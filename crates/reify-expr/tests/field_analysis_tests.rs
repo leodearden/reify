@@ -1128,3 +1128,382 @@ fn analysis_wrappers_over_analytical_field_unchanged() {
     assert_eq!(*source, FieldSourceKind::SafetyFactor);
     assert_eq!(*codomain_type, Type::dimensionless_scalar());
 }
+
+// ── Task 7129 step-3: end-to-end reduction over a Sampled-backed wrapper ────
+//
+// These drive the FULL chain through the real builtin dispatch:
+//   von_mises(Field{Sampled}) → Field{VonMises, lambda: Field{Sampled}}
+//   max(that)                 → field_reductions::compute_extremum
+//                             → project_sampled_tensor_windows (stride 9)
+//                             → reify_stdlib::compute_von_mises_3x3 per window
+//                             → reduce_sampled_extremum → argmax_argmin_index
+//
+// Every expected value below is a closed form for the uniaxial window
+// σ_xx = S (all other components zero), and every one is exactly
+// representable in binary, so the assertions use `assert_eq!` on the `Value`
+// rather than an epsilon. The exactness is an identity, not a tolerance:
+// `project_sampled_windows` applies the kernel per window and
+// `argmax_argmin_index` selects a buffer element VERBATIM — there is no
+// interpolation and no accumulation anywhere on the path.
+//
+// Result encodings (from `field_reductions::wrap_codomain` / `wrap_scalar_coord`):
+//   PRESSURE codomain          → Value::Scalar { si_value, dimension: PRESSURE }
+//   dimensionless codomain     → Value::Real(v)
+//   dimensionless-scalar domain → Value::Real(coord) for argmax/argmin
+
+/// Reduce `field` with a 1-argument reduction builtin (`max`/`min`/`argmax`/`argmin`).
+fn reduce(op: &str, field: Value, field_type: Type, result_type: Type) -> Value {
+    let expr = make_function_call(
+        op,
+        vec![CompiledExpr::literal(field, field_type)],
+        result_type,
+    );
+    let values = ValueMap::new();
+    eval_expr(&expr, &EvalContext::simple(&values))
+}
+
+/// Build `<op>(<stress fixture>)` and return the resulting wrapper field plus
+/// its `Type::Field`, so it can be fed straight into [`reduce`].
+fn wrapper_over_fixture(op: &str, codomain: Type) -> (Value, Type) {
+    let (field, field_type) = sampled_stress_fixture();
+    let wrapper = eval_analysis_wrapper(op, field, field_type, codomain.clone());
+    assert_ne!(
+        wrapper,
+        Value::Undef,
+        "{op} over the Sampled stress fixture must construct a wrapper"
+    );
+    let wrapper_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(codomain),
+    };
+    (wrapper, wrapper_type)
+}
+
+/// A `Value::Scalar` carrying PRESSURE.
+fn pressure(si_value: f64) -> Value {
+    Value::Scalar {
+        si_value,
+        dimension: DimensionVector::PRESSURE,
+    }
+}
+
+/// `max`/`min` of `von_mises` over the Sampled stress fixture.
+///
+/// Uniaxial windows σ_xx = {100e6, 250e6, 175e6} → von Mises = |σ_xx| =
+/// {100e6, 250e6, 175e6}. Expected max = 250e6 Pa, min = 100e6 Pa, exactly.
+#[test]
+fn max_min_of_von_mises_over_sampled_field_reduce_to_closed_form() {
+    let (wrapper, wrapper_type) = wrapper_over_fixture("von_mises", pressure_scalar_type());
+
+    assert_eq!(
+        reduce(
+            "max",
+            wrapper.clone(),
+            wrapper_type.clone(),
+            pressure_scalar_type()
+        ),
+        pressure(250e6),
+        "max(von_mises(Sampled stress)) should be the largest window's von Mises"
+    );
+    assert_eq!(
+        reduce("min", wrapper, wrapper_type, pressure_scalar_type()),
+        pressure(100e6),
+        "min(von_mises(Sampled stress)) should be the smallest window's von Mises"
+    );
+}
+
+/// `max`/`min` of `max_shear` over the Sampled stress fixture.
+///
+/// For a uniaxial window the eigenvalues are {0, 0, σ} ascending (σ > 0), so
+/// `compute_max_shear_3x3` = (eigs[2] − eigs[0]) / 2 = σ/2 exactly:
+/// {50e6, 125e6, 87.5e6}. Expected max = 125e6 Pa, min = 50e6 Pa.
+#[test]
+fn max_min_of_max_shear_over_sampled_field_reduce_to_closed_form() {
+    let (wrapper, wrapper_type) = wrapper_over_fixture("max_shear", pressure_scalar_type());
+
+    assert_eq!(
+        reduce(
+            "max",
+            wrapper.clone(),
+            wrapper_type.clone(),
+            pressure_scalar_type()
+        ),
+        pressure(125e6),
+        "max(max_shear(Sampled stress)) = max σ/2 = 250e6/2"
+    );
+    assert_eq!(
+        reduce("min", wrapper, wrapper_type, pressure_scalar_type()),
+        pressure(50e6),
+        "min(max_shear(Sampled stress)) = min σ/2 = 100e6/2"
+    );
+}
+
+/// `max`/`min` of `principal_stresses` over the Sampled stress fixture.
+///
+/// The projection is find_min-DEPENDENT (`field_reductions.rs`
+/// `project_principal_stresses_sampled`): `max` selects eigs[2] (σ₁, the
+/// largest principal stress) while `min` selects eigs[0] (σ₃, the smallest).
+/// For a uniaxial window the eigenvalues are {0, 0, σ}, so eigs[2] = σ and
+/// eigs[0] = 0 for every window. Expected max = 250e6 Pa, min = 0.0 Pa.
+///
+/// This find_min dependence is precisely why the wrapper is kept LAZY rather
+/// than eagerly projected at construction time: no single pre-projected
+/// buffer could serve both reductions.
+#[test]
+fn max_min_of_principal_stresses_over_sampled_field_reduce_to_closed_form() {
+    let (wrapper, wrapper_type) = wrapper_over_fixture(
+        "principal_stresses",
+        Type::List(Box::new(pressure_scalar_type())),
+    );
+
+    assert_eq!(
+        reduce(
+            "max",
+            wrapper.clone(),
+            wrapper_type.clone(),
+            pressure_scalar_type()
+        ),
+        pressure(250e6),
+        "max(principal_stresses(Sampled stress)) selects eigs[2] = the largest σ₁"
+    );
+    assert_eq!(
+        reduce("min", wrapper, wrapper_type, pressure_scalar_type()),
+        pressure(0.0),
+        "min(principal_stresses(Sampled stress)) selects eigs[0] = σ₃ = 0 for a uniaxial window"
+    );
+}
+
+/// `max`/`min` of `safety_factor` over the Sampled stress fixture.
+///
+/// safety_factor = yield / von Mises. With yield = 500e6 and von Mises =
+/// {100e6, 250e6, 175e6}: {5.0, 2.0, 2.857…}. Only the two exactly
+/// representable extremes are asserted — 500/175 is deliberately NOT asserted.
+///
+/// The codomain is `Type::dimensionless_scalar()`, and `wrap_codomain` maps a
+/// dimensionless scalar to `Value::Real`, not `Value::Scalar { DIMENSIONLESS }`.
+#[test]
+fn max_min_of_safety_factor_over_sampled_field_reduce_to_closed_form() {
+    let (field, field_type) = sampled_stress_fixture();
+    let wrapper = eval_safety_factor(field, field_type, 500e6);
+    assert_ne!(wrapper, Value::Undef, "safety_factor wrapper must construct");
+    let wrapper_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
+    };
+
+    assert_eq!(
+        reduce(
+            "max",
+            wrapper.clone(),
+            wrapper_type.clone(),
+            Type::dimensionless_scalar()
+        ),
+        Value::Real(5.0),
+        "max(safety_factor(.., 500e6)) = 500e6 / 100e6 = 5.0 (the least-stressed window)"
+    );
+    assert_eq!(
+        reduce("min", wrapper, wrapper_type, Type::dimensionless_scalar()),
+        Value::Real(2.0),
+        "min(safety_factor(.., 500e6)) = 500e6 / 250e6 = 2.0 (the most-stressed window)"
+    );
+}
+
+/// `argmax`/`argmin` of `von_mises` return DOMAIN COORDINATES, not values.
+///
+/// Pins that `arg_coord_from_index` decomposes the winning linear index
+/// against the inner Sampled field's cloned `axis_grids`: the 250e6 window is
+/// at index 1 → coord 1.0, the 100e6 window at index 0 → coord 0.0. The domain
+/// is a dimensionless scalar, so `wrap_scalar_coord` yields `Value::Real`.
+#[test]
+fn argmax_argmin_of_von_mises_over_sampled_field_return_domain_coordinates() {
+    let (wrapper, wrapper_type) = wrapper_over_fixture("von_mises", pressure_scalar_type());
+
+    assert_eq!(
+        reduce(
+            "argmax",
+            wrapper.clone(),
+            wrapper_type.clone(),
+            Type::dimensionless_scalar()
+        ),
+        Value::Real(1.0),
+        "argmax(von_mises(..)) should be the axis coord of the 250e6 window (index 1)"
+    );
+    assert_eq!(
+        reduce("argmin", wrapper, wrapper_type, Type::dimensionless_scalar()),
+        Value::Real(0.0),
+        "argmin(von_mises(..)) should be the axis coord of the 100e6 window (index 0)"
+    );
+}
+
+/// Out-of-solid FEA sentinel windows are SKIPPED, not propagated.
+///
+/// `solve_elastic_static` writes `f64::NAN` for all 9 components at grid points
+/// outside the mesh. Those windows project to NaN and are dropped by the
+/// `is_finite()` gate in `argmax_argmin_index`, so a real stress field with
+/// exterior grid points still reduces to the interior peak.
+#[test]
+fn von_mises_over_sampled_field_skips_nan_sentinel_windows() {
+    let sf = make_sampled_tensor_1d(
+        "stress_with_exterior",
+        vec![0.0, 1.0, 2.0, 3.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+            [f64::NAN; 9], // out-of-solid sentinel
+        ],
+    );
+    let (field, field_type) = wrap_sampled_stress_field(sf);
+    let wrapper =
+        eval_analysis_wrapper("von_mises", field, field_type, pressure_scalar_type());
+    let wrapper_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+
+    assert_eq!(
+        reduce(
+            "max",
+            wrapper.clone(),
+            wrapper_type.clone(),
+            pressure_scalar_type()
+        ),
+        pressure(250e6),
+        "the NaN sentinel window must be skipped, not poison the max"
+    );
+    assert_eq!(
+        reduce(
+            "argmax",
+            wrapper,
+            wrapper_type,
+            Type::dimensionless_scalar()
+        ),
+        Value::Real(1.0),
+        "argmax must still index the 250e6 window, not the NaN one"
+    );
+}
+
+/// An all-NaN buffer (every grid point outside the solid) has no finite
+/// extremum, so all four wrappers reduce to `Value::Undef` under every
+/// reduction rather than returning NaN or panicking.
+#[test]
+fn analysis_reductions_over_all_nan_sampled_field_return_undef() {
+    let nan_fixture = || {
+        let sf = make_sampled_tensor_1d(
+            "all_exterior",
+            vec![0.0, 1.0, 2.0],
+            vec![[f64::NAN; 9], [f64::NAN; 9], [f64::NAN; 9]],
+        );
+        wrap_sampled_stress_field(sf)
+    };
+
+    for (op, codomain) in [
+        ("von_mises", pressure_scalar_type()),
+        ("max_shear", pressure_scalar_type()),
+        (
+            "principal_stresses",
+            Type::List(Box::new(pressure_scalar_type())),
+        ),
+    ] {
+        let (field, field_type) = nan_fixture();
+        let wrapper = eval_analysis_wrapper(op, field, field_type, codomain.clone());
+        assert_ne!(
+            wrapper,
+            Value::Undef,
+            "{op}: the wrapper still CONSTRUCTS over an all-NaN field — only the reduction is Undef"
+        );
+        let wrapper_type = Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(codomain),
+        };
+        for red in ["max", "min", "argmax", "argmin"] {
+            assert_eq!(
+                reduce(
+                    red,
+                    wrapper.clone(),
+                    wrapper_type.clone(),
+                    Type::dimensionless_scalar()
+                ),
+                Value::Undef,
+                "{red}({op}(all-NaN field)) should be Undef — no finite extremum exists"
+            );
+        }
+    }
+
+    let (field, field_type) = nan_fixture();
+    let sf_wrapper = eval_safety_factor(field, field_type, 500e6);
+    assert_ne!(sf_wrapper, Value::Undef, "safety_factor wrapper constructs");
+    let sf_wrapper_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
+    };
+    for red in ["max", "min", "argmax", "argmin"] {
+        assert_eq!(
+            reduce(
+                red,
+                sf_wrapper.clone(),
+                sf_wrapper_type.clone(),
+                Type::dimensionless_scalar()
+            ),
+            Value::Undef,
+            "{red}(safety_factor(all-NaN field)) should be Undef"
+        );
+    }
+}
+
+/// REMAINING-GAP PIN: the wrapper now constructs over a Sampled backing, but
+/// pointwise `sample()` of that wrapper is still `Value::Undef`.
+///
+/// Mechanism: `sample_field_at` (`crates/reify-expr/src/lib.rs`) forwards the
+/// INNER field's lambda slot — a `Value::SampledField` — into
+/// `apply_lambda_with_point_unpacking`, which handles `Value::Lambda` only and
+/// returns `Undef` for anything else. Closing it needs the tensor element
+/// dimension plumbed through `sample_field_at` (the wrapper's own codomain
+/// cannot recover it for `safety_factor`, whose codomain is dimensionless)
+/// plus a stride-3 variant for `principal_stresses` — edits well outside this
+/// task's file set, tracked separately.
+///
+/// This is NOT a regression from task 7129: before the fix
+/// `von_mises(sampled)` was itself `Undef`, so sampling it was `Undef` too.
+/// The observable for the sample path is unchanged; only the reduction path
+/// changed. The test is written in two parts so it was genuinely RED before
+/// the `validate_tensor_field` relaxation — the first assertion failed.
+#[test]
+fn sampled_backed_analysis_wrapper_is_constructed_but_pointwise_sample_still_undef() {
+    let (field, field_type) = sampled_stress_fixture();
+    let wrapper =
+        eval_analysis_wrapper("von_mises", field, field_type, pressure_scalar_type());
+
+    // Part 1 — the wrapper IS constructed (this is what task 7129 fixed).
+    assert!(
+        matches!(
+            &wrapper,
+            Value::Field {
+                source: FieldSourceKind::VonMises,
+                ..
+            }
+        ),
+        "von_mises over a Sampled stress field must construct a VonMises wrapper, got {wrapper:?}"
+    );
+
+    // Part 2 — pointwise sampling of it is still Undef (the remaining gap).
+    let wrapper_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(wrapper, wrapper_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        ],
+        pressure_scalar_type(),
+    );
+    let values = ValueMap::new();
+    assert_eq!(
+        eval_expr(&sample_expr, &EvalContext::simple(&values)),
+        Value::Undef,
+        "pointwise sample() of a Sampled-backed analysis wrapper is still Undef — \
+         a separate, pre-existing gap in apply_lambda_with_point_unpacking"
+    );
+}
