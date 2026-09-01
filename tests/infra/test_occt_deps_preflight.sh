@@ -538,6 +538,58 @@ _containment_has_no_grep_pipeline() {
 assert "_out_contains' body contains no '| grep' pipeline (no pipefail/SIGPIPE exposure)" \
     _containment_has_no_grep_pipeline
 
+# --- A MISS must be DIAGNOSABLE, not silent.
+#
+# tests/infra/test_helpers.sh's assert() dumps captured evidence only when the
+# checker actually wrote to its per-assert tmpfile (`[ -s "$_f" ]`). A
+# `_guard_output_names` that swallows the guard output into a shell variable
+# and then `return 1`s writes NOTHING, so the FAIL line reads
+# "  FAIL: guard output NAMES <x>" with no captured-output block at all — the
+# reader cannot tell whether the guard printed the wrong thing, printed
+# nothing, or (as it turned out) printed exactly the right thing and the
+# harness misreported it. That evidence gap is precisely why the SIGPIPE defect
+# above survived a full task cycle unroot-caused.
+#
+# Behavioural, not prose: WHETHER evidence is emitted and whether it carries
+# the two things a reader needs (which needle was missing, and what the guard
+# actually said). Exact wording is deliberately not pinned.
+_MISS_NEEDLE="__absent_needle_6493__"
+_SELF_PAYLOAD_FIRST_LINE="${_SELF_PAYLOAD%%$'\n'*}"
+
+assert "self-check has a non-empty first payload line to look for in the diagnostic" \
+    test -n "$_SELF_PAYLOAD_FIRST_LINE"
+
+# stdout AND stderr — the helper is free to use either; what matters is that
+# assert()'s tmpfile (which captures both) ends up non-empty.
+_MISS_DIAG="$(_guard_output_names "$_SELF_LIB_OK" "$_SELF_INC_MISSING" "$_MISS_NEEDLE" 2>&1 || true)"
+
+assert "_guard_output_names EMITS evidence on a needle miss (assert's on-FAIL dump has something to show)" \
+    test -n "$_MISS_DIAG"
+
+assert "that evidence NAMES the needle that was missing ('$_MISS_NEEDLE')" \
+    _out_contains "$_MISS_DIAG" "$_MISS_NEEDLE"
+
+assert "that evidence carries the CAPTURED guard output (at least its first line)" \
+    _out_contains "$_MISS_DIAG" "$_SELF_PAYLOAD_FIRST_LINE"
+
+# The other half of the contract: an all-green run must stay byte-for-byte
+# unchanged, because run_all.sh's cause_hint and dark-factory's classifier both
+# parse this file's output shape. So the helper must emit on the FAILURE path
+# only.
+_no_emission_on_match() {
+    local out
+    out="$(_guard_output_names "$_SELF_LIB_OK" "$_SELF_INC_MISSING" "$_SELF_NEEDLE" 2>&1)" || return 1
+    [ -z "$out" ] || {
+        echo "_guard_output_names emitted on the SUCCESS path, which would change"
+        echo "the green output shape run_all.sh and dark-factory parse:"
+        printf '%s\n' "$out"
+        return 1
+    }
+}
+
+assert "_guard_output_names emits NOTHING when every needle matches (green shape unchanged)" \
+    _no_emission_on_match
+
 # ---------------------------------------------------------------------------
 # 1. Guard script exists and is executable
 # ---------------------------------------------------------------------------
