@@ -1806,7 +1806,7 @@ async fn an_abandoned_submission_is_dropped_at_the_lane_instead_of_driven() {
     // A plain `std` thread is never a runtime context, so the job's
     // `Handle::block_on` is legal there and a non-skipping impl genuinely drives
     // the future — which is what makes the assertion below attributable.
-    std::thread::spawn(move || job())
+    std::thread::spawn(job)
         .join()
         .expect(
             "invoking a skipped job must be a clean no-op: dropping the captured \

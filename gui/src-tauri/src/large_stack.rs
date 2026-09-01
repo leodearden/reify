@@ -1107,6 +1107,45 @@ where
 ///
 /// And a `RecvError` is that loud panic rather than a hang: a disconnected
 /// `oneshot` resolves AT ONCE, so the `.await` below can never park forever.
+///
+/// # Drop-cancellation: the job checks `reply_tx.is_closed()` before driving
+///
+/// Task 5772 removed drop-cancellation — the awaiting side could go away while
+/// the job ran to completion regardless — and disclosed it. Task 6517 restores
+/// it partially, at the LANE. Four things a reader needs and cannot infer from
+/// the one-line check in the job body:
+///
+/// 1. **`reply_tx.is_closed()` IS the cancellation token.** It is true exactly
+///    when the awaiting side's `dispatch_async` future was dropped, because that
+///    future owns the `oneshot` receiver. So nothing has to be threaded through
+///    the [`Job`] contract, through `lsp_bridge`, or through any caller: no new
+///    parameter, no new type, no new dependency (`tokio-util`'s
+///    `CancellationToken` would need the `sync` feature this crate's `tokio` pin
+///    does not enable, and `futures` is not a `reify-gui` dependency at all).
+/// 2. **It is STRICTLY WEAKER than pre-5772 drop-cancellation, deliberately.**
+///    It can only skip work that has NOT STARTED; it never interrupts work in
+///    flight. There is no cancellation point inside
+///    [`tokio::runtime::Handle::block_on`], and the four `spawn_blocking` arms
+///    are uninterruptible once started in any case — dropping a `JoinHandle`
+///    does not cancel a blocking task. Claiming more than "dropped from the
+///    queue" would be false.
+/// 3. **Why it applies to BOTH lanes, not only the query pool.** A closed
+///    receiver means the whole Tauri command future is gone, and before task
+///    5772 an abandoned NOTIFICATION stopped at its next `.await` too. Skipping
+///    it is therefore faithful to the pre-5772 contract in both directions
+///    rather than a new state-loss risk: the state the notification would have
+///    written is state a pre-5772 abandoned request never wrote either.
+/// 4. **Why the blocking seam [`dispatch`] gets no equivalent.**
+///    [`std::sync::mpsc::Sender`] has no `is_closed`, and — more to the point —
+///    its submitter is parked in `recv()` for the whole call, so it cannot be
+///    dropped in the first place. The asymmetry is a property of the two seams,
+///    not an omission.
+///
+/// The RESIDUAL, stated rather than left to be discovered: a request abandoned
+/// AFTER its consumer picked it up still runs to completion. That cost is now
+/// BOUNDED rather than eliminated — it occupies one of
+/// [`LSP_POOL_SIZE`](crate::large_stack::LSP_POOL_SIZE) query consumers instead
+/// of the only LSP consumer in the process.
 pub(crate) async fn dispatch_async<Fut, T>(sender: Option<&JobSender>, fut: Fut) -> T
 where
     Fut: std::future::Future<Output = T> + Send + 'static,
@@ -1131,9 +1170,18 @@ where
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
+        // CANCEL AT THE LANE (task 6517). A closed `reply_tx` means the awaiting
+        // side's `dispatch_async` future was dropped, so nothing is waiting for
+        // this answer. Returning here drops `fut` WITHOUT polling it, running its
+        // destructors exactly as an abandoned Tauri command future did before
+        // task 5772. See this function's "Drop-cancellation" section for the
+        // four things that are not inferable from this line.
+        if reply_tx.is_closed() {
+            return;
+        }
         // Identical to `dispatch`'s job body apart from the driver: the catch
-        // lives INSIDE the job, so the lane's `for job in rx` loop can never
-        // observe an unwind and cannot be killed by user code.
+        // lives INSIDE the job, so the lane's receive loop can never observe an
+        // unwind and cannot be killed by user code.
         // `AssertUnwindSafe` is sound because the job OWNS its captures and is
         // consumed by this call — nothing observes them after a panic — and the
         // payload is re-raised on the submitter below rather than swallowed.
