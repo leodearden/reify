@@ -121,24 +121,36 @@ fn compile_constraint_def(
             // an error so the user sees the typo at def-compile time rather than silently
             // accepting it and getting a confusing error at the instantiation site.
             //
-            // `enum_defs` is this site's PRIVATE enum namespace — no
-            // `EnumNameScope` is installed around constraint-def compilation, so
-            // the ambient set the deferred alias arm in
-            // `resolve_type_expr_with_aliases_kinded` consults is empty here and
-            // `type AL = Zq` arrives still spelled `AL`. Hop the unresolved-alias
-            // chain to the name the body ultimately spells before the enum
-            // lookup, so an enum-bodied alias is suppressed exactly as the direct
-            // enum spelling is (task 6259).
+            // `enum_defs` is this site's PRIVATE enum namespace, and it is now a
+            // NARROWED backstop rather than the whole story: task 6416 installs an
+            // `EnumNameScope` above (see the params-loop preamble), so the ambient
+            // set the deferred alias arm in
+            // `resolve_type_expr_with_aliases_kinded` consults is NON-empty here.
+            // Both the bare enum spelling and a non-parametric enum-bodied alias
+            // now RESOLVE through that fallback instead of merely being suppressed
+            // — MEASURED on this tree: `param g : Zq` and `param g : AL`
+            // (`type AL = Zq`), and the chain `A2 -> A1 -> Zq`, all store
+            // `ty == Some(Enum("Zq"))` with zero diagnostics. Those values are what
+            // task 4546's arg type check in `expand_constraint_inst` consumes; it
+            // skips params whose `ty` is `None`, so populating them is precisely
+            // what made that check stop being inert for enum-typed params.
             //
-            // This SUPPRESSES the spurious diagnostic and nothing more: `ty` stays
-            // `None`, which is what the DIRECT spelling stores too (measured — the
-            // guard below only gates the diagnostic, it never populates `ty`).
-            // Populating it would change what `expand_constraint_inst` checks at
-            // every instantiation site, which is out of this task's scope.
+            // What survives here is the PARAMETERISED form, which the ambient
+            // fallback cannot reach: it is gated on `type_args.is_empty()`, while
+            // `resolve_enum_type` ignores type args entirely. So this guard is
+            // still the only thing suppressing a spurious "unknown type" for
+            // `param g : Zq<Int>` and `param g : AL<Int>` — MEASURED: both store
+            // `ty: None` with zero diagnostics today, and deleting the
+            // `resolve_enum_type` conjunct (or the alias hop below) makes them
+            // start erroring. The hop to the name the alias body ultimately spells
+            // (task 6259) is therefore still load-bearing, but its remaining
+            // consumer is exactly the parameterised alias form: with the hop
+            // removed, `param g : AL<Int>` emits "unknown type 'AL'" while the bare
+            // `AL` stays clean via the ambient fallback (measured both ways).
             //
-            // The enum lookup moved inside the block so the hop can be named; it
+            // The enum lookup sits inside the block so the hop can be named; it
             // and the `structure_names` test are both pure predicates, so the
-            // reordering is behaviour-preserving.
+            // ordering is behaviour-preserving.
             if let Some(te) = &param.type_expr
                 && resolved_ty.is_none()
                 && let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
