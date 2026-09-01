@@ -807,9 +807,10 @@ orch_daily_cost_ceiling_usd: 10000.0
 watcher_daily_cost_ceiling_usd: 10000.0
 
 # Usage cap / multi-account failover
-# 6 automation accounts (G→F→E→C→B→D); A reserved for interactive (eval runners
-# inject A dynamically via USAGE_ACCOUNTS_FILE override). Authoritative pool list:
-# config/usage-accounts.yaml.
+# 7 automation accounts (B→C→D→E→F→G→H); A reserved for INTERACTIVE use only.
+# Evals have NO dedicated account — they draw on this same pool and must be
+# robust to cap/429 events (ruling 2026-08-30, task 4741). Authoritative pool
+# list: config/usage-accounts.yaml, which here is a symlink to dark-factory's.
 # When one account hits its cap, UsageGate rotates to the next in list order.
 usage_cap:
   enabled: true
