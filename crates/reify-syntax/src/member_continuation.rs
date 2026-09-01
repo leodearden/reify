@@ -78,6 +78,34 @@
 //! binaries at risk, to police a rule that is purely about layout. Keeping the
 //! check here also keeps the merge surface against the pending 801-line
 //! `ts_parser.rs` change on `task/5392` down to the single call site.
+//!
+//! # Severity: a hard failure on every entry path (measured, #7094 step-10)
+//!
+//! These entries go into `ParsedModule::errors`, and INV-SF-7 forbids the
+//! quiet pick — so "reported" is not enough, the compile has to STOP. Every
+//! path that compiles a file a user named does stop, and none of them was
+//! changed by #7094:
+//!
+//! - `reify_compiler::module_dag` — the project/import entry. Both
+//!   `ModuleDag::compile_module` and `compile_project_with_entry_source_cfg`
+//!   map a non-empty `parsed.errors` to `Diagnostic::error` and return `Err`
+//!   before any compilation phase runs. Pinned by
+//!   `crates/reify-compiler/tests/harness_langcore/member_continuation_hard_error_tests.rs`,
+//!   which asserts `Severity::Error` explicitly so a downgrade cannot pass.
+//! - `reify-cli`'s single-file `parse_and_compile` — prints each
+//!   `parsed.errors` entry and returns `ExitCode::FAILURE` before it calls
+//!   `compile_with_stdlib_checked`.
+//!
+//! `compile_builder::pre_pass::forward_parse_errors` DOES downgrade every
+//! `ParseError` to a `Diagnostic::warning` (deliberately: it runs after a
+//! best-effort parse, and its blanket behaviour is not #7094's to change).
+//! That downgrade is only reachable when a caller hands a `ParsedModule`
+//! straight to `compile_with_prelude_*` without checking `errors` first,
+//! which is what the test helpers do — both entry paths above pre-check, so
+//! no member-continuation entry reaches it on a user-facing compile. If a
+//! future production caller skips that pre-check, the fix is a structural
+//! marker on the entry (not a message-prefix match, which would be a
+//! substring hack under INV-SF-6).
 
 use reify_core::SourceSpan;
 

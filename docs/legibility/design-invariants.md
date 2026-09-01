@@ -268,7 +268,11 @@ same seam yields four outcomes (correct / silently wrong / undef /
 parse-error-at-wrong-line) depending on adjacent tokens. #5492's corpus
 red on main is suspected drift of the same seam. Ratified by Leo
 2026-07-25 (seam review); #5392 is the enforcement vehicle for the
-fn-body seam.
+fn-body seam, and #7094 for the member-body seam — the structure,
+occurrence, trait, purpose, relate, constraint-def and guarded-block
+bodies, whose separator-free `repeat(...)` lets a member absorb the
+next line. #7094's mechanism is the post-parse check in
+`crates/reify-syntax/src/member_continuation.rs`.
 
 ## Angle-crossing family (INV-AD-1..4)
 
