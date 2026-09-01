@@ -249,6 +249,13 @@ opus/max/$25/180t; merge verify 2 hosts, laptop quarantined), main HEAD 72b9c5b0
 orchestrator config change or model-lineage default switch lands mid-experiment, record the
 date and split descriptives at it; do not discard data.
 
+Era events recorded under this rule:
+- **2026-09-01**: fleet-wide `timeouts.architect` 2400 → 7200 (reify task 7182, merge
+  9be8de5f, esc-5469-10, Leo-approved; hot-reloaded same day). Raises the architect
+  transcript-silence bound in both arms; total runtime stays capped by
+  `invocation_timeout=7200`. Zero E3-arm architect timeout kills existed at change time
+  (runs.db checked). Split descriptives at this date.
+
 ## 8. Predictions (pre-registered, direction + rough magnitude)
 
 1. **Cost per delivered kLOC: coarse 25–50% LOWER** than standard (mechanism: ~28 fewer
