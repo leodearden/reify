@@ -481,10 +481,26 @@ the user — `report_eval_output` (`main.rs:2763`) prints every diagnostic to st
    checker's misattributed `operator undefined for these operand kinds: StructureInstance`.
    The non-assertion hot path must keep its zero-allocation shape (tactical: a precomputed
    per-check boolean).
-2. `build_outputs` / `build_outputs_with_result` (`engine_build.rs:5044`/`:5094`) emit an
+2. Three production call sites share one helper,
+   `unenforced_representation_bound_diagnostic` (`tolerance_combine.rs`), and emit an
    **Error**-severity coded diagnostic when the module declares a bound the export path cannot
-   demonstrate it honours. `cmd_build`'s existing `Severity::Error` gate (`main.rs:1095-1107`,
-   `:1260`) converts that to a non-zero exit **with no CLI change**.
+   demonstrate it honours: `build_outputs` / `build_outputs_with_result`
+   (`engine_build.rs:5044`/`:5094`, the occurrence-driven Mode-B export path); `cmd_build`'s
+   Mode-A `-o` path (`crates/reify-cli/src/main.rs`), which calls the helper directly ahead of
+   the write rather than relying only on the pre-existing `Severity::Error` gate for its exit
+   code; and the GUI export surface (`gui/src-tauri/src/engine.rs`'s `Engine::export()` →
+   `build()`) — **still a bypass as of this writing**: `build()` never calls the helper, only
+   `build_outputs`/`build_outputs_with_result` do. Task **6190** closes this third site (fix
+   committed on branch `task/6190`, not yet landed on `main`); this line records the as-shipped
+   state, not the post-6190 one.
+
+   Mode A and Mode B are also empirically asymmetric in what they report **on success**, independent
+   of the refusal wiring above: Mode A (`reify build -o <path>`) prints `Wrote <path>` followed by a
+   `Triangles: N` line; Mode B (occurrence-driven, no `-o`) prints `Wrote <path>` with **no**
+   `Triangles:` line, and writes to the occurrence's own declared path rather than the `-o` target.
+   Confirmed during task 6170's D3 γ-verification (`wf_c00d1e3e-262`, 2026-08-10) and by reviewer
+   finding "design-coherence" on `crates/reify-cli/src/main.rs:1021` during 6170's amendment pass
+   (fixed in code there; this PRD records the docs half).
 3. Post-**6085**, (2) narrows: the export path measures and refines like `check`, and refusal is
    reserved for genuinely unachievable bounds.
 
@@ -515,6 +531,15 @@ its drift-guard registration **in the same diff** (`.config/nextest.toml` partit
 `tests/infra/run-all-classification.manifest` row) — this is the A3-before-A6 failure of esc-4914-162.
 **No test may assert a wall-clock upper bound**; BT-4's cost check is a task-recorded measurement, not
 a gate assertion (`tests/infra/test_no_new_wallclock_upper_bounds.sh`).
+
+**The Mode A/Mode B reporting asymmetry (§5 C-SURFACE (2)) is deliberate, and follows from this same
+rule.** `reify build -o <path>` (Mode A) prints `Wrote <path>` and a `Triangles: N` line; the
+occurrence-driven `reify build` (Mode B, no `-o`) prints `Wrote <path>` with **no** `Triangles:` line
+and writes to the occurrence's own declared path rather than the `-o` target. Mode B gets the count
+for free — it must realize anyway to enumerate `: Output` occurrences — while Mode A printing the
+same count would cost a full extra realization + tessellation (5–20 s, §2.2) that this rule forbids
+paying just to report a number. Confirmed during task 6170's D3 γ-verification (`wf_c00d1e3e-262`,
+2026-08-10) and reviewer finding "design-coherence" on `crates/reify-cli/src/main.rs:1021`.
 
 ---
 
@@ -625,8 +650,15 @@ measurement, no refine.
 **non-zero** with an Error diagnostic naming the unenforced bound, instead of today's silent exit-0
 alongside a 0.1 m-deflection STL. Compatibility is measured: **zero** existing `.ri` combines a bound
 with an export (§3.1(f)), so nothing regresses.
-*Modules:* `crates/reify-eval/src/engine_build.rs` (`build_outputs`, `build_outputs_with_result`).
-*Lock note:* no CLI file is touched — `cmd_build`'s existing `Severity::Error` gate does the exit.
+*Modules:* three call sites (§5 C-SURFACE (2) has the full contract and the Mode-A/Mode-B reporting
+asymmetry): `crates/reify-eval/src/engine_build.rs` (`build_outputs`, `build_outputs_with_result` —
+Mode B); `crates/reify-cli/src/main.rs`'s `cmd_build` Mode-A `-o` path; and
+`gui/src-tauri/src/engine.rs` (still a bypass as of this writing — task 6190 closes it, not yet
+landed on `main`).
+*Lock note:* `crates/reify-cli/src/main.rs` **is** touched — an earlier version of this note said "no
+CLI file is touched," which was stale: Mode A calls `unenforced_representation_bound_diagnostic`
+directly ahead of the write rather than relying only on `cmd_build`'s pre-existing
+`Severity::Error` gate for its exit code.
 
 **θ — Enforce the bound on export.** *(Leaf.* deps: γ1, β, **task 6085***)*
 Once a declared tolerance actually reaches `kernel.export()`, apply C-LOOP on the export path and
