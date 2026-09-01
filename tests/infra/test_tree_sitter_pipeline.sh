@@ -2575,6 +2575,129 @@ test_freshness_detects_and_repairs_stale_archive() {
     fi
 }
 
+test_freshness_leaves_are_ld_scrubbed() {
+    # Both freshness leaves must be emitted through verify.sh's SCRUBBED tool
+    # emitter (add_tool), i.e. the plan line itself must literally begin with
+    # `export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; `.
+    #
+    # WHY: /opt/reify-deps/lib is a whole conda prefix that shadows hundreds of
+    # system sonames and outranks DT_RUNPATH, so any non-cargo tool inheriting
+    # it gets conda libraries substituted underneath it. verify.sh states the
+    # rule at its add_tool() definition: "If the line reaches cargo at all, use
+    # `add` ... Everything else (shell scripts, npm, git, node) uses `add_tool`".
+    # scripts/tree-sitter-freshness.sh is pure shell (sha256sum/shasum/stat/
+    # find/touch via scripts/lib.sh) — no cargo, no reify binary — so it is a
+    # TOOL line and genuinely wants the scrub, exactly like its neighbour
+    # ./scripts/tree-sitter-generate.sh.
+    #
+    # WHY THIS EXISTS IN ADDITION TO tests/infra/test_verify_ld_library_path_scope.sh:
+    # that guard ENUMERATES plain-`add` call sites in verify.sh SOURCE and accepts
+    # EITHER add_tool() OR a trailing `# ld-ok: <reason>` marker. A future edit
+    # could satisfy it by bolting on a marker while silently dropping the scrub.
+    # This test pins the SCRUB ITSELF, on emitted plan text, and it is routed from
+    # this task's own artifacts (scripts/tree-sitter-freshness.sh ->
+    # test_tree_sitter_pipeline.sh, see the infra-test map), so it also fires on a
+    # task-scope verify that touches only the freshness script.
+    #
+    # Asserted on captured plan TEXT, never on verify.sh source text.
+    local verify="$REPO_ROOT/scripts/verify.sh"
+    assert_file_exists "$verify" || return 1
+
+    # The literal head every add_tool() line carries. Spelled out here rather
+    # than sourced from verify.sh so this file is an INDEPENDENT oracle. Note
+    # the `${VAR-}` form is matched LITERALLY: _LD_SCRUB is single-quoted in
+    # verify.sh precisely so the variable NAME, not a host-specific value, lands
+    # in the plan and --print-plan stays a hermetic, host-independent oracle.
+    local scrub='export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
+
+    local action plan cmds line stripped
+    local n_ensure n_check n_control
+    for action in "all --profile debug --scope all --include-infra" \
+                  "test --profile both --scope all --include-infra" \
+                  "lint --scope all --include-infra" \
+                  "typecheck --scope all"; do
+        # Retrying, completeness-guarded capture — same rationale/pattern as
+        # test_verify_plan_includes_freshness_after_generation. $action word-splits
+        # inside the inner bash -c (its unquoted $2), so no outer SC2086 exposure.
+        capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+            bash -c 'exec bash "$1" $2 --print-plan 2>/dev/null' _ "$verify" "$action" || true
+        if ! plan_capture_complete "$plan"; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' --print-plan capture truncated after retries"
+            return 1
+        fi
+        # Reason over the COMMANDS BLOCK only — the environment preamble carries
+        # commented-out lines that are not plan leaves.
+        cmds="${plan#*# --- commands}"
+
+        n_ensure=0
+        n_check=0
+        n_control=0
+        # Here-string, not a pipe: the loop must run in THIS shell or the counters
+        # below are lost to a subshell. Fork-free line walking for the same reason
+        # ts_offset_of is (an EINTR surface can flip an assertion under load).
+        while IFS= read -r line; do
+            case "$line" in
+                *"./scripts/tree-sitter-freshness.sh ensure"*) n_ensure=$(( n_ensure + 1 )) ;;
+                *"./scripts/tree-sitter-freshness.sh check"*)  n_check=$(( n_check + 1 )) ;;
+                # Control: an ESTABLISHED add_tool() site, one line above the first
+                # freshness leaf. Asserting the scrub on IT proves `$scrub` still
+                # matches what verify.sh actually emits, so a drift in _LD_SCRUB's
+                # spelling reports as "the literal moved" rather than as a false
+                # accusation against the freshness leaves.
+                *"./scripts/tree-sitter-generate.sh"*)
+                    n_control=$(( n_control + 1 ))
+                    stripped="${line#"$scrub"}"
+                    if [[ "$stripped" == "$line" ]]; then
+                        echo ""
+                        echo "  ASSERTION FAILED: the CONTROL line — an established add_tool() site —"
+                        echo "  does not carry the scrub literal this test matches on:"
+                        echo "  |$line"
+                        echo "  |$scrub  <- expected prefix"
+                        echo "  verify.sh's _LD_SCRUB has changed shape; update the literal in this"
+                        echo "  test rather than reading the freshness assertions below as real."
+                        return 1
+                    fi
+                    continue
+                    ;;
+                *) continue ;;
+            esac
+            stripped="${line#"$scrub"}"
+            if [[ "$stripped" == "$line" ]]; then
+                echo ""
+                echo "  ASSERTION FAILED: verify.sh '$action' emits a tree-sitter-freshness leaf"
+                echo "  that is NOT LD-scrubbed — it was added with plain add() instead of add_tool():"
+                echo "  |$line"
+                echo "  Expected the line to begin with the literal:"
+                echo "  |$scrub"
+                echo "  scripts/tree-sitter-freshness.sh is pure shell and never reaches cargo, so"
+                echo "  /opt/reify-deps/lib (a conda prefix that outranks DT_RUNPATH) would be"
+                echo "  substituted underneath sha256sum/stat/find/touch. A '# ld-ok:' marker does"
+                echo "  NOT satisfy this test — the scrub itself is the property under assertion."
+                return 1
+            fi
+        done <<< "$cmds"
+
+        # NON-VACUITY: without this, a plan carrying zero freshness leaves — or a
+        # renamed script — sails through the loop above having asserted nothing.
+        if [ "$n_ensure" -eq 0 ] || [ "$n_check" -eq 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' plan has no freshness leaf to assert on"
+            echo "  (matched 'ensure' lines: $n_ensure, 'check' lines: $n_check) — the scrub"
+            echo "  assertion above would be vacuous. Both leaves are required on every"
+            echo "  RUN_RUST plan; see test_verify_plan_includes_freshness_after_generation."
+            return 1
+        fi
+        if [ "$n_control" -eq 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' plan has no './scripts/tree-sitter-generate.sh'"
+            echo "  leaf to use as the scrub-literal control, so a drift in verify.sh's _LD_SCRUB"
+            echo "  spelling would be indistinguishable from a genuinely unscrubbed freshness leaf."
+            return 1
+        fi
+    done
+}
+
 test_verify_plan_includes_freshness_after_generation() {
     # The guard is only worth anything if the gate RUNS it, and runs it in the
     # right place. Two orderings are load-bearing and both are asserted here:
