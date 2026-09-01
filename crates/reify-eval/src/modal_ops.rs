@@ -1189,7 +1189,8 @@ pub(crate) fn run_modal_analysis(
     // BC selection reads only node coordinates, so it takes the order-correct node
     // slice directly (no half-populated `BeamMesh` sentinel): the P1 mesh nodes or
     // the promoted P2 node set, whichever `modal_mesh` carries.
-    let bcs = build_dirichlet_bcs(options, modal_mesh.nodes(), length, width, height);
+    let DirichletRealization { bcs, diagnostics: bc_diagnostics } =
+        build_dirichlet_bcs(options, modal_mesh.nodes(), length, width, height);
     let eigen_opts = EigenSolverOptions {
         n_modes,
         tol,
@@ -1342,11 +1343,16 @@ pub(crate) fn run_modal_analysis(
         None
     };
     let new_warm_state = Some(state);
+    // BC-realization notes FIRST, then the solve's own diagnostics: an author
+    // reading a `W_ModalRigidBodyMode` warning wants the realization that
+    // produced it above the warning, not below.
+    let mut diagnostics = bc_diagnostics;
+    diagnostics.extend(core.diagnostics);
     let outcome = ComputeOutcome::Completed {
         result,
         new_warm_state,
         cost_per_byte,
-        diagnostics: core.diagnostics,
+        diagnostics,
         structured_detail: vec![],
     };
     ModalTrampolineRun {
@@ -3005,13 +3011,25 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 /// DirichletBc dof"), so the uniqueness is part of this function's contract
 /// rather than a downstream consumer's problem. Every BC here is homogeneous
 /// (`value: 0.0`), so deduplicating by `dof` alone loses nothing.
+///
+/// # Diagnostics
+///
+/// Returns a [`DirichletRealization`], not a bare vector, because the
+/// `PinnedSupport` realization DECISION is count-dependent and would otherwise
+/// be invisible: adding or removing a support elsewhere on the body silently
+/// re-realizes a pinned beam end (clamp ⇄ transverse pin), and the author's only
+/// observable would be a frequency that moved. Every such face therefore carries
+/// one `I_ModalPinnedFaceRealization` `Severity::Info` diagnostic naming what it
+/// was realized as AND why — see
+/// [`pinned_end_face_realization_diagnostics`]. Numbers are unaffected; this is
+/// a reporting channel only.
 fn build_dirichlet_bcs(
     options: &Value,
     nodes: &[[f64; 3]],
     length: f64,
     width: f64,
     height: f64,
-) -> Vec<DirichletBc> {
+) -> DirichletRealization {
     let targets = support_targets(options);
     // Count DISTINCT recognized FACES, not supports. Two hazards fall out of
     // that one choice, and both are mechanism classes:
@@ -3040,6 +3058,16 @@ fn build_dirichlet_bcs(
     // transverse-pin mechanism class outright rather than documenting it as a
     // residual. `solve_generalized_eigen`'s singular-K fallback remains the
     // backstop for a singular K_free arriving by any other route.
+    //
+    // All three shapes are pinned by tests, so the argument cannot rot silently:
+    // the pin-pin case and the propped cantilever by
+    // `build_dirichlet_bcs_discriminates_support_kind` (i)/(iv), and the third —
+    // where the whole argument rests on the non-end face being a FULL clamp — by
+    // `build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end` (iii).
+    //
+    // The count is still non-local, which is why every pinned end face also
+    // reports what it was realized as: see
+    // [`pinned_end_face_realization_diagnostics`].
     let faces_named: BTreeSet<(usize, bool)> =
         targets.iter().filter_map(|(_, t)| face_bound(t)).collect();
     let n_faces = faces_named.len();
@@ -3060,7 +3088,11 @@ fn build_dirichlet_bcs(
         .iter()
         .filter(|(_, t)| is_beam_axis_end_face(t))
         .all(|(kind, _)| *kind == DeclaredSupport::Pinned);
-    if names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned {
+    let simply_supported =
+        names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned;
+    let diagnostics = pinned_end_face_realization_diagnostics(&targets, n_faces, simply_supported);
+
+    if simply_supported {
         // The special case re-interprets the TWO END FACES only. Every support
         // naming another face is still realized per-face and unioned on top, so
         // e.g. `[Pinned(x_min), Pinned(x_max), Fixed(y_min)]` is a
@@ -3073,10 +3105,111 @@ fn build_dirichlet_bcs(
             .filter(|(_, t)| !is_beam_axis_end_face(t))
             .collect();
         bcs.extend(per_face_bcs(&others, nodes, length, width, height));
-        return normalize_bcs(bcs);
+        return DirichletRealization { bcs: normalize_bcs(bcs), diagnostics };
     }
 
-    normalize_bcs(per_face_bcs(&faces, nodes, length, width, height))
+    DirichletRealization {
+        bcs: normalize_bcs(per_face_bcs(&faces, nodes, length, width, height)),
+        diagnostics,
+    }
+}
+
+/// What [`build_dirichlet_bcs`] realized: the Dirichlet set itself, plus the
+/// advisory diagnostics explaining any realization the author cannot read off
+/// their own declaration.
+///
+/// A struct rather than a bare `Vec<DirichletBc>` because the `PinnedSupport`
+/// realization is decided from a NON-LOCAL count ([`face_realization`]'s
+/// `n_faces`), so the two halves must be produced by the SAME pass over the same
+/// supports — a sibling function recomputing the decision could drift from the
+/// one that actually emitted the DOFs, which is precisely the silent-BC-
+/// reinterpretation class task 6663 exists to close.
+struct DirichletRealization {
+    /// The homogeneous Dirichlet set: sorted by `dof` and deduplicated.
+    bcs: Vec<DirichletBc>,
+    /// `Severity::Info` notes about count-dependent realizations. Empty for
+    /// every model whose supports are all `FixedSupport`, and for every
+    /// `PinnedSupport` that names no beam-axis end face — those realizations are
+    /// unconditional and need no explanation.
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// One `I_ModalPinnedFaceRealization` `Severity::Info` diagnostic per DISTINCT
+/// beam-axis end face carrying a `PinnedSupport`, naming what that face was
+/// realized as and WHY.
+///
+/// # Why this exists
+///
+/// [`face_realization`] decides what a `PinnedSupport` on a beam end constrains
+/// from a count of the model's DISTINCT named faces, i.e. from something the
+/// author did NOT write on that support. Going from `[Pinned("x_min")]` to
+/// `[Pinned("x_min"), Fixed("y_min")]` re-realizes x_min from a full 3-DOF clamp
+/// to a Z-only transverse pin, and vice versa on removal — a change of
+/// idealization on a face that was never edited. Without a diagnostic the only
+/// observable is a frequency that moved, which is the same
+/// silent-BC-reinterpretation failure mode this task closes, merely narrowed
+/// from "the kind is ignored" to "the kind is read in a context you cannot see".
+///
+/// The scoping argument in [`face_realization`] stands: no reachable
+/// `PinTransverse` configuration is a mechanism. This does not change any
+/// number; it puts the count-dependence in the same diagnostic stream the rest
+/// of the modal solve reports through, so the flip is legible in BOTH directions
+/// (pinned as a transverse pin, and pinned-therefore-clamped).
+///
+/// # What is reported, and what is not
+///
+/// One note per distinct face, not per support: `[Pinned("x_min"),
+/// Pinned("x_min")]` is one face (the same `face_bound` set the count runs over,
+/// so the message can never disagree with the decision it describes) and gets
+/// one note. `FixedSupport` is silent — it clamps unconditionally, so there is
+/// nothing context-dependent to explain. A `PinnedSupport` on a NON-end face is
+/// silent for the same reason (it always clamps). A `PinnedSupport` whose target
+/// names no recognized face is silent because it selects nothing at all.
+fn pinned_end_face_realization_diagnostics(
+    targets: &[(DeclaredSupport, String)],
+    n_faces: usize,
+    simply_supported: bool,
+) -> Vec<Diagnostic> {
+    let mut seen: BTreeSet<(usize, bool)> = BTreeSet::new();
+    let mut out = Vec::new();
+    for (kind, target) in targets {
+        if *kind != DeclaredSupport::Pinned || !is_beam_axis_end_face(target) {
+            continue;
+        }
+        let Some(bound) = face_bound(target) else {
+            continue;
+        };
+        if !seen.insert(bound) {
+            continue;
+        }
+        let message = if simply_supported {
+            format!(
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
+                 transverse (Z) pin — the simply-supported beam idealization — because BOTH \
+                 beam-axis end faces are pinned; three minimal neutral-axis anchors are added \
+                 so K_free is not singular. The same declaration clamps all 3 translational \
+                 DOFs when it is the only face the model's supports name."
+            )
+        } else if face_realization(*kind, target, n_faces) == FaceRealization::PinTransverse {
+            format!(
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
+                 transverse (Z) pin — the simply-supported beam idealization — because the \
+                 model's supports name {n_faces} distinct faces. Were this the only face \
+                 named, the SAME declaration would clamp all 3 translational DOFs instead and \
+                 the fundamental would rise."
+            )
+        } else {
+            format!(
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") clamps all 3 \
+                 translational DOFs, because it is the only face the model's supports name (a \
+                 lone transverse pin is a mechanism). Naming a second distinct face would \
+                 re-realize this one as a transverse (Z) pin — the simply-supported beam \
+                 idealization — and the fundamental would drop."
+            )
+        };
+        out.push(Diagnostic::info(message));
+    }
+    out
 }
 
 /// Realize each `(what, face)` pair independently: select the face's nodes by
@@ -3100,8 +3233,12 @@ fn build_dirichlet_bcs(
 /// second DISTINCT recognized face** can flip a `Pinned` beam-end face from a
 /// clamp to a transverse-only pin without that face being mentioned again. That
 /// is a deliberate, documented trade-off (see [`face_realization`]'s "Why
-/// `Pinned` is not Z-only, always"), not an oversight — but it means "adds
-/// rather than reinterprets" holds for face SELECTION and DOF emission, not for
+/// `Pinned` is not Z-only, always"), not an oversight — and, since review
+/// suggestion 1, a REPORTED one: every pinned beam-end face carries an
+/// `I_ModalPinnedFaceRealization` Info diagnostic naming which way it went and
+/// why ([`pinned_end_face_realization_diagnostics`]), so the flip is legible
+/// without re-reading this paragraph. It still means "adds rather than
+/// reinterprets" holds for face SELECTION and DOF emission, not for
 /// the choice of realization. Two inputs that used to perturb that decision no
 /// longer can, because the count runs over DISTINCT FACES via [`face_bound`]: a
 /// support naming NO recognized face cannot vote on a realization it cannot
@@ -3412,6 +3549,12 @@ fn face_bound(target: &str) -> Option<(usize, bool)> {
 /// `Fixed` always clamps. `Pinned` realizes as a transverse (Z) pin ONLY on a
 /// beam-axis end face of a model that names at least one other DISTINCT face;
 /// otherwise it clamps like every other pinned face in the system.
+///
+/// Because that decision reads a count the author did not write on the support,
+/// [`build_dirichlet_bcs`] reports it: every pinned beam-end face gets an
+/// `I_ModalPinnedFaceRealization` Info diagnostic in BOTH directions (see
+/// [`pinned_end_face_realization_diagnostics`]). The rules below decide the
+/// number; that diagnostic is what makes the decision legible.
 ///
 /// # Why `Pinned` is not "Z-only, always"
 ///
@@ -5175,8 +5318,36 @@ mod tests {
                 self.width,
                 self.height,
             )
+            .bcs
             .iter()
             .map(|b| b.dof)
+            .collect()
+        }
+
+        /// The `I_ModalPinnedFaceRealization` messages [`build_dirichlet_bcs`]
+        /// emits for `supports`, in emission order.
+        fn realization_notes(&self, supports: Vec<Value>) -> Vec<String> {
+            let opts = modal_options(vec![(
+                "boundary_conditions".to_string(),
+                Value::List(supports),
+            )]);
+            build_dirichlet_bcs(
+                &opts,
+                &self.mesh.nodes,
+                self.length,
+                self.width,
+                self.height,
+            )
+            .diagnostics
+            .into_iter()
+            .inspect(|d| {
+                assert_eq!(
+                    d.severity,
+                    Severity::Info,
+                    "a BC-realization note must be advisory, never a Warning/Error: {d:?}",
+                );
+            })
+            .map(|d| d.message)
             .collect()
         }
 
@@ -5506,6 +5677,12 @@ mod tests {
     ///        so Z-pinning both leaves the beam free to slide axially. Both
     ///        faces clamp instead.
     ///
+    /// Case (iii), added by review suggestion 4, is the other side: the beam-end
+    /// pin that DOES realize as transverse-only, in the one shape the
+    /// no-mechanism argument depends on rather than merely illustrates —
+    /// `[Pinned("x_min"), Fixed("y_min")]`, where the second face is a non-end
+    /// face and must therefore be a FULL clamp for the model to be well posed.
+    ///
     /// The propped case `[Fixed("x_min"), Pinned("x_max")]` (covered by
     /// `build_dirichlet_bcs_discriminates_support_kind` case (iv)) is the
     /// counterexample that keeps this scoping from collapsing into "Pinned
@@ -5538,6 +5715,142 @@ mod tests {
                 .filter(|&n| f.on_y_min(n))
                 .all(|n| clamped(&side_pins, n)),
             "every y_min node must carry all three DOFs",
+        );
+
+        // (iii) Amendment (review suggestion 4): `[Pinned("x_min"),
+        //       Fixed("y_min")]` — the third and last shape that can reach
+        //       `PinTransverse`, and the ONE the no-mechanism argument rests
+        //       entirely on. `build_dirichlet_bcs`'s count-site comment
+        //       enumerates three: the pin-pin special case (covered by
+        //       `build_dirichlet_bcs_discriminates_support_kind` case (i)), the
+        //       propped cantilever (case (iv)) and "an end pin plus a non-end
+        //       face, which always clamps" — this one, previously untested.
+        //
+        //       Both halves must hold TOGETHER. x_min being a bare Z pin is only
+        //       well posed because y_min removes the remaining rigid-body modes;
+        //       an edit to `face_realization` that made a non-end `Fixed` face
+        //       anything less than a full clamp would leave the model a
+        //       mechanism whose ≈ 0 Hz modes come back under a mere Warning,
+        //       with nothing else in this module red.
+        let end_pin_plus_side = dof_set(vec![pinned_support("x_min"), fixed_support("y_min")]);
+        let off_y_min_x_min: Vec<usize> = (0..f.n_nodes())
+            .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
+            .collect();
+        assert!(
+            !off_y_min_x_min.is_empty(),
+            "the fixture must have x_min nodes off the y_min edge for this case to say anything",
+        );
+        assert!(
+            off_y_min_x_min
+                .iter()
+                .all(|&n| z_only(&end_pin_plus_side, n)),
+            "every x_min node off y_min must be transverse-only (Z): a beam-end PinnedSupport \
+             in a model naming a second distinct face is the simply-supported idealization",
+        );
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| f.on_y_min(n))
+                .all(|n| clamped(&end_pin_plus_side, n)),
+            "every y_min node must be FULLY clamped — that is the only thing removing the \
+             rigid-body modes the transverse-only x_min pin leaves behind",
+        );
+    }
+
+    /// Amendment (review suggestion 1): the count-dependent `PinnedSupport`
+    /// realization must be VISIBLE, in both directions.
+    ///
+    /// [`face_realization`] decides what a pinned beam end constrains from a
+    /// non-local count of distinct named faces, so adding or removing an
+    /// unrelated support elsewhere on the body re-realizes a face the author
+    /// never edited. The DOF sets asserted throughout this module pin that the
+    /// decision is CORRECT; this pins that it is REPORTED, so the author's only
+    /// observable is not a frequency that moved.
+    ///
+    /// Three realizations, three messages, and the pairing is what matters: the
+    /// same declaration `PinnedSupport("x_min")` reports "clamps all 3
+    /// translational DOFs" alone and "transverse (Z) pin" once a second face is
+    /// named. `FixedSupport` stays silent (its realization is unconditional).
+    #[test]
+    fn build_dirichlet_bcs_reports_count_dependent_pinned_realization() {
+        let f = BcFixture::new();
+        let notes = |supports: Vec<Value>| f.realization_notes(supports);
+
+        // (a) The flip's CLAMP side: a lone pinned beam end.
+        let lone = notes(vec![pinned_support("x_min")]);
+        assert_eq!(
+            lone.len(),
+            1,
+            "a lone pinned beam end must report exactly one realization note; got {lone:?}",
+        );
+        assert!(
+            lone[0].starts_with("I_ModalPinnedFaceRealization:")
+                && lone[0].contains("x_min")
+                && lone[0].contains("clamps all 3 translational DOFs"),
+            "the lone-face note must say the pin CLAMPED, and name the face: {:?}",
+            lone[0],
+        );
+
+        // (b) The flip's PIN side — the same declaration, one unrelated support
+        //     added on a face that is never mentioned again. This is the
+        //     silent-reinterpretation the note exists to make legible.
+        let flipped = notes(vec![pinned_support("x_min"), fixed_support("y_min")]);
+        assert_eq!(
+            flipped.len(),
+            1,
+            "only the PINNED face is explained; FixedSupport clamps unconditionally and needs \
+             no note. got {flipped:?}",
+        );
+        assert!(
+            flipped[0].contains("x_min") && flipped[0].contains("transverse (Z) pin"),
+            "adding an unrelated support must report x_min as a transverse pin: {:?}",
+            flipped[0],
+        );
+        assert_ne!(
+            lone[0], flipped[0],
+            "the two realizations of the SAME declaration must not report identically — that \
+             is the whole point of the note",
+        );
+
+        // (c) The pin-pin special case names both ends, and says the anchors are
+        //     what keeps it well posed.
+        let pin_pin = notes(vec![pinned_support("x_min"), pinned_support("x_max")]);
+        assert_eq!(
+            pin_pin.len(),
+            2,
+            "both pinned end faces must be explained; got {pin_pin:?}",
+        );
+        assert!(
+            pin_pin.iter().any(|m| m.contains("x_min"))
+                && pin_pin.iter().any(|m| m.contains("x_max"))
+                && pin_pin.iter().all(|m| m.contains("neutral-axis anchors")),
+            "the simply-supported notes must name both faces and the anchors: {pin_pin:?}",
+        );
+
+        // (d) Silence where there is nothing context-dependent to explain: an
+        //     all-Fixed model, and a pinned NON-end face (which always clamps).
+        assert!(
+            notes(vec![fixed_support("x_min"), fixed_support("x_max")]).is_empty(),
+            "FixedSupport realizations are unconditional and must emit no notes",
+        );
+        assert!(
+            notes(vec![pinned_support("y_min"), pinned_support("y_max")]).is_empty(),
+            "a PinnedSupport on a non-beam-axis face always clamps — no count-dependence, so \
+             no note",
+        );
+
+        // (e) One note per distinct FACE, not per support — the same `face_bound`
+        //     set the realization decision itself counts over, so the message can
+        //     never disagree with the decision it describes.
+        let duplicated = notes(vec![pinned_support("x_min"), pinned_support("x_min")]);
+        assert_eq!(
+            duplicated.len(),
+            1,
+            "a duplicated support names ONE face and must produce ONE note; got {duplicated:?}",
+        );
+        assert_eq!(
+            duplicated[0], lone[0],
+            "a duplicated support is still a lone face, so it must report the CLAMP realization \
+             — matching `build_dirichlet_bcs_ignores_duplicate_face_targets`",
         );
     }
 
@@ -5701,7 +6014,7 @@ mod tests {
             "boundary_conditions".to_string(),
             Value::List(vec![fixed_support("x_min"), fixed_support("y_min")]),
         )]);
-        let bcs = build_dirichlet_bcs(&opts, &f.mesh.nodes, f.length, f.width, f.height);
+        let bcs = build_dirichlet_bcs(&opts, &f.mesh.nodes, f.length, f.width, f.height).bcs;
 
         let mut seen = HashSet::new();
         let dups: Vec<usize> = bcs
