@@ -1313,9 +1313,15 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
 #[cfg(unix)]
 #[test]
 fn stderr_drain_survives_backpressure_from_a_chatty_stub_child() {
-    let (mut guard, stderr_reader) = spawn_sh_stub(
-        "printf 'REIFY_6162_BACKPRESSURE_MARKER\n' >&2; i=0; while [ $i -lt 256 ]; do printf '%1024s' '' >&2; i=$((i+1)); done",
+    const BACKPRESSURE_MARKER: &str = "REIFY_6162_BACKPRESSURE_MARKER";
+    const CHUNK_BYTES: usize = 1024;
+    const CHUNK_COUNT: usize = 256;
+    const PAYLOAD_BYTES: usize = CHUNK_BYTES * CHUNK_COUNT;
+
+    let script = format!(
+        "printf '{BACKPRESSURE_MARKER}\n' >&2; i=0; while [ $i -lt {CHUNK_COUNT} ]; do printf '%{CHUNK_BYTES}s' '' >&2; i=$((i+1)); done"
     );
+    let (mut guard, stderr_reader) = spawn_sh_stub(&script);
 
     let (status, stderr) = wait_for_exit(&mut guard, 30, stderr_reader);
     let stderr_summary = elide(&stderr);
@@ -1323,15 +1329,18 @@ fn stderr_drain_survives_backpressure_from_a_chatty_stub_child() {
         status.success(),
         "stub should exit cleanly after writing its deterministic payload (stderr: {stderr_summary})"
     );
+    let marker_and_newline = BACKPRESSURE_MARKER.len() + 1;
+    let expected_len = marker_and_newline + PAYLOAD_BYTES;
     assert_eq!(
         stderr.len(),
-        262_175,
-        "expected exactly 262175 bytes of captured stderr (31-byte marker+newline plus the \
-         stub's deterministic 256 * 1024 = 262144-byte payload) — a mismatch means the drain \
-         dropped or duplicated bytes, not merely fell behind. Captured stderr: {stderr_summary}"
+        expected_len,
+        "expected exactly {expected_len} bytes of captured stderr ({marker_and_newline}-byte \
+         marker+newline plus the stub's deterministic {CHUNK_COUNT} * {CHUNK_BYTES} = \
+         {PAYLOAD_BYTES}-byte payload) — a mismatch means the drain dropped or duplicated \
+         bytes, not merely fell behind. Captured stderr: {stderr_summary}"
     );
     assert!(
-        stderr.contains("REIFY_6162_BACKPRESSURE_MARKER"),
+        stderr.contains(BACKPRESSURE_MARKER),
         "expected the captured stderr to contain the stub's marker, proving the bytes came \
          from this test's own trigger. Captured stderr: {stderr_summary}"
     );
