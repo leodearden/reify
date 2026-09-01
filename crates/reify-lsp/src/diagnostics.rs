@@ -124,8 +124,13 @@ pub struct DiagnosticsResult {
 ///   hover/completion show no computed values file-wide. Under:
 ///   `phase_auto_type_param_resolution`'s `monomorph_name_would_collide`
 ///   path pushes a CODE-LESS error and `continue`s, leaving the same
-///   unsubstituted cells invisible to any code match. Both halves pinned by
-///   `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`.
+///   unsubstituted cells invisible to any code match. The over-fire half is
+///   pinned by case (2) of
+///   `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`;
+///   the under-fire half is NOT test-pinned, because the collision is
+///   unreachable from valid `.ri` source (`$` is illegal in identifiers —
+///   the compiler itself calls that arm "impossible from source; this is a
+///   compiler bug"). Structural detection needs no code, so it holds anyway.
 /// - **A direct scan of `compiled.templates`' `value_cells`.** Measured to
 ///   over-fire on every SUCCESSFUL generic instantiation: the generic
 ///   `Bearing` template SURVIVES monomorphisation carrying
@@ -139,9 +144,9 @@ pub struct DiagnosticsResult {
 /// ## Cost
 ///
 /// One extra `EvaluationGraph::from_templates` per call at each of the three
-/// entry points, on the keystroke path. It is dominated by the
-/// `parse_with_stdlib` + `compile_with_stdlib_checked` that already ran on
-/// the same keystroke, and by the eval it gates.
+/// entry points, on the keystroke path — the SAME construction the gated
+/// eval would itself run. The guard therefore at worst doubles graph
+/// construction on a keystroke, and never adds an eval.
 ///
 /// ## Blast radius: wider than `auto:`, deliberately
 ///
