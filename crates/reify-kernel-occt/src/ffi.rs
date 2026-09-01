@@ -700,6 +700,12 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Draft ---
+        /// Apply a draft angle to every draftable face, relative to the
+        /// neutral plane taken from `plane_shape`'s first planar face.
+        ///
+        /// `angle_rad` is SI radians, unscaled — consumed by
+        /// `BRepOffsetAPI_DraftAngle::Add`, which takes radians. See
+        /// `rotate_shape` above for the contract (#6184).
         fn draft_shape(
             shape: &OcctShape,
             angle_rad: f64,
@@ -709,6 +715,9 @@ pub mod ffi {
         /// Apply `BRepOffsetAPI_DraftAngle` to the curated face subset
         /// identified by 0-based canonical-order face indices. Requires
         /// non-empty `face_indices`; the all-faces path uses `draft_shape`.
+        ///
+        /// `angle_rad` is SI radians, unscaled, exactly as in `draft_shape` —
+        /// see `rotate_shape` above for the contract (#6184).
         fn draft_faces_shape(
             shape: &OcctShape,
             angle_rad: f64,
@@ -790,6 +799,16 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Curve constructors ---
+        /// Build a circular arc wire of `radius` centred at `(cx, cy, cz)` on
+        /// the axis `(ax, ay, az)`.
+        ///
+        /// `start_angle`/`end_angle` are SI radians, unscaled: the C++ side
+        /// passes them to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` as the
+        /// CURVE PARAMETERS of a `Geom_Circle`, and that parameter space is
+        /// radians by OCCT's parameterisation (a full circle is `2*PI`). The
+        /// suffix-free names are the user-facing DSL keyword spelling, not an
+        /// unknown convention — see `GeometryOp::Arc` in `reify-ir` for why,
+        /// and `rotate_shape` above for the contract (#6184).
         fn make_arc_wire(
             cx: f64,
             cy: f64,
@@ -801,6 +820,12 @@ pub mod ffi {
             ay: f64,
             az: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Build a helix wire. Takes NO angle: `radius`, `pitch` and `height`
+        /// are all lengths and the turn count is the dimensionless
+        /// `height / pitch`, so no angular value crosses this bridge. The only
+        /// angle is C++-internal — the `(height/pitch) * 2*PI` u-parameter
+        /// extent on the cylindrical surface, radians. See `GeometryOp::Helix`
+        /// in `reify-ir` (#6521).
         fn make_helix_wire(radius: f64, pitch: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         /// Build a polyline wire from N >= 2 points (flat 3*N coord slice).
         /// Produces N-1 line edges.  Stable kernel FFI primitive: polygon-face
