@@ -177,11 +177,11 @@ fn planar_joint_definition_is_self_check_clean() {
 /// DOF type would become `Type::Error`, which suppresses the §7.1 count/kind
 /// verdict entirely (anti-cascade, `compile_builder/entities_phase.rs`) and
 /// emits nothing at all. This test would then pass for the wrong reason. Its
-/// companion — the `spherical` row of `orientation_dof_is_classified_not_skipped`
-/// (section (b′) below) — closes that hole: it over-declares the same body and
-/// asserts the mismatch actually fires naming "declared 4 rotational free DOF",
-/// a phrase only reachable once `dof_kind_of` has classified
-/// `Type::Orientation(3)`.
+/// companion — the `coincident_body` row of
+/// `orientation_dof_is_classified_not_skipped` (section (b′) below) — closes
+/// that hole: it over-declares this same body and asserts the mismatch
+/// actually fires naming "declared 4 rotational free DOF", a phrase only
+/// reachable once `dof_kind_of` has classified `Type::Orientation(3)`.
 #[test]
 fn spherical_joint_definition_is_self_check_clean() {
     let module = compile_source_with_stdlib(
@@ -203,9 +203,12 @@ fn spherical_joint_definition_is_self_check_clean() {
 ///
 /// NON-VACUITY: same masking hazard as
 /// `spherical_joint_definition_is_self_check_clean` above — a clean verdict and
-/// a skipped verdict are both silent. Its companion — the `ball` row of
-/// `orientation_dof_is_classified_not_skipped` (section (b′) below) — proves
-/// the verdict is genuinely computed, not skipped.
+/// a skipped verdict are both silent. The SAME companion closes it: the
+/// `coincident_body` row of `orientation_dof_is_classified_not_skipped`
+/// (section (b′) below) over-declares this exact body, and one row suffices
+/// for both joints because the joint NAME is not an input to DOF
+/// classification — this definition and `spherical`'s are byte-identical apart
+/// from it.
 #[test]
 fn ball_joint_definition_is_self_check_clean() {
     let module = compile_source_with_stdlib(
@@ -260,7 +263,7 @@ fn ball_joint_definition_is_self_check_clean() {
 /// `label` names the row so a failure in the table below is attributable
 /// without re-running each case by hand. The exact diagnostic prose lives HERE
 /// and in the table rows only, so a rewording of `describe_declared` /
-/// `check_joint_dof` is a one-place fix rather than three.
+/// `check_joint_dof` is a one-place fix rather than one per case.
 fn assert_single_dof_mismatch(
     label: &str,
     source: &str,
@@ -294,22 +297,28 @@ fn assert_single_dof_mismatch(
 }
 
 /// The `Orientation` DOF type must be CLASSIFIED, never silently skipped —
-/// proven over three rows, one per hazard:
+/// proven over two rows, one per body shape:
 ///
 ///  1. `orient_probe` — a bare `with orientation: Orientation` over
 ///     `concentric(a, b)`, whose residual (3,3) − (2,2) = (1 rot, 1 trans)
-///     cannot match (3, 0). The narrowest possible probe of the arm.
-///  2. `spherical` — the mutation companion for
-///     `spherical_joint_definition_is_self_check_clean`: the same
-///     `coincident(c, d)` body, but over-declaring
+///     cannot match (3, 0). The narrowest possible probe of the arm: it pins
+///     the classifier independently of any joint definition.
+///  2. `coincident_body` — the mutation companion for BOTH (b) clean tests
+///     above: the same `coincident(c, d)` body they use, but over-declaring
 ///     `{ orientation: Orientation, extra: Angle }` = (3,0) + (1,0)
 ///     = (4 rot, 0 trans) against the residual (3 rot, 0 trans).
-///  3. `ball` — the identical over-declaration on the kinematic synonym, so a
-///     future change touching only one of the two joint definitions cannot
-///     leave the other vacuously green.
 ///
-/// Rows 2 and 3 are what make the (b) clean tests non-vacuous; row 1 pins the
-/// classifier itself independently of either joint definition.
+/// Row 2 is what makes both `spherical_joint_definition_is_self_check_clean`
+/// and `ball_joint_definition_is_self_check_clean` non-vacuous, and one row
+/// covers both: `spherical` and `ball` are kinematic synonyms with
+/// byte-identical bodies, and the joint NAME is not an input to DOF
+/// classification — it reaches only `describe_declared`'s message prefix. A
+/// second row differing only in that name would add cost, not coverage.
+///
+/// Scope note: like the (b) tests, these rows compile INLINE joint definitions
+/// rather than reading `stdlib/joints.ri`, so they pin the classifier and the
+/// verdict machinery, NOT the stdlib bodies. `standard_joint_library_compiles_clean`
+/// (section (a)) is what observes the real stdlib text.
 #[test]
 fn orientation_dof_is_classified_not_skipped() {
     for (label, source, declared_phrase, residual_phrase) in [
@@ -321,17 +330,10 @@ fn orientation_dof_is_classified_not_skipped() {
             "1 rot + 1 trans",
         ),
         (
-            "spherical: over-declared {orientation: Orientation, extra: Angle} (4rot,0trans) \
+            "coincident_body (the shared spherical/ball shape): over-declared \
+             {orientation: Orientation, extra: Angle} (4rot,0trans) \
              vs coincident residual (3rot,0trans)",
             "joint spherical(c: Point3<Length>, d: Point3<Length>) \
-             with { orientation: Orientation, extra: Angle } = coincident(c, d)",
-            "declared 4 rotational free DOF",
-            "3 rot + 0 trans",
-        ),
-        (
-            "ball: over-declared {orientation: Orientation, extra: Angle} (4rot,0trans) \
-             vs coincident residual (3rot,0trans)",
-            "joint ball(c: Point3<Length>, d: Point3<Length>) \
              with { orientation: Orientation, extra: Angle } = coincident(c, d)",
             "declared 4 rotational free DOF",
             "3 rot + 0 trans",
