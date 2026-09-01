@@ -2086,6 +2086,43 @@ pub(crate) fn update_source_target_matches_active(
     }
 }
 
+/// Which spelling of the updated file goes ON THE WIRE to the frontend?
+///
+/// The push-side counterpart of [`update_source_target_matches_active`]: that
+/// function decides WHETHER the caller's spelling names the active file, this
+/// one decides WHICH spelling the `apply_gui_state` push carries. The guard's
+/// deliberate tolerance of non-canonical spellings — the stem-only module key
+/// `"part.ri"`, and any relative/`..`/symlink form that `canonicalize`s to the
+/// active file — is exactly what makes this second function necessary.
+///
+/// `editorStore.openFile` keys tabs by `canonicalizeKey(file.path)`, and
+/// `canonicalizeKey` returns any NON-absolute path unchanged (it cannot call
+/// `realpath(3)` from inside the webview). So echoing the caller's raw
+/// spelling back opens a SECOND tab under a different key and makes it active,
+/// while the real tab — keyed by the absolute path — keeps the STALE text:
+/// the duplicate-tab shape of bug #3892, reappearing as the editor desync
+/// (#3893) the `file` member exists to close.
+///
+/// With `Some(active)` this returns the engine's own entry path. Because
+/// [`open_path_into_engine`] loads the engine from an ALREADY-canonicalized
+/// `path` and pushes that same string to the frontend as `open_file`, the
+/// value returned here is byte-for-byte the key `editorStore` already holds
+/// the tab under.
+///
+/// With `None` — the `load_from_source` flow, where there is no session path
+/// to fall back on and the guard accepts anything — it canonicalizes the
+/// caller's spelling itself via [`crate::path_key::canonicalize_debug_open_path`],
+/// so even that arm cannot emit a relative, tab-forking key.
+pub(crate) fn resolve_update_source_push_path(
+    active: Option<&std::path::Path>,
+    requested: &str,
+) -> String {
+    match active {
+        Some(active) => active.to_string_lossy().into_owned(),
+        None => crate::path_key::canonicalize_debug_open_path(requested),
+    }
+}
+
 /// Keep only the diagnostics that belong to the file the caller named.
 ///
 /// Pure: no engine, no Tauri handle, no I/O — the same headless-testability
@@ -2122,6 +2159,10 @@ pub(crate) fn filter_diagnostics_for_file(
 ///     `file` member, because this tool writes no disk and so no FS-watcher
 ///     re-fire will bring the editor buffer along (step-10). Without it the
 ///     design would re-render while the editor still showed the old text.
+///     `path` is the SESSION's canonical path, resolved by
+///     [`resolve_update_source_push_path`] — never the caller's raw spelling,
+///     which the active-file guard deliberately accepts in non-canonical
+///     forms and which would therefore fork a second editor tab (#3892/#3893).
 ///  3. `query_frontend("apply_gui_state", ...)` — applies both, no view reset.
 ///  4. Returns `{"success", "diagnostics_count", "diagnostics"}` filtered to
 ///     `file_path` via [`filter_diagnostics_for_file`], which matches EITHER
@@ -2149,10 +2190,23 @@ async fn handle_reify_update_source(
     )
     .await?;
 
-    let diagnostics = run_on_engine(&state.engine, |s| Ok(s.get_diagnostics())).await?;
+    // ONE engine lock for both reads: the diagnostics AND the session's own
+    // entry path. Taking the lock twice would buy nothing and widen the window
+    // in which the two could disagree.
+    let (diagnostics, active) = run_on_engine(&state.engine, |s| {
+        Ok((
+            s.get_diagnostics(),
+            s.canonical_file_path().map(|p| p.to_path_buf()),
+        ))
+    })
+    .await?;
+    // The FILTER stays on the caller's raw spelling — `filter_diagnostics_for_file`
+    // matches either spelling by construction — while only the PUSH path is
+    // canonicalized.
     let filtered = filter_diagnostics_for_file(diagnostics, &file_path);
 
-    let payload = write_tool_frontend_payload(&gs, Some((&file_path, &content)))?;
+    let push_path = resolve_update_source_push_path(active.as_deref(), &file_path);
+    let payload = write_tool_frontend_payload(&gs, Some((&push_path, &content)))?;
     state
         .debug_bridge
         .query_frontend("apply_gui_state", payload)
@@ -5009,10 +5063,8 @@ structure def Part {
         let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
             std::sync::Mutex::new(Some(s0));
 
-        let edited = ai_write_source().replace(
-            "param depth: Length = 40mm",
-            "param depth: Length = 55mm",
-        );
+        let edited =
+            ai_write_source().replace("param depth: Length = 40mm", "param depth: Length = 55mm");
         reify_update_source_on_engine_and_refresh_baseline(
             &engine,
             &last_state,
