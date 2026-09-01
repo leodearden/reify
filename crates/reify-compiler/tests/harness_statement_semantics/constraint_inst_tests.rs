@@ -1014,3 +1014,59 @@ structure S {
         "an enum-typed structure param forwarded to an Enum(Zq) param",
     );
 }
+
+// ── Task 6416 / step-5: the arg type check on the ENUM-BODIED ALIAS path ─────
+//
+// Task 6259's parity harness in `tests/harness_langcore/type_alias_compile_tests.rs`
+// compares `alias_ty` against `direct_ty` only, so reverting task 6416's
+// `EnumNameScope` install collapses both sides to `None` and leaves it green.
+// The two cases below pin ABSOLUTE diagnostic counts through the alias spelling,
+// which is what actually detects such a revert.
+
+/// An Int literal passed to an ALIAS-typed enum param must be rejected exactly
+/// as it is for the direct spelling — `type AL = Zq` resolves to `Enum(Zq)`, so
+/// `expand_constraint_inst` type-checks the arg instead of skipping it.
+#[test]
+fn int_arg_for_alias_typed_enum_param_is_rejected() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL
+    true
+}
+structure S {
+    constraint K(g: 5)
+}
+"#,
+        1,
+        "an Int literal passed to an alias-typed (`type AL = Zq`) Enum param",
+    );
+}
+
+/// Accept-side guard for the alias spelling: the correct variant must still pass.
+///
+/// Without this, the reject case above would stay green under an over-broad
+/// future change that began rejecting every alias-typed enum arg — the same
+/// false-positive risk the direct-spelling guards above cover.
+#[test]
+fn correct_enum_variant_arg_for_alias_typed_param_is_accepted() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL
+    true
+}
+structure S {
+    constraint K(g: Zq.Close)
+}
+"#,
+        0,
+        "the correct Zq.Close variant passed to an alias-typed (`type AL = Zq`) Enum param",
+    );
+}

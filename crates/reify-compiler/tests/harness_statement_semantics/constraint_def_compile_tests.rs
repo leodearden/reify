@@ -1558,3 +1558,101 @@ constraint def K {
         "expected param 'g' to carry the resolved stdlib enum type Enum(ThreadSystem)"
     );
 }
+
+// ── Task 6416 / step-5: absolute-value locks on the ENUM-BODIED ALIAS path ───
+//
+// Task 6259 left a parity harness at
+// `tests/harness_langcore/type_alias_compile_tests.rs` covering this same
+// constraint-def-param position, but every one of its assertions compares
+// `alias_ty` against `direct_ty` — pure PARITY, never an absolute value.
+// Reverting task 6416's `EnumNameScope` install collapses BOTH sides to `None`
+// together, so parity still holds and those tests stay GREEN. The tests that
+// most look like they guard this change are provably blind to its revert.
+//
+// The two tests below pin the ABSOLUTE post-fix value instead, which is the
+// only shape that detects the revert. Enum-bodied aliases are part of the
+// population task 6416 newly subjected to instantiation-time type checking, so
+// this is a behavioural contract, not merely extra coverage.
+
+/// A non-parametric alias whose BODY is an enum (`type AL = Zq`) must resolve
+/// through the same ambient `RESOLUTION_ENUM_NAMES` fallback as the direct
+/// spelling, storing `Some(Enum("Zq"))` — the alias's own name never appears in
+/// the ambient set, so this exercises the deferred use-site arm of
+/// `resolve_type_expr_with_aliases_kinded` recursing into the alias body while
+/// the scope installed by `compile_constraint_def` is live.
+#[test]
+fn alias_to_enum_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for an alias-to-enum constraint def param, got: {:?}",
+        errors
+    );
+
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "K")
+        .expect("K constraint def must be present in module.constraint_defs");
+    let param: &CompiledConstraintParam = &def.params[0];
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("Zq".to_string())),
+        "expected param 'g' typed `AL` to carry the resolved BODY type Enum(Zq); \
+         `None` here means the instantiation-site arg type check silently skips \
+         every alias-typed enum param. This is an ABSOLUTE assertion on purpose — \
+         do NOT weaken it to a direct-vs-alias parity comparison, since parity is \
+         exactly what failed to detect the defect (both sides were None)."
+    );
+}
+
+/// The same, through a TRANSITIVE chain `A2 -> A1 -> Zq`: the alias walker must
+/// still reach the enum body across multiple links while the ambient set is live.
+///
+/// A one-link-only fix would leave this red while
+/// `alias_to_enum_constraint_def_param_resolves_to_enum_type` passed.
+#[test]
+fn transitive_alias_chain_to_enum_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+enum Zq { Close, Medium }
+type A1 = Zq
+type A2 = A1
+
+constraint def K {
+    param g : A2
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for a transitive alias chain to an enum, got: {:?}",
+        errors
+    );
+
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "K")
+        .expect("K constraint def must be present in module.constraint_defs");
+    let param: &CompiledConstraintParam = &def.params[0];
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("Zq".to_string())),
+        "expected param 'g' typed `A2` (-> `A1` -> `Zq`) to carry Enum(Zq) — the \
+         alias walker must reach the enum body through every link, not just one"
+    );
+}
