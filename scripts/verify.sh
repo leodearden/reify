@@ -2580,7 +2580,7 @@ build_plan() {
     # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
     # test_verify_plan_includes_freshness_after_generation.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/tree-sitter-freshness.sh ensure"
+        add_tool "./scripts/tree-sitter-freshness.sh ensure"
     fi
 
     # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
@@ -3118,7 +3118,7 @@ build_plan() {
     # test_verify_plan_includes_freshness_after_generation.
     if [ "$RUN_RUST" -eq 1 ] \
         && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ] || [ "$DO_TEST" -eq 1 ]; }; then
-        add "./scripts/tree-sitter-freshness.sh check"
+        add_tool "./scripts/tree-sitter-freshness.sh check"
     fi
 
     # retry_failed_only HONEST MARKER (task 5290 / PRD verify-retry-failed-only
