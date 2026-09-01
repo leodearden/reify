@@ -587,6 +587,129 @@ mod tests {
         );
     }
 
+    // ── Field-arm boundary guards (task #6577) ───────────────────────────────
+    //
+    // INVARIANT these lock: the compiler's `Type::Field` arms exist ONLY where
+    // eval has a matching `Value::Field`-returning arm, and every fall-through
+    // case is one where eval returns `Value::Undef` — which
+    // `value_type_kind_matches` (crates/reify-eval/src/lib.rs:313) accepts for
+    // ANY type, so the fall-through is provably kind-safe in both directions.
+    //
+    // These pass on arrival. That is intentional: they are regression locks on
+    // the gate boundary, so a later "simplification" (e.g. accepting any
+    // `Type::Field`, or dropping an arity gate) cannot silently widen the
+    // compiler's claim past what eval can honour. Each corresponds to a real
+    // eval behaviour, not a hypothetical.
+
+    /// `stress_invariants` keeps its `StructureRef` even for a Field arg: eval
+    /// has NO `stress_invariants` Field arm in `crates/reify-expr/src/lib.rs`,
+    /// so the Field prelude must not capture it.
+    #[test]
+    fn stress_invariants_over_tensor_field_is_still_structure_ref() {
+        let arg = pressure_tensor_field_arg();
+        assert_eq!(
+            analysis_fn_result_type("stress_invariants", &[arg]),
+            Type::StructureRef("StressInvariants".to_string()),
+            "stress_invariants must keep StructureRef(\"StressInvariants\") for a Field arg — \
+             eval has no Field dispatch arm for this name"
+        );
+    }
+
+    /// A non-tensor codomain falls through: `Field<D, Vector3<LENGTH>>` is not a
+    /// 3x3 tensor, so `tensor_element_dimension` returns `None` and eval yields
+    /// `Value::Undef` (crates/reify-expr/src/analysis.rs:25-43).
+    #[test]
+    fn von_mises_over_non_tensor_codomain_field_falls_through() {
+        let arg = CompiledExpr::literal(
+            Value::Undef,
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::vec3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+            },
+        );
+        assert_eq!(
+            analysis_fn_result_type("von_mises", &[arg]),
+            Type::dimensionless_scalar(),
+            "a Field with a Vector3 codomain must NOT take the Field arm — eval's \
+             tensor_element_dimension rejects it and returns Value::Undef"
+        );
+    }
+
+    /// A wrong-rank tensor codomain falls through: `Tensor<2,2,_>` fails eval's
+    /// `n: 3` gate, so eval yields `Value::Undef`.
+    #[test]
+    fn von_mises_over_wrong_rank_tensor_field_falls_through() {
+        let arg = CompiledExpr::literal(
+            Value::Undef,
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::tensor(
+                    2,
+                    2,
+                    Type::Scalar {
+                        dimension: DimensionVector::PRESSURE,
+                    },
+                )),
+            },
+        );
+        assert_eq!(
+            analysis_fn_result_type("von_mises", &[arg]),
+            Type::dimensionless_scalar(),
+            "a Field with a 2x2 tensor codomain must NOT take the Field arm — eval's \
+             gate requires n = 3"
+        );
+    }
+
+    /// Arity gate: `von_mises` dispatches on a Field in eval only at
+    /// `evaluated_args.len() == 1`; a 2-arg call falls through to `eval_builtin`.
+    #[test]
+    fn von_mises_over_tensor_field_with_extra_arg_falls_through() {
+        let args = [pressure_tensor_field_arg(), dimensionless_tensor_arg()];
+        assert_eq!(
+            analysis_fn_result_type("von_mises", &args),
+            Type::dimensionless_scalar(),
+            "von_mises at arity 2 must NOT take the Field arm — eval's dispatch gate \
+             is evaluated_args.len() == 1"
+        );
+    }
+
+    /// Arity gate, mirror image: `safety_factor` dispatches on a Field in eval
+    /// only at `evaluated_args.len() == 2`; a 1-arg call falls through.
+    #[test]
+    fn safety_factor_over_tensor_field_with_one_arg_falls_through() {
+        let arg = pressure_tensor_field_arg();
+        assert_eq!(
+            analysis_fn_result_type("safety_factor", &[arg]),
+            Type::dimensionless_scalar(),
+            "safety_factor at arity 1 must NOT take the Field arm — eval's dispatch gate \
+             is evaluated_args.len() == 2"
+        );
+    }
+
+    /// The pre-existing concrete-Tensor path is provably unperturbed by the
+    /// Field prelude: the same assertions as the Tensor tests above, re-stated
+    /// here as an explicit non-regression lock on the prelude's insertion point.
+    #[test]
+    fn concrete_tensor_path_is_unperturbed_by_the_field_prelude() {
+        assert_eq!(
+            analysis_fn_result_type("von_mises", &[pressure_tensor_arg()]),
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE
+            },
+            "von_mises over a concrete Tensor must still yield Scalar<PRESSURE>, \
+             not a Field — the prelude only fires for Type::Field args"
+        );
+        assert_eq!(
+            analysis_fn_result_type("principal_stresses", &[pressure_tensor_arg()]),
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::PRESSURE
+            })),
+            "principal_stresses over a concrete Tensor must still yield List(Scalar<PRESSURE>)"
+        );
+    }
+
     /// `stress_invariants(...)` → `Type::StructureRef("StressInvariants")`.
     #[test]
     fn stress_invariants_is_structure_ref() {
