@@ -1543,17 +1543,118 @@ run_harness_layout_scan "$_s4_baseline" 20000 \
     "cleancrate:$_s4_clean_dir" "dirtycrate:$_s4_dirty_dir" \
     > "$_s4_out" 2>/dev/null || _s4_rc=$?
 
-_s4_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=2 violations=1$' "$_s4_out" || true)"
-assert "4: exactly one structured SUMMARY crates=2 violations=1 line" \
+_s4_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=2 violations=1 warnings=0$' "$_s4_out" || true)"
+assert "4: exactly one structured SUMMARY crates=2 violations=1 warnings=0 line" \
     test "$_s4_summary_count" -eq 1
 assert "4: aggregate scan returns non-zero when any crate has a violation (rc 1)" \
     test "$_s4_rc" -eq 1
 
 # Non-blank lines that do NOT match the canonical grammar (`|| true`: the
 # clean case is the grep-no-match exit 1).
-_s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (PASS|FAIL|SUMMARY) ' || true)"
+_s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (PASS|FAIL|WARN|SUMMARY) ' || true)"
 assert "4: every emitted non-empty line matches the canonical HARNESS_KLOC_CAP grammar" \
     test -z "$_s4_bad"
+
+# ===========================================================================
+# Section 4b: rules (a)+(c) — the ADVISORY WARN tier (approaching-cap).
+#
+# A harness unit that is over WARN_PCT% of the cap but still UNDER it emits a
+# `reason=approaching-cap` WARN line, so the squeeze surfaces in ROUTINE gate
+# output rather than only on the commit that finally breaks the cap. The tier
+# is deliberately ADVISORY: it never changes the exit code and never
+# increments `violations=` (a gating WARN would have turned the merge gate RED
+# on main for a unit no single task is scoped to fix — see the WARN_PCT
+# comment beside CAP_LINES).
+#
+# Hermetic mktemp -d fixtures in the Section 1/1b idiom, driven through the
+# aggregating driver so the SUMMARY field is exercised too.
+# ===========================================================================
+echo ""
+echo "--- Section 4b: advisory WARN tier (approaching-cap) ---"
+
+_s4b_baseline="$(mktemp)"; _TMPDIRS+=("$_s4b_baseline")
+: > "$_s4b_baseline"   # empty fixture baseline (rule (a) never consults it)
+
+# --- (a)+(f): a unit at 95% of the passed cap WARNs, and SUMMARY counts it ---
+_s4b_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_dir")
+awk 'BEGIN { for (i = 0; i < 19000; i++) print "// x" }' > "$_s4b_dir/harness_warn.rs"
+
+_s4b_out="$(mktemp)"; _TMPDIRS+=("$_s4b_out")
+_s4b_rc=0
+run_harness_layout_scan "$_s4b_baseline" 20000 "synthcrate:$_s4b_dir" \
+    > "$_s4b_out" 2>/dev/null || _s4b_rc=$?
+
+# Fully `^...$`-anchored: WARN must carry the SAME five breakdown fields, in the
+# same order, as `reason=exceeds-cap`, so rule (c)'s three-remedy reading
+# (module_lines dominates -> split; root_lines -> trim; external_lines ->
+# re-home the includer) applies to a WARN identically.
+_s4b_warn_count="$(grep -cE '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_warn\.rs reason=approaching-cap lines=19000 cap=20000 warn_at=18000 pct=95 root_lines=19000 module_lines=0 module_files=0 external_lines=0 external_files=0$' "$_s4b_out" || true)"
+assert "4b: exactly one fully-anchored WARN line with the same breakdown fields as exceeds-cap" \
+    test "$_s4b_warn_count" -eq 1
+
+# --- (b): a WARN is NOT a violation ---
+assert "4b: a WARNing scan still returns 0 (WARN is advisory, never gating)" \
+    test "$_s4b_rc" -eq 0
+assert "4b: the WARNing crate still emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate$' "$_s4b_out"
+assert "4b: a WARN emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s4b_out"
+
+# --- (f): SUMMARY gains an APPENDED warnings=<n> field ---
+_s4b_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=1 violations=0 warnings=1$' "$_s4b_out" || true)"
+assert "4b: SUMMARY appends warnings= after violations= (crates=1 violations=0 warnings=1)" \
+    test "$_s4b_summary_count" -eq 1
+
+# --- (c): the WARN boundary is STRICTLY GREATER, not >= ---
+_s4b_at_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_at_dir")
+awk 'BEGIN { for (i = 0; i < 18000; i++) print "// x" }' > "$_s4b_at_dir/harness_at.rs"
+_s4b_at_out="$(mktemp)"; _TMPDIRS+=("$_s4b_at_out")
+_s4b_at_rc=0
+harness_layout_violations synthcrate "$_s4b_at_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_at_out" 2>/dev/null || _s4b_at_rc=$?
+assert "4b: a unit EXACTLY at the warn line (18000 = 90% of 20000) emits no WARN (-gt, not -ge)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN" "$1"' _ "$_s4b_at_out"
+assert "4b: the at-boundary unit still passes cleanly (rc 0)" \
+    test "$_s4b_at_rc" -eq 0
+
+_s4b_over_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_over_dir")
+awk 'BEGIN { for (i = 0; i < 18001; i++) print "// x" }' > "$_s4b_over_dir/harness_over.rs"
+_s4b_over_out="$(mktemp)"; _TMPDIRS+=("$_s4b_over_out")
+harness_layout_violations synthcrate "$_s4b_over_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_over_out" 2>/dev/null || true
+assert "4b: one line ABOVE the warn line (18001) does WARN (the boundary is exercised from both sides)" \
+    grep -Eq '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_over\.rs reason=approaching-cap lines=18001 cap=20000 warn_at=18000 ' "$_s4b_over_out"
+
+# --- (d): FAIL takes precedence — no double-report for the same file ---
+_s4b_fail_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_fail_dir")
+awk 'BEGIN { for (i = 0; i < 20001; i++) print "// x" }' > "$_s4b_fail_dir/harness_overcap.rs"
+_s4b_fail_out="$(mktemp)"; _TMPDIRS+=("$_s4b_fail_out")
+_s4b_fail_rc=0
+harness_layout_violations synthcrate "$_s4b_fail_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_fail_out" 2>/dev/null || _s4b_fail_rc=$?
+assert "4b: an over-cap unit still FAILs with reason=exceeds-cap" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_overcap\.rs reason=exceeds-cap lines=20001 cap=20000' "$_s4b_fail_out"
+assert "4b: an over-cap unit emits NO WARN line (FAIL wins outright, no double-report)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN" "$1"' _ "$_s4b_fail_out"
+assert "4b: an over-cap unit still returns 1" \
+    test "$_s4b_fail_rc" -eq 1
+
+# --- (e): the warn line is DERIVED FROM THE CAP PASSED IN, not hardcoded ---
+# Re-drive the SAME 19000-line fixture at cap=10000: it must now FAIL (19000 >
+# 10000), while a 9500-line unit WARNs at warn_at=9000. A hardcoded 18000 would
+# leave the 9500-line unit silent and the WARN tier untestable at any other cap.
+_s4b_cap10_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_cap10_dir")
+cp "$_s4b_dir/harness_warn.rs" "$_s4b_cap10_dir/harness_warn.rs"
+awk 'BEGIN { for (i = 0; i < 9500; i++) print "// x" }' > "$_s4b_cap10_dir/harness_small.rs"
+_s4b_cap10_out="$(mktemp)"; _TMPDIRS+=("$_s4b_cap10_out")
+harness_layout_violations synthcrate "$_s4b_cap10_dir" "$_s4b_baseline" 10000 \
+    > "$_s4b_cap10_out" 2>/dev/null || true
+assert "4b: at cap=10000 the 19000-line unit FAILs (exceeds-cap), not WARNs" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_warn\.rs reason=exceeds-cap lines=19000 cap=10000' "$_s4b_cap10_out"
+assert "4b: at cap=10000 the 9500-line unit WARNs with warn_at=9000 (threshold derived from the PASSED cap)" \
+    grep -Eq '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_small\.rs reason=approaching-cap lines=9500 cap=10000 warn_at=9000 pct=95 ' "$_s4b_cap10_out"
+assert "4b: at cap=10000 the 19000-line unit emits no WARN line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN .*harness_warn\.rs" "$1"' _ "$_s4b_cap10_out"
 
 # ===========================================================================
 # Section 5: LIVE scan — the guard is GREEN on the real pre-consolidation tree
@@ -1615,7 +1716,8 @@ _live_summary="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP SUMMARY
 # archived log (the 2026-07-20 incident: 4 live violations, zero offender
 # lines captured, four investigations blocked). Gated on failure so a clean
 # run's output is byte-for-byte unchanged.
-if [ "$_live_rc" -ne 0 ] || [ "$_live_summary" != "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0" ]; then
+if [ "$_live_rc" -ne 0 ] || ! printf '%s\n' "$_live_summary" \
+        | grep -qE '^HARNESS_KLOC_CAP SUMMARY crates=5 violations=0 warnings=[0-9]+$'; then
     echo "  ---- Section 5: live scan output (captured, printed on failure) ----"
     printf '%s\n' "$_live_out"
     echo "  ---- Section 5: end live scan output ----"
@@ -1623,8 +1725,14 @@ fi
 
 assert "5: live scan is green on the current tree (rc 0, zero violations)" \
     test "$_live_rc" -eq 0
-assert "5: live SUMMARY line reads exactly crates=5 violations=0" \
-    test "$_live_summary" = "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0"
+# The violations count is pinned to EXACTLY 0; the warnings count is
+# deliberately NOT pinned to a number here. WARN is advisory (it never changes
+# the exit code or `violations=`), and an equality on the count would turn this
+# gate RED the moment an unrelated live unit innocently SHRANK below the WARN
+# line — punishing progress. WHICH units warn is ratcheted as a shrinking
+# SUBSET in Section 5d, which is where an ARRIVING unit is caught.
+assert "5: live SUMMARY line reads crates=5 violations=0 (warn count advisory, ratcheted in 5d)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^HARNESS_KLOC_CAP SUMMARY crates=5 violations=0 warnings=[0-9]+$"' _ "$_live_summary"
 
 # ===========================================================================
 # Section 5b: live non-vacuity — the live measure actually reads module dirs,
