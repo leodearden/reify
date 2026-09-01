@@ -1268,8 +1268,19 @@ structure Mech2 {
             );
         }
         // Non-motion StructureRef tags — none must match.
+        // `JacobianColumn` is the joint_jacobian result tag since task 6102;
+        // `Twist` stays — it is still the transform_log / transform_exp tag.
+        // Both must be non-motion: a Jacobian column and a spatial velocity are
+        // neither of them a joint kind.
         for tag in &[
-            "Coupling", "Mechanism", "Snapshot", "JointBinding", "BodyId", "SweepDim", "Twist",
+            "Coupling",
+            "Mechanism",
+            "Snapshot",
+            "JointBinding",
+            "BodyId",
+            "SweepDim",
+            "Twist",
+            "JacobianColumn",
         ] {
             assert!(
                 !is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),

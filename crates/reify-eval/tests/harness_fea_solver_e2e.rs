@@ -43,6 +43,8 @@ mod fea_loads_stdlib_smoke;
 mod fea_stress_reductions_smoke;
 #[path = "harness_fea_solver_e2e/fea_structured_detail_e2e.rs"]
 mod fea_structured_detail_e2e;
+#[path = "harness_fea_solver_e2e/jacobian_column_member_access.rs"]
+mod jacobian_column_member_access;
 #[path = "harness_fea_solver_e2e/kinematic_diagnostics_e2e.rs"]
 mod kinematic_diagnostics_e2e;
 #[path = "harness_fea_solver_e2e/kinematic_examples_e2e.rs"]
