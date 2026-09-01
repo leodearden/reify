@@ -1719,3 +1719,160 @@ fn a_pool_job_may_submit_to_another_lane() {
         "the inner job must land on the ENGINE lane specifically"
     );
 }
+
+// ── Cancel at the lane (task 6517) ───────────────────────────────────────────
+//
+// Task 5772 disclosed that routing `lsp_request` onto a lane removed
+// DROP-CANCELLATION: before it, an abandoned `invoke` dropped the Tauri
+// command's future and the LSP work stopped at its next `.await`; after it, the
+// future is moved into a job and driven by `Handle::block_on` on a thread with
+// no cancellation point, so dropping the awaiting side only drops the `oneshot`
+// receiver while the work runs to completion regardless.
+//
+// The restoration is deliberately PARTIAL and needs no new dependency, no new
+// token type and no change to the job contract: `dispatch_async` already moves a
+// `tokio::sync::oneshot::Sender` into the job, and `Sender::is_closed()` is true
+// exactly when the awaiting side's future was dropped. Checking it before
+// driving anything skips an abandoned job instead of executing it.
+//
+// # Why these two tests use a SYNTHETIC sender
+//
+// Both need to observe the queue between the submission and the job running,
+// which no real lane permits — a real consumer would pick the job up
+// immediately. Building a `JobSender` over a channel whose `Receiver` the TEST
+// holds makes the ordering provable rather than timed: the job cannot possibly
+// have run before the test runs it by hand. No global lane is touched, and no
+// assertion depends on a race.
+
+/// (ah) An ABANDONED submission is dropped at the lane instead of driven.
+///
+/// The abandonment is modelled exactly as production produces it: the awaiting
+/// side's future is dropped (here by `tokio::time::timeout` elapsing; in the GUI
+/// by a closed window, a navigated-away pane, or a keystroke's request
+/// superseded by the next one), which drops the `oneshot` receiver and closes
+/// the `reply_tx` the job holds.
+///
+/// The job is then invoked ON A PLAIN THREAD rather than in this frame, for a
+/// reason that is the difference between an attributable RED and a confusing
+/// one: the job carries a `Handle::block_on`, and calling that inside this
+/// runtime panics "Cannot start a runtime from within a runtime". On a plain
+/// `std` thread it is legal — so at RED the future genuinely runs and this fails
+/// on the flag it is about, rather than on a nested-runtime panic that names
+/// nothing.
+///
+/// The join assertion is the second half of the claim: a skipped job must be a
+/// clean NO-OP, not a new failure mode. Returning early drops the captured
+/// future without polling it, which runs its destructors exactly as an abandoned
+/// Tauri command future did before task 5772.
+#[tokio::test]
+async fn an_abandoned_submission_is_dropped_at_the_lane_instead_of_driven() {
+    use crate::large_stack::{JobSender, dispatch_async};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    // The test HOLDS `rx`, so nothing drains the queue and the job provably
+    // cannot run before the hand-invocation below.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sender = JobSender::new("test-cancel", tx);
+
+    let polled = Arc::new(AtomicBool::new(false));
+    let polled_in_fut = Arc::clone(&polled);
+
+    let elapsed = tokio::time::timeout(
+        Duration::from_millis(50),
+        dispatch_async(Some(&sender), async move {
+            polled_in_fut.store(true, Ordering::SeqCst);
+            7u32
+        }),
+    )
+    .await;
+    assert!(
+        elapsed.is_err(),
+        "precondition: with nobody draining the queue the await must time out — \
+         that elapse is what DROPS the submitted future and abandons the request"
+    );
+    assert!(
+        !polled.load(Ordering::SeqCst),
+        "precondition: the job cannot have run yet — this test holds the only \
+         `Receiver`"
+    );
+
+    let job = rx
+        .try_recv()
+        .expect("the abandoned request must still have been ENQUEUED — this test \
+                 is about what the lane does with it, not about whether it arrived");
+
+    // A plain `std` thread is never a runtime context, so the job's
+    // `Handle::block_on` is legal there and a non-skipping impl genuinely drives
+    // the future — which is what makes the assertion below attributable.
+    std::thread::spawn(move || job())
+        .join()
+        .expect(
+            "invoking a skipped job must be a clean no-op: dropping the captured \
+             future must not panic, or cancellation would trade wasted work for a \
+             new failure mode",
+        );
+
+    assert!(
+        !polled.load(Ordering::SeqCst),
+        "the lane must DISCARD a job whose awaiting side is gone, not drive it. \
+         The future was polled, so the abandoned request ran anyway — occupying a \
+         consumer and delaying the live requests queued behind it, which is \
+         exactly the cost task 5772 disclosed."
+    );
+}
+
+/// (ai) The anti-vacuity twin of (ah): a LIVE submission is still driven.
+///
+/// Without this, (ah) would also be satisfied by an implementation that never
+/// ran anything at all — a lane that dropped every job would pass a
+/// "cancellation works" assertion perfectly while resolving nothing.
+///
+/// Same synthetic-sender shape, but a second thread drains the queue and runs
+/// the job WHILE this task awaits, so the `oneshot` receiver is provably alive at
+/// the moment the job body checks it. That thread is also what makes the job's
+/// `Handle::block_on` legal, as in (ah).
+#[tokio::test]
+async fn a_live_submission_is_still_driven() {
+    use crate::large_stack::{JobSender, dispatch_async};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sender = JobSender::new("test-live", tx);
+
+    let polled = Arc::new(AtomicBool::new(false));
+    let polled_in_fut = Arc::clone(&polled);
+
+    let drainer = std::thread::spawn(move || {
+        let job = rx.recv().expect("a live submission must be enqueued");
+        job();
+    });
+
+    let value = tokio::time::timeout(
+        Duration::from_secs(10),
+        dispatch_async(Some(&sender), async move {
+            polled_in_fut.store(true, Ordering::SeqCst);
+            4242u32
+        }),
+    )
+    .await
+    .expect(
+        "a submission whose awaiting side is still alive must RESOLVE — a lane \
+         that skipped it would hang this await until the timeout",
+    );
+
+    drainer.join().expect("the drainer thread must not panic");
+
+    assert_eq!(
+        value, 4242,
+        "a live submission must deliver its value unchanged: the cancellation \
+         check must gate on the receiver being GONE, never on anything else"
+    );
+    assert!(
+        polled.load(Ordering::SeqCst),
+        "a live submission's future must actually be POLLED, not merely answered"
+    );
+}
