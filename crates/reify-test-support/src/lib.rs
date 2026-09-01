@@ -5,6 +5,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod builders;
+pub mod examples_corpus;
 pub mod fixtures;
 pub mod git_env;
 pub mod helpers;
@@ -21,6 +22,14 @@ pub mod value_decompose;
 pub mod values;
 
 pub use builders::*;
+// Deliberately NOT `pub use examples_corpus::*;`, for the same reason spelled
+// out for `git_env` below: `examples_dir`, `discover_ri_files`,
+// `relative_to_examples_dir` and `filter_skipped` are generic enough names
+// that hoisting them into a crate root which many test files glob-import
+// (`use reify_test_support::*;`) would turn a future same-named item in any
+// other glob-exported module into an E0659 ambiguity at every such use site.
+// Both real consumers spell the module path, so `pub mod examples_corpus;`
+// above is the whole surface.
 pub use fixtures::*;
 // Deliberately NOT `pub use git_env::*;`. `sanitize` and `REPO_REDIRECT_VARS`
 // are generic enough names that hoisting them into a crate root which many
