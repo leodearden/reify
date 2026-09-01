@@ -949,12 +949,45 @@ const CLAMPED_P2_REL_TOL: f64 = 0.04;
 /// `f₁ = (4.730041² / 2π) · √(EI / (ρ A L⁴)) ≈ 262.6 Hz`, with `I = b·h³/12`,
 /// `A = b·h`.
 ///
-/// This is the accuracy counterpart to the eval-surface acceptance e2e
+/// # Why this exists alongside the e2e's clause (d) (review suggestion 5)
+///
+/// The eval-surface acceptance e2e
 /// (`reify-eval-fea-tests/tests/modal_analysis_e2e.rs::
-/// e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported`): that one
-/// pins that fixed-fixed and pinned-pinned DIFFER on the dogfood section; this
-/// one pins that the clamped-clamped answer is quantitatively RIGHT against the
-/// `βL = 4.730041` reference on this file's validated slender fixture.
+/// e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported`) already
+/// checks a clamped-clamped fundamental against `βL = 4.730041`, at −1.46% on a
+/// 3% band, for 21.7 s covering THREE solves — so on wall clock per accuracy
+/// statement this benchmark is the expensive one, and the question of whether it
+/// earns its 38.8 s is fair. It does, on three axes that are independent by
+/// construction rather than by coincidence, and a shared failure would have to
+/// break all three at once to stay hidden:
+///
+///   1. **Solver path.** This test dense-eigensolves (`solve_eigen_dense`, a QZ
+///      over the full projected pair). The e2e goes through
+///      `solve_generalized_eigen`'s shift-invert route — sparse Cholesky of
+///      `K_free` plus Lanczos. They share no numerical kernel below the
+///      assembly, so an accuracy defect in either is invisible to the other.
+///   2. **Fixture regime.** `L/r ≈ 346` here (200 × 10 × 2 mm) versus the
+///      dogfood section's stubby `L/h ≈ 18`. Euler–Bernoulli is the right model
+///      for the first and a ~1.5%-shear-deficient model for the second, which is
+///      exactly why the e2e band has to be 3% while this one can be read as a
+///      convergence statement (3.089% → 2.106% → 1.694% under span refinement).
+///      A discretization regression that hid inside the e2e's shear-explained
+///      residual would move this monotone sequence.
+///   3. **Layer.** No parser, no eval graph, no `@optimized` dispatch and no BC
+///      REALIZATION: the Dirichlet set here is written directly by coordinate.
+///      That is what makes it an accuracy statement about the clamped-clamped
+///      SOLVE rather than about `build_dirichlet_bcs` — the e2e cannot separate
+///      the two, because realizing the BCs is the thing it is testing.
+///
+/// **Routing this through `solve_eigen_shift_invert` was considered and
+/// rejected.** It would recover most of the 38.8 s (n_free = 1269 is well into
+/// the sparse regime), but it buys that by deleting axis 1 — the independent
+/// dense-QZ cross-check that is half of why the test earns its place — and it
+/// would make this the only member of the file's three-benchmark family not
+/// sharing `solve_beam_modes`'s single path, re-opening the duplication that
+/// amendment removed. The cheaper lever, if the gate ever needs one, is the
+/// mesh: the tuning table above prices nx=16 at 3.089%, which a 4% bound still
+/// admits.
 ///
 /// Passes when `|f₁ − f₁,analytic| / f₁,analytic < CLAMPED_P2_REL_TOL`.
 #[cfg_attr(

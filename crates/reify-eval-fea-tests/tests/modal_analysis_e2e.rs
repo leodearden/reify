@@ -1151,6 +1151,10 @@ fn e2e_printer_gantry_prints_five_modes() {
 // benchmark (`reify-solver-elastic/tests/modal_benchmarks.rs`) measures 38.8 s
 // on its own, for ONE dense QZ solve at n_free = 1269 — the shift-invert path
 // this test takes is why three larger solves come in cheaper than one dense one.
+// Both make a clamped-clamped accuracy statement against βL = 4.730041 and
+// neither subsumes the other; `CLAMPED_P2_REL_TOL`'s doc there gives the three
+// independent axes (solver path, fixture slenderness regime, layer) and is the
+// place to argue from if either is ever proposed for removal.
 
 /// Two `FixedSupport`s must give the clamped-clamped answer, not the
 /// pinned-pinned one — and a mixed `[Fixed, Pinned]` pair must give the
