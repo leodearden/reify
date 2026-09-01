@@ -55,6 +55,21 @@ scripts/seed-warm-lane.sh            tests/infra/test_warm_lane_pool.sh
 # intra-run-serial classification of test_reify_audit_ptodo.sh /
 # test_tree_sitter_pipeline.sh silently rests on.
 scripts/seed-warm-lane.sh            tests/infra/test_target_per_lane_independence.sh
+# Task 6889: the SUT's OWN suite. Measured gap — tests/infra/test_seed_warm_lane.sh
+# had no row anywhere in this map, so editing scripts/seed-warm-lane.sh selected
+# the two rows above but never the 5500-line suite that actually exercises the
+# script end to end (its stdout contract, its mode gating, its post-conditions).
+# Same one-artifact-multiple-rows pattern already used for this artifact above.
+scripts/seed-warm-lane.sh            tests/infra/test_seed_warm_lane.sh
+# ...and test_git_rerere_guard.sh, because that suite's (wiring-lane) block
+# asserts ON THIS FILE: that it carries an uncommented call to the guard, and
+# that the subcommand is `arm` (a bare `check` would report the drift while
+# leaving the fleet armed). Without this row a task-scope verify that edits only
+# seed-warm-lane.sh — dropping or commenting out the invocation, which is exactly
+# how the guard becomes dead code — never selects the suite that would catch it.
+# Mirrors the scripts/setup-dev.sh -> test_git_rerere_guard.sh row below, which
+# exists for the identical reason at developer-setup cadence.
+scripts/seed-warm-lane.sh            tests/infra/test_git_rerere_guard.sh
 scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 # Task 5981: refresh-warm-base.sh's OWN suite also guards its provenance WIP
 # refusal path (Block I). The row above maps the artifact only to the pool

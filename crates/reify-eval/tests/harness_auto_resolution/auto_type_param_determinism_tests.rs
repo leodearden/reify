@@ -51,8 +51,29 @@ const EXAMPLE_PATH: &str = concat!(
 );
 
 /// Absolute path to the workspace `examples/` directory.
-/// Mirrors `EXAMPLES_DIR` in `crates/reify-compiler/tests/examples_smoke.rs`.
+/// Mirrors `EXAMPLES_DIR` in
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`.
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
+
+/// Conservative absolute floor, chosen below current corpus size to leave
+/// headroom for ordinary SKIP_SET churn without flaking this guard. If the
+/// corpus is ever intentionally trimmed below this floor, lower the
+/// constant to match — the assertion has no way to distinguish an intended
+/// shrink from a regression.
+///
+/// Deliberately NOT relative to paths.len() (e.g. `paths.len() -
+/// skip.len()`, or a fraction like `paths.len() / 2`): a
+/// discover_ri_files() regression shrinks paths.len() and exercised.len()
+/// in lockstep, so any floor derived from paths.len() — subtractive or
+/// proportional — still passes and misses exactly the regression this
+/// check exists to catch.
+///
+/// A discovery-regression TRIPWIRE, not a corpus-size target:
+/// [`discovery_floor_tracks_the_live_corpus`] is this file's own freshness
+/// ratchet, firing once this constant has drifted too far below the live
+/// corpus to still catch a regression, and naming a new value to raise it
+/// to.
+const MIN_EXERCISED_RI_FILES: usize = 200;
 
 /// Classifies *why* a [`SKIP_SET`] entry is excluded from the v0.1
 /// example-corpus perf regression walk
@@ -378,6 +399,30 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The subset of `paths` not present in [`SKIP_SET`] (keyed by
+/// [`relative_to_examples_dir`]), each paired with its precomputed relative
+/// key. The single source of the SKIP_SET-filtered "exercised" quantity —
+/// both `v0_1_example_corpus_compile_and_check_time_is_bounded` and
+/// [`discovery_floor_tracks_the_live_corpus`] call this instead of
+/// re-deriving the filter, so they can never disagree about what
+/// "exercised" means.
+fn exercised_paths(paths: &[PathBuf]) -> Vec<(&PathBuf, String)> {
+    use std::collections::HashSet;
+
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
+    paths
+        .iter()
+        .filter_map(|p| {
+            let rel = relative_to_examples_dir(p);
+            if skip.contains(rel.as_str()) {
+                None
+            } else {
+                Some((p, rel))
+            }
+        })
+        .collect()
+}
+
 // ─── step-1: fixture compiles with three Seal candidates ─────────────────────
 
 /// Load `bearing_auto_seal.ri` via `parse_and_compile_with_stdlib`, assert no
@@ -600,30 +645,8 @@ fn per_file_violations(
 /// history/tradeoffs: task 5149.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
-    use std::collections::HashSet;
-
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
 
-    // Conservative absolute floor, set well below current corpus size so
-    // healthy growth/shrinkage doesn't flake this guard while still catching
-    // a partial-discovery regression (e.g. most files silently skipped) that
-    // a bare non-empty check would miss. If the corpus is ever intentionally
-    // trimmed below this floor, lower the constant to match — the assertion
-    // has no way to distinguish an intended shrink from a regression.
-    //
-    // Deliberately NOT relative to paths.len() (e.g. `paths.len() -
-    // skip.len()`, or a fraction like `paths.len() / 2`): a
-    // discover_ri_files() regression shrinks paths.len() and candidates.len()
-    // in lockstep, so any floor derived from paths.len() — subtractive or
-    // proportional — still passes and misses exactly the regression this
-    // check exists to catch.
-    //
-    // Also not derived from examples_smoke.rs: that sibling has no analogous
-    // floor to share, and hoisting corpus discovery into a common crate is a
-    // cross-crate change outside this single-file task's scope.
-    const EXPECTED_MIN_FILES: usize = 100;
-
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
     let paths = discover_ri_files();
 
     // Resolve the skip-filtered candidate list — and fail fast on the
@@ -631,31 +654,27 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     // compile+check loop. Otherwise a misconfigured discover_ri_files()/
     // SKIP_SET would still burn time compiling whatever few files it found
     // before reporting the regression.
-    let candidates: Vec<(&PathBuf, String)> = paths
-        .iter()
-        .map(|path| (path, relative_to_examples_dir(path)))
-        .filter(|(_, rel)| !skip.contains(rel.as_str()))
-        .collect();
+    let exercised = exercised_paths(&paths);
 
     assert!(
-        candidates.len() >= EXPECTED_MIN_FILES,
+        exercised.len() >= MIN_EXERCISED_RI_FILES,
         "corpus discovery found only {} .ri file(s) (expected >= {}) — \
          raw discover_ri_files() count: {}, SKIP_SET size: {} — \
          discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
          moved or most entries skipped), which would silently narrow this \
          perf gate's coverage. If this is instead an intentional corpus \
-         reduction, lower EXPECTED_MIN_FILES to match. The raw/SKIP_SET counts \
+         reduction, lower MIN_EXERCISED_RI_FILES to match. The raw/SKIP_SET counts \
          above distinguish a discovery regression (raw count also low) from an \
-         intentional corpus shrink (raw count normal, candidates below floor).",
-        candidates.len(),
-        EXPECTED_MIN_FILES,
+         intentional corpus shrink (raw count normal, exercised below floor).",
+        exercised.len(),
+        MIN_EXERCISED_RI_FILES,
         paths.len(),
-        skip.len()
+        SKIP_SET.len()
     );
 
     let mut measurements: Vec<(String, Duration)> = Vec::new();
 
-    for (path, rel) in &candidates {
+    for (path, rel) in &exercised {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
 
@@ -895,5 +914,58 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
         rel_paths.iter().any(|r| r == "bearing_auto_seal.ri"),
         "bearing_auto_seal.ri must be in the examples/ corpus discovered by discover_ri_files(); \
          found: {rel_paths:#?}"
+    );
+}
+
+// ─── step-13 ratchet: MIN_EXERCISED_RI_FILES tracks the live corpus ───────────────
+
+/// Freshness ratchet for [`MIN_EXERCISED_RI_FILES`]: a second-order check on the
+/// constant's own value, which never gates
+/// [`v0_1_example_corpus_compile_and_check_time_is_bounded`] itself.
+/// One-directional by construction — a discovery regression only SHRINKS
+/// `exercised`, which makes the assertion below easier to satisfy, so this
+/// ratchet can never mask that regression; it only fires once the corpus
+/// has grown enough that the floor has lost its tripwire sensitivity; see
+/// the assertion message for the current bound.
+///
+/// Measures `exercised` via the same [`exercised_paths`] helper that the
+/// gate calls (not the raw [`discover_ri_files`] count), so this ratchet
+/// can never disagree with the gate it tracks. Directory walk only — no
+/// `check_source_with_stdlib` — so it adds no measurable time to this
+/// binary.
+///
+/// Also asserts that `exercised_paths` excluded exactly `SKIP_SET.len()`
+/// files: `total - exercised` must equal `SKIP_SET.len()`, or a SKIP_SET key
+/// no longer matches `relative_to_examples_dir()`'s output (e.g. a
+/// path-separator change or a stray prefix) and a skip has silently stopped
+/// taking effect — `skip_set_entries_exist_under_examples_dir` alone cannot
+/// catch this, since it only proves each key *joins* onto a real file, not
+/// that the key string equals the one `exercised_paths` filters on.
+#[test]
+fn discovery_floor_tracks_the_live_corpus() {
+    let paths = discover_ri_files();
+    let total = paths.len();
+    let exercised = exercised_paths(&paths).len();
+
+    assert_eq!(
+        total - exercised,
+        SKIP_SET.len(),
+        "exercised_paths excluded {} of {} SKIP_SET entries — SKIP_SET keys \
+         no longer match relative_to_examples_dir() output",
+        total - exercised,
+        SKIP_SET.len()
+    );
+
+    assert!(
+        MIN_EXERCISED_RI_FILES * 2 >= exercised,
+        "MIN_EXERCISED_RI_FILES ({}) has drifted stale: the live examples/ corpus \
+         now yields {} exercised .ri files ({} discovered, {} in SKIP_SET), \
+         more than 2x the floor. Raise MIN_EXERCISED_RI_FILES to ~{} and \
+         re-review its tripwire doc comment.",
+        MIN_EXERCISED_RI_FILES,
+        exercised,
+        total,
+        SKIP_SET.len(),
+        exercised * 3 / 4
     );
 }

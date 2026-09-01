@@ -439,11 +439,22 @@ fn main() {
     //   src/scanner.c and src/tree_sitter/*.h ARE watched. This build script never
     //   writes them, so the double-execution objection does not apply — and before
     //   this change they were watched by NOTHING. `cargo:rerun-if-changed=grammar.js`
-    //   was the only directive emitted, and the `cc` crate emits none of its own.
+    //   was the only directive emitted, and the `cc` crate emits none of its own
+    //   (task #5784 verified this against the vendored cc-1.2.62: zero
+    //   `rerun-if-changed` occurrences in its sources), and cargo narrows a build
+    //   script's watch set to EXACTLY the emitted `rerun-if-changed` list.
     //   The consequence was a false GREEN: an edit confined to src/scanner.c gave
     //   cargo no reason to re-run this script, so cc::Build::compile was never
     //   re-invoked, the previously-built libtree_sitter_reify.a stayed linked, and
     //   the external-scanner change was simply never under test.
+    //
+    // Task #5784 fixed the scanner.c half of that with a single hardcoded
+    // `cargo:rerun-if-changed=src/scanner.c` line. This loop SUBSUMES it: it
+    // derives the watch set from `compilation_inputs()` — the same single
+    // enumeration the stamp writer uses — so it covers src/scanner.c AND every
+    // tracked src/tree_sitter/*.h, and a header added later is watched
+    // automatically rather than silently unwatched (which is exactly how this
+    // defect class recurs).
     println!("cargo:rerun-if-changed=grammar.js");
     for rel in compilation_inputs() {
         if rel == "src/parser.c" {

@@ -5,29 +5,30 @@
 //
 // ── WHY THE SUBJECT IS A SWEPT BEZIER AND NOT A NURBS SURFACE ──
 //
-// The obvious spline subject is `nurbs_surface(...)`, and it is the one that does
-// NOT work.  Two candidates were considered:
+// `nurbs(degree, n_pts, coords…, weights…)` returns a WIRE — no facets, no
+// chord deviation, not a measurable class at all (semantics, not behaviour).
 //
-//  (a) `nurbs(degree, n_pts, coords…, weights…)` returns a WIRE.  A wire has no
-//      facets, therefore no chord deviation, therefore nothing to measure.  It is
-//      not a measurable class at all — excluded on semantics, not on behaviour.
+// `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree,
+// v_degree)` DOES realize and measure.  Its control net must be a NESTED
+// u-major grid of `point3(...)` poles (never bare `[x,y,z]` literals), with
+// nested per-row weights; a runnable, correctly-shaped probe lives at
+// tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.  It is not the
+// subject here only because its numbers are calibrated separately (see below) —
+// not because it fails to realize.
 //
-//  (b) `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree,
-//      v_degree)` [6 args, crates/reify-compiler/src/geometry.rs:2639] returns a
-//      Face and is the right shape — but it does NOT realize.  Measured
-//      2026-08-10 at 5db884e30b with a 3x3 control net, unit weights, clamped
-//      knots [0,0,0,1,1,1] in both directions and u_degree = v_degree = 2:
-//          INDETERMINATE PnrgSplineCheck#constraint[0]
-//      in 0.22 s — a fast fail, i.e. no realization was attempted rather than a
-//      slow kernel failure.  This is consistent with the known latent gap:
-//      `Operation::SurfaceNurbs` is ABSENT from `occt_capability_descriptor()`
-//      (crates/reify-kernel-occt/src/register.rs:101-163), so it resolves only via
-//      the DEFAULT_KERNEL_NAME fallback in engine_build.rs and `plan_output_repr`
-//      returns None for it.  Recorded as measured; not escalated.
+// Full mechanism history — including the superseded 2026-08-10
+// kernel-capability-gap misattribution and why the corrected nested call
+// realizes — lives in docs/notes/precision-refine-envelope-calibration.md
+// §1.5, which is the canonical record; it is not repeated here to avoid the
+// two-location drift this fixture was once a monument to.  Pending d-ladder
+// work for the nurbs_surface class: #6545 (ticket
+// tkt_0RSV7JNW3WXWDSFJGRDMHDT63T).
 //
-// The subject below is therefore the documented FALLBACK: a circular profile swept
-// along a BEZIER path.  That is a genuinely non-analytic (B-spline-parameterized)
-// surface — the property the spline class is here to exercise — and it measures.
+// The subject below is nonetheless the swept Bezier: its numbers — 100 mm
+// 0.003, 50 mm 0.007, 20 mm 0.013 (§1.1 summary row and §1.5 d-ladder of
+// docs/notes/precision-refine-envelope-calibration.md) — are already
+// committed to the calibration tables, and swapping the subject now would
+// invalidate them.
 //
 // NOT wired into any probe set or auto-run gate.
 
@@ -36,12 +37,8 @@ module pnrg_envelope_spline
 #precision(20mm)
 
 // Subject: a circle swept along a cubic Bezier path — the measurable spline
-// surface.  To reproduce the nurbs_surface non-realization instead, substitute:
-//   let g = nurbs_surface([[0mm,0mm,0mm],[500mm,0mm,300mm],[1000mm,0mm,0mm],
-//                          [0mm,500mm,300mm],[500mm,500mm,800mm],[1000mm,500mm,300mm],
-//                          [0mm,1000mm,0mm],[500mm,1000mm,300mm],[1000mm,1000mm,0mm]],
-//                         [1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0],
-//                         [0.0,0.0,0.0,1.0,1.0,1.0], [0.0,0.0,0.0,1.0,1.0,1.0], 2, 2)
+// surface.  For the nurbs_surface alternative, see
+// tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.
 structure PnrgSpline {
     let g = sweep(circle(100mm), bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
 }

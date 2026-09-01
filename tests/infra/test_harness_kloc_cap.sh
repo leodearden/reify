@@ -105,7 +105,9 @@
 #       cap must be SPLIT into a second `harness_<subsystem2>.rs`, never
 #       allowed to balloon unbounded — and never accommodated by raising the
 #       cap, which would loosen the C2 ratchet to fit its first offender and
-#       contradict the ratified §3 W1/§7 band.
+#       contradict the ratified §3 W1/§7 band. Parking the overflow in one of
+#       the 7 override binaries instead is likewise refused — see the clause
+#       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #6461).
 #
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
@@ -134,6 +136,12 @@
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=unsanctioned-standalone
 #           HARNESS_KLOC_CAP PASS crate=<c>
 #           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n>
+#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=undeclared-member member=<harness_sub/file.rs>
+#           HARNESS_KLOC_CAP PASS crate=<c> scan=undeclared-members roots=<n> members=<n>
+#       (the last two lines are rule (d)'s, APPENDED here rather than inserted
+#       among the four above, so existing unanchored consumers keep matching —
+#       the same append-don't-insert discipline this rule list already states
+#       for the external breakdown fields, below.)
 #       On exceeds-cap, `lines=` is the WHOLE-UNIT total, and the four
 #       breakdown fields decompose it as
 #           lines = root_lines + module_lines + external_lines
@@ -151,6 +159,61 @@
 #       The two external fields are APPENDED after `module_files=`, never
 #       inserted before `lines=`, so existing unanchored consumers of this
 #       grammar keep matching.
+#
+#   (d) NO UNDECLARED MEMBER. Rule (c)'s converse direction, not a fourth
+#       independent axis. A `.rs` file physically present under a harness
+#       root's own `crates/<c>/tests/harness_<subsystem>/` module directory,
+#       with no `mod` declaration reachable anywhere in the root's
+#       transitive mod-graph, is never compiled by rustc: its `#[test]` fns
+#       vanish silently — no compile error, no link error, no test-count
+#       signal — and the tree stays green with strictly LESS coverage than
+#       a reader of the source tree would assume. Section 6 below walks
+#       declaration -> file (does every bare `mod` resolve correctly); rule
+#       (d) walks the CONVERSE direction, file -> declaration (does every
+#       file under the module dir have a reachable declaration at all).
+#       Neither direction subsumes the other: Section 6's own principled
+#       exception — a bare `mod x;` that correctly resolves to a retained
+#       `tests/` sibling — is EXACTLY where a module-dir file of the same
+#       stem (`tests/harness_<subsystem>/x.rs`, left behind mid-move) goes
+#       silently dead, because rustc's crate-root-relative resolution binds
+#       the sibling and never looks at the module-dir file at all. This
+#       mechanizes a hazard already named in a commit message —
+#       46a65f5181: "an unregistered file is never compiled, so its tests
+#       would be silently absent... a vacuous pass" — but never before
+#       enforced by a guard.
+#
+#       REMEDY for a genuine FAIL here, so a developer who hits one is not
+#       left choosing between "delete the file" and reverse-engineering the
+#       parser: either (i) DELETE the orphaned file, if it should never have
+#       been compiled (a stale leftover from a move); or (ii) DECLARE it —
+#           #[cfg(any())]
+#           #[path = "harness_<subsystem>/<file>.rs"]
+#           mod <file>;
+#       — which this rule accepts as declared regardless of cfg state, since
+#       the shared parser (_harness_layout_mod_decls) does not evaluate
+#       `#[cfg(...)]` at all (Section 10's must-not-fire fixture for a
+#       `#[cfg(target_os = "linux")]`-gated member pins exactly this). Use
+#       (ii) for a file that must stay in the module dir but is deliberately
+#       never compiled (e.g. a colocated fixture meant to be read via
+#       `include_str!`, not `mod`-ed in) — a permanently-false `cfg(any())`
+#       is deliberate over some other silent exclusion: it keeps the file's
+#       existence at least VISIBLE to a reader of the root, rather than
+#       structurally invisible to both this rule and rustc.
+#
+#       LANDING PRECONDITION. Like Sections 6-9, rule (d) is a WHOLE-TREE
+#       LIVE scan, not diff-scoped — unlike
+#       scripts/check-harness-baseline-registration.sh's rule (b) analogue,
+#       which is diff-scoped precisely because a whole-tree live scan
+#       re-fires on every innocent downstream rebaser once such drift is on
+#       main (the 5260/5266/5288 thrash scripts/verify.sh's own 5300-gate
+#       comment records). That tradeoff is only sound because the
+#       precondition was actually MEASURED, not assumed: on 4a9f2d6d4c the
+#       live tree held 31 harness roots and 585 module-dir member files
+#       across the 5 consolidatable crates, with 0 undeclared and every
+#       module dir flat (no nested subdirs). Should such drift ever land on
+#       main regardless, this whole-tree scan will re-fire on every
+#       innocent rebaser until it is fixed — the remedy there is to fix the
+#       drift, not to loosen this rule.
 #
 # ===========================================================================
 # THE GRANDFATHER-BASELINE RATCHET (harness-layout-baseline.manifest).
@@ -457,6 +520,127 @@ harness_path_attr_violations() {
         return 1
     fi
     _emit PASS "crate=$crate"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# harness_undeclared_member_violations <crate> <tests_dir>
+#
+# Rule (d) — NO UNDECLARED MEMBER. The CONVERSE of harness_path_attr_violations
+# above: that detector walks declaration -> file (does every bare `mod`
+# resolve correctly); this one walks file -> declaration (does every file
+# physically present under a harness root's own module dir have a reachable
+# `mod` declaration anywhere in the root's mod-graph at all). A `.rs` file
+# under `crates/<c>/tests/harness_<subsystem>/` with no reachable declaration
+# is never compiled by rustc, so its `#[test]` fns vanish silently — no
+# compile error, no link error, no test-count signal. Neither direction
+# subsumes the other.
+#
+# WHY THIS IS A GUARD AND NOT A COMMENT (mirrors harness_path_attr_violations'
+# own header framing). harness_path_attr_violations walks declarations -> files
+# and, BY DESIGN, passes a bare `mod x;` whose crate-root-relative resolution
+# lands on a retained `tests/` sibling (Section 6's principled exception) —
+# that is correct FOR THAT DETECTOR'S QUESTION. But it means a module-dir file
+# of the SAME STEM (`tests/harness_<subsystem>/x.rs`, left behind mid-move, or
+# never removed) is structurally INVISIBLE to it: rustc also resolves the bare
+# `mod x;` to the sibling, so the module-dir file is silently never compiled —
+# no compile error, no link error, no test-count signal, exactly the silent
+# mode that makes prose alone insufficient here too.
+#
+# For every <tests_dir>/harness_<subsystem>.rs root that has a module dir
+# (${root%.rs}; a single-file harness with no module dir has nothing to
+# scan), compares every *.rs file found under that module dir at any depth
+# against harness-layout-lib.sh's harness_layout_declared_members, and flags
+# any file absent from that set. Both sides of the comparison are run through
+# `_harness_layout_norm_path` — the declared set already comes normalized
+# (harness_layout_declared_members' contract), and the `find` result and the
+# <tests_dir> prefix used to derive `member=` are normalized here — so a
+# `#[path]` value written as `./harness_sub/a.rs` or a `..`-round-trip cannot
+# compare unequal to its canonical form and false-fire (the same moddir-prefix
+# hazard harness-layout-lib.sh's header calls out). `member=` is always the
+# canonical, <tests_dir>-relative form (`harness_sub/a.rs`) a developer can
+# paste straight into `#[path = "…"]`, never a `./`- or `..`-bearing echo of
+# whatever form the caller's <tests_dir> or the file's declaration happened to
+# use.
+#
+# Prints one structured FAIL line per violation and returns 1 if <crate> has
+# any. On a clean crate emits ONE aggregate `PASS crate=<c>
+# scan=undeclared-members roots=<n> members=<n>` line and returns 0 — the
+# SAME `crate=<c>` field Section 6's bare per-crate `PASS crate=<c>` carries
+# (task #7042 amendment: an earlier cut of this rule dropped it, which left
+# the archived merge-verify log with N indistinguishable
+# `scan=undeclared-members` lines per run and no way to tell which crate
+# contributed which counts — exactly the log-forensics use case the counts
+# below exist for), PLUS the counts Section 6 has no equivalent of
+# (harness_path_attr_violations reports no comparable per-root/per-file
+# totals). Here the member count is this rule's own non-vacuity witness: a
+# detector that visited every root but silently compared zero member files
+# (a broken find glob, a moddir guard that always `continue`s, an over-broad
+# declared set) would otherwise return 0 just as vacuously as the
+# silent-coverage-loss failure mode this whole rule exists to close, one
+# level up — so the count is emitted into the structured grammar (and hence
+# the archived merge-verify log) rather than left as an internal bash
+# variable a future reader would have to re-derive. `roots=` counts every
+# `harness_*.rs` glob match in <tests_dir> (including a single-file harness
+# with no module dir, which contributes 0 to `members=`); `members=` counts
+# every *.rs file compared under a module dir at any depth, declared or not.
+# Parameterized on <tests_dir> so hermetic fixtures drive it exactly as live.
+#
+# KNOWN LIMITATION (documented in harness-layout-lib.sh's
+# _harness_layout_walk_unit header, not fixed here): the shared walk this
+# rule's declared-member set is built from resolves a decl by the declaring
+# FILE's directory only, with no awareness of inline `mod outer { ... }`
+# block nesting — a decl textually inside such a block reads as declared
+# even where rustc would resolve it under a subdirectory this walk never
+# looks in. No live harness root uses that shape today, so this is a
+# documented latent gap, not a current miscount.
+# ---------------------------------------------------------------------------
+harness_undeclared_member_violations() {
+    local crate="$1"
+    local tests_dir="$2"
+
+    local violations=0 roots=0 members=0
+    local root moddir f member decl tests_dir_norm
+
+    if [ ! -d "$tests_dir" ]; then
+        _emit FAIL "crate=$crate" "dir=$tests_dir" "reason=missing-tests-dir"
+        return 1
+    fi
+
+    _harness_layout_norm_path "$tests_dir"; tests_dir_norm="$_HL_NORM_OUT"
+
+    for root in "$tests_dir"/harness_*.rs; do
+        [ -f "$root" ] || continue          # skip a literal no-match glob
+        roots=$((roots + 1))
+        moddir="${root%.rs}"
+        [ -d "$moddir" ] || continue        # single-file harness: nothing to scan
+
+        # Rebuilt fresh per root: membership is root-scoped, not crate-scoped.
+        # Keys are already normalized (harness_layout_declared_members' own
+        # contract), so only the `find` side below needs normalizing to match.
+        local -A _declared=()
+        while IFS= read -r decl; do
+            [ -n "$decl" ] || continue
+            _declared["$decl"]=1
+        done < <(harness_layout_declared_members "$root")
+
+        # Process substitution (not a pipe) draining to completion — the same
+        # esc-5172-1 SIGPIPE-141 posture harness_layout_unit_lines documents.
+        while IFS= read -r -d '' f; do
+            _harness_layout_norm_path "$f"
+            f="$_HL_NORM_OUT"
+            members=$((members + 1))
+            [ -n "${_declared["$f"]:-}" ] && continue
+            member="${f#"$tests_dir_norm"/}"
+            _emit FAIL "crate=$crate" "file=$root" "reason=undeclared-member" "member=$member"
+            violations=$((violations + 1))
+        done < <(find "$moddir" -type f -name '*.rs' -print0)
+    done
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    _emit PASS "crate=$crate" "scan=undeclared-members" "roots=$roots" "members=$members"
     return 0
 }
 
@@ -860,6 +1044,14 @@ assert "1c: clean scan emits no FAIL line" \
 # root) is not a compile unit and must be silently ignored — pins the
 # existing `for f in "$tests_dir"/*.rs` glob behavior against a future
 # rewrite that starts walking directories directly.
+#
+# Rule (d) (Section 10 below) preserves this pin rather than conflicting
+# with it: both harness_layout_violations here and
+# harness_undeclared_member_violations loop `for root in
+# "$tests_dir"/harness_*.rs`, so an orphan dir has no root and is never
+# visited by EITHER rule — there is nothing for rule (d) to compare an
+# orphan dir's files against, and reporting them undeclared would just be
+# this same silent-ignore behavior restated as a false positive.
 _s1c_orphan_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1c_orphan_dir")
 mkdir -p "$_s1c_orphan_dir/harness_orphan"
 awk 'BEGIN { for (i = 0; i < 3; i++) print "// x" }' > "$_s1c_orphan_dir/harness_orphan/x.rs"
@@ -1055,10 +1247,51 @@ _s1e5_tuple="$(harness_layout_unit_lines "$_s1e5_dir/harness_stem.rs")"
 assert "1e: a bare \`mod\` in a non-root non-mod.rs file resolves against the file's STEM dir, in both the .rs and the dir/mod.rs form, and does not bind the containing-dir decoys (total=56 root=2 module=0 files=0 external=54 extfiles=3)" \
     test "$_s1e5_tuple" = "56 2 0 0 54 3"
 
+# --- Regression (task #7042 amendment): `_HL_WALK_VISITED` (declared -gA
+# inside `_harness_layout_walk_unit`) is RESET at the top of every call — "a
+# second call must not inherit the first's visited set" per that function's
+# own header. Nothing exercised that reset until now: dropping the `=()`
+# would make a second same-shell call on a root that shares an external
+# include skip the already-visited file and undercount it, and every fixture
+# above either lives in its own tmpdir (no shared path to leak across) or is
+# invoked via `$(…)` (which forks a SUBSHELL, so any leaked-or-reset state
+# never escapes back to this shell to be observed).
+#
+# Two roots in ONE dir both `#[path]`-include the SAME external file, called
+# via plain output REDIRECTION (`>`), not `$(…)`: a redirected shell-function
+# call runs in THIS shell (no fork), so `_HL_WALK_VISITED`'s global state
+# genuinely persists — or, if the reset regressed, leaks — between the two
+# calls exactly as it would across two `harness_layout_unit_lines` calls in a
+# real caller's loop (e.g. run_harness_layout_scan's per-crate loop, or
+# Section 5b's _s5bc_scan). ---
+_s1e6_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1e6_dir")
+mkdir -p "$_s1e6_dir/common"
+{
+    printf '#[path = "common/shared.rs"]\n'
+    printf 'mod shared;\n'
+} > "$_s1e6_dir/harness_alpha.rs"                                 # root: 2 lines
+{
+    printf '#[path = "common/shared.rs"]\n'
+    printf 'mod shared;\n'
+} > "$_s1e6_dir/harness_beta.rs"                                  # root: 2 lines
+awk 'BEGIN { for (i = 0; i < 9; i++) print "// x" }' > "$_s1e6_dir/common/shared.rs"
+
+_s1e6_out1="$(mktemp)"; _TMPDIRS+=("$_s1e6_out1")
+_s1e6_out2="$(mktemp)"; _TMPDIRS+=("$_s1e6_out2")
+harness_layout_unit_lines "$_s1e6_dir/harness_alpha.rs" > "$_s1e6_out1"
+harness_layout_unit_lines "$_s1e6_dir/harness_beta.rs" > "$_s1e6_out2"
+_s1e6_tuple1="$(cat "$_s1e6_out1")"
+_s1e6_tuple2="$(cat "$_s1e6_out2")"
+
+assert "1e: first same-shell call reports the shared external include (total=11 root=2 module=0 files=0 external=9 extfiles=1)" \
+    test "$_s1e6_tuple1" = "11 2 0 0 9 1"
+assert "1e: a SECOND same-shell call on a different root sharing the same external include still reports it — _HL_WALK_VISITED did not leak across calls (total=11 root=2 module=0 files=0 external=9 extfiles=1)" \
+    test "$_s1e6_tuple2" = "11 2 0 0 9 1"
+
 # --- Coherence: the total is exactly root + module + external in every case. ---
 _s1e_total_coherent() {
     local tuple total root mod files ext extfiles
-    for tuple in "$_s1e_tuple" "$_s1e2_tuple" "$_s1e3_tuple" "$_s1e4_tuple" "$_s1e5_tuple"; do
+    for tuple in "$_s1e_tuple" "$_s1e2_tuple" "$_s1e3_tuple" "$_s1e4_tuple" "$_s1e5_tuple" "$_s1e6_tuple1" "$_s1e6_tuple2"; do
         read -r total root mod files ext extfiles <<<"$tuple"
         [ "$total" -eq $((root + mod + ext)) ] || return 1
     done
@@ -1464,17 +1697,30 @@ assert "6: clean harness root emits no FAIL line (precision — no blunt \"alway
 
 # --- LIVE scan: every crates/*/tests dir holding a harness root, on disk. Not
 # scoped to CONSOLIDATABLE_CRATES, so a harness root appearing in any other
-# crate is still covered. ---
+# crate is still covered. ONE pass feeds BOTH this section's #[path]-mandate
+# check AND Section 10's undeclared-member check below (task #7042
+# amendment, the Section 5b/5c pattern — see that pair for the precedent):
+# the two loops were byte-identical over `crates/*/tests` apart from which
+# detector they called and which output they accumulated into, so a single
+# traversal now populates this section's $_s6_live_out/$_s6_live_rc AND
+# Section 10's $_s10_live_out/$_s10_live_rc, plus the ONE shared
+# $_s6s10_live_roots count both sections' non-vacuity asserts read — so the
+# two counts can never silently drift apart. Section 10 below runs no loop
+# of its own; it only asserts on the globals this loop sets. ---
 _s6_live_out="$(mktemp)"; _TMPDIRS+=("$_s6_live_out")
 _s6_live_rc=0
-_s6_live_roots=0
+_s10_live_out="$(mktemp)"; _TMPDIRS+=("$_s10_live_out")
+_s10_live_rc=0
+_s6s10_live_roots=0
 : > "$_s6_live_out"
+: > "$_s10_live_out"
 for _d in "$REPO_ROOT"/crates/*/tests; do
     [ -d "$_d" ] || continue
     compgen -G "$_d/harness_*.rs" > /dev/null || continue
-    _s6_live_roots=$((_s6_live_roots + $(compgen -G "$_d/harness_*.rs" | wc -l)))
+    _s6s10_live_roots=$((_s6s10_live_roots + $(compgen -G "$_d/harness_*.rs" | wc -l)))
     _c="$(basename "$(dirname "$_d")")"
     harness_path_attr_violations "$_c" "$_d" >> "$_s6_live_out" 2>/dev/null || _s6_live_rc=1
+    harness_undeclared_member_violations "$_c" "$_d" >> "$_s10_live_out" 2>/dev/null || _s10_live_rc=1
 done
 
 # Offender lines to the archived log on failure (the Section 5 idiom).
@@ -1487,9 +1733,11 @@ fi
 assert "6: live tree honors the C1 #[path] mandate in every harness root (rc 0)" \
     test "$_s6_live_rc" -eq 0
 # Non-vacuity: the live scan must actually have visited harness roots, or a
-# future glob/layout change would silently turn the assert above into a no-op.
+# future glob/layout change would silently turn the assert above into a
+# no-op. Shared with Section 10's own roots assert below — see the fused-loop
+# comment above.
 assert "6: live scan actually visited harness roots (>= 13 found, non-vacuity)" \
-    test "$_s6_live_roots" -ge 13
+    test "$_s6s10_live_roots" -ge 13
 
 # ===========================================================================
 # Section 7: PRD §6 BT-2 — no repo-resident selector names a PRE-consolidation
@@ -2051,5 +2299,240 @@ assert "9: live baseline has no malformed rows (every data row is a well-formed 
 # is expected to shrink as consolidation proceeds, all the way to 0.
 assert "9: live row-shape scan emits a structured PASS line carrying the data-row count" \
     grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=[0-9]+$' "$_s9_live_out"
+
+# ===========================================================================
+# Section 10: rule (d) — undeclared member (a file physically present under a
+# harness root's own module dir with NO reachable `mod` declaration anywhere
+# in the root's transitive mod-graph). rustc never compiles such a file, so
+# its `#[test]` fns vanish with no compile error, no link error, and no
+# test-count signal — this is the converse of Section 6, which walks
+# declaration -> file; this walks file -> declaration, and neither subsumes
+# the other.
+# ===========================================================================
+echo ""
+echo "--- Section 10: rule (d) — undeclared member (file present, never declared) ---"
+
+# --- must-fire: a module-dir file with no reachable `mod` declaration ---
+_s10_bad_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bad_dir")
+mkdir -p "$_s10_bad_dir/harness_synth"
+{
+    printf '#[path = "harness_synth/declared.rs"]\n'
+    printf 'mod declared;\n'
+} > "$_s10_bad_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bad_dir/harness_synth/declared.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bad_dir/harness_synth/orphan.rs"
+
+_s10_bad_out="$(mktemp)"; _TMPDIRS+=("$_s10_bad_out")
+_s10_bad_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bad_dir" \
+    > "$_s10_bad_out" 2>/dev/null || _s10_bad_rc=$?
+
+assert "10: a module-dir file with no reachable \`mod\` declaration fires (returns 1)" \
+    test "$_s10_bad_rc" -eq 1
+assert "10: violation emitted as a structured FAIL line (undeclared-member, member named)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=undeclared-member member=harness_synth/orphan\.rs$' "$_s10_bad_out"
+assert "10: the DECLARED member is not named in any FAIL line (precision)" \
+    bash -c '! grep -q "member=harness_synth/declared.rs" "$1"' _ "$_s10_bad_out"
+
+# --- must-not-fire: a member declared TRANSITIVELY, from a nested mod.rs
+# inside the module dir rather than from the root itself. This is the case
+# that rules out a root-only, single-hop declared-members walk: it must not
+# contradict harness_layout_unit_lines, which explicitly counts members "at
+# ANY depth" (its own Section 1c fixture already builds
+# harness_nested/deep/b.rs). rustc resolves a bare `mod` declared in a
+# `mod.rs` against THAT FILE'S OWN directory, so `sub/mod.rs`'s `mod deep;`
+# reaches `sub/deep.rs` without the root ever naming it directly. ---
+_s10_nested_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_nested_dir")
+mkdir -p "$_s10_nested_dir/harness_synth/sub"
+{
+    printf '#[path = "harness_synth/sub/mod.rs"]\n'
+    printf 'mod sub;\n'
+} > "$_s10_nested_dir/harness_synth.rs"
+printf 'mod deep;\n' > "$_s10_nested_dir/harness_synth/sub/mod.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_nested_dir/harness_synth/sub/deep.rs"
+
+_s10_nested_out="$(mktemp)"; _TMPDIRS+=("$_s10_nested_out")
+_s10_nested_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_nested_dir" \
+    > "$_s10_nested_out" 2>/dev/null || _s10_nested_rc=$?
+
+assert "10: a member declared transitively via a nested mod.rs is NOT flagged (rc 0)" \
+    test "$_s10_nested_rc" -eq 0
+# roots=1 members=2 pins the count exactly (the Section 8/9 rows=2 idiom):
+# 1 root (harness_synth.rs) and 2 module-dir files compared (sub/mod.rs,
+# sub/deep.rs) — proving the walk actually descended into sub/ rather than
+# vacuously reporting members=0.
+assert "10: transitive-member scan emits a structured PASS line (crate=synthcrate roots=1 members=2)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate scan=undeclared-members roots=1 members=2$' "$_s10_nested_out"
+assert "10: transitive-member scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_nested_out"
+
+# --- must-not-fire: NORMALIZATION — non-canonical but valid #[path] values (a
+# leading "./" and a "../"-round-trip) must resolve to the same member as
+# their canonical form, or a raw-vs-normalized comparison would false-fire. ---
+_s10_norm_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_norm_dir")
+mkdir -p "$_s10_norm_dir/harness_synth"
+{
+    printf '#[path = "./harness_synth/a.rs"]\n'
+    printf 'mod a;\n'
+    printf '#[path = "harness_synth/../harness_synth/b.rs"]\n'
+    printf 'mod b;\n'
+} > "$_s10_norm_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_norm_dir/harness_synth/a.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_norm_dir/harness_synth/b.rs"
+
+_s10_norm_out="$(mktemp)"; _TMPDIRS+=("$_s10_norm_out")
+_s10_norm_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_norm_dir" \
+    > "$_s10_norm_out" 2>/dev/null || _s10_norm_rc=$?
+
+assert "10: non-canonical #[path] forms (./ and ../-round-trip) are NOT flagged (rc 0)" \
+    test "$_s10_norm_rc" -eq 0
+assert "10: normalization scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_norm_out"
+
+# --- must-not-fire: MODDIR BOUNDARY + the live #[cfg] shape. A #[cfg]-gated
+# member (crates/reify-cli/tests/harness_cli.rs:184-186's #[cfg] -> #[path]
+# -> mod ordering) is DECLARED regardless of cfg state, and a bare `mod
+# common;` resolving to a retained tests/ sibling is not a member at all — it
+# resolves OUTSIDE the module dir. ---
+_s10_bound_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bound_dir")
+mkdir -p "$_s10_bound_dir/harness_synth" "$_s10_bound_dir/common"
+{
+    printf '#[cfg(target_os = "linux")]\n'
+    printf '#[path = "harness_synth/gated.rs"]\n'
+    printf 'mod gated;\n'
+    printf 'mod common;\n'
+} > "$_s10_bound_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bound_dir/harness_synth/gated.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bound_dir/common/mod.rs"
+
+_s10_bound_out="$(mktemp)"; _TMPDIRS+=("$_s10_bound_out")
+_s10_bound_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bound_dir" \
+    > "$_s10_bound_out" 2>/dev/null || _s10_bound_rc=$?
+
+assert "10: a #[cfg]-gated member (#[cfg] then #[path] then mod) is NOT flagged (rc 0)" \
+    test "$_s10_bound_rc" -eq 0
+assert "10: moddir-boundary scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_bound_out"
+
+# --- must-not-fire: SHAPE GUARDS. A single-file harness (no module dir) has
+# nothing to scan; and the Section 1c ORPHAN case (a module dir with no
+# sibling root) is re-driven through rule (d) to confirm it preserves that
+# pin rather than newly firing on it. ---
+_s10_single_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_single_dir")
+printf '#[test]\nfn t() {}\n' > "$_s10_single_dir/harness_synth.rs"
+
+_s10_single_out="$(mktemp)"; _TMPDIRS+=("$_s10_single_out")
+_s10_single_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_single_dir" \
+    > "$_s10_single_out" 2>/dev/null || _s10_single_rc=$?
+
+assert "10: a single-file harness (no module dir) is NOT flagged (rc 0)" \
+    test "$_s10_single_rc" -eq 0
+# roots=1 members=0 pins that the single root is still counted even though
+# it contributes nothing to members= (no module dir to compare at all).
+assert "10: single-file-harness scan emits a structured PASS line (crate=synthcrate roots=1 members=0)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate scan=undeclared-members roots=1 members=0$' "$_s10_single_out"
+
+_s10_orphan_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_orphan_dir")
+mkdir -p "$_s10_orphan_dir/harness_orphan"
+awk 'BEGIN { for (i = 0; i < 3; i++) print "// x" }' > "$_s10_orphan_dir/harness_orphan/x.rs"
+
+_s10_orphan_out="$(mktemp)"; _TMPDIRS+=("$_s10_orphan_out")
+_s10_orphan_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_orphan_dir" \
+    > "$_s10_orphan_out" 2>/dev/null || _s10_orphan_rc=$?
+
+assert "10: an orphan module dir with no sibling root is NOT flagged, same pin as 1c (rc 0)" \
+    test "$_s10_orphan_rc" -eq 0
+assert "10: orphan-dir scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_orphan_out"
+
+# --- must-FIRE: SILENT-BIND RESIDUE — the case Section 6 deliberately
+# tolerates. root writes bare `mod x;`, and BOTH a retained tests/ sibling
+# ($dir/x.rs) AND a module-dir file of the same stem ($dir/harness_synth/x.rs)
+# exist. rustc's crate-root-relative resolution binds the SIBLING (Section
+# 6's principled exception, unchanged by this rule), which leaves the
+# module-dir file silently dead — the concrete witness for why rule (d)
+# exists at all. ---
+_s10_bind_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bind_dir")
+mkdir -p "$_s10_bind_dir/harness_synth"
+printf 'mod x;\n' > "$_s10_bind_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bind_dir/x.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bind_dir/harness_synth/x.rs"
+
+_s10_bind_attr_out="$(mktemp)"; _TMPDIRS+=("$_s10_bind_attr_out")
+_s10_bind_attr_rc=0
+harness_path_attr_violations synthcrate "$_s10_bind_dir" \
+    > "$_s10_bind_attr_out" 2>/dev/null || _s10_bind_attr_rc=$?
+assert "10: Section 6's principled sibling exception still holds unchanged (rc 0)" \
+    test "$_s10_bind_attr_rc" -eq 0
+
+_s10_bind_out="$(mktemp)"; _TMPDIRS+=("$_s10_bind_out")
+_s10_bind_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bind_dir" \
+    > "$_s10_bind_out" 2>/dev/null || _s10_bind_rc=$?
+
+assert "10: the silent-bind residue module-dir file DOES fire (returns 1)" \
+    test "$_s10_bind_rc" -eq 1
+assert "10: silent-bind residue reported as undeclared-member member=harness_synth/x.rs" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=undeclared-member member=harness_synth/x\.rs$' "$_s10_bind_out"
+
+# --- LIVE scan: fused into Section 6's live loop above (task #7042
+# amendment, the Section 5b/5c pattern — see that loop's comment) rather than
+# a second byte-identical traversal of `crates/*/tests` here. $_s10_live_out,
+# $_s10_live_rc and the shared $_s6s10_live_roots are already populated by
+# the time this section runs; nothing below re-scans. This is the
+# WHOLE-TREE-LIVE landing precondition prerequisite pre-1 measured before any
+# code was written (31 roots, 585 module-dir member files, 0 undeclared, on
+# 4a9f2d6d4c): a rule (d) that visited every root but silently compared zero
+# member files (a broken find glob, a moddir guard that always `continue`s,
+# a declared-set that accidentally contains everything) would pass an rc-0 +
+# roots-floor assert VACUOUSLY — the exact silent-failure mode this whole
+# task exists to close, one level up. The member-count floor below guards
+# the guard. ---
+
+# Offender lines to the archived log on failure (the Section 5/6 idiom).
+if [ "$_s10_live_rc" -ne 0 ]; then
+    echo "  ---- Section 10: live undeclared-member scan output (printed on failure) ----"
+    cat "$_s10_live_out"
+    echo "  ---- Section 10: end live scan output ----"
+fi
+
+assert "10: live tree — every harness root declares every module-dir member (rc 0)" \
+    test "$_s10_live_rc" -eq 0
+# Non-vacuity (roots): shared with Section 6's own roots assert above — the
+# SAME fused scan populated both, so this can no longer silently drift from
+# Section 6's count the way two independently-maintained variables could.
+assert "10: live scan actually visited harness roots (>= 13 found, non-vacuity)" \
+    test "$_s6s10_live_roots" -ge 13
+
+# Non-vacuity (members): roots alone are not enough — see the block comment
+# above. harness_undeclared_member_violations emits one aggregate `PASS
+# crate=<c> scan=undeclared-members roots=<n> members=<n>` line PER CALL
+# (i.e. per crate — the same granularity Section 6 is called at, and now
+# carrying the SAME crate= field Section 6's own PASS line does — task #7042
+# amendment, so an operator reading the archived merge-verify log can tell
+# which crate contributed which counts), so the live loop above accumulates
+# one such line per clean crate into $_s10_live_out. Summing their
+# `members=` fields across every crate is the whole-tree member count this
+# rule actually ratchets (585 today, measured on 4a9f2d6d4c — the count only
+# grows as consolidation leaves land, so this is a floor, not a pin,
+# mirroring Sections 8/9's own declared-row floors).
+assert "10: live scan emits the new aggregate PASS grammar (crate=C scan=undeclared-members roots=N members=N)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=[A-Za-z0-9_-]+ scan=undeclared-members roots=[0-9]+ members=[0-9]+$' "$_s10_live_out"
+
+# `|| true` (the Section 4 idiom, tests/infra/test_harness_kloc_cap.sh:1315):
+# under `set -o pipefail` a legitimate zero-match grep exits 1, and awk's
+# unconditional `END { print sum + 0 }` never masks that — without `|| true`
+# this whole command substitution would abort the script here, before
+# test_summary ever runs (the same class of hazard test_helpers.sh's assert()
+# guards against at its own `rm -f`/`return 0`).
+_s10_live_members="$(grep -E '^HARNESS_KLOC_CAP PASS crate=[A-Za-z0-9_-]+ scan=undeclared-members roots=[0-9]+ members=[0-9]+$' "$_s10_live_out" \
+    | awk -F'members=' '{sum += $2} END {print sum + 0}' || true)"
+assert "10: live scan actually compared >= 300 module-dir member files across all crates (non-vacuity floor, 585 today)" \
+    test "$_s10_live_members" -ge 300
 
 test_summary
