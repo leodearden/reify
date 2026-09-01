@@ -18,14 +18,27 @@
 //! (b) `example_lambda_sweep_boundary_blend_centre`: reads the SHIPPED
 //!     `examples/cost_robustness_tradeoff.ri` from disk and evals its λ sweep
 //!     (λ=1.0, λ=0.5, λ=0.0 over one shared Money cost and one shared constraint
-//!     set). Asserts zero error-severity diagnostics, every λ strictly inside the
-//!     feasible region, and — per task #5715 — a REAL λ signal: the λ=1 anchor
-//!     reaches the cost's closed-form interior optimum, and the three λ are
-//!     strictly ordered with a minimum pairwise separation. This replaces the
-//!     #5618/#5715 characterization pin (`spread < 1e-9`), which recorded the
-//!     degenerate state in which both anchors collapsed onto the solver's
-//!     constraint-derived seed. The complementary zero-margin-BOUNDARY form of
-//!     the λ=1 invariant (monotone cost, explicit tight `AutoParam` bounds) stays
+//!     set) plus the file's objectiveless `CentralityReference` control. Asserts
+//!     zero error-severity diagnostics, every λ strictly inside the feasible
+//!     region, and — per task #5715 — a REAL, SEED-INDEPENDENT λ signal: the λ=1
+//!     anchor reaches the cost's closed-form interior optimum, the λ=0 anchor
+//!     reaches the Chebyshev centre (cross-checked against `CentralityReference`,
+//!     which the engine resolves through its own synthesised centrality default),
+//!     and the three λ are strictly ordered with a minimum pairwise separation —
+//!     with every one of them provably distinct from the solver's
+//!     constraint-derived seed.
+//!
+//!     Both halves of that separation take a deliberate lever in the example.
+//!     The λ=1 half needs a cost with a reachable INTERIOR optimum; the λ=0 half
+//!     needs an ASYMMETRIC constraint set (`thickness * 2 < 30mm` alongside the
+//!     `1mm`/`25mm` box), because for a plain two-sided box the derived seed
+//!     midpoint IS the Chebyshev centre by construction and no choice of numbers
+//!     could tell a real λ=0 solve apart from a seed fallback.
+//!
+//!     This replaces the #5618/#5715 characterization pin (`spread < 1e-9`),
+//!     which recorded the degenerate state in which both anchors had collapsed
+//!     onto that seed. The complementary zero-margin-BOUNDARY form of the λ=1
+//!     invariant (monotone cost, explicit tight `AutoParam` bounds) stays
 //!     verified at the solver level in
 //!     `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
 
@@ -154,13 +167,20 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
 }
 
 /// (b) the shipped `examples/cost_robustness_tradeoff.ri` sweeps λ=1.0 → 0.5 → 0.0
-/// across three structures sharing one Money cost and one constraint set.
+/// across three structures sharing one Money cost and one constraint set, plus a
+/// fourth objectiveless `CentralityReference` control carrying that same param and
+/// the same constraints.
 ///
-/// A REAL λ signal, seed-independent at this layer (task #5715). The λ=1 anchor is
-/// pinned to the cost's closed-form interior optimum — a point that is neither the
-/// solver's constraint-derived seed nor the robustness centre, so only a genuine
-/// cost optimisation can land there — and the three λ are required to be strictly
-/// ordered with a minimum pairwise separation of `LAMBDA_SEPARATION_M`.
+/// A REAL λ signal, seed-independent at this layer (task #5715). BOTH anchors are
+/// pinned to independently-derived targets that are distinct from each other AND
+/// from the solver's constraint-derived seed:
+///
+///   * λ=1 → the cost's closed-form interior optimum (5mm);
+///   * λ=0 → the Chebyshev centre of the three-half-space feasible region
+///     (31/3 mm), cross-checked against `CentralityReference`, which the engine
+///     resolves through its own synthesised `Maximize(min_slack)` default;
+///   * λ=0.5 → strictly between, with a minimum pairwise separation of
+///     `LAMBDA_SEPARATION_M`.
 ///
 /// This replaces the #5715 characterization pin (`spread < 1e-9`), which recorded
 /// the degenerate state described in that task: with a MONOTONE cost the λ=1
@@ -169,7 +189,10 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
 /// autos always get `bounds: None` — `engine_eval.rs::build_auto_param_list`), so
 /// `solve_core_with_sd_tolerance`'s drift fallback reported THE SEED; and for a
 /// plain two-sided box that seed midpoint IS the Chebyshev centre, i.e. the λ=0
-/// target, by construction. Both anchors therefore collapsed onto one point.
+/// target, by construction. Both anchors therefore collapsed onto one point. The
+/// example now breaks that second coincidence with an ASYMMETRIC third constraint
+/// (`thickness * 2 < 30mm`), whose gradient differs from the box's, so the
+/// Chebyshev centre and the bounding-box midpoint are no longer the same point.
 ///
 /// Reads the example from disk (not a fixture copy) — mirrors
 /// `continuous_cost_min_example_e2e.rs`'s disk-path convention; compile-level
@@ -217,18 +240,24 @@ fn example_lambda_sweep_boundary_blend_centre() {
     let t_pure_cost = thickness_si("TradeoffPureCost"); // λ=1.0
     let t_blend = thickness_si("TradeoffBlend"); // λ=0.5
     let t_robust = thickness_si("TradeoffRobust"); // λ=0.0
+    // The objectiveless control: same auto param, same three constraints, NO
+    // `minimize`, so the engine resolves it through `build_centrality_objective`'s
+    // synthesised `Maximize(min_slack)` default.
+    let t_centrality = thickness_si("CentralityReference");
 
-    // ── all three λ resolve strictly INSIDE the open box (1mm, 25mm) ───────────
+    // ── every result resolves strictly INSIDE the feasible region (1mm, 15mm) ──
     // Layer-appropriate and genuinely load-bearing: the example compiles, solves,
-    // and every λ lands on a finite value satisfying both user constraints.
+    // and every λ lands on a finite value satisfying ALL THREE user constraints.
+    // The upper bound is 15mm, not 25mm: `thickness * 2 < 30mm` binds first.
     for (label, t) in [
         ("λ=1.0", t_pure_cost),
         ("λ=0.5", t_blend),
         ("λ=0.0", t_robust),
+        ("CentralityReference", t_centrality),
     ] {
         assert!(
-            t.is_finite() && t > 0.001 && t < 0.025,
-            "{label} thickness should be finite and strictly inside (1mm, 25mm), got {:.6e} m",
+            t.is_finite() && t > 0.001 && t < 0.015,
+            "{label} thickness should be finite and strictly inside (1mm, 15mm), got {:.6e} m",
             t
         );
     }
@@ -258,6 +287,61 @@ fn example_lambda_sweep_boundary_blend_centre() {
          Landing on ~1.3e-2 m means the anchor fell back to the constraint-derived \
          seed — see task #5715.",
         t_pure_cost,
+    );
+
+    // ── λ=0 ANCHOR: a GENUINE Chebyshev centre, cross-checked and seed-free ────
+    //
+    // (i) ENGINE-COMPUTED reference. `CentralityReference` carries the same auto
+    // param and the same three constraints with NO objective at all, so the
+    // engine resolves it through `build_centrality_objective`'s synthesised
+    // `Maximize(min_slack)` default. PRD §8.1 requires λ=0 to reduce to exactly
+    // that objective, so the two must agree. This is the in-example analogue of
+    // the solver-level sibling's independent `build_centrality_objective` solve:
+    // a target the ENGINE computes, not a lone hardcoded constant.
+    assert!(
+        (t_robust - t_centrality).abs() < ANCHOR_TOL_M,
+        "λ=0.0 must reduce to the engine's own centrality default (PRD §8.1); got \
+         t(λ=0)={:.6e} m vs objectiveless CentralityReference={:.6e} m",
+        t_robust,
+        t_centrality,
+    );
+
+    // (ii) CLOSED FORM. The slacks are `t − 1mm`, `25mm − t` and `30mm − 2t`.
+    // Maximising their minimum is a 1-D Chebyshev problem: the binding pair is
+    // `t − 1mm` (slope +1) against `30mm − 2t` (slope −2), so
+    //     t − 1 = 30 − 2t  →  t = 31/3 mm ≈ 10.3333mm,
+    // at which the remaining slack `25mm − t = 14.667mm` comfortably exceeds the
+    // binding value `9.333mm` and is therefore non-binding.
+    assert!(
+        (t_robust - 31.0 / 3.0 * 0.001).abs() < ANCHOR_TOL_M,
+        "λ=0.0 must reach the closed-form Chebyshev centre 31/3 mm ≈ 1.03333e-2 m \
+         of the three-half-space region; got {:.6e} m",
+        t_robust,
+    );
+
+    // (iii) SEED-INDEPENDENCE TRIPWIRE — the assertion this whole task exists to
+    // make possible (#5715). The λ=0 result must NOT be the solver's
+    // constraint-derived box midpoint.
+    //
+    // Where 13mm comes from: `extract_initial_point` (solver.rs) arm 3 derives a
+    // box from the constraints, and `derive_from_side` recognises only the shapes
+    // `p OP far`, `p − k OP far` and `k − p OP far`. `thickness * 2 < 30mm` has a
+    // `Mul` on the near side, so it contributes a centrality slack but does NOT
+    // tighten the derived box — the box stays `[1mm, 25mm]` and its midpoint is
+    // 13mm (measured directly with a monotone-cost drift-fallback probe).
+    //
+    // This is not a hidden coupling to that gap: if `derive_from_side` is ever
+    // widened to recognise scaled shapes, the derived box becomes `[1mm, 15mm]`
+    // and the seed moves to 8mm — still more than LAMBDA_SEPARATION_M away from
+    // all three λ values (3.0mm / 0.81mm / 2.33mm), so the assertion keeps
+    // meaning the same thing.
+    assert!(
+        (t_robust - 0.013).abs() > LAMBDA_SEPARATION_M,
+        "λ=0.0 must be distinguishable from the constraint-derived seed midpoint \
+         (13mm): landing there would make a real centrality solve and a drift \
+         fallback indistinguishable, which is exactly the #5715 defect. got \
+         {:.6e} m",
+        t_robust,
     );
 
     // ── λ ORDERING with a minimum pairwise SEPARATION ──────────────────────────
