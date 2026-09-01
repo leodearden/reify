@@ -355,15 +355,22 @@ _majmin_lines() {
 # "" == "" would recreate the exact class of vacuity this task fixes.
 # ---------------------------------------------------------------------------
 
-# _rust_occt_list <fn-name> — the ordered `NativeDep::Occt => &[...]` string
-# literals from the named fn block in crates/reify-build-utils/src/lib.rs, one
-# per line. Anchored to `fn <name>` and bounded by that fn's closing brace, so
-# the four `NativeDep::Occt =>` arms in the file can never be confused.
-_rust_occt_list() {
-    awk -v fname="fn $1" '
+# _rust_dep_list <fn-name> <Variant> — the ordered
+# `NativeDep::<Variant> => &[...]` string literals from the named fn block in
+# crates/reify-build-utils/src/lib.rs, one per line. Anchored to `fn <name>`
+# and bounded by that fn's closing brace, so the several `NativeDep::<V> =>`
+# arms in the file can never be confused.
+#
+# Handles all THREE literal shapes present in that file without special-casing:
+# the one-line `NativeDep::Gmsh => &["a", "b"],` form; the multi-line
+# `NativeDep::Occt => &[` + one-string-per-line + `],` form; and the block
+# `NativeDep::OpenVdb => { &[...] }` form whose arm line itself carries no
+# literals. Only the variant string is parameterised — no parser fork per dep.
+_rust_dep_list() {
+    awk -v fname="fn $1" -v arm="NativeDep::$2 =>" '
         index($0, fname) { infn = 1; next }
         infn && /^    }$/ { exit }
-        infn && index($0, "NativeDep::Occt =>") { inarm = 1 }
+        infn && index($0, arm) { inarm = 1 }
         inarm {
             n = split($0, parts, "\"")
             for (i = 2; i <= n; i += 2) print parts[i]
@@ -372,13 +379,13 @@ _rust_occt_list() {
     ' "$RUST_SRC"
 }
 
-# _rust_occt_scalar <fn-name> — the single string literal on the
-# `NativeDep::Occt =>` arm of the named fn block. Same anchoring rules.
-_rust_occt_scalar() {
-    awk -v fname="fn $1" '
+# _rust_dep_scalar <fn-name> <Variant> — the single string literal on the
+# `NativeDep::<Variant> =>` arm of the named fn block. Same anchoring rules.
+_rust_dep_scalar() {
+    awk -v fname="fn $1" -v arm="NativeDep::$2 =>" '
         index($0, fname) { infn = 1; next }
         infn && /^    }$/ { exit }
-        infn && index($0, "NativeDep::Occt =>") {
+        infn && index($0, arm) {
             n = split($0, parts, "\"")
             if (n >= 2) print parts[2]
             exit
@@ -466,20 +473,20 @@ _bash_guard_array() {
     _extract_bash_array "$1" < "$GUARD"
 }
 
-# _bash_occt_array <VAR> — the named array as declared INSIDE the
-# `occt-candidates` marker block, so a same-named array elsewhere in the file
-# can never satisfy the parity parse.
-_bash_occt_array() {
-    sed -n '/# BEGIN occt-candidates/,/# END occt-candidates/p' "$GUARD" \
-        | _extract_bash_array "$1"
+# _bash_block_array <block> <VAR> — the named array as declared INSIDE the
+# `# BEGIN <block>` / `# END <block>` marker block, so a same-named array
+# elsewhere in the file can never satisfy the parity parse.
+_bash_block_array() {
+    sed -n "/# BEGIN $1/,/# END $1/p" "$GUARD" \
+        | _extract_bash_array "$2"
 }
 
-# _bash_occt_scalar <VAR> — value of the named scalar assignment inside the
-# `occt-candidates` marker block.
-_bash_occt_scalar() {
-    awk -v var="$1" '
-        index($0, "# BEGIN occt-candidates") { inblk = 1; next }
-        index($0, "# END occt-candidates") { exit }
+# _bash_block_scalar <block> <VAR> — value of the named scalar assignment
+# inside that same marker block.
+_bash_block_scalar() {
+    awk -v blk="$1" -v var="$2" '
+        index($0, "# BEGIN " blk) { inblk = 1; next }
+        inblk && index($0, "# END " blk) { exit }
         !inblk { next }
         $0 ~ ("^[[:space:]]*" var "=") {
             line = $0
@@ -749,63 +756,84 @@ assert "guard exits 0 when BOTH override dirs carry their sentinels (positive co
 echo ""
 echo "--- 5: parity — bash occt-candidates block mirrors NativeDep::Occt ---"
 
-_RUST_LIB_CANDS="$(_rust_occt_list lib_candidates)"
-_RUST_INC_CANDS="$(_rust_occt_list include_candidates)"
-_RUST_LIB_SENT="$(_rust_occt_scalar lib_sentinel)"
-_RUST_INC_SENT="$(_rust_occt_scalar include_sentinel)"
-
-_BASH_LIB_CANDS="$(_bash_occt_array OCCT_LIB_CANDIDATES)"
-_BASH_INC_CANDS="$(_bash_occt_array OCCT_INCLUDE_CANDIDATES)"
-_BASH_LIB_SENT="$(_bash_occt_scalar OCCT_LIB_SENTINEL)"
-_BASH_INC_SENT="$(_bash_occt_scalar OCCT_INCLUDE_SENTINEL)"
-
-# Anchor-integrity asserts FIRST: without these, a renamed fn or a dropped
-# marker block degrades every comparison below to "" == "" and the whole
-# parity section passes while guarding nothing.
-assert "Rust parse of NativeDep::Occt lib_candidates is non-empty (anchor 'fn lib_candidates' found)" \
-    test -n "$_RUST_LIB_CANDS"
-assert "Rust parse of NativeDep::Occt include_candidates is non-empty (anchor 'fn include_candidates' found)" \
-    test -n "$_RUST_INC_CANDS"
-assert "Rust parse of NativeDep::Occt lib_sentinel is non-empty (anchor 'fn lib_sentinel' found)" \
-    test -n "$_RUST_LIB_SENT"
-assert "Rust parse of NativeDep::Occt include_sentinel is non-empty (anchor 'fn include_sentinel' found)" \
-    test -n "$_RUST_INC_SENT"
-assert "bash parse of OCCT_LIB_CANDIDATES is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_LIB_CANDS"
-assert "bash parse of OCCT_INCLUDE_CANDIDATES is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_INC_CANDS"
-assert "bash parse of OCCT_LIB_SENTINEL is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_LIB_SENT"
-assert "bash parse of OCCT_INCLUDE_SENTINEL is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_INC_SENT"
-
-# Order-sensitive comparison: the priority order IS the invariant (system
-# paths ahead of /opt/reify-deps/lib, which ships gmsh's transitive OCCT 7.9).
+# _parity_diff <a> <b> — order-sensitive difference of two newline-separated
+# lists, empty when they agree. The priority ORDER is itself the invariant, so
+# a set comparison would not do: OCCT's system paths must stay ahead of
+# /opt/reify-deps' OCCT 7.9, and conversely Gmsh/OpenVDB's /opt/reify-deps must
+# stay ahead of apt's stale gmsh 4.12.1 / openvdb 10.0.1.
 _parity_diff() {
     diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") 2>&1 || true
 }
 
-_LIB_CAND_DIFF="$(_parity_diff "$_RUST_LIB_CANDS" "$_BASH_LIB_CANDS")"
-if [ -n "$_LIB_CAND_DIFF" ]; then
-    echo "  OCCT lib-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
-    printf '%s\n' "$_LIB_CAND_DIFF" | sed 's/^/    /'
-fi
-assert "bash OCCT_LIB_CANDIDATES equals NativeDep::Occt lib_candidates, order included" \
-    test -z "$_LIB_CAND_DIFF"
+# _assert_dep_parity <Variant> <block> <PREFIX>
+#
+# The whole mirror check for one native dep: Rust's `NativeDep::<Variant>` arms
+# (the single source of truth) against the `# BEGIN <block>` marker block in
+# scripts/check-manifold-deps.sh (a declared mirror), for both candidate lists
+# ORDER INCLUDED and both sentinels.
+#
+# The four ANCHOR-INTEGRITY asserts come FIRST and are mandatory. Without them
+# a renamed fn, a dropped marker block or a mistyped variant degrades every
+# comparison below to "" == "" and the whole section passes while guarding
+# NOTHING — which is the same vacuity class this file exists to close, one
+# level up.
+_assert_dep_parity() {
+    local variant="$1" block="$2" prefix="$3"
+    local rust_lib rust_inc rust_lib_sent rust_inc_sent
+    local bash_lib bash_inc bash_lib_sent bash_inc_sent
+    local lib_diff inc_diff
 
-_INC_CAND_DIFF="$(_parity_diff "$_RUST_INC_CANDS" "$_BASH_INC_CANDS")"
-if [ -n "$_INC_CAND_DIFF" ]; then
-    echo "  OCCT include-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
-    printf '%s\n' "$_INC_CAND_DIFF" | sed 's/^/    /'
-fi
-assert "bash OCCT_INCLUDE_CANDIDATES equals NativeDep::Occt include_candidates, order included" \
-    test -z "$_INC_CAND_DIFF"
+    rust_lib="$(_rust_dep_list lib_candidates "$variant")"
+    rust_inc="$(_rust_dep_list include_candidates "$variant")"
+    rust_lib_sent="$(_rust_dep_scalar lib_sentinel "$variant")"
+    rust_inc_sent="$(_rust_dep_scalar include_sentinel "$variant")"
 
-assert "bash OCCT_LIB_SENTINEL ('$_BASH_LIB_SENT') equals NativeDep::Occt lib_sentinel ('$_RUST_LIB_SENT')" \
-    test "$_BASH_LIB_SENT" = "$_RUST_LIB_SENT"
+    bash_lib="$(_bash_block_array "$block" "${prefix}_LIB_CANDIDATES")"
+    bash_inc="$(_bash_block_array "$block" "${prefix}_INCLUDE_CANDIDATES")"
+    bash_lib_sent="$(_bash_block_scalar "$block" "${prefix}_LIB_SENTINEL")"
+    bash_inc_sent="$(_bash_block_scalar "$block" "${prefix}_INCLUDE_SENTINEL")"
 
-assert "bash OCCT_INCLUDE_SENTINEL ('$_BASH_INC_SENT') equals NativeDep::Occt include_sentinel ('$_RUST_INC_SENT')" \
-    test "$_BASH_INC_SENT" = "$_RUST_INC_SENT"
+    assert "Rust parse of NativeDep::$variant lib_candidates is non-empty (anchor 'fn lib_candidates' found)" \
+        test -n "$rust_lib"
+    assert "Rust parse of NativeDep::$variant include_candidates is non-empty (anchor 'fn include_candidates' found)" \
+        test -n "$rust_inc"
+    assert "Rust parse of NativeDep::$variant lib_sentinel is non-empty (anchor 'fn lib_sentinel' found)" \
+        test -n "$rust_lib_sent"
+    assert "Rust parse of NativeDep::$variant include_sentinel is non-empty (anchor 'fn include_sentinel' found)" \
+        test -n "$rust_inc_sent"
+    assert "bash parse of ${prefix}_LIB_CANDIDATES is non-empty ($block marker block found)" \
+        test -n "$bash_lib"
+    assert "bash parse of ${prefix}_INCLUDE_CANDIDATES is non-empty ($block marker block found)" \
+        test -n "$bash_inc"
+    assert "bash parse of ${prefix}_LIB_SENTINEL is non-empty ($block marker block found)" \
+        test -n "$bash_lib_sent"
+    assert "bash parse of ${prefix}_INCLUDE_SENTINEL is non-empty ($block marker block found)" \
+        test -n "$bash_inc_sent"
+
+    lib_diff="$(_parity_diff "$rust_lib" "$bash_lib")"
+    if [ -n "$lib_diff" ]; then
+        echo "  $variant lib-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
+        printf '%s\n' "$lib_diff" | sed 's/^/    /'
+    fi
+    assert "bash ${prefix}_LIB_CANDIDATES equals NativeDep::$variant lib_candidates, order included" \
+        test -z "$lib_diff"
+
+    inc_diff="$(_parity_diff "$rust_inc" "$bash_inc")"
+    if [ -n "$inc_diff" ]; then
+        echo "  $variant include-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
+        printf '%s\n' "$inc_diff" | sed 's/^/    /'
+    fi
+    assert "bash ${prefix}_INCLUDE_CANDIDATES equals NativeDep::$variant include_candidates, order included" \
+        test -z "$inc_diff"
+
+    assert "bash ${prefix}_LIB_SENTINEL ('$bash_lib_sent') equals NativeDep::$variant lib_sentinel ('$rust_lib_sent')" \
+        test "$bash_lib_sent" = "$rust_lib_sent"
+
+    assert "bash ${prefix}_INCLUDE_SENTINEL ('$bash_inc_sent') equals NativeDep::$variant include_sentinel ('$rust_inc_sent')" \
+        test "$bash_inc_sent" = "$rust_inc_sent"
+}
+
+_assert_dep_parity Occt occt-candidates OCCT
 
 # --- 6: the same mirror one layer down — the snap-fallback ALGORITHM.
 #
@@ -1071,5 +1099,28 @@ assert "guard output NAMES openvdb/openvdb.h and the offending OpenVDB include d
 assert "guard exits 0 when BOTH OpenVDB override dirs carry their sentinels (positive control)" \
     _guard_env_exits_zero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
         OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
+
+# ---------------------------------------------------------------------------
+# 10. PARITY for the two new mirrors — the same anti-drift check section 5
+#     applies to OCCT, run against `gmsh-candidates` and `openvdb-candidates`.
+#
+# Rust stays the single source of truth. Order is compared, not just membership,
+# because the priority order IS the invariant on both new arms and it is the
+# OPPOSITE of OCCT's: /opt/reify-deps must lead for gmsh and openvdb (that is
+# where reify's 4.15.2 / 13.0.0 live) where it appears in NEITHER of OCCT's
+# lists (the conda env ships OCCT 7.9 as a transitive of gmsh while reify links
+# system OCCT 7.8). Gmsh's and OpenVdb's own lib orders also differ from each
+# other, so a drift that merely swapped two entries would still resolve — just
+# against the wrong install, silently.
+#
+# Every parse asserts non-empty FIRST (inside _assert_dep_parity), so a renamed
+# fn, a dropped marker block or a mistyped variant fails loudly instead of
+# degrading the comparison to "" == "" and passing while guarding nothing.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 10: parity — gmsh/openvdb marker blocks mirror their NativeDep arms ---"
+
+_assert_dep_parity Gmsh gmsh-candidates GMSH
+_assert_dep_parity OpenVdb openvdb-candidates OPENVDB
 
 test_summary
