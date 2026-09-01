@@ -222,6 +222,54 @@ measurement is identical. No commit sha is cited for that run on purpose — unt
 fixture lands it exists only on a task branch, and every amend or rebase orphans a
 branch-local sha.
 
+**Full d-ladder, measured 2026-09-01** (task #6545), reproducing the fixture above at
+twelve rungs from the mandated 100/50/20/10 mm spine down to the finest affordable
+0.3 mm:
+
+| d | a | a/d | note |
+|---|---|---|---|
+| 100 mm | 6.518e-2 | 0.652 | floor |
+| 50 mm | 2.494e-2 | 0.499 | |
+| 20 mm | 1.713e-2 | 0.857 | |
+| 10 mm | 6.974e-3 | 0.697 | |
+| 5 mm | 4.107e-3 | 0.821 | |
+| 3 mm | 2.854e-3 | 0.951 | |
+| 1 mm | 8.419e-4 | 0.842 | |
+| 0.8 mm | 7.658e-4 | 0.957 | |
+| 0.6 mm | 5.867e-4 | 0.978 | |
+| **0.5 mm** | 4.980e-4 | **0.996** | ← sup |
+| 0.4 mm | 3.930e-4 | 0.983 | |
+| 0.3 mm | 2.875e-4 | 0.958 | |
+
+The 20 mm row reproduces the `1.713e-2` excerpted above exactly, confirming this ladder
+measures the same committed fixture. The ratio is non-monotonic — it oscillates rather
+than rising, echoing (without reproducing) the sphere's staircase in §1.2 — and peaks at
+**sup K = 0.996 at d = 0.5 mm**.
+
+**Floor.** Achieved is pinned at `6.518e-2` for all `d ≥ 100 mm`: probed additionally at
+200 mm and 400 mm, both return the identical `6.518e-2`. The 100 mm row above sits inside
+that floor, mirroring how §1.4 phrases the sphere's pin.
+
+**Deterministic.** All fourteen rungs run (the twelve tabulated above plus the 200 mm and
+400 mm floor probes) returned byte-identical achieved values across 3 consecutive
+full-ladder repetitions. Wall clocks varied under load, per §0 Caveat 1; the ratios did
+not.
+
+**Not budget-limited.** No rung timed out. The finest rung (0.3 mm) completed in
+15.5–18.7 s, far inside the 90 s wall — unlike sweep, pipe and spline above, whose
+ladders were cut short by the 90 s wall, not by the geometry.
+
+**Provenance for this block** — own stamp, a different binary/HEAD/session than §0's
+identity table:
+
+| | |
+|---|---|
+| binary | `target/release/reify`, built 2026-09-01 01:27 (newer than the last `crates/` commit `f431d8b72f`, 2026-08-31 20:03 — no rebuild needed) |
+| HEAD | `01c1e3e445` (branch `task/6545`) |
+| kernel | OCCT 7.8 (53 `libTK*.so.7.8` linked; `has_occt` live, confirmed functionally — all 42 runs (14 rungs × 3 reps) realized and passed the §0 Caveat-2 datum gate) |
+| machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0) |
+| load | 88.85 – 118.40 1-min loadavg across the 3 reps |
+
 `Operation::SurfaceNurbs` remains genuinely absent from `occt_capability_descriptor()`
 (`crates/reify-kernel-occt/src/register.rs`) — that fact still holds. What was wrong was
 the inference that the absence prevents realization: it resolves instead via the
