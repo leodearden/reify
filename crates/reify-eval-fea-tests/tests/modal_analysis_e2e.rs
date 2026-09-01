@@ -136,14 +136,46 @@ const CC_FIXTURE_PROPPED_ANALYTIC_HZ: f64 = 620.702;
 /// because the pair happens to sit close together. Every band in this test now
 /// reads the vertical family, the same one signals (f)/(g) use.
 ///
-/// # The bit-preservation claim this band carries
+/// # What this band is, and is NOT
 ///
-/// Task 6663 leaves the pin-pin realization (`simply_supported_pin_pin_bcs`)
-/// untouched, and the raw fundamental above — still printed, and asserted finite
-/// — reproduces the dogfood round's 391.049 Hz to four decimals. That equality is
-/// the evidence that the pinned Dirichlet set really is unchanged; the −0.53%
-/// band is the accuracy statement about the mode the analytic actually describes.
+/// It is an ACCURACY statement about the vertical mode the pinned-pinned
+/// analytic describes: 3% around 397.33 Hz. It is deliberately NOT the
+/// bit-preservation guard, and an earlier revision of this comment claimed it
+/// was — asserting that the raw fundamental "reproduces the dogfood round's
+/// 391.049 Hz to four decimals" when the test only checked that value finite and
+/// positive. At 3% on a different mode, the pinned realization could have
+/// drifted by 2.5% (and the raw lateral mode by any amount) with this band still
+/// green.
+///
+/// Bit-preservation is now asserted directly, by signal (i) against
+/// [`CC_FIXTURE_PINNED_RAW_F1_HZ`], and independently by the untouched 2% bands
+/// in `e2e_simply_supported_modes_match_analytic`.
 const CC_FIXTURE_PINNED_REL_TOL: f64 = 0.03;
+
+/// The pinned configuration's RAW fundamental (the lateral / Y-bending mode),
+/// Hz. **MEASURED on this exact fixture and mesh, in release** — see
+/// [`CC_FIXTURE_PINNED_REL_TOL`]'s quoted `[modal bc-kind]` block, and the
+/// task-6663 dogfood round that first reported 391.0495 Hz for BOTH the pinned
+/// and the (then-defective) fixed configuration.
+///
+/// This is the bit-preservation anchor: task 6663 leaves
+/// `simply_supported_pin_pin_bcs` untouched, so the pinned Dirichlet set — and
+/// therefore this frequency — must not move. Signal (i) asserts it within
+/// [`CC_FIXTURE_PINNED_RAW_REL_TOL`].
+const CC_FIXTURE_PINNED_RAW_F1_HZ: f64 = 391.0495;
+
+/// Band on [`CC_FIXTURE_PINNED_RAW_F1_HZ`]: 0.5%, an order of magnitude tighter
+/// than the accuracy bands, because this is not an accuracy claim at all — it is
+/// "the pinned Dirichlet set is unchanged, so this number is unchanged". The
+/// only legitimate variation is floating-point summation order across BLAS
+/// builds, far below 0.5%; a realization change is not (the pre-6663 defect made
+/// the FIXED configuration read this same 391.0495 Hz, and the correct clamped
+/// answer is 887.55 Hz — 127% away, i.e. 227 band-widths).
+///
+/// Deliberately NOT tightened to bit equality: this is a 3-D FE eigensolve read
+/// through the DSL, and an exact `==` would be a portability trap rather than a
+/// stronger guard.
+const CC_FIXTURE_PINNED_RAW_REL_TOL: f64 = 5e-3;
 
 /// Clamped-clamped band, read on the VERTICAL (Z-dominant) fundamental.
 /// **MEASURED at this exact mesh**, in release:
@@ -1021,7 +1053,9 @@ fn e2e_printer_gantry_prints_five_modes() {
 //   (a) no Error-severity diagnostics after parse + eval
 //   (b) a ComputeNode with target == "modal::free_vibration" in the graph
 //   (c) f1z_pinned within CC_FIXTURE_PINNED_REL_TOL of the SS analytic 397.33 Hz
-//       — the guard that the pin-pin realization is BIT-PRESERVED by this task
+//       — an ACCURACY band on the pinned vertical mode. NOT the bit-preservation
+//       guard, which is (i); see CC_FIXTURE_PINNED_REL_TOL's own doc for why the
+//       two were conflated and what that cost
 //   (d) f1z_fixed within CC_FIXTURE_FIXED_REL_TOL of the CC analytic 900.699 Hz
 //   (e) f1z_fixed / f1z_pinned ≥ CC_FIXTURE_MIN_FIXED_PINNED_RATIO — the task's
 //       literal "they must DIFFER" acceptance
@@ -1035,6 +1069,11 @@ fn e2e_printer_gantry_prints_five_modes() {
 //   (h) the mixed pair's RAW fundamental sits strictly below its vertical one —
 //       the measurable form of "a lateral mode intrudes here", which is what
 //       forces the whole test onto the vertical family
+//   (i) the pinned configuration's RAW fundamental reproduces the measured
+//       391.0495 Hz within CC_FIXTURE_PINNED_RAW_REL_TOL — the BIT-PRESERVATION
+//       guard proper. (c) is an accuracy band on a DIFFERENT mode and cannot
+//       carry that claim; this one is on the number the dogfood round reported,
+//       at 0.5%
 //
 // Why (f)–(h) live in THIS test rather than a sibling: all three solves come
 // from one eval of one fixture, so a sibling test would re-run the two heavy
@@ -1198,7 +1237,26 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
         );
     }
 
-    // (c) Pinned-pinned is unchanged by this task — the bit-preservation guard.
+    // (i) BIT-PRESERVATION, asserted rather than asserted-about. Task 6663 does
+    //     not touch `simply_supported_pin_pin_bcs`, so the pinned realization's
+    //     raw fundamental must still be the 391.0495 Hz the dogfood round
+    //     measured. This is the guard that (c) was previously claimed to be but
+    //     is not: (c) is a 3% accuracy band on the VERTICAL mode (395.22 Hz),
+    //     so it would stay green through a 2.5% drift of the pinned Dirichlet
+    //     set and through ANY drift of this lateral one.
+    let pinned_raw_err =
+        (f1_pinned - CC_FIXTURE_PINNED_RAW_F1_HZ).abs() / CC_FIXTURE_PINNED_RAW_F1_HZ;
+    assert!(
+        pinned_raw_err < CC_FIXTURE_PINNED_RAW_REL_TOL,
+        "f1_pinned (raw) = {:.4} Hz, measured reference = {:.4} Hz, rel_err = {:.3}% > {:.2}% \
+         — the pin-pin Dirichlet set must be unchanged by the support-kind fix",
+        f1_pinned,
+        CC_FIXTURE_PINNED_RAW_F1_HZ,
+        pinned_raw_err * 100.0,
+        CC_FIXTURE_PINNED_RAW_REL_TOL * 100.0
+    );
+
+    // (c) Pinned-pinned is unchanged by this task — the accuracy band.
     //
     // Read on the VERTICAL family, not on `first_frequency`. The square section
     // makes this configuration's two bending directions near-degenerate (391.05
