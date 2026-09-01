@@ -155,4 +155,80 @@ mod tests {
             "expected the relative key to round-trip back onto examples_dir()"
         );
     }
+    // ─── discover_ri_files contract ───────────────────────────────────────
+
+    /// Prefix for every temp dir these `discover_ri_files` tests create, so
+    /// SIGKILL debris under `/tmp` stays attributable to this suite (see
+    /// `temp_dirs::prefixed_tempdir`'s "Names stay attributable" section).
+    const EXAMPLES_CORPUS_TEMPDIR_PREFIX: &str = "reify-examples-corpus-";
+
+    /// Materialise a fixture file at `dir.join(rel)`, creating any parent
+    /// directories the forward-slash-separated `rel` implies.
+    fn touch_under(dir: &std::path::Path, rel: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|e| panic!("create parent dirs for fixture {rel:?}: {e}"));
+        }
+        std::fs::write(&path, "// fixture\n")
+            .unwrap_or_else(|e| panic!("write fixture {rel:?}: {e}"));
+    }
+
+    /// discover_ri_files: over one fixture tree, exactly the `.ri` FILES at any
+    /// depth come back, sorted by full path.
+    ///
+    /// One case carries the whole contract on purpose. The tree contains a
+    /// top-level `.ri`, a nested `sub/deep/*.ri` (so a non-recursing walk
+    /// fails), a non-`.ri` sibling (`notes.md`), and a `.ri`-suffixed
+    /// DIRECTORY — which must be recursed into and never itself pushed, the
+    /// one case where "ends in .ri" and "is a `.ri` file" diverge. Fixtures are
+    /// created in an order that differs from their sorted order, and the
+    /// comparison is made WITHOUT re-sorting the result, so an
+    /// order-preserving-but-unsorted implementation cannot pass.
+    #[test]
+    fn discover_ri_files_returns_only_nested_ri_files_sorted_by_path() {
+        let guard = crate::temp_dirs::prefixed_tempdir(EXAMPLES_CORPUS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+
+        // Creation order is deliberately not sorted order.
+        touch_under(dir, "zebra.ri");
+        touch_under(dir, "sub/deep/nested.ri");
+        touch_under(dir, "alpha.ri");
+        touch_under(dir, "notes.md");
+        touch_under(dir, "sub/notes.md");
+        // A DIRECTORY whose name ends in `.ri`, holding a real `.ri` file.
+        touch_under(dir, "looks_like_a_file.ri/inner.ri");
+
+        let found = super::discover_ri_files(dir);
+
+        assert_eq!(
+            found,
+            vec![
+                dir.join("alpha.ri"),
+                dir.join("looks_like_a_file.ri/inner.ri"),
+                dir.join("sub/deep/nested.ri"),
+                dir.join("zebra.ri"),
+            ],
+            "expected exactly the four `.ri` FILES at any depth, sorted by full path and \
+             compared without re-sorting: `notes.md` and `sub/notes.md` must be filtered out \
+             by extension, the `.ri`-named DIRECTORY must be recursed into rather than \
+             pushed, and a walk that did not recurse would miss `sub/deep/nested.ri`; \
+             got {found:?}"
+        );
+    }
+
+    /// discover_ri_files: an empty directory yields an empty `Vec` rather than
+    /// panicking, so a suite whose corpus is momentarily empty fails on its own
+    /// discovery floor with a countable number, not on a walk panic.
+    #[test]
+    fn discover_ri_files_on_an_empty_directory_yields_an_empty_vec() {
+        let guard = crate::temp_dirs::prefixed_tempdir(EXAMPLES_CORPUS_TEMPDIR_PREFIX);
+
+        let found = super::discover_ri_files(guard.path());
+
+        assert!(
+            found.is_empty(),
+            "expected an empty directory to yield an empty Vec; got {found:?}"
+        );
+    }
 }
