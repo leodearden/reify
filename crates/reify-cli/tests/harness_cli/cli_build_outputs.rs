@@ -24,7 +24,6 @@
 use crate::common;
 
 use std::path::Path;
-use std::process::Command;
 
 /// Assert `bytes` is a well-formed binary STL: an 80-byte header, a 4-byte
 /// little-endian triangle count `N > 0`, then exactly `50·N` triangle bytes —
@@ -51,20 +50,12 @@ fn assert_valid_binary_stl(bytes: &[u8]) {
 /// Run `reify <args...>` with the child process's working directory set to
 /// `cwd`, returning `(success, stdout, stderr)`. Pinning the child cwd lets the
 /// B7 test prove design-relative resolution does not fall back to the cwd.
+///
+/// Thin `bool`-success shim over [`common::run_with_args_in`] — the shared
+/// spawn site — since every call site here only ever asserted `.success()`.
 fn run_in(cwd: &Path, args: &[&str]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-    (
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
+    let (status, stdout, stderr) = common::run_with_args_in(cwd, args);
+    (status.success(), stdout, stderr)
 }
 
 /// B5: `reify build <temp>/foo.ri` with NO `-o` must let the single `STLOutput`

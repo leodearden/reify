@@ -107,15 +107,6 @@ pub fn run_with_args(args: &[&str]) -> (ExitStatus, String, String) {
 /// cwd-pinned spawn — a per-module copy would be duplication rather than
 /// isolation.
 ///
-/// It is NOT (yet) the only such spawn in the harness, and this docstring does
-/// not claim to have consolidated one: two hand-rolled cwd-pinned copies remain
-/// outside this file — `cli_build_outputs.rs`'s private `run_in` (which returns
-/// `bool` rather than `ExitStatus`, so it is a signature change, not a
-/// substitution) and `cli_imported_field_eval.rs`'s inline `current_dir` call.
-/// Both live in test modules outside task #6170's lock set and were left
-/// untouched deliberately; migrating them is a mechanical follow-up for whoever
-/// next holds those files.
-///
 /// Pinning matters whenever a test asserts on DESIGN-FILE-relative artifact
 /// paths (io-export B7): it keeps every artifact inside the caller's tempdir and
 /// guarantees a stray write cannot land in `tests/fixtures/` or the crate root.
