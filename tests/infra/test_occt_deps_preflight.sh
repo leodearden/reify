@@ -117,26 +117,35 @@ echo "=== OCCT deps preflight tests ==="
 # Fixture + invocation helpers
 # ---------------------------------------------------------------------------
 
-# _mk_include_fixture <name> — mktemp-style dir under $_TMPDIR containing the
-# OCCT include sentinel. Prints the path.
+# _mk_include_fixture <name> [<sentinel>] — dir under $_TMPDIR containing the
+# named include sentinel (default: OCCT's Standard_Failure.hxx). Prints the
+# path.
+#
+# The sentinel may be a NESTED path — OpenVDB's is `openvdb/openvdb.h`, not a
+# bare filename — so its parent dirs are created too. A flat fixture would make
+# the OpenVDB positive control fail for entirely the wrong reason.
 _mk_include_fixture() {
-    local d="$_TMPDIR/$1"
-    mkdir -p "$d"
-    : > "$d/Standard_Failure.hxx"
+    local d="$_TMPDIR/$1" sentinel="${2:-Standard_Failure.hxx}"
+    local parent="$d"
+    case "$sentinel" in */*) parent="$d/${sentinel%/*}" ;; esac
+    mkdir -p "$parent"
+    : > "$d/$sentinel"
     printf '%s' "$d"
 }
 
-# _mk_lib_fixture <name> <version> — dir under $_TMPDIR reproducing the Debian
-# two-hop OCCT chain that reify_build_utils' own unit fixture models
-# (crates/reify-build-utils/src/lib.rs, read_soname_version tests):
-#   libTKernel.so -> libTKernel.so.<v> -> libTKernel.so.<v>.1
-# so the FIRST-level link target's suffix is exactly <version>. Prints the path.
+# _mk_lib_fixture <name> <version> [<sentinel>] — dir under $_TMPDIR
+# reproducing the Debian TWO-HOP chain that reify_build_utils' own unit fixture
+# models (crates/reify-build-utils/src/lib.rs, read_soname_version tests):
+#   <sentinel> -> <sentinel>.<v> -> <sentinel>.<v>.1
+# so the FIRST-level link target's suffix is exactly <version> (which is the
+# whole point: `readlink -f` would yield <v>.1 instead). Sentinel defaults to
+# OCCT's libTKernel.so. Prints the path.
 _mk_lib_fixture() {
-    local d="$_TMPDIR/$1" v="$2"
+    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}"
     mkdir -p "$d"
-    : > "$d/libTKernel.so.$v.1"
-    ln -sfn "libTKernel.so.$v.1" "$d/libTKernel.so.$v"
-    ln -sfn "libTKernel.so.$v" "$d/libTKernel.so"
+    : > "$d/$sentinel.$v.1"
+    ln -sfn "$sentinel.$v.1" "$d/$sentinel.$v"
+    ln -sfn "$sentinel.$v" "$d/$sentinel"
     printf '%s' "$d"
 }
 
@@ -153,15 +162,17 @@ _mk_patchlink_lib_fixture() {
     printf '%s' "$d"
 }
 
-# _mk_conda_lib_fixture <name> <version> — dir under $_TMPDIR reproducing the
-# conda-forge / /opt/reify-deps layout: ONE level, `libTKernel.so ->
-# libTKernel.so.<v>` where <v> is itself the full three-segment version. The
-# first-level target's suffix is therefore the whole version verbatim.
+# _mk_conda_lib_fixture <name> <version> [<sentinel>] — dir under $_TMPDIR
+# reproducing the conda-forge / /opt/reify-deps layout: ONE hop,
+# `<sentinel> -> <sentinel>.<v>` where <v> is itself the full version. The
+# first-level target's suffix is therefore the whole version verbatim. This is
+# also gmsh's live shape at /opt/reify-deps/lib
+# (libgmsh.so -> libgmsh.so.4.15.2). Sentinel defaults to OCCT's libTKernel.so.
 _mk_conda_lib_fixture() {
-    local d="$_TMPDIR/$1" v="$2"
+    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}"
     mkdir -p "$d"
-    : > "$d/libTKernel.so.$v"
-    ln -sfn "libTKernel.so.$v" "$d/libTKernel.so"
+    : > "$d/$sentinel.$v"
+    ln -sfn "$sentinel.$v" "$d/$sentinel"
     printf '%s' "$d"
 }
 
@@ -182,19 +193,102 @@ _mk_empty_fixture() {
     printf '%s' "$d"
 }
 
-# _guard_exits_zero <lib_dir> <include_dir>
-_guard_exits_zero() {
-    [ -x "$GUARD" ] || return 1
-    OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" bash "$GUARD" >/dev/null
+# --- dep-generic guard invocation ------------------------------------------
+#
+# check-manifold-deps.sh is ONE script with SEQUENTIAL arms — manifold
+# prebuilt, tbb pin, OCCT, Gmsh, OpenVDB — and any arm exiting non-zero means
+# every arm after it never runs. A `_guard_env_exits_nonzero` assert on a
+# DOWNSTREAM dep would then PASS for entirely the wrong reason (the upstream
+# arm's exit) and test nothing at all — the same vacuity class this whole file
+# exists to close. So the env-list form below takes the FULL override set
+# explicitly, and each dep's section supplies healthy fixtures for every arm
+# ahead of it rather than relying on live host state.
+
+# _guard_run <VAR=VALUE>... — run the guard under exactly these overrides.
+# Combined stdout+stderr on stdout; the guard's own exit status is returned.
+_guard_run() {
+    env "$@" bash "$GUARD" 2>&1
 }
 
-# _guard_exits_nonzero <lib_dir> <include_dir>
+# _guard_env_exits_zero <VAR=VALUE>...
+_guard_env_exits_zero() {
+    [ -x "$GUARD" ] || return 1
+    _guard_run "$@" >/dev/null
+}
+
+# _guard_env_exits_nonzero <VAR=VALUE>...
 #
 # Guarded on `-x "$GUARD"` first: a missing or unrunnable script also exits
 # non-zero, which would otherwise false-pass every negation below.
-_guard_exits_nonzero() {
+_guard_env_exits_nonzero() {
     [ -x "$GUARD" ] || return 1
-    ! OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" bash "$GUARD" >/dev/null 2>&1
+    ! _guard_run "$@" >/dev/null
+}
+
+# _guard_env_output_names <VAR=VALUE>... -- <needle>...
+# Combined stdout+stderr of the guard must contain every needle (literal).
+#
+# ON A MISS it ECHOES the offending needle, the guard's exit status, the full
+# override set it ran under, and the entire captured guard output, then returns
+# 1. WHY: test_helpers.sh's assert() dumps its per-assert tmpfile only when that
+# file is non-empty (`[ -s "$_f" ]`), so a helper that swallows the guard output
+# into a shell variable and returns 1 silently produces a FAIL line with NO
+# evidence attached — the reader cannot distinguish "the guard printed the wrong
+# thing" from "the guard printed nothing" from "the guard was right and the
+# harness misreported it". That gap is what kept the pipefail/SIGPIPE defect
+# (see _out_contains) unroot-caused for a full task cycle.
+#
+# Emission is on the FAILURE path ONLY, so an all-green suite stays
+# byte-for-byte unchanged — run_all.sh's cause_hint and dark-factory's
+# classifier both parse this file's green output shape. Every continuation line
+# carries the NON-whitespace `  | ` prefix test_helpers.sh documents:
+# dark-factory's slot-timeout classifier is `^[ \t]*`-anchored, so a captured
+# @@REIFY_SLOT_TIMEOUT@@ sentinel reproduced at column 0 (or merely indented)
+# would misclassify the whole merge verify as semaphore starvation.
+_guard_env_output_names() {
+    [ -x "$GUARD" ] || return 1
+    local -a envs=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+        envs+=("$1")
+        shift
+    done
+    [ "${1:-}" = "--" ] && shift
+    local out needle rc=0 e line
+    out="$(_guard_run "${envs[@]}")" || rc=$?
+    for needle in "$@"; do
+        if ! _out_contains "$out" "$needle"; then
+            echo "  | needle NOT FOUND in the guard output: $needle"
+            echo "  | guard exit status: $rc"
+            for e in "${envs[@]}"; do
+                echo "  | override: $e"
+            done
+            echo "  | ---- captured guard output ----"
+            # Fork-free, and deliberately NOT `printf | sed`: this is the
+            # failure path, where losing the dump to a pipefail surprise is
+            # worst. A herestring is not a pipeline, so nothing here is
+            # exposed to the hazard _out_contains documents.
+            while IFS= read -r line; do
+                echo "  | $line"
+            done <<< "$out"
+            echo "  | ---- end captured guard output ----"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# --- OCCT-positional wrappers ----------------------------------------------
+# Thin adapters over the env-list forms above, kept so the OCCT sections read
+# as they did before the file grew two more deps.
+
+# _guard_exits_zero <lib_dir> <include_dir>
+_guard_exits_zero() {
+    _guard_env_exits_zero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2"
+}
+
+# _guard_exits_nonzero <lib_dir> <include_dir>
+_guard_exits_nonzero() {
+    _guard_env_exits_nonzero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2"
 }
 
 # _out_contains <haystack> <needle> — literal (grep -F semantics) substring
@@ -236,51 +330,10 @@ _lines_contain_exact() {
 }
 
 # _guard_output_names <lib_dir> <include_dir> <needle>...
-# Combined stdout+stderr of the guard must contain every needle (literal).
-#
-# ON A MISS it ECHOES the offending needle, the guard's exit status, and the
-# whole captured guard output, then returns 1. WHY: test_helpers.sh's assert()
-# dumps its per-assert tmpfile only when that file is non-empty
-# (`[ -s "$_f" ]`), so a helper that swallows the guard output into a shell
-# variable and returns 1 silently produces a FAIL line with NO evidence
-# attached — the reader cannot distinguish "the guard printed the wrong
-# thing" from "the guard printed nothing" from "the guard was right and the
-# harness misreported it". That gap is what kept the pipefail/SIGPIPE defect
-# (see _out_contains) unroot-caused for a full task cycle.
-#
-# Emission is on the FAILURE path ONLY, so an all-green suite stays
-# byte-for-byte unchanged — run_all.sh's cause_hint and dark-factory's
-# classifier both parse this file's green output shape. Every continuation
-# line carries the NON-whitespace `  | ` prefix test_helpers.sh documents:
-# dark-factory's slot-timeout classifier is `^[ \t]*`-anchored, so a captured
-# @@REIFY_SLOT_TIMEOUT@@ sentinel reproduced at column 0 (or merely indented)
-# would misclassify the whole merge verify as semaphore starvation.
 _guard_output_names() {
     local libdir="$1" incdir="$2"
     shift 2
-    [ -x "$GUARD" ] || return 1
-    local out needle rc=0
-    out="$(OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" bash "$GUARD" 2>&1)" || rc=$?
-    for needle in "$@"; do
-        if ! _out_contains "$out" "$needle"; then
-            echo "  | needle NOT FOUND in the guard output: $needle"
-            echo "  | guard exit status: $rc"
-            echo "  | OCCT_LIB_DIR=$libdir"
-            echo "  | OCCT_INCLUDE_DIR=$incdir"
-            echo "  | ---- captured guard output ----"
-            # Fork-free, and deliberately NOT `printf | sed`: this is the
-            # failure path, where losing the dump to a pipefail surprise is
-            # worst. A herestring is not a pipeline, so nothing here is
-            # exposed to the hazard _out_contains documents.
-            local line
-            while IFS= read -r line; do
-                echo "  | $line"
-            done <<< "$out"
-            echo "  | ---- end captured guard output ----"
-            return 1
-        fi
-    done
-    return 0
+    _guard_env_output_names OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" -- "$@"
 }
 
 # _majmin_lines — MAJOR.MINOR projection of each non-empty line on stdin,
@@ -897,5 +950,64 @@ fi
 # not possible anyway: that is a shell function, not reachable from the child.
 assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') projects (major.minor) into OCCT_ACCEPTED_SONAMES" \
     bash -c 'printf "%s\n" "$1" | grep -qxF -- "$2"' _ "$_ACCEPTED_MAJMIN" "$_SETUP_DEV_MAJMIN"
+
+# ---------------------------------------------------------------------------
+# 8. GMSH PRESENCE — the same silent vacuity, one dep over (task #6493).
+#
+# reify_build_utils::find(NativeDep::Gmsh) returns None when EITHER half is
+# unresolved, and crates/reify-kernel-gmsh/build.rs answers with a
+# `cargo:warning` plus a bare `return` — byte-for-byte the same fail-OPEN shape
+# OCCT had before task #6343. 81 has_gmsh-gated items then vanish: the suite
+# reports zero tests REPORTED, not zero tests FAILED, and the gate goes green
+# over a mesher nothing exercised.
+#
+# build.rs stays deliberately fail-OPEN (its cfg(not(has_gmsh)) stub modules
+# are a sanctioned, tested configuration). The GATE lives here, in
+# check-manifold-deps.sh, exactly as it does for OCCT.
+#
+# EVERY case supplies healthy OCCT overrides: the OCCT arm runs AHEAD of the
+# Gmsh arm in the same script, so without them a `_guard_env_exits_nonzero`
+# assert would pass on the OCCT arm's exit and test nothing. Every negative
+# case pairs its exit-code assert with an output assert naming a GMSH-specific
+# string, so a failure that really came from upstream stays attributable.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 8: gmsh presence — missing libs / headers => red gate naming gmsh ---"
+
+# Healthy upstream (OCCT), built at the DERIVED accepted version rather than a
+# hardcoded 7.8, so a legitimate future pin bump stays a one-line diff in one
+# file.
+_UPSTREAM_OCCT_LIB="$(_mk_lib_fixture upstream-occt-lib "$_ACCEPTED_FIRST")"
+_UPSTREAM_OCCT_INC="$(_mk_include_fixture upstream-occt-include)"
+_OCCT_OK=(OCCT_LIB_DIR="$_UPSTREAM_OCCT_LIB" OCCT_INCLUDE_DIR="$_UPSTREAM_OCCT_INC")
+
+# Gmsh's live shape at /opt/reify-deps/lib is ONE hop
+# (libgmsh.so -> libgmsh.so.4.15.2), so the fixture uses that layout.
+_GMSH_LIB_OK="$(_mk_conda_lib_fixture gmsh-lib-ok 4.15.2 libgmsh.so)"
+_GMSH_INC_OK="$(_mk_include_fixture gmsh-include-ok gmshc.h)"
+_GMSH_LIB_MISSING="$(_mk_empty_fixture gmsh-lib-missing)"
+_GMSH_INC_MISSING="$(_mk_empty_fixture gmsh-include-missing)"
+
+assert "guard exits NON-zero when the Gmsh lib dir lacks libgmsh.so (headers present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_MISSING" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
+
+assert "guard output NAMES libgmsh.so and the offending Gmsh lib dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_MISSING" GMSH_INCLUDE_DIR="$_GMSH_INC_OK" \
+        -- "libgmsh.so" "$_GMSH_LIB_MISSING"
+
+assert "guard exits NON-zero when the Gmsh include dir lacks gmshc.h (libs present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_MISSING"
+
+assert "guard output NAMES gmshc.h and the offending Gmsh include dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_MISSING" \
+        -- "gmshc.h" "$_GMSH_INC_MISSING"
+
+assert "guard exits 0 when BOTH Gmsh override dirs carry their sentinels (positive control)" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
 
 test_summary
