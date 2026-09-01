@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::lsp_bridge::{LspBridge, lsp_request_impl};
+use reify_lsp::server::NotificationSink;
 use reify_lsp::test_support::RecordingSink;
 
 #[tokio::test]
@@ -541,13 +542,20 @@ async fn lsp_request_on_worker_preserves_the_error_path() {
     );
 }
 
-/// (d) The dispatch genuinely happens ON the lane — not inline on the awaiting
-/// tokio worker.
+/// (d) The ORDERED-lane helper `run_on_lsp_worker` genuinely runs its future on
+/// the lane thread — not inline on the awaiting tokio worker.
 ///
-/// Asserted via a probe submitted through the SAME lane API the routing uses, so
-/// this pins the mechanism rather than a coincidence: if `lsp_request_on_worker`
-/// were quietly awaiting `lsp_request_impl` directly, the value would still be
-/// right and only this test would notice.
+/// SCOPE, corrected in the task-6517 amendment pass: this probes
+/// `crate::large_stack::run_on_lsp_worker`, which since the routing change has
+/// no production caller — `lsp_request_on_worker` is
+/// `lsp_request_on_lane(lane_for_method(&method), ..)`. So the claim this doc
+/// used to make ("if `lsp_request_on_worker` were quietly awaiting
+/// `lsp_request_impl` directly, only this test would notice") is no longer this
+/// test's to make; it belongs to (q), which asserts it against the production
+/// entry point through a thread-recording sink. What (d) still pins, and what it
+/// is kept for, is the ORDERED lane's own dispatch mechanism: the helper several
+/// tests use for work that must be ordered against the notification stream puts
+/// that work on `LSP_WORKER_THREAD_NAME` rather than awaiting it inline.
 #[tokio::test]
 async fn the_lsp_lane_runs_its_work_off_the_awaiting_runtime_thread() {
     use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
@@ -860,8 +868,12 @@ const UNRECOGNISED_METHODS: [&str; 2] = ["textDocument/notAThing", ""];
 /// `crates/reify-lsp/src/bridge.rs`'s `match method` (the fourteen arms before
 /// its `other =>` fallthrough).
 ///
-/// Transcribed from SOURCE rather than from this crate's prose so (j) is a real
-/// cross-check: if the two lists here drifted from `reify-lsp`, (j) fails.
+/// Transcribed by hand, and therefore NOT self-validating: (j) drives every
+/// entry through the real dispatcher rather than trusting the transcription, so
+/// an arm renamed or deleted in `reify-lsp` reds this file instead of drifting
+/// out of it silently. An earlier revision of this comment claimed the
+/// transcription itself was the cross-check; it was not — three hand-maintained
+/// `const` arrays in one file can only ever prove each other consistent.
 const HANDLE_REQUEST_ARMS: [&str; 14] = [
     "initialize",
     "initialized",
@@ -971,8 +983,36 @@ fn query_methods_route_to_the_query_pool() {
 /// Disjointness is asserted too: a method listed in BOTH tables would make (h)
 /// and (i) contradictory, and whichever ran second would look like a routing bug
 /// rather than a table bug.
-#[test]
-fn the_classification_covers_every_dispatchable_method() {
+///
+/// # The arm list is EXECUTED against the real dispatcher, not just compared
+///
+/// The set half above relates three hand-maintained `const` arrays in this file
+/// to each other, which proves them internally consistent and nothing more:
+/// rename or delete an arm in `crates/reify-lsp/src/bridge.rs` and every set
+/// assertion still holds, because `HANDLE_REQUEST_ARMS` is a copy, not an
+/// observation. So the second half calls [`lsp_request_impl`] for every entry of
+/// both tables and reads the answer through `reify-lsp`'s OWN public constant,
+/// `bridge::error_prefix::UNSUPPORTED_METHOD` — the exact string its `other =>`
+/// fallthrough emits:
+///
+/// * every `HANDLE_REQUEST_ARMS` entry must NOT come back unsupported (it may
+///   come back `Ok`, or `Err` from its own params parse — both mean the arm is
+///   there), and
+/// * every `UNRECOGNISED_METHODS` entry MUST come back unsupported.
+///
+/// That is what turns "adding an arm to `reify-lsp` is a decision here" from a
+/// claim into a mechanism, in both directions: a NEW arm nobody classified is
+/// caught by the set half only once it is transcribed, but a REMOVED or RENAMED
+/// arm — the drift that no assertion could previously see — now reds this test
+/// on the first run.
+///
+/// `"null"` is the params payload for every row because the question is which
+/// ARM was reached, never whether it liked its arguments. Each arm is driven on
+/// its OWN bridge so nothing (notably `shutdown`) can leave state that changes a
+/// later row's answer.
+#[tokio::test]
+async fn the_classification_covers_every_dispatchable_method() {
+    use reify_lsp::bridge::error_prefix::UNSUPPORTED_METHOD;
     use std::collections::BTreeSet;
 
     let ordered: BTreeSet<&str> = ORDERED_METHODS.into_iter().collect();
@@ -994,6 +1034,44 @@ fn the_classification_covers_every_dispatchable_method() {
          silently take the conservative fallthrough with no test naming it; one \
          present in `classified` but not in `arms` is a stale entry in this file."
     );
+
+    // ── The executable half: every row is driven through the real dispatcher ──
+
+    for method in HANDLE_REQUEST_ARMS {
+        let bridge = LspBridge::new();
+        if let Err(e) = lsp_request_impl(&bridge, method, "null".to_string()).await {
+            assert!(
+                !e.starts_with(UNSUPPORTED_METHOD),
+                "`{method}` is listed in HANDLE_REQUEST_ARMS but \
+                 `InProcessLsp::handle_request` answered with its \
+                 unsupported-method fallthrough ({e:?}). Either the arm was \
+                 renamed or removed in `crates/reify-lsp/src/bridge.rs` — in \
+                 which case ORDERED_METHODS / QUERY_METHODS still route a \
+                 method that no longer exists — or this list has a typo. Both \
+                 are classification bugs, which is why this row executes rather \
+                 than merely comparing strings."
+            );
+        }
+    }
+
+    for method in UNRECOGNISED_METHODS {
+        let bridge = LspBridge::new();
+        let err = lsp_request_impl(&bridge, method, "null".to_string())
+            .await
+            .expect_err(&format!(
+                "`{method:?}` is used by (h) as an UNRECOGNISED method — the row \
+                 that pins `lane_for_method`'s conservative default — so \
+                 `handle_request` must reject it. If it now succeeds, it is a \
+                 real arm and must be classified, not treated as unknown."
+            ));
+        assert!(
+            err.starts_with(UNSUPPORTED_METHOD),
+            "`{method:?}` must be rejected by the `other =>` fallthrough \
+             specifically, not by some arm's params parse — otherwise (h)'s \
+             unknown-method rows would be pinning the default against a method \
+             that is actually dispatchable. Got: {err:?}"
+        );
+    }
 }
 
 /// (k) The ORDERED lane still has EXACTLY ONE consumer after the `Lane`
@@ -1008,6 +1086,10 @@ fn the_classification_covers_every_dispatchable_method() {
 /// A size-N lane would fail this rather than pass it by luck: the shared
 /// receiver lock is handed off after each dequeue, so consumers ROTATE across
 /// sequential submissions even when only one job is in flight at a time.
+///
+/// Its twin for the other lane is (p): this pins `LSP_LANE` at exactly 1, and
+/// (p) pins `LSP_POOL` at `LSP_POOL_SIZE`. Both counts are load-bearing and in
+/// opposite directions, so neither can be left to the other.
 #[test]
 fn the_ordered_lane_still_has_exactly_one_consumer() {
     use crate::large_stack::{LSP_LANE, dispatch};
@@ -1412,5 +1494,255 @@ async fn an_abandoned_request_does_not_occupy_a_lane_consumer() {
         bridge.get_diagnostics(ABANDONED_URI).await.is_empty(),
         "the abandoned request must have left NO server-side state — no \
          document, and therefore no diagnostics, for its URI"
+    );
+}
+
+/// (p) The PRODUCTION query pool runs the consumers it DECLARES — the twin of
+/// (k), for the lane whose consumer count is the whole point of task 6517.
+///
+/// (k) pins `LSP_LANE` at exactly one consumer, because a second one would let a
+/// `didChange` overtake an earlier one. This pins the opposite direction, and
+/// nothing else in either test file does: `large_stack_tests`' (aa)/(ab)/(ad)/
+/// (ae) measure the mechanism against test-local `Lane::pool(..)` instances,
+/// (l) above deliberately uses a test-local size-2 pool, and (i) only compares
+/// `lane_for_method`'s returned POINTER with `LSP_POOL.sender()`. So before this
+/// test, rebuilding the static as `Lane::new(LSP_POOL_THREAD_PREFIX)` — or
+/// letting `LSP_POOL_SIZE` fall to 1 — left every other test in this binary
+/// green while restoring total head-of-line blocking among LSP queries, which is
+/// exactly the regression the task exists to prevent.
+///
+/// # Two assertions, because neither alone is enough
+///
+/// STRUCTURAL, via `Lane::size()`. `LSP_POOL.size() == LSP_POOL_SIZE` catches a
+/// static rebuilt with `Lane::new` or with a stray literal; `LSP_POOL_SIZE == 4`
+/// catches the constant itself being lowered. The second is a VALUE assertion
+/// rather than a `>= 2` range check on purpose — `LSP_POOL_SIZE`'s own docs
+/// justify a fixed constant by promising "the same number on every machine —
+/// directly assertable from a test", and a range check would let 4 drift to 2
+/// unremarked, which is precisely the silent narrowing this guards.
+///
+/// BEHAVIOURAL, via thread names. A declared size means nothing if `Lane::sender`
+/// does not act on it, so a probe is dispatched through the real pool and the
+/// thread it lands on is named. This is a sharp check rather than a soft one
+/// because of `Lane`'s naming rule: a size-1 lane names its consumer EXACTLY
+/// `name`, with no index (that is what keeps `reify-lsp-w` byte-identical across
+/// the pool generalisation), so BOTH regressions above produce the bare
+/// `reify-lsp-p` — which is not in the expected set and reds here.
+///
+/// # Why the observed set is NOT asserted to be the full set
+///
+/// That would be a scheduling bet dressed as a property. Consumers do rotate
+/// across sequential submissions — the shared receiver lock is released before
+/// each job body — but WHICH waiter wins the freed lock is the OS's choice, so
+/// "all four names appear within N submissions" can fail on a loaded machine
+/// with nothing broken. The alternative — PARKING four consumers to observe them
+/// at once — is the starvation hazard (l) documents from the other side: any
+/// concurrently-running test in this binary holding one pool consumer would make
+/// the parked count fall short and RED a healthy pool. So the count is pinned
+/// structurally and the naming behaviourally, and neither assertion depends on
+/// the scheduler. This test never parks a consumer for longer than a
+/// `ThreadId` read.
+#[test]
+fn the_query_pool_runs_the_consumers_it_declares() {
+    use crate::large_stack::{LSP_LANE, LSP_POOL, LSP_POOL_SIZE, LSP_POOL_THREAD_PREFIX, dispatch};
+    use std::collections::HashSet;
+
+    assert_eq!(
+        LSP_POOL_SIZE, 4,
+        "`LSP_POOL_SIZE` is a FIXED constant so the head-of-line bound is the \
+         same number on every machine and in every bug report. Changing it is a \
+         legitimate decision — but a deliberate one, which is what this line \
+         makes it."
+    );
+    assert_eq!(
+        LSP_POOL.size(),
+        LSP_POOL_SIZE,
+        "the query pool must be declared with `LSP_POOL_SIZE` consumers. A \
+         static rebuilt as `Lane::new(LSP_POOL_THREAD_PREFIX)`, or with a \
+         literal that drifted from the constant, serializes every LSP query \
+         again while leaving every other test green."
+    );
+    assert_eq!(
+        LSP_LANE.size(),
+        1,
+        "the ordered lane must stay single-consumer — the structural twin of \
+         (k)'s behavioural check, and the invariant `didChange` ordering rests on"
+    );
+
+    let expected: HashSet<String> = (0..LSP_POOL_SIZE)
+        .map(|i| format!("{LSP_POOL_THREAD_PREFIX}{i}"))
+        .collect();
+    let caller = std::thread::current().name().map(str::to_owned);
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for _ in 0..32 {
+        let landed_on = dispatch(LSP_POOL.sender(), || {
+            std::thread::current().name().map(str::to_owned)
+        })
+        .expect(
+            "a pool job must run on a NAMED lane thread; an unnamed thread means \
+             the lane degraded and the job ran somewhere this test cannot vouch \
+             for",
+        );
+        assert!(
+            expected.contains(&landed_on),
+            "a pool job landed on {landed_on:?}, which is not one of {expected:?}. \
+             A size-1 lane names its consumer exactly \
+             `{LSP_POOL_THREAD_PREFIX}` with no index, so that bare name here is \
+             the signature of the pool having been collapsed to a single \
+             consumer."
+        );
+        seen.insert(landed_on);
+    }
+
+    assert!(
+        !seen.is_empty(),
+        "non-vacuity: the loop must actually have dispatched, or every \
+         assertion inside it held over nothing"
+    );
+    assert!(
+        caller.is_none_or(|c| !seen.contains(&c)),
+        "the pool must run its jobs on lane threads, not degrade to inline \
+         calls on the caller — a degraded lane would report the caller's own \
+         thread name and make the naming assertions meaningless. Saw {seen:?}"
+    );
+}
+
+/// A [`NotificationSink`] that records the NAME of the thread each
+/// `publish_diagnostics` call arrives on.
+///
+/// `reify_lsp::test_support::RecordingSink` records the CALL but not its thread,
+/// and it lives in `crates/reify-lsp` — outside this task's scope — so the
+/// thread observation is made with a local sink rather than by widening that
+/// one. Being a sink, it is also the ONLY hook `reify-lsp` exposes to this
+/// crate that can report where server-side work ran, which is why (q) below can
+/// make the observation for a notification and not for a query.
+#[derive(Default)]
+struct ThreadNameSink {
+    threads: std::sync::Mutex<Vec<Option<String>>>,
+}
+
+impl NotificationSink for ThreadNameSink {
+    fn publish_diagnostics(
+        &self,
+        _uri: tower_lsp::lsp_types::Url,
+        _diagnostics: Vec<tower_lsp::lsp_types::Diagnostic>,
+        _version: Option<i32>,
+    ) {
+        self.threads
+            .lock()
+            .unwrap()
+            .push(std::thread::current().name().map(str::to_owned));
+    }
+}
+
+impl ThreadNameSink {
+    /// Drain the recorded thread names, so a later assertion speaks only about
+    /// the requests issued since the last drain.
+    fn take(&self) -> Vec<Option<String>> {
+        std::mem::take(&mut self.threads.lock().unwrap())
+    }
+}
+
+/// (q) The PRODUCTION entry point genuinely reaches a lane thread — asserted
+/// against `lsp_request_on_worker` itself, not against a lane helper beside it.
+///
+/// (d) makes the same claim, but since the routing change it makes it about
+/// `crate::large_stack::run_on_lsp_worker`, which production no longer calls at
+/// all: `lsp_request_on_worker` is now
+/// `lsp_request_on_lane(lane_for_method(&method), ..)`. So (d) went vacuous with
+/// respect to its own stated purpose — gutting `lsp_request_on_worker` to a
+/// plain `lsp_request_impl(..).await` would leave (d), (h), (i), (l), (n) and
+/// (o) all green, because each of those either drives the `lsp_request_on_lane`
+/// seam directly, inspects `lane_for_method` in isolation, or only checks a
+/// returned VALUE — and a value is exactly what a gutted wrapper still gets
+/// right. This restores the property against the real entry point.
+///
+/// The observation is the sink: `did_open` calls `publish_diagnostics`
+/// synchronously, on whatever thread is running the handler, so the recorded
+/// name IS the thread `lsp_request_on_worker` put the work on. Broken source
+/// guarantees a publish, so "no record" means "never ran" rather than "ran and
+/// had nothing to say".
+///
+/// # What this covers for the QUERY pool, and how
+///
+/// Not by the same observation: no read-only query publishes anything, so the
+/// sink is silent for all eight of them, and PARKING pool consumers to watch
+/// them instead is the starvation hazard (l) and (p) document. It is covered by
+/// COMPOSITION, which since task 6517 is one line — `lsp_request_on_worker` IS
+/// `lsp_request_on_lane(lane_for_method(&method), ..)`, for every method at
+/// once. This test proves that line reaches a lane rather than awaiting inline;
+/// (i) proves `lane_for_method` returns `LSP_POOL`'s sender for each of the
+/// eight queries; (p) proves those consumers are real, indexed pool threads.
+/// The gutting this exists to catch removes the lane hop for EVERY method
+/// simultaneously, so catching it on one is catching it.
+#[tokio::test]
+async fn the_production_entry_point_runs_its_work_on_a_lane_thread() {
+    use crate::large_stack::LSP_WORKER_THREAD_NAME;
+    use crate::lsp_bridge::lsp_request_on_worker;
+
+    const URI: &str = "file:///production_entry_lane.ri";
+    /// Broken source, so `didOpen` is GUARANTEED to publish error diagnostics.
+    const BROKEN: &str = "structure {";
+
+    assert_ne!(
+        std::thread::current().name(),
+        Some(LSP_WORKER_THREAD_NAME),
+        "precondition: this test must not itself be running on the lane thread, \
+         or the assertion below would hold for a wrapper that awaited inline"
+    );
+
+    let sink = Arc::new(ThreadNameSink::default());
+    let bridge = Arc::new(LspBridge::with_sink(sink.clone()));
+
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialize".to_string(),
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialized".to_string(),
+        "{}".to_string(),
+    )
+    .await
+    .expect("initialized");
+    // Discard any setup publishes, so the assertions speak only about the
+    // `didOpen` below.
+    let _ = sink.take();
+
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/didOpen".to_string(),
+        json!({
+            "textDocument": {
+                "uri": URI,
+                "languageId": "reify",
+                "version": 1,
+                "text": BROKEN
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didOpen");
+
+    let threads = sink.take();
+    assert!(
+        !threads.is_empty(),
+        "non-vacuity: the `didOpen` must have published diagnostics, or the \
+         thread assertion below would hold over an empty list"
+    );
+    assert!(
+        threads
+            .iter()
+            .all(|t| t.as_deref() == Some(LSP_WORKER_THREAD_NAME)),
+        "`lsp_request_on_worker` must run its work on the ordered LSP lane \
+         thread `{LSP_WORKER_THREAD_NAME}`, not inline on the awaiting runtime \
+         worker. Diagnostics were published from {threads:?} — which is what a \
+         wrapper gutted to `lsp_request_impl(..).await` would report, while \
+         still returning exactly the right value."
     );
 }

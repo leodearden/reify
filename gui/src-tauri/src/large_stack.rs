@@ -740,6 +740,33 @@ impl Lane {
         }
     }
 
+    /// How many consumers this lane DECLARES.
+    ///
+    /// The bound this module advertises — "head-of-line blocking among LSP
+    /// queries is bounded at [`LSP_POOL_SIZE`], and notifications keep exactly
+    /// one FIFO consumer" — is a property of these two numbers, and until this
+    /// accessor existed neither was readable from a test. `LSP_LANE`'s 1 could
+    /// be pinned behaviourally (consumers ROTATE across sequential submissions,
+    /// so a second consumer shows up as a second `ThreadId`), but the pool's 4
+    /// could not: observing all four names requires the shared receiver lock to
+    /// be handed to a different waiter on every round trip, which is a
+    /// scheduling bet rather than a guarantee, and observing them by PARKING
+    /// four consumers would starve every other test sharing this process-wide
+    /// `static`. So the count is exposed structurally instead.
+    ///
+    /// Read only by tests, and `pub(crate)` for the same stated reason
+    /// [`Lane::pool`] and [`JobSender::new`] are. It is a two-word getter over a
+    /// field that is already `const` at every call site, so it cannot drift from
+    /// what [`Lane::sender`] spawns.
+    ///
+    /// The `allow` is scoped to `not(test)` rather than blanket: this getter has
+    /// no production caller BY DESIGN, so a blanket allow would also hide the
+    /// day it stopped being read anywhere at all.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const fn size(&self) -> usize {
+        self.size
+    }
+
     /// Lazily create this lane's worker, yielding its queue — or `None` if the
     /// OS refused the [`COMPILE_STACK_SIZE`] mapping.
     ///
@@ -1105,7 +1132,22 @@ where
 /// [`LSP_LANE`] (ordered) or [`LSP_POOL`] (queries). This function hard-codes
 /// [`LSP_LANE`], so it is the right entry only for work that must be ordered
 /// against the notification stream; several tests use it for exactly that.
-pub async fn run_on_lsp_worker<Fut, T>(fut: Fut) -> T
+///
+/// It is `pub(crate)` rather than `pub` as of that same task. `lib.rs` declares
+/// `pub mod large_stack`, so `pub` here meant PUBLIC API of the `reify-gui`
+/// library — and since routing moved to [`crate::lsp_bridge::lane_for_method`]
+/// this function has no caller in the binary at all, only in tests. Leaving it
+/// `pub` would advertise the ordered lane as the LSP entry point to an outside
+/// caller, which is now exactly the wrong default: an arbitrary method must be
+/// ROUTED, not pinned to `LSP_LANE`. `pub(crate)` keeps every existing test
+/// call site compiling (they are in this crate) while removing the misleading
+/// surface — the same visibility [`dispatch`] and [`dispatch_async`] carry, for
+/// the same reason. The `not(test)` `allow` that follows is the honest record of
+/// the consequence: with the visibility narrowed, "no production caller" becomes
+/// a `dead_code` warning in the non-test build, and scoping the allow to
+/// `not(test)` keeps the lint live for the build where the callers actually are.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn run_on_lsp_worker<Fut, T>(fut: Fut) -> T
 where
     Fut: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
@@ -1176,8 +1218,8 @@ where
 ///
 /// Task 5772 removed drop-cancellation — the awaiting side could go away while
 /// the job ran to completion regardless — and disclosed it. Task 6517 restores
-/// it partially, at the LANE. Four things a reader needs and cannot infer from
-/// the one-line check in the job body:
+/// it partially, at the LANE. Five things a reader needs and cannot infer from
+/// the `is_closed` check in the job body:
 ///
 /// 1. **`reply_tx.is_closed()` IS the cancellation token.** It is true exactly
 ///    when the awaiting side's `dispatch_async` future was dropped, because that
@@ -1207,6 +1249,13 @@ where
 ///    its submitter is parked in `recv()` for the whole call, so it cannot be
 ///    dropped in the first place. The asymmetry is a property of the two seams,
 ///    not an omission.
+/// 5. **The cancel path drops `fut` under the runtime and under a
+///    `catch_unwind`.** It is the only path that disposes of `fut` WITHOUT
+///    `handle.block_on`, so it is the only one that would otherwise run tokio
+///    destructors on a plain `std` thread with no ambient runtime ("there is no
+///    reactor running") and outside any catch. Both guards are restored
+///    explicitly at the check; see the comment there for why losing a consumer
+///    is the worst outcome available at this particular line.
 ///
 /// The RESIDUAL, stated rather than left to be discovered: a request abandoned
 /// AFTER its consumer picked it up still runs to completion. That cost is now
@@ -1242,7 +1291,37 @@ where
         // destructors exactly as an abandoned Tauri command future did before
         // task 5772. See this function's "Drop-cancellation" section for the
         // four things that are not inferable from this line.
+        //
+        // The drop is deliberately given the SAME two protections the driven
+        // path has, because this is the one place `fut` is disposed of by a path
+        // `handle.block_on` never runs:
+        //
+        // * INSIDE the runtime context (`handle.enter()`). `dispatch_async` is
+        //   generic over `Fut`, and a tokio resource's destructor —
+        //   `Sleep`, `Interval`, `TcpStream`, anything holding a driver handle —
+        //   panics "there is no reactor running" when dropped on a plain `std`
+        //   thread with no ambient runtime, which is exactly what a lane
+        //   consumer is. `block_on` installs that context for the non-cancelled
+        //   path; the guard installs it here. Today's only caller
+        //   (`lsp_bridge::lsp_request_future`) captures an `Arc` and two
+        //   `String`s, so this is latent rather than live — and it is a line,
+        //   whereas discovering it later is a dead consumer.
+        // * INSIDE a `catch_unwind`, so a panicking destructor cannot escape
+        //   into the consumer's receive loop and kill it. Losing a consumer is
+        //   worse here than anywhere else in the module: on the size-1
+        //   `LSP_LANE` it costs the ordered lane its ONLY consumer, after which
+        //   every later submission takes the `spawn_on_large_stack` recovery
+        //   path — the per-call 256 MiB mapping this module exists to
+        //   eliminate. The payload is dropped rather than re-raised because
+        //   there is, by construction, no submitter left to re-raise it on:
+        //   `reply_tx` is already closed. `AssertUnwindSafe` is sound for the
+        //   same reason it is below — the closure OWNS `fut` and is consumed by
+        //   this call, so nothing observes it afterwards.
         if reply_tx.is_closed() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _enter = handle.enter();
+                drop(fut);
+            }));
             return;
         }
         // Identical to `dispatch`'s job body apart from the driver: the catch
