@@ -413,12 +413,25 @@ thread_local! {
 /// Panic if this submission would enqueue work onto the lane whose thread is
 /// making it — the one shape that wedges a lane permanently.
 ///
-/// A lane has a SINGLE consumer, so a job that submits to its own lane and then
-/// waits for the reply can never be answered: the inner job only runs once the
-/// outer one returns, and the outer one is blocked waiting for it. The thread
-/// stops returning to its `for job in rx` loop, so the lane is dead AND every
-/// future submitter in the process blocks forever too — a silent, unrecoverable,
-/// process-wide hang.
+/// A job that submits to its own lane and then waits for the reply can never be
+/// answered BY THE CONSUMER RUNNING IT: that consumer only returns to its
+/// dequeue loop once the outer job returns, and the outer job is blocked waiting
+/// for the inner one. On a single-consumer lane that is immediately fatal — the
+/// lane is dead AND every future submitter in the process blocks forever too, a
+/// silent, unrecoverable, process-wide hang.
+///
+/// # Why a size-N pool is rejected too, and not merely "when no consumer is free"
+///
+/// A pool with an idle consumer could in principle serve a self-submission, so
+/// the blanket rule is CONSERVATIVE on purpose (task 6517). It stays blanket for
+/// two reasons. First, `size` simultaneous self-submissions wedge a size-`size`
+/// pool exactly as one wedges a size-1 lane, so a permissive rule's safety would
+/// depend on how many callers happen to be in flight — a property no caller can
+/// check, and therefore not a rule. Second, every consumer of a pool publishes
+/// the SAME lane name in [`CURRENT_LANE`], which is what keeps this check a
+/// thread-local compare rather than a live count of idle consumers; making it
+/// conditional would mean adding shared state on the hottest submission path to
+/// license a shape no caller in this crate needs.
 ///
 /// # Why a panic here is strictly better than the hang it replaces
 ///
@@ -437,10 +450,13 @@ fn assert_not_reentrant(sender: &JobSender) {
     assert!(
         !sender.is_own_lane_thread(),
         "re-entrant submission to the `{}` large-stack lane: a job running ON \
-         that lane submitted to it again. The lane has a single consumer, so the \
-         inner job could only run after the outer one returned, and the outer one \
-         is waiting for it — a permanent wedge. Run the inner work inline, or \
-         submit it to the other lane.",
+         that lane submitted to it again. The consumer running the outer job \
+         cannot answer the inner one — it only returns to its dequeue loop after \
+         the outer job returns, and the outer job is waiting for the inner. On a \
+         single-consumer lane that wedges the lane outright; on a size-N pool, N \
+         such submissions wedge every consumer, so it is rejected uniformly \
+         rather than conditionally on how many consumers happen to be idle. Run \
+         the inner work inline, or submit it to another lane.",
         sender.lane
     );
 }
@@ -507,20 +523,111 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// keystroke latency exists yet. Cited here for the same reason the module docs
 /// cite #6195 and 5466: a disclosed limit with no ticket behind it is
 /// indistinguishable from a limit nobody intends to close.
+/// # One consumer or N: a POOL is an instance, not a variant (task 6517)
+///
+/// A lane carries a `size`, and everything above holds for every value of it.
+/// [`Lane::new`] declares a size-1 lane; [`Lane::pool`] declares a size-N one.
+/// There is no second `struct`, no `enum` arm and no second submission path:
+/// [`Lane::sender`] spawns `size` consumers over a SHARED
+/// `Arc<Mutex<Receiver<Job>>>`, and [`Job`], [`JobSender`], [`JobReply`], the
+/// catch-inside-the-job protocol, [`dispatch`], [`dispatch_async`],
+/// [`CURRENT_LANE`] and [`assert_not_reentrant`] are reused verbatim. That is
+/// the same doctrine that made a second LANE an instance rather than a second
+/// design, applied one level down.
+///
+/// Three consequences worth stating, because none is inferable from "N
+/// consumers":
+///
+/// * **Dequeue order is still FIFO, and jobs still run concurrently.** Each
+///   consumer takes the shared lock, `recv()`s, and RELEASES the lock before
+///   running the job body. So the lock is held only across a dequeue — exactly
+///   one consumer is parked in `recv` at a time and the rest are queued on the
+///   mutex, which preserves arrival order; but no consumer holds it while
+///   working, so `size` job bodies genuinely run at once.
+/// * **The uniform `Arc<Mutex<Receiver>>` costs a size-1 lane one UNCONTENDED
+///   lock acquisition per job.** That is a handful of nanoseconds against a
+///   channel round trip, and it is paid deliberately: special-casing size 1 to
+///   the old `for job in rx` loop would mean two receive loops to keep correct,
+///   which is the "one mechanism, literally" property this module trades small
+///   costs to keep.
+/// * **A size-N lane costs N virtual 256 MiB reservations, not N x 256 MiB
+///   resident.** A thread stack is an address-space reservation committed
+///   page-by-page on first touch (see [`COMPILE_STACK_SIZE`]), and the whole
+///   lane — every consumer of it — is created lazily on the first
+///   [`Lane::sender`] call, so a session that never submits to a pool pays
+///   nothing for it.
+///
+/// Thread NAMES follow the same instance-not-variant rule from the outside: a
+/// size-1 lane's consumer is named exactly `name`, so `reify-engine-w` and
+/// `reify-lsp-w` are byte-identical to what they were before pools existed and
+/// no existing profiler filter, `top -H` alert or test assertion moves. Only a
+/// size-N lane suffixes an index, `{name}{i}`.
 pub(crate) struct Lane {
-    /// The lane thread's name, for backtraces, `top -H` and profiler rows.
+    /// The lane thread's name, for backtraces, `top -H` and profiler rows. For a
+    /// pool this is the PREFIX; consumer `i` is named `{name}{i}`.
     name: &'static str,
+    /// How many consumer threads drain this lane's queue. 1 for a lane declared
+    /// with [`Lane::new`]; the bound on head-of-line blocking for one declared
+    /// with [`Lane::pool`].
+    ///
+    /// It is a FIXED constant per lane rather than a function of
+    /// [`std::thread::available_parallelism`], so the bound is the same on every
+    /// machine and is directly assertable from a test.
+    size: usize,
     /// The lazily-created queue. `None` records that the OS REFUSED the mapping.
     queue: std::sync::OnceLock<Option<JobSender>>,
 }
 
 impl Lane {
-    /// Declare a lane. `const` so lanes can be `static`s created at no runtime
-    /// cost; the thread itself is not spawned until [`Lane::sender`] is first
-    /// called.
+    /// Declare a SINGLE-consumer lane. `const` so lanes can be `static`s created
+    /// at no runtime cost; the thread itself is not spawned until
+    /// [`Lane::sender`] is first called.
+    ///
+    /// Its consumer is named exactly `name` — no index suffix — so the lanes
+    /// that predate pools keep their exact thread names.
     const fn new(name: &'static str) -> Self {
         Self {
             name,
+            size: 1,
+            queue: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Declare a lane with `size` consumers, bounding head-of-line blocking
+    /// among the work routed to it at `size` rather than serializing it
+    /// (task 6517).
+    ///
+    /// `name` is a PREFIX here: consumer `i` is named `{name}{i}`, so a caller
+    /// must keep `name.len()` plus the widest index it will ever use inside
+    /// Linux's 15-byte `pthread_setname_np` budget — `std` silently ignores a
+    /// longer name, so an overrun would not fail loudly, it would just erase the
+    /// thread's identity from `/proc`, `top -H` and every profiler capture. Each
+    /// production prefix carries a `const _: () = assert!(..)` for that, beside
+    /// the constant.
+    ///
+    /// `pub(crate)` for the same stated reason [`JobSender::new`] is: so a test
+    /// can declare its OWN instance. That matters more here than it does there —
+    /// proving a pool runs `size` jobs at once means PARKING `size` consumers,
+    /// and doing that to a process-wide `static` would starve whichever other
+    /// test in the same binary is concurrently using it.
+    ///
+    /// # A zero-size pool is a COMPILE error, not a runtime one
+    ///
+    /// The `assert!` below is reachable only in a `const` context: every call
+    /// site is a `static` initialiser, so it is const-evaluated and
+    /// `Lane::pool(name, 0)` fails the build rather than yielding a lane whose
+    /// queue nobody drains — which is a silent hang, the one outcome this module
+    /// promises never to produce.
+    pub(crate) const fn pool(name: &'static str, size: usize) -> Self {
+        assert!(
+            size >= 1,
+            "a lane needs at least one consumer; a size-0 lane's queue would \
+             never be drained, which is the silent hang this module exists to \
+             rule out"
+        );
+        Self {
+            name,
+            size,
             queue: std::sync::OnceLock::new(),
         }
     }
@@ -538,40 +645,108 @@ impl Lane {
     /// outcome this module must never produce.
     ///
     /// Holding the `Sender` in the `OnceLock` forever is deliberate: the channel
-    /// therefore never disconnects on its own, so the lane's `for job in rx`
-    /// loop parks on an empty queue rather than exiting.
+    /// therefore never disconnects on its own, so every consumer parks on an
+    /// empty queue rather than exiting.
+    ///
+    /// # Spawn failure with N consumers: `None` only when ZERO started
+    ///
+    /// The policy above generalises without changing meaning. `None` is the
+    /// degrade-to-inline / degrade-to-native-await signal, and it is correct
+    /// exactly when NOTHING will drain the queue. A PARTIAL spawn failure — say
+    /// three of four consumers — is not that case: the queue still has a
+    /// drainer, so every submission still completes on a large stack, merely
+    /// with a smaller concurrency bound. Warning and continuing is therefore
+    /// strictly better than discarding the consumers that did start, and it
+    /// keeps the "never lose a result, never block" invariant intact under
+    /// partial OS refusal.
     pub(crate) fn sender(&'static self) -> Option<&'static JobSender> {
         self.queue
             .get_or_init(|| {
                 let (tx, rx) = std::sync::mpsc::channel::<Job>();
                 let name = self.name;
-                match std::thread::Builder::new()
-                    .name(name.to_string())
-                    .stack_size(COMPILE_STACK_SIZE)
-                    .spawn(move || {
-                        // Publish this thread's lane identity so
-                        // `assert_not_reentrant` can tell a self-submission (a
-                        // permanent wedge) from a cross-lane one (legal).
-                        CURRENT_LANE.with(|l| l.set(Some(name)));
-                        // Parks while the queue is empty. `rx` only ends when
-                        // the `Sender` in the `OnceLock` drops, which never
-                        // happens, so this loop lives as long as the process.
-                        for job in rx {
-                            job();
+                let size = self.size;
+                // Shared so `size` consumers can drain ONE queue. The lock is
+                // taken only across a dequeue (see the loop below), never across
+                // a job body.
+                let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+
+                let mut started = 0usize;
+                for index in 0..size {
+                    // EXACTLY `name` for a single-consumer lane, so
+                    // `reify-engine-w` / `reify-lsp-w` are byte-identical to what
+                    // they were before pools existed; `{name}{index}` only when
+                    // there is more than one consumer to tell apart.
+                    let thread_name = if size == 1 {
+                        name.to_owned()
+                    } else {
+                        format!("{name}{index}")
+                    };
+                    let rx = std::sync::Arc::clone(&rx);
+                    match std::thread::Builder::new()
+                        .name(thread_name)
+                        .stack_size(COMPILE_STACK_SIZE)
+                        .spawn(move || {
+                            // Publish this thread's lane identity so
+                            // `assert_not_reentrant` can tell a self-submission
+                            // (a permanent wedge) from a cross-lane one (legal).
+                            // EVERY consumer of a lane publishes the SAME name —
+                            // that is what makes the guard work unchanged for a
+                            // pool.
+                            CURRENT_LANE.with(|l| l.set(Some(name)));
+                            loop {
+                                // Take the lock, dequeue, RELEASE it — then run
+                                // the job. Holding it across `recv` is what
+                                // keeps dequeue order FIFO (exactly one consumer
+                                // parks in `recv`; the rest queue on the mutex);
+                                // releasing it before the body is what lets
+                                // `size` bodies run at once. Poisoning is
+                                // recovered rather than propagated, mirroring
+                                // `JobSender::send` — and a job body cannot
+                                // poison this lock anyway, because the job's own
+                                // `catch_unwind` is INSIDE the job and the lock
+                                // is not held while it runs.
+                                let dequeued = {
+                                    let guard = rx
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    guard.recv()
+                                };
+                                // Parks while the queue is empty. `recv` only
+                                // errs when the `Sender` in the `OnceLock`
+                                // drops, which never happens, so this loop lives
+                                // as long as the process.
+                                let Ok(job) = dequeued else { break };
+                                job();
+                            }
+                        }) {
+                        Ok(_handle) => started += 1,
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: failed to spawn {name} lane consumer \
+                                 {index} of {size} ({e})"
+                            );
                         }
-                    }) {
-                    Ok(_handle) => Some(JobSender::new(name, tx)),
-                    Err(e) => {
-                        // Same warning shape as `run_on_large_stack`'s inline
-                        // fallback.
-                        eprintln!(
-                            "Warning: failed to spawn {name} thread ({e}); that \
-                             lane's work will run on the caller's default-size \
-                             stack instead"
-                        );
-                        None
                     }
                 }
+
+                if started == 0 {
+                    // Nothing will drain the queue, so record the degrade
+                    // signal. Same warning shape as `run_on_large_stack`'s
+                    // inline fallback.
+                    eprintln!(
+                        "Warning: failed to spawn any {name} thread; that lane's \
+                         work will run on the caller's default-size stack instead"
+                    );
+                    return None;
+                }
+                if started < size {
+                    eprintln!(
+                        "Warning: the {name} lane started {started} of {size} \
+                         consumers; its work still runs on a large stack, with a \
+                         smaller concurrency bound"
+                    );
+                }
+                Some(JobSender::new(name, tx))
             })
             .as_ref()
     }
