@@ -51,24 +51,70 @@ fn read_frequency(val: &Value) -> f64 {
     }
 }
 
-/// Analytic Euler–Bernoulli fundamental frequency (Hz) for the shared
-/// 200×10×2 mm AISI 1045 steel beam, given the dimensionless eigen-coefficient
-/// `beta_l` (β·L): cantilever uses 1.875, simply-supported mode `n` uses `n·π`.
+/// A prismatic beam fixture's section and material — everything
+/// `fₙ = (βL)²/(2π)·√(E·I/(ρ·A·L⁴))` needs besides βL.
 ///
-///   fₙ = (βL)² / (2π) · √( E·I / (ρ·A·L⁴) )
+/// One value per FIXTURE, so the numbers a fixture's `.ri` file declares are
+/// transcribed into this file exactly once. Before this struct (review
+/// suggestion 3) the clamped-clamped fixture's section existed only in prose —
+/// in the `.ri` header, in a constants block comment and in the test's own
+/// header — while its three analytic references were transcribed decimal
+/// literals with nothing linking them back. Editing the fixture's geometry or
+/// material left all three bands silently referring to a beam that no longer
+/// existed.
+struct BeamSection {
+    /// Young's modulus, Pa.
+    e: f64,
+    /// Density, kg/m³.
+    rho: f64,
+    /// Span, m (the X axis).
+    l: f64,
+    /// Width, m (the Y axis).
+    b: f64,
+    /// Height, m — the Z axis, i.e. the bending axis the βL families below
+    /// describe (`I = b·h³/12`, deflection in Z).
+    h: f64,
+}
+
+/// The shared 200 × 10 × 2 mm AISI 1045 steel beam behind the cantilever and
+/// simply-supported e2e fixtures (`cantilever_beam_modes.ri`,
+/// `simply_supported_beam_modes.ri`). Mirrors `modal_benchmarks.rs`'s
+/// `STEEL_E_PA` / `STEEL_DENSITY` and its `BeamFixture { lx: 0.2, ly: 0.01,
+/// lz: 0.002 }`.
+const STEEL_BEAM_SECTION: BeamSection =
+    BeamSection { e: 205.0e9, rho: 7850.0, l: 0.2, b: 0.01, h: 0.002 };
+
+/// The task-6663 dogfood section behind `fixtures/clamped_clamped_beam_modes.ri`
+/// — a CFRP rolled tube smeared to a solid section of equivalent EI and
+/// mass/length: `span = 800mm`, square `h = 44.588mm` (so `b == h`),
+/// `youngs_modulus = 110GPa`, `density = 695.39kg/m^3`.
 ///
-/// E = 205 GPa, ρ = 7850 kg/m³, L = 0.2 m, b = 0.01 m, h = 0.002 m,
-/// I = b·h³/12 (bending about Y, deflection in Z), A = b·h.
-fn analytic_beam_frequency(beta_l: f64) -> f64 {
+/// These five numbers must match that fixture's `ClampedClampedBeamModes`
+/// parameters and its `CFRP_Rolled_Tube` material. They are the ONLY place the
+/// section is spelled for assertion purposes: the three bands below name their
+/// βL family and nothing else.
+const CC_FIXTURE_SECTION: BeamSection =
+    BeamSection { e: 110.0e9, rho: 695.39, l: 0.8, b: 0.044588, h: 0.044588 };
+
+/// Analytic Euler–Bernoulli frequency (Hz) for `section`, given the
+/// dimensionless eigen-coefficient `beta_l` (β·L).
+///
+///   fₙ = (βL)² / (2π) · √( E·I / (ρ·A·L⁴) ),  I = b·h³/12,  A = b·h
+///
+/// βL families: cantilever 1.875104, simply-supported mode `n` `n·π`,
+/// clamped-pinned 3.926602, clamped-clamped 4.730041.
+fn analytic_beam_frequency_for(beta_l: f64, section: &BeamSection) -> f64 {
     use std::f64::consts::PI;
-    let e: f64 = 205.0e9;
-    let rho: f64 = 7850.0;
-    let l: f64 = 0.2;
-    let b: f64 = 0.01;
-    let h: f64 = 0.002;
+    let BeamSection { e, rho, l, b, h } = *section;
     let i: f64 = b * h.powi(3) / 12.0;
     let a: f64 = b * h;
     beta_l.powi(2) / (2.0 * PI) * (e * i / (rho * a * l.powi(4))).sqrt()
+}
+
+/// [`analytic_beam_frequency_for`] on the shared steel section — the spelling
+/// the cantilever and simply-supported e2es have always used.
+fn analytic_beam_frequency(beta_l: f64) -> f64 {
+    analytic_beam_frequency_for(beta_l, &STEEL_BEAM_SECTION)
 }
 
 /// Cantilever P2 first-mode rel-err tolerance — the calibrated honest P2 floor.
@@ -86,34 +132,37 @@ const SS_P2_REL_TOL: f64 = 0.02;
 
 // ── task 6663: support-KIND acceptance bands (clamped-clamped vs pinned-pinned) ─
 //
-// All three constants below are bands over the SAME dogfood section — L = 800 mm,
-// square 44.588 × 44.588 mm, E = 110 GPa, ν = 0.3, ρ = 695.39 kg/m³ — solved at
-// element_order = P2 on the trampoline's own `build_beam_mesh` discretization
-// (nx = round(800/44.588 · 6) = 108, nz = 6).
+// All three constants below are bands over the SAME dogfood section —
+// [`CC_FIXTURE_SECTION`], which IS the fixture's declaration rather than a prose
+// restatement of it — solved at element_order = P2 on the trampoline's own
+// `build_beam_mesh` discretization (nx = round(800/44.588 · 6) = 108, nz = 6).
 //
-// Analytic Euler–Bernoulli fundamentals fₙ = (βL)²/(2π)·√(E·I/(ρ·A·L⁴)):
-//   pinned-pinned   βL = π         → 397.33 Hz
-//   clamped-pinned  βL = 3.926602  → 620.702 Hz
-//   clamped-clamped βL = 4.730041  → 900.699 Hz
+// The three references are COMPUTED from that section by
+// `analytic_beam_frequency_for`, so only the βL family is spelled per band
+// (amendment, review suggestion 3 — they were transcribed decimal literals, and
+// a fixture geometry edit would have left all three pointing at a beam that no
+// longer existed). Evaluated, they reproduce the decimal literals they replace
+// to within 6e-6 relative — βL = π → 397.3282 Hz (was 397.33),
+// βL = 3.926602 → 620.7024 Hz (was 620.702), βL = 4.730041 → 900.6985 Hz (was
+// 900.699) — so every band below is arithmetically unchanged. The test prints
+// all three, with the section they came from, under `--nocapture`.
 
-/// Analytic pinned-pinned (simply-supported) fundamental, Hz, for the fixture
-/// section above.
-const CC_FIXTURE_PINNED_ANALYTIC_HZ: f64 = 397.33;
+/// βL for the pinned-pinned (simply-supported) fundamental — λ² = 9.8696.
+const CC_BETA_L_PINNED: f64 = std::f64::consts::PI;
 
-/// Analytic clamped-clamped fundamental, Hz, for the fixture section above.
-const CC_FIXTURE_FIXED_ANALYTIC_HZ: f64 = 900.699;
+/// βL for the clamped-clamped fundamental — λ² = 22.3733, i.e. `(4.730041/π)²
+/// = 2.267×` the pinned-pinned one. That ratio IS task 6663's acceptance.
+const CC_BETA_L_FIXED: f64 = 4.730041;
 
-/// Analytic clamped-pinned (propped-cantilever) fundamental, Hz, for the fixture
-/// section above — the MIXED pair `[FixedSupport("x_min"),
-/// PinnedSupport("x_max")]`, task 6663's scope extension.
+/// βL for the clamped-pinned (propped-cantilever) fundamental — the MIXED pair
+/// `[FixedSupport("x_min"), PinnedSupport("x_max")]`, task 6663's scope
+/// extension.
 ///
-/// βL = 3.926602 (λ² = 15.4182), i.e. strictly between the pinned-pinned 9.8696
-/// and the clamped-clamped 22.3733. The closed form used here is the SAME one
-/// that reproduces this file's other two references on this exact section
-/// (βL = π → 397.328 vs the 397.33 above; βL = 4.730041 → 900.6985 vs the
-/// 900.699 above), and its CP/PP ratio 1.562191 matches 15.4182/9.8696 to six
-/// digits — so 620.702 Hz is a checked reference, not a transcribed one.
-const CC_FIXTURE_PROPPED_ANALYTIC_HZ: f64 = 620.702;
+/// λ² = 15.4182, strictly between the pinned-pinned 9.8696 and the
+/// clamped-clamped 22.3733, and the CP/PP frequency ratio the closed form
+/// returns (1.562191) matches 15.4182/9.8696 to six digits — the cross-check
+/// that this βL is the right root and not a transcription slip.
+const CC_BETA_L_PROPPED: f64 = 3.926602;
 
 /// Pinned-pinned band, read on the VERTICAL (Z-dominant) fundamental.
 /// **MEASURED at this exact mesh**, in release:
@@ -147,35 +196,34 @@ const CC_FIXTURE_PROPPED_ANALYTIC_HZ: f64 = 620.702;
 /// drifted by 2.5% (and the raw lateral mode by any amount) with this band still
 /// green.
 ///
-/// Bit-preservation is now asserted directly, by signal (i) against
-/// [`CC_FIXTURE_PINNED_RAW_F1_HZ`], and independently by the untouched 2% bands
-/// in `e2e_simply_supported_modes_match_analytic`.
+/// # Where bit-preservation IS asserted (amendment, review suggestion 2)
+///
+/// Not here, and no longer anywhere in this file. The claim — task 6663 leaves
+/// `simply_supported_pin_pin_bcs` untouched, so the pin-pin Dirichlet set is
+/// unchanged — is STRUCTURAL, and is asserted structurally and exactly at the
+/// unit level, on the DOF sets themselves:
+///
+///   * `modal_ops::tests::build_dirichlet_bcs_discriminates_support_kind`
+///     case (i) — two `PinnedSupport`s still select the pin-pin set;
+///   * `modal_ops::tests::simply_supported_pin_pin_bcs_places_minimal_anchors` —
+///     Z on every end-face node plus exactly the three neutral-axis anchors;
+///   * `modal_ops::tests::build_dirichlet_bcs_pin_pin_special_case_does_not_discard_other_faces`
+///     — the special case adds to, rather than replaces, the other faces.
+///
+/// A previous revision ALSO pinned the pinned configuration's raw
+/// `first_frequency` here, at 391.0495 Hz ± 0.5%, and called that the
+/// bit-preservation guard. It was not one: that number depends on
+/// `build_beam_mesh`'s derived nx, the P2 promotion, the element assembly and
+/// the shift-invert tolerance as much as on the Dirichlet set, so any legitimate
+/// improvement in any of them would have failed it under the message "the pin-pin
+/// Dirichlet set must be unchanged" — a confidently wrong diagnosis, and exactly
+/// the mis-attribution class the rest of these comments warn about. It was also
+/// the file's only band read off a RAW mode index rather than a dominant-axis
+/// family, i.e. it re-adopted the index fragility everything else here exists to
+/// avoid (the pinned pair is 1.07% apart). The numeric side of the same property
+/// is covered by `e2e_simply_supported_modes_match_analytic`'s untouched 2%
+/// bands.
 const CC_FIXTURE_PINNED_REL_TOL: f64 = 0.03;
-
-/// The pinned configuration's RAW fundamental (the lateral / Y-bending mode),
-/// Hz. **MEASURED on this exact fixture and mesh, in release** — see
-/// [`CC_FIXTURE_PINNED_REL_TOL`]'s quoted `[modal bc-kind]` block, and the
-/// task-6663 dogfood round that first reported 391.0495 Hz for BOTH the pinned
-/// and the (then-defective) fixed configuration.
-///
-/// This is the bit-preservation anchor: task 6663 leaves
-/// `simply_supported_pin_pin_bcs` untouched, so the pinned Dirichlet set — and
-/// therefore this frequency — must not move. Signal (i) asserts it within
-/// [`CC_FIXTURE_PINNED_RAW_REL_TOL`].
-const CC_FIXTURE_PINNED_RAW_F1_HZ: f64 = 391.0495;
-
-/// Band on [`CC_FIXTURE_PINNED_RAW_F1_HZ`]: 0.5%, an order of magnitude tighter
-/// than the accuracy bands, because this is not an accuracy claim at all — it is
-/// "the pinned Dirichlet set is unchanged, so this number is unchanged". The
-/// only legitimate variation is floating-point summation order across BLAS
-/// builds, far below 0.5%; a realization change is not (the pre-6663 defect made
-/// the FIXED configuration read this same 391.0495 Hz, and the correct clamped
-/// answer is 887.55 Hz — 127% away, i.e. 227 band-widths).
-///
-/// Deliberately NOT tightened to bit equality: this is a 3-D FE eigensolve read
-/// through the DSL, and an exact `==` would be a portability trap rather than a
-/// stronger guard.
-const CC_FIXTURE_PINNED_RAW_REL_TOL: f64 = 5e-3;
 
 /// Clamped-clamped band, read on the VERTICAL (Z-dominant) fundamental.
 /// **MEASURED at this exact mesh**, in release:
@@ -1069,11 +1117,15 @@ fn e2e_printer_gantry_prints_five_modes() {
 //   (h) the mixed pair's RAW fundamental sits strictly below its vertical one —
 //       the measurable form of "a lateral mode intrudes here", which is what
 //       forces the whole test onto the vertical family
-//   (i) the pinned configuration's RAW fundamental reproduces the measured
-//       391.0495 Hz within CC_FIXTURE_PINNED_RAW_REL_TOL — the BIT-PRESERVATION
-//       guard proper. (c) is an accuracy band on a DIFFERENT mode and cannot
-//       carry that claim; this one is on the number the dogfood round reported,
-//       at 0.5%
+//
+// NOT asserted here (amendment, review suggestion 2): bit-preservation of the
+// pin-pin Dirichlet set. A former signal (i) pinned the pinned configuration's
+// RAW `first_frequency` to 391.0495 Hz ± 0.5% and claimed to be that guard; it
+// was not, because that number also depends on the derived mesh, the P2
+// promotion, the assembly and the shift-invert tolerance, so any legitimate
+// improvement in any of them would have reported "the pin-pin Dirichlet set must
+// be unchanged". The property IS asserted — structurally and exactly, on the DOF
+// sets — by the unit tests `CC_FIXTURE_PINNED_REL_TOL`'s doc names.
 //
 // Why (f)–(h) live in THIS test rather than a sibling: all three solves come
 // from one eval of one fixture, so a sibling test would re-run the two heavy
@@ -1214,18 +1266,42 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     let f1z_fixed = vertical_fixed[0];
     let f1z_propped = vertical_propped[0];
 
+    // The three Euler–Bernoulli references, COMPUTED from the fixture's own
+    // section (amendment, review suggestion 3) rather than transcribed as
+    // decimal literals. `CC_FIXTURE_SECTION` is the single place this file
+    // spells the `.ri` fixture's geometry and material, so each band below names
+    // only its βL family; edit the fixture and these move with it instead of
+    // silently referring to a beam that no longer exists.
+    let cc_pinned_analytic_hz = analytic_beam_frequency_for(CC_BETA_L_PINNED, &CC_FIXTURE_SECTION);
+    let cc_fixed_analytic_hz = analytic_beam_frequency_for(CC_BETA_L_FIXED, &CC_FIXTURE_SECTION);
+    let cc_propped_analytic_hz =
+        analytic_beam_frequency_for(CC_BETA_L_PROPPED, &CC_FIXTURE_SECTION);
+    eprintln!(
+        "[modal bc-kind] analytic references from CC_FIXTURE_SECTION \
+         (L={:.4} m, b={:.6} m, h={:.6} m, E={:.4e} Pa, ρ={:.2} kg/m³): \
+         pinned {:.4} Hz, propped {:.4} Hz, fixed {:.4} Hz",
+        CC_FIXTURE_SECTION.l,
+        CC_FIXTURE_SECTION.b,
+        CC_FIXTURE_SECTION.h,
+        CC_FIXTURE_SECTION.e,
+        CC_FIXTURE_SECTION.rho,
+        cc_pinned_analytic_hz,
+        cc_propped_analytic_hz,
+        cc_fixed_analytic_hz,
+    );
+
     eprintln!(
         "[modal bc-kind] f1z_pinned={:.4} Hz (analytic {:.3}, err {:+.2}%) [raw f1 = {:.4} Hz]",
         f1z_pinned,
-        CC_FIXTURE_PINNED_ANALYTIC_HZ,
-        (f1z_pinned - CC_FIXTURE_PINNED_ANALYTIC_HZ) / CC_FIXTURE_PINNED_ANALYTIC_HZ * 100.0,
+        cc_pinned_analytic_hz,
+        (f1z_pinned - cc_pinned_analytic_hz) / cc_pinned_analytic_hz * 100.0,
         f1_pinned
     );
     eprintln!(
         "[modal bc-kind] f1z_fixed ={:.4} Hz (analytic {:.3}, err {:+.2}%) [raw f1 = {:.4} Hz]",
         f1z_fixed,
-        CC_FIXTURE_FIXED_ANALYTIC_HZ,
-        (f1z_fixed - CC_FIXTURE_FIXED_ANALYTIC_HZ) / CC_FIXTURE_FIXED_ANALYTIC_HZ * 100.0,
+        cc_fixed_analytic_hz,
+        (f1z_fixed - cc_fixed_analytic_hz) / cc_fixed_analytic_hz * 100.0,
         f1_fixed
     );
     // NOT compared to an analytic here: the mixed configuration's RAW fundamental
@@ -1250,25 +1326,6 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
         );
     }
 
-    // (i) BIT-PRESERVATION, asserted rather than asserted-about. Task 6663 does
-    //     not touch `simply_supported_pin_pin_bcs`, so the pinned realization's
-    //     raw fundamental must still be the 391.0495 Hz the dogfood round
-    //     measured. This is the guard that (c) was previously claimed to be but
-    //     is not: (c) is a 3% accuracy band on the VERTICAL mode (395.22 Hz),
-    //     so it would stay green through a 2.5% drift of the pinned Dirichlet
-    //     set and through ANY drift of this lateral one.
-    let pinned_raw_err =
-        (f1_pinned - CC_FIXTURE_PINNED_RAW_F1_HZ).abs() / CC_FIXTURE_PINNED_RAW_F1_HZ;
-    assert!(
-        pinned_raw_err < CC_FIXTURE_PINNED_RAW_REL_TOL,
-        "f1_pinned (raw) = {:.4} Hz, measured reference = {:.4} Hz, rel_err = {:.3}% > {:.2}% \
-         — the pin-pin Dirichlet set must be unchanged by the support-kind fix",
-        f1_pinned,
-        CC_FIXTURE_PINNED_RAW_F1_HZ,
-        pinned_raw_err * 100.0,
-        CC_FIXTURE_PINNED_RAW_REL_TOL * 100.0
-    );
-
     // (c) Pinned-pinned is unchanged by this task — the accuracy band.
     //
     // Read on the VERTICAL family, not on `first_frequency`. The square section
@@ -1278,13 +1335,13 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     // the pair happens to sit 1.1% apart. Every band in this test now reads the
     // same family the (f)/(g) clauses do.
     let pinned_err =
-        (f1z_pinned - CC_FIXTURE_PINNED_ANALYTIC_HZ).abs() / CC_FIXTURE_PINNED_ANALYTIC_HZ;
+        (f1z_pinned - cc_pinned_analytic_hz).abs() / cc_pinned_analytic_hz;
     assert!(
         pinned_err < CC_FIXTURE_PINNED_REL_TOL,
         "f1z_pinned = {:.4} Hz, analytic simply-supported = {:.3} Hz, rel_err = {:.2}% > {:.2}% \
          — the pinned-pinned realization must be unchanged by the support-kind fix",
         f1z_pinned,
-        CC_FIXTURE_PINNED_ANALYTIC_HZ,
+        cc_pinned_analytic_hz,
         pinned_err * 100.0,
         CC_FIXTURE_PINNED_REL_TOL * 100.0
     );
@@ -1292,17 +1349,17 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     // (d) Clamped-clamped lands on the clamped-clamped analytic, not the pinned
     //     one. Same family as (c), for the same reason (887.55 vertical / 890.90
     //     lateral is a 0.4% split — thinner still than the pinned pair's).
-    let fixed_err = (f1z_fixed - CC_FIXTURE_FIXED_ANALYTIC_HZ).abs() / CC_FIXTURE_FIXED_ANALYTIC_HZ;
+    let fixed_err = (f1z_fixed - cc_fixed_analytic_hz).abs() / cc_fixed_analytic_hz;
     assert!(
         fixed_err < CC_FIXTURE_FIXED_REL_TOL,
         "f1z_fixed = {:.4} Hz, analytic clamped-clamped = {:.3} Hz, rel_err = {:.2}% > {:.2}% \
          — two FixedSupports must clamp BOTH end faces, not degrade to the pinned-pinned answer \
          ({:.3} Hz)",
         f1z_fixed,
-        CC_FIXTURE_FIXED_ANALYTIC_HZ,
+        cc_fixed_analytic_hz,
         fixed_err * 100.0,
         CC_FIXTURE_FIXED_REL_TOL * 100.0,
-        CC_FIXTURE_PINNED_ANALYTIC_HZ
+        cc_pinned_analytic_hz
     );
 
     // (e) The two configurations must genuinely DIFFER — the task's acceptance.
@@ -1342,22 +1399,22 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     eprintln!(
         "[modal bc-kind] f1z_propped={:.4} Hz (analytic {:.3}, err {:+.2}%)",
         f1z_propped,
-        CC_FIXTURE_PROPPED_ANALYTIC_HZ,
-        (f1z_propped - CC_FIXTURE_PROPPED_ANALYTIC_HZ) / CC_FIXTURE_PROPPED_ANALYTIC_HZ * 100.0
+        cc_propped_analytic_hz,
+        (f1z_propped - cc_propped_analytic_hz) / cc_propped_analytic_hz * 100.0
     );
     let propped_err =
-        (f1z_propped - CC_FIXTURE_PROPPED_ANALYTIC_HZ).abs() / CC_FIXTURE_PROPPED_ANALYTIC_HZ;
+        (f1z_propped - cc_propped_analytic_hz).abs() / cc_propped_analytic_hz;
     assert!(
         propped_err < CC_FIXTURE_PROPPED_REL_TOL,
         "f1z_propped = {:.4} Hz, analytic clamped-pinned = {:.3} Hz, rel_err = {:.2}% > {:.2}% \
          — [FixedSupport(x_min), PinnedSupport(x_max)] must be a genuine propped cantilever, \
          not the pinned-pinned ({:.3} Hz) or clamped-clamped ({:.3} Hz) answer",
         f1z_propped,
-        CC_FIXTURE_PROPPED_ANALYTIC_HZ,
+        cc_propped_analytic_hz,
         propped_err * 100.0,
         CC_FIXTURE_PROPPED_REL_TOL * 100.0,
-        CC_FIXTURE_PINNED_ANALYTIC_HZ,
-        CC_FIXTURE_FIXED_ANALYTIC_HZ
+        cc_pinned_analytic_hz,
+        cc_fixed_analytic_hz
     );
 
     // (g) BC stiffness must ORDER strictly: pin-pin < propped < clamp-clamp,
