@@ -19,6 +19,7 @@
 //! production build graph (see the measured 130-vs-185-crate note in this
 //! crate's `Cargo.toml`).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Absolute path to the workspace `examples/` directory.
@@ -143,6 +144,64 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// The subset of `paths` whose [`relative_to_examples_dir`] key is not in
+/// `skip_keys`, each paired with that precomputed key.
+///
+/// This is the SINGLE source of the skip-list-filtered "exercised" quantity.
+/// Every consumer — corpus-walking `#[test]`s and the discovery-floor ratchets
+/// alike — calls this instead of re-deriving the filter, so they can never
+/// disagree about what "exercised" means. Before this existed, each suite
+/// open-coded the same `HashSet` + `filter_map`, and a suite that had drifted
+/// would have reported a different `exercised` count from its own floor guard
+/// without either failing.
+///
+/// # Contracts callers may rely on
+///
+/// - **Input order is preserved** (`filter_map` is order-preserving), so a
+///   caller reporting the kept set gets a stable, reviewable message without
+///   sorting — and, given [`discover_ri_files`] sorts, a path-sorted one.
+/// - **The relative key is precomputed.** It is computed once per path here and
+///   handed back, so callers need not recompute it (and cannot compute it
+///   differently).
+/// - **A skip key naming no path in `paths` is silently inert.** Detecting such
+///   a dead key is [`crate::helpers::missing_paths_under`]'s job; this function
+///   deliberately does not duplicate it.
+///
+/// The two lifetimes are independent on purpose: `skip_keys` are typically
+/// borrowed from a caller's `'static` SKIP_SET, and tying them to the `paths`
+/// borrow would force a needless reborrow at every call site.
+///
+/// # Arity is the caller's problem
+///
+/// Exactly as for [`crate::helpers::missing_paths_under`]: skip lists carry
+/// per-file metadata of differing shape, so this takes a plain iterator of
+/// relative keys and callers project their own tuple away at the call boundary
+/// — `SKIP_SET.iter().map(|(name, _)| *name)`. That is what lets skip lists of
+/// differing arity share one implementation while staying private to their own
+/// crate: no cross-crate coupling of the skip lists is created or implied.
+///
+/// # Panics
+///
+/// Panics via [`relative_to_examples_dir`] if any path is not lexically rooted
+/// under [`examples_dir`].
+pub fn filter_skipped<'p, 'k>(
+    paths: &'p [PathBuf],
+    skip_keys: impl IntoIterator<Item = &'k str>,
+) -> Vec<(&'p PathBuf, String)> {
+    let skip: HashSet<&str> = skip_keys.into_iter().collect();
+    paths
+        .iter()
+        .filter_map(|p| {
+            let rel = relative_to_examples_dir(p);
+            if skip.contains(rel.as_str()) {
+                None
+            } else {
+                Some((p, rel))
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
