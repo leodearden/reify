@@ -969,6 +969,32 @@ pub enum GeometryOp {
         axis: [f64; 3],
     },
     /// Create a helix wire.
+    ///
+    /// **No angular value crosses this boundary** (INV-AD-4; #6521) — that
+    /// absence is the declaration, not an omission of one. `radius`, `pitch`
+    /// and `height` are all LENGTHS, and all three are length-GATED at eval by
+    /// `required_length_args` in `curve_helix`
+    /// (`reify-eval/src/geometry_ops.rs`), whose note already records that
+    /// `pitch` is a length PER TURN rather than an angle. The turn count is the
+    /// dimensionless ratio `height / pitch`, so INV-AD-4's crossing clause is
+    /// not triggered here.
+    ///
+    /// **The only angle is internal to the C++ and is RADIANS.**
+    /// `make_helix_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`) derives
+    /// `n_turns = height / pitch` and then a total sweep `u_length = n_turns *
+    /// 2.0 * M_PI` in the u-parameter of a `Geom_CylindricalSurface`, whose
+    /// (u, v) space that source annotates "u = angle". The `2*PI` — not 360 —
+    /// is what makes it radians (doctrine D4,
+    /// `docs/prds/v0_6/angle-dimension-completion.md`). It is a DERIVED
+    /// INTERNAL quantity, so it is declared for the reader rather than gated:
+    /// there is no angular argument here to gate.
+    ///
+    /// **Helix is not on the wireframe STEP angle path**; [`GeometryOp::Arc`]
+    /// is. Nothing exports a helix handle to STEP — a helix reaches STEP only
+    /// after being consumed as a sweep/pipe spine into a solid, i.e. as BRep,
+    /// and #6184's wireframe pin
+    /// (`export_step_declares_si_radians_for_wireframe_curve_parameters`,
+    /// `reify-kernel-occt/src/handle.rs`) is fixtured on an arc.
     Helix {
         radius: f64,
         pitch: f64,
