@@ -793,18 +793,31 @@ structure def Probe {
 }
 
 // ─── task 6041: std.kinematic type guard (inverse_dynamics) ───────────────
+//
+// `inverse_dynamics` and `inverse_dynamics_at_snapshot` take the real
+// `Mechanism`/`Snapshot` structure types from `std.kinematic` (task 4311),
+// not the pre-task-4311 `Real` placeholders — mirrors what
+// `mass_properties_has_four_params_with_correct_types` guards for the
+// `Frame3`/`std.ports` half (task 4547). Not a load-order position check:
+// a reversed `std.kinematic`/`std.dynamics` order panics the stdlib loader
+// for every test in this binary before a position assertion could run, so
+// only a silent type regression (order correct, types wrong) is worth
+// guarding here.
+//
+// One test per function, each pinning params then return_type, rather than
+// one test covering both: `assert_eq!` aborts its test fn on the first
+// failing arm, so a single combined test that regressed both functions
+// would have reported only the first.
+//
+// NOTE: neither test below exercises `MotionTrajectory.mechanism` itself,
+// which remains a `Real` placeholder (dynamics.ri's mechanism-type
+// placeholder note) guarded separately by
+// `motion_trajectory_has_mechanism_and_samples_params` above — this pair is
+// signature coverage for the two fns, not full `Mechanism`-type coverage of
+// std.dynamics.
 
-/// `inverse_dynamics` and `inverse_dynamics_at_snapshot` take the real
-/// `Mechanism`/`Snapshot` structure types from `std.kinematic` (task 4311),
-/// not the pre-task-4311 `Real` placeholders — mirrors what
-/// `mass_properties_has_four_params_with_correct_types` guards for the
-/// `Frame3`/`std.ports` half (task 4547). Not a load-order position check:
-/// a reversed `std.kinematic`/`std.dynamics` order panics the stdlib loader
-/// for every test in this binary before a position assertion could run, so
-/// only a silent type regression (order correct, types wrong) is worth
-/// guarding here.
 #[test]
-fn inverse_dynamics_fns_have_mechanism_and_snapshot_param_types() {
+fn inverse_dynamics_signature_uses_mechanism_and_motion_trajectory() {
     let inverse_dynamics = find_function("inverse_dynamics");
     assert_eq!(
         inverse_dynamics.params,
@@ -830,7 +843,10 @@ fn inverse_dynamics_fns_have_mechanism_and_snapshot_param_types() {
         "inverse_dynamics return type should be List<List<JointForce>> (PRD §5.2); got: {:?}",
         inverse_dynamics.return_type
     );
+}
 
+#[test]
+fn inverse_dynamics_at_snapshot_signature_uses_mechanism_and_snapshot() {
     // NOTE: the q_dot/q_ddot arm just below intentionally pins `List<dimensionless
     // scalar>`, not a `JointValue`-named type — `JointValue` is `pub type JointValue
     // = Real` (trajectory.ri, "no live owner" TODO), a placeholder the kinematic-
