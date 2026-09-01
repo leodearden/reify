@@ -2511,9 +2511,9 @@ fn solve_core_with_sd_tolerance(
             // `is_none()` covers TWO causes since task #6377, which is why the
             // reason no longer says only "undefined": an undefined TERM, and a
             // non-finite weighted FOLD of well-defined terms. The second is a
-            // deliberate reclassification of an outcome that used to be
-            // `Solved` — see `eval_objective_set`'s guard for why it fails
-            // closed.
+            // deliberate reclassification — see `eval_objective_set`'s guard
+            // for what it replaced (measured, and NOT a uniform prior `Solved`)
+            // and why abstaining is the fail-closed answer.
             if let Some(obj) = effective_objective
                 && eval_objective_set(obj, &trial_values, &problem.functions, dispatch).is_none()
             {

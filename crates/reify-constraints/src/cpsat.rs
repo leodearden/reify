@@ -1207,8 +1207,10 @@ impl CpSatSolver {
 /// at `eval_objective_set`'s fail-closed accumulator guard (task #6377); do not
 /// restate it here. What this file DOES own is the reach of that guarantee: it
 /// rests on [`CpSatSolver::solve_ranked_with_budget`] being `score`'s sole
-/// construction site, so a second scoring path would re-open all three failures
-/// below without touching either sort.
+/// construction site, so a second scoring path would re-open every failure
+/// `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`
+/// enumerates — including that function's reachable `debug_assert_eq!` panic —
+/// without touching either sort.
 struct ScoredModel {
     score: f64,
     index: usize,
