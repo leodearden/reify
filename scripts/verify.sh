@@ -1058,7 +1058,11 @@ is_occt_crate() {
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
 #     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
 #     jacobian_column_members.ri (read via std::fs::read_to_string by
-#     jacobian_column_member_access.rs's fixture_source(), task 6102)
+#     jacobian_column_member_access.rs's fixture_source(), task 6102),
+#     damped_material_mixin_conformance.ri + damped_material_preset_conformance.ri
+#     (both read via std::fs::read_to_string by materials_fea_tests.rs, task
+#     6877 — the mixin one pins the Damped-mixin SUBSTRATE with probe-local
+#     trait names, the preset one pins the LANDED stdlib surface)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1084,7 +1088,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1108,12 +1112,15 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri ge
 # it; do not trust a copy of this list anywhere else.
 #
 # NOTE the two lists MOSTLY NEST: every _RUST_COUPLED_RI_FIXTURES member that is
-# also a grammar-ledger pin is listed below as well (jacobian_column_members.ri is
-# the exception — it is read by a compiled Rust target but is not an
-# EXPECTED_CLEAN pin, so it has no gui entry to retain). Those that are pinned are
-# pinned in the ledger, and the rust arm already sets gui=1, so it short-circuits
-# them. They are retained here deliberately so that dropping a fixture from the
-# rust list can never silently drop its gui coverage too.
+# also a grammar-ledger pin is listed below as well, and the rust arm already
+# sets gui=1, so it short-circuits them. They are retained here deliberately so
+# that dropping a fixture from the rust list can never silently drop its gui
+# coverage too. THREE members are not EXPECTED_CLEAN pins and so have no gui
+# entry to retain: jacobian_column_members.ri (read by a compiled Rust target
+# but never pinned, task 6102), and task 6877's
+# damped_material_{mixin,preset}_conformance.ri (deliberately not pinned — an
+# unpinned fixture is inert for that ledger, so pinning them would add the
+# PG-DRIFT-GUI obligation for no added signal).
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
@@ -1226,7 +1233,7 @@ decide_scope() {
                 #     its own tests/fixtures + examples/, then pushes ONE
                 #     explicit prd-gate path — so ADDING a fixture provably
                 #     cannot change any Rust target's inputs. EDITING one of the
-                #     eleven in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
+                #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
                 #     no later gate — a red-main class outage). That

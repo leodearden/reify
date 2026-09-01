@@ -11,6 +11,8 @@
 // Module exports:
 //   - `MaterialPropertyProvenance` — citation record (source, reference, notes)
 //   - `ElasticMaterial`            — dimensioned FEA trait
+//   - `Damped`                     — free-standing hysteretic-loss mixin (η)
+//   - `DampedMaterial`             — named intersection `ElasticMaterial + Damped`
 //   - `Steel_AISI_1045`            — medium-carbon steel (general-purpose)
 //   - `Aluminium_6061_T6`          — precipitation-hardened aerospace aluminium
 //   - `Titanium_Ti6Al4V`           — alpha-beta titanium (aerospace, biomedical)
@@ -143,16 +145,111 @@ trait ElasticMaterial : ConstitutiveLaw {
     constraint poisson_ratio < 0.5
 }
 
+
+// ── Damped mixin + DampedMaterial named intersection ─────────────────────────
+//
+// PRD reference: docs/prds/v0_6/damped-modal-bonded-heterogeneous.md
+// §Contract C1, §Resolved decisions 1-2 (leaf α, task #6877).
+
+// `Damped` carries the single hysteretic-loss input the damped-modal solve
+// reads.
+//
+//   loss_factor — structural (hysteretic) loss factor η. Dimensionless ratio
+//                 of energy dissipated per radian to peak strain energy
+//                 stored, i.e. the imaginary part of the complex modulus
+//                 E* = E(1 + iη). At (or near) a resonance the equivalent
+//                 viscous damping ratio is ζ ≈ η/2, which is the conversion
+//                 the modal solve applies per mode.
+//
+// η ≥ 0 is normative and is pinned by the constraint below rather than by
+// this comment — a negative loss factor is energy generation, not damping.
+// The bound mirrors `ElasticMaterial`'s two Poisson constraints above; both
+// inject into every conformer through the same trait-constraint pass.
+//
+// `Damped` is a FREE-STANDING mixin: it deliberately does NOT refine
+// `ConstitutiveLaw`. Loss is orthogonal to the stiffness law, so keeping the
+// mixin parentless lets it compose with future non-isotropic damped laws
+// (Orthotropic / TransverseIsotropic) instead of being welded to the
+// linear-isotropic family (PRD decision 1).
+//
+// ── NAMING HAZARD — `Damped` (here) vs `Damping` (materials_mechanical.ri) ──
+//
+// These two are unrelated, and neither supersedes nor refines the other.
+// Picking one by name alone is the mistake this note exists to prevent:
+//
+//   - `Damped` (HERE, std/materials/fea) is the CONSTITUTIVE / FEA loss
+//     input. A free-standing mixin with a single `loss_factor`, consumed by
+//     the damped-modal solve, composed into `DampedMaterial` below alongside
+//     the `ConstitutiveLaw` family.
+//   - `trait Damping : MaterialSpec { damping_ratio; loss_factor }` in
+//     `crates/reify-compiler/stdlib/materials_mechanical.ri:183` is a
+//     DATASHEET-SPEC trait in the `MaterialSpec` family — the shape a
+//     supplier datasheet populates, carrying `damping_ratio` as well. Real
+//     conformer: `examples/drivebelt_trait_bounds.ri:48`.
+//
+// The interaction is benign: a structure conforming to BOTH gets exactly one
+// `loss_factor` requirement, because `collect_all_requirements` dedups by
+// (name, kind) and both traits spell it `Real`.
+// (Reciprocal note lives above `trait Damping` in materials_mechanical.ri.)
+trait Damped {
+    param loss_factor : Real // dimensionless
+
+    // Lower bound: η >= 0. A negative loss factor would mean the material
+    // adds energy over a cycle rather than dissipating it. Undamped (η = 0)
+    // is admissible and is the degenerate case the undamped modal solve
+    // already handles.
+    constraint loss_factor >= 0
+}
+
+// `DampedMaterial` is the ergonomic named intersection for the isotropic
+// damped case — the spelling a user writes as
+// `structure def MySteel : DampedMaterial + Visual { … }` (PRD §Goal).
+//
+// The body is EMPTY on purpose. Requirements and trait constraints are
+// collected transitively through the refinement chain
+// (`collect_all_requirements`, trait_requirements.rs:152), so a conformer
+// must declare BOTH parents' params — `youngs_modulus`, `poisson_ratio`,
+// `density`, `yield_stress` from `ElasticMaterial` plus `loss_factor` from
+// `Damped` — and inherits all three trait constraints (the two Poisson
+// bounds and η >= 0). Restating any member here would duplicate a contract
+// the compiler already derives.
+//
+// Multi-refinement idiom precedent: `trait Watertight : Closed + Manifold {}`
+// in `stdlib/geometry_traits.ri:84`.
+//
+// Conformance is transitive in the other direction too: a `DampedMaterial`
+// conformer still satisfies `ElasticMaterial`, `Damped` and (via
+// `ElasticMaterial`) `ConstitutiveLaw`, so every existing consumer of those
+// bounds keeps type-checking unchanged.
+trait DampedMaterial : ElasticMaterial + Damped {}
 // ── Starter material library ─────────────────────────────────────────────────
 //
 // Each concrete material below is a top-level structure conforming to
-// `ElasticMaterial`. Defaults bake in matweb-equivalent public-reference
+// `DampedMaterial` — the named intersection `ElasticMaterial + Damped`
+// declared above (α #6877, PRD §Goal / decision 2). The presets conform to
+// the intersection rather than spelling both parents out.
+//
+// Nothing downstream changes at compile time: `DampedMaterial` REFINES
+// `ElasticMaterial`, so the four elastic properties and both Poisson
+// constraints still arrive transitively (via `collect_all_requirements`),
+// and every `ElasticMaterial` / `ConstitutiveLaw` consumer — `solve_elastic_static`,
+// `solve_buckling`, `stdlib/fdm.ri:153` — still accepts a preset, because
+// `trait_satisfies` walks all parents of a multi-parent refinement.
+//
+// Note that `TopologyTemplate.trait_bounds` is DECLARED-only, so a preset's
+// bounds vec now reads `["DampedMaterial", "Visual"]`: "ElasticMaterial" is
+// legitimately absent there while remaining satisfied. Tests that need the
+// satisfies property must assert it at a trait-bounded slot, not by
+// inspecting that vec.
+//
+// Defaults bake in matweb-equivalent public-reference
 // values so a bare `Steel_AISI_1045()` instantiation populates every cell;
 // callers may override individual fields at construction (e.g.
 // `Steel_AISI_1045(yield_stress: some(550MPa))` for a tempered variant).
 //
-// Per-property provenance is encoded as four parallel `..._provenance`
-// fields rather than a single `Map<String, ...>` so:
+// Per-property provenance is encoded as five parallel `..._provenance`
+// fields — one per property, including α's (#6877) `loss_factor` — rather
+// than a single `Map<String, ...>` so:
 //   - typos at the source level become missing-member errors
 //   - downstream FEA reports can pull each citation by name
 //   - refining traits that add properties (shear modulus, hardening, ...)
@@ -172,11 +269,12 @@ trait ElasticMaterial : ConstitutiveLaw {
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (mid-dark neutral
 // grey, slight satin sheen) — NOT physically derived (PRD §4.3 decision 5).
-structure def Steel_AISI_1045 : ElasticMaterial + Visual {
+structure def Steel_AISI_1045 : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 205GPa
     param poisson_ratio : Real = 0.29 // dimensionless
     param density : Density = 7850kg/m^3
     param yield_stress : Option<Pressure> = some(310MPa)
+    param loss_factor : Real = 0.0006 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -202,6 +300,12 @@ structure def Steel_AISI_1045 : ElasticMaterial + Visual {
             reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
             notes: "Tensile yield strength for hot-rolled condition; quenched-and-tempered variants reach higher values."
         )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Structural / plain-carbon steel — material-class hysteretic loss factor, not an AISI 1045 datasheet value",
+            notes: "CLASS-LEVEL structural / plain-carbon steel loss factor, NOT an AISI-1045-specific measurement: published values for structural steel span roughly 2e-4 to 1e-3 and 6e-4 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
+        )
 
     // Editorial appearance: mid-dark neutral grey, slight satin sheen.
     // Values are EDITORIAL (PRD §4.3 decision 5 — NOT physically derived).
@@ -222,11 +326,12 @@ structure def Steel_AISI_1045 : ElasticMaterial + Visual {
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (lighter grey, satin)
 // — NOT physically derived (PRD §4.3 decision 5).
-structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
+structure def Aluminium_6061_T6 : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 68.9GPa
     param poisson_ratio : Real = 0.33 // dimensionless
     param density : Density = 2700kg/m^3
     param yield_stress : Option<Pressure> = some(276MPa)
+    param loss_factor : Real = 0.0002 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -252,6 +357,12 @@ structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
             reference: "Aluminum 6061-T6",
             notes: "Tensile yield strength for T6 temper; degrades on prolonged exposure above ~150 °C."
         )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Wrought aluminium alloys — material-class hysteretic loss factor, not a 6061-T6 datasheet value",
+            notes: "CLASS-LEVEL wrought-aluminium loss factor, NOT a 6061-T6-specific measurement: published values for wrought aluminium alloys span roughly 1e-4 to 4e-4 and 2e-4 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
+        )
 
     // Editorial appearance: lighter grey, satin.
     // Values are EDITORIAL (PRD §4.3 decision 5 — NOT physically derived).
@@ -272,11 +383,12 @@ structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (grey, satin)
 // — NOT physically derived (PRD §4.3 decision 5).
-structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
+structure def Titanium_Ti6Al4V : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 113.8GPa
     param poisson_ratio : Real = 0.342 // dimensionless
     param density : Density = 4430kg/m^3
     param yield_stress : Option<Pressure> = some(880MPa)
+    param loss_factor : Real = 0.0004 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -302,6 +414,12 @@ structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
             reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
             notes: "Tensile yield for annealed condition; STA temper reaches higher values."
         )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Alpha-beta titanium alloys — material-class hysteretic loss factor, not a Ti-6Al-4V datasheet value",
+            notes: "CLASS-LEVEL alpha-beta titanium loss factor, NOT a Ti-6Al-4V-specific measurement: published values for alpha-beta titanium alloys span roughly 1e-4 to 1e-3 and 4e-4 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
+        )
 
     // Editorial appearance: grey, satin.
     // Values are EDITORIAL (PRD §4.3 decision 5 — NOT physically derived).
@@ -325,11 +443,12 @@ structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (matte off-white)
 // — NOT physically derived (PRD §4.3 decision 5).
-structure def ABS_Plastic : ElasticMaterial + Visual {
+structure def ABS_Plastic : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 2.3GPa
     param poisson_ratio : Real = 0.35 // dimensionless
     param density : Density = 1050kg/m^3
     param yield_stress : Option<Pressure> = some(40MPa)
+    param loss_factor : Real = 0.02 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -354,6 +473,12 @@ structure def ABS_Plastic : ElasticMaterial + Visual {
             source: "matweb",
             reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
             notes: "Approximate yield: ABS exhibits a ductile-to-brittle transition sensitive to strain rate and temperature. Refer to supplier datasheet for limit-state work."
+        )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Amorphous thermoplastics — material-class hysteretic loss factor, not an ABS resin-grade datasheet value",
+            notes: "CLASS-LEVEL amorphous-thermoplastic loss factor, NOT a resin-grade-specific measurement: published values for amorphous thermoplastics span roughly 1e-2 to 4e-2 and are STRONGLY frequency- and temperature-dependent (eta rises steeply approaching the glass transition); 2e-2 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
         )
 
     // Editorial appearance: matte off-white.
