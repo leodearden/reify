@@ -222,24 +222,47 @@ pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
     }
 }
 
-/// Validate that `v` is a `Value::Scalar` with dimension matching `expected_dim`
-/// and a finite SI value.
+/// Validate that `v` carries `expected_dim` and a finite SI value.
 ///
 /// Returns `Some(si_value)` on success, `None` on any failure.
+///
+/// # An adapter, not a rival
+///
+/// Since task 5791 (PRD `docs/prds/v0_6/dimension-checked-readers.md` §6
+/// decision 8) this is a THIN ADAPTER over
+/// [`reify_ir::arg_acceptance::accept_arg`], so the dimension predicate — and
+/// the rejection wording that goes with it — has exactly ONE implementation in
+/// the repo instead of an eval-layer one and a stdlib-layer one drifting apart.
+/// Adding a dimension rule here rather than there is how the two would fork
+/// again; don't.
+///
+/// The signature deliberately keeps taking a bare `DimensionVector` rather than
+/// an `&ArgSpec`: this helper returns `Option<f64>` and never formats a
+/// message, so it has no use for `type_name`/`migration_hint`, and changing the
+/// signature would churn its 8 production call sites and 12 tests for no
+/// contract gain. Per-position `ArgSpec` adoption (§7 I1) is the consuming
+/// leaves' work.
+///
+/// # The finiteness filter is a DELIBERATE narrowing
+///
+/// `accept_arg` ACCEPTS a non-finite Scalar — it IS the expected dimension,
+/// merely NaN/±inf — and `crates/reify-ir/src/arg_acceptance.rs`'s module doc
+/// assigns promoting non-finite handling into the shared family to **task
+/// 6157**. Until then this adapter keeps its own finiteness post-filter, and
+/// that divergence is intentional rather than an oversight: it is pinned
+/// two-sidedly by
+/// `validate_dimensioned_scalar_keeps_its_finiteness_filter_over_accept_arg`,
+/// so a later "simplification" that drops it turns red.
 pub(crate) fn validate_dimensioned_scalar(v: &Value, expected_dim: DimensionVector) -> Option<f64> {
-    match v {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            if *dimension != expected_dim {
-                return None;
-            }
-            if !si_value.is_finite() {
-                return None;
-            }
-            Some(*si_value)
-        }
+    // `type_name` and `migration_hint` are unused: this helper returns
+    // `Option<f64>` and never formats an `ArgRejection` message.
+    let spec = reify_ir::arg_acceptance::ArgSpec {
+        type_name: "",
+        dimension: expected_dim,
+        migration_hint: None,
+    };
+    match reify_ir::arg_acceptance::accept_arg(v, &spec) {
+        reify_ir::arg_acceptance::Acceptance::Accepted(si) if si.is_finite() => Some(si),
         _ => None,
     }
 }
