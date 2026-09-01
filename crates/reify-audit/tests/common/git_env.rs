@@ -17,10 +17,10 @@
 //!   for a caller that has already verified, in this environment, that the
 //!   audit produces an envelope. That verified fact is what the child's
 //!   stronger mark carries.
-//! - [`in_replay_child`] — the weak predicate: "am I inside ANY replay
-//!   child?". For a precondition, never for a tightening.
-//! - [`replay_child_expects_envelope`] — the strong one, and the only one a
-//!   test may use to turn an otherwise-graceful skip into a hard failure.
+//! - [`replay_child_expects_envelope`] — the ONLY predicate a test may use to
+//!   turn an otherwise-graceful skip into a hard failure. The weaker "am I
+//!   inside ANY replay child?" question has a private helper, so no sibling
+//!   binary can reach for it by mistake.
 //! - [`spawn_replay_child_lacking_audit_prereqs`] — the inverse fixture: one
 //!   replay child in an environment that genuinely cannot run the audit, so a
 //!   test can pin which mark may tighten a skip and which may not.
@@ -116,23 +116,24 @@ impl ReplayMark {
 /// answers exactly one question — "am I inside any replay child?" — and
 /// nothing more.
 ///
-/// Its one reader is [`audit_script_stdout_poisoned_and_sanitized`]'s
-/// precondition, which needs that weak question and no other: that helper's
-/// `run_orphan_audit` gate would hit a repo-root mismatch panic inside ANY
-/// poisoned child, whatever its parent verified.
+/// PRIVATE on purpose: this is not the predicate that may tighten a graceful
+/// skip into a hard failure (that is [`replay_child_expects_envelope`]), and a
+/// predicate the sibling test binaries cannot name is one they cannot misuse.
+/// Both readers are in this module:
 ///
-/// NOT the predicate for tightening a graceful skip into a hard failure — use
-/// [`replay_child_expects_envelope`]. Why, and the measured regression:
-/// `tests/g_allow.rs`'s
-/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
-#[allow(dead_code)]
-pub fn in_replay_child() -> bool {
+/// - [`audit_script_stdout_poisoned_and_sanitized`]'s precondition, which
+///   needs exactly this weak question — that helper's `run_orphan_audit` gate
+///   would hit a repo-root mismatch panic inside ANY poisoned child, whatever
+///   its parent verified.
+/// - [`replay_with_mark`]'s re-entrancy guard, which asks the same question
+///   for the same reason: child-ness alone decides whether to recurse.
+fn in_replay_child() -> bool {
     std::env::var_os(REPLAY_GUARD).is_some()
 }
 
 /// True when this process is a replay child whose parent verified an audit
-/// envelope before spawning it — [`in_replay_child`] plus the fact that makes
-/// a skip inexplicable. The ONLY predicate a test may use to tighten an
+/// envelope before spawning it — replay child-ness PLUS the fact that makes a
+/// skip inexplicable. The ONLY predicate a test may use to tighten an
 /// otherwise-graceful skip into a hard failure.
 ///
 /// The guarantee comes from the spawn side:
@@ -143,7 +144,7 @@ pub fn in_replay_child() -> bool {
 /// apart — which, under an ambient hook git environment, is exactly the hazard
 /// the replay exists to catch.
 ///
-/// Why the weaker [`in_replay_child`] may not be used here is stated once, in
+/// Why mere child-ness may not be used here is stated once, in
 /// `tests/g_allow.rs`'s
 /// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
 #[allow(dead_code)]
@@ -536,8 +537,12 @@ fn replay_child_command(filters: &[&str], mark: ReplayMark) -> Command {
 /// The shared body of both replay variants; `mark` is the value stamped into
 /// [`REPLAY_GUARD`] for the child, and the ONLY difference between them.
 fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) {
-    // Re-entrancy guard: we ARE the replayed child. Do not recurse.
-    if std::env::var_os(REPLAY_GUARD).is_some() {
+    // Re-entrancy guard: we ARE the replayed child. Do not recurse. The
+    // question is child-ness and nothing more, so it goes through the one
+    // predicate that answers it — never a second hand-rolled read of
+    // `REPLAY_GUARD`, which a change to what counts as "set" would reach only
+    // half of.
+    if in_replay_child() {
         return;
     }
 
