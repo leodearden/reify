@@ -1,9 +1,8 @@
 //! E_PRIV_REDUNDANT lint pass (task #3978 δ — module-and-visibility-hardening Slice C).
 //!
 //! Walks every member of every structure, occurrence, trait, and purpose body
-//! recursively (GuardedGroup / SubDecl body / MatchArmDeclGroup / PortDecl body)
-//! and emits a [`DiagnosticCode::PrivRedundant`] `Severity::Error` when a `let`
-//! or `constraint` member carries `is_priv == true`.
+//! recursively and emits a [`DiagnosticCode::PrivRedundant`] `Severity::Error`
+//! when a `let` or `constraint` member carries `is_priv == true`.
 //!
 //! # Why E_PRIV_REDUNDANT?
 //!
@@ -15,36 +14,33 @@
 //!
 //! # Walk coverage
 //!
-//! This pass covers the same nesting as [`reify_ast::walk_specialization_scope_members`]:
-//! - Top-level members of `structure`, `occurrence`, `trait`, `purpose` bodies.
-//! - `MemberDecl::Sub` bodies (specialization scopes, `s.body.is_some()`).
-//! - `MemberDecl::GuardedGroup` — both `members` (where) and `else_members` (else).
-//! - `MemberDecl::MatchArmDeclGroup` — each arm's `member`.
-//! - `MemberDecl::Port` bodies (`p.members`).
+//! This pass does not walk members itself — it delegates to
+//! [`reify_ast::walk_all_member_bodies`], the MAXIMAL member-recursion set,
+//! because the question it asks ("does any `let`/`constraint` anywhere under
+//! this declaration carry `priv`?") admits no exception.  WHICH optional bodies
+//! that descends into is declared as data on reify-ast's `MemberRecursionSet`
+//! table; read it there rather than from a second copy here, because a second
+//! copy is exactly the drift surface that consolidation removed.
 //!
-//! Depth is bounded by [`MAX_DEPTH`] (mirrors [`reify_ast::MAX_MEMBER_NESTING_DEPTH`]).
+//! Depth is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`], which the shared
+//! walker owns.
 
-use reify_ast::{Declaration, MemberDecl, ParsedModule};
+use reify_ast::{Declaration, MemberDecl, ParsedModule, walk_all_member_bodies};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
-
-/// Stack-safety bound on the recursive member walk.
-///
-/// 32 mirrors [`reify_ast::MAX_MEMBER_NESTING_DEPTH`].
-const MAX_DEPTH: usize = 32;
 
 /// Walk every declaration in `parsed` and emit a [`DiagnosticCode::PrivRedundant`]
 /// `Severity::Error` for every `let` or `constraint` member carrying `is_priv == true`.
 pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnostic>) {
     for decl in &parsed.declarations {
         match decl {
-            Declaration::Structure(s) => lint_members(&s.members, diagnostics, 0),
-            Declaration::Occurrence(o) => lint_members(&o.members, diagnostics, 0),
-            Declaration::Trait(t) => lint_members(&t.members, diagnostics, 0),
+            Declaration::Structure(s) => lint_members(&s.members, diagnostics),
+            Declaration::Occurrence(o) => lint_members(&o.members, diagnostics),
+            Declaration::Trait(t) => lint_members(&t.members, diagnostics),
             Declaration::Purpose(p) => {
-                lint_members(&p.members, diagnostics, 0);
+                lint_members(&p.members, diagnostics);
                 // Also walk structures nested in the purpose body.
                 for s in &p.structures {
-                    lint_members(&s.members, diagnostics, 0);
+                    lint_members(&s.members, diagnostics);
                 }
             }
             _ => {}
@@ -52,57 +48,42 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
     }
 }
 
-/// Recursively lint a member list at the given nesting depth.
-fn lint_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>, depth: usize) {
-    if depth > MAX_DEPTH {
-        return;
-    }
-    for member in members {
-        match member {
-            MemberDecl::Let(l) if l.is_priv => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "E_PRIV_REDUNDANT: 'priv' is not valid on let/constraint members; \
-                         'let' bindings are already private to the structure body",
-                    )
-                    .with_code(DiagnosticCode::PrivRedundant)
-                    .with_label(DiagnosticLabel::new(l.span, "'priv' not allowed here")),
-                );
-            }
-            MemberDecl::Constraint(c) if c.is_priv => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "E_PRIV_REDUNDANT: 'priv' is not valid on let/constraint members; \
-                         'constraint' members are already private to the structure body",
-                    )
-                    .with_code(DiagnosticCode::PrivRedundant)
-                    .with_label(DiagnosticLabel::new(c.span, "'priv' not allowed here")),
-                );
-            }
-            // Recurse into Sub bodies (specialization scopes).
-            MemberDecl::Sub(s) => {
-                if let Some(body) = s.body.as_ref() {
-                    lint_members(body, diagnostics, depth + 1);
-                }
-            }
-            // Recurse into both branches of a GuardedGroup.
-            MemberDecl::GuardedGroup(g) => {
-                lint_members(&g.members, diagnostics, depth + 1);
-                lint_members(&g.else_members, diagnostics, depth + 1);
-            }
-            // Recurse into each arm of a MatchArmDeclGroup.
-            MemberDecl::MatchArmDeclGroup(g) => {
-                for arm in &g.arms {
-                    lint_members(std::slice::from_ref(&*arm.member), diagnostics, depth + 1);
-                }
-            }
-            // Recurse into Port body members.
-            MemberDecl::Port(p) => {
-                lint_members(&p.members, diagnostics, depth + 1);
-            }
-            _ => {}
+/// Lint every member reachable under `members`, at any nesting depth.
+///
+/// Nesting and the depth bound both belong to
+/// [`reify_ast::walk_all_member_bodies`]; this function contributes only the
+/// per-member predicate.
+fn lint_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
+    // The `_ => {}` arm below is a Let/Constraint PREDICATE, not a
+    // recursion-set decision — the same distinction `find_named_member_span_depth`
+    // documents in reify-ast's decl.rs. A newly added `MemberDecl` variant is
+    // now classified in exactly ONE place, `walk_members`'s wildcard-free
+    // match, which fails to COMPILE until that classification is made. Before
+    // this delegation, THIS file's own `_` arm silently defaulted a new variant
+    // to "never descended into".
+    walk_all_member_bodies(members, &mut |member| match member {
+        MemberDecl::Let(l) if l.is_priv => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E_PRIV_REDUNDANT: 'priv' is not valid on let/constraint members; \
+                     'let' bindings are already private to the structure body",
+                )
+                .with_code(DiagnosticCode::PrivRedundant)
+                .with_label(DiagnosticLabel::new(l.span, "'priv' not allowed here")),
+            );
         }
-    }
+        MemberDecl::Constraint(c) if c.is_priv => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E_PRIV_REDUNDANT: 'priv' is not valid on let/constraint members; \
+                     'constraint' members are already private to the structure body",
+                )
+                .with_code(DiagnosticCode::PrivRedundant)
+                .with_label(DiagnosticLabel::new(c.span, "'priv' not allowed here")),
+            );
+        }
+        _ => {}
+    });
 }
 
 // ── inline unit tests ─────────────────────────────────────────────────────────
@@ -139,7 +120,7 @@ mod tests {
     /// the code it names rather than about "whatever the pass happened to emit".
     fn priv_redundant_diags(members: &[reify_ast::MemberDecl]) -> Vec<Diagnostic> {
         let mut diags = Vec::new();
-        lint_members(members, &mut diags, 0);
+        lint_members(members, &mut diags);
         diags
             .into_iter()
             .filter(|d| d.code == Some(DiagnosticCode::PrivRedundant))
