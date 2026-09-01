@@ -15,16 +15,19 @@
 //!     Only the plain scope qualifies for `RobustnessFloorApplied`; the tradeoff
 //!     scope must NOT, since it replaces the floor with its own two-anchor blend.
 //!
-//! (b) step-09/step-10 (GREEN) `example_lambda_sweep_boundary_blend_centre`: reads
-//!     the SHIPPED `examples/cost_robustness_tradeoff.ri` from disk and evals its
-//!     three structures (λ=1.0, λ=0.5, λ=0.0 over the same Money cost and
-//!     two-sided `1mm < thickness < 25mm` box, Chebyshev centre 13mm). Asserts
-//!     zero error-severity diagnostics, every λ strictly inside the box, and —
-//!     per task #5715 — that all three λ COINCIDE at this layer. It formerly
-//!     asserted a strict ordering; that assertion rested on the pre-#5618 fixed
-//!     seed and never proved λ drives the blend. The real λ contract is verified
-//!     seed-independently at the solver level in
-//!     `cost_robustness_tradeoff_blend.rs` with explicit tight `AutoParam` bounds.
+//! (b) `example_lambda_sweep_boundary_blend_centre`: reads the SHIPPED
+//!     `examples/cost_robustness_tradeoff.ri` from disk and evals its λ sweep
+//!     (λ=1.0, λ=0.5, λ=0.0 over one shared Money cost and one shared constraint
+//!     set). Asserts zero error-severity diagnostics, every λ strictly inside the
+//!     feasible region, and — per task #5715 — a REAL λ signal: the λ=1 anchor
+//!     reaches the cost's closed-form interior optimum, and the three λ are
+//!     strictly ordered with a minimum pairwise separation. This replaces the
+//!     #5618/#5715 characterization pin (`spread < 1e-9`), which recorded the
+//!     degenerate state in which both anchors collapsed onto the solver's
+//!     constraint-derived seed. The complementary zero-margin-BOUNDARY form of
+//!     the λ=1 invariant (monotone cost, explicit tight `AutoParam` bounds) stays
+//!     verified at the solver level in
+//!     `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, ValueCellId};
@@ -36,6 +39,27 @@ use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_w
 /// (mirrors `continuous_cost_min_example_e2e.rs::EXAMPLE_PATH`).
 const EXAMPLE_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/cost_robustness_tradeoff.ri");
+
+/// Absolute tolerance (metres) for the λ-anchor convergence checks in test (b).
+/// Mirrors `reify-constraints/tests/cost_robustness_tradeoff_blend.rs::ANCHOR_TOL_M`
+/// so both layers of this contract quote one epsilon.
+///
+/// This is an ACHIEVABILITY bound, not a tuned value: every target it is compared
+/// against is derived in closed form at its assertion site, and the measured
+/// convergence errors on this problem are 4.6e-11 m (the λ=1 cost anchor) and
+/// < 1e-17 m (the λ=0 centrality anchor) — six-plus orders of margin. It is also
+/// far below every separation the test cares about (the smallest is ~2.2 mm), so
+/// it cannot launder a collapsed sweep into a pass.
+const ANCHOR_TOL_M: f64 = 1e-5;
+
+/// Minimum pairwise separation (metres) required between consecutive λ results in
+/// test (b). A FLOOR, not a target: the measured separations are 2.188 mm
+/// (λ=1 → λ=0.5) and 3.145 mm (λ=0.5 → λ=0), i.e. both exceed it by more than 2x.
+///
+/// The point of a floor rather than a bare `<` is that a future degenerate
+/// re-collapse of the two anchors — the exact #5715 failure this test replaces —
+/// fails loudly instead of squeaking past on float noise.
+const LAMBDA_SEPARATION_M: f64 = 1e-3;
 
 /// Two sibling top-level structures sharing the same shape (one `Length = auto(free)`
 /// param, one `Money` unit cost, one `>` inequality) so the ONLY variable between
@@ -130,13 +154,22 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
 }
 
 /// (b) the shipped `examples/cost_robustness_tradeoff.ri` sweeps λ=1.0 → 0.5 → 0.0
-/// across three structures sharing the same Money cost and two-sided
-/// `1mm < thickness < 25mm` box.
+/// across three structures sharing one Money cost and one constraint set.
 ///
-/// NOT a λ signal — see the characterization pin below and task #5715. Both the
-/// λ=1 and λ=0 anchors land on the box midpoint at this layer, so the sweep is
-/// observably flat here; the λ contract is proven in
-/// `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
+/// A REAL λ signal, seed-independent at this layer (task #5715). The λ=1 anchor is
+/// pinned to the cost's closed-form interior optimum — a point that is neither the
+/// solver's constraint-derived seed nor the robustness centre, so only a genuine
+/// cost optimisation can land there — and the three λ are required to be strictly
+/// ordered with a minimum pairwise separation of `LAMBDA_SEPARATION_M`.
+///
+/// This replaces the #5715 characterization pin (`spread < 1e-9`), which recorded
+/// the degenerate state described in that task: with a MONOTONE cost the λ=1
+/// optimum sits past a strict `>` boundary the floor-free anchor cannot reach
+/// (the constraint penalty has zero slope at its own root, and `.ri`-compiled
+/// autos always get `bounds: None` — `engine_eval.rs::build_auto_param_list`), so
+/// `solve_core_with_sd_tolerance`'s drift fallback reported THE SEED; and for a
+/// plain two-sided box that seed midpoint IS the Chebyshev centre, i.e. the λ=0
+/// target, by construction. Both anchors therefore collapsed onto one point.
 ///
 /// Reads the example from disk (not a fixture copy) — mirrors
 /// `continuous_cost_min_example_e2e.rs`'s disk-path convention; compile-level
@@ -200,48 +233,60 @@ fn example_lambda_sweep_boundary_blend_centre() {
         );
     }
 
-    // ── CHARACTERIZATION PIN (task #5715): all three λ coincide at this layer ──
+    // ── λ=1 ANCHOR: the cost's CLOSED-FORM interior optimum ────────────────────
     //
-    // This test formerly asserted the strict ordering t(λ=1) < t(λ=0.5) < t(λ=0),
-    // calling it "the reliable, solver-independent signal at this layer". It was
-    // neither reliable nor solver-independent, and it never proved λ drives the
-    // blend. Two compounding facts, BOTH structural:
+    // The example's cost is `unit_cost * (thickness / 1mm + 25mm / thickness)`,
+    // i.e. `5USD · (a·t + b/t)` with `a = 1/(1mm)` and `b = 25mm`. Then
+    //     d/dt (a·t + b/t) = a − b/t² = 0  →  t* = sqrt(b/a) = sqrt(25mm · 1mm) = 5mm,
+    // and it is the UNIQUE global minimum on `t > 0` since the second derivative
+    // `2b/t³` is strictly positive there.
     //
-    //  1. `.ri`-compiled autos always get `bounds: None` (engine_eval.rs), so the
-    //     floor-free λ=1 cost anchor cannot reach the strict `>` boundary — the
-    //     constraint penalty has zero slope at its own root — and
-    //     `solve_core_with_sd_tolerance`'s drift-fallback returns THE SEED. The
-    //     example's header comment always said so: the λ=1 value was never 1mm.
-    //  2. For a two-sided box `lo < t < hi` the constraint-derived seed midpoint
-    //     `(lo+hi)/2` IS the Chebyshev centre — the λ=0 target — BY CONSTRUCTION.
-    //     No choice of numbers separates them.
+    // Why this is reachable where a monotone cost's optimum is not: 5mm is
+    // STRICTLY INTERIOR to the feasible region, so the constraint penalty is
+    // identically zero in a neighbourhood of it. There is no zero-slope-at-the-root
+    // interaction with the penalty, no infeasible drift, and hence no
+    // `solve_core_with_sd_tolerance` seed fallback — the very failure mode that
+    // made the old monotone-cost sweep flat (task #5715, γ #4791).
     //
-    // So λ=1 returns the seed midpoint and λ=0 returns the Chebyshev centre, and
-    // those are one point (13mm here). The old ordering passed only because the
-    // PRE-#5618 seed was a FIXED 10mm that happened to sit below 13mm; task #5618
-    // derived the seed from the constraint box, the two collapsed, and the
-    // coincidence that had been carrying the assertion disappeared. The blend is
-    // not broken — its two anchors genuinely coincide at this layer.
-    //
-    // The λ contract itself is verified rigorously and seed-independently at the
-    // SOLVER level in `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`
-    // (λ=1 → true 1mm boundary, λ=0 → 2.5mm centre, λ=0.5 strictly between), which
-    // deliberately picks bounds whose midpoint matches NEITHER target so a pass
-    // "can only come from the solver actually reaching the target, never from a
-    // seed/target coincidence". Those 3 tests are green. Nothing is uncovered here.
-    //
-    // Pinned as equality rather than deleted so this stays a tripwire: when #5715
-    // gives the λ dial a real `.ri`-layer signal, this assertion FAILS and whoever
-    // lands it restores an ordering check that actually means something.
-    let spread = t_pure_cost.max(t_blend).max(t_robust) - t_pure_cost.min(t_blend).min(t_robust);
+    // 5mm is NOT the solver's constraint-derived seed (13mm, measured) and NOT the
+    // robustness/Chebyshev centre. This assertion can therefore only pass if the
+    // λ=1 anchor genuinely optimised the cost.
     assert!(
-        spread < 1e-9,
-        "#5715 pins all three λ as coincident at the .ri layer (both anchors land on \
-         the 13mm box midpoint). A nonzero spread means λ became observable here — \
-         good news: replace this pin with a real ordering assertion. got t(λ=1)={:.6e}, \
-         t(λ=0.5)={:.6e}, t(λ=0)={:.6e}",
+        (t_pure_cost - 0.005).abs() < ANCHOR_TOL_M,
+        "λ=1.0 must reach the cost's closed-form interior optimum \
+         sqrt(25mm · 1mm) = 5mm (floor-free pure cost-minimisation); got {:.6e} m. \
+         Landing on ~1.3e-2 m means the anchor fell back to the constraint-derived \
+         seed — see task #5715.",
+        t_pure_cost,
+    );
+
+    // ── λ ORDERING with a minimum pairwise SEPARATION ──────────────────────────
+    //
+    // The direct inversion of the #5715 characterization pin this replaces
+    // (`spread < 1e-9`, "all three λ coincide at this layer"). Increasing λ weights
+    // the cost anchor, decreasing λ weights the robustness anchor, so the sweep
+    // must move monotonically from the cost optimum up towards the robust centre.
+    //
+    // A separation FLOOR rather than a bare `<` is the load-bearing choice: it
+    // makes a degenerate re-collapse of the two anchors fail loudly instead of
+    // squeaking past on float noise.
+    assert!(
+        t_blend - t_pure_cost > LAMBDA_SEPARATION_M,
+        "λ=0.5 must sit at least {:.3e} m ABOVE λ=1.0 (the blend pulls away from the \
+         pure-cost optimum towards the robust centre); got t(λ=1)={:.6e}, \
+         t(λ=0.5)={:.6e}, separation {:.6e} m",
+        LAMBDA_SEPARATION_M,
         t_pure_cost,
         t_blend,
+        t_blend - t_pure_cost,
+    );
+    assert!(
+        t_robust - t_blend > LAMBDA_SEPARATION_M,
+        "λ=0.0 must sit at least {:.3e} m ABOVE λ=0.5 (pure robustness goes all the \
+         way to the centre); got t(λ=0.5)={:.6e}, t(λ=0)={:.6e}, separation {:.6e} m",
+        LAMBDA_SEPARATION_M,
+        t_blend,
         t_robust,
+        t_robust - t_blend,
     );
 }
