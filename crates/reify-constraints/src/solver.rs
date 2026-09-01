@@ -3234,8 +3234,12 @@ fn score_solution(
 /// branch delivers this for free, with no special case: on an open interval
 /// every incumbent is beaten by a point nearer the (unattainable) bound, so
 /// the suppression branch always fires. Detecting "no optimum exists" and
-/// surfacing it as its OWN diagnostic is a separate capability, explicitly
-/// out of scope for #5711 — follow-up.
+/// surfacing it as its OWN diagnostic is a separate capability, explicitly out
+/// of scope for #5711 and already filed as task #5975 — do not re-file. (The
+/// ORDINARY suboptimal-incumbent case, where an optimum does exist and this
+/// branch discards a strictly better point without telling anyone, is the
+/// distinct gap tracked on task #6901 — see the `IncumbentSuboptimal` arm
+/// below.)
 fn verify_uniqueness(
     problem: &ResolutionProblem,
     solved_values: &HashMap<ValueCellId, Value>,
@@ -3384,6 +3388,38 @@ fn verify_uniqueness(
                     // Suppress: an optimality finding, not a §11.6
                     // non-uniqueness one — see
                     // `UniquenessVerdict::IncumbentSuboptimal`'s doc.
+                    //
+                    // KNOWN GAP, tracked on task #6901 (review suggestion 1).
+                    // Returning `true` here makes `finalise_uniqueness` emit
+                    // `Solved { unique: true }` carrying the INCUMBENT — a
+                    // point we have just obtained POSITIVE EVIDENCE is not the
+                    // argmin, having found a strictly better feasible point
+                    // and discarded it. This `warn!` is the only surfacing:
+                    // it never reaches the `.ri` author, and the resulting
+                    // `OptimalityStatus::BestFound { reason }` is
+                    // indistinguishable from a clean converged solve. Not a
+                    // corner — per the per-fixture measurement above this arm
+                    // fires on all five `warm_start_*` fixtures today.
+                    //
+                    // NOT fixable inside #5711, and the two candidate fixes
+                    // are both larger than a warn-string change:
+                    //   (a) surface it — `SolveResult::Solved` has no
+                    //       diagnostics channel, so this needs a new
+                    //       `BestFoundReason` variant or a coded diagnostic,
+                    //       i.e. `reify-ir` / `reify-core` carrier types
+                    //       outside this task's scope;
+                    //   (b) ADOPT the better perturbed point instead of
+                    //       discarding it — changes resolved VALUES on those
+                    //       five fixtures and breaks the monotonicity property
+                    //       documented on `classify_uniqueness`, so it needs
+                    //       its own measurement pass.
+                    // #6901's constituent β ("honesty floor — stop asserting
+                    // unproven uniqueness, typed cause") already owns this
+                    // class and already retypes this function's
+                    // NON-convergence arm in the carrier; this arm is the
+                    // third assertion of the same class and belongs with it.
+                    // Do NOT quietly downgrade the verdict here instead —
+                    // suppression is what keeps the classifier monotone.
                     tracing::warn!(
                         incumbent_score,
                         perturbed_score,
