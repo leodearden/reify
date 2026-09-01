@@ -39,20 +39,36 @@
 //!
 //! # Cell assertions
 //!
-//! The same reasoning covers `assert_bool_cell` / `assert_length_cell`: a
-//! pin's *reading* of a built `BuildResult` cell is as copy-pasteable as its
+//! The same reasoning covers the cell-assertion helpers below: a pin's
+//! *reading* of a built `BuildResult` cell is as copy-pasteable as its
 //! building, and a message-format tweak in one copy silently desynchronises
 //! the rest. They live here so that any pin adopting them reports a failing
-//! cell identically.
+//! cell identically. (Enumerating them here would be the same register this
+//! header refuses to keep for the build helpers — each fn's own doc comment
+//! says what it pins.)
 //!
-//! Adoption is INCREMENTAL — read the paragraph above as the intent, not as a
-//! description of today's harness. As of task #6269 the sole consumer is
-//! `kernel_queries_intersects_smoke`; nine sibling modules still hand-roll an
-//! inline `ValueCellId::new` + `assert_eq!` / `match ... Value::Scalar` at each
-//! call site, the closest being `best_practices_clearance_oracle`. So the drift
-//! these helpers close is still open across the rest of the harness: they are
-//! AVAILABLE to every pin, and migrating one is a mechanical, self-contained
-//! change for whichever task next holds that pin's lock.
+//! Adoption follows a CRITERION, deliberately stated instead of a per-module
+//! list. The paragraph replaced here (task #6491) kept a register — "the sole
+//! consumer is …; nine sibling modules still hand-roll …" — and duly fell out
+//! of lockstep the moment the next adopting task landed, which is precisely the
+//! failure this header avoids everywhere else. A fresh list would only re-arm
+//! it. The rule instead:
+//!
+//! **Adopt a helper where it pins EXACTLY what the call site already pinned.
+//! Never widen a tolerance, and never relax an exactness, to make a call site
+//! fit.** The mirror-image error is equally excluded: do not add a helper that
+//! would serve exactly one call site, since it closes no duplication and buys
+//! only indirection.
+//!
+//! What that criterion excludes is a property of the VALUE, not a backlog of
+//! unconverted modules — so a pin reading a cell directly is not thereby
+//! behind. `assert_bool_cell` and `assert_length_cell` fit `Value::Bool` and
+//! LENGTH-dimension `Value::Scalar` cells and nothing else, so a scalar in
+//! another dimension (ANGLE), a rank-2 `Value::Tensor`, a variant-only
+//! non-`Undefined` check, and a multi-component `Point` walk each stay at their
+//! call sites by construction. `ValueCellId::new` appearing in a module is not
+//! evidence either way: some uses are `edit_param` ARGUMENTS naming a cell to
+//! mutate, never a cell read, and no cell-assertion helper applies to those.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
