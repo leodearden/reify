@@ -2453,23 +2453,314 @@ pub structure DToolhead {
     param tool_dock_pitch : Length = 80mm
 }
 
-/// Assembly E — Z-bed: 12 mm Mic-6 plate, magnetic flexible PEI sheet, 4-corner
-/// electronic-tilt servo Z, parking shutter (no bellows). Owns the Z-travel
-/// centreline visualisation.
+/// Assembly E — Z-bed: THREE-COLUMN tendon-lifted bed (O3 round, 2026-09-01;
+/// Leo ratified 3-column over the spec's 4-corner — spec amendment queued).
+///
+/// ARCHITECTURE (all agreed with Leo this round):
+///  - 3 lift columns (ground round shaft + dry polymer bushing carriage),
+///    positions: pair on the side bands at y=col_pair_y, single rear-centre —
+///    the FRONT access aperture stays completely open.
+///  - Drive: Vectran tendon + COUNTERWEIGHT per column (single design
+///    vocabulary with the XY drive; power-off = neutral hover; ~zero servo
+///    holding torque; no lubricant in the chamber; crash-compliant). Creep
+///    vetted 2026-09-01: ~0.03%/log-decade at 50% MBL (NASA GSFC), zero
+///    measurable at fiber level ≤50% load; we run at ~0.2% MBL. Negative
+///    CTE: tendons TIGHTEN on chamber heat-up. Bedding-in dominates —
+///    pre-cycle warm, re-tension after first soak. 3 distinct servos
+///    (full 2-axis electronic tilt), drums in the rear service bay (routing
+///    detail deferred with web externalization).
+///  - Plate support at the strip-optimal INBOARD points (Leo's min-excursion
+///    principle): cantilever tip sag balances mid-span droop. The 1D strip
+///    optimum lands at a_frac ≈ 0.20 of the span from each edge (verified
+///    LIVE by the tip/mid ratio constraint below — the model checks its own
+///    optimum rather than trusting a hard-coded root).
+///  - Mounts: carriage↔subframe ROLLING Maxwell (V-ball-V, radial — tilt
+///    corrections cycle these; rolling kills stick-slip in the leveling
+///    loop); subframe↔plate SLIDING Maxwell (3 radial pin-pair V-grooves on
+///    the subframe, balls staked in the plate underside — plate thermal
+///    stroke is mm-scale, sliding returns deterministically; grooves =
+///    adhesive-bonded ground dowel pairs, Tg>150°C epoxy + mechanical
+///    capture). Carriage yaw about its single shaft is reacted through the
+///    Maxwell sandwich (tangential is a constrained direction, 170-240mm
+///    arm) — no second rod needed; drive anchors straddle the shaft plane
+///    to null yaw moment.
+///
+/// KINEMATICS SURFACE (probe-informed, 2026-09-01): NO loop closures — the
+/// .ri-reachable closed-loop path is structurally broken and SILENT (K1-K4
+/// in the round ledger: NotConverged unreported, fully-bound loops never
+/// residual-checked, closing-joint pivot double-counted, body pose absent
+/// from the residual — parallel platforms inexpressible in principle).
+/// Rotation→translation coupling is also inexpressible (revolute-parent
+/// couplings stay angular), so the drum ratio is cell algebra. The honest
+/// encoding: 3 OPEN-CHAIN prismatic joints at real pivots + closed-form
+/// plane-through-3-points pose algebra + constraint cells; sweep exercises
+/// warm-started FK. Pose readback to scalars is blocked (K7) — mechanism
+/// cells verify convergence/expressibility, the algebra carries the values.
 pub structure EZBed {
+    // ── Cross-cutting inputs, pinned literals (Printer pins; #6662 idiom) ──
     param build_x : Length = 500mm
     param build_y : Length = 800mm
     param build_z : Length = 600mm
+    param slab_top_m : Length = 0mm - 178mm   // == AFrame base_z + side_t
+    param sweep_floor_m : Length = 620mm      // gantry lower-bearing sweep floor
+    param wall_in_l : Length = 0mm - 124mm    // left wall inner face
+    param wall_in_r : Length = 624mm          // right wall inner face
+    param back_in : Length = 0mm - 128mm      // back wall inner face
 
+    // ── Bed stack ──────────────────────────────────────────────────────────
     param bed_plate_thickness : Length = 12mm
+    param rho_mic6 : Density = 2700kg/m^3
+    param e_mic6 : Pressure = 69GPa
+    param nu_mic6 : Real = 0.33
+    param m_heater : Mass = 2kg               // silicone pad, bonded
+    param m_sheet  : Mass = 1kg               // magnetic substrate + PEI sheet
+    param m_subframe : Mass = 6kg             // welded/bolted steel subframe (est)
+    param g_acc : Acceleration = 9.81 * 1m / (1s * 1s)
+    /// Gravity-sag flatness excursion budget (thermal bow tracked separately).
+    param sag_budget : Length = 0.03mm
 
-    // Z-bed travel centreline (reference viz, not a part — hidden by default).
+    // ── Lift geometry ──────────────────────────────────────────────────────
+    /// Strip-optimal support inset fraction (min-max excursion; ~0.20 —
+    /// the tip/mid ratio constraint verifies optimality live).
+    param a_frac : Real = 0.20
+    param park_below : Length = 80mm          // park depth below build zone (spec 50–100)
+    param park_margin : Length = 20mm         // hardware clearance over the slab
+    /// Bed surface height NOW (top of travel = first-layer position).
+    param bed_z : Length = 600mm
+    param shaft_d : Length = 25mm
+    param col_w : Length = 60mm               // column footprint (shaft housing)
+    param col_top : Length = 600mm            // column/pulley crown (< sweep floor)
+    param carriage_h : Length = 60mm          // rides UP from the arm plane
+    param arm_h : Length = 20mm
+    param subframe_h : Length = 30mm
+    param maxwell_gap : Length = 8mm          // subframe→plate ball stand-off
+    param col_pair_x_l : Length = 0mm - 60mm  // left pair column centre x
+    param col_pair_x_r : Length = 560mm
+    param col_single_y : Length = 0mm - 60mm  // rear column y (rear band)
+    /// Rear column x — OFFSET, not centred: the drive web owns the rear
+    /// band's centre (fairlead collars to x=434 + the x=418 descent; the
+    /// inter-collar gap is 32mm < col_w). 480 clears collar B by 16mm; the
+    /// support point stays at (250,160) via an L-arm. Re-centre when the
+    /// web externalizes (hand-kept vs the web, like web_x_max below).
+    param col_single_x : Length = 480mm
+    /// Rear-web x outer envelope + rope margin (collar face 434 + 6):
+    /// HAND-KEPT literal — no relay chain reaches RearDrive's cap_x/frame_x
+    /// from here; re-derive at web externalization.
+    param web_x_max : Length = 440mm
+    param cw_w_s : Length = 90mm              // single cw slimmed for the RR pocket
+    param rope_dia : Length = 6mm
+    param rope_ea  : Force = 800kN            // == DriveTendons EA (same stock)
+    param rope_mbl : Force = 28.47kN
+    param cw_rho : Density = 7850kg/m^3       // steel counterweight blocks
+    param cw_w : Length = 120mm
+    /// Z-hop duty (Leo, 2026-09-01: fast sub-0.5mm moves at every rapid).
+    param hop_stroke : Length = 0.5mm
+    let hop_time = 0.03s
+
+    // ── Support points (strip-optimal, inboard — Leo's principle) ─────────
+    let sup_y_pair   = build_y * (1.0 - a_frac)         // 640: pair line (front-ish)
+    let sup_y_single = build_y * a_frac                 // 160: single (rear-ish)
+    let sup_x_a = build_x * a_frac                      // 100
+    let sup_x_b = build_x * (1.0 - a_frac)              // 400
+    let sup_x_s = build_x / 2                           // 250: single point
+
+    // ── Plate strip-sag algebra (y-axis strip; q per unit width) ──────────
+    // Roark overhanging-beam: UDL q over full length, symmetric supports.
+    // The model VERIFIES a_frac is at the min-max optimum: tip and mid
+    // excursions (both measured from the support line) must balance.
+    let plate_d = e_mic6 * bed_plate_thickness * bed_plate_thickness
+        * bed_plate_thickness / (12 * (1.0 - nu_mic6 * nu_mic6))   // N·m (plate rigidity)
+    let q_areal = rho_mic6 * bed_plate_thickness * g_acc   // N/m² (plate self-weight)
+    let ovh  = build_y * a_frac                          // overhang a
+    let span = build_y - ovh * 2                         // interior span l
+    let theta_a = q_areal * (span * span * span / 24
+        - ovh * ovh * span / 4) / plate_d                // support slope (rad)
+    let sag_tip = theta_a * ovh
+        + q_areal * ovh * ovh * ovh * ovh / (8 * plate_d)
+    let sag_mid = q_areal * span * span * (5 * span * span - 24 * ovh * ovh)
+        / (384 * plate_d)
+    let sag_ratio = sag_tip / sag_mid
+
+    // ── Masses + per-column static shares (determinate: 3 points) ─────────
+    let m_plate : Mass = build_x * build_y * bed_plate_thickness * rho_mic6
+    let m_bed : Mass = m_plate + m_heater + m_sheet + m_subframe
+    let w_bed : Force = m_bed * g_acc
+    let y_cg = build_y / 2
+    /// Lever rule about the support lines: the single point carries
+    /// share_s, the pair splits the rest.
+    let share_s = (sup_y_pair - y_cg) / (sup_y_pair - sup_y_single)   // 0.5
+    let share_p = (1.0 - share_s) / 2                                  // 0.25 each
+    let t_col_s : Force = w_bed * share_s     // single-column tendon tension
+    let t_col_p : Force = w_bed * share_p
+
+    // ── Counterweights (per column, neutral balance, 2:1 REEVED) ──────────
+    // Reeving 2:1 (elevator practice): cw stroke = travel/2, cw mass =
+    // 2× its column share — the full-stroke cw would otherwise overrun the
+    // gantry-sweep ceiling (stroke 680 + block height > column height).
+    let m_cw_s : Mass = m_bed * share_s * 2
+    let m_cw_p : Mass = m_bed * share_p * 2
+    let cw_h_s = m_cw_s / (cw_rho * cw_w_s * cw_w_s)
+    let cw_h_p = m_cw_p / (cw_rho * cw_w * cw_w)
+
+    // ── Travel + hop dynamics ──────────────────────────────────────────────
+    let travel : Length = build_z + park_below            // 680
+    let drop : Length = build_z - bed_z                   // current drop from top
+    let a_hop : Acceleration = 2 * hop_stroke / (hop_time * hop_time)
+    /// Reflected inertia on the drive tendons: bed + reeved cw at (1/2)²
+    /// each = 1.5× bed mass.
+    let m_z_eff : Mass = m_bed * 1.5
+    let f_hop_content : Frequency = 1.0 / (2 * hop_time)  // ~17Hz excitation band
+    // Worst-case (longest) drive free length: carriage at park, pulley at crown.
+    let l_rope_max : Length = col_top - slab_top_m
+    let k_col_min : Stiffness = rope_ea / l_rope_max
+    /// Bed-on-tendons vertical mode, worst case (all three at max length).
+    let f_z_min : Frequency = sqrt(k_col_min * 3 / m_z_eff) / (2 * pi)
+
+    // ── Bed pose algebra (closed-form plane through 3 support heights) ────
+    // Heights h_a/h_b (pair) and h_s (single) are the servo DOF; tilt is
+    // exact, no least-squares — the 3-column dividend.
+    param h_a : Length = 0mm     // pair-a height offset from nominal
+    param h_b : Length = 0mm
+    param h_s : Length = 0mm
+    let tilt_x = (h_b - h_a) / (sup_x_b - sup_x_a)                  // rad (small)
+    let mid_pair = (h_a + h_b) / 2
+    let tilt_y = (mid_pair - h_s) / (sup_y_pair - sup_y_single)
+    let z_centre = h_s + tilt_y * (y_cg - sup_y_single)
+    /// Leveling envelope each servo must cover (probe-measured tilt ranges).
+    param tilt_budget : Real = 0.002          // ±2 mrad
+    let h_range_needed : Length = tilt_budget * (sup_y_pair - sup_y_single)
+
+    // ── Kinematics: 3 open-chain prismatic lifts (probe idiom P1/P6) ──────
+    // Joint value = carriage height above the park datum. NOTE the geometry
+    // cell below is named bed_solid, not body — `body(...)` is also the
+    // mechanism-builder builtin and a let of that name would shadow it.
+    let j_a = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+        point3(col_pair_x_l, sup_y_pair, slab_top_m))
+    let j_b = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+        point3(col_pair_x_r, sup_y_pair, slab_top_m))
+    let j_s = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+        point3(col_single_x, col_single_y, slab_top_m))
+    let mech = body(body(body(mechanism(), "car_a", j_a), "car_b", j_b), "car_s", j_s)
+    let lift_now = travel - drop              // carriage height above park datum
+    let snap = snapshot(mech, [bind(j_a, lift_now), bind(j_b, lift_now), bind(j_s, lift_now)])
+    let sweep_snaps = sweep(mech, j_a, 0mm .. 680mm, 5)
+    let sweep_n = sweep_snaps.count
+
+    // ── Geometry (world frame; bed at bed_z) ──────────────────────────────
+    // Lift stack rises FROM the arm plane: arm, subframe, maxwell gap,
+    // plate. Carriage rides UP from the arm plane (never below it), so at
+    // park nothing reaches deeper than the arm bottom.
+    let plate_top = bed_z
+    let arm_z = plate_top - bed_plate_thickness - maxwell_gap - subframe_h - arm_h
+    let cw_z_s = slab_top_m + park_margin + drop / 2 + cw_h_s / 2  // counter-phase, 2:1
+    let cw_z_p = slab_top_m + park_margin + drop / 2 + cw_h_p / 2
+    let cw_off = (col_w + cw_w) / 2 + 10mm
+    let bed_solid = union(
+        union(
+            union(
+                // Three columns: shaft housing footprint (slab → crown).
+                union(
+                    translate(box(col_w, col_w, col_top - slab_top_m), col_pair_x_l, sup_y_pair, (col_top + slab_top_m) / 2),
+                    translate(box(col_w, col_w, col_top - slab_top_m), col_pair_x_r, sup_y_pair, (col_top + slab_top_m) / 2)
+                ),
+                union(
+                    translate(box(col_w, col_w, col_top - slab_top_m), col_single_x, col_single_y, (col_top + slab_top_m) / 2),
+                    // Carriages (up from arm plane) + arms to the support points.
+                    union(
+                        union(
+                            translate(box(col_w, col_w, carriage_h), col_pair_x_l, sup_y_pair, arm_z + carriage_h / 2),
+                            translate(box(sup_x_a - col_pair_x_l + col_w, col_w, arm_h), (col_pair_x_l + sup_x_a) / 2, sup_y_pair, arm_z + arm_h / 2)
+                        ),
+                        union(
+                            union(
+                                translate(box(col_w, col_w, carriage_h), col_pair_x_r, sup_y_pair, arm_z + carriage_h / 2),
+                                translate(box(col_pair_x_r - sup_x_b + col_w, col_w, arm_h), (col_pair_x_r + sup_x_b) / 2, sup_y_pair, arm_z + arm_h / 2)
+                            ),
+                            union(
+                                translate(box(col_w, col_w, carriage_h), col_single_x, col_single_y, arm_z + carriage_h / 2),
+                                // L-arm: y-leg out of the rear band, x-leg to
+                                // the support point at (sup_x_s, sup_y_single).
+                                union(
+                                    translate(box(col_w, sup_y_single - col_single_y + col_w, arm_h), col_single_x, (col_single_y + sup_y_single) / 2, arm_z + arm_h / 2),
+                                    translate(box(col_single_x - sup_x_s + col_w, col_w, arm_h), (col_single_x + sup_x_s) / 2, sup_y_single, arm_z + arm_h / 2)
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+            union(
+                // Subframe: pair rail + spine to the single point (atop arms).
+                union(
+                    translate(box(sup_x_b - sup_x_a + 80mm, 60mm, subframe_h), (sup_x_a + sup_x_b) / 2, sup_y_pair, arm_z + arm_h + subframe_h / 2),
+                    translate(box(60mm, sup_y_pair - sup_y_single + 60mm, subframe_h), sup_x_s, (sup_y_pair + sup_y_single) / 2, arm_z + arm_h + subframe_h / 2)
+                ),
+                // Plate stack: Mic-6 + heater pad (under) + PEI sheet (over).
+                union(
+                    translate(box(build_x, build_y, bed_plate_thickness), build_x / 2, build_y / 2, plate_top - bed_plate_thickness / 2),
+                    union(
+                        translate(box(build_x - 40mm, build_y - 40mm, 3mm), build_x / 2, build_y / 2, plate_top - bed_plate_thickness - 1.5mm),
+                        translate(box(build_x, build_y, 1mm), build_x / 2, build_y / 2, plate_top + 0.5mm)
+                    )
+                )
+            )
+        ),
+        // Counterweights: pair cws OUTBOARD in +y of their columns (the ±x
+        // sides face the walls); single cw in the right-rear pocket
+        // (x 500..624, y<0 — clear of walls AND the web envelope).
+        union(
+            union(
+                translate(box(cw_w, cw_w, cw_h_p), col_pair_x_l, sup_y_pair + cw_off, cw_z_p),
+                translate(box(cw_w, cw_w, cw_h_p), col_pair_x_r, sup_y_pair + cw_off, cw_z_p)
+            ),
+            translate(box(cw_w_s, cw_w_s, cw_h_s), col_single_x + (col_w + cw_w_s) / 2 + 10mm, col_single_y, cw_z_s)
+        )
+    )
+
+    // Z-bed travel centreline (reference viz — hidden by default).
     aux let z_bed_travel_centerline = translate(
         box(6mm, 6mm, build_z),
         build_x / 2, build_y / 2, build_z / 2
     )
 
+    // ── Constraints ────────────────────────────────────────────────────────
     constraint bed_plate_thickness > 0mm
+    // Strip optimum verified live: tip and mid excursions balance (±25%).
+    constraint sag_ratio > 0.75
+    constraint sag_ratio < 1.25
+    constraint sag_tip < sag_budget
+    constraint sag_mid < sag_budget
+    // Column crowns and top-of-travel carriage stay under the sweep floor:
+    constraint col_top < sweep_floor_m - 10mm
+    constraint arm_z + carriage_h < sweep_floor_m - 10mm
+    // Park: the arm plane (lowest lift hardware) clears the slab.
+    constraint 0mm - park_below - bed_plate_thickness - maxwell_gap - subframe_h - arm_h > slab_top_m + park_margin
+    // Columns stand clear of the bed plan and inside the walls/back bay:
+    constraint col_pair_x_l + col_w / 2 < 0mm
+    constraint col_pair_x_l - col_w / 2 > wall_in_l
+    constraint col_pair_x_r - col_w / 2 > build_x
+    constraint col_pair_x_r + col_w / 2 < wall_in_r
+    constraint col_single_y + col_w / 2 < 0mm
+    constraint col_single_y - col_w / 2 > back_in
+    // Rear column + its cw clear the drive-web envelope and the right wall:
+    constraint col_single_x - col_w / 2 > web_x_max
+    constraint col_single_x + (col_w + cw_w_s) / 2 + 10mm + cw_w_s / 2 < wall_in_r
+    // Counterweights: stroke (travel/2, reeved) + block fits under the crown,
+    // and the single cw stays inside the rear bay:
+    constraint slab_top_m + park_margin + travel / 2 + cw_h_s < col_top
+    constraint slab_top_m + park_margin + travel / 2 + cw_h_p < col_top
+    constraint col_single_y - cw_w_s / 2 > back_in
+    // Hop: never unloads a tendon (down-hop accel ≪ g) and the bed-on-
+    // tendon mode clears the hop excitation band with 2× margin:
+    constraint a_hop < g_acc * 0.5
+    constraint f_z_min > f_hop_content * 2
+    // Tendon working load stays under 20% MBL (drive convention); the cw
+    // tendon carries 2× the column share (reeved):
+    constraint t_col_s * 2 < rope_mbl * 0.2
+    // Leveling range sanity:
+    constraint h_range_needed < 5mm
+    constraint travel > build_z
+    constraint sweep_n > 4
 }
 
 /// Assembly F — Chamber: insulated panels (steel skin + mineral-wool / aerogel),
@@ -2672,4 +2963,17 @@ pub structure Printer {
     // (0.8..1.35) is exactly the legitimate spread between them.
     constraint self.a_frame.k_pair_m < self.gantry_fea.k_eb * 4 * 1.35
     constraint self.a_frame.k_pair_m > self.gantry_fea.k_eb * 4 * 0.95
+
+    // ── O3: EZBed lift pins (frame/motion truth → EZBed pinned literals) ───
+    constraint self.e_z_bed.slab_top_m < self.a_frame.base_z + self.a_frame.side_t + o1_pin_slack
+    constraint self.e_z_bed.slab_top_m > self.a_frame.base_z + self.a_frame.side_t - o1_pin_slack
+    // Gantry sweep floor = lower-bearing surface = build_z + bearing clearance:
+    constraint self.e_z_bed.sweep_floor_m < self.env.build_z + 20mm + o1_pin_slack
+    constraint self.e_z_bed.sweep_floor_m > self.env.build_z + 20mm - o1_pin_slack
+    constraint self.e_z_bed.wall_in_r < self.a_frame.wall_cx - self.a_frame.side_t / 2 + o1_pin_slack
+    constraint self.e_z_bed.wall_in_r > self.a_frame.wall_cx - self.a_frame.side_t / 2 - o1_pin_slack
+    constraint self.e_z_bed.wall_in_l < self.a_frame.centre_x * 2 - self.a_frame.wall_cx + self.a_frame.side_t / 2 + o1_pin_slack
+    constraint self.e_z_bed.wall_in_l > self.a_frame.centre_x * 2 - self.a_frame.wall_cx + self.a_frame.side_t / 2 - o1_pin_slack
+    constraint self.e_z_bed.back_in < self.a_frame.y0 + self.a_frame.side_t + o1_pin_slack
+    constraint self.e_z_bed.back_in > self.a_frame.y0 + self.a_frame.side_t - o1_pin_slack
 }
