@@ -29,10 +29,16 @@ module symmetry_mirror
 //   dimensioned length such as `5mm`" and then a hard geometry-compile error
 //   ("missing or non-Length argument 'ox' for mirror").
 //
-//   TRAP: that error does NOT appear under `reify check` — check reports "All
-//   constraints satisfied" on the bare-0 form. It only surfaces at `reify eval`
-//   / build time. A green check is not evidence that a geometry call's argument
-//   dimensions are right.
+//   TRAP, re-scoped: the bare-0 7-arg form above is now a HARD `reify check`
+//   failure — a compile-layer ArgTypeMismatch (task 5662) on each of ox, oy and
+//   oz, exit 1, and no verdict line at all. What survives is narrower: on the
+//   decoded-value route `mirror(g, plane_yz(0))` the same three ox/oy/oz Length
+//   errors DO reach check's stderr, yet check still exits 0 and still prints
+//   "All constraints satisfied." underneath them. So the surviving warning is
+//   about the EXIT STATUS and that trailing verdict line, not about the error
+//   being absent — read check's stderr, never its exit code alone. That split
+//   is measured behaviour here and is deliberate but not permanent; re-measure
+//   rather than trusting this line.
 //
 //   Plane constructors: plane_xy(z), plane_xz(y), plane_yz(x) — each takes
 //   EXACTLY ONE offset argument, naming the axis the plane spans (so the
