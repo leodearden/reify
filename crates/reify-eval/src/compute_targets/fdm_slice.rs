@@ -1099,6 +1099,216 @@ mod tests {
         assert_eq!(result1, result2, "the HIT returns the cached Toolpath value");
     }
 
+    /// END-TO-END unit-regime pin: G-code **text** → the ζ parser →
+    /// [`toolpath_to_value`] → DSL `Value`, over the whole path rather than from a
+    /// hand-built [`Bead`].
+    ///
+    /// Every other regime test in this module starts from `sample_toolpath()` (a
+    /// hand-built struct) or from a compile-only `.ri` snippet, so none of them can
+    /// see a COMPOUNDING error between the parser's native millimetres and this
+    /// module's conversion — a parser that silently pre-scaled, or a `MM_TO_M`
+    /// applied twice, reads identically at those seams. This test drives the
+    /// production [`fdm_slice_dispatch`] through the module's stub-slicer seam (a
+    /// `#!/bin/sh` that `cp`s the committed ζ fixture to the composed `-o` path), so
+    /// the Values asserted below are the ones a design author actually receives.
+    ///
+    /// Deliberately NOT a live PrusaSlicer run: no slicer is on `$PATH` here (which
+    /// is why `real_slicer_build_is_deterministic_verify_and_lock` skips), and a real
+    /// slice's widths and heights come from PrusaSlicer's own config rather than from
+    /// anything the `.ri` declares, so its expected values would not be derivable.
+    /// Every expectation below IS derivable — one f64 operation from a literal in
+    /// `crates/reify-fdm/tests/fixtures/prusaslicer_bracket.gcode`:
+    ///
+    /// - every `;WIDTH:` in the fixture is `0.45` → `width` == 4.5e-4 m
+    /// - every `;HEIGHT:` is `0.2` → `height` == 2.0e-4 m
+    /// - `;Z:0.2` / `;Z:0.4` → `layers[0].z` == 2.0e-4 m, `layers[1].z` == 4.0e-4 m
+    /// - `M109 S210` holds for every bead (the `M104 S0` sits after the last
+    ///   extrusion) → `nominal_temp` == 483.15 K
+    /// - every pen-down travel carries `F9000` → `speed` == 0.15 m·s⁻¹
+    /// - the `G1 X0 Y0 F9000` before the first `;TYPE:External perimeter` extrude →
+    ///   that bead's first centerline point == `[0, 0, 2.0e-4]` m
+    #[cfg(unix)]
+    #[test]
+    fn gcode_text_marshals_into_the_si_regime_end_to_end() {
+        /// The three SI-metre coordinates of a marshalled centerline point, after
+        /// checking the `Point3<Length>` shape `resolve_point3_length_arg` requires.
+        fn point_coords_m(v: &Value, what: &str) -> [f64; 3] {
+            match v {
+                Value::Point(coords) => {
+                    assert_eq!(coords.len(), 3, "{what}: expected exactly 3 components");
+                    let mut out = [0.0_f64; 3];
+                    for (i, c) in coords.iter().enumerate() {
+                        match c {
+                            Value::Scalar {
+                                si_value,
+                                dimension,
+                            } => {
+                                assert_eq!(
+                                    *dimension,
+                                    DimensionVector::LENGTH,
+                                    "{what} component {i}: expected LENGTH, got {dimension:?}"
+                                );
+                                out[i] = *si_value;
+                            }
+                            other => panic!(
+                                "{what} component {i}: expected a dimensioned Scalar, got {other:?}"
+                            ),
+                        }
+                    }
+                    out
+                }
+                other => panic!("{what}: expected a Value::Point, got {other:?}"),
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let counter = dir.path().join("run-count");
+        let stub = write_stub_script(
+            dir.path(),
+            "si-regime-slicer.sh",
+            &emit_fixture_counting_body(&fixture_gcode_path(), &counter),
+        );
+
+        let inputs = undef_inputs();
+        let realizations = [body_handle(0x6301)];
+        let never = CancellationHandle::new();
+
+        let result = match fdm_slice_dispatch(&inputs, &realizations, Some(&stub), None, &never) {
+            ComputeOutcome::Completed { result, .. } => result,
+            other => panic!("the stub-slicer dispatch expected Completed, got {other:?}"),
+        };
+        // The stub really ran: these Values came from parsing the fixture TEXT, not
+        // from the empty `degraded_toolpath_value` (whose fields would vacuously pass
+        // every per-bead assertion below).
+        let runs = std::fs::read_to_string(&counter)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        assert_eq!(runs, 1, "the stub slicer ran exactly once");
+
+        let beads = as_list(field(&result, "beads").expect("beads field"));
+        let layers = as_list(field(&result, "layers").expect("layers field"));
+
+        // Counts read off the fixture, not guessed: two `;LAYER_CHANGE` blocks, and
+        // per layer four structural bead runs — `External perimeter` and `Perimeter`
+        // (one role, but the travel between them breaks the run) plus the infill
+        // pass's two extrudes, which a travel likewise separates. The
+        // `;TYPE:Skirt/Brim` run contributes NOTHING: `role_from_prusaslicer_type`
+        // maps it to `None`, so its extrusions are skipped.
+        assert_eq!(
+            layers.len(),
+            2,
+            "the fixture has two `;LAYER_CHANGE` layers"
+        );
+        assert_eq!(beads.len(), 8, "four structural bead runs per layer");
+
+        // Per-bead invariants over EVERY bead rather than index-by-index pins: the
+        // fixture is uniform in width / height / temperature / feedrate, so a
+        // conversion that missed one bead — or one field — surfaces here.
+        for (i, b) in beads.iter().enumerate() {
+            assert_length(
+                field(b, "width").expect("width field"),
+                4.5e-4,
+                &format!("bead {i} width (;WIDTH:0.45)"),
+            );
+            assert_length(
+                field(b, "height").expect("height field"),
+                2.0e-4,
+                &format!("bead {i} height (;HEIGHT:0.2)"),
+            );
+            assert_scalar(
+                field(b, "nominal_temp").expect("nominal_temp field"),
+                483.15,
+                DimensionVector::TEMPERATURE,
+                &format!("bead {i} nominal_temp (M109 S210 → 210 °C)"),
+            );
+            assert_scalar(
+                field(b, "speed").expect("speed field"),
+                0.15,
+                DimensionVector::VELOCITY,
+                &format!("bead {i} speed (F9000 mm·min⁻¹)"),
+            );
+
+            // `layer_z` agrees with the owning layer's `;Z:` in the same regime.
+            let layer_index = match field(b, "layer_index").expect("layer_index field") {
+                Value::Int(n) => *n,
+                other => panic!("bead {i} layer_index must be an Int, got {other:?}"),
+            };
+            let expected_layer_z = if layer_index == 0 { 2.0e-4 } else { 4.0e-4 };
+            assert_length(
+                field(b, "layer_z").expect("layer_z field"),
+                expected_layer_z,
+                &format!("bead {i} layer_z (layer {layer_index})"),
+            );
+
+            let centerline = as_list(field(b, "centerline").expect("centerline field"));
+            assert!(
+                centerline.len() >= 2,
+                "bead {i} must be a real polyline, got {} points",
+                centerline.len()
+            );
+            for (k, p) in centerline.iter().enumerate() {
+                let coords = point_coords_m(p, &format!("bead {i} centerline point {k}"));
+                // The fixture's part occupies 0..10 mm in X/Y and 0.2..0.4 mm in Z, so
+                // in SI every coordinate lies within [0, 1.1e-2] m. Read as millimetres
+                // the same points are 0..10 — 1000x outside this envelope — which makes
+                // the bound the regime assertion at scale; it simultaneously excludes
+                // the skirt's x/y = -1 mm, the only negative coordinates in the file.
+                for (axis, c) in coords.iter().enumerate() {
+                    assert!(
+                        (0.0..=1.1e-2).contains(c),
+                        "bead {i} centerline point {k} axis {axis}: {c} m falls outside the \
+                         fixture's SI envelope [0, 1.1e-2] m — either the mm→m conversion did \
+                         not happen (0..10 read as mm) or a sacrificial Skirt/Brim extrusion \
+                         (x/y = -1 mm) leaked through"
+                    );
+                }
+            }
+        }
+
+        // The Skirt/Brim run really produced no bead, so the FIRST bead is the
+        // External perimeter that follows it — pinned by its role and by the pen-down
+        // point `G1 X0 Y0 F9000` leaves it at, on the `;Z:0.2` layer.
+        assert_eq!(
+            field(&beads[0], "role"),
+            Some(&Value::Enum {
+                type_name: "BeadRole".to_string(),
+                variant: "Perimeter".to_string(),
+                payload: vec![],
+            }),
+            "the first bead is the External perimeter (the preceding Skirt/Brim is skipped)"
+        );
+        let cl0 = as_list(field(&beads[0], "centerline").expect("centerline field"));
+        assert_point3_length(
+            &cl0[0],
+            [0.0, 0.0, 2.0e-4],
+            "first bead pen-down point (G1 X0 Y0, `;Z:0.2`)",
+        );
+        assert_point3_length(
+            &cl0[1],
+            [1.0e-2, 0.0, 2.0e-4],
+            "first bead first extrude endpoint (G1 X10 Y0)",
+        );
+
+        // Layer Z in the same SI regime as the beads sitting on it, and the layers
+        // partition the beads (so the 8 above are all reachable from a `Layer`).
+        assert_eq!(field(&layers[0], "index"), Some(&Value::Int(0)));
+        assert_length(
+            field(&layers[0], "z").expect("layer z field"),
+            2.0e-4,
+            "layer 0 z (;Z:0.2)",
+        );
+        assert_length(
+            field(&layers[1], "z").expect("layer z field"),
+            4.0e-4,
+            "layer 1 z (;Z:0.4)",
+        );
+        let owned: usize = layers
+            .iter()
+            .map(|l| as_list(field(l, "bead_indices").expect("bead_indices field")).len())
+            .sum();
+        assert_eq!(owned, beads.len(), "the layers partition every bead");
+    }
+
     /// REVIEW-FIX (blocking issue 1/2, robustness_unit_mismatch): `read_slice_settings`
     /// must convert the `Length` field's SI-metre magnitude to millimetres. A real
     /// `FDMProcess` has `layer_height = 0.2mm` → a `Length` Scalar with `si_value
