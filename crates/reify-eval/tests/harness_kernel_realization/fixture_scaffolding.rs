@@ -56,6 +56,8 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
+use reify_core::ty::SelectorKind;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
@@ -254,5 +256,54 @@ pub(crate) fn assert_length_cell(
             "{struct_name}.{cell_name} should be Value::Scalar{{LENGTH, {expected}}}, \
              got: {other:?}"
         ),
+    }
+}
+
+/// Asserts that `cell_value` holds a kernel-free `Value::Selector` whose node is
+/// a single `Leaf` of the expected `kind`, then runs `check_query` against the
+/// leaf's `LeafQuery` (task 4118 γ).
+///
+/// The third cell-assertion helper class alongside `assert_bool_cell` and
+/// `assert_length_cell`, and the one that closes a duplication rather than
+/// merely offering to: its two consumers — `kernel_queries_directional_selectors`
+/// and `kernel_queries_filtered_edges` — each carried a BYTE-IDENTICAL local
+/// copy of this body before task #6491 hoisted it here.
+///
+/// Takes the already-read `Option<&Value>` rather than a `(&BuildResult,
+/// struct_name, cell_name)` triple like its two siblings, because what varies
+/// per call site here is the leaf predicate, not the read: the caller's
+/// `check_query` closure owns every numeric expectation and epsilon, so the
+/// helper pins the SHAPE (kernel-free `Selector` / expected `kind` / single
+/// `Leaf`) and nothing else. That keeps a tolerance out of this file, where it
+/// could only be a shared default that silently retunes a pin.
+///
+/// Further copies of this helper live in OTHER harnesses
+/// (`harness_topology_selector`, `harness_geometry`) and are deliberately out of
+/// reach: this module belongs to the `harness_kernel_realization` test binary
+/// only, so serving them would mean promoting the helper into the shared
+/// `reify-test-support` crate. Those copies have already drifted into differing
+/// panic messages and, in `topology_selector_runtime.rs`, a differing signature,
+/// so unifying them is a design question rather than a mechanical hoist.
+///
+/// `#[track_caller]` is load-bearing now that the fn lives in a different file
+/// from its callers: without it a failure would report `fixture_scaffolding.rs`
+/// and lose WHICH pin broke — strictly worse than the local fn it replaces.
+#[track_caller]
+pub(crate) fn assert_selector_leaf(
+    cell_value: Option<&Value>,
+    label: &str,
+    kind: SelectorKind,
+    check_query: impl FnOnce(&LeafQuery),
+) {
+    let sv = match cell_value {
+        Some(Value::Selector(sv)) => sv,
+        other => panic!(
+            "{label} must be a kernel-free Value::Selector (task 4118 γ; BT7), got: {other:?}"
+        ),
+    };
+    assert_eq!(sv.kind, kind, "{label}: selector kind");
+    match &sv.node {
+        SelectorNode::Leaf { query, .. } => check_query(query),
+        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
     }
 }

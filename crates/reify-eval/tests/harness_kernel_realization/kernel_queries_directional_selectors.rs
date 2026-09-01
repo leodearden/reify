@@ -43,8 +43,8 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
-use reify_ir::value::{LeafQuery, SelectorNode};
-use reify_ir::{ExportFormat, Value};
+use reify_ir::value::LeafQuery;
+use reify_ir::ExportFormat;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
 const FIXTURE_PATH: &str = concat!(
