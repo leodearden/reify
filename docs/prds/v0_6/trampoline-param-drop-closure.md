@@ -47,9 +47,18 @@ Task **#4149** (done) fixed this defect class for exactly one struct: `BucklingO
 emitting the workspace's **only** code of this kind, `DiagnosticCode::BucklingOptionUnsupported`. The
 sweep asked whether that fix generalized. It did not.
 
-Within `BucklingOptions` itself the #4149 warning is **complete** — it covers exactly the three dead
-knobs (`mode`, `sigma`, `auto_dense`), and `n_modes`/`tol`/`max_iters`/`element_order` genuinely reach
-the kernel. Every finding below is *outside* that struct.
+Within `BucklingOptions` itself the #4149 warning is **complete as a warning** — it covers exactly the
+three dead knobs (`mode`, `sigma`, `auto_dense`), and `n_modes`/`tol`/`max_iters`/`element_order`
+genuinely reach the kernel. The remaining §2.1 findings are all *outside* that struct.
+
+**CORRECTION (2026-09-01, esc-7077-1).** The paragraph above originally ended "Every finding below is
+*outside* that struct", and on that basis those three knobs were given no §7 row and no owner. That
+conflates census-completeness with ownership. "Covered by a warning" is not one of C1's three states:
+the three knobs are declared-but-not-honored, they are not meaningless on the buckling path, so C1
+classes them `ignored` — and C1 invariant 1 (union **equals** the param set) plus invariant 2 (live
+owner) therefore both bind. Their only historical owner, #4149, is `done`, which is exactly the D4
+defect this PRD names for `mesh_size` / `element_order` / `target_quantity_of_interest`. They now carry
+§7 rows and live owners; see D6.
 
 ### 2.1 Drops that change the computed answer
 
@@ -217,6 +226,41 @@ decomposition.
 only consumer `select_rungs` has zero production callers. The disposition — wire it or delete the
 param — is a decision task, not a build task, and is filed as such.
 
+**D6 — No permanent ratification; a parked owner is not an owner (Leo, 2026-09-01, resolving
+esc-7076-1 / esc-7077-1).** Both escalations offered "ratify permanently" as an exit, and a fourth C1
+disposition (`ratified`, carrying a rationale and a PRD cite instead of a task) was drafted for it.
+Both are **rejected**, and not on balance — the category is ruled out of existence. Leo, verbatim:
+"PDROP should never express such a param. The whole point of PDROP is that there aren't any such params
+allowed. The principle is: nothing is vacuous without being owned by something that is going to fix
+that vacuousness. Permanently vacuous things are a bad smell and a source of bugs. And things that are
+'going to get fixed someday without being owned' are effectively permanent: they don't get fixed until
+they get owned, and that usually happens after they've caused some kind of expensive, painful mess."
+
+Three consequences bind on the leaves:
+
+1. **C1 keeps exactly three sets.** Do not add a fourth, and do not press `not_applicable` into service
+   for a param that is merely unimplemented. C1's discriminator is *semantic meaninglessness on this
+   code path* — the worked case is `element_order` on `mechanism_modal`, where element order has no
+   meaning in a lumped model. A param the kernel *could* honor but nobody has yet is `ignored`.
+2. **A `do_not_complete` owner fails C4c.** PDROP's liveness predicate as drafted in C1 invariant 2 is
+   status-only ("not absent, `done` or `cancelled`"), which is strictly weaker than the PTODO predicate
+   §3 claims to reuse (`ptodo.rs:1257` — "genuinely-live = present ∧ non-terminal ∧ ¬do_not_complete").
+   η implements the **four-condition** predicate, and a parked owner is failure mode (c), reported
+   distinguishably from a terminal one. PTODO's `parked-on-anchor` is not a blessing: #4644 built it as
+   the recurrence *guard* after #4643 dismantled the never-completable-anchor pattern, on the grounds
+   that such an anchor "is neither specific … nor ever-completable". An entry owned by a task that will
+   never complete is the amnesty §3 forbids.
+3. **Every owner must be genuinely completable.** The owners filed under this decision each close on a
+   definite event: #7177 when the DWR PRD is authored (dep-gated on #4909, which owns replacing the
+   uniform-refinement fallback that discards its own Dörfler marking); #7178 when the shift-invert PRD
+   is authored; #7179 when `mode`/`auto_dense` are honored and leave the allowlist entirely.
+
+**D6 note — a limit of the gate, recorded so it is not rediscovered.** C1 declares sets over the
+*params* of a consumed structure, so an entire **unconsumed load type** is outside PDROP's reach by
+construction: `loads: [TractionLoad(...)]` reaching `solve_buckling` is not a param drop and no
+allowlist entry can express it. That class is owned by the dimension-checked-readers chain
+(#5791 → #6922 → #5802) and by #5800, not here.
+
 ## 7. Disposition table
 
 Every measured finding, with its exit. No finding is unassigned; that is the D4 obligation made
@@ -226,20 +270,23 @@ checkable.
 |---|---|---|
 | A1 buckling `supports` | **honor** — port modal's `build_dirichlet_bcs` / `support_targets` | this PRD, leaf γ |
 | A2 buckling `PointLoad.point`/`.direction` | **honor** — port `elastic_static`'s `target_node_set` + #4245's direction handling | this PRD, leaf γ |
-| A3 buckling non-`PointLoad` load types | **split** (`TractionLoad`/`BodyForce`) + **honor** (`PressureLoad`/`Gravity`, already implemented elastic-side) | split PRD / leaf γ |
+| A3 buckling non-`PointLoad` load types | **split** (`TractionLoad`/`BodyForce`) + **honor** (`PressureLoad`/`Gravity`, already implemented elastic-side) | **#5800** / leaf γ |
 | A4 `LoadCase.options` in buckling_multi_case | **honor** — `multi_case.rs` already does it | this PRD, leaf δ |
 | A5 `actuator_limits` + `force_limit` phantom read | **honor** | this PRD, leaf ε |
 | A6 `ElasticOptions.max_iter` | **honor** — also removes the 1000-vs-2000 contradiction | this PRD, leaf β |
 | A7 `ElasticOptions.cg_tolerance` | **honor** | this PRD, leaf β |
-| A8 `TractionLoad` / `BodyForce` | **split** to a load-types PRD | split PRD (§9) |
+| A8 `TractionLoad` / `BodyForce` | **split** to a load-types PRD | **#5800** (§9; #7078 was a duplicate, cancelled) |
 | A9 `mechanism_modal` `tol`/`max_iters` | **honor** | this PRD, leaf ζ |
 | A10 `target_fidelity` ×2 | **rule** — wire or delete | this PRD, leaf θ (decision) |
 | `mechanism_modal.element_order` | **not_applicable** | this PRD, leaf ζ |
-| `ModalOptions.sigma` → `shift_frequency` | **allowlist**, owner live | **#6097** (pending) |
+| `BucklingOptions.mode` | **honor** — dispatch dense vs shift-invert; both entry points already public | **#7179** (pending) |
+| `BucklingOptions.auto_dense` | **honor** — `false` becomes a coded error below the Lanczos floor, not a faer panic | **#7179** (pending) |
+| `BucklingOptions.sigma` | **allowlist**, owner live — σ≠0 needs an indefinite factorization, not plumbing | **#7178** (pending) |
+| `ModalOptions.sigma` → `shift_frequency` | **allowlist**, owner live — retype #6097, numerics #7178 | **#6097** + **#7178** (both pending) |
 | `force_tet` / `require_hex_wedge` | **allowlist**, owner live | **#4746** (pending) |
 | `ElasticOptions.mesh_size` | **allowlist**, owner to be filed | leaf ι files it |
 | `ElasticOptions.element_order` (elastic path) | **allowlist**, owner to be filed | leaf ι files it |
-| `target_quantity_of_interest` | **allowlist**, owner to be filed (DWR) | leaf ι files it |
+| `target_quantity_of_interest` | **allowlist**, owner live (DWR) | **#7177** (pending, dep-gated on #4909) |
 
 ## 8. Pre-conditions
 
@@ -288,7 +335,11 @@ Phase 3 — remaining honors. Phase 4 — docs-truth + close.
 - **Honoring `mesh_size`, the elastic `element_order` path, `target_quantity_of_interest`,
   `force_tet`/`require_hex_wedge`** — allowlisted with live owners (§7).
 - **Retro-migrating existing diagnostics** to the new codes. INV-SF-6's opportunistic-migration posture
-  governs; this PRD adds codes, it does not sweep.
+  governs; this PRD adds codes, it does not sweep. **One scoped exception (D6, 2026-09-01):** leaving
+  `BucklingOptions` un-migrated would permanently exempt the one struct `docs/legibility/design-invariants.md`
+  holds up as "the house pattern" from the pattern it exemplifies. Its `mode` and `auto_dense` arms are
+  retired by #7179 when it honors them, and its `sigma` arm gains a live `#NNNN` cite (#7178) where it
+  cites no task today. That is opportunistic migration at the site, not a sweep.
 - **The `sub p = Ctor(...)` silent-accept family** (#6946, #6869, #6191) — ctor *binding* diagnostics,
   a different seam from trampoline *extraction*.
 - **Whether a param should exist at all.** θ rules on `target_fidelity` only because its consumer is
