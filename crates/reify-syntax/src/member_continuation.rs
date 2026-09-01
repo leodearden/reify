@@ -83,8 +83,43 @@ use reify_core::SourceSpan;
 
 /// Member-list container node kinds this check covers.
 ///
-/// Step-2 scope: `structure_definition` only. Widened in step-6.
-const MEMBER_LIST_CONTAINERS: &[&str] = &["structure_definition"];
+/// Derived from the member-repeat sites in `tree-sitter-reify/grammar.js` —
+/// every rule with a brace-delimited `repeat(...)` body whose items are
+/// members. Each entry names the grammar rule and the repeat it owns.
+const MEMBER_LIST_CONTAINERS: &[&str] = &[
+    // repeat($._member) — grammar.js:512
+    "structure_definition",
+    // repeat($._member) — grammar.js:525
+    "occurrence_definition",
+    // repeat($.trait_member) — grammar.js:291
+    "trait_declaration",
+    // repeat($.purpose_member) — grammar.js:375
+    "purpose_declaration",
+    // repeat($._constraint_def_body_item) — grammar.js:407
+    "constraint_definition",
+    // repeat($._guard_member), twice (the `where` body and the `else` body)
+    // — grammar.js:598, :600
+    "guarded_block",
+    // repeat($.relation_member) — grammar.js:727
+    "relate_block",
+    // repeat($.relation_member) — grammar.js:748
+    "sub_relate_block",
+    // repeat($.relation_member) — grammar.js:800
+    "joint_body",
+    // repeat(choice($.param_assignment, $._member)) — grammar.js:945
+    "specialization_body",
+    // repeat1($.keyed_member_entry) — grammar.js:970
+    "keyed_member_block",
+    // seq($.match_arm_decl_arm, repeat(seq(',', $.match_arm_decl_arm)), …)
+    // — grammar.js:1404. Carried deliberately even though no arm shape can
+    // trip the rule today: arms are `,`-separated and `match_arm_sub_decl`
+    // ends in a plain identifier with no expression tail, so the grammar
+    // already rejects the join with an ERROR node (measured). grammar.js
+    // (~line 1415) defers the arm-body form `sub name : T { … }` to task
+    // #3569; carrying the container now means that widening arrives covered.
+    // Pinned by `match_arm_decl_block_rejects_the_join_at_the_grammar_level_already`.
+    "match_arm_decl_block",
+];
 
 /// Scan `root` for member-continuation ambiguities.
 ///

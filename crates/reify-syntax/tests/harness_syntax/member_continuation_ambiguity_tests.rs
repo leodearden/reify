@@ -342,9 +342,25 @@ fn no_tracked_ri_source_trips_the_member_continuation_check() {
 
 // ── (f) the other member-list bodies ─────────────────────────────────────────
 
-/// Assert `source` yields exactly one member-continuation diagnostic, anchored
-/// at the first byte of `needle`.
-fn assert_one_member_continuation_error_at(label: &str, source: &str, needle: &str) {
+/// Assert `source` yields exactly one member-continuation diagnostic whose
+/// span covers exactly `token`, located by searching for `locator`.
+///
+/// `locator` and `token` are separate because the diagnostic is deliberately
+/// token-precise: the offending row reads `- 3mm`, but the span must cover the
+/// `-` alone. Passing the whole row as the locator keeps the fixture's intent
+/// readable while still pinning the narrow span.
+fn assert_one_member_continuation_error_at(
+    label: &str,
+    source: &str,
+    locator: &str,
+    token: &str,
+) {
+    assert!(
+        locator.starts_with(token),
+        "{label}: test bug — locator {locator:?} must begin with the expected \
+         token {token:?}"
+    );
+
     let found = member_continuation_errors(source);
     assert_eq!(
         found.len(),
@@ -352,13 +368,13 @@ fn assert_one_member_continuation_error_at(label: &str, source: &str, needle: &s
         "{label}: expected exactly one member-continuation diagnostic, got {found:#?}"
     );
     let at = source
-        .find(needle)
-        .unwrap_or_else(|| panic!("{label}: fixture must contain {needle:?}")) as u32;
+        .find(locator)
+        .unwrap_or_else(|| panic!("{label}: fixture must contain {locator:?}")) as u32;
     let (start, end, _) = &found[0];
     assert_eq!(
         (*start, *end),
-        (at, at + needle.len() as u32),
-        "{label}: span must cover exactly {needle:?} at byte {at}, got {:?}",
+        (at, at + token.len() as u32),
+        "{label}: span must cover exactly {token:?} at byte {at}, got {:?}",
         &source[*start as usize..*end as usize]
     );
 }
@@ -376,7 +392,7 @@ fn assert_one_member_continuation_error_at(label: &str, source: &str, needle: &s
 #[test]
 fn relate_body_item_boundary_join_is_rejected() {
     let source = "structure S {\n  relate {\n    a.b\n    (x)\n  }\n}\n";
-    assert_one_member_continuation_error_at("relate body", source, "(");
+    assert_one_member_continuation_error_at("relate body", source, "(x)", "(");
 }
 
 /// The same shape in a sub's inline `at <pose> where { … }` relate block,
@@ -391,7 +407,7 @@ fn sub_relate_block_body_item_boundary_join_is_rejected() {
         "  }\n",
         "}\n",
     );
-    assert_one_member_continuation_error_at("sub_relate_block body", source, "(x)");
+    assert_one_member_continuation_error_at("sub_relate_block body", source, "(x)", "(");
 }
 
 /// `namespaced_ref.txt` case "namespaced_ref item boundary: a predicate ending
@@ -400,7 +416,7 @@ fn sub_relate_block_body_item_boundary_join_is_rejected() {
 #[test]
 fn constraint_def_body_item_boundary_join_is_rejected() {
     let source = "constraint def C {\n  a.b\n  (x) > 0\n}\n";
-    assert_one_member_continuation_error_at("constraint def body", source, "(x)");
+    assert_one_member_continuation_error_at("constraint def body", source, "(x)", "(");
 }
 
 /// `namespaced_ref.txt`'s sibling control case, "item boundary control: a
@@ -410,19 +426,24 @@ fn constraint_def_body_item_boundary_join_is_rejected() {
 #[test]
 fn constraint_def_bare_ident_control_join_is_rejected() {
     let source = "constraint def C {\n  a\n  (x) > 0\n}\n";
-    assert_one_member_continuation_error_at("constraint def bare-ident control", source, "(x)");
+    assert_one_member_continuation_error_at(
+        "constraint def bare-ident control",
+        source,
+        "(x)",
+        "(",
+    );
 }
 
 #[test]
 fn trait_body_leading_operator_continuation_is_rejected() {
     let source = "trait T {\n  let d = 5mm\n  - 3mm\n}\n";
-    assert_one_member_continuation_error_at("trait body", source, "- 3mm");
+    assert_one_member_continuation_error_at("trait body", source, "- 3mm", "-");
 }
 
 #[test]
 fn purpose_body_leading_operator_continuation_is_rejected() {
     let source = "purpose P() {\n  let d = 5mm\n  - 3mm\n}\n";
-    assert_one_member_continuation_error_at("purpose body", source, "- 3mm");
+    assert_one_member_continuation_error_at("purpose body", source, "- 3mm", "-");
 }
 
 #[test]
@@ -435,7 +456,7 @@ fn guarded_block_body_leading_operator_continuation_is_rejected() {
         "  }\n",
         "}\n",
     );
-    assert_one_member_continuation_error_at("guarded-block body", source, "- 3mm");
+    assert_one_member_continuation_error_at("guarded-block body", source, "- 3mm", "-");
 }
 
 /// `occurrence_definition` shares `repeat($._member)` with
@@ -444,7 +465,7 @@ fn guarded_block_body_leading_operator_continuation_is_rejected() {
 #[test]
 fn occurrence_body_leading_operator_continuation_is_rejected() {
     let source = "occurrence O : S {\n  let d = 5mm\n  - 3mm\n}\n";
-    assert_one_member_continuation_error_at("occurrence body", source, "- 3mm");
+    assert_one_member_continuation_error_at("occurrence body", source, "- 3mm", "-");
 }
 
 /// MEASURED FINDING, contra #7094's plan, which listed a must-error case here.
