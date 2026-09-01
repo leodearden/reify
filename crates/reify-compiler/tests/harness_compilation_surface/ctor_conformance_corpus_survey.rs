@@ -998,7 +998,10 @@ fn an_empty_quoted_token_is_a_miss_so_the_fallback_prefix_is_still_consulted() {
         field_of_message("argument 'label' has type 'Int'"),
         Some("label".to_owned())
     );
-    assert_eq!(field_of_message("E_CTOR_ARITY: W() expects at most 1 argument, got 3"), None);
+    assert_eq!(
+        field_of_message("E_CTOR_ARITY: W() expects at most 1 argument, got 3"),
+        None
+    );
 
     // `def_of_diagnostic`'s ε prose path has the same latent shape and is
     // covered by the same source-level rule.
