@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Preflight guard for the workspace's native deps: THREE arms, all run BEFORE
+# Preflight guard for the workspace's native deps: FOUR arms, all run BEFORE
 # any expensive compile, each converting a silent or cryptic downstream
 # failure into a fast, actionable message.
 #
@@ -25,6 +25,15 @@
 #      upgrade that moves the version relinks the kernel with nothing louder
 #      than a `cargo:warning`, and the has_occt suite that would have caught
 #      the regression is exactly what disappears when OCCT goes missing.
+#
+#   4. Gmsh presence (task #6493). Byte-for-byte the same silent vacuity as
+#      arm 3: `reify_build_utils::find(NativeDep::Gmsh)` returns None,
+#      `crates/reify-kernel-gmsh/build.rs` emits a `cargo:warning` and returns
+#      without setting `has_gmsh`, and every `#[cfg(has_gmsh)]`-gated item in
+#      the workspace stops being compiled at all. PRESENCE is fatal here;
+#      the resolved SONAME is RECORDED but deliberately NOT pinned to an
+#      accepted set — see that arm's own banner for why the OCCT pin's
+#      justification does not carry over.
 #
 # verify.sh runs this as the first plan entry when Rust work is in scope.
 #
@@ -247,7 +256,10 @@ occt_hint() {
     err " green over a kernel nothing exercised."
 }
 
-# occt_find_dir <override> <sentinel> <candidate>...
+# dep_find_dir <override> <sentinel> <candidate>...
+#
+# SHARED by all three native-dep arms below, so the resolution rule exists
+# ONCE rather than three drifting times.
 #
 # Mirrors reify_build_utils::find_dir_with_override
 # (crates/reify-build-utils/src/lib.rs) rule for rule, with ONE deliberate,
@@ -261,7 +273,7 @@ occt_hint() {
 # ships the unversioned dev symlink.
 #
 # EMPTY-OVERRIDE RULE (shared, NOT a divergence): an exported-but-EMPTY
-# OCCT_LIB_DIR / OCCT_INCLUDE_DIR counts as UNSET on both sides and falls
+# <DEP>_LIB_DIR / <DEP>_INCLUDE_DIR counts as UNSET on both sides and falls
 # through to the candidate list. `[ -n "$override" ]` below is the bash half;
 # `override_dir.filter(|d| !d.is_empty())` in find_dir_with_override is the
 # Rust half, pinned by its `find_dir_ignores_exported_but_empty_override` unit
@@ -272,7 +284,7 @@ occt_hint() {
 #
 # Prints the resolved dir on stdout and returns 0; returns 1 with no output
 # when nothing resolves.
-occt_find_dir() {
+dep_find_dir() {
     local override="$1" sentinel="$2"
     shift 2
     if [ -n "$override" ]; then
@@ -295,6 +307,13 @@ occt_find_dir() {
     # both halves — OCCT_SNAP_ROOT's default against the Rust read_dir literal,
     # and the sentinel -> subdir mapping below against the Rust match arms,
     # order included.
+    #
+    # SCOPED TO OCCT BY CONSTRUCTION, and it must stay that way: the `case`
+    # below is keyed on the SENTINEL, and has arms only for OCCT's two. Gmsh
+    # and OpenVDB sentinels fall through to an empty $snap_subdir and never
+    # scan, which is exactly what find_dir_with_override's `_ => None` arm
+    # does. Do not add arms for them here — the build has none, and this
+    # helper being shared is not a licence to widen it.
     local snap_subdir=""
     case "$sentinel" in
         Standard_Failure.hxx) snap_subdir="usr/include/opencascade" ;;
@@ -313,10 +332,11 @@ occt_find_dir() {
     return 1
 }
 
-# occt_searched_desc <override> <env-var-name> <candidate>...
+# dep_searched_desc <override> <env-var-name> <candidate>...
 # Human-readable rendering of WHERE the guard actually looked, so a red gate
 # names the searched paths rather than leaving the reader to infer them.
-occt_searched_desc() {
+# Shared by all three arms, same as dep_find_dir above.
+dep_searched_desc() {
     local override="$1" envvar="$2"
     shift 2
     if [ -n "$override" ]; then
@@ -331,8 +351,8 @@ OCCT_LIB_OVERRIDE="${OCCT_LIB_DIR:-}"
 
 # `|| true` inside the substitution: a non-resolving arm must reach the named
 # error below, not abort under `set -e` with no message at all.
-OCCT_INCLUDE_RESOLVED="$(occt_find_dir "$OCCT_INCLUDE_OVERRIDE" "$OCCT_INCLUDE_SENTINEL" "${OCCT_INCLUDE_CANDIDATES[@]}" || true)"
-OCCT_LIB_RESOLVED="$(occt_find_dir "$OCCT_LIB_OVERRIDE" "$OCCT_LIB_SENTINEL" "${OCCT_LIB_CANDIDATES[@]}" || true)"
+OCCT_INCLUDE_RESOLVED="$(dep_find_dir "$OCCT_INCLUDE_OVERRIDE" "$OCCT_INCLUDE_SENTINEL" "${OCCT_INCLUDE_CANDIDATES[@]}" || true)"
+OCCT_LIB_RESOLVED="$(dep_find_dir "$OCCT_LIB_OVERRIDE" "$OCCT_LIB_SENTINEL" "${OCCT_LIB_CANDIDATES[@]}" || true)"
 
 # Report BOTH halves before exiting. find() is None when EITHER is unresolved,
 # so a reader whose host is missing both should not have to fix one, re-run,
@@ -341,13 +361,13 @@ occt_failed=0
 
 if [ -z "$OCCT_INCLUDE_RESOLVED" ]; then
     err "manifold-deps guard: OCCT headers not found — no $OCCT_INCLUDE_SENTINEL in:"
-    err "                     $(occt_searched_desc "$OCCT_INCLUDE_OVERRIDE" OCCT_INCLUDE_DIR "${OCCT_INCLUDE_CANDIDATES[@]}")"
+    err "                     $(dep_searched_desc "$OCCT_INCLUDE_OVERRIDE" OCCT_INCLUDE_DIR "${OCCT_INCLUDE_CANDIDATES[@]}")"
     occt_failed=1
 fi
 
 if [ -z "$OCCT_LIB_RESOLVED" ]; then
     err "manifold-deps guard: OCCT libraries not found — no $OCCT_LIB_SENTINEL in:"
-    err "                     $(occt_searched_desc "$OCCT_LIB_OVERRIDE" OCCT_LIB_DIR "${OCCT_LIB_CANDIDATES[@]}")"
+    err "                     $(dep_searched_desc "$OCCT_LIB_OVERRIDE" OCCT_LIB_DIR "${OCCT_LIB_CANDIDATES[@]}")"
     occt_failed=1
 fi
 
@@ -419,5 +439,87 @@ if [ "$occt_soname_accepted" -ne 1 ]; then
 fi
 
 ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED)"
+
+# ---------- Gmsh presence preflight (task #6493) ----------
+#
+# See arm 4 in the file header. Same fail-OPEN build.rs, same silent deletion
+# of the gated test surface, same reason it has to be caught before the
+# compile rather than inferred from test results.
+#
+# Note this gates the VERIFY PIPELINE, not `cargo build` — gmsh-free stub
+# builds stay sanctioned, and crates/reify-kernel-gmsh carries real
+# `cfg(not(has_gmsh))` stub modules (src/kernel.rs, src/lib.rs,
+# src/mesh_profile_2d.rs) for them, exactly as reify-kernel-occt does.
+
+# BEGIN gmsh-candidates — EXACT MIRROR of reify_build_utils::NativeDep::Gmsh
+# (crates/reify-build-utils/src/lib.rs). Order is load-bearing and is the
+# OPPOSITE of OCCT's: /opt/reify-deps comes FIRST here, because the conda-forge
+# env is where reify's gmsh 4.15.2 actually lives and Ubuntu's apt gmsh (4.12.1)
+# must not win. Rust stays the source of truth; this block is a declared mirror,
+# pinned equal INCLUDING ORDER by tests/infra/test_occt_deps_preflight.sh — so
+# an edit on either side fails that guard rather than silently leaving the gate
+# and the build disagreeing.
+GMSH_LIB_CANDIDATES=(
+    /opt/reify-deps/lib
+    /usr/lib/x86_64-linux-gnu
+    /usr/lib
+    /usr/local/lib
+)
+GMSH_INCLUDE_CANDIDATES=(
+    /opt/reify-deps/include
+    /usr/include
+    /usr/local/include
+)
+GMSH_LIB_SENTINEL=libgmsh.so
+GMSH_INCLUDE_SENTINEL=gmshc.h
+# END gmsh-candidates
+
+gmsh_install_hint() {
+    err "Provision the conda-forge reify-deps env — scripts/setup-dev.sh's"
+    err "'conda-forge env: gmsh + openvdb' block does exactly this, installing"
+    err "gmsh 4.15.2 into /opt/reify-deps (apt's gmsh is stale at 4.12.1):"
+    err "    ./scripts/setup-dev.sh"
+    err "Or point GMSH_INCLUDE_DIR / GMSH_LIB_DIR at an existing install."
+}
+
+gmsh_hint() {
+    gmsh_install_hint
+    err "WHY THIS IS FATAL rather than a warning: without gmsh, reify-kernel-gmsh's"
+    err " build.rs never emits has_gmsh, so every #[cfg(has_gmsh)]-gated item in the"
+    err " workspace is not compiled AT ALL — reify-kernel-gmsh's whole test surface,"
+    err " the occt_gmsh conformance suites, and the reify-eval FEA/mesh e2e binaries."
+    err " The suite then reports zero tests REPORTED, not zero tests FAILED, and the"
+    err " gate goes green over a mesher nothing exercised."
+}
+
+GMSH_INCLUDE_OVERRIDE="${GMSH_INCLUDE_DIR:-}"
+GMSH_LIB_OVERRIDE="${GMSH_LIB_DIR:-}"
+
+# `|| true` inside the substitution: a non-resolving arm must reach the named
+# error below, not abort under `set -e` with no message at all.
+GMSH_INCLUDE_RESOLVED="$(dep_find_dir "$GMSH_INCLUDE_OVERRIDE" "$GMSH_INCLUDE_SENTINEL" "${GMSH_INCLUDE_CANDIDATES[@]}" || true)"
+GMSH_LIB_RESOLVED="$(dep_find_dir "$GMSH_LIB_OVERRIDE" "$GMSH_LIB_SENTINEL" "${GMSH_LIB_CANDIDATES[@]}" || true)"
+
+# Report BOTH halves before exiting, same rule as the OCCT arm: find() is None
+# when EITHER is unresolved, so a reader whose host is missing both should not
+# have to fix one, re-run, and discover the other.
+gmsh_failed=0
+
+if [ -z "$GMSH_INCLUDE_RESOLVED" ]; then
+    err "manifold-deps guard: gmsh headers not found — no $GMSH_INCLUDE_SENTINEL in:"
+    err "                     $(dep_searched_desc "$GMSH_INCLUDE_OVERRIDE" GMSH_INCLUDE_DIR "${GMSH_INCLUDE_CANDIDATES[@]}")"
+    gmsh_failed=1
+fi
+
+if [ -z "$GMSH_LIB_RESOLVED" ]; then
+    err "manifold-deps guard: gmsh libraries not found — no $GMSH_LIB_SENTINEL in:"
+    err "                     $(dep_searched_desc "$GMSH_LIB_OVERRIDE" GMSH_LIB_DIR "${GMSH_LIB_CANDIDATES[@]}")"
+    gmsh_failed=1
+fi
+
+if [ "$gmsh_failed" -ne 0 ]; then
+    gmsh_hint
+    exit 1
+fi
 
 exit 0
