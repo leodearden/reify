@@ -12,6 +12,17 @@
 //! or a StructureRef (stress_invariants). All five are pure eval-builtins
 //! already dispatched by name in `reify_stdlib::eval_builtin` (analysis.rs).
 //!
+//! **Field arguments (task #6577).** The same names also accept a
+//! `Field<D, Tensor<2,3,Q>>` — the shape `ElasticResult.stress` carries — and
+//! there eval does NOT reduce: `crates/reify-expr/src/lib.rs` intercepts the
+//! call and returns a lazily-wrapped `Value::Field`
+//! (`crates/reify-expr/src/analysis.rs:132-224`). The compile-time result must
+//! therefore be a `Type::Field` too, because `value_type_kind_matches`
+//! (`crates/reify-eval/src/lib.rs:330`) maps `Value::Field` only onto
+//! `Type::Field`. [`field_tensor_arg`] mirrors eval's shape gate and each arm
+//! mirrors eval's per-name arity gate, so the compiler never claims a Field
+//! result for a call eval would answer with `Value::Undef`.
+//!
 //! The call STAYS a `FunctionCall` (eval untouched). Only the compile-time
 //! result type is fixed here, eliminating the first-arg `Tensor` drift in
 //! `expr.rs`'s `NoUserFunctions` ladder. This is the established pattern for
@@ -53,6 +64,8 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 /// Result type for a FEA stress-analysis reduction builtin, derived from the
 /// compiled argument structure.
 ///
+/// # Concrete-tensor forms (arg0 is a `Tensor`/`Matrix`)
+///
 /// - `von_mises` / `max_shear` → `scalar_or_real(tensor_quantity(arg0))`.
 ///   A Pressure tensor → `Scalar<Pressure>`; a dimensionless tensor → `Real`.
 ///   Mirrors `trace` / `magnitude` in `math_fn_result_type`.
@@ -62,10 +75,41 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 /// - `stress_invariants` → `Type::StructureRef("StressInvariants")` (the
 ///   struct def in `std.fea`). Mirrors `is_dynamics_query` → `MassProperties`.
 ///
+/// # Field-argument forms (arg0 is a `Field` with a 3x3 tensor codomain, task #6577)
+///
+/// - `von_mises` / `max_shear` at arity 1 → `Field<D, scalar_or_real(Q)>`.
+///
+/// The result is a **`Type::Field`, not a `Type::Scalar`**: eval does not reduce
+/// a field eagerly, it wraps it LAZILY and hands back a `Value::Field`
+/// (`crates/reify-expr/src/lib.rs` dispatch → `analysis::compute_von_mises` /
+/// `compute_max_shear` → `wrap_tensor_field`, `crates/reify-expr/src/analysis.rs:132-157`).
+/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) maps a
+/// `Value::Field` ONLY onto a `Type::Field`, and the mismatch is enforced in
+/// production at `engine_admin.rs:124` as `EngineError::TypeKindMismatch` — so a
+/// scalar compile-time type here would trade a dimension bug for a kind lie.
+/// This is the same shape `fea_envelope_result_type` uses for `envelope_von_mises`
+/// (`units.rs:1071-1093`). The consumer half needs no change: `max`/`min` already
+/// reduce a `Type::Field` codomain via `reduce_field_codomain`
+/// (`math_signatures.rs:275-287`), so `max(von_mises(stress))` is `Scalar<Pressure>`.
+///
 /// Only reached for names in [`ANALYSIS_FN_NAMES`] (the caller gates on
 /// [`is_analysis_typed_fn`]); the `_` arm is therefore unreachable in practice
 /// and returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
+    // Field-argument forms (task #6577). Gated on eval's exact shape+arity so the
+    // compiler's claim stays narrower-or-equal to what eval can honour; every
+    // fall-through lands on `Value::Undef`, which is kind-compatible with any type
+    // (`value_type_kind_matches`, crates/reify-eval/src/lib.rs:313).
+    if let Some((domain, dim)) = field_tensor_arg(args, 0)
+        && matches!(name, "von_mises" | "max_shear")
+        && args.len() == 1
+    {
+        return Type::Field {
+            domain: Box::new(domain.clone()),
+            codomain: Box::new(scalar_or_real(dim)),
+        };
+    }
+
     match name {
         // von_mises / max_shear: scalar reduction of the tensor quantity.
         // Scalar<Pressure> for a Pressure tensor; Real for dimensionless.
@@ -103,6 +147,44 @@ fn tensor_quantity(args: &[CompiledExpr], i: usize) -> DimensionVector {
         }
         _ => DimensionVector::DIMENSIONLESS,
     }
+}
+
+/// The `(domain, element dimension)` of arg `i` when it is a `Type::Field` whose
+/// codomain is a 3x3 tensor/matrix of scalars. `None` otherwise.
+///
+/// Deliberately mirrors eval's gate — `analysis::tensor_element_dimension`
+/// (`crates/reify-expr/src/analysis.rs:25-43`), reached via `validate_tensor_field`
+/// (`:60-112`) — so the compile-time type and the `Value::Field` eval produces
+/// agree under `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`).
+/// The `Type::Int` quantity branch is carried over for the same reason:
+/// `tensor_element_dimension` maps it to `DIMENSIONLESS`.
+///
+/// Distinct from [`tensor_quantity`], which handles the CONCRETE tensor/matrix
+/// arg forms and is deliberately left untouched by task #6577: teaching it to
+/// recurse into a Field codomain would yield a `Scalar` compile-time type for a
+/// call eval answers with a `Value::Field`.
+fn field_tensor_arg(args: &[CompiledExpr], i: usize) -> Option<(&Type, DimensionVector)> {
+    let Some(Type::Field { domain, codomain }) = args.get(i).map(|a| &a.result_type) else {
+        return None;
+    };
+    let dim = match codomain.as_ref() {
+        Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity,
+        }
+        | Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity,
+        } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            Type::Int => DimensionVector::DIMENSIONLESS,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((domain.as_ref(), dim))
 }
 
 // `scalar_or_real` is defined in `crate::signatures_common` and re-exported
