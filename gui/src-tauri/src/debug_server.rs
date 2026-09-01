@@ -4910,6 +4910,139 @@ structure def Part {
         ));
     }
 
+    // ── Task 5097 δ step-23: RED — `reify_update_source`'s frontend push must
+    // carry the SESSION'S canonical path, never the caller's raw spelling
+    // (review finding, correctness) ──
+    //
+    // `handle_reify_update_source` pushes
+    // `write_tool_frontend_payload(&gs, Some((&file_path, &content)))` with
+    // `file_path` the UNMODIFIED `reify_write_str_param(&params, "file_path")`,
+    // while the sibling funnel `open_path_into_engine` runs
+    // `crate::path_key::canonicalize_debug_open_path(raw_path)` BEFORE building
+    // its `open_file` push for exactly this reason ("fixes bug #3892:
+    // duplicate tabs via debug bridge").
+    //
+    // The two interact badly because `update_source_target_matches_active`
+    // DELIBERATELY accepts non-canonical spellings — the stem-only module key
+    // `"part.ri"`, and any relative/`..`/symlink spelling that `canonicalize`s
+    // to the active file. On the frontend `editorStore.openFile` keys tabs by
+    // `canonicalizeKey(file.path)`, and `canonicalizeKey` returns any
+    // NON-absolute path unchanged (`gui/src/utils/pathUtils.ts` — `if
+    // (!p.startsWith('/')) return p;`), so an accepted non-canonical spelling
+    // opens a SECOND tab under a different key and makes it active, while the
+    // real tab keyed by the absolute path keeps the STALE text — precisely the
+    // silent editor desync the `file` member was added to close (bug #3893).
+    //
+    // Tested against the extractable helper rather than the handler:
+    // `DebugServerState` is an Arc-of-Mutex bundle this module itself records
+    // as impractical to build in `mod tests`, which is why every test in this
+    // cluster drives the `*_on_engine_and_refresh_baseline` cores instead.
+    //
+    // FAILS TO COMPILE until step-24 adds `resolve_update_source_push_path`.
+
+    #[test]
+    fn resolve_update_source_push_path_uses_the_sessions_canonical_path() {
+        // The named review case: ALL THREE spellings the guard accepts must
+        // land on the SAME wire key — the session's own canonical path, which
+        // is byte-for-byte the key `open_path_into_engine` already pushed as
+        // `open_file` (it loads the engine from an ALREADY-canonicalized
+        // `path`), and therefore the key `editorStore` already holds the tab
+        // under.
+        let dir = tempfile::tempdir().unwrap();
+        let active = write_and_canonicalize(dir.path(), "part.ri", ai_write_source());
+        let active_path = std::path::Path::new(&active);
+
+        // A relative/dot-segment spelling of the same file — accepted by
+        // `update_source_target_matches_active`'s `canonicalize` arm.
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        let indirect = format!("{}/./sub/../part.ri", dir.path().display());
+
+        for requested in ["part.ri", indirect.as_str(), active.as_str()] {
+            assert_eq!(
+                resolve_update_source_push_path(Some(active_path), requested),
+                active,
+                "every spelling the guard accepts must push the SESSION's \
+                 canonical path, not the caller's; {requested:?} did not"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_update_source_push_path_canonicalizes_when_no_file_is_loaded() {
+        // The `load_from_source` arm: the guard accepts ANY path there (see
+        // `update_source_target_matches_active`'s `None` case) and there is no
+        // session path to fall back on — so this arm must canonicalize the
+        // caller's spelling itself. Otherwise it is the one remaining way to
+        // put a relative, tab-forking key on the wire.
+        //
+        // `Cargo.toml` is resolved relative to the test process CWD, which
+        // cargo fixes at the package root — a real on-disk relative spelling
+        // without mutating global CWD state (which would race sibling tests).
+        let canonical = std::fs::canonicalize("Cargo.toml")
+            .expect("the package root must contain Cargo.toml")
+            .to_string_lossy()
+            .into_owned();
+
+        let pushed = resolve_update_source_push_path(None, "Cargo.toml");
+        assert!(
+            pushed.starts_with('/'),
+            "a relative spelling must be resolved to an ABSOLUTE key — that is \
+             exactly what the frontend's `canonicalizeKey` cannot do for \
+             itself; got {pushed:?}"
+        );
+        assert_eq!(
+            pushed, canonical,
+            "the no-session arm must push the on-disk canonical form"
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_update_source_pushes_the_canonical_path_for_a_stem_only_key() {
+        // End-to-end over a REAL session: the stem-only key `"part.ri"` is the
+        // spelling `get_diagnostics` stamps and therefore the one an AI client
+        // is most likely to echo back. The guard accepts it (by design), so
+        // the push is the only thing standing between it and a forked tab.
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0));
+
+        let edited = ai_write_source().replace(
+            "param depth: Length = 40mm",
+            "param depth: Length = 55mm",
+        );
+        reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            "part.ri",
+            &edited,
+        )
+        .await
+        .expect("the stem-only module key names the active file and must be accepted");
+
+        // What the handler would put on the wire for this call.
+        let active = crate::engine_lock::with_engine_lock(&engine, |s| {
+            Ok(s.canonical_file_path().map(|p| p.to_path_buf()))
+        })
+        .and_then(std::convert::identity)
+        .expect("the launched session must expose a canonical path");
+        let pushed = resolve_update_source_push_path(active.as_deref(), "part.ri");
+
+        // Absoluteness is the load-bearing property: it is precisely what
+        // `canonicalizeKey` needs in order to hit the tab
+        // `open_path_into_engine` already opened.
+        assert!(
+            pushed.starts_with('/'),
+            "the pushed key must be ABSOLUTE, got {pushed:?}"
+        );
+        assert_eq!(
+            pushed, canonical,
+            "the pushed key must be the session's canonical path"
+        );
+    }
+
     // ── Task 5097 δ step-18: RED — `reify_update_source`'s diagnostics filter
     // must not be vacuous (review finding) ──
     //
