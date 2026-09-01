@@ -1,7 +1,7 @@
 use reify_compiler::{CompiledModule, RequirementKind, ValueCellDecl, ValueCellKind, Visibility};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, DEPRECATED_ANNOTATION, DimensionVector, ModulePath, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, SourceSpan, TEST_ANNOTATION, Type, ValueCellId};
-use reify_ir::{BinOp, ConstraintSolver, SolveResult, Value};
+use reify_ir::{BinOp, ConstraintSolver, Mesh, SolveResult, Value};
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
@@ -1208,6 +1208,74 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
         m_id,
         solver,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Box / cube mesh fixtures
+// ---------------------------------------------------------------------------
+//
+// Hoisted from `crates/reify-kernel-gmsh/tests/common/mod.rs` by task #6387,
+// completing the dedup that #6200 deliberately deferred (that module's own doc
+// comment named this wider hoist as the intended end state, but carried no
+// task cite). These are the workspace-canonical definitions; they replace the
+// per-file copies that previously lived in
+// `reify-kernel-gmsh/tests/{mesh_to_volume_tests,pipeline_integration,
+// refine_volume_tests}.rs` and, transitively, `tests/common/mod.rs`'s own.
+//
+// Why one copy matters: the cost of duplicated fixtures is DRIFT. A fixture
+// corrected in one copy and not the others silently makes independent guards
+// disagree about what "a box" is — exactly the class of gap that let #6200
+// survive undetected. Deduplicating the geometry means a correction lands
+// everywhere at once.
+//
+// `reify-kernel-manifold`'s offset-taking `test_fixtures::unit_cube_mesh` is
+// the one deliberate exception and keeps its own box literal: that module is
+// reachable from the crate's plain library artifact (the `test-fixtures`
+// feature path), where `reify-test-support` is not linkable because it is only
+// a dev-dependency there. `crates/reify-kernel-manifold/tests/
+// cube_fixture_agreement.rs` is the executable guard that keeps the two
+// honest.
+
+/// Axis-aligned box spanning `[0,lx] x [0,ly] x [0,lz]`: 8 vertices / 12
+/// outward-wound triangles, enclosed volume exactly `lx * ly * lz`.
+///
+/// The winding is vetted OUTWARD (unlike `through_thickness_tests.rs`'s
+/// `slab_surface_mesh`), which is a precondition for every signed-volume and
+/// divergence-theorem assertion built on it.
+pub fn prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
+    Mesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            lx, 0.0, 0.0, // 1
+            lx, ly, 0.0, // 2
+            0.0, ly, 0.0, // 3
+            0.0, 0.0, lz, // 4
+            lx, 0.0, lz, // 5
+            lx, ly, lz, // 6
+            0.0, ly, lz, // 7
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            // -Z bottom (outward = -Z, so CW from +Z view)
+            0, 2, 1,  0, 3, 2,
+            // +Z top
+            4, 5, 6,  4, 6, 7,
+            // -Y front
+            0, 1, 5,  0, 5, 4,
+            // +Y back
+            3, 7, 6,  3, 6, 2,
+            // -X left
+            0, 4, 7,  0, 7, 3,
+            // +X right
+            1, 2, 6,  1, 6, 5,
+        ],
+        normals: None,
+    }
+}
+
+/// The unit cube — `prismatic_box_mesh(1.0, 1.0, 1.0)`, enclosed volume 1.0.
+pub fn unit_cube_mesh() -> Mesh {
+    prismatic_box_mesh(1.0, 1.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------
