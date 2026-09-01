@@ -899,6 +899,103 @@ fn missing_skip_set_paths_contract() {
     );
 }
 
+// ─── shared corpus-helper premise pins ───────────────────────────────────────
+
+/// Pin the premise the shared corpus helpers rest on: THIS crate's
+/// manifest-relative path to `examples/` and
+/// [`reify_test_support::examples_corpus::examples_dir`] name the same
+/// directory.
+///
+/// # Why this is needed independently of reify-compiler's identical pin
+///
+/// The premise is per-consumer-crate — each crate's `CARGO_MANIFEST_DIR` is its
+/// own — so the compiler-side pin says nothing about reify-eval.
+///
+/// # Why it must outlive the migration to the shared module
+///
+/// `relative_to_examples_dir` strips a **lexical** prefix, and after the hoist
+/// that prefix is spelled from reify-test-support's manifest dir
+/// (`…/crates/reify-test-support/../../examples`), not this crate's
+/// (`…/crates/reify-eval/../../examples`). The two strings differ by
+/// construction and only the directories they resolve to are expected to match
+/// — which holds only while reify-test-support sits at the same depth as this
+/// crate. A future crate relocation or workspace re-layout that changed that
+/// depth would make `examples_dir()` name a wrong or non-existent directory,
+/// and every corpus guard in this file would silently degrade to walking
+/// nothing rather than failing.
+///
+/// The file-count comparison is what makes that degradation unrepresentable: a
+/// shared helper pointing at a same-named but different directory could not
+/// match it.
+#[test]
+fn shared_examples_dir_agrees_with_this_crates_manifest_relative_path() {
+    let local = std::fs::canonicalize(EXAMPLES_DIR)
+        .unwrap_or_else(|e| panic!("canonicalize this crate's EXAMPLES_DIR ({EXAMPLES_DIR}): {e}"));
+    let shared_raw = reify_test_support::examples_corpus::examples_dir();
+    let shared = std::fs::canonicalize(shared_raw).unwrap_or_else(|e| {
+        panic!(
+            "canonicalize reify_test_support::examples_corpus::examples_dir() ({}): {e}",
+            shared_raw.display()
+        )
+    });
+
+    assert_eq!(
+        local, shared,
+        "the shared corpus root and this crate's own manifest-relative path must resolve to \
+         the same directory — the two lexical spellings differ by construction, so only the \
+         canonicalized forms are compared. If reify-test-support ever moves to a different \
+         depth under the repo root, examples_dir() silently starts naming the wrong \
+         directory and every corpus guard in this file goes vacuous."
+    );
+
+    let local_count = discover_ri_files().len();
+    let shared_count = reify_test_support::examples_corpus::discover_ri_files(shared_raw).len();
+    assert_eq!(
+        local_count, shared_count,
+        "the two walks must discover the same number of `.ri` files ({local_count} local vs \
+         {shared_count} shared); an equal-but-empty pair would also mean the corpus root is \
+         wrong, which the assertion above rules out"
+    );
+    assert!(
+        shared_count > 0,
+        "the shared walk discovered no `.ri` files under {} — a corpus walk that degraded to \
+         walking nothing would make every guard in this file vacuously pass",
+        shared_raw.display()
+    );
+}
+
+/// Verify two invariants for every path returned by `discover_ri_files()`:
+///
+/// (a) `relative_to_examples_dir` accepts the path without panicking — i.e. the
+///     path is lexically rooted under the corpus root, as `discover_ri_files`
+///     guarantees. If the walker ever started canonicalizing paths (resolving
+///     `..`), the `strip_prefix` inside `relative_to_examples_dir` would break
+///     and this test surfaces the regression before it silently corrupts
+///     SKIP_SET lookups or failure reports.
+///
+/// (b) The relative form round-trips: joining it back onto the corpus root
+///     reproduces the original absolute path. This locks the SKIP_SET-key
+///     join-compatibility contract across the full corpus, for both top-level
+///     (`bracket.ri`-style) and nested (`fields/composed_stiffness.ri`-style)
+///     entries.
+///
+/// New coverage for this file, which previously had no corpus-wide round-trip
+/// guard at all: it is what catches the shared helper's `strip_prefix` silently
+/// breaking on THIS crate's corpus walk. Directory-walk only — no compile, no
+/// check — so it adds negligible time to this file's perf-budgeted suite.
+#[test]
+fn relative_to_examples_dir_accepts_all_discovered_paths() {
+    for path in discover_ri_files() {
+        // Will panic if path is not lexically rooted under the corpus root.
+        let rel = relative_to_examples_dir(&path);
+        assert_eq!(
+            Path::new(EXAMPLES_DIR).join(&rel),
+            path,
+            "round-trip failed: corpus root .join({rel:?}) != original {path:?}"
+        );
+    }
+}
+
 // ─── step-13: fixture is included in corpus ───────────────────────────────────
 
 /// Assert that `bearing_auto_seal.ri` is discovered by the corpus walker.
