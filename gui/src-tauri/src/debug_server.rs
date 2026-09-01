@@ -5326,6 +5326,161 @@ structure def Part {
         );
     }
 
+    // ── Task 5097 δ step-25: RED — a failed `reify_update_source` followed by
+    // `reify_save_file` OVERWRITES the user's canonical `.ri` with source that
+    // does not compile (review finding, data-loss) ──
+    //
+    // `EngineSession::update_source` calls `record_compile_failure(diags,
+    // content, module_name)` on BOTH failure arms with the REJECTED `content`;
+    // `record_compile_failure` classifies it `CompileFailureKind::LiveEdit`
+    // whenever `self.core.compiled().is_some()`, which it is after a
+    // successful launch; `build_files_with_live_edit` then SPLICES that
+    // rejected source into the matching `files[]` entry to hold its
+    // one-snapshot invariant; and
+    // `reify_save_file_on_engine_and_refresh_baseline` writes exactly
+    // `gs.files.first().content` to the ACTIVE canonical path.
+    //
+    // Correct for a READ-ONLY `engine_state` snapshot — the editor must be
+    // able to see the text it just failed to compile. Catastrophic for a
+    // WRITE-BACK. `reify_update_source_compile_failure_leaves_the_baseline_stale…`
+    // only pins that `last_state` did not move; nothing covers the SAVE that
+    // follows.
+    //
+    // FAILS until step-26 adds `EngineSession::holds_rejected_source` and the
+    // interlock in `reify_save_file_on_engine_and_refresh_baseline`.
+
+    /// Source that does not parse — the shape a mid-edit AI buffer actually
+    /// has. Shared by the three save-interlock tests so they all provoke the
+    /// SAME recorded `CompileFailure`.
+    fn ai_write_rejected_source() -> &'static str {
+        "structure def Part { param width: Length = "
+    }
+
+    #[tokio::test]
+    async fn reify_save_file_refuses_after_a_failed_update_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        let on_disk_before = std::fs::read_to_string(&canonical).expect("part.ri must be readable");
+
+        reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &canonical,
+            ai_write_rejected_source(),
+        )
+        .await
+        .expect_err("source that does not compile must be REFUSED");
+
+        // The session is now holding a REJECTED buffer that `build_gui_state`
+        // deliberately surfaces in `files[0].content`. Persisting it would
+        // destroy the user's canonical document.
+        reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, None)
+            .await
+            .expect_err("saving a buffer the engine itself rejected must be REFUSED");
+
+        assert_eq!(
+            std::fs::read_to_string(&canonical).expect("part.ri must be readable"),
+            on_disk_before,
+            "the refused save must leave the canonical .ri BYTE-IDENTICAL"
+        );
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s0),
+            "the refusal must be atomic — no half-advanced baseline either"
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_save_file_refuses_a_rejected_buffer_for_an_explicit_target_too() {
+        // Writing non-compiling text to a NEW path while answering
+        // `success: true` is the same lie, just less destructive — so the
+        // "save as" arm is interlocked identically.
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0));
+
+        reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &canonical,
+            ai_write_rejected_source(),
+        )
+        .await
+        .expect_err("source that does not compile must be REFUSED");
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = other_dir.path().join("copy.ri");
+        reify_save_file_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            Some(other.to_string_lossy().into_owned()),
+        )
+        .await
+        .expect_err("an explicit target must not receive a rejected buffer either");
+
+        assert!(
+            !other.exists(),
+            "the refused save-as must not have created {}",
+            other.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_save_file_succeeds_again_once_the_buffer_compiles() {
+        // The interlock is a TRANSIENT one, not a permanent wedge: a
+        // successful `reify_update_source` clears `compile_failure` via
+        // `commit_state`, and the save then writes the new text. Without this
+        // companion the fix could regress into "reify_save_file is dead after
+        // any typo".
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0));
+
+        reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &canonical,
+            ai_write_rejected_source(),
+        )
+        .await
+        .expect_err("source that does not compile must be REFUSED");
+        reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, None)
+            .await
+            .expect_err("the rejected buffer must not reach disk");
+
+        // Recover: a buffer that DOES compile.
+        let repaired =
+            ai_write_source().replace("param depth: Length = 40mm", "param depth: Length = 25mm");
+        reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &canonical,
+            &repaired,
+        )
+        .await
+        .expect("a buffer that compiles must be accepted");
+
+        reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, None)
+            .await
+            .expect("the save must work again once the buffer compiles");
+        assert_eq!(
+            std::fs::read_to_string(&canonical).expect("part.ri must be readable"),
+            repaired,
+            "the recovered save must persist the REPAIRED text"
+        );
+    }
+
     #[tokio::test]
     async fn reify_export_writes_a_non_empty_file() {
         let dir = tempfile::tempdir().unwrap();

@@ -21288,6 +21288,49 @@ fn apply_param_to_source_str_rejects_an_unknown_cell() {
     assert_writeback_untouched(&mut session, &path, writeback_source());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn holds_rejected_source_tracks_the_compile_failure() {
+    // `build_gui_state().files[].content` is NOT unconditionally the committed
+    // buffer: `build_files_with_live_edit` deliberately SPLICES a recorded
+    // `LiveEdit` failure's rejected source into the matching entry to hold its
+    // one-snapshot invariant (so `files[]` and `compile_diagnostics` come from
+    // the same snapshot). Correct for a read-only snapshot; catastrophic for
+    // any consumer that PERSISTS that content — which is exactly what the
+    // reify-debug `reify_save_file` write tool does.
+    //
+    // This is the predicate such a consumer must consult first. Asserted over
+    // the full round trip, so it cannot regress into a permanent wedge: a
+    // successful recompile clears it via `commit_state`.
+    let (_dir, _path, mut session) = writeback_session();
+
+    assert!(
+        !session.holds_rejected_source(),
+        "a freshly loaded session holds no rejected buffer"
+    );
+
+    session
+        .update_source("part.ri", "structure def Part { param width: Length = ")
+        .expect_err("source that does not parse must be REFUSED");
+    assert!(
+        session.holds_rejected_source(),
+        "a refused recompile RECORDS the rejected source (record_compile_failure), \
+         which build_files_with_live_edit then surfaces in files[].content"
+    );
+
+    session
+        .update_source("part.ri", writeback_source())
+        .expect("a buffer that compiles must be accepted");
+    assert!(
+        !session.holds_rejected_source(),
+        "a successful commit_state clears compile_failure — the interlock is \
+         transient, not a permanent wedge"
+    );
+}
+
 /// Task 5212 (GUI reload wiring): every whole-file reload entry
 /// (`load_from_source` / `load_file` / `update_source`) funnels through
 /// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
