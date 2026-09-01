@@ -1086,6 +1086,19 @@ fn e2e_printer_gantry_prints_five_modes() {
 // (e) read 1.0; (f) missed its band by 36%; (g) read pinned == propped.
 //
 // Release-gated like every other heavy modal e2e in this file.
+//
+// GATE COST (amendment, review suggestion 6): **MEASURED 21.7 s** in release on
+// this branch (`test result: ok … finished in 21.70s`, this test alone,
+// sequential). One eval drives THREE P2 shift-invert modal solves over the same
+// 1526-node P1 / ~10k-node P2 mesh — the pinned, fixed and mixed configurations
+// — and 21.7 s is the total for all three plus parse, compile and eval. Recorded
+// here for the same reason the kernel benchmarks record theirs next to their
+// meshes: this test is release-only, so its whole cost lands on the merge gate,
+// and a future mesh or `n_modes` bump should be costed against a measurement
+// rather than guessed. Sibling reference point: the clamped-clamped kernel
+// benchmark (`reify-solver-elastic/tests/modal_benchmarks.rs`) measures 38.8 s
+// on its own, for ONE dense QZ solve at n_free = 1269 — the shift-invert path
+// this test takes is why three larger solves come in cheaper than one dense one.
 
 /// Two `FixedSupport`s must give the clamped-clamped answer, not the
 /// pinned-pinned one — and a mixed `[Fixed, Pinned]` pair must give the

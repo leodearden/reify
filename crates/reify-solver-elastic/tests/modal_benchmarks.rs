@@ -895,8 +895,25 @@ fn measure_clamped_clamped(grid: &BeamFixture) -> BeamModalMeasurement {
 /// | nx×ny×nz | n_free | f₁ (Hz) | rel_err | note                              |
 /// |----------|--------|---------|---------|-----------------------------------|
 /// | 16×1×1   | 837    | 270.760 | +3.089% | fails a 2% bound                  |
-/// | **24×1×1** | **1269** | **268.179** | **+2.106%** | **chosen** — 1.89% margin under 4%, matches the SS benchmark's span mesh |
+/// | **24×1×1** | **1269** | **268.179** | **+2.106%** | **chosen** — 1.89% margin under 4%, matches the SS benchmark's span mesh, **~39 s** |
 /// | 32×1×1   | 1701   | 267.096 | +1.694% | clears 2% by only 0.31%           |
+///
+/// # Gate cost
+///
+/// **MEASURED 38.8 s** at the chosen `nx=24` (`test result: ok … finished in
+/// 38.78s`, release, this test alone, sequential) — the same way
+/// [`CANTILEVER_P2_REL_TOL`] records `~25 s` for its own chosen mesh, and for
+/// the same reason: this test is release-only, so its cost lands entirely on the
+/// merge gate and must be visible to whoever next tunes the mesh rather than
+/// re-derived from the QZ's O(n³).
+///
+/// That is ≈ 1.6× the cantilever benchmark's ~25 s at `n_free = 864` — well
+/// under what the cubic alone predicts ((1269/864)³ ≈ 3.2×), because the dense
+/// QZ's constant factors and the assembly it shares do not scale cubically.
+/// Sizing the next step from this row rather than from the ratio matters: the
+/// `nz=2` cantilever row's ~115 s at `n_free = 1440` is the cautionary
+/// neighbour, and `nx=32` here (`n_free = 1701`) would buy 0.41% of accuracy for
+/// a materially larger share of the gate.
 ///
 /// **Why 2% is not used here.** It FAILS at nx=16 and nx=24 and clears at nx=32
 /// by only 0.31%, so a 2% bound at any of this file's established meshes would be
