@@ -64,10 +64,17 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 | torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
 | cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
 | fillet blend | `fillet_r/feature` | 0.925 | 0.49, `d/R` = 6e-4 | supremum |
+| nurbs surface | `d/span` † | 0.996 | `d/span` = 5e-4 | supremum † |
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
 | spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound** |
 | loft | — | **no datum** | — | blocked at realization |
+
+† Supremum over the **d-ladder at the committed 1000 mm × 1000 mm control net** (§1.5)
+only. Unlike cone/torus/fillet, whose shape regime (`top/bottom`, `minor/major`,
+`r/feature`) was independently walked, this task scoped a d-ladder only, at one fixed
+control net — the net shape itself was not walked. Read this row's `supremum` as scoped
+to that ladder, not as a class-wide bound over net shape.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
