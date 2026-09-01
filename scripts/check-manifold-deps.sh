@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Preflight guard for the workspace's native deps: FOUR arms, all run BEFORE
+# Preflight guard for the workspace's native deps: FIVE arms, all run BEFORE
 # any expensive compile, each converting a silent or cryptic downstream
 # failure into a fast, actionable message.
 #
@@ -34,6 +34,17 @@
 #      the resolved SONAME is RECORDED but deliberately NOT pinned to an
 #      accepted set — see that arm's own banner for why the OCCT pin's
 #      justification does not carry over.
+#
+#   5. OpenVDB presence (task #6493). The third instance of arm 4's shape,
+#      one dep over: `crates/reify-kernel-openvdb/build.rs` is byte-for-byte
+#      the same fail-OPEN find()/warning/return, and every
+#      `#[cfg(has_openvdb)]`-gated item disappears with it. Presence fatal,
+#      SONAME recorded and not pinned, for the same reasons.
+#
+# Arms run in DECLARATION ORDER and the first failure exits, so an arm can
+# only assume the arms above it passed. tests/infra/test_occt_deps_preflight.sh
+# drives each downstream arm with healthy fixtures for every arm ahead of it
+# for exactly that reason.
 #
 # verify.sh runs this as the first plan entry when Rust work is in scope.
 #
@@ -519,6 +530,86 @@ fi
 
 if [ "$gmsh_failed" -ne 0 ]; then
     gmsh_hint
+    exit 1
+fi
+
+# ---------- OpenVDB presence preflight (task #6493) ----------
+#
+# See arm 5 in the file header. Same fail-OPEN build.rs, same silent deletion
+# of the gated surface, same reason it has to be caught before the compile.
+#
+# Note this gates the VERIFY PIPELINE, not `cargo build` — openvdb-free stub
+# builds stay sanctioned, and crates/reify-kernel-openvdb carries real
+# `cfg(not(has_openvdb))` stub modules (src/kernel.rs, src/ingest.rs) for them.
+
+# BEGIN openvdb-candidates — EXACT MIRROR of
+# reify_build_utils::NativeDep::OpenVdb (crates/reify-build-utils/src/lib.rs).
+# Order is load-bearing and is NOT the same as Gmsh's: OpenVdb puts
+# /usr/local/lib ahead of /usr/lib/x86_64-linux-gnu where Gmsh does the
+# reverse, so this list is copied PER-DEP and must never be "deduplicated"
+# against the gmsh block above. /opt/reify-deps leads both, because that is
+# where the conda-forge openvdb 13.0.0 lives. Rust stays the source of truth;
+# this block is a declared mirror, pinned equal INCLUDING ORDER by
+# tests/infra/test_occt_deps_preflight.sh — so an edit on either side fails
+# that guard rather than silently leaving the gate and the build disagreeing.
+OPENVDB_LIB_CANDIDATES=(
+    /opt/reify-deps/lib
+    /usr/local/lib
+    /usr/lib/x86_64-linux-gnu
+    /usr/lib
+)
+OPENVDB_INCLUDE_CANDIDATES=(
+    /opt/reify-deps/include
+    /usr/local/include
+    /usr/include
+)
+OPENVDB_LIB_SENTINEL=libopenvdb.so
+OPENVDB_INCLUDE_SENTINEL=openvdb/openvdb.h
+# END openvdb-candidates
+
+openvdb_install_hint() {
+    err "Provision the conda-forge reify-deps env — scripts/setup-dev.sh's"
+    err "'conda-forge env: gmsh + openvdb' block does exactly this, installing"
+    err "openvdb 13.0.0 into /opt/reify-deps (apt's openvdb is stale at 10.0.1):"
+    err "    ./scripts/setup-dev.sh"
+    err "Or point OPENVDB_INCLUDE_DIR / OPENVDB_LIB_DIR at an existing install."
+}
+
+openvdb_hint() {
+    openvdb_install_hint
+    err "WHY THIS IS FATAL rather than a warning: without openvdb,"
+    err " reify-kernel-openvdb's build.rs never emits has_openvdb, so every"
+    err " #[cfg(has_openvdb)]-gated item in the workspace is not compiled AT ALL —"
+    err " the crate's whole sparse-SDF/voxel-grid test surface included. The suite"
+    err " then reports zero tests REPORTED, not zero tests FAILED, and the gate goes"
+    err " green over a voxel kernel nothing exercised."
+}
+
+OPENVDB_INCLUDE_OVERRIDE="${OPENVDB_INCLUDE_DIR:-}"
+OPENVDB_LIB_OVERRIDE="${OPENVDB_LIB_DIR:-}"
+
+# `|| true` inside the substitution: a non-resolving arm must reach the named
+# error below, not abort under `set -e` with no message at all.
+OPENVDB_INCLUDE_RESOLVED="$(dep_find_dir "$OPENVDB_INCLUDE_OVERRIDE" "$OPENVDB_INCLUDE_SENTINEL" "${OPENVDB_INCLUDE_CANDIDATES[@]}" || true)"
+OPENVDB_LIB_RESOLVED="$(dep_find_dir "$OPENVDB_LIB_OVERRIDE" "$OPENVDB_LIB_SENTINEL" "${OPENVDB_LIB_CANDIDATES[@]}" || true)"
+
+# Report BOTH halves before exiting, same rule as the arms above.
+openvdb_failed=0
+
+if [ -z "$OPENVDB_INCLUDE_RESOLVED" ]; then
+    err "manifold-deps guard: openvdb headers not found — no $OPENVDB_INCLUDE_SENTINEL in:"
+    err "                     $(dep_searched_desc "$OPENVDB_INCLUDE_OVERRIDE" OPENVDB_INCLUDE_DIR "${OPENVDB_INCLUDE_CANDIDATES[@]}")"
+    openvdb_failed=1
+fi
+
+if [ -z "$OPENVDB_LIB_RESOLVED" ]; then
+    err "manifold-deps guard: openvdb libraries not found — no $OPENVDB_LIB_SENTINEL in:"
+    err "                     $(dep_searched_desc "$OPENVDB_LIB_OVERRIDE" OPENVDB_LIB_DIR "${OPENVDB_LIB_CANDIDATES[@]}")"
+    openvdb_failed=1
+fi
+
+if [ "$openvdb_failed" -ne 0 ]; then
+    openvdb_hint
     exit 1
 fi
 
