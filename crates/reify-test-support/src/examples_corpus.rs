@@ -287,4 +287,109 @@ mod tests {
             "expected an empty directory to yield an empty Vec; got {found:?}"
         );
     }
+    // ─── filter_skipped contract ──────────────────────────────────────────
+
+    /// filter_skipped: exactly the skipped keys are dropped, the rest come back
+    /// in input order paired with their relative key.
+    ///
+    /// Inputs are constructed lexically under `examples_dir()` and need not
+    /// exist on disk — filtering is pure key comparison. Paths are ordered
+    /// skipped/kept/skipped/kept so neither a short-circuit on the first skip
+    /// nor an off-by-one can pass, and the keys mix a top-level entry with
+    /// nested forward-slash ones (the real skip-list key shape).
+    ///
+    /// Also pins that a skip key naming a path NOT in `paths` is silently inert:
+    /// it filters nothing and is not an error. Detecting such a dead key is
+    /// [`crate::helpers::missing_paths_under`]'s job, not this one — duplicating
+    /// it here would give two guards one contract.
+    #[test]
+    fn filter_skipped_drops_exactly_the_skipped_keys_and_preserves_order() {
+        let paths = vec![
+            super::examples_dir().join("auto/skipped_top.ri"),
+            super::examples_dir().join("kept_top.ri"),
+            super::examples_dir().join("fields/skipped_nested.ri"),
+            super::examples_dir().join("fields/kept_nested.ri"),
+        ];
+
+        let kept = super::filter_skipped(
+            &paths,
+            [
+                "auto/skipped_top.ri",
+                "fields/skipped_nested.ri",
+                "never/appears/in/paths.ri",
+            ],
+        );
+
+        assert_eq!(
+            kept,
+            vec![
+                (&paths[1], "kept_top.ri".to_string()),
+                (&paths[3], "fields/kept_nested.ri".to_string()),
+            ],
+            "expected exactly the two unskipped paths, in input order, each paired with its \
+             precomputed relative key — and the dead skip key 'never/appears/in/paths.ri' to \
+             be silently inert; got {kept:?}"
+        );
+    }
+
+    /// filter_skipped: the same logical skip list projected out of a 2-tuple and
+    /// out of a 3-tuple yields identical results.
+    ///
+    /// This is the behaviour that lets ONE implementation serve skip lists of
+    /// differing arity in different crates — reify-compiler's
+    /// `&[(&str, &str)]` and reify-eval's `&[(&str, SkipKind, &str)]` — while
+    /// each stays private to its own crate. It mirrors
+    /// `missing_paths_under`'s "# Arity is the caller's problem" contract
+    /// (helpers.rs:62-69) and its arity-projection test.
+    #[test]
+    fn filter_skipped_is_agnostic_to_the_callers_skip_set_arity() {
+        let paths = vec![
+            super::examples_dir().join("skipped.ri"),
+            super::examples_dir().join("auto/kept.ri"),
+        ];
+
+        // Stand-ins for the two real SKIP_SET shapes; the `u8` stands in for
+        // reify-eval's `SkipKind`.
+        let two_tuple: &[(&str, &str)] = &[("skipped.ri", "why it is skipped")];
+        let three_tuple: &[(&str, u8, &str)] = &[("skipped.ri", 7, "why it is skipped")];
+
+        let from_two = super::filter_skipped(&paths, two_tuple.iter().map(|(k, _)| *k));
+        let from_three = super::filter_skipped(&paths, three_tuple.iter().map(|(k, _, _)| *k));
+
+        assert_eq!(
+            from_two,
+            vec![(&paths[1], "auto/kept.ri".to_string())],
+            "expected the 2-tuple projection to drop exactly the skipped path; got {from_two:?}"
+        );
+        assert_eq!(
+            from_two, from_three,
+            "expected the same logical skip list to produce identical results whether the \
+             caller projects it out of a 2-tuple or a 3-tuple — that agnosticism is what lets \
+             one implementation serve both crates' SKIP_SETs; got {from_two:?} vs {from_three:?}"
+        );
+    }
+
+    /// filter_skipped: an empty skip iterator keeps every input path, so a suite
+    /// with no skips still gets the (path, key) pairing this returns rather than
+    /// having to special-case the empty list.
+    #[test]
+    fn filter_skipped_with_an_empty_skip_list_keeps_every_path() {
+        let paths = vec![
+            super::examples_dir().join("a.ri"),
+            super::examples_dir().join("nested/b.ri"),
+        ];
+        let empty: [&str; 0] = [];
+
+        let kept = super::filter_skipped(&paths, empty);
+
+        assert_eq!(
+            kept,
+            vec![
+                (&paths[0], "a.ri".to_string()),
+                (&paths[1], "nested/b.ri".to_string()),
+            ],
+            "expected an empty skip list to keep every path, still paired with its relative \
+             key; got {kept:?}"
+        );
+    }
 }
