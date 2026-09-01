@@ -48,9 +48,27 @@ use reify_test_support::run_orphan_audit;
 
 mod common;
 
+/// The audit scope every test in this file uses.
+///
+/// One home because several docs below rest on the premise that all the runs
+/// are of the SAME scope — e.g. the synthetic witness's sanitized-half failure
+/// message says `run_orphan_audit` "ran this same script against this same
+/// scope moments ago". Nothing compares the literals at runtime, so spelling
+/// them separately would let one drift and silently falsify that premise while
+/// every test stayed green.
+const SCOPE: &str = "crates/reify-audit/src";
+
+/// The test the two replay paths select, by libtest positional filter.
+///
+/// One home for the same reason as [`SCOPE`], plus one specific to a filter:
+/// the replay must not select the test that spawns it, and "no other test name
+/// in this binary contains this substring" is a property of ONE string. Two
+/// copies make it a property nothing states about either.
+const TARGET_TEST: &str = "reify_audit_pub_fns_are_g_allow_marked";
+
 #[test]
 fn reify_audit_pub_fns_are_g_allow_marked() {
-    let audit = run_orphan_audit("crates/reify-audit/src");
+    let audit = run_orphan_audit(SCOPE);
 
     // Defence-in-depth against `run_orphan_audit`'s public contract, which
     // still permits `None` (see its doc for the causes). Scoped to a replay
@@ -150,10 +168,10 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// Only one test in this binary is exposed to the hazard. An empty filter
 /// would also drag the synthetic witness into the child, where it poisons and
 /// strips its OWN children's environments — pure cost that dilutes the floor's
-/// meaning, and now a hard failure on that helper's `in_replay_child`
+/// meaning, and now a hard failure on that helper's replay-child
 /// precondition. Naming the target also keeps the selection exact: no other
-/// test name in this binary contains the substring
-/// `reify_audit_pub_fns_are_g_allow_marked`, so the replay cannot select
+/// test name in this binary contains [`TARGET_TEST`] as a substring, so the
+/// replay cannot select
 /// itself. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is the second line
 /// of defence.
 ///
@@ -165,8 +183,6 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// filter to actually select them.
 #[test]
 fn orphan_audit_survives_ambient_hook_git_env() {
-    const SCOPE: &str = "crates/reify-audit/src";
-
     // EARN the mark before spawning anything. The child is entitled to treat
     // a skip as a failure only because THIS run just proved, in THIS
     // environment, that the audit produces an envelope; without that proof the
@@ -190,10 +206,7 @@ fn orphan_audit_survives_ambient_hook_git_env() {
         return;
     }
 
-    common::git_env::replay_self_under_hook_git_env_expecting_envelope(
-        &["reify_audit_pub_fns_are_g_allow_marked"],
-        1,
-    );
+    common::git_env::replay_self_under_hook_git_env_expecting_envelope(&[TARGET_TEST], 1);
 }
 
 /// The replay child's hard failure must fire ONLY where the parent has
@@ -287,10 +300,10 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     // for which, and for why neither is reachable from this fixture).
     const SKIP_MARKER: &str = "skipping orphan audit";
 
-    // The same filter the replay harness uses, for the same reason: this test
-    // must not select itself, and no other test name in this binary contains
-    // that substring.
-    const TARGET: [&str; 1] = ["reify_audit_pub_fns_are_g_allow_marked"];
+    // Literally the same filter the replay harness uses — the module-level
+    // const, not a second spelling of it — so this fixture cannot pin the
+    // behaviour of a test the real replay no longer selects.
+    const TARGET: [&str; 1] = [TARGET_TEST];
 
     // --- Half A: an unverified mark must leave the graceful skip intact ---
     let plain =
@@ -451,7 +464,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
 #[test]
 fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
     let Some((poisoned, sanitized)) =
-        common::git_env::audit_script_stdout_poisoned_and_sanitized("crates/reify-audit/src")
+        common::git_env::audit_script_stdout_poisoned_and_sanitized(SCOPE)
     else {
         // The helper gates on `reify_test_support::run_orphan_audit`, so this
         // is that function's own graceful-skip protocol verbatim — python3 /
