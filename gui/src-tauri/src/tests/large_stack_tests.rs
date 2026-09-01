@@ -1300,3 +1300,411 @@ async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedg
          would answer from the awaiting runtime worker instead"
     );
 }
+
+// ── Bounded intra-lane concurrency (task 6517) ───────────────────────────────
+//
+// The section above closes with the boundary task 5772 left open: "no test here
+// claims concurrency WITHIN a lane". This section is that claim, and it is the
+// whole content of task 6517's first half — a lane generalised from ONE consumer
+// to N, so that head-of-line blocking among LSP queries becomes BOUNDED at the
+// pool size rather than total.
+//
+// # Why every test here declares its OWN lane
+//
+// `ENGINE_LANE` and `LSP_LANE` are process-wide `static`s shared by every test
+// in this binary, and cargo runs those tests CONCURRENTLY. A test that parked a
+// consumer of a global pool to prove occupancy would therefore be parking a
+// resource an unrelated test is simultaneously trying to use — starving it, and
+// hanging the suite rather than failing it. So each test below declares a
+// TEST-LOCAL `static POOL: Lane = Lane::pool(..)` inside its own fn body. A
+// `static` in a fn body still has `'static` lifetime (which `Lane::sender`
+// requires) but is nameable only from that fn, which makes the isolation
+// structural rather than a convention someone must remember.
+//
+// # Why no RED here is a hang
+//
+// Same doctrine as the rest of this file. Concurrency is measured with an
+// `AtomicUsize` arrival counter plus a generous wall-clock DEADLINE: a lane that
+// failed to run N jobs at once makes the counter stall, the deadline elapses,
+// and the job returns `false` — a clean assertion failure naming what it saw.
+// The deep-recursion test goes through [`deep_recurse_if_on_lane`], which
+// refuses to recurse anywhere but a real pool consumer, for exactly the reason
+// [`deep_recurse_if_on_thread`] exists.
+
+/// Recurse ~16 MiB ONLY if we genuinely landed on a consumer of the pool lane
+/// named by `prefix`; otherwise report where we actually are, without recursing.
+///
+/// The pool sibling of [`deep_recurse_if_on_thread`], and it must be a separate
+/// helper rather than a call to that one: a pool consumer's thread name is
+/// `{prefix}{index}`, so no single `&'static str` is the expected name. Matching
+/// the prefix plus an all-digits tail is what keeps the check as tight as the
+/// exact-name one — `reify-lsp-w` must not satisfy a `reify-lsp-p` probe, and
+/// neither must a caller thread that merely happens to start with the prefix.
+fn deep_recurse_if_on_lane(prefix: &'static str, depth: u32) -> Result<u64, String> {
+    let actual = std::thread::current().name().map(str::to_owned);
+    let on_pool_consumer = actual.as_deref().is_some_and(|name| {
+        name.strip_prefix(prefix)
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+    });
+    if !on_pool_consumer {
+        return Err(format!(
+            "refusing to recurse ~16 MiB on thread {actual:?}: expected a \
+             consumer of the {prefix:?} pool lane (a `{prefix}<index>` thread). \
+             The lane degraded to an inline call, so recursing here would \
+             overflow a default-size stack and abort the entire test binary."
+        ));
+    }
+    Ok(deep_recurse(depth))
+}
+
+/// Submit `n` jobs to `lane` from `n` SEPARATE submitter threads, each of which
+/// increments a shared arrival counter and then parks until every one of the `n`
+/// has arrived — or until a wall-clock deadline elapses.
+///
+/// Returns, per job, whether it observed all `n` in flight AT ONCE. On a
+/// single-consumer lane job 1 parks holding the only consumer, jobs 2..n never
+/// start, the deadline elapses and job 1 reports `false` — a bounded assertion
+/// failure, never a hang, which is the property this whole file is written to.
+///
+/// Factored out because it is the measurement BOTH (aa) and (ae) need: (aa)
+/// establishes the concurrency, (ae) re-establishes it after a panic to prove no
+/// consumer was lost. Writing it twice would let the two drift.
+fn observe_concurrent_arrivals(lane: &'static crate::large_stack::Lane, n: usize) -> Vec<bool> {
+    use crate::large_stack::dispatch;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Generous relative to the work (an atomic increment), so only a genuine
+    /// serialization can exhaust it. It is a liveness BACKSTOP, not the
+    /// property under test — see the section header.
+    const ARRIVAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+    let arrived = Arc::new(AtomicUsize::new(0));
+    let submitters: Vec<_> = (0..n)
+        .map(|_| {
+            let arrived = Arc::clone(&arrived);
+            std::thread::spawn(move || {
+                dispatch(lane.sender(), move || {
+                    arrived.fetch_add(1, Ordering::SeqCst);
+                    let deadline = std::time::Instant::now() + ARRIVAL_DEADLINE;
+                    while arrived.load(Ordering::SeqCst) < n {
+                        if std::time::Instant::now() >= deadline {
+                            return false;
+                        }
+                        std::thread::yield_now();
+                    }
+                    true
+                })
+            })
+        })
+        .collect();
+
+    submitters
+        .into_iter()
+        .map(|h| h.join().expect("a submitter thread must not panic"))
+        .collect()
+}
+
+/// (aa) A size-N lane runs N jobs CONCURRENTLY — the head-of-line-blocking
+/// measurement in regression-test form.
+///
+/// This is the property task 6517 exists to establish, and it is asserted
+/// directly rather than inferred from thread names: every one of the three jobs
+/// must observe all three in flight at once, which is only possible if three
+/// consumers are draining the queue simultaneously. A single-consumer lane fails
+/// it as a clean assertion bounded by [`observe_concurrent_arrivals`]'s
+/// deadline, never as a hang.
+#[test]
+fn a_pool_lane_runs_its_jobs_concurrently_up_to_its_size() {
+    use crate::large_stack::Lane;
+
+    const SIZE: usize = 3;
+    static POOL: Lane = Lane::pool("t6517-conc-", SIZE);
+
+    let observed = observe_concurrent_arrivals(&POOL, SIZE);
+
+    assert_eq!(
+        observed.len(),
+        SIZE,
+        "every submitter must have produced a verdict"
+    );
+    assert!(
+        observed.iter().all(|saw_all| *saw_all),
+        "a size-{SIZE} lane must run {SIZE} jobs at once: every job must observe \
+         all {SIZE} arrivals before the deadline, got {observed:?}. A `false` \
+         means that job timed out waiting for siblings that never started — \
+         i.e. the lane still serializes."
+    );
+}
+
+/// (ab) A pool NAMES each consumer `{prefix}{index}` and AMORTISES them: every
+/// job lands on a thread drawn from a set of at most `size`, and never on the
+/// caller.
+///
+/// Three properties in one submission loop, because they are the same property
+/// seen from three sides. The NAME is the observability half — a pool whose
+/// consumers reported `<unnamed>`, or all reported the same string, would make a
+/// stalled query indistinguishable from a stalled sibling in a `top -H` capture.
+/// The bounded `ThreadId` SET is the amortisation half: a pool that spawned a
+/// thread per job would pay the 256 MiB mapping this tier exists to eliminate.
+/// And "never the caller" is the non-vacuity half — a lane that degraded to
+/// inline execution would satisfy both of the others trivially.
+///
+/// The 15-byte assertion is the runtime companion to the `const _: () =
+/// assert!(..)` beside each production prefix: `std` silently IGNORES a
+/// `pthread_setname_np` name that overruns Linux's budget, so an over-long
+/// pool name would not fail loudly — it would just not appear in `/proc`.
+#[test]
+fn a_pool_lane_names_and_amortises_each_consumer_thread() {
+    use crate::large_stack::{Lane, dispatch};
+    use std::collections::HashSet;
+
+    const PREFIX: &str = "t6517-name-";
+    const SIZE: usize = 2;
+    static POOL: Lane = Lane::pool(PREFIX, SIZE);
+
+    let caller_id = std::thread::current().id();
+    let expected_names: HashSet<String> = (0..SIZE).map(|i| format!("{PREFIX}{i}")).collect();
+
+    let mut seen_ids = HashSet::new();
+    let mut seen_names = HashSet::new();
+    for _ in 0..24 {
+        let (id, name) = dispatch(POOL.sender(), || {
+            (
+                std::thread::current().id(),
+                std::thread::current().name().map(str::to_owned),
+            )
+        });
+        assert_ne!(
+            id, caller_id,
+            "a pool job must run on a lane consumer, not degrade to an inline \
+             call on the submitter"
+        );
+        let name = name.expect("a pool consumer thread must be NAMED, not `<unnamed>`");
+        assert!(
+            expected_names.contains(&name),
+            "a pool consumer must be named `{{prefix}}{{index}}` for some index \
+             < {SIZE}; expected one of {expected_names:?}, got {name:?}"
+        );
+        assert!(
+            name.len() <= 15,
+            "the consumer name {name:?} must fit Linux's 15-byte \
+             pthread_setname_np budget, or `std` silently drops it"
+        );
+        seen_ids.insert(id);
+        seen_names.insert(name);
+    }
+
+    assert!(
+        seen_ids.len() <= SIZE,
+        "a size-{SIZE} lane must amortise at most {SIZE} threads across every \
+         submission, saw {} distinct ThreadIds",
+        seen_ids.len()
+    );
+    assert!(
+        !seen_ids.is_empty(),
+        "the submission loop must have run at least one job"
+    );
+}
+
+/// (ac) Generalising `Lane` to N consumers renames NOTHING: a size-1 lane still
+/// reports its exact constant, with no index suffix.
+///
+/// The load-bearing half of the generalisation's compatibility story, and the
+/// one a `format!("{name}{i}")`-for-every-lane implementation would silently
+/// break: `reify-engine-w0` is a different string from `reify-engine-w`, so
+/// every existing profiler alert, `top -H` filter and test assertion keyed on
+/// the constants would stop matching. Pinning it here means the pool mechanism
+/// cannot be landed by renaming the threads that predate it.
+#[test]
+fn a_single_consumer_lane_keeps_its_exact_thread_name() {
+    use crate::large_stack::{
+        LSP_LANE, LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME, dispatch, run_on_worker,
+    };
+
+    let engine = run_on_worker(|| std::thread::current().name().map(str::to_owned));
+    assert_eq!(
+        engine.as_deref(),
+        Some(WORKER_THREAD_NAME),
+        "the size-1 ENGINE lane must keep its exact name — no `0` suffix"
+    );
+
+    let lsp = dispatch(LSP_LANE.sender(), || {
+        std::thread::current().name().map(str::to_owned)
+    });
+    assert_eq!(
+        lsp.as_deref(),
+        Some(LSP_WORKER_THREAD_NAME),
+        "the size-1 LSP lane must keep its exact name — no `0` suffix"
+    );
+}
+
+/// (ad) LARGE STACK — a pool consumer survives ~16 MiB of recursion, exactly as
+/// a single-consumer lane does.
+///
+/// A pool is an INSTANCE of the lane mechanism, not a second design, so it must
+/// inherit every property the single-consumer lanes already prove. The stack is
+/// the one that would be easiest to lose while rewriting the spawn loop —
+/// `Builder::new().name(..)` without `.stack_size(..)` compiles fine and yields
+/// a 2 MiB consumer.
+///
+/// Per this file's "no violent RED" doctrine the recursion is reached ONLY
+/// through [`deep_recurse_if_on_lane`], so a degraded lane yields a clean
+/// assertion failure instead of SIGABRTing the whole binary.
+#[test]
+fn a_pool_lane_carries_the_large_stack() {
+    use crate::large_stack::{Lane, dispatch};
+
+    const PREFIX: &str = "t6517-deep-";
+    static POOL: Lane = Lane::pool(PREFIX, 2);
+
+    let result = dispatch(POOL.sender(), || {
+        deep_recurse_if_on_lane(PREFIX, DEEP_RECURSION_DEPTH)
+    });
+
+    let depth_reached = result.unwrap_or_else(|why| panic!("{why}"));
+    assert_eq!(
+        depth_reached,
+        u64::from(DEEP_RECURSION_DEPTH) + 1,
+        "deep recursion must run to completion on a pool consumer's large stack"
+    );
+}
+
+/// (ae) A panicking pool job re-raises its ORIGINAL payload on ITS submitter,
+/// and the pool afterwards still runs `size` jobs CONCURRENTLY.
+///
+/// The second half is what makes this more than a re-run of (t) against a new
+/// instance. A pool has N consumers, so "it still answers" is satisfied by a
+/// pool that lost N-1 of them — the panic would have silently converted the
+/// bounded-blocking guarantee back into the total serialization task 6517 exists
+/// to remove, while every simple survival assertion stayed green. Re-measuring
+/// full concurrency is the only assertion that can see that.
+#[test]
+fn a_pool_lane_is_panic_isolated_and_keeps_all_its_consumers() {
+    use crate::large_stack::{Lane, dispatch};
+    use std::panic::AssertUnwindSafe;
+
+    const SIZE: usize = 3;
+    static POOL: Lane = Lane::pool("t6517-panic", SIZE);
+
+    let before = observe_concurrent_arrivals(&POOL, SIZE);
+    assert!(
+        before.iter().all(|saw_all| *saw_all),
+        "precondition: the pool must run {SIZE} jobs at once BEFORE the panic, \
+         got {before:?}"
+    );
+
+    let poisoned = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        dispatch::<_, ()>(POOL.sender(), || panic!("pool boom"));
+    }));
+    let payload = poisoned.expect_err("a panicking pool job must reach its submitter");
+    assert_eq!(
+        panic_message(&*payload),
+        "pool boom",
+        "the submitter must receive the JOB's original payload, not a substitute"
+    );
+
+    let after = observe_concurrent_arrivals(&POOL, SIZE);
+    assert!(
+        after.iter().all(|saw_all| *saw_all),
+        "every consumer must survive a poisoned job: the pool must still run \
+         {SIZE} jobs at once, got {after:?}. A `false` here means the panic \
+         killed a consumer and silently narrowed the pool."
+    );
+}
+
+/// (af) A job running ON a pool that submits to THAT SAME pool is rejected
+/// loudly, naming the reentrancy and the lane — and the pool survives.
+///
+/// The guard stays BLANKET per lane rather than becoming "reject only when no
+/// consumer is free". That is deliberately conservative: a pool with a free
+/// consumer could in principle serve a self-submission, but `size` simultaneous
+/// self-submissions genuinely wedge a size-`size` pool, and the wedge is
+/// process-wide and silent — the one outcome `large_stack`'s docs promise never
+/// to produce. A rule whose safety depends on how many callers happen to be
+/// in flight is not a rule.
+///
+/// Carries (r2)'s caveat unchanged: if the guard is ever removed this test HANGS
+/// rather than failing. It is bounded here in a way (r2) is not — the wedged
+/// lane is test-local, so the damage cannot escape into another test — but the
+/// test itself would still not terminate.
+#[test]
+fn submitting_to_your_own_pool_panics_loudly_instead_of_wedging_it() {
+    use crate::large_stack::{Lane, dispatch};
+    use std::panic::AssertUnwindSafe;
+
+    const PREFIX: &str = "t6517-reent-";
+    static POOL: Lane = Lane::pool(PREFIX, 2);
+
+    let poisoned = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        dispatch(POOL.sender(), || dispatch(POOL.sender(), || 1u32))
+    }));
+    let payload = poisoned.expect_err(
+        "a re-entrant pool submission must panic on its submitter rather than \
+         wedge the pool",
+    );
+    let message = panic_message(&*payload);
+    assert!(
+        message.contains("re-entrant submission"),
+        "the panic must name the reentrancy rather than surface as a generic \
+         channel error, got: {message}"
+    );
+    assert!(
+        message.contains(PREFIX),
+        "the panic must name the LANE that was re-entered, got: {message}"
+    );
+
+    let (value, name) = dispatch(POOL.sender(), || {
+        (7u32, std::thread::current().name().map(str::to_owned))
+    });
+    assert_eq!(
+        value, 7,
+        "the pool must survive a rejected re-entrant submission and keep serving"
+    );
+    assert!(
+        name.as_deref().is_some_and(|n| n.starts_with(PREFIX)),
+        "the surviving pool must still be the POOL — a degraded inline call \
+         would answer from the submitter's thread instead, got {name:?}"
+    );
+}
+
+/// (ag) A pool job may submit to ANOTHER lane, and lands on that lane's thread.
+///
+/// The pool counterpart of (r3), and it pins the same distinction: the guard is
+/// keyed on the lane IDENTITY published by the consumer thread, not on "am I on
+/// some lane thread". Every consumer of a pool publishes the SAME lane name —
+/// which is what makes (af) work — so a sloppy generalisation could easily
+/// publish a per-consumer name (`{prefix}{index}`) instead, which would leave
+/// (af) passing for one consumer and silently failing for the rest. Asserting
+/// the inner job's thread NAME rather than merely that it returned is what pins
+/// that it genuinely crossed lanes.
+#[test]
+fn a_pool_job_may_submit_to_another_lane() {
+    use crate::large_stack::{Lane, WORKER_THREAD_NAME, dispatch, run_on_worker};
+
+    const PREFIX: &str = "t6517-cross-";
+    static POOL: Lane = Lane::pool(PREFIX, 2);
+
+    let (outer_id, inner_id, inner_name) = dispatch(POOL.sender(), || {
+        let outer_id = std::thread::current().id();
+        let (inner_id, inner_name) = run_on_worker(|| {
+            (
+                std::thread::current().id(),
+                std::thread::current().name().map(str::to_owned),
+            )
+        });
+        (outer_id, inner_id, inner_name)
+    });
+
+    assert_ne!(
+        outer_id, inner_id,
+        "a cross-lane submission from a pool must run on the OTHER lane's \
+         thread — the guard must not reject it, and it must not degrade to an \
+         inline call on the pool consumer"
+    );
+    assert_eq!(
+        inner_name.as_deref(),
+        Some(WORKER_THREAD_NAME),
+        "the inner job must land on the ENGINE lane specifically"
+    );
+}
