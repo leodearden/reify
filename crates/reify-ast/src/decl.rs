@@ -657,6 +657,47 @@ where
     }
 }
 
+/// Visit every member reachable under `members`, descending into EVERY
+/// optional body there is — the MAXIMAL member-recursion set.
+///
+/// Invokes `visitor` on each member parent-before-children, then recurses:
+/// `SubDecl.body`, `PortDecl.members`, `GuardedGroupDecl.{members,
+/// else_members}`, and each `MatchArmDeclArmDecl.member`. Recursion is bounded
+/// by [`MAX_MEMBER_NESTING_DEPTH`], so a pathologically nested input is cut off
+/// rather than overflowing the stack. Never exits early — `visitor` returns
+/// nothing, and the `Infallible` break type below makes that a static property.
+///
+/// Used by whole-declaration passes that must not miss a member anywhere:
+/// `priv_redundant_lint.rs`'s E_PRIV_REDUNDANT walk is the caller today.
+///
+/// **Signature note.** Unlike [`walk_specialization_scope_members`] this takes a
+/// `&[MemberDecl]`, not a `&SubDecl`, because its caller applies it to five
+/// different declaration bodies (structure / occurrence / trait / purpose
+/// members, plus each structure nested in a purpose) rather than to one sub's
+/// scope.
+///
+/// **Anti-drift.** Which optional bodies this descends into is declared as data
+/// on [`MemberRecursionSet`]; see the table there rather than a second copy
+/// here, because a second copy is exactly the drift surface the consolidation
+/// removed.
+pub fn walk_all_member_bodies<'a, F>(members: &'a [MemberDecl], visitor: &mut F)
+where
+    F: FnMut(&'a MemberDecl),
+{
+    // `Infallible` as the break type statically pins "this wrapper visits
+    // everything and never exits early" — the closure always returns
+    // `Continue`, so `walk_members` can never actually produce a `Break`.
+    let _: ControlFlow<Infallible> = walk_members(
+        members,
+        MemberRecursionSet::ALL_MEMBER_BODIES,
+        0,
+        &mut |m| {
+            visitor(m);
+            ControlFlow::Continue(())
+        },
+    );
+}
+
 /// Which optional bodies a member-recursion walk descends into.
 ///
 /// The single place the member-recursion set is declared as data, replacing
@@ -668,7 +709,7 @@ where
 ///
 /// This table is the module's canonical anti-drift artifact: every
 /// member-recursion set in this module is one of the consts below, and
-/// [`walk_members`] is the single traversal all three callers share. The exit
+/// [`walk_members`] is the single traversal every caller shares. The exit
 /// rule is NOT a property of the set — it is the `ControlFlow` break type the
 /// caller's visitor chooses — but it is listed here so one table carries the
 /// whole picture.
@@ -678,6 +719,7 @@ where
 /// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no | no — `B = Infallible` pins it |
 /// | `NAMED_MEMBER_LOOKUP` | [`find_named_member_span_depth`] | no | yes | yes — first match wins |
 /// | `PARAM_DEFAULT_LOOKUP` | [`collect_param_default_candidates`] | no | no | yes — once ambiguous |
+/// | `ALL_MEMBER_BODIES` | [`walk_all_member_bodies`] | yes | yes | no — `B = Infallible` pins it |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemberRecursionSet {
     sub_body: bool,
@@ -709,11 +751,31 @@ impl MemberRecursionSet {
         sub_body: false,
         port_body: false,
     };
+    /// Used by [`walk_all_member_bodies`] — today, `priv_redundant_lint.rs`'s
+    /// E_PRIV_REDUNDANT pass. The structural MAXIMUM: descend into everything
+    /// there is.
+    ///
+    /// Named for the set, not the caller (unlike its three siblings), because
+    /// it encodes no caller-specific judgement — the siblings each answer a
+    /// scoping question ("is a port body inside a specialization scope?", "is
+    /// a port-body param addressable by bare name?"), whereas this one just
+    /// says "all of them". A caller-specific name would invite the next
+    /// full-coverage pass to add a fifth synonymous const instead of reusing
+    /// this one, which is exactly the drift the table above exists to prevent.
+    ///
+    /// Why the union is right for E_PRIV_REDUNDANT: the lint asks "does any
+    /// `let`/`constraint` anywhere under this declaration carry `priv`?", and
+    /// both a specialization-override body and a port body are places a
+    /// `let`/`constraint` can be written, so neither may be skipped.
+    const ALL_MEMBER_BODIES: Self = Self {
+        sub_body: true,
+        port_body: true,
+    };
 }
 
 /// The single member-recursion walker behind
-/// [`walk_specialization_scope_members`], `find_named_member_span_depth`, and
-/// `collect_param_default_candidates`.
+/// [`walk_specialization_scope_members`], [`walk_all_member_bodies`],
+/// `find_named_member_span_depth`, and `collect_param_default_candidates`.
 ///
 /// Visits every member of `members`, invoking `visitor` on each one
 /// (parent-before-children), and recurses according to `set` — see
