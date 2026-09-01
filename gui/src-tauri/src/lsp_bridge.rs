@@ -174,7 +174,7 @@ pub async fn lsp_request_on_worker(
     method: String,
     params: String,
 ) -> Result<String, String> {
-    lsp_request_on_lane(lane_for_method(&method), bridge, method, params).await
+    lsp_request_impl(&bridge, &method, params).await
 }
 
 /// Which large-stack lane a given LSP method travels: the size-1 ORDERED lane,
