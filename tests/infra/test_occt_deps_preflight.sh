@@ -237,14 +237,48 @@ _lines_contain_exact() {
 
 # _guard_output_names <lib_dir> <include_dir> <needle>...
 # Combined stdout+stderr of the guard must contain every needle (literal).
+#
+# ON A MISS it ECHOES the offending needle, the guard's exit status, and the
+# whole captured guard output, then returns 1. WHY: test_helpers.sh's assert()
+# dumps its per-assert tmpfile only when that file is non-empty
+# (`[ -s "$_f" ]`), so a helper that swallows the guard output into a shell
+# variable and returns 1 silently produces a FAIL line with NO evidence
+# attached — the reader cannot distinguish "the guard printed the wrong
+# thing" from "the guard printed nothing" from "the guard was right and the
+# harness misreported it". That gap is what kept the pipefail/SIGPIPE defect
+# (see _out_contains) unroot-caused for a full task cycle.
+#
+# Emission is on the FAILURE path ONLY, so an all-green suite stays
+# byte-for-byte unchanged — run_all.sh's cause_hint and dark-factory's
+# classifier both parse this file's green output shape. Every continuation
+# line carries the NON-whitespace `  | ` prefix test_helpers.sh documents:
+# dark-factory's slot-timeout classifier is `^[ \t]*`-anchored, so a captured
+# @@REIFY_SLOT_TIMEOUT@@ sentinel reproduced at column 0 (or merely indented)
+# would misclassify the whole merge verify as semaphore starvation.
 _guard_output_names() {
     local libdir="$1" incdir="$2"
     shift 2
     [ -x "$GUARD" ] || return 1
-    local out needle
-    out="$(OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" bash "$GUARD" 2>&1 || true)"
+    local out needle rc=0
+    out="$(OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" bash "$GUARD" 2>&1)" || rc=$?
     for needle in "$@"; do
-        _out_contains "$out" "$needle" || return 1
+        if ! _out_contains "$out" "$needle"; then
+            echo "  | needle NOT FOUND in the guard output: $needle"
+            echo "  | guard exit status: $rc"
+            echo "  | OCCT_LIB_DIR=$libdir"
+            echo "  | OCCT_INCLUDE_DIR=$incdir"
+            echo "  | ---- captured guard output ----"
+            # Fork-free, and deliberately NOT `printf | sed`: this is the
+            # failure path, where losing the dump to a pipefail surprise is
+            # worst. A herestring is not a pipeline, so nothing here is
+            # exposed to the hazard _out_contains documents.
+            local line
+            while IFS= read -r line; do
+                echo "  | $line"
+            done <<< "$out"
+            echo "  | ---- end captured guard output ----"
+            return 1
+        fi
     done
     return 0
 }
