@@ -4646,6 +4646,54 @@ mod tests {
     // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
     // not a runtime behaviour a test can pin.
 
+    // --- FeaLoadKindUnsupported tests (dimension-checked-readers α, task 5791) ---
+    //
+    // The ONE variant this task mints. Per BINDING ruling A7 (Leo, 2026-08-30,
+    // esc-5791-3) `ArgDimensionMismatch` is NOT minted — the dimension
+    // rejection reason reuses the shipped `DimensionedArgRejected` — so there
+    // is deliberately no test for it here.
+    //
+    // No exhaustiveness test is written over `DiagnosticCode`. MEASURED: the
+    // enum is `#[non_exhaustive]`, there is no `impl DiagnosticCode` anywhere
+    // in the workspace, no `as_str`/`Display`/`FromStr`, no exhaustiveness
+    // test, no docs registry and no mirrored GUI enum
+    // (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    // representative spread, not a census). A variant addition therefore has
+    // exactly zero other update obligations.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FeaLoadKindUnsupported`
+    /// serializes as `"FeaLoadKindUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`), and deserializes back to the same variant.
+    /// This is the wire form downstream tooling reads as an opaque string, so
+    /// it is a compatibility surface.
+    ///
+    /// RED until step-12 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fea_load_kind_unsupported_serializes_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FeaLoadKindUnsupported).unwrap();
+        assert_eq!(s, "\"FeaLoadKindUnsupported\"");
+
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, DiagnosticCode::FeaLoadKindUnsupported);
+    }
+
+    /// The variant attaches through the ordinary builder and reads back, at
+    /// `Severity::Error` — PRD §6 decision 6: the stdlib-declared but
+    /// solver-unreachable FEA load kinds get an explicit named REJECTION rather
+    /// than the silent no-op INV-SF-3 forbids.
+    ///
+    /// RED until step-12 adds the variant.
+    #[test]
+    fn fea_load_kind_unsupported_attaches_to_a_diagnostic() {
+        use super::Severity;
+
+        let d = Diagnostic::error("unsupported FEA load kind 'TractionLoad'")
+            .with_code(DiagnosticCode::FeaLoadKindUnsupported);
+        assert_eq!(d.code, Some(DiagnosticCode::FeaLoadKindUnsupported));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
     /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
     /// serializes as `"DimensionedArgRejected"` (PascalCase, from
     /// `rename_all = "PascalCase"`). This is the wire form the GUI reads as an
