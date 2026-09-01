@@ -117,6 +117,18 @@
 #       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #7004).
 #       Pinned non-vacuously by Section 3c below.
 #
+#       APPROACHING THE CAP IS ITSELF A SIGNAL. A pure pass/fail cap only
+#       speaks on the commit that finally breaks it — by which point the
+#       author owes an unrelated split before their own change can land. So
+#       rule (a) also emits an ADVISORY `reason=approaching-cap` WARN once a
+#       unit passes WARN_PCT% of the cap (see WARN_PCT beside CAP_LINES),
+#       surfacing the squeeze in routine gate output while there is still
+#       headroom to act. Advisory means EXACTLY that: no exit-code change, no
+#       `violations=` increment. The gating half of the signal is the shrinking
+#       `_KLOC_WARN_KNOWN` subset ratchet (Section 5d) — a unit may LEAVE the
+#       warn set freely, but a unit ARRIVING in it is red and must be
+#       acknowledged in the same diff.
+#
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
 #       `tests/common/` helpers. rustc compiles a SEPARATE COPY of such a file
@@ -143,13 +155,21 @@
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n> root_lines=<n> module_lines=<n> module_files=<n> external_lines=<n> external_files=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=unsanctioned-standalone
 #           HARNESS_KLOC_CAP PASS crate=<c>
-#           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n>
+#           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n> warnings=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=undeclared-member member=<harness_sub/file.rs>
 #           HARNESS_KLOC_CAP PASS crate=<c> scan=undeclared-members roots=<n> members=<n>
-#       (the last two lines are rule (d)'s, APPENDED here rather than inserted
-#       among the four above, so existing unanchored consumers keep matching —
-#       the same append-don't-insert discipline this rule list already states
-#       for the external breakdown fields, below.)
+#           HARNESS_KLOC_CAP WARN crate=<c> file=<path> reason=approaching-cap lines=<n> cap=<n> warn_at=<n> pct=<n> root_lines=<n> module_lines=<n> module_files=<n> external_lines=<n> external_files=<n>
+#       (the undeclared-member pair is rule (d)'s and the WARN line is the
+#       advisory tier's; all three are APPENDED here rather than inserted among
+#       the first four, so existing unanchored consumers keep matching — the
+#       same append-don't-insert discipline this rule list already states for
+#       the external breakdown fields, below. `warnings=` is likewise APPENDED
+#       to SUMMARY after `violations=`, for the same reason.)
+#       A WARN is ADVISORY: it never changes the exit code and is never counted
+#       in `violations=`. It carries the SAME five breakdown fields, in the same
+#       order, as `reason=exceeds-cap`, so the three-remedy reading below
+#       applies to it identically — the point being to act on the split while
+#       there is still headroom, not after the gate is already red.
 #       On exceeds-cap, `lines=` is the WHOLE-UNIT total, and the four
 #       breakdown fields decompose it as
 #           lines = root_lines + module_lines + external_lines
@@ -293,6 +313,24 @@ while IFS= read -r _ov; do OVERRIDE_BINARIES+=("$_ov"); done < <(harness_layout_
 # line count, simplest/conservative; ~20 kLOC = upper end of the §7 band).
 CAP_LINES=20000
 
+# The ADVISORY warn line, as a percentage of the cap. A harness unit above
+# WARN_PCT% of the cap but still under it emits a `reason=approaching-cap`
+# WARN, so the squeeze surfaces in ROUTINE gate output instead of only on the
+# commit that finally breaks the cap.
+#
+# The tier is ADVISORY BY DESIGN: it never changes the exit code and never
+# increments `violations=`. That is not timidity, it is the only shape that
+# could land. At introduction (task #6121) TWO live units were already above a
+# 90% line — harness_fea_solver_e2e at 19265 (96.3%, split by this same task)
+# and crates/reify-syntax/tests/harness_syntax.rs at 18617 (93.0%, a crate this
+# task is not scoped to fix and which is tracked separately). A GATING warn
+# would therefore have turned the merge gate RED on main the moment it landed,
+# and would have kept re-firing on every innocent downstream rebaser — exactly
+# the failure mode rule (d)'s LANDING PRECONDITION note above warns about.
+# WHICH units warn is instead ratcheted as a shrinking SUBSET (_KLOC_WARN_KNOWN
+# below), so an ARRIVING unit is red while a unit LEAVING the set is free.
+WARN_PCT=90
+
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
 # guards; default path is unchanged).
@@ -384,12 +422,28 @@ harness_layout_violations() {
             harness_*.rs)
                 IFS=' ' read -r lines root_lines module_lines module_files external_lines external_files \
                     <<<"$(harness_layout_unit_lines "$f")" || true
+                # The warn line is DERIVED from the cap passed in, never
+                # hardcoded, so the hermetic fixtures drive synthetic caps
+                # exactly as the live driver drives CAP_LINES — and a future
+                # CAP_LINES change cannot silently decouple the two.
+                local warn_lines=$(( cap_lines * WARN_PCT / 100 ))
                 if [ "$lines" -gt "$cap_lines" ]; then
                     _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
                         "lines=$lines" "cap=$cap_lines" \
                         "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files" \
                         "external_lines=$external_lines" "external_files=$external_files"
                     violations=$((violations + 1))
+                elif [ "$lines" -gt "$warn_lines" ]; then
+                    # elif, not a second if: FAIL wins outright, so an over-cap
+                    # unit is never double-reported as both. Carries the SAME
+                    # five breakdown fields in the SAME order as exceeds-cap,
+                    # so rule (c)'s three-remedy reading applies identically —
+                    # and deliberately does NOT touch `violations`.
+                    _emit WARN "crate=$crate" "file=$f" "reason=approaching-cap" \
+                        "lines=$lines" "cap=$cap_lines" "warn_at=$warn_lines" \
+                        "pct=$(( lines * 100 / cap_lines ))" \
+                        "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files" \
+                        "external_lines=$external_lines" "external_files=$external_files"
                 fi
                 continue
                 ;;
@@ -433,8 +487,8 @@ run_harness_layout_scan() {
     local cap="$2"
     shift 2
 
-    local crate_count=0 total_violations=0
-    local pair crate dir crate_out n
+    local crate_count=0 total_violations=0 total_warnings=0
+    local pair crate dir crate_out n w
 
     for pair in "$@"; do
         crate="${pair%%:*}"
@@ -446,10 +500,20 @@ run_harness_layout_scan() {
         crate_out="$(harness_layout_violations "$crate" "$dir" "$baseline" "$cap")" || true
         n="$(printf '%s\n' "$crate_out" | grep -cE '^HARNESS_KLOC_CAP FAIL ' || true)"
         total_violations=$((total_violations + n))
+        # Same idiom, WARN substituted: the warn count is derived from the
+        # detector's own structured output (the contract), exactly as the
+        # violation count is — not from a side channel that could drift.
+        w="$(printf '%s\n' "$crate_out" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
+        total_warnings=$((total_warnings + w))
         printf '%s\n' "$crate_out"
     done
 
-    _emit SUMMARY "crates=$crate_count" "violations=$total_violations"
+    # `warnings=` is APPENDED after `violations=`, never inserted before
+    # `lines=`/`violations=` — the append-don't-insert discipline rule (c)
+    # already states for the external breakdown fields, so existing unanchored
+    # consumers of this grammar keep matching.
+    _emit SUMMARY "crates=$crate_count" "violations=$total_violations" "warnings=$total_warnings"
+    # Return code stays keyed to violations ALONE: a WARN is advisory.
     [ "$total_violations" -eq 0 ]
 }
 
