@@ -510,6 +510,55 @@ fn match_arm_decl_block_rejects_the_join_at_the_grammar_level_already() {
     );
 }
 
+/// `port_body` (grammar.js:1013-1023) holds full `let` members, so REPRO 1
+/// reproduces inside a port body verbatim. Surfaced as MISSING by the
+/// grammar-drift guard in section (g), not by hand — which is the guard doing
+/// exactly the job it was added for.
+#[test]
+fn port_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "structure S {\n",
+        "  port p : in Flow {\n",
+        "    let x = 5mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("port body", source, "- 3mm", "-");
+}
+
+/// `field_source_sampled` (grammar.js:338-343) repeats `field_config_entry`,
+/// which is `key = <expression>` (grammar.js:364-368). The trailing expression
+/// absorbs the next line exactly as a `let` does. Also surfaced by section (g).
+#[test]
+fn field_source_sampled_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "field def f : Length -> Length {\n",
+        "  source = sampled {\n",
+        "    resolution = 5mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("sampled field source", source, "- 3mm", "-");
+}
+
+/// `field_source_imported` (grammar.js:358-363) has the same body shape as
+/// `field_source_sampled` but is a distinct grammar rule, so it needs its own
+/// container entry and its own pin. Also surfaced by section (g).
+#[test]
+fn field_source_imported_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "field def f : Length -> Length {\n",
+        "  source = imported {\n",
+        "    scale = 5mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("imported field source", source, "- 3mm", "-");
+}
+
 // ── (g) grammar-drift guard ─────────────────────────────────────────────────
 //
 // The container list in `member_continuation.rs` is a hand-written enumeration
@@ -536,29 +585,26 @@ fn match_arm_decl_block_rejects_the_join_at_the_grammar_level_already() {
 /// shape that lets one member's trailing expression swallow the next member's
 /// first token.
 ///
-/// Comment lines are skipped, and only the `rules: {` block is scanned, so the
-/// `commaSeparated` helper above it cannot be attributed to a rule.
-fn member_list_body_repeats(grammar: &str) -> Vec<(usize, String)> {
+/// The scan runs on [`mask_noncode`]'s output, so comments cannot contribute a
+/// site and no string or regex content can be mistaken for grammar. Only the
+/// `rules: {` block is scanned, so the `commaSeparated` helper above it cannot
+/// be attributed to a rule.
+fn member_list_body_repeats(masked: &str) -> Vec<(usize, String)> {
     let mut sites = Vec::new();
     let mut current_rule: Option<String> = None;
     let mut in_rules_block = false;
 
-    for (line_index, (line_start, line)) in line_spans(grammar).into_iter().enumerate() {
-        let trimmed = line.trim_start();
+    for (line_index, (line_start, line)) in line_spans(masked).into_iter().enumerate() {
         if !in_rules_block {
-            in_rules_block = trimmed == "rules: {";
+            in_rules_block = line.trim_start() == "rules: {";
             continue;
         }
         if let Some(name) = rule_header(line) {
             current_rule = Some(name.to_string());
         }
-        // A `repeat(` inside prose is not a grammar site.
-        if trimmed.starts_with("//") || trimmed.starts_with('*') {
-            continue;
-        }
 
         for open in repeat_call_offsets(line) {
-            let Some(arg) = balanced_arg(grammar, line_start + open) else {
+            let Some(arg) = balanced_arg(masked, line_start + open) else {
                 panic!(
                     "grammar.js:{}: unbalanced `repeat(` — the drift-guard scanner \
                      cannot classify this site, so it cannot vouch for the grammar. \
@@ -642,39 +688,129 @@ fn repeat_call_offsets(line: &str) -> Vec<usize> {
     out
 }
 
-/// The balanced-parenthesis argument text of a call whose `(` ends at `open`
-/// (a byte offset one past the paren). Quoted strings are skipped, so a `'('`
-/// token in the grammar cannot unbalance the scan.
-fn balanced_arg(src: &str, open: usize) -> Option<&str> {
-    let bytes = src.as_bytes();
-    let mut depth = 1usize;
-    let mut i = open;
-    let mut quote: Option<u8> = None;
-    while i < bytes.len() {
-        let c = bytes[i];
-        match quote {
-            Some(q) => {
-                if c == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if c == q {
-                    quote = None;
+/// `grammar` with every comment, regex literal and string-literal *interior*
+/// blanked to spaces — byte-for-byte the same length, so every offset computed
+/// on the result also indexes the original.
+///
+/// Balancing parentheses on the raw text is not safe. `grammar.js` holds a
+/// regex literal containing a bare `"` (`/[^"\\{}]/`, the `string_literal`
+/// rule) and another containing a bare `/` inside a character class
+/// (`/[^*]*\\*+([^/*][^*]*\\*+)*/`); a naive quote-aware scan desynchronises on
+/// the first and stays wrong for the rest of the file. That is not
+/// hypothetical — it is what this scanner did on its first run, and the
+/// unbalanced-`repeat(` panic below is what caught it.
+///
+/// String literals keep their two delimiters so [`contains_string_literal`] can
+/// still see that a separator token was present, without re-parsing it.
+/// Comments and regex literals are blanked whole: neither is ever a separator.
+/// Newlines are preserved everywhere so line numbering survives.
+fn mask_noncode(grammar: &str) -> String {
+    let src = grammar.as_bytes();
+    let mut out = vec![b' '; src.len()];
+    let mut i = 0usize;
+
+    // Copy `src[i]` through and advance; used for every byte that is real code.
+    macro_rules! keep {
+        () => {{
+            out[i] = src[i];
+            i += 1;
+        }};
+    }
+    // Blank `src[i]`, but never a newline — line numbering must survive.
+    macro_rules! blank {
+        () => {{
+            if src[i] == b'\n' {
+                out[i] = b'\n';
+            }
+            i += 1;
+        }};
+    }
+
+    while i < src.len() {
+        match src[i] {
+            b'/' if src.get(i + 1) == Some(&b'/') => {
+                while i < src.len() && src[i] != b'\n' {
+                    blank!();
                 }
             }
-            None => match c {
-                b'\'' | b'"' => quote = Some(c),
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(&src[open..i]);
+            b'/' if src.get(i + 1) == Some(&b'*') => {
+                blank!();
+                blank!();
+                while i < src.len() && !(src[i] == b'*' && src.get(i + 1) == Some(&b'/')) {
+                    blank!();
+                }
+                for _ in 0..2 {
+                    if i < src.len() {
+                        blank!();
                     }
                 }
-                _ => {}
-            },
+            }
+            // Any remaining `/` in code position opens a regex literal:
+            // `grammar.js` contains no division.
+            b'/' => {
+                blank!();
+                let mut in_class = false;
+                while i < src.len() {
+                    match src[i] {
+                        b'\\' => {
+                            blank!();
+                            if i < src.len() {
+                                blank!();
+                            }
+                            continue;
+                        }
+                        b'[' => in_class = true,
+                        b']' => in_class = false,
+                        // A `/` inside `[...]` is content, not the terminator.
+                        b'/' if !in_class => {
+                            blank!();
+                            break;
+                        }
+                        _ => {}
+                    }
+                    blank!();
+                }
+            }
+            q @ (b'\'' | b'"') => {
+                keep!();
+                while i < src.len() && src[i] != q {
+                    if src[i] == b'\\' {
+                        blank!();
+                        if i < src.len() {
+                            blank!();
+                        }
+                        continue;
+                    }
+                    blank!();
+                }
+                if i < src.len() {
+                    keep!();
+                }
+            }
+            _ => keep!(),
         }
-        i += 1;
+    }
+
+    String::from_utf8(out).expect("masking only ever copies whole bytes or writes ASCII")
+}
+
+/// The balanced-parenthesis argument text of a call whose `(` ends at `open`
+/// (a byte offset one past the paren), over [`mask_noncode`]'s output — where a
+/// `'('` token has already been blanked and so cannot unbalance the scan.
+fn balanced_arg(masked: &str, open: usize) -> Option<&str> {
+    let bytes = masked.as_bytes();
+    let mut depth = 1usize;
+    for (i, &c) in bytes.iter().enumerate().skip(open) {
+        match c {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&masked[open..i]);
+                }
+            }
+            _ => {}
+        }
     }
     None
 }
@@ -689,35 +825,20 @@ fn contains_symbol_reference(arg: &str) -> bool {
     })
 }
 
-/// Does `arg` carry a single-quoted string token — i.e. a separator?
+/// Does `arg` carry a string token — i.e. a separator?
+///
+/// `arg` comes from [`mask_noncode`], where a string literal is exactly its two
+/// surviving delimiters, so the presence of a quote byte IS the presence of a
+/// string token.
 fn contains_string_literal(arg: &str) -> bool {
-    let bytes = arg.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'\'' {
-            let mut j = i + 1;
-            while j < bytes.len() {
-                if bytes[j] == b'\\' {
-                    j += 2;
-                    continue;
-                }
-                if bytes[j] == b'\'' {
-                    return true;
-                }
-                j += 1;
-            }
-            return false;
-        }
-        i += 1;
-    }
-    false
+    arg.bytes().any(|c| c == b'\'' || c == b'"')
 }
 
 /// Every grammar-rule name defined in `grammar.js`'s `rules: {` block.
-fn grammar_rule_names(grammar: &str) -> Vec<String> {
+fn grammar_rule_names(masked: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut in_rules_block = false;
-    for (_, line) in line_spans(grammar) {
+    for (_, line) in line_spans(masked) {
         if !in_rules_block {
             in_rules_block = line.trim_start() == "rules: {";
             continue;
@@ -734,8 +855,14 @@ fn member_list_containers_cover_every_member_repeat_in_the_grammar() {
     let path = workspace_root().join("tree-sitter-reify/grammar.js");
     let grammar = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let masked = mask_noncode(&grammar);
+    assert_eq!(
+        masked.len(),
+        grammar.len(),
+        "masking must be length-preserving or every offset below is wrong"
+    );
 
-    let sites = member_list_body_repeats(&grammar);
+    let sites = member_list_body_repeats(&masked);
 
     // Non-vacuity: a scanner that silently matches nothing would make every
     // assertion below pass while vouching for nothing at all.
@@ -783,7 +910,7 @@ fn member_list_containers_cover_every_member_repeat_in_the_grammar() {
     );
 
     // (iii) no dead entries: every name on either list is a real grammar rule.
-    let rules = grammar_rule_names(&grammar);
+    let rules = grammar_rule_names(&masked);
     let dead: Vec<_> = covered
         .iter()
         .copied()

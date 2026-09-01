@@ -86,7 +86,25 @@ use reify_core::SourceSpan;
 /// Derived from the member-repeat sites in `tree-sitter-reify/grammar.js` —
 /// every rule with a brace-delimited `repeat(...)` body whose items are
 /// members. Each entry names the grammar rule and the repeat it owns.
-const MEMBER_LIST_CONTAINERS: &[&str] = &[
+///
+/// Public so the contract is readable and checkable from outside the crate:
+/// this list plus [`MEMBER_LIST_CONTAINER_EXCLUSIONS`] is a total accounting of
+/// the grammar's member-list bodies, and the two together are what the
+/// grammar-drift guard verifies.
+///
+/// TRIPWIRE: `grammar.js` has no pointer back to this list, so a member-list
+/// body added there is covered only if someone also adds it HERE. Dropping an
+/// entry, or adding a grammar rule without adding it, silently un-enforces
+/// INV-SF-7 at that site — every member-continuation test keeps passing,
+/// because the container is simply never visited. Both directions are caught
+/// by:
+///   - `member_list_containers_cover_every_member_repeat_in_the_grammar`
+///     (`crates/reify-syntax/tests/harness_syntax/member_continuation_ambiguity_tests.rs`),
+///     which re-derives the sites from `grammar.js` and requires each to be
+///     covered here or excluded below with a reason.
+///   - the per-container must-error tests in the same file, which catch a
+///     removed entry.
+pub const MEMBER_LIST_CONTAINERS: &[&str] = &[
     // repeat($._member) — grammar.js:512
     "structure_definition",
     // repeat($._member) — grammar.js:525
@@ -110,6 +128,20 @@ const MEMBER_LIST_CONTAINERS: &[&str] = &[
     "specialization_body",
     // repeat1($.keyed_member_entry) — grammar.js:970
     "keyed_member_block",
+    // repeat(choice($.param_declaration, $.let_declaration, …)) — grammar.js:1015.
+    // A port body holds full `let` members, so it carries REPRO 1 verbatim:
+    // `port p : in Flow { let x = 5mm ⏎ - 3mm }` parses as one joined
+    // `binary_expression` (measured with `tree-sitter parse`).
+    "port_body",
+    // repeat($.field_config_entry) — grammar.js:341.
+    // `field_config_entry` is `key = <expression>` (grammar.js:364-368), so its
+    // trailing expression absorbs the next entry's line exactly as a `let` does:
+    // `sampled { resolution = 5mm ⏎ - 3mm }` joins (measured).
+    "field_source_sampled",
+    // repeat($.field_config_entry) — grammar.js:361. Same body shape and same
+    // join as `field_source_sampled`; a separate grammar rule, so a separate
+    // entry (measured).
+    "field_source_imported",
     // seq($.match_arm_decl_arm, repeat(seq(',', $.match_arm_decl_arm)), …)
     // — grammar.js:1404. Carried deliberately even though no arm shape can
     // trip the rule today: arms are `,`-separated and `match_arm_sub_decl`
@@ -119,6 +151,48 @@ const MEMBER_LIST_CONTAINERS: &[&str] = &[
     // #3569; carrying the container now means that widening arrives covered.
     // Pinned by `match_arm_decl_block_rejects_the_join_at_the_grammar_level_already`.
     "match_arm_decl_block",
+];
+
+/// Grammar rules that own a separator-free `repeat(...)` body which this check
+/// deliberately does **not** cover — `(rule_name, reason)`.
+///
+/// The grammar-drift guard treats [`MEMBER_LIST_CONTAINERS`] and this table as
+/// a partition: every separator-free repeat in `grammar.js` must appear in one
+/// or the other. That is the point of writing the exclusions down rather than
+/// letting the guard's scan quietly skip them — an omission and a decision look
+/// identical from the outside, and only a stated reason tells them apart.
+///
+/// TRIPWIRE: an entry added here silences the drift guard for that rule
+/// forever. Add one only when the join provably cannot form (or has no member
+/// column to anchor against), and say which, so the next reader can re-check
+/// the claim instead of inheriting it.
+pub const MEMBER_LIST_CONTAINER_EXCLUSIONS: &[(&str, &str)] = &[
+    (
+        "source_file",
+        "repeat($._declaration) — grammar.js:126. Not brace-delimited: a \
+         top-level declaration list has no `{` and therefore no member column \
+         for clause 5 to compare against, so the rule has no anchor here. A \
+         top-level join is a different defect with a different fix and is not \
+         #7094's seam.",
+    ),
+    (
+        "fn_body",
+        "repeat($.fn_let_binding) — grammar.js:241. The separator is real but \
+         lives INSIDE the item rather than in the repeat: `fn_let_binding` ends \
+         in a REQUIRED `;` (grammar.js:248-255), so consecutive bindings can \
+         never be adjacent and no silent join can form. What CAN go wrong here \
+         is a MISSING `;`, which is a parse error the grammar already demands — \
+         anchoring that error to the right line is task #5392's seam, not this \
+         one.",
+    ),
+    (
+        "interpolated_string",
+        "repeat(choice(alias($._string_content, $.string_chunk), \
+         $.interpolation)) — grammar.js:1774. Not a member list at all: the \
+         repeat runs over string CONTENT between `\"` delimiters. A chunk has \
+         no expression tail to absorb a following line with, and there is no \
+         member column, so clauses 1 and 5 are both undefined here.",
+    ),
 ];
 
 /// Scan `root` for member-continuation ambiguities.
