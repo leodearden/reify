@@ -734,7 +734,11 @@ fn compute_total_violation(
 /// **Op-rule pact (three members, in-crate)**: `collect_floor_terms` and
 /// `derive_from_expr` (task #5618) reuse this exact Ge/Gt/Le/Lt/And decomposition.
 /// Any op-rule change here must be reflected in BOTH of them; all three carry the
-/// cross-reference comment.
+/// cross-reference comment.  `derive_from_expr` holds only the OP half: its `And`
+/// split was factored out to `for_each_leaf_conjunct`, which its two callers
+/// (`derive_param_intervals`, `params_in_underivable_constraints`) drive.  A
+/// change to the `And` rule itself therefore lands in three places, not four —
+/// here, in `collect_floor_terms`, and in `for_each_leaf_conjunct`.
 fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -843,7 +847,9 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// **Parallel to `collect_slack_terms`**: any op-rule change there must also be
 /// reflected here — and, since task #5618, in `derive_from_expr` as well. The
 /// cross-reference comment in `collect_slack_terms` records the three-member pact;
-/// keep all three in sync.
+/// keep all three in sync. `derive_from_expr`'s `And` half lives in
+/// `for_each_leaf_conjunct`, so an `And`-rule change lands there rather than in
+/// `derive_from_expr` itself.
 fn collect_floor_terms(expr: &CompiledExpr, out: &mut Vec<(CompiledExpr, CompiledExpr, Type)>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -1098,6 +1104,38 @@ fn constant_operand_value(
         .filter(|v| v.is_finite())
 }
 
+/// Visit every LEAF CONJUNCT of `expr` — i.e. split on `BinOp::And` all the way
+/// down and hand `f` each non-`And` node, in left-to-right order. A non-`And`
+/// expression is its own single leaf.
+///
+/// THE ONLY `And`-splitting recursion in the derivation family (review
+/// suggestion 3). [`derive_param_intervals`] and
+/// [`params_in_underivable_constraints`] both drive it, so the two cannot
+/// drift apart: before this extraction each carried its own copy, and the
+/// per-conjunct abstention granularity documented on
+/// [`params_in_underivable_constraints`] silently depended on those two copies
+/// agreeing. If a future change teaches the family another STRUCTURAL
+/// connective — splitting `Or`, the blind spot the abstention docs repeatedly
+/// name — it belongs here, once, and both callers inherit it.
+///
+/// Deliberately NOT part of the `collect_slack_terms` op-rule pact: the pact
+/// governs the per-leaf OP RULES (`Ge`/`Gt` vs `Le`/`Lt` vs skip), which
+/// [`collect_slack_terms`], [`collect_floor_terms`] and [`derive_from_expr`]
+/// each still own. This owns only the structural walk down to the leaves.
+fn for_each_leaf_conjunct(expr: &CompiledExpr, f: &mut impl FnMut(&CompiledExpr)) {
+    if let CompiledExprKind::BinOp {
+        op: BinOp::And,
+        left,
+        right,
+    } = &expr.kind
+    {
+        for_each_leaf_conjunct(left, &mut *f);
+        for_each_leaf_conjunct(right, f);
+    } else {
+        f(expr);
+    }
+}
+
 /// Derive one [`DerivedInterval`] per auto param (in `auto_params` order) from the
 /// inequality constraints.
 ///
@@ -1119,17 +1157,25 @@ fn derive_param_intervals(
         .map(|(i, p)| (p.id.clone(), i))
         .collect();
     for (_, expr) in constraints {
-        derive_from_expr(expr, &auto_index, values, functions, &mut out, dispatch);
+        for_each_leaf_conjunct(expr, &mut |leaf| {
+            derive_from_expr(leaf, &auto_index, values, functions, &mut out, dispatch);
+        });
     }
     out
 }
 
-/// Recursive worker for [`derive_param_intervals`].
+/// Per-leaf op-rule worker for [`derive_param_intervals`].
 ///
 /// **Third member of the `collect_slack_terms` op-rule pact**: same
-/// `Ge`/`Gt` → left-bounded-below, `Le`/`Lt` → left-bounded-above, `And` → recurse,
-/// everything else (including `Eq`, `Ne`, `Or`) → skip.  Any op-rule change in
+/// `Ge`/`Gt` → left-bounded-below, `Le`/`Lt` → left-bounded-above, everything
+/// else (including `Eq`, `Ne`, `Or`) → skip.  Any op-rule change in
 /// `collect_slack_terms` or `collect_floor_terms` must be reflected here.
+///
+/// Takes ONE leaf conjunct and does not recurse: the pact's `And` → recurse
+/// half lives in [`for_each_leaf_conjunct`], which every caller drives (review
+/// suggestion 3 — [`collect_underivable_in_leaf`] used to carry a second copy
+/// of that recursion). Calling this directly on an `A AND B` node therefore
+/// derives NOTHING, by design; go through [`for_each_leaf_conjunct`].
 fn derive_from_expr(
     expr: &CompiledExpr,
     auto_index: &HashMap<ValueCellId, usize>,
@@ -1162,11 +1208,9 @@ fn derive_from_expr(
                 right, left, true, strict, auto_index, values, functions, out, dispatch,
             );
         }
-        BinOp::And => {
-            derive_from_expr(left, auto_index, values, functions, out, dispatch);
-            derive_from_expr(right, auto_index, values, functions, out, dispatch);
-        }
-        // Eq, Ne, Or and every arithmetic op: no one-sided bound on a single auto.
+        // And (split upstream by `for_each_leaf_conjunct`, so it cannot appear
+        // here on the intended call path), Eq, Ne, Or and every arithmetic op:
+        // no one-sided bound on a single auto.
         _ => {}
     }
 }
@@ -1385,11 +1429,14 @@ fn seed_box_from_intervals(
 /// teaching [`derive_from_expr`] the missing shapes, not tightening the test
 /// here.
 ///
-/// Conjuncts are split on `And` before the test, mirroring
-/// [`derive_from_expr`]'s own recursion: in `x > 1mm AND y < 5mm - x` the first
-/// conjunct is readable and the second is not, and per-conjunct granularity is
-/// what keeps `x` from being scored readable on the strength of a DIFFERENT
-/// conjunct while the one that actually mentions it is opaque.
+/// Conjuncts are split on `And` before the test, by the SAME
+/// [`for_each_leaf_conjunct`] walk [`derive_param_intervals`] drives — one
+/// recursion, so the two cannot disagree about what a leaf is (review
+/// suggestion 3). Granularity is what the split buys: in
+/// `x > 1mm AND y < 5mm - x` the first conjunct is readable and the second is
+/// not, and per-conjunct scoring is what keeps `x` from being called readable
+/// on the strength of a DIFFERENT conjunct while the one that actually
+/// mentions it is opaque.
 ///
 /// Pure function of its inputs — no solve, no I/O, no mutation.
 fn params_in_underivable_constraints(
@@ -1414,29 +1461,36 @@ fn params_in_underivable_constraints(
     // for each conjunct of every constraint.
     let mut scratch = vec![DerivedInterval::default(); auto_params.len()];
     for (_, expr) in constraints {
-        collect_underivable(
-            expr,
-            &auto_index,
-            values,
-            functions,
-            &mut scratch,
-            &mut out,
-            dispatch,
-        );
+        for_each_leaf_conjunct(expr, &mut |leaf| {
+            collect_underivable_in_leaf(
+                leaf,
+                &auto_index,
+                values,
+                functions,
+                &mut scratch,
+                &mut out,
+                dispatch,
+            );
+        });
     }
     out
 }
 
-/// Recursive worker for [`params_in_underivable_constraints`]: splits on `And`,
-/// then scores one leaf conjunct by re-running [`derive_from_expr`] on it into a
-/// scratch buffer and comparing what it bounded against what it mentions.
+/// Per-leaf worker for [`params_in_underivable_constraints`]: scores ONE leaf
+/// conjunct by re-running [`derive_from_expr`] on it into a scratch buffer and
+/// comparing what it bounded against what it mentions.
+///
+/// Does not recurse — the caller drives [`for_each_leaf_conjunct`], the single
+/// `And` split shared with [`derive_param_intervals`] (review suggestion 3).
+/// Passing an `A AND B` node here directly would score the conjunction as ONE
+/// leaf and lose the per-conjunct granularity this function exists to provide.
 ///
 /// `scratch` is caller-owned and RESET (not reallocated) at each leaf; it must be
 /// `auto_params.len()` long, since `derive_from_expr` indexes it by auto index.
 /// Its contents carry no meaning across leaves — the per-conjunct granularity
 /// documented on [`params_in_underivable_constraints`] depends on the reset.
-fn collect_underivable(
-    expr: &CompiledExpr,
+fn collect_underivable_in_leaf(
+    leaf: &CompiledExpr,
     auto_index: &HashMap<ValueCellId, usize>,
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -1444,19 +1498,9 @@ fn collect_underivable(
     out: &mut HashSet<usize>,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
-    if let CompiledExprKind::BinOp {
-        op: BinOp::And,
-        left,
-        right,
-    } = &expr.kind
-    {
-        collect_underivable(left, auto_index, values, functions, scratch, out, dispatch);
-        collect_underivable(right, auto_index, values, functions, scratch, out, dispatch);
-        return;
-    }
     scratch.fill(DerivedInterval::default());
-    derive_from_expr(expr, auto_index, values, functions, scratch, dispatch);
-    for id in expr.collect_value_refs() {
+    derive_from_expr(leaf, auto_index, values, functions, scratch, dispatch);
+    for id in leaf.collect_value_refs() {
         if let Some(&i) = auto_index.get(&id)
             && scratch
                 .get(i)
@@ -5415,6 +5459,54 @@ mod tests {
     /// Conjuncts are scored SEPARATELY: an `And` of two readable bounds flags
     /// nothing, and mixing in an unreadable conjunct flags only what that
     /// conjunct mentions opaquely.
+    /// The shared `And` walk both derivation consumers drive (review suggestion
+    /// 3). Pinned directly, not only through its two callers: it is now the
+    /// ONLY structural recursion in the family, so its contract — nested `And`
+    /// flattens left-to-right, anything else is its own single leaf, and no
+    /// `And` node is ever handed to the leaf callback — is what keeps
+    /// `derive_param_intervals` and `params_in_underivable_constraints` from
+    /// disagreeing about what a leaf is.
+    #[test]
+    fn for_each_leaf_conjunct_flattens_nested_ands_and_yields_non_and_verbatim() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+
+        // A non-`And` expression is its own single leaf.
+        let leaf = cmp_ref_lit(BinOp::Ge, &q, 1.0);
+        let mut seen = 0usize;
+        super::for_each_leaf_conjunct(&leaf, &mut |_| seen += 1);
+        assert_eq!(seen, 1, "a non-`And` expression is its own single leaf");
+
+        // `((a AND b) AND c)` → three leaves, left to right, no `And` among them.
+        let a = cmp_ref_lit(BinOp::Ge, &q, 1.0);
+        let b = cmp_ref_lit(BinOp::Le, &q, 4.0);
+        let c = cmp_ref_lit(BinOp::Eq, &q, 2.0);
+        let nested = CompiledExpr::binop(
+            BinOp::And,
+            CompiledExpr::binop(BinOp::And, a, b, Type::Bool),
+            c,
+            Type::Bool,
+        );
+
+        let mut ops = Vec::new();
+        super::for_each_leaf_conjunct(&nested, &mut |leaf| {
+            if let reify_ir::CompiledExprKind::BinOp { op, .. } = &leaf.kind {
+                ops.push(*op);
+            } else {
+                panic!("every leaf here is a BinOp comparison");
+            }
+        });
+        assert_eq!(
+            ops,
+            vec![BinOp::Ge, BinOp::Le, BinOp::Eq],
+            "nested `And`s must flatten left-to-right, and no `And` node may reach the \
+             leaf callback — `derive_from_expr` no longer recurses, so an `And` that \
+             leaked through would derive nothing at all"
+        );
+    }
+
     #[test]
     fn params_in_underivable_constraints_splits_conjunctions() {
         use reify_core::Type;
@@ -5438,8 +5530,8 @@ mod tests {
                 None,
             )
             .is_empty(),
-            "`And` must recurse exactly as `derive_from_expr` does, not be treated as one \
-             opaque leaf"
+            "`And` must be split by `for_each_leaf_conjunct` — the same walk \
+             `derive_param_intervals` drives — not treated as one opaque leaf"
         );
 
         let mixed = CompiledExpr::binop(
