@@ -2166,7 +2166,8 @@ pub structure AFrame {
     /// Usable Y travel TODAY: 800mm rails − 150mm bearing − two sock_len end
     /// grips = 510mm < build_y 800. PRE-EXISTING latent defect made visible:
     /// full travel needs ~1100mm rails (= wall_len), a rear-web cascade
-    /// deferred to its own round (tracked task — see round notes). Pillars
+    /// deferred to its own round (#5098 carries the GUI-gate scenario and
+    /// the externalization-round checklist). Pillars
     /// already sit at the future grip zones; only the sockets are interim.
     /// FULL TRAVEL ALSO REQUIRES WEB EXTERNALIZATION (measured 2026-09-01,
     /// Leo confirmed): at y_head < ~46–61 the lower gantry tube (z 635–695,
@@ -2516,7 +2517,9 @@ pub structure EZBed {
     param m_sheet  : Mass = 1kg               // magnetic substrate + PEI sheet
     param m_subframe : Mass = 6kg             // welded/bolted steel subframe (est)
     param g_acc : Acceleration = 9.81 * 1m / (1s * 1s)
-    /// Gravity-sag flatness excursion budget (thermal bow tracked separately).
+    /// Gravity-sag flatness excursion budget. Thermal bow is deliberately
+    /// OUTSIDE this budget: it is soak-then-probe territory (mesh
+    /// compensation), not a modelled quantity.
     param sag_budget : Length = 0.03mm
 
     // ── Lift geometry ──────────────────────────────────────────────────────
