@@ -261,7 +261,17 @@ async fn lsp_request_impl_null_literal_passes_json_parse_step() {
 // arms this seam DOES cover are the other ten — including `didOpen`,
 // `didChange`, `hover`, `completion`, `documentSymbol`, `documentHighlight` —
 // which are precisely the keystroke/cursor-frequency ones. Closing the other
-// four needs `crates/reify-lsp/src/server.rs`, outside this task's scope.
+// four needs `crates/reify-lsp/src/server.rs`, outside this task's scope
+// (task #6195).
+//
+// That stack cut is UNCHANGED by task 6517, and is a different cut from the LANE
+// routing the section further down adds. Since 6517 the fourteen arms are split
+// across two lanes — six ordered + everything unrecognised on `LSP_LANE`, eight
+// read-only queries on `LSP_POOL` — which is orthogonal to which four get the
+// big stack. Three of the pooled arms (`documentHighlight`, `prepareRename`,
+// `rename`) were covered by NO test in this file before 6517; the parity table
+// in (b) now spans every pooled arm plus one ordered-lane arm, because those are
+// exactly the arms whose lane changed.
 
 /// Compile-time proof that `T` satisfies the bound the lane rests on. Never
 /// runs; naming the type is the assertion.
@@ -578,10 +588,14 @@ async fn the_lsp_lane_runs_its_work_off_the_awaiting_runtime_thread() {
 /// `large_stack_tests.rs`; this one proves the real path is wired to the same
 /// lane.
 ///
-/// EXERCISES THE INLINE ARMS. `didOpen` and `hover` both run inline inside
-/// `handle_request`, so they are genuinely on the lane. `definition`,
-/// `prepareRename`, `rename` and `references` hop to `spawn_blocking` and are
-/// NOT — no assertion here claims otherwise.
+/// EXERCISES THE INLINE ARMS, ACROSS BOTH LANES. `didOpen` and `hover` both run
+/// inline inside `handle_request`, so they genuinely get a lane's large stack —
+/// but since task 6517 they get DIFFERENT lanes: `initialize`, `initialized` and
+/// `didOpen` travel the ordered `LSP_LANE`, while the `hover` travels the query
+/// `LSP_POOL`. The test name's "the lane" predates that split and is kept for
+/// continuity; read it as "a lane". `definition`, `prepareRename`, `rename` and
+/// `references` hop to `spawn_blocking` and get no large stack on either lane —
+/// no assertion here claims otherwise.
 #[tokio::test]
 async fn deeply_nested_source_opens_and_hovers_through_the_lane() {
     use crate::lsp_bridge::lsp_request_on_worker;

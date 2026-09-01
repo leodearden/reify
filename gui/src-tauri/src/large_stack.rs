@@ -44,19 +44,22 @@
 //! * `debug_server.rs::run_on_engine` → every debug/MCP engine closure, which
 //!   includes the compile-bearing `open_file` / `load_fixture` tools
 //!
-//! **3. PERSISTENT lanes — [`run_on_worker`] (engine) and
-//! [`run_on_lsp_worker`] (LSP).** For high-frequency work, where a per-call
-//! mapping is the wrong mechanism. One thread per lane for the process lifetime;
-//! the per-call cost becomes a queue push and a channel round trip. The `'static`
-//! bound is the price (see [`run_on_worker`]).
+//! **3. PERSISTENT lanes — [`run_on_worker`] (engine) and the LSP routing in
+//! [`crate::lsp_bridge`].** For high-frequency work, where a per-call mapping is
+//! the wrong mechanism. A lane's threads live for the process lifetime, so the
+//! per-call cost becomes a queue push and a channel round trip. The `'static`
+//! bound is the price (see [`run_on_worker`]). Most lanes run ONE consumer;
+//! [`LSP_POOL`] runs [`LSP_POOL_SIZE`], which is a size on the same mechanism
+//! and not a second one — see [`Lane`]'s "One consumer or N".
 //!
-//! The two lanes differ in their JOB TYPE, not only in their name. `ENGINE_LANE`
-//! takes a BLOCKING closure `FnOnce() -> T`, submitted via [`run_on_worker`] /
-//! [`dispatch`]; `LSP_LANE` takes a `Future`, submitted via
-//! [`run_on_lsp_worker`] / [`dispatch_async`]. That split is a correctness
-//! constraint rather than a style choice: when a lane is absent its work must
-//! still run somewhere, and an async submission's fallback frame is inside the
-//! tokio runtime — a future can be `.await`ed there, whereas a closure with a
+//! The ENGINE and LSP lanes differ in their JOB TYPE, not only in their name.
+//! `ENGINE_LANE` takes a BLOCKING closure `FnOnce() -> T`, submitted via
+//! [`run_on_worker`] / [`dispatch`]; both LSP lanes take a `Future`, submitted
+//! via [`dispatch_async`] (and, for the ordered lane specifically,
+//! [`run_on_lsp_worker`]). That split is a correctness constraint rather than a
+//! style choice: when a lane is absent its work must still run somewhere, and an
+//! async submission's fallback frame is inside the tokio runtime — a future can
+//! be `.await`ed there, whereas a closure with a
 //! [`tokio::runtime::Handle::block_on`] already baked in cannot, because
 //! `block_on` from inside a runtime panics "Cannot start a runtime from within a
 //! runtime". Taking the future and letting the lane decide how to drive it is
@@ -69,35 +72,58 @@
 //!   `get_def_preview`, `get_containing_definition`,
 //!   `get_entity_at_source_location`, `get_active_fea_case`,
 //!   `set_active_fea_case`.
-//! * LSP lane — `main.rs::lsp_request` → `lsp_bridge::lsp_request_on_worker`,
+//! * LSP lanes — `main.rs::lsp_request` → `lsp_bridge::lsp_request_on_worker`,
 //!   which fires on effectively every keystroke and cursor move.
+//!   [`crate::lsp_bridge::lane_for_method`] routes each method to either the
+//!   single-consumer ORDERED lane [`LSP_LANE`] (state-mutating + lifecycle
+//!   methods, plus anything unrecognised) or the QUERY POOL [`LSP_POOL`] (the
+//!   eight read-only queries).
 //!
 //! # What is still NOT covered
 //!
-//! Two boundaries, stated as limits rather than left to be inferred:
+//! Four boundaries, stated as limits rather than left to be inferred. Items 3
+//! and 4 were OPEN at task 5772 and are now bounded rather than unbounded (task
+//! 6517); they are restated as the narrower limits that actually hold, not
+//! deleted, because a limit that stopped being total did not stop existing.
 //!
-//! 1. **Four LSP methods.** `InProcessLsp::handle_request`'s
-//!    `textDocument/definition`, `prepareRename`, `rename` and `references` arms
-//!    each call `tokio::task::spawn_blocking`, so their compiler work executes on
-//!    tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
-//!    under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request`
-//!    on a lane gives the big stack only to that thread's OWN frames, so the LSP
-//!    lane cannot help those four. Closing them needs a change in
+//! 1. **Four LSP methods do not get the large stack.**
+//!    `InProcessLsp::handle_request`'s `textDocument/definition`,
+//!    `prepareRename`, `rename` and `references` arms each call
+//!    `tokio::task::spawn_blocking`, so their compiler work executes on tokio's
+//!    BLOCKING POOL, whose threads take the std ~2 MiB default (nothing under
+//!    `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on a
+//!    lane gives the big stack only to that thread's OWN frames, so no lane —
+//!    ordered or pooled — can help those four. Closing them needs a change in
 //!    `crates/reify-lsp/src/server.rs`, which is outside this module and would
 //!    also regress the stdio `reify lsp` CLI server (it relies on
 //!    `spawn_blocking` to keep its 2-worker runtime responsive). Tracked as
-//!    task #6195.
+//!    task #6195. NOTE this is a STACK limit only: their separate cost — holding
+//!    a consumer for a workspace-wide walk while gaining nothing from it — is
+//!    what item 3 now bounds, and the two were previously narrated as one.
 //! 2. **`main.rs::mcp_tool_call`** remains unrouted; it is task 5466's scope, and
 //!    joins the ENGINE lane as a lane choice rather than a redesign.
-//! 3. **Concurrency WITHIN a lane.** A lane has one consumer, so routing
-//!    `lsp_request` onto [`LSP_LANE`] serializes LSP requests against each
-//!    other, where the multi-threaded tauri runtime previously ran them
-//!    concurrently. The split buys isolation from ENGINE work, not from other
-//!    LSP work — see [`Lane`]'s "What the split does NOT buy" for what that
-//!    costs and what bounding it would take. Tracked as task #6517.
-//! 4. **Drop-cancellation of an LSP request.** A future handed to a lane is
-//!    driven to completion by a thread that cannot be cancelled, so abandoning
-//!    the awaiting side no longer stops the work — see
+//! 3. **Concurrency WITHIN a lane is BOUNDED, not unlimited.** LSP work runs on
+//!    TWO lanes: [`LSP_LANE`], a single-consumer ORDERED lane carrying the
+//!    state-mutating and lifecycle methods (plus anything unrecognised), and
+//!    [`LSP_POOL`], a [`LSP_POOL_SIZE`]-consumer QUERY POOL carrying the eight
+//!    read-only queries. Head-of-line blocking among queries is therefore
+//!    bounded at [`LSP_POOL_SIZE`] — the fifth simultaneous in-flight query
+//!    queues — rather than total, as it was when one consumer served all of LSP.
+//!    Notifications still serialize against each other, which is a REQUIREMENT
+//!    (reordering two `didChange`es is corruption, not staleness) rather than a
+//!    residual limit. The routing lives in
+//!    [`crate::lsp_bridge::lane_for_method`]; what the split buys and what it
+//!    gives up is on [`Lane`].
+//! 4. **Drop-cancellation is PARTIAL.** An abandoned request is dropped at the
+//!    lane BEFORE it starts: [`dispatch_async`]'s job body returns early when
+//!    `reply_tx.is_closed()`, which is true exactly when the awaiting side's
+//!    future was dropped. But a request already picked up by a consumer runs to
+//!    completion — there is no cancellation point inside
+//!    [`tokio::runtime::Handle::block_on`], and the four `spawn_blocking` arms
+//!    of item 1 are uninterruptible once started regardless. So the residual is
+//!    "abandoned-after-start still runs", now costing one of [`LSP_POOL_SIZE`]
+//!    consumers rather than the only LSP consumer in the process. See
+//!    [`dispatch_async`]'s "Drop-cancellation" section and
 //!    [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
 //!
 //! So the invariant this module establishes is: "compile-bearing and
@@ -137,6 +163,23 @@
 //!
 //! The worst outcome anywhere in this module is therefore a loud panic — never a
 //! silent hang, and never a nested runtime.
+//!
+//! ## Measured: a runtime torn down under a lane job does NOT panic the job
+//!
+//! Task 6517's brief predicted a shutdown edge — that a lane job outliving its
+//! runtime would hit an `unwrap`/`expect` on a `spawn_blocking` `JoinHandle` in
+//! `reify-lsp` and turn into a job panic. It was checked against the source and
+//! is REFUTED. Each of the four arms handles its `JoinError` with
+//! `tracing::error!` plus `None`: `crates/reify-lsp/src/server.rs` lines
+//! 355-361 (`goto_definition`), 489-492 (`prepare_rename`), 550-553 (`rename`)
+//! and 612-615 (`references`). There is no `unwrap` or `expect` on any of those
+//! `JoinHandle`s — the only `unwrap_or_else` nearby is on an `Option<PathBuf>`
+//! INSIDE the blocking closure. So the observed behaviour is: those arms log and
+//! answer `None`, and the predicted job panic does not occur.
+//!
+//! Recorded as the measurement it is, naming the lines, rather than as a
+//! reassurance: it is true of `reify-lsp` as of task 6517, and a future change
+//! there could make it false without anything here noticing.
 
 /// Stack size for the large-stack compile thread: 256 MiB.
 ///
@@ -527,46 +570,60 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// reservation committed page-by-page — near-zero RSS until used — and it is
 /// created only if something actually submits to it.
 ///
-/// # What the split does NOT buy: LSP requests now serialize against EACH OTHER
+/// # What the split buys, and the ONE ordering property it gives up
 ///
-/// Stated as a limit rather than left to be inferred from "two lanes", because
-/// the argument above is about the OTHER lane's work and does not carry over.
-/// A lane has a single consumer, and [`LSP_LANE`]'s consumer parks in
-/// `Handle::block_on(fut)` for the whole request, so `lsp_request` calls now run
-/// strictly one at a time.
+/// The lane split protects the keystroke path from ENGINE work; the ordered
+/// lane / query pool split (task 6517) additionally BOUNDS its exposure to other
+/// LSP work. Both halves are needed, and neither implies the other.
 ///
-/// That is a real change, not merely a theoretical one. Before task 5772 these
-/// futures were awaited on the multi-threaded tauri runtime, and
-/// `textDocument/hover` — which takes only a brief `state.read().await` and never
-/// touches the `eval_state` mutex that `didChange` holds across its diagnostics
-/// eval — genuinely ran concurrently with an in-flight `didChange` eval.
+/// Task 5772 shipped a single LSP consumer that parked in
+/// `Handle::block_on(fut)` for a whole request, so `lsp_request` calls ran
+/// strictly one at a time — a real regression against the multi-threaded tauri
+/// runtime that preceded it, where `textDocument/hover` (a brief
+/// `state.read().await`, never the `eval_state` mutex `didChange` holds across
+/// its diagnostics eval) genuinely ran concurrently with an in-flight
+/// `didChange`. Task 6517 replaces that with two lanes: [`LSP_LANE`] keeps ONE
+/// consumer for the state-mutating and lifecycle methods, and [`LSP_POOL`] runs
+/// the eight read-only queries on [`LSP_POOL_SIZE`] consumers. Head-of-line
+/// blocking among queries is bounded at [`LSP_POOL_SIZE`] rather than total, and
+/// the sharpest case — a workspace-wide `references` or `rename` holding a
+/// consumer for its full duration while its deep frames run on the blocking
+/// pool's ~2 MiB threads (module docs item 1) — now costs one of
+/// [`LSP_POOL_SIZE`] consumers instead of the only one.
 ///
-/// The sharpest case is the four `spawn_blocking` arms from the module docs'
-/// "What is still NOT covered". They hand their compiler work to tokio's
-/// blocking pool, but the lane thread stays parked in `block_on` for the whole
-/// duration — so a workspace-wide `textDocument/references` now stalls every
-/// subsequent keystroke's `didChange` and `hover` behind it, while gaining
-/// nothing from the lane in exchange (its own frames on the lane's stack are
-/// shallow; the deep ones are on the blocking pool's ~2 MiB threads).
+/// A pool needed two arguments before it could be an instance of this mechanism
+/// rather than a second design. Both are discharged:
 ///
-/// So the accurate claim is: the lane split protects the keystroke path from
-/// ENGINE work, not from other LSP work. Bounding the remainder means either
-/// keeping the four `spawn_blocking` arms off the lane, or making [`LSP_LANE`] a
-/// small fixed pool of large-stack consumers instead of a single-consumer queue.
-/// Both are follow-up work rather than part of this routing: a method-keyed
-/// bypass couples this module to `reify-lsp`'s internal choice of which arms
-/// offload — a coupling that would rot silently if that choice changed — and a
-/// pool is a different concurrency design than the one this task specified,
-/// needing its own reentrancy and ordering argument (LSP notifications such as
-/// `didOpen`/`didChange` are order-sensitive against later requests on the same
-/// document, so a pool must not reorder them).
+/// * **ORDERING.** LSP notifications are order-sensitive against each other:
+///   applying `didChange` N+1 before N yields text neither the client nor the
+///   server ever had. So notifications keep ONE FIFO consumer — that is why
+///   [`LSP_LANE`] is size 1 by requirement, not by leftover, and why
+///   [`crate::lsp_bridge::lane_for_method`] defaults every UNRECOGNISED method
+///   to it.
+/// * **REENTRANCY.** [`assert_not_reentrant`] stays BLANKET per lane. Every
+///   consumer of a pool publishes the same [`CURRENT_LANE`] name, so a pool job
+///   submitting to its own pool panics exactly as a single-consumer lane's does.
+///   That is conservative — a pool with an idle consumer could in principle
+///   serve it — and deliberately so; see that function's docs.
 ///
-/// That deferral is TRACKED, not merely narrated: task #6517 carries both
-/// candidate fixes above, and records that the choice between them should be
-/// made against a measurement — no benchmark of serialized-vs-concurrent
-/// keystroke latency exists yet. Cited here for the same reason the module docs
-/// cite #6195 and 5466: a disclosed limit with no ticket behind it is
-/// indistinguishable from a limit nobody intends to close.
+/// The one ordering property genuinely GIVEN UP is query-versus-notification: a
+/// query may now read text older than a concurrently-processing `didChange`.
+/// That is STALENESS, never corruption — `reify-lsp`'s own `RwLock`/`Mutex`
+/// serialise the accesses for safety — and it is exactly the pre-task-5772
+/// behaviour on the multi-threaded tauri runtime. An awaited client sequence
+/// still reads its own writes, because the awaited `didChange` job has returned
+/// before the next request is submitted at all.
+///
+/// One consequence of that staleness is worth naming rather than leaving
+/// implicit: `rename` returns an unversioned `WorkspaceEdit.changes` map, so a
+/// `WorkspaceEdit` computed against text a concurrent `didChange` has since
+/// replaced is applied by the client with no version guard. That window predates
+/// task 5772 and is not introduced here, but routing `rename` to the pool
+/// re-opens it deliberately, so it is tracked rather than absorbed: follow-up
+/// ticket `tkt_0RT4B6B63TJ8PPFQ72GB725J1P` (versioned `documentChanges` plus a
+/// client-side version check). Named here for the same reason the module docs
+/// name #6195 and 5466: a disclosed limit with nothing behind it is
+/// indistinguishable from one nobody intends to close.
 /// # One consumer or N: a POOL is an instance, not a variant (task 6517)
 ///
 /// A lane carries a `size`, and everything above holds for every value of it.
@@ -1143,9 +1200,8 @@ where
 ///
 /// The RESIDUAL, stated rather than left to be discovered: a request abandoned
 /// AFTER its consumer picked it up still runs to completion. That cost is now
-/// BOUNDED rather than eliminated — it occupies one of
-/// [`LSP_POOL_SIZE`](crate::large_stack::LSP_POOL_SIZE) query consumers instead
-/// of the only LSP consumer in the process.
+/// BOUNDED rather than eliminated — it occupies one of [`LSP_POOL_SIZE`] query
+/// consumers instead of the only LSP consumer in the process.
 pub(crate) async fn dispatch_async<Fut, T>(sender: Option<&JobSender>, fut: Fut) -> T
 where
     Fut: std::future::Future<Output = T> + Send + 'static,

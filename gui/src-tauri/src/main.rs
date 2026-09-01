@@ -606,9 +606,19 @@ fn mcp_tool_call(
     result
 }
 
-/// Task 5772: dispatched on the persistent large-stack LSP lane rather than on
-/// the awaiting tokio worker, whose ~2 MiB stack this compiler-adjacent work
-/// reaches at keystroke frequency.
+/// Task 5772: dispatched on a persistent large-stack LSP lane rather than on the
+/// awaiting tokio worker, whose ~2 MiB stack this compiler-adjacent work reaches
+/// at keystroke frequency.
+///
+/// Task 6517: ROUTED by method across two such lanes. The lib-internal
+/// `lsp_bridge::lane_for_method` sends the state-mutating and
+/// lifecycle methods — plus anything `InProcessLsp::handle_request` does not
+/// recognise — to the single-consumer ORDERED lane, and the eight read-only
+/// queries to a `LSP_POOL_SIZE`-consumer QUERY POOL. Notification ordering is
+/// therefore unchanged (one FIFO consumer), while head-of-line blocking among
+/// queries is bounded at the pool size rather than total. The frontend sees no
+/// difference: this command's signature, its arguments and its return type are
+/// exactly as task 5772 left them.
 ///
 /// Stays `async`. Converting it to a sync command would make Tauri run it as
 /// `ExecutionContext::Blocking` on the IPC thread with NO ambient tokio runtime,

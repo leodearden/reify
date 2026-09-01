@@ -78,8 +78,9 @@ pub async fn lsp_request_impl(
     serde_json::to_string(&result).map_err(|e| format!("serialize error: {e}"))
 }
 
-/// [`lsp_request_impl`], dispatched on the persistent LARGE-STACK LSP lane
-/// instead of on the awaiting tokio worker (task 5772).
+/// [`lsp_request_impl`], dispatched on a persistent LARGE-STACK LSP lane instead
+/// of on the awaiting tokio worker (task 5772), and ROUTED by method to one of
+/// two such lanes (task 6517) — see "Which lane" below.
 ///
 /// `lsp_request` fires on effectively every keystroke and cursor move, and the
 /// work it reaches is compiler-adjacent: `reify-syntax`'s CST-to-AST walk (which
@@ -101,48 +102,66 @@ pub async fn lsp_request_impl(
 /// panics "Cannot start a runtime from within a runtime"; see
 /// [`crate::large_stack::dispatch_async`]'s degradation policy.
 ///
-/// # What this does NOT cover
+/// # Which lane, and what the routing does NOT cover
 ///
-/// Those same four arms hop to `spawn_blocking`, so their compiler work executes
-/// on tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
+/// Since task 6517 there are TWO destinations, chosen by [`lane_for_method`]:
+///
+/// * ORDERED lane ([`crate::large_stack::LSP_LANE`], one consumer) —
+///   `initialize`, `initialized`, `textDocument/didOpen`,
+///   `textDocument/didChange`, `textDocument/didClose`, `shutdown`, plus any
+///   method `handle_request` does not recognise.
+/// * QUERY pool ([`crate::large_stack::LSP_POOL`],
+///   [`crate::large_stack::LSP_POOL_SIZE`] consumers) —
+///   `textDocument/completion`, `hover`, `definition`, `documentSymbol`,
+///   `documentHighlight`, `prepareRename`, `rename`, `references`.
+///
+/// What the LARGE STACK covers is a different cut and is unchanged by that
+/// split. Four of the pooled arms — `definition`, `prepareRename`, `rename`,
+/// `references` — hop to `spawn_blocking`, so their compiler work executes on
+/// tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
 /// under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on
 /// a 256 MiB thread gives the big stack only to that thread's OWN frames, so
-/// those four are unaffected by this routing. The arms it does cover are the
-/// other ten — `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
-/// `completion`, `hover`, `documentSymbol`, `documentHighlight`, `shutdown` —
-/// which are precisely the keystroke/cursor-frequency ones. Closing the four
-/// needs a change in `crates/reify-lsp/src/server.rs`, which would also regress
-/// the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to keep its
-/// 2-worker runtime responsive); tracked as task #6195 rather than overclaimed
-/// here.
+/// those four are unaffected by any lane. The arms that DO get the big stack are
+/// the other ten — `initialize`, `initialized`, `didOpen`, `didChange`,
+/// `didClose`, `completion`, `hover`, `documentSymbol`, `documentHighlight`,
+/// `shutdown` — which are precisely the keystroke/cursor-frequency ones. Closing
+/// the four needs a change in `crates/reify-lsp/src/server.rs`, which would also
+/// regress the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to
+/// keep its 2-worker runtime responsive); tracked as task #6195 rather than
+/// overclaimed here.
 ///
-/// # What this COSTS: the request is no longer DROP-CANCELLABLE
+/// # What this COSTS: drop-cancellation is PARTIAL
 ///
 /// Stated alongside the coverage limit above because it is a behaviour change
-/// this routing INTRODUCES, not merely one it fails to fix.
+/// this routing introduced, and one it now only partly repairs.
 ///
 /// Before task 5772 the body ran inside the Tauri command's own future, so a
 /// frontend `invoke` that was abandoned — window closed, pane navigated away,
 /// a keystroke's request superseded by the next one — dropped that future and
-/// the LSP work stopped at its next `.await` point. Now the future is MOVED
-/// into a lane job and driven by [`tokio::runtime::Handle::block_on`] on a
-/// thread that has no cancellation point at all. Dropping the awaiting side
-/// only drops the `oneshot` receiver; `reply_tx.send` then fails silently
-/// (`let _ = ...`) while the work runs to completion regardless.
+/// the LSP work stopped at its next `.await` point. Task 5772 moved the future
+/// into a lane job driven by [`tokio::runtime::Handle::block_on`] on a thread
+/// with no cancellation point at all, so the work ran to completion regardless.
 ///
-/// That compounds with the single-consumer serialization documented on
-/// [`crate::large_stack::Lane`]: an abandoned request still occupies the lane
-/// for its full duration, so it delays the LIVE requests queued behind it.
-/// Bounding it means threading a cancellation token into the job and checking
-/// it at the lane before driving the future, so an abandoned request is dropped
-/// from the queue instead of executed — same lane, same shape, but a different
-/// job contract than this task specified. Tracked with the serialization it
-/// compounds, on task #6517.
+/// Task 6517 restores the NOT-YET-STARTED half.
+/// [`crate::large_stack::dispatch_async`]'s job body returns early when
+/// `reply_tx.is_closed()` — true exactly when the awaiting side's future was
+/// dropped — so an abandoned request is discarded at the lane instead of
+/// executed, and its captured future is dropped without ever being polled.
+///
+/// The RESIDUAL, which no doc here should be read as denying: a request already
+/// picked up by a consumer still runs to completion. `Handle::block_on` has no
+/// cancellation point, and the four `spawn_blocking` arms above are
+/// uninterruptible once started in any case (dropping a `JoinHandle` does not
+/// cancel a blocking task). What changed is the COST of that residual: an
+/// abandoned in-flight query now occupies one of
+/// [`crate::large_stack::LSP_POOL_SIZE`] consumers rather than the only LSP
+/// consumer in the process, so it no longer stalls every subsequent keystroke
+/// behind it.
 ///
 /// Not a correctness bug in either direction: the work is idempotent
 /// request-handling against the bridge's own state, and every arm still
 /// RESOLVES. It is a wasted-work and latency cost, and the honest statement of
-/// it is this paragraph rather than silence.
+/// it is these paragraphs rather than silence.
 ///
 /// # Why this composition lives here, not inline in `main.rs`
 ///
