@@ -9,16 +9,12 @@ module mirror_bare_origin
 //
 // WHY THIS ROUTE AND NOT THE 7-ARG SCALAR ONE (task 5662).  This fixture's job
 // for leaf β is to be a BUILD-ONLY diagnostic — one that `check` can only
-// surface by reaching build().  The 7-arg scalar form `mirror(arm, 0, 0, 0, …)`
-// held that job until task 5662 gave its ox/oy/oz a compile-layer LENGTH slot in
-// `crates/reify-compiler/src/builtin_signatures.rs`; a compile-layer
-// Severity::Error makes `cmd_check` return FAILURE and short-circuit BEFORE
-// constraint checking and before build(), which would destroy every assertion
-// here.  The decoded-value route is a STRUCTURAL exclusion from that slot table
-// — a position on it arrives already assembled into a composite `Value` by a
-// stdlib producer, so it never passes through a positional argument index for
-// the table to key on — which makes it the one bare-origin shape that stays
-// build-only for good.  The fixture stays deliberately BARE either way.
+// surface by reaching build() — and the 7-arg scalar form no longer qualifies.
+// The full argument (why the arity guard is load-bearing, and why the
+// decoded-value route is a STRUCTURAL exclusion from the compile slot table) is
+// stated once, on the `mirror` / `circular_pattern` arms of `builtin_arg_slots`
+// in `crates/reify-compiler/src/builtin_signatures.rs`.  Read it there.
+// The fixture stays deliberately BARE either way — only the route changed.
 //
 // Verified baselines, MEASURED on this file at task 5662 (binary built from
 // task/5662 with the two new slots NOT yet landed; re-measured unchanged after

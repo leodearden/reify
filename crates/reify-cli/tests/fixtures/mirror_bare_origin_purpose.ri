@@ -10,11 +10,10 @@ module mirror_bare_origin_purpose
 // leaf β is the geometry-compile diagnostic — never a constraint violation and
 // never a purpose-activation failure.
 //
-// Task 5662 moved this fixture off the 7-arg scalar form for the reason set out
-// at length in `mirror_bare_origin.ri`'s header: that form now has a
-// compile-layer LENGTH slot, and a compile Severity::Error makes `cmd_check`
-// short-circuit before build(), whereas the decoded-value route is a STRUCTURAL
-// exclusion from the slot table and so stays build-only for good.
+// Task 5662 moved this fixture off the 7-arg scalar form, exactly as it moved
+// its non-purpose twin; the reason is stated once, on the `mirror` /
+// `circular_pattern` arms of `builtin_arg_slots` in
+// `crates/reify-compiler/src/builtin_signatures.rs`.
 //
 // Verified baseline, MEASURED at task 5662:
 //

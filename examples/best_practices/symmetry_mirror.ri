@@ -25,9 +25,13 @@ module symmetry_mirror
 //   the NORMAL components stay bare dimensionless numbers:
 //       mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)     // correct
 //       mirror(g,   0,   0,   0, 1, 0, 0)     // WRONG — bare-0 origin
-//   The wrong form yields "mirror: ox argument expects Length, got Int; pass a
-//   dimensioned length such as `5mm`" and then a hard geometry-compile error
-//   ("missing or non-Length argument 'ox' for mirror").
+//   The wrong form is rejected at COMPILE time, before anything is built: one
+//   error per component ("mirror: ox argument expects Length, got Int; pass a
+//   dimensioned length such as `5mm`", then the same for oy and oz), and exit 1
+//   under BOTH `reify check` and `reify eval`. Compilation aborts there, so the
+//   older geometry-compile error ("missing or non-Length argument 'ox' for
+//   mirror") is NOT reached on this route — it survives only on the
+//   decoded-value route described just below.
 //
 //   TRAP, re-scoped: the bare-0 7-arg form above is now a HARD `reify check`
 //   failure — a compile-layer ArgTypeMismatch (task 5662) on each of ox, oy and

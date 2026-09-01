@@ -60,8 +60,11 @@
 //!   `extrude_infinite`'s `dx`/`dy`/`dz`) is dimensionless and legitimately
 //!   bare in correct `.ri`, so a slot there would reject valid code. Stated
 //!   binding at `crates/reify-eval/src/arg_acceptance.rs`'s "unit-vector
-//!   DIRECTIONS" paragraph. The three builtins whose arguments STRADDLE this
-//!   line carry the split on their own arm.
+//!   DIRECTIONS" paragraph. The builtins whose arguments STRADDLE this line
+//!   carry the split on their own arm — deliberately UNCOUNTED here, because a
+//!   tally stated away from the arms is exactly the second copy nothing
+//!   machine-checks that this section opens by warning against. It read
+//!   "three" until task 5662 added the fourth and fifth.
 //! - **COUNTS, face INDICES and dimensionless RATIOS are never slots.** A
 //!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
 //!   error, not a dimension one, and a LENGTH slot on a ratio would reject
@@ -591,10 +594,26 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // These two arms make `reify check` a REAL gate for these positions, not
         // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
         // compile `Severity::Error` and short-circuits BEFORE constraint checking
-        // and before `build()`. That is exactly why task 5748's CLI fixtures
-        // (`crates/reify-cli/tests/fixtures/mirror_bare_origin*.ri`) had to move
-        // to the decoded-value route, which is structurally excluded from this
-        // table — see their headers.
+        // and before `build()`. Pinned at the CLI seam by
+        // `check_rejects_bare_scalar_mirror_origin_before_reaching_build`.
+        //
+        // STRUCTURAL EXCLUSION OF THE DECODED-VALUE ROUTE — the AUTHORITATIVE
+        // statement, kept here beside the code it describes per this module's
+        // own header rule. Four other sites need it and POINT here rather than
+        // restate it: `reify-cli/tests/fixtures/mirror_bare_origin{,_purpose}.ri`,
+        // `cli_check.rs`' two build-diagnostic tests, and
+        // `reify-eval/tests/mirror_circular_value_forms_e2e.rs`.
+        //
+        // A bare origin reaching `mirror` / `circular_pattern` through the value
+        // form — `mirror(g, plane_yz(0))`, `circular_pattern(g, axis_z(…), n, a)`
+        // — arrives already assembled into a composite `Value` by a stdlib
+        // producer, so it never passes through a positional argument index for
+        // this name-and-arity-keyed table to key on. NO arm can gate it: the
+        // exclusion is structural, not a gap someone forgot to fill, so it stays
+        // a BUILD-only diagnostic for as long as the table stays index-keyed.
+        // That is why task 5748's two CLI fixtures had to move onto that route
+        // when these arms landed — the short-circuit above would otherwise have
+        // destroyed every assertion they carry.
         "circular_pattern" if arg_count == 9 => const { &[
             length_arg(1, "ox"),
             length_arg(2, "oy"),

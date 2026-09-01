@@ -34,8 +34,10 @@
 //! `parse_and_compile`, which hard-asserts zero Error diagnostics. They route
 //! through `compile_bare_origin` instead — a TIGHTENING, not a loosening; see
 //! that helper. Every dimensioned row and every VALUE-form row stays on the
-//! strict helper, because the decoded-value route is structurally excluded from
-//! the compile slot table and so still compiles clean.
+//! strict helper: the value form is structurally excluded from the compile slot
+//! table and so still compiles clean. Why that exclusion is structural rather
+//! than a gap is stated once, on the `mirror` / `circular_pattern` arms of
+//! `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{BuildResult, Engine};
