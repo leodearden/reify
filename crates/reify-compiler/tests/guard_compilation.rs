@@ -735,11 +735,29 @@ structure def S {
     // Pin the exact error count so a future grammar change that makes `type`
     // valid inside guards (but introduces a different parse error) cannot
     // silently make this test pass for the wrong reason.
+    //
+    // The count deliberately EXCLUDES INV-SF-7 member-continuation diagnostics
+    // (#7094). On this source the `param active : Bool = true` member absorbs
+    // the following `where active {` line under error recovery — `tree-sitter
+    // parse` reports `(param_declaration [2, 4] - [4, 29])`, i.e. the member
+    // starts at row 2 col 4 and ends at row 4, with `where` sitting at col 4,
+    // at or left of the member's own start column. That is a genuine, orthogonal
+    // true positive of the member-continuation check, not a second reading of
+    // the `type X = Y` rejection this test characterizes. Filtering it out
+    // (rather than bumping the literal to 2) keeps the original guard intact:
+    // the assertion still fails if the `type`-in-guard rejection stops being
+    // exactly one error, and it stays decoupled from #7094's diagnostic count.
+    let non_continuation_errors: Vec<_> = parsed
+        .errors
+        .iter()
+        .filter(|e| !e.message.contains("ambiguous member continuation"))
+        .collect();
     assert_eq!(
-        parsed.errors.len(),
+        non_continuation_errors.len(),
         1,
-        "expected exactly one parse error for `type X = Y` inside a guarded block, \
-         got: {:?}",
+        "expected exactly one non-member-continuation parse error for `type X = Y` \
+         inside a guarded block, got: {:?} (all errors: {:?})",
+        non_continuation_errors,
         parsed.errors
     );
 }
