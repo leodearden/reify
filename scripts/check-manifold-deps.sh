@@ -344,6 +344,42 @@ dep_find_dir() {
     return 1
 }
 
+# dep_soname_ver <lib_dir> <sentinel>
+#
+# The version segment of the dev symlink's FIRST-LEVEL target, mirroring
+# reify_build_utils::read_soname_version() (crates/reify-build-utils/src/lib.rs)
+# rule for rule, shared by all three arms so that rule exists ONCE:
+#   - `readlink`, NEVER `readlink -f`. Multi-hop resolution gives the wrong
+#     answer on both live shapes: OCCT's Debian chain would yield 7.8.1 where
+#     the build sees 7.8, and openvdb's would yield 13.0.0 where it sees 13.0.
+#   - everything after the `<sentinel>.` prefix taken VERBATIM, so conda's
+#     one-hop `libgmsh.so -> libgmsh.so.4.15.2` yields `4.15.2` and OCCT's
+#     `:libTKernel.so.7.9.3` link directive names a file that exists.
+#
+# Prints the version on stdout, or NOTHING when it is undeterminable (the
+# sentinel is not a symlink, or its target does not carry the prefix). Always
+# exits 0 — whether an empty result is fatal is the CALLER's decision, and the
+# three arms differ: OCCT hard-fails (build.rs splices the version into link
+# directives behind a hard-coded fallback, so an unread SONAME links something
+# nobody verified), while Gmsh and OpenVDB record `unknown` and continue
+# (they link the unversioned `dylib=gmsh` / `dylib=openvdb` symlink and splice
+# no version anywhere, so there is no unverified-link hazard to gate on).
+dep_soname_ver() {
+    local lib_dir="$1" sentinel="$2"
+    # `|| true`: a non-symlink makes readlink exit non-zero, and under `set -e`
+    # that would abort the caller with no message at all — reporting the
+    # undeterminable case is the whole point.
+    local target base ver
+    target="$(readlink "$lib_dir/$sentinel" 2>/dev/null || true)"
+    base="${target##*/}"
+    [ -n "$base" ] || return 0
+    ver="${base#"$sentinel."}"
+    # Unchanged => the prefix was absent, so there is no version to read. An
+    # empty remainder (a bare `<sentinel>.` target) is equally unusable.
+    [ "$ver" = "$base" ] && return 0
+    printf '%s' "$ver"
+}
+
 # dep_searched_desc <override> <env-var-name> <candidate>...
 # Human-readable rendering of WHERE the guard actually looked, so a red gate
 # names the searched paths rather than leaving the reader to infer them.
@@ -389,29 +425,13 @@ if [ "$occt_failed" -ne 0 ]; then
 fi
 
 # Both halves resolved, so has_occt WILL be set. Now pin which OCCT it is.
-#
-# Mirrors reify_build_utils::read_soname_version()
-# (crates/reify-build-utils/src/lib.rs) rule for rule:
-#   - the FIRST-level link target only — `readlink`, never `readlink -f`,
-#     because multi-hop resolution yields 7.8.1 on a host where the build sees
-#     7.8;
-#   - everything after the `libTKernel.so.` prefix taken VERBATIM, so the
-#     conda one-level `-> libTKernel.so.7.9.3` shape yields `7.9.3` and a
-#     `:libTKernel.so.7.9.3` link directive names a file that exists.
+# The first-level read itself lives in dep_soname_ver() above, shared with the
+# Gmsh and OpenVDB arms; OCCT_SONAME_TARGET is kept only for the error text,
+# which names the raw link target the operator will see on disk.
 OCCT_SONAME_PATH="$OCCT_LIB_RESOLVED/$OCCT_LIB_SENTINEL"
-# `|| true`: a non-symlink makes readlink exit non-zero, and under `set -e`
-# that would abort here with no message at all — the undeterminable branch
-# below is the whole point.
 OCCT_SONAME_TARGET="$(readlink "$OCCT_SONAME_PATH" 2>/dev/null || true)"
-OCCT_SONAME_BASE="${OCCT_SONAME_TARGET##*/}"
 OCCT_SONAME_PREFIX="$OCCT_LIB_SENTINEL."
-OCCT_SONAME_VER=""
-if [ -n "$OCCT_SONAME_BASE" ]; then
-    OCCT_SONAME_VER="${OCCT_SONAME_BASE#"$OCCT_SONAME_PREFIX"}"
-    # Unchanged => the prefix was absent, so there is no version to read. An
-    # empty remainder (a bare `libTKernel.so.` target) is equally unusable.
-    [ "$OCCT_SONAME_VER" = "$OCCT_SONAME_BASE" ] && OCCT_SONAME_VER=""
-fi
+OCCT_SONAME_VER="$(dep_soname_ver "$OCCT_LIB_RESOLVED" "$OCCT_LIB_SENTINEL")"
 
 if [ -z "$OCCT_SONAME_VER" ]; then
     err "manifold-deps guard: could not determine the OCCT SONAME from $OCCT_SONAME_PATH"
@@ -534,6 +554,20 @@ if [ "$gmsh_failed" -ne 0 ]; then
     exit 1
 fi
 
+# RECORDING half of the arm — stdout, so a reviewer reading a green
+# reify-kernel-gmsh result in the verify log can see WHICH Gmsh produced it.
+# Read through the shared dep_soname_ver(), so the first-level-only rule
+# (`readlink`, never `readlink -f`) is stated once for all three arms.
+#
+# `unknown` is NOT fatal here, unlike the OCCT arm. crates/reify-kernel-gmsh's
+# build.rs links the unversioned `dylib=gmsh` dev symlink and splices no version
+# into any link directive, so an unreadable SONAME cannot make the build link
+# something nobody verified — it only costs this log line its specificity.
+# Hard-failing on it would red every RUN_RUST=1 verify over a packaging detail
+# with no correctness consequence.
+GMSH_SONAME_VER="$(dep_soname_ver "$GMSH_LIB_RESOLVED" "$GMSH_LIB_SENTINEL")"
+ok "Gmsh ${GMSH_SONAME_VER:-unknown} at $GMSH_LIB_RESOLVED (headers: $GMSH_INCLUDE_RESOLVED)"
+
 # ---------- OpenVDB presence preflight (task #6493) ----------
 #
 # See arm 5 in the file header. Same fail-OPEN build.rs, same silent deletion
@@ -613,5 +647,19 @@ if [ "$openvdb_failed" -ne 0 ]; then
     openvdb_hint
     exit 1
 fi
+
+# RECORDING half of the arm — stdout, so a reviewer reading a green
+# reify-kernel-openvdb result in the verify log can see WHICH OpenVDB produced it.
+# Read through the shared dep_soname_ver(), so the first-level-only rule
+# (`readlink`, never `readlink -f`) is stated once for all three arms.
+#
+# `unknown` is NOT fatal here, unlike the OCCT arm. crates/reify-kernel-openvdb's
+# build.rs links the unversioned `dylib=openvdb` dev symlink and splices no version
+# into any link directive, so an unreadable SONAME cannot make the build link
+# something nobody verified — it only costs this log line its specificity.
+# Hard-failing on it would red every RUN_RUST=1 verify over a packaging detail
+# with no correctness consequence.
+OPENVDB_SONAME_VER="$(dep_soname_ver "$OPENVDB_LIB_RESOLVED" "$OPENVDB_LIB_SENTINEL")"
+ok "OpenVDB ${OPENVDB_SONAME_VER:-unknown} at $OPENVDB_LIB_RESOLVED (headers: $OPENVDB_INCLUDE_RESOLVED)"
 
 exit 0
