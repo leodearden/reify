@@ -801,31 +801,71 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
 /// jcodemunch index reported a declaration line that no longer exists in
 /// the file on disk. Returns `None` on the happy-path empty slice.
 ///
-/// Deliberately summarises to ONE line naming only the affected count and
-/// the first entry, regardless of how many symbols are affected: a
+/// Partitions those entries on the `wire_line == 0` sentinel and gives
+/// each cause its OWN remedy, because they are structurally different
+/// failures wearing one predicate: a line past EOF means the index is
+/// stale (re-index), while a `0` means the wire never emitted a `line`
+/// column at all (a grammar drift — re-indexing changes nothing). See
+/// `stale_decl_line_diagnostic_splits_its_remedy_by_cause`.
+///
+/// Deliberately summarises to ONE line naming only each bucket's affected
+/// count and first entry, regardless of how many symbols are affected: a
 /// per-symbol print would reproduce the per-symbol stderr storm this task
 /// exists to remove. `RealJCodemunchOps::get_changed_symbols` calls this
 /// once per invocation (the P1 sweep calls `get_changed_symbols` once per
 /// done task), so a stale index is loud without flooding stderr.
 fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option<String> {
-    let (file, wire_line, file_line_count) = out_of_range.first()?;
-    let n = out_of_range.len();
-    // Two deliberate phrasing constraints, both about not stating something
-    // false:
-    //
-    // 1. The line count is scoped to the FIRST entry, the only one the
-    //    message names. `out_of_range` entries can span files of different
-    //    lengths, so a single `1..={file_line_count}` range attributed to
-    //    all `n` symbols would be wrong for every entry but the first.
-    // 2. No `>`-shaped claim. `wire_line` can be `0` (the "no line
-    //    reported" sentinel — see `decl_line_out_of_range`), and
-    //    `0 > file_line_count` is false, so "line 0 > 13165 lines" would
-    //    read as self-contradictory for exactly that entry.
+    if out_of_range.is_empty() {
+        return None;
+    }
+    // Partitioned on the `0` sentinel because the two conditions
+    // `decl_line_out_of_range` folds together have DIFFERENT causes, and so
+    // different remedies. Past-EOF means the index describes a file that
+    // has since shrunk — re-indexing fixes it. Line `0` means the wire
+    // never reported a line at all, which is a grammar-version drift
+    // (`find_references` dropped its `line` column in jcodemunch-mcp
+    // 1.108.54, and `changed_symbols_from_wire` now routes that same shape
+    // here through its `unwrap_or(0)`); re-indexing a perfectly current
+    // repo would not change one row. One remedy for both would tell the
+    // operator to re-index — at maximum volume, every symbol at once — on
+    // the day `get_changed_symbols` follows `find_references`.
+    let (no_line, past_eof): (Vec<_>, Vec<_>) = out_of_range
+        .iter()
+        .partition(|(_, wire_line, _)| *wire_line == 0);
+
+    // Each clause names only its OWN bucket's first entry and count:
+    // entries can span files of different lengths, so a line count
+    // attributed to all `n` symbols would be wrong for every entry but the
+    // one it was read off.
+    let mut clauses: Vec<String> = Vec::new();
+    if let Some((file, wire_line, file_line_count)) = past_eof.first() {
+        // No `>`-shaped claim even in this bucket, where it would be true:
+        // keeping both clauses phrased alike is what stops a later reader
+        // from reintroducing "line 0 > 200 lines" by copying this one.
+        clauses.push(format!(
+            "{} symbol(s) have a declaration line past their file's current end \
+             (first: {file} line {wire_line}, which has {file_line_count} lines) — \
+             the jcodemunch index may be stale; re-index the repo",
+            past_eof.len()
+        ));
+    }
+    if let Some((file, wire_line, _file_line_count)) = no_line.first() {
+        // Deliberately carries no "re-index" imperative: the file's own
+        // line count is irrelevant to a wire that never reported a line, so
+        // naming it here would only invite the wrong remedy.
+        clauses.push(format!(
+            "{} symbol(s) reported no declaration line (first: {file}, reported \
+             line {wire_line}) — the jcodemunch wire omitted the `line` column; \
+             that is a grammar drift, not a stale index",
+            no_line.len()
+        ));
+    }
+    // Still ONE line however many buckets fired — `; `-joined, never
+    // newline-joined; see this function's doc on the per-symbol storm.
     Some(format!(
-        "reify-audit: jcodemunch suppression enrichment: {n} symbol(s) have a declaration line \
-         outside their file's current line range (first: {file} line {wire_line}, which has \
-         {file_line_count} lines) — the jcodemunch index may be stale; re-index the repo. \
-         Suppression flags are unavailable for these symbols."
+        "reify-audit: jcodemunch suppression enrichment: {}. Suppression flags \
+         are unavailable for these symbols.",
+        clauses.join("; ")
     ))
 }
 
@@ -836,10 +876,13 @@ fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option
 /// diagnostic this feeds is only correct when it fires for exactly the
 /// symbols `extract_suppression` treats as unlocatable.
 ///
-/// `line_count_for(file)` should return `None` when the file's line count
-/// is unknown (e.g. the file could not be read), so an unreadable file is
-/// reported once by [`read_source_lines_for_enrichment`]'s own diagnostic
-/// and not double-reported here.
+/// `line_count_for(file)` should return `None` only when the file's line
+/// count is UNKNOWN (e.g. the file could not be read), so an unreadable
+/// file is reported once by [`read_source_lines_for_enrichment`]'s own
+/// diagnostic and not double-reported here. A file that read fine and is
+/// empty is a known count of `0`, not an unknown one — it must return
+/// `Some(0)`, which makes every one of its symbols out-of-range (nothing
+/// is locatable in a 0-line file) and so reportable.
 ///
 /// Factored out of `RealJCodemunchOps::get_changed_symbols`'s enrichment
 /// loop as an independently-tested step: before this helper existed, the
@@ -885,20 +928,37 @@ fn collect_stale_decl_lines(
 fn enrich_suppression_flags(symbols: &mut [ChangedSymbol], project_root: &Path) -> Option<String> {
     // Cache by path: many symbols share the same file (e.g. decl.rs has
     // 1110+ rows), so reading each file once avoids O(symbols) disk reads.
-    let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    //
+    // `Option<Vec<String>>`, not `Vec<String>`: a bare vector conflates the
+    // two states a `vec![]` can mean, and they have OPPOSITE operator
+    // consequences. `None` = the read failed, which
+    // `read_source_lines_for_enrichment` has already reported once for this
+    // path — reporting it again below would double-count it. `Some(vec![])`
+    // = the file read fine and is EMPTY, which nothing has reported, and in
+    // which no declaration line can ever be located — so every one of its
+    // symbols belongs in the stale-index summary. A truncated file is the
+    // single likeliest shape for a genuinely stale index, so it is exactly
+    // the input that must not degrade silently.
+    let mut file_cache: HashMap<PathBuf, Option<Vec<String>>> = HashMap::new();
     for sym in symbols.iter_mut() {
         let path = project_root.join(&sym.file);
-        let lines = match file_cache.entry(path) {
+        let cached = match file_cache.entry(path) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(v) => {
                 let (lines, diagnostic) = read_source_lines_for_enrichment(v.key());
-                if let Some(msg) = diagnostic {
-                    eprintln!("{msg}");
-                }
-                v.insert(lines)
+                let entry = match diagnostic {
+                    Some(msg) => {
+                        eprintln!("{msg}");
+                        None
+                    }
+                    None => Some(lines),
+                };
+                v.insert(entry)
             }
         };
-        if !lines.is_empty() {
+        if let Some(lines) = cached.as_deref()
+            && !lines.is_empty()
+        {
             let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
                 extract_suppression(lines, sym.line);
             sym.has_allow_dead_code = has_allow_dead_code;
@@ -913,10 +973,12 @@ fn enrich_suppression_flags(symbols: &mut [ChangedSymbol], project_root: &Path) 
     // and hand the result to `stale_decl_line_diagnostic`" — deleting
     // either line fails to compile on an unresolved `out_of_range`.
     let out_of_range = collect_stale_decl_lines(symbols, |file| {
+        // `Some(0)` for a readable-but-empty file (every line is out of
+        // range in a 0-line file, so its symbols get summarised), `None`
+        // only for a read failure (already reported once, per path, above).
         file_cache
             .get(&project_root.join(file))
-            .filter(|lines| !lines.is_empty())
-            .map(Vec::len)
+            .and_then(|cached| cached.as_ref().map(Vec::len))
     });
     stale_decl_line_diagnostic(&out_of_range)
 }
@@ -2455,10 +2517,17 @@ mod tests {
     /// `wire_line == 0` (the "no line reported" sentinel — see
     /// `decl_line_out_of_range`) is one of the two conditions that lands a
     /// symbol in `out_of_range`, alongside past-EOF. The message must not
-    /// claim `0 > file_line_count`: that comparison is false, so a `>`-shaped
-    /// message reads as self-contradictory ("line 0 > 200 lines") and its
-    /// "re-index" remedy is confusing for a wire that simply never reported
-    /// a line at all.
+    /// claim `0 > file_line_count`: that comparison is false, so a
+    /// `>`-shaped message reads as self-contradictory ("line 0 > 200
+    /// lines").
+    ///
+    /// Asserts FACTS, not phrasing: `mentions_count` for the wire line
+    /// (as its sibling above already does for the affected count) rather
+    /// than `contains("line 0")`, which reds on a behaviour-neutral reword
+    /// like "reported line: 0"; and a targeted ban on an `0 > `-shaped
+    /// ordering claim rather than a whole-message ban on the `>` character,
+    /// which would also red on an unrelated future `>` (an arrow in a path,
+    /// a quoted rule string).
     #[test]
     fn stale_decl_line_diagnostic_wire_line_zero_is_not_self_contradictory() {
         let zero_line = vec![("crates/some/src/lib.rs".to_string(), 0usize, 200usize)];
@@ -2469,18 +2538,142 @@ mod tests {
             "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
         );
         assert!(
-            !msg.contains('>'),
-            "diagnostic must make no ordering claim at all about the wire line: \
-             `0 > file_line_count` is false, so any `>`-shaped phrasing is \
-             self-contradictory for the 0 sentinel; got: {msg}"
-        );
-        assert!(
             msg.contains("crates/some/src/lib.rs"),
             "diagnostic must name the path; got: {msg}"
         );
         assert!(
-            msg.contains("line 0"),
-            "diagnostic must still name the reported wire line 0; got: {msg}"
+            mentions_count(&msg, 0),
+            "diagnostic must still report the wire line it read (0); got: {msg}"
+        );
+        assert!(
+            !msg.contains("0 > ") && !msg.contains("0>"),
+            "diagnostic must make no ordering claim about the 0 sentinel: \
+             `0 > file_line_count` is false, so an `0 > `-shaped phrasing is \
+             self-contradictory; got: {msg}"
+        );
+    }
+
+    /// The two conditions `decl_line_out_of_range` folds together have
+    /// different causes, so they must carry different REMEDIES: a line past
+    /// EOF means the index is stale (re-index), a line of `0` means the wire
+    /// omitted the column entirely (a grammar drift — re-indexing changes
+    /// nothing).
+    ///
+    /// Without this, `changed_symbols_from_wire`'s `unwrap_or(0)` routes a
+    /// future jcodemunch that drops `line` from `get_changed_symbols` — as
+    /// it already did for `find_references` — into telling the operator to
+    /// re-index a perfectly current repo, once per symbol's worth of volume.
+    #[test]
+    fn stale_decl_line_diagnostic_splits_its_remedy_by_cause() {
+        let no_line = vec![("crates/some/src/lib.rs".to_string(), 0usize, 200usize)];
+        let msg = stale_decl_line_diagnostic(&no_line).expect("a 0 entry must diagnose");
+        assert!(
+            !msg.contains("re-index"),
+            "a wire that never reported a line says nothing about the index's \
+             freshness — re-indexing is the wrong remedy; got: {msg}"
+        );
+        assert!(
+            msg.contains("`line` column"),
+            "the 0 sentinel's diagnostic must name its actual cause (the wire \
+             omitted the column); got: {msg}"
+        );
+
+        let past_eof = vec![("crates/other/src/lib.rs".to_string(), 500usize, 100usize)];
+        let msg_eof =
+            stale_decl_line_diagnostic(&past_eof).expect("a past-EOF entry must diagnose");
+        assert!(
+            msg_eof.contains("re-index the repo"),
+            "a line past EOF is exactly the stale-index case; got: {msg_eof}"
+        );
+        assert!(
+            !msg_eof.contains("`line` column"),
+            "a past-EOF line was reported — the column is present; got: {msg_eof}"
+        );
+
+        // Mixed: both causes present at once must both be reported, each
+        // with its own count and first entry, still on ONE line.
+        let mixed = vec![
+            ("crates/some/src/lib.rs".to_string(), 0usize, 200usize),
+            ("crates/other/src/lib.rs".to_string(), 500usize, 100usize),
+            ("crates/third/src/mod.rs".to_string(), 0usize, 42usize),
+        ];
+        let msg_mixed = stale_decl_line_diagnostic(&mixed).expect("mixed entries must diagnose");
+        assert!(
+            msg_mixed.contains("re-index the repo") && msg_mixed.contains("`line` column"),
+            "both causes must be reported when both are present; got: {msg_mixed}"
+        );
+        assert!(
+            mentions_count(&msg_mixed, 2),
+            "the no-line bucket holds 2 of the 3 entries; got: {msg_mixed}"
+        );
+        assert!(
+            msg_mixed.contains("crates/some/src/lib.rs")
+                && msg_mixed.contains("crates/other/src/lib.rs"),
+            "each bucket must name its OWN first entry; got: {msg_mixed}"
+        );
+        assert!(
+            !msg_mixed.contains("crates/third/src/mod.rs"),
+            "only each bucket's first entry is named; got: {msg_mixed}"
+        );
+        assert_eq!(
+            msg_mixed.lines().count(),
+            1,
+            "splitting the remedy must not split the line; got: {msg_mixed:?}"
+        );
+    }
+
+    /// A declaring file that reads FINE but is EMPTY — truncated by the very
+    /// refactor that made the index stale — leaves every one of its symbols
+    /// unlocatable, and must be summarised rather than silently skipped.
+    ///
+    /// This is the state a `HashMap<PathBuf, Vec<String>>` cache conflates
+    /// with "could not be read": the read succeeded, so
+    /// `read_source_lines_for_enrichment` emits no diagnostic of its own,
+    /// and a `!lines.is_empty()` filter in the line-count closure then
+    /// excludes it from the summary too — zero operator output on the input
+    /// shape most likely to BE a stale index.
+    #[test]
+    fn enrich_suppression_flags_reports_a_readable_but_empty_declaring_file() {
+        fn sym(file: &str, line: usize) -> ChangedSymbol {
+            ChangedSymbol {
+                name: "widget".to_string(),
+                file: file.to_string(),
+                line,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }
+        }
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        std::fs::write(tmp.path().join("empty.rs"), "").expect("write empty.rs");
+
+        let mut symbols = vec![sym("empty.rs", 7)];
+        let msg = enrich_suppression_flags(&mut symbols, tmp.path()).expect(
+            "a readable-but-empty declaring file leaves its symbols unlocatable — \
+             that must be reported, not silently skipped",
+        );
+        assert!(
+            msg.contains("empty.rs"),
+            "diagnostic must name the empty declaring file; got: {msg}"
+        );
+        assert!(
+            !symbols[0].has_allow_dead_code
+                && !symbols[0].has_cfg_test
+                && symbols[0].g_allow_marker.is_none(),
+            "nothing is locatable in a 0-line file — flags stay neutral; got {:?}",
+            symbols[0]
+        );
+
+        // The sibling state must stay OUT of the summary: a file that could
+        // not be read at all is already reported once per path by
+        // `read_source_lines_for_enrichment`, so counting it here too would
+        // double-report it.
+        let mut unreadable = vec![sym("does-not-exist.rs", 7)];
+        assert!(
+            enrich_suppression_flags(&mut unreadable, tmp.path()).is_none(),
+            "an unreadable file has its own per-path diagnostic and must not \
+             also appear in the stale-index summary"
         );
     }
 
