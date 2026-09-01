@@ -232,7 +232,7 @@ it demonstrates the algebra but not the arithmetic. `arc2` is the direction an
 author usually wants: an arc length computed from an angle that was *not* derived
 from a ratio.
 
-Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error: syntax error: rad`.
+Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error: syntax error in structure body`.
 
 This is not a style preference — the crossing is what makes the binding compile. On an annotated `param`/`let` whose initializer is an *expression*, omitting it is a hard error:
 
