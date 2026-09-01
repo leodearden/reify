@@ -30,6 +30,13 @@ module printer
 // editing a single source would silently not propagate past the first
 // sub-bearing level. Do not rely on deep threading until #6592 lands.
 //
+// STRUCTURAL MASS GUIDELINE (Leo, 2026-09-01): concentrate mass in the
+// STATIC parts of the machine; keep the moving parts as light as possible
+// consistent with the mechanical requirements. (Already motivated the CFRP
+// gantry tubes and the 40%-fill aluminium carriage-block sketch; the
+// 90×90×300 blocks are placeholder-fat and slim in a real carriage design —
+// nothing in the moving set is epoxy granite.)
+//
 // COREXY GEOMETRY (agreed in design review):
 //  - Round rails => the X gantry is a STACKED PAIR (two rails) to constrain roll
 //    about the rail axis; their midplane coincides with the Y-rail plane.
@@ -2161,6 +2168,16 @@ pub structure AFrame {
     /// full travel needs ~1100mm rails (= wall_len), a rear-web cascade
     /// deferred to its own round (tracked task — see round notes). Pillars
     /// already sit at the future grip zones; only the sockets are interim.
+    /// FULL TRAVEL ALSO REQUIRES WEB EXTERNALIZATION (measured 2026-09-01,
+    /// Leo confirmed): at y_head < ~46–61 the lower gantry tube (z 635–695,
+    /// all x) and the lower head bearings (z 620–710) sweep into the
+    /// fairlead collar tops (z ≤ 657, y −64..+16, x 66–434) — 22–37mm
+    /// interpenetration. No wall fits between the future moving envelope
+    /// (reaches y −75) and the web either: the web must vacate rearward
+    /// past y0 = −150. Moving the web (not this wall) is MANDATORY for the
+    /// rail-lengthening round; this back wall stays at y0 as the receiving
+    /// plane, and the two grommet pass-throughs fold into that round's
+    /// penetration design (rail bores + 8 rail-run stations + returns).
     let travel_avail : Length = rail_span_m - brg_len_m - sock_len * 2
 
     // ── Geometry: right side (aux operands realize hidden — Capstan idiom) ──
@@ -2250,9 +2267,11 @@ pub structure AFrame {
                     )
                 ),
                 union(
-                    // Back wall top member + the front lintel tying the pillars.
+                    // Back wall top member + the front lintel tying the pillars
+                    // (lintel gets its own y-centre: 70-deep on 65-deep pillars
+                    // overshot y1 by 2.5mm when centred at pil_f_cy).
                     translate(box(mid_w, mem_w, mem_w), centre_x, y0 + mem_w / 2, field_top - mem_w / 2),
-                    translate(box(lin_len, lin_w, lin_w), centre_x, pil_f_cy, lin_cz)
+                    translate(box(lin_len, lin_w, lin_w), centre_x, y1 - lin_w / 2, lin_cz)
                 )
             )
         ),
