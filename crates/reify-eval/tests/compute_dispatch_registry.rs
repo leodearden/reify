@@ -1720,6 +1720,151 @@ fn phase15_phase2_parity_deepest_expressible_cross_sub_read() {
     );
 }
 
+/// amend (#6662 reviewer_comprehensive round 2, suggestion #1 — robustness).
+///
+/// The `Unreusable`/no-template-value branch used to hard-code ONE explanation:
+/// "structure not in module.templates — e.g. a prelude/stdlib structure". That
+/// branch is ALSO reached when template-scope dispatch RAN and FAILED —
+/// `e2e_registered_failed_trampoline_does_not_silently_body_inline` pins that
+/// the Failed handler does not write to `values`, so the template cell is
+/// ABSENT — and in that case `template_cell_was_dispatched` is TRUE (the
+/// `ComputeNode` exists, because lowering only inserts one inside the registered
+/// arm), so the decline reporter's registered-target gate PASSES and the
+/// misattributing text gets printed, on top of the trampoline's own Error for
+/// the same cell.
+///
+/// Sharpened while fixing it: the prelude reading is not merely one of two
+/// possible causes here, it is the one cause that can NEVER be the explanation
+/// for a message that actually reaches the user. A structure with no
+/// template-scope pass gets no `ComputeNode` either, so the registered-target
+/// gate suppresses it first. Hence the fix is structural — `DeclineCause`
+/// carries which condition fired, and the reporter emits only `InputsDiffer`.
+///
+/// This fixture is the registered-but-Failed shape INSIDE an instantiated
+/// `sub`, i.e. the exact quadrant that misfired.
+#[test]
+fn instance_scope_failed_trampoline_declines_without_the_prelude_wording() {
+    let source = r#"
+        @optimized("test::failing_in_sub")
+        fn failing_in_sub(x : Int) -> Int {
+            x
+        }
+
+        structure FailingInner {
+            param input : Int = 42
+            let result = failing_in_sub(input)
+        }
+
+        structure FailingOuter {
+            sub inner = FailingInner()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::failing_in_sub", failing_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // ── premises: this fixture really is in the branch under test ───────────
+    // (p1) Template scope DISPATCHED and the dispatch FAILED, so the template
+    //      output cell holds no value — the `NoTemplateValue` condition.
+    let template_cell = ValueCellId::new("FailingInner", "result");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        None,
+        "premise: the Failed handler does not write to `values`, so the \
+         template-scope cell must be ABSENT (that absence is what drives the \
+         instance-scope gate into the no-template-value branch). Got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // (p2) A ComputeNode NAMES that cell — so `template_cell_was_dispatched` is
+    //      TRUE and the registered-target gate does NOT suppress. Without this,
+    //      the test would pass vacuously.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let dispatched = snapshot
+        .graph
+        .compute_nodes
+        .values()
+        .any(|n| n.output_value_cells.contains(&template_cell));
+    assert!(
+        dispatched,
+        "premise: lowering inserts a ComputeNode only inside the registered arm, \
+         so a registered-but-Failed target must still leave one naming \
+         FailingInner.result — that is what makes the registered-target gate \
+         PASS and the decline text reachable. compute_nodes: {:?}",
+        snapshot.graph.compute_nodes
+    );
+
+    // (p3) The trampoline's own Error is present: template scope already owns
+    //      the report of this condition.
+    assert!(
+        eval_result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("test trampoline failed")),
+        "premise: the failing trampoline's Error must be surfaced. Got: {:?}",
+        eval_result.diagnostics
+    );
+
+    // ── the regression guard ────────────────────────────────────────────────
+    // (a) NOTHING anywhere may attribute this failed solve to a prelude/stdlib
+    //     structure. This is the assertion the reviewer asked for, and it reds
+    //     on the pre-fix code.
+    let misattributed: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("prelude/stdlib structure")
+                || d.message.contains("was never evaluated")
+        })
+        .collect();
+    assert!(
+        misattributed.is_empty(),
+        "a registered-but-FAILED template-scope dispatch must never be reported \
+         at instance scope as a structure that got no template-scope pass — the \
+         prelude/stdlib wording is the one explanation that is provably not the \
+         cause whenever the registered-target gate lets a message through. Got: \
+         {misattributed:?}"
+    );
+
+    // (b) And in fact no instance-scope decline at all: template scope already
+    //     emitted the authoritative Error for this cell, so a second report
+    //     would be the same class of misleading duplicate the registered-target
+    //     gate was added to eliminate.
+    let declines: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::failing_in_sub"))
+        .collect();
+    assert!(
+        declines.is_empty(),
+        "a failed template-scope dispatch must not also produce an \
+         instance-scope decline warning: the value is body-inlined either way \
+         and the trampoline's Error is the one true report. Got: {declines:?}"
+    );
+
+    // (c) Values are untouched by this amendment: the instance still
+    //     body-inlines (`failing_in_sub`'s body is `x`), exactly as before.
+    assert_eq!(
+        eval_result
+            .values
+            .get(&ValueCellId::new("FailingOuter.inner", "result")),
+        Some(&Value::Int(42)),
+        "the amendment removes a misleading DIAGNOSTIC, never a value: the \
+         instance cell must still body-inline to its own input, 42. Got {:?}",
+        eval_result
+            .values
+            .get(&ValueCellId::new("FailingOuter.inner", "result"))
+    );
+}
+
 /// amend (#6662 reviewer_comprehensive, suggestion #7 — the bound on the above).
 ///
 /// The divergence the parity test is defending against would need a read whose
@@ -1753,16 +1898,109 @@ fn two_level_cross_sub_read_is_rejected_by_the_compiler() {
             sub leaf = Leaf4()
             let computed = dbl_deep2(self.leaf.inner.x)
         }
+
+        structure Leaf4Ok {
+            param ix : Int = 5
+        }
+
+        structure Mid4Ok {
+            sub leaf = Leaf4Ok()
+            let computed = dbl_deep2(self.leaf.ix)
+        }
     "#;
     let compiled = reify_test_support::compile_source_with_stdlib(source);
     let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+
+    // (a) THE LOAD-BEARING ASSERTION — structural, not prose. What the parity
+    //     argument actually needs is that no compiled expression in `Mid4` can
+    //     carry a read whose KEY reaches two levels down (`Mid4.leaf.inner` +
+    //     member `x`); such a key is projected by phase 2's BFS and not by
+    //     phase 1.5's single-level loop, which is the only way the two instance
+    //     maps could disagree on a key the reuse gate queries.
+    //
+    //     amend (#6662 reviewer_comprehensive round 2, suggestion #6). This used
+    //     to assert on the exact diagnostic prose `unknown member 'inner' on sub
+    //     'leaf'`, so a purely cosmetic rewording of that message redded a
+    //     load-bearing test, while a change that kept the wording but started
+    //     ACCEPTING the two-level form elsewhere would have slipped past.
+    //     Asserting on the compiled read set inverts both failure modes. (A
+    //     `DiagnosticCode` would be the other structured option, but that
+    //     emission site in `reify-compiler/src/expr.rs` is still a legacy
+    //     `code: None` producer and is outside this task's lock set.)
+    let mid4 = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Mid4")
+        .expect("Mid4 template must exist even when its let poisons");
+    let deep_reads: Vec<reify_core::ValueCellId> = mid4
+        .value_cells
+        .iter()
+        .filter_map(|c| c.default_expr.as_ref())
+        .chain(
+            mid4.sub_components
+                .iter()
+                .flat_map(|sc| sc.args.iter().map(|(_, e)| e)),
+        )
+        .flat_map(|e| reify_eval::deps::extract_dependency_trace(e).reads)
+        // `Mid4.leaf` is ONE hop (one dot) and is carried by BOTH maps; the
+        // shape under test is `Mid4.leaf.inner` — two hops, two dots.
+        .filter(|r| r.entity.matches('.').count() >= 2)
+        .collect();
     assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("unknown member 'inner' on sub 'leaf'")),
-        "a two-level cross-sub read must stay a COMPILE error — the phase-1.5 / \
-         phase-2 map-parity argument in resolve_optimized_instance_cell depends \
-         on it being unreachable. Got: {:?}",
-        errors
+        deep_reads.is_empty(),
+        "a TWO-level cross-sub read must not survive compilation into any \
+         Mid4 expression: `resolve_optimized_instance_cell`'s phase-1.5 / \
+         phase-2 map-parity argument holds only because the deepest expressible \
+         cross-sub read is ONE hop, which both instance maps carry. Got deep \
+         reads: {deep_reads:?}. (Informationally, today the compiler rejects the \
+         form outright: {errors:?})"
     );
+
+    // (b) NON-VACUITY. The compiler poisons the rejected read to a literal, so
+    //     `Mid4` legitimately carries ZERO reads — meaning (a) alone could pass
+    //     for the wrong reason if the scan were walking nothing. `Mid4Ok` is the
+    //     same shape one hop shallower (`self.leaf.ix`, the DEEPEST expressible
+    //     cross-sub read), compiled in the same module: the identical scan must
+    //     find it, keyed at exactly ONE dot. That is both the proof the scan
+    //     sees reads at all and the positive statement of the parity bound.
+    let ok_reads: Vec<reify_core::ValueCellId> = mid4_ok_reads(&compiled);
+    assert!(
+        ok_reads
+            .iter()
+            .any(|r| r.entity == "Mid4Ok.leaf" && r.member == "ix"),
+        "non-vacuity: the same scan must FIND the one-hop cross-sub read \
+         `Mid4Ok.leaf.ix` — otherwise (a)'s emptiness proves nothing about the \
+         two-level shape. Got: {ok_reads:?}"
+    );
+    assert!(
+        ok_reads.iter().all(|r| r.entity.matches('.').count() <= 1),
+        "the deepest expressible cross-sub read is ONE hop; a deeper key here \
+         would break the same parity bound (a) defends. Got: {ok_reads:?}"
+    );
+
+    // (c) Corroborating, and deliberately prose-free: the module does NOT
+    //     compile clean. If a future compiler starts accepting `self.leaf.inner.x`
+    //     this reds alongside (a); if it merely rewords its rejection, neither
+    //     assertion moves.
+    assert!(
+        !errors.is_empty(),
+        "the two-level cross-sub read must remain a COMPILE error; a silent \
+         acceptance would put a two-level key in reach of the reuse gate"
+    );
+}
+
+/// Every value-cell read compiled into `Mid4Ok` — the control arm of
+/// `two_level_cross_sub_read_is_rejected_by_the_compiler`'s structural
+/// assertion (amend #6662 round 2, suggestion #6).
+fn mid4_ok_reads(compiled: &reify_compiler::CompiledModule) -> Vec<reify_core::ValueCellId> {
+    compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Mid4Ok")
+        .expect("Mid4Ok template must compile: it is the legal one-hop control")
+        .value_cells
+        .iter()
+        .filter_map(|c| c.default_expr.as_ref())
+        .flat_map(|e| reify_eval::deps::extract_dependency_trace(e).reads)
+        .collect()
 }

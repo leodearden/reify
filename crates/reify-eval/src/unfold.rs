@@ -1,6 +1,6 @@
 // Recursive sub-component unfolding — unfold_recursive_sub and elaborate_child_* functions.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind, find_template};
@@ -513,6 +513,10 @@ fn elaborate_child_instance_nested<'t>(
     // and containment stays a no-op, matching `NoContainment`'s rationale.
     let arg_runtime_sink = RefCell::new(Vec::new());
     let arg_containment = NoContainment;
+    // One `@optimized`-name index for this phase's whole walk (amend #6662
+    // suggestion #3). Lazily built on the first `UserFunctionCall` probe, so an
+    // instance with no function-call lets pays nothing.
+    let optimized_names: OptimizedNameIndex = OptimizedNameIndex::new();
     // Every sub this phase declines to descend into, with the reason. Handed to
     // `report_unresolvable_nested_reads` below so a child let left `Undef` by a
     // skip is named rather than silently dropped. All four skip arms feed it,
@@ -702,14 +706,17 @@ fn elaborate_child_instance_nested<'t>(
                 // read onto a phase-1.5 node key (dropping param reads, remapping
                 // cross-sub reads onto their sub node) so `topological_sort` can
                 // see the edges, which is the wrong set for a value comparison.
-                // The raw trace is what the gate needs.
-                let reads = extract_dependency_trace(expr).reads;
+                // The raw trace is what the gate needs — and it is passed as a
+                // CLOSURE so the tree walk happens only on the `@optimized` path
+                // (amend suggestion #2); every other scratch let now pays one
+                // hash lookup instead of a full `extract_dependency_trace`.
                 let v = match resolve_optimized_instance_cell(
                     expr,
                     functions,
+                    &optimized_names,
                     child_template,
                     &key.member,
-                    &reads,
+                    || extract_dependency_trace(expr).reads,
                     &overlay,
                     values,
                 ) {
@@ -1282,6 +1289,26 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
+/// The set of function NAMES in a `functions` slice that carry an
+/// `@optimized` attribute, built at most once per elaboration phase.
+///
+/// amend (#6662 reviewer_comprehensive, suggestion #3 — efficiency). The
+/// pre-filter inside [`optimized_target_of`] was `functions.iter().any(|f|
+/// f.name == *name && f.optimized_target.is_some())` — O(|functions|) string
+/// comparisons against the STDLIB-INCLUSIVE set, run once per
+/// `UserFunctionCall` cell per instance, so its cost scaled as
+/// instances × cells × |stdlib functions|. Hoisting the name set turns the
+/// per-cell half into one hash lookup.
+///
+/// A `OnceCell`, not an eagerly-built set, because the build is only worth
+/// paying for when the phase actually probes something: a template whose cells
+/// contain no `UserFunctionCall` at all never reaches the lookup, and must not
+/// pay |functions| for the privilege. Each of the three instance-scope
+/// elaboration phases owns one, declared beside the loop it serves — the
+/// lifetime `'f` ties the borrowed names to the `functions` slice they were
+/// read from, so a cache can never outlive or be paired with a different slice.
+pub(crate) type OptimizedNameIndex<'f> = OnceCell<HashSet<&'f str>>;
+
 /// The ONE `@optimized`-cell probe: `Some(target)` iff `expr` is a
 /// `UserFunctionCall` that overload-resolves to a function carrying an
 /// `@optimized("target")` attribute.
@@ -1299,24 +1326,31 @@ fn eval_child_expr(
 /// asserts the equivalence across every shape either one can see, so a
 /// divergence reds rather than silently splitting.
 ///
-/// (`is_optimized_userfn_cell` itself is not yet re-expressed as a call to this
-/// function: `engine_eval.rs` is outside #6662's lock set. The test is the
-/// binding half — it fails if the two ever disagree.)
+/// `is_optimized_userfn_cell` is not YET re-expressed as a call to this
+/// function — `engine_eval.rs` was outside #6662's lock set, a process
+/// constraint rather than a technical one (same crate; this fn is already
+/// `pub(crate)`). The test above is the binding half meanwhile: it fails if the
+/// two ever disagree on any of the shapes it enumerates. The collapse is
+/// tracked as a follow-up, filed from #6662's amendment pass as ticket
+/// `tkt_0RT53256ABFRYETNAXEJP3EN1T` — not cited as `#NNNN` because the curator
+/// assigns the task id asynchronously and an unresolvable cite would be an
+/// orphan under the repo's citation convention.
 ///
-/// PERF (suggestion #3). The cheap `functions.iter().any(name && optimized)`
-/// pre-filter runs BEFORE `find_matching_compiled_function`, whose multi-tier
-/// overload scan walks per-candidate param/arg types over the whole `functions`
-/// slice (stdlib included). Instance elaboration probes EVERY
-/// `UserFunctionCall` cell of every instance, and `eval_child_expr` then
-/// resolves the same call again on the fallback path — without this pre-filter
-/// an ordinary, non-`@optimized` function-call let pays full overload
-/// resolution twice per instance. The pre-filter is exact, not approximate:
-/// `find_matching_compiled_function` only ever returns a candidate with
-/// `f.name == function_name`, so if no such candidate carries an
+/// PERF (suggestion #3). The [`OptimizedNameIndex`] lookup runs BEFORE
+/// `find_matching_compiled_function`, whose multi-tier overload scan walks
+/// per-candidate param/arg types over the whole `functions` slice (stdlib
+/// included). Instance elaboration probes EVERY `UserFunctionCall` cell of
+/// every instance, and `eval_child_expr` then resolves the same call again on
+/// the fallback path — without the pre-filter an ordinary, non-`@optimized`
+/// function-call let pays full overload resolution twice per instance. The
+/// pre-filter is exact, not approximate: `find_matching_compiled_function` only
+/// ever returns a candidate with `f.name == function_name` (every tier's
+/// `arity_match` requires it), so if no candidate of that name carries an
 /// `optimized_target` the full scan cannot produce one either.
-pub(crate) fn optimized_target_of(
+pub(crate) fn optimized_target_of<'f>(
     expr: &reify_ir::CompiledExpr,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
+    optimized_names: &OptimizedNameIndex<'f>,
 ) -> Option<String> {
     let reify_ir::CompiledExprKind::UserFunctionCall {
         function_name,
@@ -1325,10 +1359,14 @@ pub(crate) fn optimized_target_of(
     else {
         return None;
     };
-    if !functions
-        .iter()
-        .any(|f| f.name == *function_name && f.optimized_target.is_some())
-    {
+    let names = optimized_names.get_or_init(|| {
+        functions
+            .iter()
+            .filter(|f| f.optimized_target.is_some())
+            .map(|f| f.name.as_str())
+            .collect()
+    });
+    if !names.contains(function_name.as_str()) {
         return None;
     }
     reify_expr::find_matching_compiled_function(functions, function_name, args)
@@ -1346,8 +1384,57 @@ enum OptimizedInstanceResolution {
     Reuse(Value),
     /// An `@optimized` call whose template-scope value CANNOT be proven to
     /// apply to this instance. The caller falls back to body-inlining (today's
-    /// behaviour) and reports `reason`.
-    Unreusable { target: String, reason: String },
+    /// behaviour) and reports `reason` — subject to
+    /// [`report_optimized_instance_decline`]'s filters, of which `cause` is one.
+    Unreusable {
+        target: String,
+        cause: DeclineCause,
+        reason: String,
+    },
+}
+
+/// WHICH of the two declining conditions [`resolve_optimized_instance_cell`]
+/// hit. Structural, so [`report_optimized_instance_decline`] can filter on the
+/// condition rather than on the human-readable `reason` text.
+///
+/// amend (#6662 reviewer_comprehensive, suggestion #1 — robustness). Before
+/// this split there was only a `reason` string, and the missing-template-value
+/// branch hard-coded ONE explanation ("structure not in module.templates — e.g.
+/// a prelude/stdlib structure"). That explanation is wrong in every case the
+/// warning could actually be PRINTED: see [`NoTemplateValue`]'s doc for why.
+///
+/// [`NoTemplateValue`]: DeclineCause::NoTemplateValue
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclineCause {
+    /// A cell in the call's DIRECT read set has a different value at instance
+    /// scope than at template scope — a constructor override, virtually always.
+    /// Genuinely instance-specific and genuinely degrading (the instance falls
+    /// back to the `.ri` body's sentinel), so this is the cause that is
+    /// REPORTED.
+    InputsDiffer,
+    /// The template-scope OUTPUT cell holds no value at all. NOT reported —
+    /// under `report_optimized_instance_decline`'s registered-target gate this
+    /// cause has no honest message to print:
+    ///
+    /// * If the owning structure got NO template-scope pass (a prelude/stdlib
+    ///   structure — `engine_eval.rs` keys its lowering on `for template in
+    ///   &module.templates`), then no `ComputeNode` names the cell either, so
+    ///   the registered-target gate is already false and nothing is emitted.
+    /// * If a `ComputeNode` DOES name the cell, template scope registered a
+    ///   trampoline and DISPATCHED — and the value is missing because that
+    ///   dispatch Failed or was Cancelled (the Failed handler deliberately does
+    ///   not write to `values`; pinned by
+    ///   `e2e_registered_failed_trampoline_does_not_silently_body_inline`).
+    ///   Template scope has already surfaced the trampoline's own Error for
+    ///   exactly that cell. A second, instance-scope report would be the same
+    ///   class of misleading duplicate the registered-target gate was added to
+    ///   eliminate — and worse, it would attribute a failed solve to "a
+    ///   prelude/stdlib structure".
+    ///
+    /// So the two reachable readings are "nothing happened" and "template scope
+    /// already told you, more accurately". Neither wants a warning here; the
+    /// VALUE is body-inlined either way, unchanged.
+    NoTemplateValue,
 }
 
 /// Decide whether an instance-scope cell may carry the template-scope cell's
@@ -1382,6 +1469,25 @@ enum OptimizedInstanceResolution {
 /// already folded into the direct reads' values. The comparison is conservative
 /// in the right direction: present-in-one-map vs absent-in-the-other compares
 /// unequal, so the helper declines rather than guesses.
+///
+/// KNOWN LIMITATION — STALENESS (amend #6662 reviewer_comprehensive,
+/// suggestion #5). `Reuse` copies the template-scope value as a ONE-TIME
+/// SNAPSHOT taken during sub elaboration; nothing refreshes it afterwards.
+/// `Engine::redispatch_geometry_consuming_compute_nodes` (engine_build.rs)
+/// re-dispatches a geometry-consuming compute node LATER, inside `build()`,
+/// once its args have hydrated to kernel-backed `GeometryHandle`s — and it
+/// writes only `node_data.output_value_cells[0]`, which is TEMPLATE-scoped
+/// because every `ComputeNode` is lowered at template scope. A reused instance
+/// cell would therefore keep the degraded first-dispatch result while the
+/// template cell got the corrected one: the "invisibly-wrong number" hazard
+/// this doc cites as the reason not to re-dispatch, reached by staleness
+/// instead. It is BELIEVED unreachable — a geometry-typed arg's instance value
+/// carries an instance-scoped realization ref, so the read comparison above
+/// should decline first — but that belief is NOT pinned by any fixture on this
+/// branch, and pinning it needs a kernel-backed handle this crate's tests
+/// cannot mint. Tracked as ticket `tkt_0RT532KR05N0FNK05FJT69R2CA` (filed from
+/// #6662's amendment pass; not cited as `#NNNN` because the curator assigns the
+/// task id asynchronously and an unresolvable cite would be an orphan).
 ///
 /// SHAPE-EXACTNESS is inherited from template scope, not re-invented: the probe
 /// is [`optimized_target_of`], the ONE definition `engine_eval.rs`'s
@@ -1425,32 +1531,52 @@ enum OptimizedInstanceResolution {
 /// * a SKIPPED sub (non-nestable / cycle cut / unresolvable) contributes to
 ///   NEITHER map: phase 2's BFS is seeded from `elaborated_sub_names`, which
 ///   excludes exactly the subs phase 1.5 skipped.
-fn resolve_optimized_instance_cell(
+// 8 args: the file's established shape for these elaboration helpers (five
+// siblings above carry the same allow). Each argument is an independent
+// capability — two value maps that must NOT be conflated, the probe index, the
+// cell's identity, and the lazy read trace — so bundling them into a struct
+// would only rename the coupling.
+#[allow(clippy::too_many_arguments)]
+fn resolve_optimized_instance_cell<'f, R>(
     expr: &reify_ir::CompiledExpr,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
+    optimized_names: &OptimizedNameIndex<'f>,
     child_template: &TopologyTemplate,
     member: &str,
-    reads: &[ValueCellId],
+    reads: impl FnOnce() -> R,
     instance_values: &ValueMap,
     global_values: &ValueMap,
-) -> OptimizedInstanceResolution {
-    let Some(target) = optimized_target_of(expr, functions) else {
+) -> OptimizedInstanceResolution
+where
+    R: AsRef<[ValueCellId]>,
+{
+    let Some(target) = optimized_target_of(expr, functions, optimized_names) else {
         return OptimizedInstanceResolution::NotOptimized;
     };
 
-    // Input equality over the DIRECT read set. `reads` is the caller's already-
-    // built `extract_dependency_trace(expr).reads` — the same function that
-    // builds phase 2's topological-sort edges, so the reuse gate and the
-    // evaluation order can never disagree about what a cell depends on. Taking
-    // it as a parameter rather than re-deriving it keeps the lets site (which
-    // has already built `child_let_traces` for exactly this `NodeId`) from
-    // walking the expression tree a second time per instance.
-    for read in reads {
+    // Input equality over the DIRECT read set. `reads` yields
+    // `extract_dependency_trace(expr).reads` — the same function that builds
+    // phase 2's topological-sort edges, so the reuse gate and the evaluation
+    // order can never disagree about what a cell depends on.
+    //
+    // amend (#6662 reviewer_comprehensive, suggestion #2 — efficiency). It is a
+    // `FnOnce`, not a slice, so the trace is materialised ONLY on the
+    // `@optimized` path. Two of the three call sites have no pre-built trace to
+    // hand over and were calling `extract_dependency_trace(expr)` eagerly for
+    // EVERY scratch let / param default of every instance (a full
+    // expression-tree walk plus a `Vec<ValueCellId>` allocation), discarding the
+    // result on the overwhelmingly common `NotOptimized` return. The third site
+    // (phase-2 lets) still passes its pre-built `child_let_traces` entry by
+    // reference — `&[ValueCellId]: AsRef<[ValueCellId]>` — so it keeps costing
+    // nothing.
+    let reads = reads();
+    for read in reads.as_ref() {
         let instance_val = instance_values.get(read);
         let global_val = global_values.get(read);
         if instance_val != global_val {
             return OptimizedInstanceResolution::Unreusable {
                 target,
+                cause: DeclineCause::InputsDiffer,
                 reason: format!(
                     "input {}.{} differs from the template's ({:?} vs {:?})",
                     read.entity, read.member, instance_val, global_val
@@ -1459,17 +1585,25 @@ fn resolve_optimized_instance_cell(
         }
     }
 
-    // The template-scope output cell. Absent when the owning structure never
-    // got a template-scope pass at all — e.g. a prelude/stdlib structure, which
-    // is not in `module.templates`.
+    // The template-scope output cell. Absent under either of two conditions —
+    // the owning structure got no template-scope pass at all (a prelude/stdlib
+    // structure, not in `module.templates`), or template scope DID dispatch and
+    // the dispatch produced no value (Failed / Cancelled). This function cannot
+    // tell them apart (it holds no graph), and deliberately does not guess: the
+    // reason names both, and `DeclineCause::NoTemplateValue` carries the
+    // distinction structurally to the one place that CAN discriminate — see
+    // that variant's doc, and `report_optimized_instance_decline`.
     let template_cell = ValueCellId::new(&child_template.name, member);
     match global_values.get(&template_cell) {
         Some(value) => OptimizedInstanceResolution::Reuse(value.clone()),
         None => OptimizedInstanceResolution::Unreusable {
             target,
+            cause: DeclineCause::NoTemplateValue,
             reason: format!(
-                "template-scope cell {}.{} was never evaluated (structure not in \
-                 module.templates — e.g. a prelude/stdlib structure)",
+                "template-scope cell {}.{} holds no value — either the structure \
+                 got no template-scope pass (not in module.templates, e.g. a \
+                 prelude/stdlib structure) or its template-scope dispatch \
+                 produced none (Failed/Cancelled)",
                 child_template.name, member
             ),
         },
@@ -1505,7 +1639,19 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 /// Escalating it to a hard failure is #6608's declared scope, and genuine
 /// per-instance dispatch under constructor overrides is #6592's.
 ///
-/// Two filters, both from the #6662 amendment review:
+/// Three filters, all from the #6662 amendment review:
+///
+/// * CAUSE GATE (round-2 suggestion #1). Only
+///   [`DeclineCause::InputsDiffer`] is reported.
+///   [`DeclineCause::NoTemplateValue`] is not: under the registered-target gate
+///   below, the only condition that reaches it is a template-scope dispatch
+///   that Failed or was Cancelled — which template scope has ALREADY reported
+///   as an Error naming the same cell — and the pre-fix message attributed that
+///   failure to "a prelude/stdlib structure", the one explanation that is
+///   provably NOT the cause whenever the gate lets the message through. See
+///   [`DeclineCause::NoTemplateValue`] for the full case split. Filtering on the
+///   structural cause rather than on the presence of a text-matching Error
+///   keeps this independent of any other site's diagnostic wording.
 ///
 /// * REGISTERED-TARGET GATE (suggestion #1). Without it the warning fired, with
 ///   actively misleading text, in the plain `reify check` shape — which
@@ -1528,6 +1674,7 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///   sibling and collection instances alike, which a set scoped to one
 ///   `elaborate_child_instance` call could not. The scan runs on the decline
 ///   path only, and dedupe keeps the scanned vec short.
+#[allow(clippy::too_many_arguments)]
 fn report_optimized_instance_decline(
     diagnostics: &mut Vec<Diagnostic>,
     snapshot: &Snapshot,
@@ -1535,8 +1682,12 @@ fn report_optimized_instance_decline(
     member: &str,
     scoped_entity: &str,
     target: &str,
+    cause: DeclineCause,
     reason: &str,
 ) {
+    if cause != DeclineCause::InputsDiffer {
+        return;
+    }
     let template_cell = ValueCellId::new(&child_template.name, member);
     if !template_cell_was_dispatched(snapshot, &template_cell) {
         return;
@@ -1586,6 +1737,10 @@ fn elaborate_child_params_only(
     // decline below), deliberately not a general drain for this sink.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
+    // One `@optimized`-name index for this whole param loop (amend #6662
+    // suggestion #3); lazily built, so a template with no function-call param
+    // defaults pays nothing.
+    let optimized_names: OptimizedNameIndex = OptimizedNameIndex::new();
 
     for cell in &child_template.value_cells {
         if cell.kind != ValueCellKind::Param {
@@ -1644,13 +1799,17 @@ fn elaborate_child_params_only(
             // instance and template agree, silently and correctly. Wiring it
             // here is what makes instance scope inherit a future template-scope
             // param fix with no further change.
-            let reads = extract_dependency_trace(default_expr).reads;
+            // The read trace is materialised lazily (amend suggestion #2): a
+            // param default that is not an `@optimized` call — the common case,
+            // and one that runs for EVERY param of EVERY instance, collection
+            // elements included — never walks the expression tree here.
             let resolution = resolve_optimized_instance_cell(
                 default_expr,
                 functions,
+                &optimized_names,
                 child_template,
                 member,
-                &reads,
+                || extract_dependency_trace(default_expr).reads,
                 &child_values,
                 values,
             );
@@ -1671,7 +1830,12 @@ fn elaborate_child_params_only(
             // agreement. When the template-scope param-default gap (#6750)
             // closes, the gate flips to true and this site starts reporting with
             // no further change here, which is the point of wiring it now.
-            if let OptimizedInstanceResolution::Unreusable { target, reason } = &resolution {
+            if let OptimizedInstanceResolution::Unreusable {
+                target,
+                cause,
+                reason,
+            } = &resolution
+            {
                 report_optimized_instance_decline(
                     diagnostics,
                     snapshot,
@@ -1679,6 +1843,7 @@ fn elaborate_child_params_only(
                     member,
                     scoped_entity,
                     target,
+                    *cause,
                     reason,
                 );
             }
@@ -1917,6 +2082,10 @@ fn elaborate_child_lets_only<'t>(
         )));
     }
 
+    // One `@optimized`-name index for this whole let loop (amend #6662
+    // suggestion #3); lazily built on the first `UserFunctionCall` probe.
+    let optimized_names: OptimizedNameIndex = OptimizedNameIndex::new();
+
     for child_node_id in sorted_child_lets {
         let expr = child_let_cells[&child_node_id];
         // child_let_cells is keyed exclusively by NodeId::Value; topological_sort returns
@@ -1960,9 +2129,10 @@ fn elaborate_child_lets_only<'t>(
         let resolution = resolve_optimized_instance_cell(
             expr,
             functions,
+            &optimized_names,
             child_template,
             member,
-            reads,
+            || reads,
             &child_values,
             values,
         );
@@ -1974,7 +2144,12 @@ fn elaborate_child_lets_only<'t>(
         // gate and the per-template-cell dedupe — see its doc comment; in
         // particular it is what keeps the plain `reify check` shape (no
         // trampolines registered at all) silent.
-        if let OptimizedInstanceResolution::Unreusable { target, reason } = &resolution {
+        if let OptimizedInstanceResolution::Unreusable {
+            target,
+            cause,
+            reason,
+        } = &resolution
+        {
             report_optimized_instance_decline(
                 diagnostics,
                 snapshot,
@@ -1982,6 +2157,7 @@ fn elaborate_child_lets_only<'t>(
                 member,
                 scoped_entity,
                 target,
+                *cause,
                 reason,
             );
         }
@@ -2424,7 +2600,10 @@ mod tests {
             ("d_wrapping", false),
         ] {
             let expr = reify_test_support::get_let_expr_in(&module, "ProbeShapes", cell);
-            let mine = optimized_target_of(expr, functions);
+            // A fresh index per probe: this test is about the VERDICT, not the
+            // memoisation, and a per-call cache keeps the two probes' inputs as
+            // close to identical as the signatures allow.
+            let mine = optimized_target_of(expr, functions, &OptimizedNameIndex::new());
             let theirs = crate::engine_eval::is_optimized_userfn_cell(expr, functions);
             assert_eq!(
                 mine.is_some(),
@@ -2478,7 +2657,6 @@ mod tests {
             .find(|t| t.name == "PreludeLike")
             .expect("PreludeLike template");
         let expr = reify_test_support::get_let_expr_in(&module, "PreludeLike", "r");
-        let reads = extract_dependency_trace(expr).reads;
 
         // Both maps agree on the INPUT (`PreludeLike.x`), so the read loop
         // passes and the outcome is decided purely by the output cell's
@@ -2498,18 +2676,42 @@ mod tests {
         let resolution = resolve_optimized_instance_cell(
             expr,
             &module.functions,
+            &OptimizedNameIndex::new(),
             template,
             "r",
-            &reads,
+            || extract_dependency_trace(expr).reads,
             &instance_values,
             &global_values,
         );
         match resolution {
-            OptimizedInstanceResolution::Unreusable { target, reason } => {
+            OptimizedInstanceResolution::Unreusable {
+                target,
+                cause,
+                reason,
+            } => {
                 assert_eq!(target, "test::prelude_target");
+                assert_eq!(
+                    cause,
+                    DeclineCause::NoTemplateValue,
+                    "the missing-output-cell branch must carry the structural cause, \
+                     not just prose — `report_optimized_instance_decline` filters on it \
+                     (amend round-2 suggestion #1): {reason}"
+                );
+                // amend (#6662 reviewer_comprehensive round 2, suggestion #1).
+                // The reason must NOT hard-code the prelude/stdlib explanation:
+                // a template-scope dispatch that Failed lands in this same
+                // branch, and is in fact the ONLY reading under which the text
+                // could ever be printed. Both causes must be named.
                 assert!(
-                    reason.contains("template-scope cell PreludeLike.r was never evaluated"),
-                    "wrong decline reason for the never-evaluated branch: {reason}"
+                    reason.contains("template-scope cell PreludeLike.r holds no value"),
+                    "wrong decline reason for the no-template-value branch: {reason}"
+                );
+                assert!(
+                    reason.contains("prelude/stdlib structure")
+                        && reason.contains("Failed/Cancelled"),
+                    "the no-template-value reason must name BOTH causes — a missing \
+                     template-scope pass AND a template-scope dispatch that produced \
+                     no value — since this branch cannot tell them apart: {reason}"
                 );
             }
             OptimizedInstanceResolution::Reuse(v) => panic!(
@@ -2526,9 +2728,10 @@ mod tests {
         match resolve_optimized_instance_cell(
             expr,
             &module.functions,
+            &OptimizedNameIndex::new(),
             template,
             "r",
-            &reads,
+            || extract_dependency_trace(expr).reads,
             &instance_values,
             &global_values,
         ) {
