@@ -988,6 +988,16 @@ _GMSH_INC_OK="$(_mk_include_fixture gmsh-include-ok gmshc.h)"
 _GMSH_LIB_MISSING="$(_mk_empty_fixture gmsh-lib-missing)"
 _GMSH_INC_MISSING="$(_mk_empty_fixture gmsh-include-missing)"
 
+# OpenVDB's live shape at /opt/reify-deps/lib is TWO hops
+# (libopenvdb.so -> libopenvdb.so.13.0 -> libopenvdb.so.13.0.0), so the
+# FIRST-level target yields `13.0` — not the `13.0.0` `readlink -f` would give.
+# Its include sentinel is a NESTED path, `openvdb/openvdb.h`, not a bare
+# filename; _mk_include_fixture creates the parent dir for it.
+_OPENVDB_LIB_OK="$(_mk_lib_fixture openvdb-lib-ok 13.0 libopenvdb.so)"
+_OPENVDB_INC_OK="$(_mk_include_fixture openvdb-include-ok openvdb/openvdb.h)"
+_OPENVDB_LIB_MISSING="$(_mk_empty_fixture openvdb-lib-missing)"
+_OPENVDB_INC_MISSING="$(_mk_empty_fixture openvdb-include-missing)"
+
 assert "guard exits NON-zero when the Gmsh lib dir lacks libgmsh.so (headers present)" \
     _guard_env_exits_nonzero "${_OCCT_OK[@]}" \
         GMSH_LIB_DIR="$_GMSH_LIB_MISSING" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
@@ -1006,8 +1016,60 @@ assert "guard output NAMES gmshc.h and the offending Gmsh include dir" \
         GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_MISSING" \
         -- "gmshc.h" "$_GMSH_INC_MISSING"
 
+# The Gmsh positive control runs the guard to COMPLETION, so it also transits
+# the OpenVDB arm that section 9 adds downstream. It therefore supplies healthy
+# OpenVDB fixtures too — leaning on live /opt/reify-deps state here would make
+# a green Gmsh result depend on a dep this section is not testing.
+_OPENVDB_OK=(OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK")
+
 assert "guard exits 0 when BOTH Gmsh override dirs carry their sentinels (positive control)" \
-    _guard_env_exits_zero "${_OCCT_OK[@]}" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
         GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
+
+# ---------------------------------------------------------------------------
+# 9. OPENVDB PRESENCE — the third instance of the same vacuity (task #6493).
+#
+# crates/reify-kernel-openvdb/build.rs is byte-for-byte the same fail-OPEN
+# shape as gmsh's and as occt's before task #6343: find() -> None,
+# `cargo:warning`, bare `return`, exit 0, no cfg. Every
+# `#[cfg(has_openvdb)]`-gated item then stops being compiled and the suite
+# reports zero tests REPORTED rather than zero FAILED.
+#
+# build.rs stays deliberately fail-OPEN — reify-kernel-openvdb's
+# cfg(not(has_openvdb)) stub modules (src/kernel.rs, src/ingest.rs) are a
+# sanctioned, tested configuration. The GATE lives in check-manifold-deps.sh.
+#
+# EVERY case supplies healthy OCCT *and* Gmsh overrides: both arms run AHEAD of
+# the OpenVDB arm in the same script, so without them a
+# `_guard_env_exits_nonzero` assert would pass on an upstream arm's exit and
+# test nothing. Every negative pairs its exit-code assert with an output assert
+# naming an OPENVDB-specific string, so an upstream failure stays attributable.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 9: openvdb presence — missing libs / headers => red gate naming openvdb ---"
+
+_GMSH_OK=(GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK")
+
+assert "guard exits NON-zero when the OpenVDB lib dir lacks libopenvdb.so (headers present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_MISSING" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
+
+assert "guard output NAMES libopenvdb.so and the offending OpenVDB lib dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_MISSING" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
+        -- "libopenvdb.so" "$_OPENVDB_LIB_MISSING"
+
+assert "guard exits NON-zero when the OpenVDB include dir lacks openvdb/openvdb.h (libs present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_MISSING"
+
+assert "guard output NAMES openvdb/openvdb.h and the offending OpenVDB include dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_MISSING" \
+        -- "openvdb/openvdb.h" "$_OPENVDB_INC_MISSING"
+
+assert "guard exits 0 when BOTH OpenVDB override dirs carry their sentinels (positive control)" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
 
 test_summary
