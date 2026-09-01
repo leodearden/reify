@@ -32,10 +32,7 @@
 //! the real-kernel harness (`SingleKernelHolder + OcctKernelHandle::spawn`)
 //! and on `kernel_queries_angle_smoke.rs` for the CARGO_MANIFEST_DIR path pattern.
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_core::ValueCellId;
-use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use super::fixture_scaffolding::{assert_bool_cell, compile_and_build_with_occt};
 
 const CONTAINS_BOX_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -51,54 +48,21 @@ const CONTAINS_BOX_PATH: &str = concat!(
 /// Skips cleanly (via early return) when OCCT is not available.
 #[test]
 fn contains_box_evals_expected_booleans() {
-    // Read the fixture unconditionally so a missing file is caught even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(CONTAINS_BOX_PATH)
-        .expect("examples/kernel_queries/contains_box.ri should exist (task 3611 step-8)");
-
-    // Validate fixture compilation unconditionally — a grammar/compile regression
-    // (e.g. `contains` signature change) should fail on every runner.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/contains_box.ri should compile with no \
-         error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // Skip the OCCT-dependent kernel build/bool assertions if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    let Some(result) =
+        compile_and_build_with_occt(CONTAINS_BOX_PATH, "examples/kernel_queries/contains_box.ri")
+    else {
         return;
-    }
-
-    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    // Helper: assert a Bool cell equals the expected value.
-    let assert_bool = |cell_name: &str, expected: bool| {
-        let cell = ValueCellId::new("ContainsBox", cell_name);
-        let actual = result.values.get(&cell);
-        assert_eq!(
-            actual,
-            Some(&Value::Bool(expected)),
-            "ContainsBox.{cell_name} should be Value::Bool({expected}), got: {actual:?}"
-        );
     };
 
     // Center (0, 0, 0): strictly inside the box → TopAbs_IN → true.
-    assert_bool("inside", true);
+    assert_bool_cell(&result, "ContainsBox", "inside", true);
 
     // Face centre (5 mm, 0, 0): exactly on the +X face → TopAbs_ON → true.
-    assert_bool("on_face", true);
+    assert_bool_cell(&result, "ContainsBox", "on_face", true);
 
     // Corner vertex (5 mm, 5 mm, 5 mm): on the boundary → TopAbs_ON → true.
-    assert_bool("corner", true);
+    assert_bool_cell(&result, "ContainsBox", "corner", true);
 
     // Far outside (20 mm, 0, 0): well outside the box → TopAbs_OUT → false.
-    assert_bool("outside", false);
+    assert_bool_cell(&result, "ContainsBox", "outside", false);
 }

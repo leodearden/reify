@@ -23,10 +23,7 @@
 //! harness) and `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_angle_smoke.rs` (Scalar
 //! epsilon-match assertion shape).
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_core::ValueCellId;
-use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use super::fixture_scaffolding::{assert_length_cell, compile_and_build_with_occt};
 
 const DISTANCE_BOX_POINT_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -42,57 +39,14 @@ const DISTANCE_BOX_POINT_PATH: &str = concat!(
 /// Skips cleanly (via early return) when OCCT is not available.
 #[test]
 fn distance_box_point_evals_to_15mm() {
-    // Read the fixture unconditionally so a missing file is caught even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(DISTANCE_BOX_POINT_PATH)
-        .expect("examples/kernel_queries/distance_box_point.ri should exist (task 3610 pre-1)");
-
-    // Validate fixture compilation unconditionally — a grammar/compile regression
-    // (e.g. `distance` signature change) should fail on every runner.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/distance_box_point.ri should compile with no \
-         error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // Skip the OCCT-dependent kernel build/value assertion if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    let Some(result) = compile_and_build_with_occt(
+        DISTANCE_BOX_POINT_PATH,
+        "examples/kernel_queries/distance_box_point.ri",
+    ) else {
         return;
-    }
-
-    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    let cell = ValueCellId::new("DistanceBoxPoint", "d");
-    let actual = result.values.get(&cell);
+    };
 
     // Allow a small floating-point epsilon on the si_value while requiring the
-    // LENGTH dimension. Modelled on the Scalar epsilon-match in
-    // kernel_queries_angle_smoke.rs::angle_smoke_evals_to_ninety_degrees.
-    match actual {
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == reify_core::DimensionVector::LENGTH => {
-            let expected = 0.015_f64; // 15 mm in SI metres
-            let epsilon = 1e-9;
-            assert!(
-                (si_value - expected).abs() < epsilon,
-                "DistanceBoxPoint.d si_value should be 0.015 (15 mm), \
-                 got {si_value:.15} (delta {delta:.3e})",
-                delta = (si_value - expected).abs()
-            );
-        }
-        other => panic!(
-            "DistanceBoxPoint.d should be Value::Scalar{{LENGTH, ≈0.015}}, got: {:?}",
-            other
-        ),
-    }
+    // LENGTH dimension. 15 mm = 0.015 m in SI metres.
+    assert_length_cell(&result, "DistanceBoxPoint", "d", 0.015, 1e-9);
 }
