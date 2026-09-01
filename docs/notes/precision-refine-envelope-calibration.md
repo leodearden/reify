@@ -267,7 +267,7 @@ re-running `reify check`; the committed file itself stays pinned at 20 mm:
 | 5 mm | 4.107e-3 | 0.8214 | |
 | 3 mm | 2.854e-3 | 0.9513 | |
 | 1 mm | 8.419e-4 | 0.8419 | |
-| 0.8 mm | 7.658e-4 | 0.9572 | |
+| 0.8 mm | 7.658e-4 | 0.9573 | |
 | 0.6 mm | 5.867e-4 | 0.9778 | |
 | 0.5 mm | 4.980e-4 | 0.9960 | initial apparent peak — superseded below |
 | 0.4 mm | 3.930e-4 | 0.9825 | |
