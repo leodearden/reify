@@ -1,6 +1,6 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `da22522934edbe82bcb270023ce88ad6b2e2dd88`
+**Base commit:** `1a40869c95ac506fc6c80939efb3c994201dde64`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
 **Sites:** 18
