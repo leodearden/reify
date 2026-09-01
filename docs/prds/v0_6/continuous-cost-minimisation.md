@@ -33,7 +33,7 @@ These are deliberately deferred to named successors so this PRD stays small and 
 | Cost-as-objective idiom (`minimize <Money-expr-over-own-auto-params>`) | `examples/continuous_cost_min.ri` (CI): a part with an auto dimension and a closed-form material cost resolves (`reify eval`) to the cost-minimising dimension subject to its constraints. |
 | `Money`-objective → robustness-floor default | The same example: the resolved auto value sits **off** the binding constraint by ≥ the margin (contrast: pure cost-min sits exactly on it). Observable via `reify eval` resolved value + an eval test asserting `value ≥ bound + margin`. |
 | Robustness-floor info diagnostic | `reify check`/`eval` emits an info/`W_*` line noting a robustness floor was applied to a cost objective and how to override. |
-| `cost_robustness_tradeoff(cost_expr, λ)` override | `examples/cost_robustness_tradeoff.ri` (CI): λ=1 resolves to the boundary (pure cost), λ=0 to the robust centre, an intermediate λ between — shown via `reify eval`. |
+| `cost_robustness_tradeoff(cost_expr, λ)` override | `examples/cost_robustness_tradeoff.ri` (CI): λ=1 → the pure-cost optimum, λ=0 → the robust (Chebyshev) centre, λ=0.5 strictly between, all three separated from the solver's constraint-derived seed — shown via `reify eval`. (#5715: the boundary-valued form of the λ=1 anchor is the monotone-cost special case, observable only with explicit `AutoParam` bounds — verified at the solver layer instead.) |
 
 **Engine-integration sub-check (G1).** The solver-side mechanisms plug into the catalogued **§3.5 ConstraintSolver** seam (`engine-integration-norm.md`) — they extend `DimensionalSolver`/objective lowering, not a new seam. No orphan-producible `pub fn` in a `kernel-*` crate.
 
@@ -157,7 +157,7 @@ Labels α…ε; IDs at decompose time. Spine (C-as-integration-gate): α → β 
 
 ### Phase 3 — Tradeoff override
 - **Task γ — Compiler + solver: `cost_robustness_tradeoff(cost_expr, λ)` special-form (recognition + typing + normalised two-anchor blend); arg diagnostics.**
-  - **Observable signal:** `examples/cost_robustness_tradeoff.ri` (CI): `reify eval` shows λ=1 → boundary, λ=0 → robust centre, λ=0.5 → strictly between; `cost_robustness_tradeoff(<non-money>, 2.0)` emits named diagnostics, no panic. **Leaf.** `grammar_confirmed=true`. Crates: reify-compiler, reify-constraints.
+  - **Observable signal:** `examples/cost_robustness_tradeoff.ri` (CI): `reify eval` shows λ=1 → the pure-cost optimum, λ=0 → the robust (Chebyshev) centre, λ=0.5 → strictly between, all three separated from the solver's constraint-derived seed (#5715: the boundary-valued form of the λ=1 anchor is the monotone-cost special case, observable only with explicit `AutoParam` bounds); `cost_robustness_tradeoff(<non-money>, 2.0)` emits named diagnostics, no panic. **Leaf.** `grammar_confirmed=true`. Crates: reify-compiler, reify-constraints.
   - **Prereqs:** β (floor + Money-objective detection in place), α.
 
 ### Phase 4 — Tolerance-tied margin (enhancement, gated on α's finding)
