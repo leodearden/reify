@@ -938,9 +938,8 @@ mod tests {
     /// [`crate::diagnostics::auto_type_param_fixtures::assert_bt8_fixture_still_diverges`] helper:
     /// assert the stub and the real checker still genuinely diverge on the
     /// fixture before asserting `AnalysisContext` matches the real one. The
-    /// guard is extracted into that one shared function (task #6798
-    /// amendment, reviewer finding "duplication") rather than duplicated
-    /// here and in
+    /// guard is extracted into that one shared function rather than
+    /// duplicated here and in
     /// `diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`,
     /// so the two call sites cannot drift apart. If a future compiler
     /// change collapses AMBIGUOUS/NO_CANDIDATE into the same verdict, the
@@ -985,8 +984,7 @@ mod tests {
         );
     }
 
-    /// AMENDMENT ROUND 2 (task #6798, reviewer_comprehensive / robustness) —
-    /// containment regression lock for the THIRD LSP production entry point,
+    /// Containment regression lock for the THIRD LSP production entry point,
     /// `AnalysisContext::from_parsed`, which backs hover, completion,
     /// goto-definition and document-symbols.
     ///
@@ -997,12 +995,8 @@ mod tests {
     /// the guard: `AnalysisContext::new` panicked at
     /// `crates/reify-eval/src/engine_eval.rs:210` with "unrepresentable
     /// cell_type: value cell `Assembly.b.seal` has cell_type TypeParam(\"T\")".
-    /// (Task #6798's amendment round 2 recorded `Bearing.seal` for this site;
-    /// re-measured here it reports `Assembly.b.seal`, the same id the
-    /// `diagnostics.rs` sites report. Which cell the assertion names first is
-    /// not load-bearing — a differing cell id is the same assertion on a
-    /// different graph entry point, NOT a different bug.) Root cause is owned
-    /// by task **#6851**; this is the LSP-side containment.
+    /// Which cell the assertion names first is not load-bearing. Root cause is
+    /// owned by task **#6851**; this is the LSP-side containment.
     ///
     /// Reuses [`crate::diagnostics::auto_type_param_fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]
     /// rather than duplicating the source string, for the same anti-drift

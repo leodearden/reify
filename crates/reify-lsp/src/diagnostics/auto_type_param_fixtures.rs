@@ -39,16 +39,14 @@ use reify_core::{DiagnosticCode, ModulePath};
 /// return cleanly and the AMBIGUOUS/NO_CANDIDATE divergence is preserved.
 /// Do not "simplify" this back to `param seal : T`.
 ///
-/// **Reachability note (task #6798 amendment round 2 — supersedes round 1).**
-/// Round 1 called the `param seal : T` hazard "pre-existing, already
-/// reachable today via the multi-candidate case on either checker". Measured
-/// re-verification falsified that: it holds for the MULTI-candidate shape
-/// only. For the SINGLE-candidate + param-referencing-constraint shape
-/// ([`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]) the stub compiles to ZERO
-/// diagnostics AND evals cleanly, and only the real checker fails resolution.
-/// This leaf's checker swap therefore made a genuinely NEW panic path
-/// reachable from the LSP's own production entry points — not merely a wider
-/// window on an old one.
+/// **Reachability.** The `param seal : T` panic hazard is pre-existing for the
+/// MULTI-candidate shape (it fires on either checker), but NOT for the
+/// SINGLE-candidate + param-referencing-constraint shape
+/// ([`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]): measured, the stub compiles
+/// that one to ZERO diagnostics AND evals cleanly, and only the real checker
+/// fails resolution. This leaf's checker swap therefore made a genuinely NEW
+/// panic path reachable from the LSP's own production entry points — not
+/// merely a wider window on an old one.
 ///
 /// **Root cause: task #6851.** `phase_auto_type_param_resolution` gates all
 /// substitution behind `if !sigma.is_empty()`, so a failed resolution
@@ -62,9 +60,8 @@ use reify_core::{DiagnosticCode, ModulePath};
 /// `crates/reify-cli/src/mcp_context.rs`'s three ungated `engine.eval` sites
 /// remain #6851's to fix.
 ///
-/// **It IS test-pinned here**, contrary to round 1's claim that a test
-/// reaching the hazard would itself panic: the guard is exactly what makes
-/// such a test possible. See
+/// **It IS test-pinned here** — the guard is exactly what makes a test that
+/// reaches the hazard possible without itself panicking. See
 /// [`crate::diagnostics::tests::auto_resolution_failure_does_not_panic_diagnostics_entry_points`]
 /// and `analysis::tests::auto_resolution_failure_does_not_panic_analysis_context`,
 /// both over [`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`].
@@ -87,9 +84,8 @@ structure def Bearing<T: Seal> {
 structure def Assembly { sub b = Bearing<auto: Seal>() }
 "#;
 
-/// Containment fixture for the `auto:`-resolution-failure panic hazard (task
-/// #6798 amendment round 2; the underlying compiler defect is owned by task
-/// **#6851**).
+/// Containment fixture for the `auto:`-resolution-failure panic hazard (the
+/// underlying compiler defect is owned by task **#6851**).
 ///
 /// A SINGLE-candidate `auto:` bound whose constraint references a param with a
 /// LITERAL default. Three measured properties make this the right fixture, and
@@ -244,8 +240,7 @@ pub(crate) fn assert_auto_fail_fixture_is_newly_reachable() {
 /// downstream assertion compares an LSP entry point against the real
 /// checker's verdict.
 ///
-/// Extracted (task #6798 amendment, reviewer finding "duplication") so the
-/// guard cannot drift between its two call sites —
+/// Extracted so the guard cannot drift between its two call sites —
 /// `crate::diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`
 /// and `crate::analysis::tests::analysis_context_uses_real_constraint_checker` —
 /// which is exactly the kind of drift sharing the fixture const was already

@@ -193,9 +193,8 @@ pub(crate) fn compiled_graph_has_unrepresentable_cell(
 /// constant constraint that the CLI resolves to
 /// `E_AUTO_TYPE_PARAM_NO_CANDIDATE` (PRD
 /// `docs/prds/v0_6/driver-contract-implementation.md` leaf pi / §5 BT8 / §12
-/// premise correction 3). Cited by symbol rather than file:line — cheaper to
-/// keep truthful across refactors (task #6798 amendment, reviewer finding
-/// "docs-maintainability").
+/// premise correction 3). Cited by symbol rather than file:line, so the
+/// pointers survive refactors.
 ///
 /// This is a **compile-time change only**. The eval-time Engine built by
 /// [`EvalState::new`] is untouched: still a bare
@@ -204,10 +203,8 @@ pub(crate) fn compiled_graph_has_unrepresentable_cell(
 /// keystroke-time FEA/buckling/form-find solve ever runs — the Leo-ratified
 /// subtraction described in the next section stands unchanged. Locked by one
 /// executable contract, below in `mod tests`:
-/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`, whose
-/// doc comment records that it also serves as the BT8-reverse lock for this
-/// compile-time change (task #6798 amendment: folded from a separate
-/// near-duplicate test — see that test's doc for why).
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`, which
+/// also serves as the BT8-reverse lock for this compile-time change.
 ///
 /// The checker swap is PAIRED with an eval-skip guard. Failing `auto:`
 /// candidate feasibility at compile time is exactly what leaves an
@@ -1004,8 +1001,7 @@ mod tests {
     /// this helper rather than calling `compile_with_stdlib` directly — a
     /// stub-compiled mirror agrees with production only by coincidence
     /// today (no fixture below carries an `auto:` clause), and would
-    /// silently drift the moment one does (task #6798 amendment, reviewer
-    /// finding "test-mirror-drift").
+    /// silently drift the moment one does.
     ///
     /// Do NOT use this helper in the BT8 anti-vacuity guards
     /// ([`assert_bt8_fixture_still_diverges`]), which intentionally compile
@@ -1131,9 +1127,9 @@ mod tests {
         );
     }
 
-    /// Amendment (task #6798, reviewer finding "test-coverage" — Gap-C
-    /// honesty warning). The checker swap's OTHER user-visible consequence,
-    /// uncovered by every other BT8 test in this file: injecting the real
+    /// The checker swap's OTHER user-visible consequence (task #6798, Gap-C
+    /// honesty warning), uncovered by every other BT8 test in this file:
+    /// injecting the real
     /// `SimpleConstraintChecker` un-gates
     /// `W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED`
     /// (`crates/reify-compiler/src/auto_type_param.rs`,
@@ -1440,8 +1436,8 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         check("compute_diagnostics_with_state", &result.diagnostics);
     }
 
-    /// AMENDMENT ROUND 2 (task #6798, reviewer_comprehensive / robustness) —
-    /// containment regression lock for the two entry points in this file.
+    /// Containment regression lock for the two entry points in this file
+    /// (root cause owned by task **#6851**).
     ///
     /// A failed `auto:` type-parameter resolution leaves a `param seal : T`
     /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
@@ -1940,9 +1936,8 @@ structure S {
         // Pre-compile to obtain the content_hash for this exact source.
         // Must use compile_like_production + ModulePath::single("test") to
         // match what compute_diagnostics_with_state derives from
-        // "file:///test.ri" (task #6798 amendment, reviewer finding
-        // "test-mirror-drift": compile_like_production is what production
-        // now actually calls).
+        // "file:///test.ri" — compile_like_production is what production
+        // actually calls.
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
@@ -3123,9 +3118,7 @@ structure S {
     /// never calls `register_compute_fns`) carries none of them registered.
     /// If `register_compute_fns` gains or loses a target, update this list
     /// to match — a stale list would silently narrow the probe back to a
-    /// sample (task #6798 amendment, reviewer finding "test-coverage": the
-    /// probe used to name only 3 of the 18 registered targets while
-    /// claiming "all three").
+    /// sample.
     const ALL_PRODUCTION_COMPUTE_TARGETS: &[&str] = &[
         "solver::elastic_static",
         "solver::buckling",
@@ -3176,17 +3169,6 @@ structure S {
     /// before and after task #6798's impl steps: the compile-time checker
     /// change never touches the eval-time Engine built by
     /// [`EvalState::new`].
-    ///
-    /// (Amendment note: this test previously had a standalone sibling,
-    /// `real_checker_injection_preserves_trampoline_free_posture`. Its
-    /// only genuinely new signal over this one was the broadened probe —
-    /// its own "compile-time no-op" assertion was unfalsifiable for the
-    /// reason noted above (no `auto:` clause means the two compile
-    /// functions provably take the same code path regardless of which
-    /// checker is passed), and its false-violation/false-pass assertion
-    /// exactly duplicated this test's stateful half. Folded in here
-    /// instead of maintained as a near-duplicate — reviewer finding
-    /// "test-coverage".)
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
         let uri = test_uri();
