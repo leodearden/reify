@@ -1674,6 +1674,10 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///   sibling and collection instances alike, which a set scoped to one
 ///   `elaborate_child_instance` call could not. The scan runs on the decline
 ///   path only, and dedupe keeps the scanned vec short.
+// 8 args: the reported fact IS this wide — the decline names a scoped instance
+// cell, the template cell behind it, the target, the structural cause and the
+// human reason, and needs the snapshot to gate and the diagnostics vec to
+// dedupe. A params struct would move the same seven fields one level down.
 #[allow(clippy::too_many_arguments)]
 fn report_optimized_instance_decline(
     diagnostics: &mut Vec<Diagnostic>,
