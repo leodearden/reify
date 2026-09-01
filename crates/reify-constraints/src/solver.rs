@@ -1471,7 +1471,7 @@ fn collect_underivable(
 /// sides by the user's own constraints?
 ///
 /// Pure predicate — no solve, no I/O, no mutation. Answers PRD
-/// `docs/reify-implementation-architecture.md:1140` §11.6 test (2) ("uniquely
+/// `docs/reify-implementation-architecture.md` §11.6 test (2) ("uniquely
 /// optimal under the applicable objective") for the γ `cost_robustness_tradeoff`
 /// path, where the perturbation machinery `verify_uniqueness` normally uses is
 /// structurally inapplicable (see that function's doc for the measured ruling).
@@ -1551,10 +1551,24 @@ fn collect_underivable(
 /// [`finalise_uniqueness`] only reaches `verify_uniqueness` when at least one
 /// param is strict.
 ///
-/// A strict param whose index has no corresponding `intervals` entry reads as
-/// NOT bracketed. A length mismatch is a caller bug, and this preserves
-/// [`solutions_agree`]'s loud-not-silent contract rather than silently
-/// defaulting to "bracketed".
+/// PRECEDENCE for a strict param whose index has no corresponding `intervals`
+/// entry (a length mismatch — always a caller bug): ABSTENTION WINS. The
+/// `underivable.contains(&i) ||` short-circuit is evaluated BEFORE the
+/// `intervals.get(i)` lookup, so such a param reads as BRACKETED when it is in
+/// the abstention set, and as NOT bracketed — [`solutions_agree`]'s
+/// loud-not-silent contract, rather than silently defaulting to "bracketed" —
+/// only when it is not. That is deliberate and not merely incidental to the
+/// short-circuit: an index the caller never derived an interval for is
+/// evidence about the CALLER, never evidence that the user left a side
+/// unbounded, so it must not override an explicit abstention. In
+/// `verify_uniqueness`'s two-phase evaluation the loud reading is the one that
+/// governs the first (empty-`underivable`) call, which is what keeps the bug
+/// reachable at all rather than masked by an abstention that has not been
+/// computed yet.
+/// `strict_autos_constraint_bracketed_index_beyond_intervals_returns_false`
+/// pins the loud half and
+/// `strict_autos_constraint_bracketed_abstention_outranks_missing_interval`
+/// the abstaining half.
 ///
 /// Bound STRICTNESS is deliberately irrelevant — a `>`/`<` bound supplies its
 /// side just as a `>=`/`<=` one does, mirroring [`derived_seed_box`]'s
@@ -2075,9 +2089,9 @@ fn solve_core_with_sd_tolerance(
     // assumed) for every non-Money solve in the workspace.  Per floor invariant (ii)
     // above, a floor-free solve stays bit-identical.
     //
-    // RE-MEASURED (task #5711 step-7, unconditional form, scratch/reverted, HEAD
-    // f4dde0b52e, `cargo test -p reify-constraints --lib`): 156 pass / 1 fail —
-    // only `tests::undefined_objective_at_fallback_triggers_no_progress`.
+    // RE-MEASURED (task #5711 step-7, unconditional form, applied to a scratch
+    // tree and reverted, `cargo test -p reify-constraints --lib`): EXACTLY ONE
+    // failure — `tests::undefined_objective_at_fallback_triggers_no_progress`.
     // `tests::defined_objective_at_fallback_returns_solved` NO LONGER fails under
     // the unconditional form: its earlier failure was the `ConstraintNonUnique` /
     // flat-objective mechanism documented on `verify_uniqueness`, and the
@@ -2818,7 +2832,7 @@ fn solutions_agree(
 }
 
 /// Verdict from comparing an incumbent solution against a perturbed re-solve,
-/// per `docs/reify-implementation-architecture.md:1140` §11.6's two disjunctive
+/// per `docs/reify-implementation-architecture.md` §11.6's two disjunctive
 /// well-determinedness tests for strict `auto` resolution: the resolved value
 /// must be either uniquely determined by constraints, or uniquely optimal
 /// under the applicable objective.
@@ -2888,7 +2902,7 @@ enum UniquenessVerdict {
 /// own (the re-solve may simply have stalled at a worse local point) —
 /// abstaining there would silently convert
 /// `strict_auto_non_unique_returns_infeasible`'s synthetic-centrality-objective
-/// fixture (solver_integration.rs:1659) into a false `Solved`.
+/// fixture (`solver_integration.rs`) into a false `Solved`.
 fn classify_uniqueness(
     auto_params: &[AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
@@ -3001,7 +3015,7 @@ fn score_solution(
 ///
 /// # The ruling (task #5711)
 ///
-/// `docs/reify-implementation-architecture.md:1140` §11.6 gives strict
+/// `docs/reify-implementation-architecture.md` §11.6 gives strict
 /// `auto` resolution TWO disjunctive well-determinedness tests: the resolved
 /// value must be either (1) uniquely determined by constraints, or (2)
 /// uniquely optimal under the applicable objective. Before #5711 this
@@ -3054,7 +3068,7 @@ fn score_solution(
 /// move) — feeding it into the suppression branch would invert that signal.
 /// Measured self-defeat if this rule is ignored: with the synthetic fallback
 /// wired in, `strict_auto_non_unique_returns_infeasible`
-/// (solver_integration.rs:1659, `x>10mm ∧ y>10mm`, no explicit objective)
+/// (`solver_integration.rs`; `x>10mm ∧ y>10mm`, no explicit objective)
 /// flips to `Solved{unique:true}` — its incumbent (0.0505,0.0505) scores
 /// -0.0405 on the synthetic min-slack objective, but the derived-box
 /// perturbed anchor (0.091,0.091) re-solves to itself at -0.081, strictly
@@ -3097,14 +3111,16 @@ fn score_solution(
 /// DEFAULT-BOUNDS-determined rather than model-determined — genuine
 /// non-determinedness, return `false`.
 ///
-/// **A/B evidence table.** Recorded so the next reader inherits MEASUREMENT
-/// rather than assertion (branch `task/5711` vs. merge-base `a1116ef21b`,
-/// swapping only this file):
-///
-/// | model | main | branch, before this fix | after this fix |
-/// |---|---|---|---|
-/// | two-sided `1mm < t < 4mm`, γ, strict, `bounds: None`, λ ∈ {0, 0.5, 1} | `Solved{unique:true, t=0.0025}` | `Infeasible{ConstraintNonUnique}` for ALL THREE λ | `Solved{unique:true}` ✓ |
-/// | one-sided `t > 1mm` (`tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`) | `ConstraintNonUnique`, `thickness = undef` | identical (NOT a regression — a pre-existing verdict) | identical ✓ |
+/// **A/B evidence.** MEASURED, not asserted. The full per-model A/B table
+/// (main vs. branch-before-fix vs. branch-after-fix) is recorded in task
+/// #5711's record rather than inlined here; both of its rows are pinned as
+/// LIVE TESTS, which is the form that cannot go stale:
+/// `gamma_strict_auto_two_sided_bracket_is_solved` for the two-sided bracket
+/// (`Infeasible{ConstraintNonUnique}` for ALL THREE λ before this fix,
+/// `Solved{unique:true}` on main and after it) and
+/// `gamma_strict_auto_one_sided_stays_non_unique` for the one-sided shape
+/// (`ConstraintNonUnique` throughout — a pre-existing verdict, not a
+/// regression), both in `tests/cost_robustness_tradeoff_blend.rs`.
 ///
 /// λ=1 regressing is what identifies the mechanism: there the blend is a
 /// positive-affine transform of cost alone, so "λ<1 pulls the blend off the
@@ -3125,28 +3141,32 @@ fn score_solution(
 /// its already-green status is deliberate, not accidental. Same convention as
 /// the "Do NOT fix this by adding `.or(synth)`" note above.
 ///
-/// # Per-fixture measurement (task #5711 pre-1, HEAD 8050d728aa, commit
-/// `34cfd26a61`)
+/// # Per-fixture measurement (task #5711 pre-1)
 ///
-/// Swapping only the anchor box for the derived seed box flips six
-/// previously-`Solved` fixtures; re-derived per-fixture from a real
-/// measurement rather than generalised from one probe — the exact error
-/// esc-5618-3 warned against. All six carry an EXPLICIT `problem.objective`,
-/// so the explicit-only scoring rule above does not change any of these six
-/// verdicts relative to what was measured:
+/// Swapping only the anchor box for the derived seed box flips SIX
+/// previously-`Solved` fixtures — re-derived per fixture from a real
+/// measurement rather than generalised from one probe (the exact error
+/// esc-5618-3 warned against), all six carrying an EXPLICIT
+/// `problem.objective`, so the explicit-only scoring rule above changes none
+/// of the six. The per-fixture incumbent-vs-perturbed SCORE table lives in
+/// task #5711's record, not here: raw scores rot against any solver retune
+/// while the disposition below does not.
 ///
-/// | fixture | branch | why (incumbent vs. perturbed score) |
-/// |---|---|---|
-/// | `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` | `IncumbentSuboptimal` | `Minimize(x)`: 0.0055 (drift-fallback seed) vs. 0.0051 |
-/// | `warm_start_fallback_returns_exact_initial_values` | `IncumbentSuboptimal` | `Minimize(p0+p1+p2)`: 0.0315 vs. 0.0303 |
-/// | `warm_start_budget_exhaustion_stays_feasible` | `IncumbentSuboptimal` | `Minimize(Σp)` over 12 params: 0.132 vs. 0.1224 |
-/// | `warm_start_scales_iterations_with_dimension` | `IncumbentSuboptimal` | `Minimize(p0)` only (p1..p7 in no objective term) — MEASURED, not assumed: 0.015 vs. 0.011; the plan's prose flagged this as possibly-a-tie, the measurement corrected it |
-/// | `multi_param_warm_start_with_objective` | `IncumbentSuboptimal` | `Minimize(p0+p1+p2)`: 0.09 vs. 0.0285 |
-/// | `defined_objective_at_fallback_returns_solved` (this file's `mod tests`) | `NonUnique` (genuine tie) | `Minimize(if x<=22mm then 1e8 else x)` is the CONSTANT `1e8` across the entire feasible region `[0.001,0.020]` plus the buffer to `0.022`; both points score exactly `1e8`. Flipped to `free: true` with a comment naming this mechanism |
+/// - FIVE (the `warm_start_*` family) classify `IncumbentSuboptimal` — their
+///   incumbent is the drift-fallback or budget-exhausted seed, which the
+///   perturbed re-solve beats — and KEEP `free: false`, so the load-bearing
+///   warm-start signal is preserved rather than bulk-flipped.
+/// - Exactly ONE is a genuine tie:
+///   `defined_objective_at_fallback_returns_solved` (this file's `mod
+///   tests`), whose `Minimize(if x<=22mm then 1e8 else x)` is the CONSTANT
+///   `1e8` across the entire feasible region, so both points score
+///   identically → `NonUnique`. It is flipped to `free: true`, with a
+///   comment at the fixture naming this mechanism.
 ///
 /// Also confirmed at the same measurement: the flip set is exactly six (all
 /// other test binaries in the crate stayed 100% green), and the dedicated
-/// uniqueness 2×2 matrix (solver_integration.rs:1568-1767) is unaffected by
+/// uniqueness 2×2 matrix (`strict_auto_unique_solution_returns_unique_true` /
+/// `strict_auto_non_unique_returns_infeasible`) is unaffected by
 /// the box swap alone.
 ///
 /// # Open interval / infimum-not-attained ruling
@@ -4815,7 +4835,7 @@ mod tests {
     // ---- classify_uniqueness tests (task #5711) ----
     //
     // classify_uniqueness is the pure verdict classifier behind PRD
-    // docs/reify-implementation-architecture.md:1140 §11.6's two disjunctive
+    // docs/reify-implementation-architecture.md §11.6's two disjunctive
     // well-determinedness tests: parameter comparison answers "uniquely
     // determined by constraints", objective-score comparison answers
     // "uniquely optimal under the applicable objective". The
@@ -5029,7 +5049,7 @@ mod tests {
     // `solve_cost_robustness_tradeoff` is seed-dependent by construction, so a
     // perturbation check compares f(seed_A) against f(seed_B) for a
     // seed-dependent f — but PRD
-    // docs/reify-implementation-architecture.md:1140 §11.6 still needs an
+    // docs/reify-implementation-architecture.md §11.6 still needs an
     // answer. Test (2) ("uniquely optimal under the applicable objective") is
     // answered WITHOUT any solve: if every strict auto's interval is bounded on
     // BOTH sides by the user's own constraints, the blend's argmin is fixed by
@@ -5196,6 +5216,39 @@ mod tests {
             "a strict param with no corresponding interval must read as NOT bracketed — \
              preserving solutions_agree's loud-not-silent contract rather than silently \
              defaulting to 'bracketed'"
+        );
+    }
+
+    /// The PRECEDENCE between the two "no positive bracketing evidence" inputs:
+    /// a param that is BOTH beyond the `intervals` slice AND in the abstention
+    /// set reads as bracketed, because `underivable.contains(&i)` short-circuits
+    /// before the `intervals.get(i)` lookup. Pins the half of
+    /// `strict_autos_constraint_bracketed`'s doc that the missing-entry test
+    /// above does not reach — the two together are the whole contract.
+    #[test]
+    fn strict_autos_constraint_bracketed_abstention_outranks_missing_interval() {
+        use std::collections::HashSet;
+
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        // Two params, ONE interval: index 1 has no entry at all.
+        let params = vec![
+            bracketed_test_param("t", false),
+            bracketed_test_param("u", false),
+        ];
+        let mut iv = DerivedInterval::default();
+        iv.push_lo(0.001, true);
+        iv.push_hi(0.004, true);
+
+        assert!(
+            strict_autos_constraint_bracketed(&params, &[iv], &HashSet::from([1])),
+            "abstention must outrank a missing `intervals` entry — the `underivable` \
+             check short-circuits before the `intervals.get(i)` lookup"
+        );
+        assert!(
+            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
+            "without that abstention the SAME missing entry must read as NOT bracketed \
+             (the loud-not-silent half)"
         );
     }
 
@@ -7731,8 +7784,9 @@ mod tests {
 
     /// §11.6 "flat region → not uniquely optimal" (task #5711): a strict auto
     /// bracketed by a plain inequality pair (`x > 5mm AND x < 6mm`), with
-    /// `bounds: None` (the production shape — solver.rs:913 records that no
-    /// `.ri` surface ever sets `AutoParam.bounds`), and an objective that is
+    /// `bounds: None` (the production shape — the "Constraint-derived parameter
+    /// bounds" section header above records that no `.ri` surface ever sets
+    /// `AutoParam.bounds`), and an objective that is
     /// FLAT within the bracket (`minimize(if x <= 6.2mm then 1e8 else x)` —
     /// the exact cost-cliff shape of `defined_objective_at_fallback_returns_solved`,
     /// scaled to this bracket) must report `ConstraintNonUnique`:
@@ -7789,8 +7843,8 @@ mod tests {
         let x_id = ValueCellId::new("Part", "x");
 
         // x > 5mm AND x < 6mm — two constraint nodes (house convention for
-        // conjunction; see e.g. `strict_auto_non_unique_returns_infeasible`,
-        // solver_integration.rs:1691).
+        // conjunction; see e.g. `strict_auto_non_unique_returns_infeasible` in
+        // `solver_integration.rs`).
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
         let five_mm = CompiledExpr::literal(
             Value::Scalar {
@@ -7910,7 +7964,7 @@ mod tests {
     ///
     /// Rebuilds the
     /// `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible`
-    /// shape (solver_integration.rs:617-669) locally: `Part.x`,
+    /// shape (`solver_integration.rs`) locally: `Part.x`,
     /// `Type::length()`, `bounds: Some((0.0, 0.1))`, `free: false`;
     /// `x > 5mm AND x < 6mm`; `minimize(x)`; `current_values: {x: 5.5mm}`.
     /// `solved = {x: 0.0055}` is that fixture's real, measured `Solved`
@@ -7980,8 +8034,8 @@ mod tests {
 
         // This fixture's real measured Solved result (the drift fallback
         // returning the exact seed) — see
-        // `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible`,
-        // solver_integration.rs:617-669.
+        // `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` in
+        // `solver_integration.rs`.
         let mut solved: std::collections::HashMap<ValueCellId, Value> =
             std::collections::HashMap::new();
         solved.insert(
