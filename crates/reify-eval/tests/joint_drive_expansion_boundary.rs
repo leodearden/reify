@@ -972,8 +972,8 @@ fn halves(path: &str) -> (EvalResult, EvalResult) {
 ///
 /// # Memoized — the rationale for BOTH wrappers
 ///
-/// The pair is cached behind a `OnceLock`, so the example is read + stripped
-/// + solved exactly ONCE per test binary. Every caller of a given pair wants
+/// The pair is cached behind a `OnceLock`, so the example is read + stripped +
+/// solved exactly ONCE per test binary. Every caller of a given pair wants
 /// the SAME evaluation, not an independent one — they all assert about one
 /// model's merged-vs-frozen gap — so re-deriving per call buys no additional
 /// signal, only more real `DimensionalSolver` runs. `OnceLock::get_or_init`
