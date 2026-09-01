@@ -331,6 +331,20 @@ CAP_LINES=20000
 # below), so an ARRIVING unit is red while a unit LEAVING the set is free.
 WARN_PCT=90
 
+# Units currently between the WARN line and the cap. A SHRINKING ratchet in
+# the same spirit as harness-layout-baseline.manifest: a unit may LEAVE this
+# list freely (that is progress and must never turn the gate red), but a unit
+# ARRIVING must be added deliberately in the same diff -- which is exactly the
+# "surface the squeeze before it breaks" signal task #6121 added the WARN tier
+# for. harness_syntax.rs is 18617/20000 = 93.0% as of task #6121 and is tracked
+# by its own follow-up; it is NOT in this task's scope.
+#
+# Kept in-script rather than in a new manifest file because this guard already
+# carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
+# shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
+# needed. Enforced as a SUBSET in Section 5d.
+_KLOC_WARN_KNOWN=( "crates/reify-syntax/tests/harness_syntax.rs" )
+
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
 # guards; default path is unchanged).
@@ -1890,6 +1904,85 @@ echo "--- Section 5c: live non-vacuity of the external attribution ---"
 
 assert "5c: at least one live harness attributes an out-of-module-dir include (external_files>0 — the walk is wired on the real tree)" \
     test "$_S5BC_EXTERNAL_WIRED" -eq 1
+
+# ===========================================================================
+# Section 5d: the LIVE WARN-set shrinking ratchet — every unit that currently
+# WARNs must be a member of the checked-in _KLOC_WARN_KNOWN set.
+#
+# This is the GATING half of the advisory WARN tier. The WARN line itself never
+# changes the exit code (see WARN_PCT), so on its own it would be pure log
+# noise that a hurried reader scrolls past. The ratchet is what makes it a
+# signal: SUBSET, not equality, so a unit may LEAVE the warn set freely (it
+# shrank — that is progress and must never turn the gate red) while a unit
+# ARRIVING is RED and must be acknowledged in the same diff that pushes it over
+# the line. Same shape as harness-layout-baseline.manifest's own ratchet, whose
+# semantics a reviewer already knows.
+#
+# An equality pin on `warnings=<n>` was deliberately NOT used: it would go red
+# the moment harness_syntax innocently dropped below 90%, punishing progress.
+# Section 5's live SUMMARY assert therefore tolerates any warn COUNT; WHICH
+# units warn is pinned here.
+#
+# Reuses Section 5's ALREADY-CAPTURED $_live_out — no second live scan. Same
+# one-scan-feeds-two-sections discipline Sections 5b/5c use, and for the same
+# reason: this guard runs on the merge gate and each live unit measured costs
+# real wall clock in a PRD about cutting merge-gate CPU.
+# ===========================================================================
+echo ""
+echo "--- Section 5d: live WARN-set shrinking ratchet ---"
+
+# Extract each live WARN line's file= value and normalise it to a repo-relative
+# path (the detector emits absolute paths, since it is driven with absolute
+# tests dirs; _KLOC_WARN_KNOWN is checked in as repo-relative so it stays
+# stable across worktrees).
+_s5d_live_warn_lines="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+_s5d_live_files=()
+while IFS= read -r _s5d_line; do
+    [ -n "$_s5d_line" ] || continue
+    _s5d_f="${_s5d_line#* file=}"
+    _s5d_f="${_s5d_f%% *}"
+    _s5d_live_files+=("${_s5d_f#"$REPO_ROOT/"}")
+done <<<"$_s5d_live_warn_lines"
+
+_s5d_known_set=""
+for _s5d_k in "${_KLOC_WARN_KNOWN[@]}"; do
+    _s5d_known_set="$_s5d_known_set|$_s5d_k|"
+done
+
+# (a) SUBSET: every live WARN file must be a known member.
+_s5d_unknown=()
+for _s5d_f in ${_s5d_live_files[@]+"${_s5d_live_files[@]}"}; do
+    case "$_s5d_known_set" in
+        *"|$_s5d_f|"*) ;;
+        *) _s5d_unknown+=("$_s5d_f") ;;
+    esac
+done
+
+# On failure, dump the offending WARN lines verbatim using the Section 5 idiom,
+# so an operator reading an ARCHIVED merge-verify log sees the exact unit and
+# its percentage without re-deriving anything by hand.
+if [ "${#_s5d_unknown[@]}" -ne 0 ]; then
+    echo "  ---- Section 5d: live WARN lines NOT in _KLOC_WARN_KNOWN ----"
+    for _s5d_f in "${_s5d_unknown[@]}"; do
+        printf '%s\n' "$_s5d_live_warn_lines" | grep -F -- "file=$REPO_ROOT/$_s5d_f " || true
+    done
+    echo "  REMEDY: split the unit (rule (a)'s prescribed remedy for a"
+    echo "  module_lines-dominated squeeze), or, if it is genuinely tolerated"
+    echo "  for now, add its repo-relative path to _KLOC_WARN_KNOWN IN THIS DIFF."
+    echo "  ---- Section 5d: end offending WARN lines ----"
+fi
+
+assert "5d: every live WARNing unit is a member of the checked-in _KLOC_WARN_KNOWN set (subset ratchet)" \
+    test "${#_s5d_unknown[@]}" -eq 0
+
+# (b) NON-VACUITY: a regression that made the file= extraction return the empty
+# set would silently turn (a) above into a no-op no matter how many units warn.
+# Pin that the parsed count matches the emitted WARN count — including the
+# healthy zero-warn end state, where both are 0 and (a) is vacuous BY FACT, not
+# by parser breakage.
+_s5d_emitted="$(printf '%s\n' "$_live_out" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
+assert "5d: the WARN file= extraction parsed exactly as many entries as the live scan emitted (non-vacuity)" \
+    test "${#_s5d_live_files[@]}" -eq "$_s5d_emitted"
 
 # ===========================================================================
 # Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root
