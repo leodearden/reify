@@ -159,9 +159,10 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
 ///
 /// (The original RED measurement, and the task-5605/5698 history of where the
-/// child dies, are recorded in project memory — search `reify` for
-/// "audit-orphan-producers ambient hook git env". They are deliberately not
-/// restated here, where nothing checks them and they would rot.)
+/// child dies, are in project memory — `search(project_id="reify", query="
+/// run_orphan_audit replay child envelope mark skip 5698 repo-root premise
+/// probe panic")`, measured to return all three records. They are deliberately
+/// not restated here, where nothing checks them and they would rot.)
 ///
 /// # Why a test NAME rather than the empty filter
 ///
@@ -231,9 +232,9 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// produced an envelope — and libtest guarantees no ordering between the two
 /// tests.
 ///
-/// (The command that measured it, and its verbatim output, are in project
-/// memory — search `reify` for "audit-orphan-producers ambient hook git env" —
-/// not here, where nothing re-measures them.)
+/// (The command that measured it and its verbatim output are in project
+/// memory, not here where nothing re-measures them — same search as the
+/// pointer in `orphan_audit_survives_ambient_hook_git_env` above.)
 ///
 /// # What is and is not covered
 ///
