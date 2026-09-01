@@ -210,6 +210,50 @@ const _: () = assert!(
     "thread name must fit Linux's 15-byte pthread_setname_np limit"
 );
 
+/// Thread-name PREFIX for the LSP QUERY POOL — [`LSP_POOL`]'s consumers, named
+/// `reify-lsp-p0` .. `reify-lsp-p{LSP_POOL_SIZE-1}` (task 6517).
+///
+/// A prefix rather than a name, because a pool has more than one thread to tell
+/// apart: `top -H` and profiler captures should say WHICH query consumer is
+/// stalled, not merely that one is. The `-p` / `-w` distinction from
+/// [`LSP_WORKER_THREAD_NAME`] is the load-bearing part — the whole point of the
+/// split is that a stall on the ordered notification lane and a stall on a query
+/// consumer are different events with different causes.
+///
+/// The budget assertion allows for a TWO-digit index rather than only the widths
+/// [`LSP_POOL_SIZE`] currently reaches, so raising the pool size later cannot
+/// silently overrun Linux's 15-byte `pthread_setname_np` limit — `std` ignores
+/// an over-long name without erroring, so the failure would be an invisible loss
+/// of thread identity rather than a build break.
+pub const LSP_POOL_THREAD_PREFIX: &str = "reify-lsp-p";
+const _: () = assert!(
+    LSP_POOL_THREAD_PREFIX.len() + 2 <= 15,
+    "the pool prefix plus a two-digit consumer index must fit Linux's 15-byte \
+     pthread_setname_np limit"
+);
+
+/// How many consumers the LSP query pool runs: 4.
+///
+/// # Why 4, and why a fixed constant
+///
+/// The bound this buys is "the FIFTH simultaneous in-flight query queues", and 4
+/// covers the realistic worst case: one slow workspace-wide `references` or
+/// `rename` overlapping the hover / completion / documentHighlight / definition
+/// traffic that a single cursor move already produces. Below 4 the common case
+/// can still block on one slow query; above it, the extra consumers would idle
+/// through every workload this GUI generates.
+///
+/// It is a FIXED constant rather than [`std::thread::available_parallelism`] on
+/// purpose. The bound is then the same number on every machine — directly
+/// assertable from a test, and the same number in a bug report as in the code —
+/// whereas a machine-derived size would make head-of-line behaviour depend on
+/// the reporter's core count.
+///
+/// The cost is four LAZILY-created virtual 256 MiB reservations committed
+/// page-by-page (see [`COMPILE_STACK_SIZE`]), not 1 GiB resident and not
+/// anything at all in a session that never issues an LSP query.
+pub(crate) const LSP_POOL_SIZE: usize = 4;
+
 /// Run `f` to completion on a dedicated OS thread with a [`COMPILE_STACK_SIZE`]
 /// stack, BLOCKING the caller until it returns, and hand back its value.
 ///
@@ -756,11 +800,35 @@ impl Lane {
 /// [`run_on_worker`]. Named [`WORKER_THREAD_NAME`].
 pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
 
-/// The LSP lane: `lsp_request` dispatch. Named [`LSP_WORKER_THREAD_NAME`].
+/// The ORDERED LSP lane: the state-mutating and lifecycle methods
+/// (`initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
+/// `shutdown`) plus, conservatively, any method
+/// `InProcessLsp::handle_request` does not recognise. Named
+/// [`LSP_WORKER_THREAD_NAME`].
 ///
 /// Separate from [`ENGINE_LANE`] so a hover never queues behind a geometry
 /// evaluation — see [`Lane`]'s "Why more than one lane".
+///
+/// SIZE 1, and that is a correctness requirement rather than a leftover: LSP
+/// notifications are order-sensitive against each other, so a second consumer
+/// would let `didChange` #2 overtake `didChange` #1 and produce text neither the
+/// client nor the server ever had. Which methods land here is
+/// [`crate::lsp_bridge::lane_for_method`]'s decision, not this module's.
 pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
+
+/// The LSP QUERY POOL: the eight read-only query methods (`completion`,
+/// `hover`, `definition`, `documentSymbol`, `documentHighlight`,
+/// `prepareRename`, `rename`, `references`), on [`LSP_POOL_SIZE`] consumers
+/// named `{LSP_POOL_THREAD_PREFIX}{i}` (task 6517).
+///
+/// This is what BOUNDS head-of-line blocking among LSP queries instead of
+/// leaving them serialized: a query that gains nothing from the large stack —
+/// the four arms that hop to `spawn_blocking`, per the module docs' item 1 —
+/// occupies one of [`LSP_POOL_SIZE`] consumers rather than the only one.
+///
+/// The classification key is LSP PROTOCOL semantics, and lives with the
+/// LSP-aware module: see [`crate::lsp_bridge::lane_for_method`].
+pub(crate) static LSP_POOL: Lane = Lane::pool(LSP_POOL_THREAD_PREFIX, LSP_POOL_SIZE);
 
 /// Run `f` to completion on the process-wide PERSISTENT large-stack thread,
 /// BLOCKING the caller until it returns, and hand back its value.
@@ -965,6 +1033,14 @@ where
 /// bridges an async caller to a large-stack thread with exactly
 /// [`spawn_on_large_stack`] + a `oneshot`. This amortises that bridge onto a
 /// persistent lane instead of paying a fresh 256 MiB mapping per call.
+///
+/// # This is the ORDERED-lane convenience wrapper, not the production entry
+///
+/// Since task 6517, production LSP dispatch reaches the lanes through
+/// [`crate::lsp_bridge::lane_for_method`], which routes each method to either
+/// [`LSP_LANE`] (ordered) or [`LSP_POOL`] (queries). This function hard-codes
+/// [`LSP_LANE`], so it is the right entry only for work that must be ordered
+/// against the notification stream; several tests use it for exactly that.
 pub async fn run_on_lsp_worker<Fut, T>(fut: Fut) -> T
 where
     Fut: std::future::Future<Output = T> + Send + 'static,

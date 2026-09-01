@@ -155,7 +155,74 @@ pub async fn lsp_request_on_worker(
     method: String,
     params: String,
 ) -> Result<String, String> {
-    crate::large_stack::run_on_lsp_worker(lsp_request_future(bridge, method, params)).await
+    lsp_request_on_lane(lane_for_method(&method), bridge, method, params).await
+}
+
+/// Which large-stack lane a given LSP method travels: the size-1 ORDERED lane,
+/// or the [`crate::large_stack::LSP_POOL_SIZE`]-consumer QUERY POOL (task 6517).
+///
+/// # The classification key is LSP PROTOCOL semantics
+///
+/// The question this answers is "does this method mutate server-side document or
+/// session state?", and it is answered from the LSP specification's own notion
+/// of notifications-versus-requests — NOT from `reify-lsp`'s internal choice of
+/// which arms hop to [`tokio::task::spawn_blocking`].
+///
+/// That distinction is the whole reason this function exists rather than a
+/// method-keyed bypass of the lane. Keying on `spawn_blocking` would be the
+/// narrower change — those four arms are exactly the ones whose lane occupancy
+/// hurts most, since they hold a consumer for a workspace-wide walk while their
+/// deep frames run on the blocking pool's ~2 MiB threads — but it would couple
+/// `gui/src-tauri` to an implementation detail of another crate that this crate
+/// can neither observe nor test, and it would rot silently the day `reify-lsp`
+/// moved an arm. A pool subsumes it WITHOUT the coupling: work that gains
+/// nothing from the big stack merely occupies one of N consumers instead of the
+/// only one, and no list of `reify-lsp` internals is needed to say so.
+///
+/// # Why the fallthrough is the ORDERED lane
+///
+/// The `matches!` below lists the CONCURRENCY-SAFE set and defaults everything
+/// else — including every method `InProcessLsp::handle_request` does not
+/// recognise — to the ordered lane. Spelled the other way round (list the
+/// ordered set, default to the pool) it would look identical in review and would
+/// hand concurrency to every method added to `reify-lsp` in future, including a
+/// state-mutating one. Making the safe direction STRUCTURAL rather than a
+/// comment is what stops that; `lsp_bridge_tests`' (h) pins it with unrecognised
+/// methods, and (j) makes adding an arm a decision here rather than a silent
+/// default.
+///
+/// # What each lane costs the other
+///
+/// Order among NOTIFICATIONS is preserved exactly — they share one FIFO
+/// consumer, which is what `didChange` correctness rests on. The one ordering
+/// property given up is query-versus-notification: a query may now read text
+/// older than a concurrently-processing `didChange`. That is staleness, never
+/// corruption (`reify-lsp`'s own `RwLock`/`Mutex` serialise the accesses for
+/// safety), and it is precisely the pre-task-5772 behaviour on the
+/// multi-threaded tauri runtime.
+pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stack::JobSender> {
+    let concurrency_safe = matches!(
+        method,
+        // Read-only queries: each takes `state.read().await`, clones what it
+        // needs and drops the guard; none touches `eval_state` or mutates the
+        // document set.
+        "textDocument/completion"
+            | "textDocument/hover"
+            | "textDocument/definition"
+            | "textDocument/documentSymbol"
+            | "textDocument/documentHighlight"
+            | "textDocument/prepareRename"
+            | "textDocument/rename"
+            | "textDocument/references"
+    );
+
+    if concurrency_safe {
+        crate::large_stack::LSP_POOL.sender()
+    } else {
+        // `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
+        // `shutdown` — and, conservatively, anything unrecognised.
+        crate::large_stack::LSP_LANE.sender()
+    }
 }
 
 /// The ONE future both LSP entry points submit: `lsp_request_impl`, owned and
@@ -195,19 +262,19 @@ async fn lsp_request_future(
 ///
 /// # Relationship to [`lsp_request_on_worker`]
 ///
-/// `lsp_request_on_lane(LSP_LANE.sender(), ..)` IS `lsp_request_on_worker`, by
-/// construction rather than by resemblance: both submit
-/// [`lsp_request_future`]'s single body, and
-/// [`crate::large_stack::run_on_lsp_worker`] — which production goes through —
-/// is defined as `dispatch_async(LSP_LANE.sender(), fut)`. So a lane-path test
-/// written against this seam exercises the production path, and the only
-/// difference either side can develop is the lane argument itself.
+/// Since task 6517 this is the ONE production body, and the lane is genuinely
+/// its only variable: [`lsp_request_on_worker`] IS
+/// `lsp_request_on_lane(lane_for_method(&method), ..)`, by construction rather
+/// than by resemblance. Both spellings submit [`lsp_request_future`]'s single
+/// body, so a test written against this seam exercises the production path and
+/// the only difference either side can develop is the lane argument itself.
 ///
-/// `#[cfg(test)] pub(crate)` — production reaches the lane through
-/// [`lsp_request_on_worker`], so this seam exists only to vary the lane
-/// argument from a test. Gating it to test builds keeps that honest and adds no
-/// public API surface; `main.rs` is unaffected.
-#[cfg(test)]
+/// It is therefore no longer `#[cfg(test)]`. The gate was honest while
+/// production reached the lane through
+/// [`crate::large_stack::run_on_lsp_worker`] and this existed only to vary the
+/// lane from a test; now that production routes over TWO lanes, the lane must be
+/// a parameter of the real path, not a test-only one. `pub(crate)` still adds no
+/// public API surface, and `main.rs` is unaffected.
 pub(crate) async fn lsp_request_on_lane(
     sender: Option<&crate::large_stack::JobSender>,
     bridge: Arc<LspBridge>,
