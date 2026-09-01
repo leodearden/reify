@@ -19,12 +19,26 @@ fn main() {
         None => {
             // OpenVDB not found — emit a warning and exit gracefully.
             // The crate compiles in stub-only mode without has_openvdb.
+            //
+            // Deliberately fail-OPEN: openvdb-free stub builds are sanctioned
+            // and this crate carries real `cfg(not(has_openvdb))` stub modules
+            // (`src/kernel.rs`, `src/ingest.rs`) for them, so hard-failing here
+            // would break a supported configuration. The GATE lives outside the
+            // build, in the OpenVDB arm of `scripts/check-manifold-deps.sh`
+            // (task 6493) — see the warning text below.
             println!(
                 "cargo:warning=OpenVDB libraries not found. \
                  Building without OpenVDB support (stub kernel only). \
                  Set OPENVDB_INCLUDE_DIR / OPENVDB_LIB_DIR or install \
                  libopenvdb-dev (or run setup-dev.sh to install the \
-                 conda-forge env at /opt/reify-deps)."
+                 conda-forge env at /opt/reify-deps). \
+                 NOTE: this also removes every #[cfg(has_openvdb)]-gated test \
+                 module and integration binary in this crate — zero tests \
+                 REPORTED, not zero tests failed. \
+                 scripts/check-manifold-deps.sh's OpenVDB arm is the gate that \
+                 should have caught this before the build started; seeing this \
+                 warning under a GREEN verify is itself a bug worth reporting \
+                 (task 6493)."
             );
             return;
         }

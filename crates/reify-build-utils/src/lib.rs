@@ -74,13 +74,14 @@ impl NativeDep {
 
     /// Canonical include-dir candidates in priority order.
     ///
-    /// The OCCT arm below is MIRRORED verbatim — order included — in the
-    /// `occt-candidates` marker block of `scripts/check-manifold-deps.sh`,
-    /// whose preflight has to reach the same verdict this function feeds into
-    /// `has_occt`. This side stays the single source of truth; parity is
-    /// pinned by `tests/infra/test_occt_deps_preflight.sh`, so an edit here
-    /// without the matching bash edit fails that guard rather than silently
-    /// leaving the gate and the build disagreeing.
+    /// ALL THREE arms below are MIRRORED verbatim — order included — in the
+    /// `occt-candidates`, `gmsh-candidates` and `openvdb-candidates` marker
+    /// blocks of `scripts/check-manifold-deps.sh`, whose preflight has to
+    /// reach the same verdict this function feeds into `has_occt` /
+    /// `has_gmsh` / `has_openvdb`. This side stays the single source of truth;
+    /// parity is pinned per-dep by `tests/infra/test_occt_deps_preflight.sh`,
+    /// so an edit here without the matching bash edit fails that guard rather
+    /// than silently leaving the gate and the build disagreeing.
     fn include_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[
@@ -103,11 +104,15 @@ impl NativeDep {
     /// `/opt/reify-deps/lib` first because that's where their canonical install
     /// lives via `scripts/setup-dev.sh`.
     ///
-    /// That ordering is precisely what the bash mirror in
-    /// `scripts/check-manifold-deps.sh`'s `occt-candidates` block must
-    /// preserve, which is why `tests/infra/test_occt_deps_preflight.sh`
-    /// compares the two lists order-sensitively. See the note on the
-    /// include-dir candidates above.
+    /// Those orderings are precisely what the bash mirrors in
+    /// `scripts/check-manifold-deps.sh`'s `occt-candidates`,
+    /// `gmsh-candidates` and `openvdb-candidates` blocks must preserve, which
+    /// is why `tests/infra/test_occt_deps_preflight.sh` compares each pair of
+    /// lists order-sensitively. Note OpenVdb's order is not Gmsh's either
+    /// (`/usr/local/lib` ahead of `/usr/lib/x86_64-linux-gnu`, where Gmsh has
+    /// the reverse), so the mirrors are per-dep copies and must not be
+    /// collapsed into one shared list. See the note on the include-dir
+    /// candidates above.
     fn lib_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[

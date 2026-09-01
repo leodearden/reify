@@ -18,6 +18,13 @@ fn main() {
     // Auto-detect Gmsh availability. Same fail-soft posture as
     // `crates/reify-kernel-occt/build.rs`: if the system lacks libgmsh, the
     // crate still compiles — only the stub kernel is exposed.
+    //
+    // Deliberately fail-OPEN: gmsh-free stub builds are sanctioned and this
+    // crate carries real `cfg(not(has_gmsh))` stub modules (`src/kernel.rs`,
+    // `src/lib.rs`, `src/mesh_profile_2d.rs`) for them, so hard-failing here
+    // would break a supported configuration. The GATE lives outside the build,
+    // in the Gmsh arm of `scripts/check-manifold-deps.sh` (task 6493) — see the
+    // warning text below.
     let LibLoc { include_dir: _include_dir, lib_dir } =
         match reify_build_utils::find(NativeDep::Gmsh) {
             Some(loc) => loc,
@@ -25,7 +32,17 @@ fn main() {
                 println!(
                     "cargo:warning=Gmsh libraries not found. \
                      Building without Gmsh support (stub kernel only). \
-                     Set GMSH_INCLUDE_DIR / GMSH_LIB_DIR or install gmsh."
+                     Set GMSH_INCLUDE_DIR / GMSH_LIB_DIR or install gmsh \
+                     (or run scripts/setup-dev.sh to provision the conda-forge \
+                     env at /opt/reify-deps). \
+                     NOTE: this also removes every #[cfg(has_gmsh)]-gated test \
+                     module and integration binary in this crate, plus the \
+                     occt_gmsh conformance suites and the reify-eval FEA/mesh \
+                     e2e binaries — zero tests REPORTED, not zero tests failed. \
+                     scripts/check-manifold-deps.sh's Gmsh arm is the gate that \
+                     should have caught this before the build started; seeing \
+                     this warning under a GREEN verify is itself a bug worth \
+                     reporting (task 6493)."
                 );
                 return;
             }

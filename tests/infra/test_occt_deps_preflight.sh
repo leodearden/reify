@@ -1,95 +1,138 @@
 #!/usr/bin/env bash
 # tests/infra/test_occt_deps_preflight.sh
 #
-# Guard for the OCCT arm of scripts/check-manifold-deps.sh (task #6343).
+# Guard for the NATIVE-DEP PREFLIGHT arms of scripts/check-manifold-deps.sh —
+# all three of them: OCCT (task #6343), Gmsh and OpenVDB (task #6493).
 #
-# WHY this guard exists. `reify_build_utils::find(NativeDep::Occt)` returns
-# `None` when EITHER the header dir or the lib dir is unresolved, and
-# `crates/reify-kernel-occt/build.rs` responds with a `cargo:warning` plus a
-# bare `return` — no `has_occt` cfg. That silently DELETES the crate's
-# `#[cfg(all(test, has_occt))]` modules and its ~25 `#![cfg(has_occt)]`
-# integration binaries: the suite reports ZERO tests, not zero failures, and
-# the verify gate stays green. This test pins the preflight that converts that
-# vacuity into a red gate.
+# FILENAME IS DELIBERATELY UNCHANGED despite the widened scope.
+# tests/infra/run-all-classification.manifest and
+# scripts/verify-pipeline-infra-tests.txt both already reference this path;
+# renaming would churn two gates for no behavioural gain.
+#
+# WHY this guard exists. `reify_build_utils::find(NativeDep::X)` returns `None`
+# when EITHER the header dir or the lib dir is unresolved, and each kernel's
+# build.rs responds with a `cargo:warning` plus a bare `return` — no
+# `has_occt` / `has_gmsh` / `has_openvdb` cfg. That silently DELETES every
+# `#[cfg(has_X)]`-gated module and integration binary: the suite reports ZERO
+# tests, not zero failures, and the verify gate stays green over a kernel
+# nothing exercised. A passing suite and a DELETED suite are indistinguishable
+# from outside. This test pins the preflight that converts that vacuity into a
+# red gate.
+#
+# All three build.rs scripts stay deliberately fail-OPEN — their stub modules
+# are a sanctioned, tested configuration — so the GATE lives outside the
+# build, in scripts/check-manifold-deps.sh, which is what this file tests.
 #
 # Script under test: scripts/check-manifold-deps.sh (emitted by
-# scripts/verify.sh as a plan entry whenever RUN_RUST=1, so the arm it guards
-# runs on every --scope all / merge-gate verify).
+# scripts/verify.sh as a plan entry whenever RUN_RUST=1, so the arms it guards
+# run on every --scope all / merge-gate verify).
 #
-# Assertions:
+# Sections:
+#   0. SELF-CHECK, the harness itself. The needle-containment primitive
+#      `_out_contains` must report a PRESENT needle deterministically (bounded
+#      statistical loop, N=5000) and must contain no `| grep` pipeline
+#      (deterministic structural pin on the hazard CLASS). A
+#      `printf | grep -q` under this file's `set -o pipefail` reports a MATCH
+#      as a MISS ~0.14% of the time — grep short-circuits, the builtin writer
+#      takes SIGPIPE, pipefail surfaces the 141. Also pins that a needle miss
+#      EMITS evidence, and that a match emits nothing (the green output shape
+#      is byte-parsed by run_all.sh's cause_hint and dark-factory's
+#      classifier).
 #   1. scripts/check-manifold-deps.sh exists and is executable.
-#   2. ABSENCE: both override dirs empty => non-zero, output names OCCT.
-#   3. LIB-ONLY MISSING: headers present, libs absent => non-zero, output
+#   2. OCCT ABSENCE: both override dirs empty => non-zero, output names OCCT.
+#   3. OCCT LIB-ONLY MISSING: headers present, libs absent => non-zero, output
 #      names libTKernel.so and the offending lib dir.
-#   4. INCLUDE-ONLY MISSING: libs present, headers absent => non-zero, output
-#      names Standard_Failure.hxx and the offending include dir. This is the
-#      mixed case that silently produces a stub build.
-#   5. PARITY, DATA (anti-drift): the marker-delimited OCCT declarations in
+#   4. OCCT INCLUDE-ONLY MISSING: libs present, headers absent => non-zero,
+#      output names Standard_Failure.hxx and the offending include dir. This is
+#      the mixed case that silently produces a stub build.
+#   5. PARITY, DATA (anti-drift), OCCT: the marker-delimited declarations in
 #      scripts/check-manifold-deps.sh equal `NativeDep::Occt`'s arms in
 #      crates/reify-build-utils/src/lib.rs — both candidate lists INCLUDING
 #      ORDER (system paths must stay ahead of /opt/reify-deps' OCCT 7.9) and
 #      both sentinel names. Rust is the source of truth; bash is a declared
-#      mirror. Both parses must yield a non-empty result, so a renamed anchor
+#      mirror. Every parse must yield a non-empty result, so a renamed anchor
 #      fails loudly instead of passing vacuously.
-#   6. PARITY, SNAP FALLBACK: the same mirror one layer down — the default of
+#      PARITY, SNAP FALLBACK: the same mirror one layer down — the default of
 #      the guard's OCCT_SNAP_ROOT equals the literal in
 #      find_dir_with_override's `read_dir(..)`, and the guard's
 #      sentinel -> subdir `case` equals that fn's `match sentinel` arms, order
 #      included. Declaration-level, because on a host that HAS system OCCT the
 #      candidate loop short-circuits before either side's fallback ever runs.
-#   7. ACCEPTED SONAME + RECORDING: a Debian-shaped chain whose first-level
-#      link target carries the FIRST value of OCCT_ACCEPTED_SONAMES => exit 0,
-#      AND the guard prints the resolved version and both resolved dirs. That
-#      [ok] line is the arm's "which OCCT produced this green result" half, so
-#      it is asserted rather than left to `>/dev/null`.
-#   8. PATCH-SHAPED SONAME: `libTKernel.so -> libTKernel.so.<accepted>.1` — a
-#      repackaging that moves the dev symlink one hop further on a
-#      functionally identical OCCT => still exit 0, and the verbatim segment
-#      is still recorded. The pin is on MAJOR.MINOR precisely so this
-#      non-event cannot hard-stop every RUN_RUST=1 verify; build.rs splices
-#      the verbatim segment, which names a file that exists.
-#   9. UNACCEPTED SONAME: version 0.0 (never a real OCCT release, so this case
-#      survives any future pin bump) => non-zero, output names OCCT, the
-#      resolved version, and the accepted set.
-#  10. CONDA-SHAPED ONE-LEVEL SYMLINK: `libTKernel.so -> libTKernel.so.7.9.3`,
-#      the exact layout live at /opt/reify-deps/lib => resolves to `7.9.3`,
-#      whose major.minor 7.9 is not accepted, so non-zero naming 7.9.3
-#      VERBATIM. Pins that the guard takes the trailing segment as-is for the
-#      record, exactly as read_soname_version documents, and projects only for
-#      the comparison.
-#  11. UNDETERMINABLE SONAME: `libTKernel.so` as a REGULAR FILE => non-zero.
-#      This is the state where find() still reports the dir resolved (it only
-#      tests .exists()), has_occt IS set, and build.rs silently falls back to
-#      the literal string "7.8" — i.e. links a version nobody verified.
-#  12. CROSS-ARTIFACT PIN: the version scripts/setup-dev.sh's OCCT block
+#   6. OCCT SONAME pin — ACCEPTED + RECORDING (a Debian-shaped chain carrying
+#      the first OCCT_ACCEPTED_SONAMES value => exit 0, and the guard prints
+#      the version and both dirs); PATCH-SHAPED (`-> ....<accepted>.1`, a
+#      repackaging of the same OCCT => still exit 0, verbatim segment still
+#      recorded — the pin is on MAJOR.MINOR precisely so this non-event cannot
+#      hard-stop every RUN_RUST=1 verify); UNACCEPTED (0.0, never a real
+#      release, so the case survives any future pin bump => non-zero naming the
+#      version and the accepted set); CONDA-SHAPED one-hop (`-> ....7.9.3`, the
+#      live /opt/reify-deps layout => names 7.9.3 VERBATIM, not 7.9);
+#      UNDETERMINABLE (sentinel is a REGULAR FILE => non-zero, because find()
+#      still reports the dir resolved, has_occt IS set, and build.rs falls back
+#      to a hard-coded version — linking something nobody verified).
+#   7. CROSS-ARTIFACT PIN: the version scripts/setup-dev.sh's OCCT block
 #      expects from dpkg projects (major.minor) into OCCT_ACCEPTED_SONAMES.
 #      Both sides are projected, so the accepted set stays free to hold a
 #      three-segment SONAME even though setup-dev.sh's `grep -oP '\d+\.\d+'`
 #      can only ever yield major.minor.
+#   8. GMSH PRESENCE: lib-only missing / include-only missing => non-zero,
+#      output names libgmsh.so or gmshc.h and the offending dir; both present
+#      => exit 0.
+#   9. OPENVDB PRESENCE: the same three, naming libopenvdb.so or the NESTED
+#      openvdb/openvdb.h sentinel.
+#  10. PARITY, DATA (anti-drift), GMSH + OPENVDB: section 5's check applied to
+#      the `gmsh-candidates` and `openvdb-candidates` blocks. Order matters
+#      here too and is the OPPOSITE of OCCT's — /opt/reify-deps must LEAD for
+#      both — and OpenVdb's lib order differs from Gmsh's, so a drift that
+#      merely swapped two entries would still resolve, just against the wrong
+#      install, silently.
+#  11. GREEN-PATH RECORDING for the two new arms: on the all-present path the
+#      guard names each dep's resolved dirs AND the SONAME read from the
+#      FIRST-level symlink target (gmsh one hop => 4.15.2; openvdb two hops =>
+#      13.0, NOT the 13.0.0 `readlink -f` would give). RECORDED only —
+#      deliberately not pinned to an accepted set, because unlike OCCT neither
+#      build.rs splices a version into any link directive.
+#  12. COMPLETENESS: the set of deps gated by scripts/check-manifold-deps.sh
+#      (derived from its `# BEGIN <dep>-candidates` marker-block NAMES) equals
+#      the variants of `enum NativeDep` (derived from its
+#      `// BEGIN native-dep-variants` markers). Compared as SETS — arm PRESENCE
+#      is the contract, arm order is not. This is the assert that would have
+#      caught task 6493's own finding, and the one that stops a FOURTH native
+#      dep shipping ungated.
 #
 # The accepted-SONAME value is DERIVED from the guard, never hardcoded here, so
 # a legitimate future pin bump stays a one-line diff in one file. Every derived
 # parse asserts non-empty first.
 #
 # Hermeticity: `pool`. Pure bash + filesystem — no cargo, no npm, no network.
-# Every OCCT case is driven through the OCCT_LIB_DIR / OCCT_INCLUDE_DIR
-# overrides the BUILD already honours, pointed at `mktemp -d` fixtures under
-# $_TMPDIR, so no bespoke test-only env seam is added to production code. The
-# guard is deliberately stricter than `find_dir_with_override` here (it demands
-# the sentinel inside an override rather than trusting the path), which is
-# exactly what makes those cases drivable.
+# Every case is driven through the <DEP>_LIB_DIR / <DEP>_INCLUDE_DIR overrides
+# the BUILD already honours (NativeDep::{lib_env,include_env}), pointed at
+# `mktemp -d` fixtures under $_TMPDIR, so no bespoke test-only env seam is
+# added to production code. The guard is deliberately stricter than
+# `find_dir_with_override` here (it demands the sentinel inside an override
+# rather than trusting the path), which is exactly what makes those cases
+# drivable.
 #
-# KNOWN, DELIBERATE CAVEAT: check-manifold-deps.sh is ONE script, and its
-# manifold-prebuilt and tbb-pin arms run ahead of the OCCT arm on every
-# invocation — including the tbb arm's `mkdir -p /opt/reify-deps/tbb-pin`
-# self-heal, which writes outside $_TMPDIR. So the two positive controls below
-# also depend on a healthy /opt/reify-deps, and a broken one surfaces here as
-# an OCCT-preflight failure. Every NEGATIVE case pairs its exit-code assert
-# with an output assert naming an OCCT-specific string, so those stay
-# attributable. There is deliberately no unqualified live-host probe in this
-# file: scripts/verify.sh already emits this guard as a plan entry on every
-# RUN_RUST=1 verify, which is where "is OCCT actually installed on this host"
-# is answered for real.
+# KNOWN, DELIBERATE CAVEAT: check-manifold-deps.sh is ONE script with
+# SEQUENTIAL arms — manifold prebuilt, tbb pin, OCCT, Gmsh, OpenVDB — and the
+# first failure exits, so no arm runs unless every arm ahead of it passed.
+# Consequences, in both directions:
+#   - Every Gmsh case supplies healthy OCCT fixtures, and every OpenVDB case
+#     supplies healthy OCCT *and* Gmsh fixtures. Without them a
+#     `_guard_env_exits_nonzero` assert would PASS on an upstream arm's exit
+#     and test nothing at all — the same vacuity class this file exists to
+#     close. Every NEGATIVE case additionally pairs its exit-code assert with
+#     an output assert naming a DEP-SPECIFIC string, so a failure that really
+#     came from upstream stays attributable.
+#   - The manifold-prebuilt and tbb-pin arms have no override seam, so every
+#     positive control still depends on a healthy /opt/reify-deps — including
+#     the tbb arm's `mkdir -p /opt/reify-deps/tbb-pin` self-heal, which writes
+#     outside $_TMPDIR. A broken deps tree surfaces here as a preflight
+#     failure naming the responsible arm.
+# There is deliberately no unqualified live-host probe in this file:
+# scripts/verify.sh already emits this guard as a plan entry on every
+# RUN_RUST=1 verify, which is where "are these deps actually installed on this
+# host" is answered for real.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -111,7 +154,7 @@ SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 _TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$_TMPDIR"' EXIT
 
-echo "=== OCCT deps preflight tests ==="
+echo "=== native-dep preflight tests (OCCT + Gmsh + OpenVDB) ==="
 
 # ---------------------------------------------------------------------------
 # Fixture + invocation helpers
