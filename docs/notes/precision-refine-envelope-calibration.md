@@ -293,8 +293,8 @@ identity table:
 (`crates/reify-kernel-occt/src/register.rs`) — that fact still holds. What was wrong was
 the inference that the absence prevents realization: it resolves instead via the
 `DEFAULT_KERNEL_NAME` fallback, which is exactly how the corrected call above realizes.
-No d-ladder row exists yet for this class — one measurement is not a ladder — tracked as
-follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
+The full d-ladder for this class is recorded above and summarized in §1.1 and §3.1,
+closing out follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
 
 ### 1.6 Loft is unreachable from the source language
 
