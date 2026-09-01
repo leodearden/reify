@@ -146,6 +146,23 @@ Three legitimate remedies, in preference order:
 
 Follow §2. This is the right answer for essentially every new Warning/Error.
 
+**The detector's reach is bounded — keep the attachment close.** PDIAG is a
+line scanner, not an AST pass: it accepts a `.with_code(` on the constructor
+line itself, or on any of the next **15 non-comment lines** below it. That
+window covers 100% of the sites in the tree today, but with no headroom — the
+widest landed constructor-to-`.with_code(` gap is exactly 15. So a genuinely
+coded diagnostic whose attachment lands 16+ non-comment lines below its
+constructor is counted code-less and turns your diff RED even though you did
+remedy (a). This is the one direction in which the detector is not permissive.
+If it happens: move the `.with_code(` up the chain (nearly always possible —
+it is a builder method, and ordering among `.with_*` calls is free), or take
+remedy (b) with that as the stated reason. The window is not widened to buy
+headroom because widening is not free: measured over this corpus, going from
+15 to 25 drops 12 real code-less sites out of the census, because a wider
+window lets an *unrelated* neighbouring constructor's `.with_code(` mark this
+site coded. `PDIAG_CODE_WINDOW` in `crates/reify-audit/src/pdiag.rs` is the
+canonical value; that module header carries the measurement.
+
 ### (b) Escape the site — only when code-less is deliberate
 
 Add a trailing `// pdiag:allow — reason` on the construction site, or on a line

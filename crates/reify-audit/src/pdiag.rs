@@ -181,9 +181,44 @@ const CODE_PROBE: &str = ".with_code(";
 /// trusting that figure: it was 13 when this detector was written and the
 /// corpus has since closed the gap. Counting non-comment lines
 /// (rather than physical ones) means an interleaved doc block cannot push a
-/// real code attachment out of reach. Widening this is a one-line change —
-/// re-measure the corpus first, and note that widening only ever makes the
-/// detector MORE permissive.
+/// real code attachment out of reach.
+///
+/// # Widening is NOT free — measured, not assumed
+///
+/// The tempting reading of "widening only ever makes the detector more
+/// permissive" is that headroom is free. It is not. Re-measured over the whole
+/// swept corpus by regenerating the baseline at each window (the census the
+/// generator prints, `<files> / <code-less sites>`):
+///
+/// | window | 13  | 14  | **15** | 25  | 30  |
+/// |--------|-----|-----|--------|-----|-----|
+/// | files  | 66  | 66  | **66** | 65  | 65  |
+/// | sites  | 640 | 640 | **639**| 627 | 622 |
+///
+/// Two readings, and the second is the load-bearing one:
+///
+/// 1. The 14 -> 15 step moves exactly one site (the `expr.rs` pair above), so
+///    15 really is the widest OWN-chain offset in the tree — not an estimate.
+/// 2. The 15 -> 25 step drops **12 further sites and a whole file**, and every
+///    one inspected is the unrelated-`.with_code(`-in-window imprecision the
+///    module header enumerates, NOT a genuine own-chain attachment. The
+///    cleanest specimen is `crates/reify-compiler/src/diagnostics.rs`, whose
+///    only site — `lossy_real_warning`'s `Diagnostic::warning(…)`, which ends
+///    its own chain at `.with_label(…)` — is falsely coded at window 25 by the
+///    `.with_code(` belonging to `dup_member_key_error`, a different function
+///    23 lines below. The file loses its baseline row entirely.
+///
+/// So the window trades hard-gate COVERAGE for headroom: 15 is the largest
+/// value that still counts every one of those 12 sites. Widening to buy slack
+/// for a hypothetical 16-line chain would silently retire 12 real ones. The
+/// residual false-RED risk in the other direction is handled where it belongs
+/// — `docs/notes/diagnostic-severity-policy.md` §3(a) names the bound and its
+/// remedies, so an author hit by it is not left guessing.
+///
+/// Closing the leak properly (bounding the code probe below, as
+/// [`escape_in_window`] bounds the escape probe above) is what would make
+/// widening safe. It is not a one-line change — the two probes need opposite
+/// bounds, see that function's docs — and is tracked as #5887.
 const PDIAG_CODE_WINDOW: usize = 15;
 
 /// The per-site opt-out token, spelled as a deliberate mirror of PTODO's
@@ -1380,19 +1415,23 @@ mod tests {
     #[test]
     fn real_corpus_multiline_chain_offset_is_coded() {
         // A 13-line constructor -> `.with_code(` gap is a real landed shape.
-        // The widest such gap in the corpus is now 15 (see PDIAG_CODE_WINDOW's
-        // doc), pinned by the boundary test below; this one guards the
-        // mid-range chain that motivated a windowed probe at all. Either MUST
-        // be coded, or the detector manufactures a false RED on landed code.
+        // The widest such gap in the corpus is 15 (see PDIAG_CODE_WINDOW's
+        // doc, which carries the per-window census), pinned by the boundary
+        // test below; this one guards the mid-range chain that motivated a
+        // windowed probe at all. Either MUST be coded, or the detector
+        // manufactures a false RED on landed code.
         assert_eq!(with_code_at_offset(13), vec![(1, true)]);
     }
 
     #[test]
     fn window_edge_is_pinned_in_both_directions() {
-        // PDIAG_CODE_WINDOW = 15: the measured worst case is 13, so 15 covers
-        // 100% of the corpus with two lines of headroom. Pinning BOTH sides
-        // makes a future widening a deliberate, evidence-anchored edit rather
-        // than an accident.
+        // PDIAG_CODE_WINDOW = 15, and the measured worst case in the corpus
+        // is ALSO 15 — zero headroom, deliberately (see the constant's docs:
+        // widening to 25 would retire 12 real code-less sites through the
+        // unrelated-`.with_code(`-in-window leak). Pinning BOTH sides makes a
+        // future widening a deliberate, evidence-anchored edit rather than an
+        // accident, and pins the exact boundary the severity-policy doc's
+        // §3(a) remedy tells authors about.
         assert_eq!(with_code_at_offset(15), vec![(1, true)], "offset 15 is the last in-window line");
         assert_eq!(with_code_at_offset(16), vec![(1, false)], "offset 16 is past the window");
     }
