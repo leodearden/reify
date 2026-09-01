@@ -204,15 +204,21 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
 #[test]
 fn tracked_ri_corpus_is_non_empty_and_covers_the_whole_tracked_tree() {
     let corpus = tracked_ri_corpus();
-    // A FLOOR, never an exact count: ~660 measured at plan time and the corpus
-    // legitimately grows. An exact assertion would go red on every new `.ri`.
-    // The live count belongs in the artifact this module generates, which states
-    // it as a measured header field — not in prose here, which cannot be kept
-    // in step with a corpus that grows between runs.
+    // A BROKEN-ENUMERATION floor, deliberately far below the live count (677
+    // measured 2026-09-01) rather than just under it. The corpus is expected to
+    // churn in BOTH directions: a fixture-consolidation task that legitimately
+    // deletes a few dozen `.ri` has nothing to do with this survey and must not
+    // red the merge gate with a message that reads like a defect. What this
+    // test's NAME claims to guard — that the enumeration is non-empty and
+    // reaches the whole tracked tree — is asserted structurally, here and in
+    // `tracked_ri_corpus_reaches_outside_examples`, and those assertions are
+    // immune to corpus size. The live count belongs in the artifact this module
+    // generates, which states it as a measured header field.
     assert!(
-        corpus.len() >= 600,
-        "tracked .ri corpus must have >= 600 entries (~660 measured 2026-08-27; the \
-         artifact header carries the live count), got {}",
+        corpus.len() >= 100,
+        "tracked .ri corpus must have >= 100 entries — a floor that catches a BROKEN \
+         enumeration (wrong root, wrong pathspec, silent git failure), not a legitimate \
+         shrink; the artifact header carries the live count. Got {}",
         corpus.len()
     );
 }
@@ -282,9 +288,17 @@ fn tracked_ri_corpus_reaches_outside_examples() {
         .iter()
         .filter(|p| !p.starts_with("examples/"))
         .count();
+    // Same reasoning as the corpus floor above: the load-bearing assertions are
+    // the two structural `starts_with` probes, which hold at any size. This
+    // number only has to be large enough to catch an enumeration that collapsed
+    // back to the examples-scoped walk β exists to widen (399 measured at plan
+    // time), and small enough that a legitimate fixture cull is not a merge-gate
+    // red.
     assert!(
-        non_examples >= 300,
-        "the non-examples half is the point of β (399 measured at plan time), got {non_examples}"
+        non_examples >= 50,
+        "the non-examples half is the point of β — a collapse back to the \
+         examples-scoped walk must red, a legitimate fixture cull must not \
+         (399 measured at plan time), got {non_examples}"
     );
 }
 
@@ -598,7 +612,15 @@ pub(super) fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::Dia
 /// This does NOT encode D9's split between class (1) call-site bug and class
 /// (2) wrong declared field type. The PRD defines that as "per-case judgment …
 /// whichever is the actual bug" and assigns it to γ; β must not fabricate it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// # The derives are load-bearing, not decoration
+///
+/// `EnumIter` + `Ord` are what make [`Owner::render_order`] DERIVED from this
+/// declaration instead of restated as an array literal at the render site. The
+/// variant order below therefore IS the artifact's group order, and adding a
+/// variant automatically adds its group. See [`Owner::render_order`] for why
+/// that matters more here than anywhere else in the module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::EnumIter)]
 enum Owner {
     /// The site's structure def is declared in an FEA stdlib module. Per D9,
     /// γ may make CALL-SITE changes only — field-type flips stay v0.6-owned.
@@ -632,6 +654,32 @@ enum Owner {
 }
 
 impl Owner {
+    /// Every owner class, in the order the artifact renders their groups.
+    ///
+    /// DERIVED from the enum declaration via `strum::EnumIter` and ordered by
+    /// the `Ord` derive — deliberately NOT an array literal at the render site.
+    /// A hand-written group list is the one drift this artifact cannot afford:
+    /// a fifth `Owner` variant would compile cleanly, render no group at all,
+    /// and silently drop every site classified into it — while the header still
+    /// printed `**Sites:** N` counting it. "A class the renderer forgets is a
+    /// class of sites that silently vanishes from the artifact" is this
+    /// module's own statement of its one unacceptable failure; a literal makes
+    /// that failure reachable by omission, and a guard test that iterates its
+    /// OWN copy of the same literal cannot see it either.
+    ///
+    /// `strum` is already a `[dev-dependencies]` entry of this crate (the ε2
+    /// `TypeDiscriminants` canary), so this costs no new dependency.
+    fn render_order() -> Vec<Owner> {
+        use strum::IntoEnumIterator;
+        let mut all: Vec<Owner> = Owner::iter().collect();
+        // The FEA do-not-touch partition first, then the actionable non-FEA
+        // group, then the two manual-triage buckets — which is exactly the
+        // declaration order, pinned here through `Ord` rather than assumed
+        // from `EnumIter`'s traversal.
+        all.sort_unstable();
+        all
+    }
+
     /// Stable section title for the rendered artifact.
     fn title(self) -> &'static str {
         match self {
@@ -704,11 +752,21 @@ const CTOR_ARITY_PREFIX: &str = "E_CTOR_ARITY: ";
 /// and [`survey_site_from_diagnostic`] preserves the RAW message on a miss, so
 /// a future wording drift degrades to a still-usable row instead of a silently
 /// dropped site or a fabricated field.
+///
+/// An EMPTY token (`prefix` immediately followed by the closing quote) is a
+/// miss, not a hit: `Some("")` names nothing, and every caller here would have
+/// to re-filter it. Rejecting it at the source keeps that rule in ONE place —
+/// and, more importantly, keeps the `or_else` fallback chains below live. An
+/// earlier draft filtered AFTER the chain
+/// (`quoted_after(A).or_else(|| quoted_after(B)).filter(non-empty)`), where a
+/// `Some("")` from `A` short-circuits `or_else` and only then filters to
+/// `None` — so `B` is never consulted and the "fallback" is conditionally dead.
 fn quoted_after(haystack: &str, prefix: &str) -> Option<String> {
     let start = haystack.find(prefix)? + prefix.len();
     let rest = &haystack[start..];
     let end = rest.find('\'')?;
-    Some(rest[..end].to_owned())
+    let token = &rest[..end];
+    (!token.is_empty()).then(|| token.to_owned())
 }
 
 /// The offending field / param name, across every wording the 7 codes use.
@@ -716,9 +774,7 @@ fn quoted_after(haystack: &str, prefix: &str) -> Option<String> {
 /// Returns `None` for `CtorArity` (whose wording names no param) and for any
 /// message that has drifted out of all three known shapes.
 fn field_of_message(message: &str) -> Option<String> {
-    quoted_after(message, ARG_PREFIX)
-        .or_else(|| quoted_after(message, REQUIRED_BY_PARAM_PREFIX))
-        .filter(|s| !s.is_empty())
+    quoted_after(message, ARG_PREFIX).or_else(|| quoted_after(message, REQUIRED_BY_PARAM_PREFIX))
 }
 
 /// `(expected, found)` from a `expected '<X>', got '<Y>'` LABEL.
@@ -915,6 +971,38 @@ fn survey_site_extracts_field_from_the_argument_prose_prefix() {
             "{code:?} must yield a field, got None"
         );
     }
+}
+
+#[test]
+fn an_empty_quoted_token_is_a_miss_so_the_fallback_prefix_is_still_consulted() {
+    // `quoted_after` rejects an empty token at the SOURCE rather than leaving
+    // each caller to re-filter, so `field_of_message`'s `or_else` chain stays a
+    // real fallback. Filtering after the chain instead makes the second prefix
+    // conditionally dead: `Some("")` from the first satisfies `or_else`, the
+    // filter then turns it into `None`, and a recoverable field renders `—`.
+    assert_eq!(
+        quoted_after("argument '' has type", ARG_PREFIX),
+        None,
+        "an empty quoted token names nothing and must not be reported as a hit"
+    );
+    assert_eq!(
+        field_of_message("argument '' … required by param 'part'"),
+        Some("part".to_owned()),
+        "an empty first token must fall THROUGH to `required by param '`, not \
+         short-circuit the chain into None"
+    );
+
+    // Positive control, so the assertion above cannot pass vacuously, plus the
+    // genuine no-match case.
+    assert_eq!(
+        field_of_message("argument 'label' has type 'Int'"),
+        Some("label".to_owned())
+    );
+    assert_eq!(field_of_message("E_CTOR_ARITY: W() expects at most 1 argument, got 3"), None);
+
+    // `def_of_diagnostic`'s ε prose path has the same latent shape and is
+    // covered by the same source-level rule.
+    assert_eq!(quoted_after("in call to ''; …", IN_CALL_TO_PREFIX), None);
 }
 
 #[test]
@@ -2318,12 +2406,7 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
              was and was not surveyed.\n\n",
         );
     }
-    for owner in [
-        Owner::FeaDeferredToV06,
-        Owner::NonFea,
-        Owner::UnresolvedDef,
-        Owner::Unknown,
-    ] {
+    for owner in Owner::render_order() {
         let mut group: Vec<&SurveySite> = run.sites.iter().filter(|s| s.owner == owner).collect();
         group.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
@@ -2535,10 +2618,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
 
     // The stated count is COMPUTED, never typed — that is the task's
     // "site count stated" signal, and it must equal the rows actually drawn.
-    let rows = md
-        .lines()
-        .filter(|l| l.starts_with("| `") && l.contains(".ri:"))
-        .count();
+    let rows = rendered_site_rows(&md);
     assert_eq!(rows, 2, "two sites must draw two table rows, got:\n{md}");
     assert!(
         md.contains("**Sites:** 2"),
@@ -2550,6 +2630,49 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
         md.contains("640"),
         "the surveyed count must be stated so the denominator is visible"
     );
+
+    // …and the same identity must hold for a run carrying one site of EVERY
+    // owner class, which is the case the two-site run above cannot see. If the
+    // renderer ever stops emitting a group, the stated `**Sites:** N` keeps
+    // counting those sites while the table stops drawing them — a class of sites
+    // silently vanishing from the artifact behind an unchanged count. Built from
+    // `Owner::render_order()` so a newly-added variant is covered the moment it
+    // is declared, with no edit here.
+    let every_class: Vec<SurveySite> = Owner::render_order()
+        .into_iter()
+        .enumerate()
+        .map(|(i, owner)| synth_site(&format!("f{i}.ri"), 1, "W", "field", owner))
+        .collect();
+    let n = every_class.len();
+    let run = SurveyRun {
+        total: n,
+        surveyed: n,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: every_class,
+    };
+    let md = render_survey(&run, "deadbeef");
+    assert_eq!(
+        rendered_site_rows(&md),
+        run.sites.len(),
+        "every site handed in must be DRAWN, not merely counted — one owner class \
+         per site, {n} sites:\n{md}"
+    );
+    assert!(
+        md.contains(&format!("**Sites:** {n}")),
+        "the stated count must equal the rows drawn; got:\n{md}"
+    );
+}
+
+/// Count the site rows actually drawn in a rendered artifact.
+///
+/// Site rows are the only table rows whose first cell is a `` `<file>.ri:<line>` ``
+/// anchor, so this cannot pick up the coverage tables.
+#[cfg(test)]
+fn rendered_site_rows(md: &str) -> usize {
+    md.lines()
+        .filter(|l| l.starts_with("| `") && l.contains(".ri:"))
+        .count()
 }
 
 #[test]
@@ -2599,15 +2722,17 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
         "the Unknown bucket must be rendered as its own group, not folded away"
     );
 
-    // Every one of the FOUR owner classes must render its own group. A class the
-    // renderer forgets is a class of sites that silently vanishes from the
-    // artifact — the survey's one unacceptable failure.
-    for owner in [
-        Owner::FeaDeferredToV06,
-        Owner::NonFea,
-        Owner::UnresolvedDef,
-        Owner::Unknown,
-    ] {
+    // EVERY owner class must render its own group. A class the renderer forgets
+    // is a class of sites that silently vanishes from the artifact — the
+    // survey's one unacceptable failure.
+    //
+    // The list is `Owner::render_order()`, i.e. DERIVED from the enum via
+    // `strum::EnumIter`, never a hand-written copy: a copy here would have to be
+    // kept in step with the renderer's own copy, and two literals that must
+    // agree is precisely the drift this test claims to catch. Because the run
+    // above is also built from that derived list, adding a fifth variant makes
+    // this test demand a fifth group rather than quietly ignoring it.
+    for owner in Owner::render_order() {
         let heading = format!("### {} — 1 site(s)", owner.title());
         assert!(
             md.contains(&heading),
