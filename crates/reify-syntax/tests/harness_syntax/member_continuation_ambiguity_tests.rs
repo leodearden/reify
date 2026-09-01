@@ -509,3 +509,301 @@ fn match_arm_decl_block_rejects_the_join_at_the_grammar_level_already() {
         parsed.errors
     );
 }
+
+// ── (g) grammar-drift guard ─────────────────────────────────────────────────
+//
+// The container list in `member_continuation.rs` is a hand-written enumeration
+// of grammar rules. Nothing in the grammar points back at it, so a member-list
+// body added to `grammar.js` tomorrow would silently escape the check and
+// reintroduce INV-SF-7 at the new site. This section closes that loop: it reads
+// `grammar.js`, re-derives the member-repeat sites from it, and requires each
+// one to be either covered or deliberately excluded with a stated reason.
+
+/// A member-list body repeat found in `grammar.js`: `(line_number, rule_name)`.
+///
+/// **What counts.** A `repeat(...)` / `repeat1(...)` is a *member-list body*
+/// when its argument
+///
+/// 1. contains at least one grammar-symbol reference (`$.x` / `$._x`), and
+/// 2. contains no string-literal token (`'...'`).
+///
+/// Clause 2 is the discriminator, and it is the INV-SF-7 rule itself in
+/// grammar terms: a repeat that carries a string literal carries a *separator*
+/// or *terminator* token (`repeat(seq(',', $.match_arm))`,
+/// `repeat(seq('+', $.trait_bound_entry))`), so consecutive items can never be
+/// adjacent in the token stream and no join can form. A repeat with no string
+/// literal at all puts items directly against each other — which is exactly the
+/// shape that lets one member's trailing expression swallow the next member's
+/// first token.
+///
+/// Comment lines are skipped, and only the `rules: {` block is scanned, so the
+/// `commaSeparated` helper above it cannot be attributed to a rule.
+fn member_list_body_repeats(grammar: &str) -> Vec<(usize, String)> {
+    let mut sites = Vec::new();
+    let mut current_rule: Option<String> = None;
+    let mut in_rules_block = false;
+
+    for (line_index, (line_start, line)) in line_spans(grammar).into_iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !in_rules_block {
+            in_rules_block = trimmed == "rules: {";
+            continue;
+        }
+        if let Some(name) = rule_header(line) {
+            current_rule = Some(name.to_string());
+        }
+        // A `repeat(` inside prose is not a grammar site.
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+
+        for open in repeat_call_offsets(line) {
+            let Some(arg) = balanced_arg(grammar, line_start + open) else {
+                panic!(
+                    "grammar.js:{}: unbalanced `repeat(` — the drift-guard scanner \
+                     cannot classify this site, so it cannot vouch for the grammar. \
+                     Fix the scanner or the grammar before trusting this test.",
+                    line_index + 1
+                );
+            };
+            if !contains_symbol_reference(arg) || contains_string_literal(arg) {
+                continue;
+            }
+            let rule = current_rule.clone().unwrap_or_else(|| {
+                panic!(
+                    "grammar.js:{}: member-list repeat with no enclosing grammar rule; \
+                     `rule_header` failed to attribute it",
+                    line_index + 1
+                )
+            });
+            sites.push((line_index + 1, rule));
+        }
+    }
+    sites
+}
+
+/// `(byte_offset_of_line_start, line_text)` for every line, newline excluded.
+fn line_spans(src: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (i, _) in src.match_indices('\n') {
+        out.push((start, src[start..i].trim_end_matches('\r')));
+        start = i + 1;
+    }
+    if start < src.len() {
+        out.push((start, &src[start..]));
+    }
+    out
+}
+
+/// A grammar-rule header line: exactly four spaces, `<name>`, `:`, `$ =>`.
+///
+/// Four spaces is the rule-definition indentation in `grammar.js`; anything
+/// deeper is inside a rule body and must not re-anchor attribution.
+fn rule_header(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("    ")?;
+    if rest.starts_with(' ') {
+        return None;
+    }
+    let (name, tail) = rest.split_once(':')?;
+    if !tail.trim_start().starts_with("$ =>") {
+        return None;
+    }
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(name)
+}
+
+/// Byte offsets, within `line`, one past the `(` of each `repeat(`/`repeat1(`.
+fn repeat_call_offsets(line: &str) -> Vec<usize> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    for (i, _) in line.match_indices("repeat") {
+        // Reject `xrepeat(` — only a whole identifier counts.
+        if i > 0 {
+            let prev = bytes[i - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        let after = &line[i + "repeat".len()..];
+        if let Some(rest) = after.strip_prefix("1(") {
+            out.push(line.len() - rest.len());
+        } else if let Some(rest) = after.strip_prefix('(') {
+            out.push(line.len() - rest.len());
+        }
+    }
+    out
+}
+
+/// The balanced-parenthesis argument text of a call whose `(` ends at `open`
+/// (a byte offset one past the paren). Quoted strings are skipped, so a `'('`
+/// token in the grammar cannot unbalance the scan.
+fn balanced_arg(src: &str, open: usize) -> Option<&str> {
+    let bytes = src.as_bytes();
+    let mut depth = 1usize;
+    let mut i = open;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match quote {
+            Some(q) => {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                b'\'' | b'"' => quote = Some(c),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&src[open..i]);
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Does `arg` reference a grammar symbol (`$.name` / `$._name`)?
+fn contains_symbol_reference(arg: &str) -> bool {
+    arg.match_indices("$.").any(|(i, _)| {
+        arg[i + 2..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    })
+}
+
+/// Does `arg` carry a single-quoted string token — i.e. a separator?
+fn contains_string_literal(arg: &str) -> bool {
+    let bytes = arg.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            let mut j = i + 1;
+            while j < bytes.len() {
+                if bytes[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                if bytes[j] == b'\'' {
+                    return true;
+                }
+                j += 1;
+            }
+            return false;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Every grammar-rule name defined in `grammar.js`'s `rules: {` block.
+fn grammar_rule_names(grammar: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_rules_block = false;
+    for (_, line) in line_spans(grammar) {
+        if !in_rules_block {
+            in_rules_block = line.trim_start() == "rules: {";
+            continue;
+        }
+        if let Some(name) = rule_header(line) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+#[test]
+fn member_list_containers_cover_every_member_repeat_in_the_grammar() {
+    let path = workspace_root().join("tree-sitter-reify/grammar.js");
+    let grammar = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+
+    let sites = member_list_body_repeats(&grammar);
+
+    // Non-vacuity: a scanner that silently matches nothing would make every
+    // assertion below pass while vouching for nothing at all.
+    assert!(
+        sites.len() >= 15,
+        "the grammar scan found only {} member-list repeats — it is broken, not \
+         the grammar. Sites: {sites:?}",
+        sites.len()
+    );
+    assert!(
+        sites.iter().any(|(_, r)| r == "structure_definition"),
+        "the scan missed `structure_definition`, the canonical member-list body \
+         (grammar.js:512). Sites: {sites:?}"
+    );
+
+    let covered = reify_syntax::member_continuation::MEMBER_LIST_CONTAINERS;
+    let excluded = reify_syntax::member_continuation::MEMBER_LIST_CONTAINER_EXCLUSIONS;
+
+    // (i) every member-list body in the grammar is covered or excluded.
+    let uncovered: Vec<_> = sites
+        .iter()
+        .filter(|(_, rule)| {
+            !covered.contains(&rule.as_str()) && !excluded.iter().any(|(r, _)| r == rule)
+        })
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "grammar.js has member-list body repeats that the member-continuation \
+         check neither covers nor deliberately excludes, so INV-SF-7 is \
+         unenforced there: {uncovered:?}. Add each rule to \
+         `MEMBER_LIST_CONTAINERS` (with a must-error test), or to \
+         `MEMBER_LIST_CONTAINER_EXCLUSIONS` with the reason it cannot join."
+    );
+
+    // (ii) every exclusion states why.
+    let unreasoned: Vec<_> = excluded
+        .iter()
+        .filter(|(_, reason)| reason.trim().is_empty())
+        .map(|(rule, _)| *rule)
+        .collect();
+    assert!(
+        unreasoned.is_empty(),
+        "these exclusions carry no reason, so nobody can tell a decision from an \
+         oversight: {unreasoned:?}"
+    );
+
+    // (iii) no dead entries: every name on either list is a real grammar rule.
+    let rules = grammar_rule_names(&grammar);
+    let dead: Vec<_> = covered
+        .iter()
+        .copied()
+        .chain(excluded.iter().map(|(r, _)| *r))
+        .filter(|name| !rules.iter().any(|r| r == name))
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "these names are not grammar rules in grammar.js — the grammar renamed or \
+         removed them and the tables rotted: {dead:?}"
+    );
+
+    // (iv) the two tables must not contradict each other.
+    let both: Vec<_> = excluded
+        .iter()
+        .map(|(r, _)| *r)
+        .filter(|r| covered.contains(r))
+        .collect();
+    assert!(
+        both.is_empty(),
+        "these rules are both covered and excluded, which is incoherent: {both:?}"
+    );
+}
