@@ -115,11 +115,10 @@ impl AnalysisContext {
         // continue to pass.
         engine.set_capture_undef_causes(true);
 
-        // Containment (task #6798 amendment round 2; root cause owned by task
-        // **#6851**): a FAILED `auto:` type-parameter resolution leaves an
-        // unsubstituted `Type::TypeParam` value cell that panics
-        // `engine.check` in debug builds — see
-        // `crate::diagnostics::diagnostic_is_auto_type_param_error`'s doc
+        // Containment (root cause owned by task **#6851**): a FAILED `auto:`
+        // type-parameter resolution leaves an unsubstituted `Type::TypeParam`
+        // value cell that panics `engine.check` in debug builds — see
+        // `crate::diagnostics::compiled_graph_has_unrepresentable_cell`'s doc
         // comment for the mechanism. Skip the eval/check pass and hand back an
         // empty `CheckResult`; `compiled.diagnostics` already carries the
         // user-visible `E_AUTO_TYPE_PARAM_*` error, so hover / completion /
@@ -143,7 +142,7 @@ impl AnalysisContext {
         // explicit literal turns any future `CheckResult` field addition into a
         // loud compile error in exactly the place that must then decide what
         // the skipped-eval value should be.
-        if crate::diagnostics::auto_type_param_resolution_failed(&compiled) {
+        if crate::diagnostics::compiled_graph_has_unrepresentable_cell(&compiled) {
             return Self {
                 parsed,
                 compiled,
@@ -931,12 +930,12 @@ mod tests {
     /// production compile site — must agree with `reify check`'s
     /// real-checker verdict on a CONSTANT `auto:` constraint, not the
     /// compile-time stub's. Reuses
-    /// [`crate::diagnostics::BT8_CONSTANT_CONSTRAINT_SRC`] rather than
+    /// [`crate::diagnostics::auto_type_param_fixtures::BT8_CONSTANT_CONSTRAINT_SRC`] rather than
     /// duplicating the fixture, so the two forward tests cannot drift
     /// apart.
     ///
     /// Anti-vacuity guard first, via the shared
-    /// [`crate::diagnostics::assert_bt8_fixture_still_diverges`] helper:
+    /// [`crate::diagnostics::auto_type_param_fixtures::assert_bt8_fixture_still_diverges`] helper:
     /// assert the stub and the real checker still genuinely diverge on the
     /// fixture before asserting `AnalysisContext` matches the real one. The
     /// guard is extracted into that one shared function (task #6798
@@ -953,10 +952,10 @@ mod tests {
     /// `CompiledModule`, one layer below `convert::convert_diagnostic`.
     #[test]
     fn analysis_context_uses_real_constraint_checker() {
-        let src = crate::diagnostics::BT8_CONSTANT_CONSTRAINT_SRC;
+        let src = crate::diagnostics::auto_type_param_fixtures::BT8_CONSTANT_CONSTRAINT_SRC;
 
         // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
-        crate::diagnostics::assert_bt8_fixture_still_diverges();
+        crate::diagnostics::auto_type_param_fixtures::assert_bt8_fixture_still_diverges();
 
         // --- AnalysisContext (the site under test) ---
         let ctx = AnalysisContext::new(src, &test_uri());
@@ -1005,7 +1004,7 @@ mod tests {
     /// different graph entry point, NOT a different bug.) Root cause is owned
     /// by task **#6851**; this is the LSP-side containment.
     ///
-    /// Reuses [`crate::diagnostics::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]
+    /// Reuses [`crate::diagnostics::auto_type_param_fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]
     /// rather than duplicating the source string, for the same anti-drift
     /// reason `BT8_CONSTANT_CONSTRAINT_SRC` is shared across its two forward
     /// tests.
@@ -1017,11 +1016,11 @@ mod tests {
     #[test]
     fn auto_resolution_failure_does_not_panic_analysis_context() {
         // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
-        crate::diagnostics::assert_auto_fail_fixture_is_newly_reachable();
+        crate::diagnostics::auto_type_param_fixtures::assert_auto_fail_fixture_is_newly_reachable();
 
         // --- AnalysisContext (the site under test) ---
         let ctx = AnalysisContext::new(
-            crate::diagnostics::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+            crate::diagnostics::auto_type_param_fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
             &test_uri(),
         );
         let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
