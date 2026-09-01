@@ -1055,7 +1055,8 @@ is_occt_crate() {
 #     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
-#     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788)
+#     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
+#     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1081,7 +1082,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1104,10 +1105,15 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri ge
 # fails on any pinned fixture missing here. Do not hand-edit without re-running
 # it; do not trust a copy of this list anywhere else.
 #
-# NOTE the two lists NEST: all 14 _RUST_COUPLED_RI_FIXTURES members are also
+# NOTE the two lists NEST: every _RUST_COUPLED_RI_FIXTURES member is also
 # pinned in the ledger, and the rust arm already sets gui=1, so it short-circuits
 # them. They are retained here deliberately so that dropping a fixture from the
 # rust list can never silently drop its gui coverage too.
+#
+# Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
+# MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
+# rots on the next addition — this one already had, still reading 10 after the
+# list had grown past it, when task #5784 added unit_middot_mul.ri.
 _GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 decide_scope() {
