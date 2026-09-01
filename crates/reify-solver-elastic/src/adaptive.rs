@@ -32,7 +32,7 @@
 use reify_ir::{Mesh, VolumeMesh};
 use reify_kernel_gmsh::MeshingOptions;
 
-use crate::volume_refine::{RefineError, element_count, refine_with_size_field};
+use crate::volume_refine::{RefineError, refine_with_size_field, tet_shape};
 
 // ---------------------------------------------------------------------------
 // Termination-reason data model (mirrors solver_elastic.ri exactly).
@@ -516,7 +516,7 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 ///   not a whole multiple of the per-element node count, so it describes no
 ///   whole number of elements.
 ///
-///   Those two are the shared `element_count` chokepoint and run **first**,
+///   Those two are the shared `tet_shape` chokepoint and run **first**,
 ///   ahead of both checks below: it is called before either the length or the
 ///   marked-index validation.
 /// * [`RefineError::SizeHintsLengthMismatch`] when
@@ -534,9 +534,11 @@ pub fn refine_marked_elements(
     options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
     // Element count from the mesh topology (shared with refine_with_size_field).
-    // Also the connectivity gate: rejects a Hex/Wedge `volume_mesh` here,
-    // before any size-hint/marked-index validation or gmsh call runs.
-    let n_elements = element_count(volume_mesh)?;
+    // Also the mesh-shape gate: rejects a Hex/Wedge or non-multiple-of-stride
+    // `volume_mesh` here, before any size-hint/marked-index validation or gmsh
+    // call runs. Only the element count is needed at this seam; the stride and
+    // order this gate also returns are consumed by `refine_with_size_field`.
+    let n_elements = tet_shape(volume_mesh)?.n_elements;
 
     // Length guard BEFORE any gmsh work: one current size per element.
     if current_sizes.len() != n_elements {

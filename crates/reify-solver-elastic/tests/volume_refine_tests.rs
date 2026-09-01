@@ -231,7 +231,7 @@ fn non_finite_size_errors() {
 
 /// A Hex `VolumeMesh` passed to `refine_with_size_field` (tet-only) must be
 /// rejected via `RefineError::UnsupportedConnectivity` from the
-/// `element_count` guard, before any size-hint validation or gmsh call
+/// `tet_shape` guard, before any size-hint validation or gmsh call
 /// (task 4996).
 #[test]
 fn refine_with_size_field_errors_on_hex_connectivity() {
@@ -250,7 +250,7 @@ fn refine_with_size_field_errors_on_hex_connectivity() {
 
 /// A Wedge `VolumeMesh` passed to `refine_marked_elements` (tet-only) must be
 /// rejected via `RefineError::UnsupportedConnectivity` from the shared
-/// `element_count` chokepoint, before any size-hint/marked-index validation
+/// `tet_shape` chokepoint, before any size-hint/marked-index validation
 /// or gmsh call (task 4996).
 #[test]
 fn refine_marked_elements_errors_on_wedge_connectivity() {
@@ -269,7 +269,7 @@ fn refine_marked_elements_errors_on_wedge_connectivity() {
 /// this crate's suites that exercises the non-P1 branch of
 /// `VolumeMesh::nodes_per_element()`.
 ///
-/// Node positions are irrelevant to `element_count`, which reads only the
+/// Node positions are irrelevant to `tet_shape`, which reads only the
 /// index-buffer length and the order tag; they are laid out as the 4 corners
 /// followed by the 6 edge midpoints so the fixture reads as a real P2 tet.
 fn one_p2_tet_vm() -> VolumeMesh {
@@ -298,7 +298,7 @@ fn one_p2_tet_vm() -> VolumeMesh {
     }
 }
 
-/// Stride regression pin: `element_count` must divide a P2 tet index buffer by
+/// Stride regression pin: `tet_shape` must divide a P2 tet index buffer by
 /// 10, not 4.
 ///
 /// Every other fixture in this crate's suites is P1 (stride 4), so without
@@ -308,7 +308,7 @@ fn one_p2_tet_vm() -> VolumeMesh {
 /// wrong element count. Asserting `expected: 1` (not `expected: 2`) on the
 /// length-mismatch report pins the divisor: 10 indices / 10 nodes = 1 element.
 #[test]
-fn element_count_divides_p2_tet_indices_by_ten() {
+fn tet_shape_divides_p2_tet_indices_by_ten() {
     let surface = dummy_surface();
     let vm = one_p2_tet_vm(); // 10 indices, P2 → exactly 1 element
     let size_hints = vec![1.0_f64; 3]; // deliberately wrong length
@@ -328,7 +328,7 @@ fn element_count_divides_p2_tet_indices_by_ten() {
 
 /// Tet index buffer whose length is not a whole multiple of the per-element
 /// node count — 5 indices at P1 stride 4 — must be rejected at the
-/// `element_count` chokepoint.
+/// `tet_shape` chokepoint.
 ///
 /// Before the divisibility guard, the truncating division reported 1 element,
 /// so `size_hints` of length 1 cleared the length check and
@@ -362,7 +362,7 @@ fn refine_with_size_field_errors_on_non_multiple_tet_indices() {
 }
 
 /// The same malformed buffer must be rejected through the `adaptive` entry
-/// point too — both public entry points share the `element_count` chokepoint.
+/// point too — both public entry points share the `tet_shape` chokepoint.
 #[test]
 fn refine_marked_elements_errors_on_non_multiple_tet_indices() {
     let surface = dummy_surface();
