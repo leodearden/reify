@@ -924,6 +924,43 @@ pub enum GeometryOp {
         z2: f64,
     },
     /// Create a circular arc wire.
+    ///
+    /// `start_angle`/`end_angle` are SI RADIANS — see [`GeometryOp::Rotate`]
+    /// for the full angular unit contract (INV-AD-4; #6184). They cross to
+    /// OCCT completely unconverted, where they are the CURVE PARAMETERS of the
+    /// `Geom_Circle` handed to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` in
+    /// `make_arc_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`). For a
+    /// `Geom_Circle` that parameter space IS radians, by OCCT's own
+    /// parameterisation rather than by an explicit angle argument — so a full
+    /// circle is `2.0 * PI`, not 360. Pinned end to end by
+    /// `export_step_declares_si_radians_for_wireframe_curve_parameters`
+    /// (`reify-kernel-occt/src/handle.rs`), which reads the two angles back out
+    /// of the exported STEP `TRIMMED_CURVE` as its `PARAMETER_VALUE` bounds.
+    /// Arc — not [`GeometryOp::Helix`] — is the wireframe op on that path.
+    ///
+    /// **Why these two carry no `_rad` suffix.** Unlike `Rotate`'s `angle_rad`,
+    /// the names are not internal: they are the user-facing DSL keyword
+    /// arguments, emitted as string literals by
+    /// `reify-compiler/src/geometry_curve.rs`, matched by name in `curve_arc`
+    /// (`reify-eval/src/geometry_ops.rs`), and published as the `arc(...)`
+    /// signature in `docs/reify-stdlib-reference.md`. Renaming them would be a
+    /// DSL-visible breaking change whose failure mode is silent — the string
+    /// matches are runtime lookups, so the rename would compile — so `Rotate`'s
+    /// "the `_rad` suffix IS the contract" is discharged HERE, by this comment,
+    /// instead. The rename was CONSIDERED AND DECLINED (#6521); the absence is
+    /// a recorded decision, not an oversight, and #5779 below supersedes the
+    /// question anyway: once a position is typed `Angle`, a suffix asserting a
+    /// raw-f64 convention would be actively wrong.
+    ///
+    /// **Ungated today.** A dimensioned `90deg` literal is resolved to radians
+    /// in the units layer (`reify-core/src/units.rs`: `deg` = PI/180 tagged
+    /// `DimensionVector::ANGLE`), but a BARE number is accepted silently as
+    /// radians — `curve_arc` reads both positions through `eval_named_arg_f64`,
+    /// which takes `Value::as_f64`'s SI magnitude and ignores the dimension
+    /// tag. That is a deliberate triage decision rather than an omission (see
+    /// the note in `curve_arc` itself), and both positions are chartered for
+    /// the `angle_spec()` typed-`Angle` gate by live task #5779, leaf γ of
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md`.
     Arc {
         center: [f64; 3],
         radius: f64,
