@@ -663,24 +663,16 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
 /// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
 ///
-/// Kept deliberately in sync with the identically-named helper in
-/// `struct_ctor_field_conformance_tests.rs`; integration tests are separate
-/// binaries and cannot share a private helper without a support-crate hop, and
-/// the set is small enough that duplication is cheaper than the indirection.
+/// The admission set itself lives in the sibling `ctor_conformance_corpus_survey`
+/// module — a `#[path]` module of the SAME test binary — as
+/// `CTOR_CONFORMANCE_CODES`, and this gate reads it rather than restating it, so
+/// the α corpus gate and the β survey cannot drift apart (task #5304). It used to
+/// be a hand-written copy kept in sync by convention; the copy in
+/// `struct_ctor_field_conformance_tests.rs` remains duplicated because that one
+/// genuinely IS a separate binary and could not share this without a
+/// support-crate hop.
 fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
-    use reify_core::diagnostics::DiagnosticCode;
-    matches!(
-        code,
-        Some(
-            DiagnosticCode::ArgTypeMismatch
-                | DiagnosticCode::SelectorKindMismatch
-                | DiagnosticCode::TypeNotConformingToTrait
-                | DiagnosticCode::TypeNotConformingToStructureRef
-                | DiagnosticCode::TypeNotConformingToVector
-                | DiagnosticCode::CtorUnknownField
-                | DiagnosticCode::CtorArity
-        )
-    )
+    crate::ctor_conformance_corpus_survey::is_ctor_conformance_code(code)
 }
 
 /// One ctor-conformance diagnostic observed during the corpus walk.

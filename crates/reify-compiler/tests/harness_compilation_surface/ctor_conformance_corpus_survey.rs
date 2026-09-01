@@ -558,10 +558,19 @@ fn ctor_type_name_at_returns_none_rather_than_guessing() {
 // ─── step 5/6: diagnostic field extraction ───────────────────────────────────
 
 /// The diagnostic codes emitted by the struct-ctor field-conformance surface
-/// (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444) — the survey's admission set,
-/// as DATA so the drift guard below can compare it against the α corpus gate's
-/// copy without a second hand-written list.
-const CTOR_CONFORMANCE_CODES: &[reify_core::diagnostics::DiagnosticCode] = {
+/// (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444) — the admission set shared by
+/// this survey and the α corpus gate in the sibling `examples_smoke.rs`.
+///
+/// This is the SINGLE definition for the whole `harness_compilation_surface`
+/// compile unit. `examples_smoke.rs` used to carry its own hand-written copy of
+/// the same seven variants; the two were lock-step by convention only, so adding
+/// an eighth code to one and not the other would have silently under-counted
+/// this survey (or under-gated the α corpus walk). Both now read this slice, so
+/// that drift is impossible by construction rather than guarded after the fact.
+/// (The *third* copy, in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
+/// genuinely IS a separate test binary and cannot share this without a
+/// support-crate hop; it stays duplicated.)
+pub(super) const CTOR_CONFORMANCE_CODES: &[reify_core::diagnostics::DiagnosticCode] = {
     use reify_core::diagnostics::DiagnosticCode;
     &[
         DiagnosticCode::ArgTypeMismatch,
@@ -576,116 +585,11 @@ const CTOR_CONFORMANCE_CODES: &[reify_core::diagnostics::DiagnosticCode] = {
 
 /// True when `code` is one of [`CTOR_CONFORMANCE_CODES`].
 ///
-/// This is a local copy of the identically-named helper in `examples_smoke.rs`
-/// — but NOT for the reason an earlier draft of this comment gave. That draft
-/// claimed "integration tests are separate binaries and cannot share a private
-/// helper", which is simply false for that sibling: `examples_smoke.rs` is a
-/// `#[path]` module declared right next to this one in
-/// `crates/reify-compiler/tests/harness_compilation_surface.rs`, so both compile
-/// into the SAME test binary and its helper is one `pub(super)` away. (The
-/// *third* copy, in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
-/// genuinely IS a separate binary and could not share anything without a
-/// support-crate hop — the original rationale is true of that one alone.) The
-/// copy stays local here only because flipping the sibling's visibility is
-/// outside task #5304's declared file scope.
-///
-/// Because the two in-unit copies are therefore lock-step by convention rather
-/// than by construction, the real hazard is DRIFT: adding an eighth
-/// ctor-conformance code to the α corpus gate and forgetting this copy would
-/// silently UNDER-COUNT the survey — exactly the failure this module's header
-/// says must never happen. [`ctor_conformance_code_set_matches_the_alpha_corpus_gate`]
-/// pins the two sets against each other on every gate run.
-fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
+/// Shared with the α corpus gate in `examples_smoke.rs`, which calls straight
+/// through to it — see [`CTOR_CONFORMANCE_CODES`] for why there is exactly one
+/// definition in this compile unit.
+pub(super) fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
     code.is_some_and(|c| CTOR_CONFORMANCE_CODES.contains(&c))
-}
-
-/// The `DiagnosticCode::` variants named inside the α corpus gate's own
-/// `is_ctor_conformance_code`, scraped from its source text.
-///
-/// Reading the sibling's TEXT rather than calling its function is deliberate and
-/// is the weaker of the two available guards: `examples_smoke.rs` is outside this
-/// task's file scope, so its helper cannot be made `pub(super)` from here. The
-/// scrape still pins the invariant that actually matters — the two admission sets
-/// are identical — and fails loudly the moment either side gains a code the other
-/// lacks. If a later task widens that helper's visibility, delete this scrape and
-/// call it directly; a direct call is compiler-enforced and cannot be defeated by
-/// formatting, which a text scrape inherently can.
-///
-/// Every way this scrape can lose the sibling's set is therefore made LOUD, since
-/// a silent under-scrape reads as agreement: a renamed/removed function, a body
-/// that no longer closes at column 0, and a body that names zero
-/// `DiagnosticCode::` variants each panic below. The one remaining shape that
-/// would scrape clean while naming variants the marker never sees is a glob
-/// import (`use DiagnosticCode::*;`) plus bare variant names, so that is refused
-/// outright rather than tolerated.
-#[cfg(test)]
-fn alpha_corpus_gate_code_names() -> Vec<String> {
-    const SIBLING: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/harness_compilation_surface/examples_smoke.rs"
-    );
-    const FN_ANCHOR: &str = "fn is_ctor_conformance_code(";
-    const MARKER: &str = "DiagnosticCode::";
-
-    let source = std::fs::read_to_string(SIBLING)
-        .unwrap_or_else(|e| panic!("cannot read the α corpus gate at {SIBLING}: {e}"));
-    assert!(
-        !source.contains("DiagnosticCode::*"),
-        "`examples_smoke.rs` glob-imports `DiagnosticCode`, so its admission set can \
-         name variants BARE — which this `DiagnosticCode::`-marker scrape cannot see, \
-         and would silently under-report as agreement. Either drop the glob import \
-         there, or (better) make its `is_ctor_conformance_code` `pub(super)` and call \
-         it from `ctor_conformance_code_set_matches_the_alpha_corpus_gate` directly."
-    );
-    let start = source.find(FN_ANCHOR).unwrap_or_else(|| {
-        panic!(
-            "`examples_smoke.rs` must still define `{FN_ANCHOR}` — if it was renamed or \
-             removed, this survey's admission set has lost its only drift guard"
-        )
-    });
-    let body = &source[start..];
-    let end = body
-        .find("\n}\n")
-        .expect("`is_ctor_conformance_code` must close with a column-0 brace");
-
-    let mut names: Vec<String> = Vec::new();
-    let mut rest = &body[..end];
-    while let Some(at) = rest.find(MARKER) {
-        rest = &rest[at + MARKER.len()..];
-        let ident: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        if !ident.is_empty() {
-            names.push(ident);
-        }
-    }
-    names.sort();
-    names.dedup();
-    assert!(
-        !names.is_empty(),
-        "scraped no `DiagnosticCode::` variants from the α corpus gate — the scrape \
-         itself has broken, which would make this guard vacuously green"
-    );
-    names
-}
-
-#[test]
-fn ctor_conformance_code_set_matches_the_alpha_corpus_gate() {
-    let mut mine: Vec<String> = CTOR_CONFORMANCE_CODES
-        .iter()
-        .map(|c| format!("{c:?}"))
-        .collect();
-    mine.sort();
-    mine.dedup();
-    assert_eq!(
-        mine,
-        alpha_corpus_gate_code_names(),
-        "the survey's admission set and `examples_smoke::is_ctor_conformance_code` must \
-         name the SAME codes. They are two copies in one compile unit with no \
-         compiler-enforced link, so a code added to one and not the other silently \
-         under-counts this survey (or under-gates the α corpus walk). Update both."
-    );
 }
 
 /// Which D9 fix-forward rule governs a site — the load-bearing, mechanizable
