@@ -55,7 +55,7 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// `trajectory::gcode_import::waypoint_to_value`, which is NOT this defect: its
 /// payload is an untyped `Value::Map` behind the bare `Profile` marker in
 /// `stdlib/trajectory.ri`, so no `.ri` declaration claims a dimension for it —
-/// undimensioned rather than mislabelled. Out of scope here, tracked as #6994.
+/// undimensioned rather than mislabelled. Out of scope here, tracked as #6478.
 const MM_TO_M: f64 = 1.0e-3;
 
 /// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
