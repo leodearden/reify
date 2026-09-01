@@ -1458,7 +1458,12 @@ impl JCodemunchOps for RealJCodemunchOps {
         // from decaying back into a silent drop of that report is the
         // seam's `#[must_use]` under the verify pipeline's
         // `cargo clippy --all-targets -- -D warnings` gate — not a test:
-        // no unit test can read this process's own stderr.
+        // no unit test can read this process's own stderr. The CALL itself
+        // is pinned separately, by
+        // `get_changed_symbols_enriches_suppression_flags_from_the_declaring_file`
+        // — `#[must_use]` cannot fire on a call site someone deleted, and
+        // the past-EOF test asserts only the neutral triple, which is also
+        // the un-enriched default.
         if let Some(msg) = enrich_suppression_flags(&mut symbols, &self.project_root) {
             eprintln!("{msg}");
         }
@@ -3426,6 +3431,74 @@ mod tests {
             assert!(
                 diagnostic.contains("99"),
                 "diagnostic must name the out-of-range wire line 99; got: {diagnostic}"
+            );
+        }
+
+        /// The POSITIVE half of the enrichment contract, and the only test
+        /// that pins the enrichment step's WIRING into
+        /// `RealJCodemunchOps::get_changed_symbols`.
+        ///
+        /// Its past-EOF sibling above cannot: that test's only post-condition
+        /// on the production route is the neutral
+        /// `(false, false, None)` triple, which is byte-for-byte the default
+        /// `changed_symbols_from_wire` already sets — so deleting the
+        /// `enrich_suppression_flags` call from `get_changed_symbols`
+        /// entirely would leave it, and the whole suite, green (it observes
+        /// the diagnostic by calling the seam a second time itself). The
+        /// `#[must_use]` guard that protects the RETURNED diagnostic cannot
+        /// fire on a call site that no longer exists.
+        ///
+        /// Here the tempdir's `a.rs` carries all three suppressions above the
+        /// wire-reported declaration line, so every flag is positively set —
+        /// and none of them can be true unless `get_changed_symbols` actually
+        /// read the file and enriched the decoded symbols.
+        #[test]
+        fn get_changed_symbols_enriches_suppression_flags_from_the_declaring_file() {
+            const MUNCH_AT_LINE_4: &str = concat!(
+                "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+                "\n",
+                "x=1 __stypes= __tables=t:added_symbols:name|file|line:str|str|int\n",
+                "t,widget,a.rs,4\n",
+            );
+
+            let tmp = tempfile::TempDir::new().expect("create tempdir");
+            std::fs::write(
+                tmp.path().join("a.rs"),
+                "// G-allow: exercised only by the GUI sidecar\n\
+                 #[allow(dead_code)]\n\
+                 #[cfg(test)]\n\
+                 fn widget() {}\n",
+            )
+            .expect("write a.rs");
+
+            let stub = RecordingStub::start_with_tool_calls(ToolCallReply::Munch(&[(
+                "get_changed_symbols",
+                MUNCH_AT_LINE_4,
+            )]));
+            let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
+                .expect("handshake against the recording stub must succeed");
+
+            let symbols = ops.get_changed_symbols("s^1", "s");
+
+            assert_eq!(symbols.len(), 1, "expected exactly the one declared symbol");
+            let sym = &symbols[0];
+            assert_eq!(sym.name, "widget");
+            assert_eq!(sym.line, 4);
+            assert!(
+                sym.has_allow_dead_code,
+                "`#[allow(dead_code)]` sits directly above the declaration — \
+                 `get_changed_symbols` must enrich the decoded symbol from the \
+                 declaring file, not return the wire defaults; got {sym:?}",
+            );
+            assert!(
+                sym.has_cfg_test,
+                "`#[cfg(test)]` sits in the same attribute block; got {sym:?}",
+            );
+            assert_eq!(
+                sym.g_allow_marker.as_deref(),
+                Some("exercised only by the GUI sidecar"),
+                "the `// G-allow:` marker above the block must reach the caller; \
+                 got {sym:?}",
             );
         }
 
