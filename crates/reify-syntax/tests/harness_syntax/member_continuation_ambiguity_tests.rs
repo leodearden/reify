@@ -339,3 +339,152 @@ fn no_tracked_ri_source_trips_the_member_continuation_check() {
         hits.join("\n")
     );
 }
+
+// ── (f) the other member-list bodies ─────────────────────────────────────────
+
+/// Assert `source` yields exactly one member-continuation diagnostic, anchored
+/// at the first byte of `needle`.
+fn assert_one_member_continuation_error_at(label: &str, source: &str, needle: &str) {
+    let found = member_continuation_errors(source);
+    assert_eq!(
+        found.len(),
+        1,
+        "{label}: expected exactly one member-continuation diagnostic, got {found:#?}"
+    );
+    let at = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("{label}: fixture must contain {needle:?}")) as u32;
+    let (start, end, _) = &found[0];
+    assert_eq!(
+        (*start, *end),
+        (at, at + needle.len() as u32),
+        "{label}: span must cover exactly {needle:?} at byte {at}, got {:?}",
+        &source[*start as usize..*end as usize]
+    );
+}
+
+/// THE DECIDED CASE. `tree-sitter-reify/test/corpus/namespaced_ref.txt`
+/// (case "namespaced_ref item boundary: relate's relation_member repeat joins
+/// the same way") deliberately COMMITS this join as the pinned CST reading.
+/// #7094's task statement requires that case be decided explicitly rather than
+/// broken by accident.
+///
+/// DECISION: reject. The pinned CST is unchanged — the grammar is untouched —
+/// but the source is now reported at the syntax layer. A `relate` body's
+/// members are bare expressions with no separator, so the join is exactly the
+/// silent value change INV-SF-7 forbids.
+#[test]
+fn relate_body_item_boundary_join_is_rejected() {
+    let source = "structure S {\n  relate {\n    a.b\n    (x)\n  }\n}\n";
+    assert_one_member_continuation_error_at("relate body", source, "(");
+}
+
+/// The same shape in a sub's inline `at <pose> where { … }` relate block,
+/// which reuses `relation_member` verbatim (grammar.js:745-751).
+#[test]
+fn sub_relate_block_body_item_boundary_join_is_rejected() {
+    let source = concat!(
+        "structure S {\n",
+        "  sub p : Part at origin where {\n",
+        "    a.b\n",
+        "    (x)\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("sub_relate_block body", source, "(x)");
+}
+
+/// `namespaced_ref.txt` case "namespaced_ref item boundary: a predicate ending
+/// `.name` JOINS a following `(` predicate" — same decision as
+/// `relate_body_item_boundary_join_is_rejected`.
+#[test]
+fn constraint_def_body_item_boundary_join_is_rejected() {
+    let source = "constraint def C {\n  a.b\n  (x) > 0\n}\n";
+    assert_one_member_continuation_error_at("constraint def body", source, "(x)");
+}
+
+/// `namespaced_ref.txt`'s sibling control case, "item boundary control: a
+/// predicate ending in a BARE ident joins the same way". The bare-ident form
+/// joins into a `function_call` rather than a `namespaced_call`; the boundary
+/// is identical and so is the decision.
+#[test]
+fn constraint_def_bare_ident_control_join_is_rejected() {
+    let source = "constraint def C {\n  a\n  (x) > 0\n}\n";
+    assert_one_member_continuation_error_at("constraint def bare-ident control", source, "(x)");
+}
+
+#[test]
+fn trait_body_leading_operator_continuation_is_rejected() {
+    let source = "trait T {\n  let d = 5mm\n  - 3mm\n}\n";
+    assert_one_member_continuation_error_at("trait body", source, "- 3mm");
+}
+
+#[test]
+fn purpose_body_leading_operator_continuation_is_rejected() {
+    let source = "purpose P() {\n  let d = 5mm\n  - 3mm\n}\n";
+    assert_one_member_continuation_error_at("purpose body", source, "- 3mm");
+}
+
+#[test]
+fn guarded_block_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "structure S {\n",
+        "  where enabled {\n",
+        "    let d = 5mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("guarded-block body", source, "- 3mm");
+}
+
+/// `occurrence_definition` shares `repeat($._member)` with
+/// `structure_definition` (grammar.js:512 and :525), so it is vulnerable to
+/// exactly the same join.
+#[test]
+fn occurrence_body_leading_operator_continuation_is_rejected() {
+    let source = "occurrence O : S {\n  let d = 5mm\n  - 3mm\n}\n";
+    assert_one_member_continuation_error_at("occurrence body", source, "- 3mm");
+}
+
+/// MEASURED FINDING, contra #7094's plan, which listed a must-error case here.
+///
+/// `match_arm_decl_block` (grammar.js:1400-1406) is the one brace-delimited
+/// member list that CANNOT host this join, for two independent reasons:
+/// its arms are `,`-separated, and `match_arm_sub_decl` ends in a plain
+/// `structure_name: $.identifier` (grammar.js:1418-1423) with no expression
+/// tail for a following line to attach to.
+///
+/// So the grammar itself already rejects the shape, loudly — a leading-operator
+/// line after an arm yields an `ERROR` node rather than a silent join. That is
+/// INV-SF-7-compliant on its own, and it is why no member-continuation
+/// diagnostic is expected here.
+///
+/// The container is still carried in `MEMBER_LIST_CONTAINERS`: grammar.js
+/// (~line 1415) defers the arm-body form `sub name : T { ... }` to task #3569,
+/// and when that lands the coverage is already in place. This test goes red if
+/// that widening ever makes the shape parse cleanly, which is exactly when
+/// someone should re-decide this case.
+#[test]
+fn match_arm_decl_block_rejects_the_join_at_the_grammar_level_already() {
+    let source = concat!(
+        "structure S {\n",
+        "  match m {\n",
+        "    A => sub h : T\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+    assert!(
+        !parsed.errors.is_empty(),
+        "the grammar must still reject this shape outright; got a clean parse"
+    );
+    assert!(
+        member_continuation_errors(source).is_empty(),
+        "no member-continuation diagnostic is expected — the join never forms. \
+         If this fires, task #3569 widened the arm body and this case needs \
+         re-deciding. Errors: {:?}",
+        parsed.errors
+    );
+}
