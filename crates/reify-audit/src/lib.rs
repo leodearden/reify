@@ -1526,10 +1526,17 @@ pub trait JCodemunchOps {
 /// Lives here rather than in each bin because it was copy-pasted into three of
 /// them, so every future change to the trait had to be replayed by hand in
 /// three places — a silent drift hazard with no compiler backstop until one
-/// copy stopped building. Two of the three now bind this one. The third,
-/// `ptodo-baseline-gen`, still carries a private copy; migrating it is a
-/// mechanical one-line change deliberately left outside this task's file
-/// scope, so a new trait method breaks two impls rather than three.
+/// copy stopped building. Two of the three now bind this one.
+///
+/// The third, `src/bin/ptodo-baseline-gen.rs`, still carries a private copy,
+/// and that is a residual defect rather than a design choice: it re-opens the
+/// exact drift hazard this hoist exists to close, in the one bin that still
+/// has it. It is not fixed here only because that file belongs to another
+/// task's concurrency footprint (#6241 landed in it most recently) — a
+/// convention boundary, not a technical one. The migration is a two-line edit
+/// (delete the private struct + impl, import this type) and is filed as
+/// follow-up work; anyone touching that bin for another reason should just do
+/// it in passing.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopJCodemunchOps;
 
