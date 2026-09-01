@@ -755,20 +755,38 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // alias registry → structure names → trait names, so a builtin arm
         // wins over a `structure def Orientation`, a `type Orientation = …`
         // alias and an `enum Orientation` in .ri source.  Such a declaration
-        // keeps compiling, but every annotation naming it silently changes
-        // meaning with NO diagnostic.  That is the same collision class that
-        // keeps "Frame3" out of this match (it collides with the `structure
-        // Frame3` in ports.ri).  Accepted here on two grounds: a grep over all
-        // tracked .ri files finds nothing in stdlib or examples binding either
-        // spelling, and the `Orientation` annotation surface is load-bearing —
-        // without it the joint DOF self-check above cannot run at all.  The
-        // residual exposure is out-of-repo user models, and adding any further
-        // name to this match is a compatibility decision on the same terms,
-        // not a free win.  Pinned by
-        // `tests::builtin_orientation_shadows_same_named_alias_and_structure`,
-        // mirroring
+        // keeps compiling, but every annotation naming it changes meaning, and
+        // the annotation USE site is silent about it.
+        //
+        // The DECLARATION site is NOT silent, though.  `compile_builder::
+        // reserved_name_lint` walks every enum/structure/occurrence/trait/type
+        // alias declaration and warns `W_RESERVED_TYPE_NAME`
+        // (`DiagnosticCode::ReservedTypeName`) whenever
+        // `resolve_type_name(name).is_some()` — it uses THIS function as its
+        // single source of truth precisely so future builtin additions are
+        // covered without a hardcoded list.  So adding this arm also changes
+        // that lint's behaviour: from task 6384 on, `structure def Orientation`
+        // / `type Orientation = …` / `enum Orientation` (and the `Orientation3`
+        // spellings) newly draw an advisory Warning at the point of
+        // declaration.  That is the intended outcome — the collision is
+        // surfaced where the author can act on it — and it bounds the residual
+        // exposure below to "an author who ignores the warning".
+        //
+        // This is the same collision class that keeps "Frame3" out of this
+        // match (it collides with the `structure Frame3` in ports.ri).
+        // Accepted here on two grounds: a grep over all tracked .ri files finds
+        // nothing in stdlib or examples binding either spelling, and the
+        // `Orientation` annotation surface is load-bearing — without it the
+        // joint DOF self-check above cannot run at all.  The residual exposure
+        // is out-of-repo user models, and adding any further name to this match
+        // is a compatibility decision on the same terms, not a free win.
+        // Pinned by
+        // `tests::builtin_orientation_shadows_same_named_alias_and_structure`
+        // (resolver precedence), mirroring
         // `tests::builtin_dimension_shadows_same_named_alias_with_different_dimension`
-        // (task #5892).
+        // (task #5892), and by
+        // `tests::orientation_declaration_draws_reserved_type_name_warning`
+        // (the newly-widened lint).
         //
         // BOTH spellings are accepted, where `Frame` accepts only the bare one.
         // The bare `Orientation` is required because that is what joints.ri
@@ -5468,12 +5486,17 @@ mod tests {
     /// `resolve_type_with_aliases` resolves builtins FIRST ("builtins → type
     /// params → alias registry → structure names → trait names", per its own
     /// doc comment), so surfacing `Orientation` / `Orientation3` as builtins
-    /// silently shadows a user-declared `type Orientation = …` alias or
+    /// shadows a user-declared `type Orientation = …` alias or
     /// `structure def Orientation` in .ri source: the declaration keeps
-    /// compiling, but every annotation naming it changes meaning with NO
-    /// diagnostic. Nothing in this repo's stdlib or examples binds either
-    /// spelling (grep-verified, task 6384), so no in-repo model is affected —
-    /// but out-of-repo user models are, and that trade is a DECISION, not an
+    /// compiling, but every annotation naming it changes meaning, and the
+    /// annotation USE site says nothing about it. The DECLARATION site does —
+    /// `reserved_name_lint` warns `W_RESERVED_TYPE_NAME` for any name where
+    /// `resolve_type_name(…).is_some()`, so this arm newly makes such a
+    /// declaration draw an advisory Warning; that half is pinned by
+    /// `orientation_declaration_draws_reserved_type_name_warning` below.
+    /// Nothing in this repo's stdlib or examples binds either spelling
+    /// (grep-verified, task 6384), so no in-repo model is affected — but
+    /// out-of-repo user models are, and that trade is a DECISION, not an
     /// accident. This test makes it one on record.
     ///
     /// Same shape and same contract as
@@ -5554,6 +5577,139 @@ mod tests {
         crate::compile_with_stdlib(&parsed)
     }
 
+    /// The resolved `cell_type` of `param o` in the probe's `structure S`.
+    ///
+    /// Panics with the available cells listed if the template or param is
+    /// missing, so a compile that silently dropped the declaration is
+    /// attributable rather than a bare `unwrap`. Mirrors
+    /// `reserved_name_lint_tests.rs`'s `find_template` / `find_param_cell`
+    /// pair, which pins the same "assert the ACTUAL resolved type, not just
+    /// error-absence" contract for `Direction`.
+    fn probe_param_o_type(module: &crate::CompiledModule) -> &Type {
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == "S")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected template `S` in the probe module; templates: {:?}",
+                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
+        template
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == crate::types::ValueCellKind::Param && vc.id.member == "o")
+            .map(|vc| &vc.cell_type)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected `param o` in template `S`; value_cells: {:?}",
+                    template
+                        .value_cells
+                        .iter()
+                        .map(|vc| &vc.id)
+                        .collect::<Vec<_>>()
+                )
+            })
+    }
+
+    /// (f) LINT-SURFACE consequence of the arm: declaring a type named
+    /// `Orientation` now draws `W_RESERVED_TYPE_NAME` at the declaration site.
+    ///
+    /// `compile_builder::reserved_name_lint` uses `resolve_type_name(name)
+    /// .is_some()` as its collision predicate — this function, as the single
+    /// source of truth, so that future builtin additions are covered without a
+    /// hardcoded list. Adding the `Orientation` arm therefore CHANGED that
+    /// lint's behaviour: `structure def Orientation` and `type Orientation =
+    /// …` were silent before task 6384 and warn from it on. That is the
+    /// intended outcome (it is what keeps the shadowing pinned by
+    /// `builtin_orientation_shadows_same_named_alias_and_structure` from being
+    /// invisible to the author), but it is a behaviour change and so is pinned
+    /// here rather than left as an emergent side effect.
+    ///
+    /// Each row asserts BOTH halves of the contract, which are independent:
+    /// the declaration draws exactly one `ReservedTypeName` warning naming the
+    /// declared name, AND the annotation in the same module still resolves to
+    /// the builtin `Type::Orientation(3)` (the lint is advisory — it must not
+    /// let the user declaration win in type position).
+    ///
+    /// Home note: the natural home for this row is
+    /// `tests/harness_modules_ports/reserved_name_lint_tests.rs`, alongside
+    /// `structure_named_frame_emits_reserved_type_name_warning`. That file is
+    /// outside task 6384's module-lock scope, so the coverage lives here
+    /// instead; fold it over if that file is ever touched for another reason.
+    #[test]
+    fn orientation_declaration_draws_reserved_type_name_warning() {
+        for (label, source) in [
+            (
+                "structure def Orientation",
+                "structure def Orientation {}\n\
+                 structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            (
+                "type Orientation = Bool",
+                "pub type Orientation = Bool\n\
+                 structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            (
+                "structure def Orientation3 (Display spelling)",
+                "structure def Orientation3 {}\n\
+                 structure S {\n    param o : Orientation3 = orient_identity()\n}",
+            ),
+        ] {
+            let module = compile_orientation_probe(source);
+            let reserved: Vec<&Diagnostic> = module
+                .diagnostics
+                .iter()
+                .filter(|d| {
+                    d.code == Some(reify_core::DiagnosticCode::ReservedTypeName)
+                        && d.severity == Severity::Warning
+                })
+                .collect();
+            assert_eq!(
+                reserved.len(),
+                1,
+                "{label}: declaring a type named after the new builtin must draw \
+                 exactly one W_RESERVED_TYPE_NAME warning (the predicate is \
+                 `resolve_type_name(name).is_some()`).\nsource:\n{source}\n\
+                 reserved: {reserved:#?}"
+            );
+
+            // The lint is ADVISORY: the builtin must still win in type position.
+            let errors: Vec<&Diagnostic> = module
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "{label}: a shadowing declaration must stay Warning-only (programs \
+                 keep compiling); got errors: {errors:#?}"
+            );
+            assert_eq!(
+                probe_param_o_type(&module),
+                &Type::Orientation(3),
+                "{label}: the annotation must still resolve to the BUILTIN \
+                 Type::Orientation(3) despite the same-named user declaration"
+            );
+        }
+
+        // NON-VACUITY control: a structure whose name has no builtin arm must
+        // draw NO ReservedTypeName warning, so the assertions above cannot pass
+        // by the lint firing indiscriminately.
+        let control = compile_orientation_probe("structure def Rotor {}");
+        let control_reserved: Vec<&Diagnostic> = control
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ReservedTypeName))
+            .collect();
+        assert!(
+            control_reserved.is_empty(),
+            "control: `structure def Rotor` binds no builtin name and must draw NO \
+             ReservedTypeName warning; got: {control_reserved:#?}"
+        );
+    }
+
     /// (e) ANNOTATION-SURFACE coverage for the arm, end to end through a real
     /// compile.
     ///
@@ -5566,8 +5722,20 @@ mod tests {
     /// this test a regression confined to the annotation path would go
     /// unnoticed.
     ///
-    /// Each row must compile with zero Error-severity diagnostics. `Undef` /
-    /// unused-binding warnings are irrelevant here and are not filtered on.
+    /// Each row must compile with zero Error-severity diagnostics AND resolve
+    /// `param o` to `Type::Orientation(3)`. The second oracle is not
+    /// redundant — it is the load-bearing one for the alias row. Zero-errors
+    /// alone proves only that `Rot` resolved to *something* that accepts an
+    /// `orient_identity()` default; a resolution to a wrong-but-compatible
+    /// type, or a future alias path that erased the arity, would keep that row
+    /// green while the alias→builtin hop (the whole point of the row) was
+    /// broken. Pinning the resolved cell type is the same contract
+    /// `reserved_name_lint_tests.rs`'s
+    /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`
+    /// applies to `Direction`.
+    ///
+    /// `Undef` / unused-binding warnings are irrelevant here and are not
+    /// filtered on.
     #[test]
     fn orientation_annotations_compile_clean() {
         for (label, source) in [
@@ -5596,6 +5764,14 @@ mod tests {
                 "{label}: `Orientation` must be usable in an ordinary annotation \
                  position and compile with zero Error-severity diagnostics.\n\
                  source:\n{source}\nerrors: {errors:#?}"
+            );
+            assert_eq!(
+                probe_param_o_type(&module),
+                &Type::Orientation(3),
+                "{label}: the annotation must RESOLVE to Type::Orientation(3), not \
+                 merely fail to error — for the alias row this is the only \
+                 assertion that exercises the alias→builtin hop at all.\n\
+                 source:\n{source}"
             );
         }
 
