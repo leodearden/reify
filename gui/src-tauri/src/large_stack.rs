@@ -173,9 +173,11 @@
 //! `tracing::error!` plus `None`: `crates/reify-lsp/src/server.rs` lines
 //! 355-361 (`goto_definition`), 489-492 (`prepare_rename`), 550-553 (`rename`)
 //! and 612-615 (`references`). There is no `unwrap` or `expect` on any of those
-//! `JoinHandle`s — the only `unwrap_or_else` nearby is on an `Option<PathBuf>`
-//! INSIDE the blocking closure. So the observed behaviour is: those arms log and
-//! answer `None`, and the predicted job panic does not occur.
+//! `JoinHandle`s — the only `unwrap`-family calls anywhere in that span are two
+//! `unwrap_or_else`es on an `Option<PathBuf>` (`stdlib_path`, server.rs:322 and
+//! :464), both INSIDE a blocking closure and neither of them fallible. So the
+//! observed behaviour is: those arms log and answer `None`, and the predicted
+//! job panic does not occur.
 //!
 //! Recorded as the measurement it is, naming the lines, rather than as a
 //! reassurance: it is true of `reify-lsp` as of task 6517, and a future change
@@ -548,12 +550,14 @@ fn assert_not_reentrant(sender: &JobSender) {
     );
 }
 
-/// One persistent large-stack worker: a NAME plus the queue feeding it.
+/// One persistent large-stack lane: a NAME, a SIZE, and the queue feeding it.
 ///
 /// A lane is created lazily on first use and lives for the process. Everything
-/// about the mechanism — the 256 MiB stack, the single-consumer queue, the
-/// explicit `None`-on-spawn-failure record, the never-dropped `Sender` — is
-/// shared by every lane; a lane is an INSTANCE, not a variant.
+/// about the mechanism — the 256 MiB stack per consumer, the one FIFO queue, the
+/// explicit `None`-when-no-consumer-started record, the never-dropped `Sender` —
+/// is shared by every lane; a lane is an INSTANCE, not a variant, and its `size`
+/// is one of the values that instance carries rather than a second mechanism
+/// (see "One consumer or N" below).
 ///
 /// # Why more than one lane
 ///
@@ -619,11 +623,14 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// `WorkspaceEdit` computed against text a concurrent `didChange` has since
 /// replaced is applied by the client with no version guard. That window predates
 /// task 5772 and is not introduced here, but routing `rename` to the pool
-/// re-opens it deliberately, so it is tracked rather than absorbed: follow-up
-/// ticket `tkt_0RT4B6B63TJ8PPFQ72GB725J1P` (versioned `documentChanges` plus a
-/// client-side version check). Named here for the same reason the module docs
-/// name #6195 and 5466: a disclosed limit with nothing behind it is
-/// indistinguishable from one nobody intends to close.
+/// re-opens it deliberately, so it is tracked rather than absorbed: task #7118
+/// (versioned `documentChanges` plus a client-side version check). Cited as a
+/// TASK rather than as the ticket this task filed — that ticket was resolved
+/// `combined` against #7118, so it is the task, not the ticket id, that stays
+/// resolvable. Named here for the same reason the module docs name #6195 and
+/// 5466: a disclosed limit with nothing behind it is indistinguishable from one
+/// nobody intends to close.
+///
 /// # One consumer or N: a POOL is an instance, not a variant (task 6517)
 ///
 /// A lane carries a `size`, and everything above holds for every value of it.
@@ -1176,9 +1183,12 @@ where
 ///    when the awaiting side's `dispatch_async` future was dropped, because that
 ///    future owns the `oneshot` receiver. So nothing has to be threaded through
 ///    the [`Job`] contract, through `lsp_bridge`, or through any caller: no new
-///    parameter, no new type, no new dependency (`tokio-util`'s
-///    `CancellationToken` would need the `sync` feature this crate's `tokio` pin
-///    does not enable, and `futures` is not a `reify-gui` dependency at all).
+///    parameter, no new type, and no new dependency. `is_closed` needs only
+///    `tokio`'s `sync` feature, which this crate already declares for the
+///    `oneshot` channel itself. The alternative token types were not available:
+///    `tokio-util` is not a `reify-gui` dependency at all (and the workspace pin
+///    it would come from selects only `rt`, not the `sync` feature that gates
+///    `CancellationToken`), and neither is `futures`.
 /// 2. **It is STRICTLY WEAKER than pre-5772 drop-cancellation, deliberately.**
 ///    It can only skip work that has NOT STARTED; it never interrupts work in
 ///    flight. There is no cancellation point inside
