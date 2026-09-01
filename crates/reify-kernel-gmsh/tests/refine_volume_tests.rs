@@ -7,13 +7,12 @@
 
 #![cfg(has_gmsh)]
 
-mod common;
-
 // The clamp probe and its serialising mutex are shared verbatim with
 // `tests/mesh_to_volume_clamp_hermeticity.rs`, the other half of this
-// discipline. Declared by path rather than through `common/mod.rs`, whose
-// stated scope is the #6200 geometry fixtures; see `common/clamp_probe.rs` for
-// why one copy matters.
+// discipline. Declared by path rather than through `common/mod.rs`, which
+// #6387 reduced to a re-export shim over `reify_test_support::fixtures` and
+// which is scheduled for deletion; see `common/clamp_probe.rs` for why one
+// copy matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
@@ -21,9 +20,9 @@ use clamp_probe::{
     CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, poison_global_mesh_size_clamp, probe_triangle_count,
     set_global_mesh_size_clamp,
 };
-use common::unit_cube_mesh;
 use reify_ir::{ElementOrderTag, Mesh};
 use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
+use reify_test_support::fixtures::unit_cube_mesh;
 
 /// A `unit_cube_mesh` scaled uniformly about the origin, i.e. the box
 /// `[0,scale]^3`.
