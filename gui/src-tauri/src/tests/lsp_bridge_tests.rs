@@ -700,3 +700,367 @@ async fn lsp_request_impl_valid_json_passes_json_parse_step() {
         );
     }
 }
+
+// ── Task 6517: the ordered lane / query pool split ───────────────────────────
+//
+// Task 5772's section above closes by naming its own limit: a lane has one
+// consumer, so every `lsp_request` serializes against every other. Task 6517
+// bounds that by routing LSP work over TWO lanes instead of one.
+//
+// The classification key is LSP PROTOCOL semantics — does this method mutate
+// server-side document/session state? — and deliberately NOT `reify-lsp`'s
+// internal choice of which arms hop to `spawn_blocking`. Keying on the latter
+// would have been the narrower change (it is exactly the four arms whose lane
+// occupancy hurts most), but it couples `gui/src-tauri` to an implementation
+// detail of another crate that this crate cannot observe or test, and that would
+// rot silently the day `reify-lsp` moved an arm. The pool subsumes it without
+// the coupling: work that gains nothing from the big stack merely occupies one
+// of N consumers instead of the only one.
+//
+// * ORDERED lane (`LSP_LANE`, size 1, unchanged): `initialize`, `initialized`,
+//   `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
+//   `shutdown` — plus, conservatively, ANY unrecognised method.
+// * QUERY pool (`LSP_POOL`, size `LSP_POOL_SIZE`): the eight read-only queries
+//   `completion`, `hover`, `definition`, `documentSymbol`, `documentHighlight`,
+//   `prepareRename`, `rename`, `references`.
+//
+// Ordering among NOTIFICATIONS is therefore preserved exactly — one FIFO
+// consumer, which is what `didChange` correctness rests on, pinned by (k). The
+// only ordering given up is query-vs-notification, which is precisely the
+// pre-5772 behaviour on the multi-threaded tauri runtime and which `reify-lsp`'s
+// own `RwLock`/`Mutex` already serialise for safety: a query can read older
+// text — staleness, never corruption.
+//
+// SCOPE UNCHANGED by this split: the four `spawn_blocking` arms still run their
+// compiler work on tokio's blocking pool at the std ~2 MiB default, whichever
+// lane submitted them (task #6195). What changes is that they no longer occupy
+// the ONLY LSP consumer while doing it.
+
+/// The order-sensitive / lifecycle methods, which must keep a single FIFO
+/// consumer. `initialize` / `initialized` / `shutdown` are session lifecycle;
+/// the three `did*` notifications mutate the server's document set, and
+/// `didOpen`/`didChange` additionally hold `reify-lsp`'s `eval_state` mutex
+/// across a synchronous diagnostics eval.
+///
+/// Reordering two of these against each other is CORRUPTION, not staleness —
+/// applying edit N+1 before edit N yields text neither the client nor the server
+/// ever had — which is why the pool must not carry them.
+const ORDERED_METHODS: [&str; 6] = [
+    "initialize",
+    "initialized",
+    "textDocument/didOpen",
+    "textDocument/didChange",
+    "textDocument/didClose",
+    "shutdown",
+];
+
+/// The read-only query methods, which may run concurrently.
+///
+/// None mutates server-side state: each takes `state.read().await`, clones what
+/// it needs and drops the guard (four of them then hop to `spawn_blocking`).
+/// Reordering these against a notification can only make one read older text.
+const QUERY_METHODS: [&str; 8] = [
+    "textDocument/completion",
+    "textDocument/hover",
+    "textDocument/definition",
+    "textDocument/documentSymbol",
+    "textDocument/documentHighlight",
+    "textDocument/prepareRename",
+    "textDocument/rename",
+    "textDocument/references",
+];
+
+/// Strings `InProcessLsp::handle_request` does NOT accept — they fall through to
+/// its `other => Err(UNSUPPORTED_METHOD)` arm.
+///
+/// These are the load-bearing cases of (h), not filler. They pin the
+/// CONSERVATIVE default: a method added to `reify-lsp` tomorrow — which may well
+/// mutate state — must NOT silently acquire concurrency here by virtue of not
+/// being listed.
+const UNRECOGNISED_METHODS: [&str; 2] = ["textDocument/notAThing", ""];
+
+/// Every arm string `InProcessLsp::handle_request` accepts, transcribed from
+/// `crates/reify-lsp/src/bridge.rs`'s `match method` (the fourteen arms before
+/// its `other =>` fallthrough).
+///
+/// Transcribed from SOURCE rather than from this crate's prose so (j) is a real
+/// cross-check: if the two lists here drifted from `reify-lsp`, (j) fails.
+const HANDLE_REQUEST_ARMS: [&str; 14] = [
+    "initialize",
+    "initialized",
+    "textDocument/didOpen",
+    "textDocument/didChange",
+    "textDocument/didClose",
+    "textDocument/completion",
+    "textDocument/hover",
+    "textDocument/definition",
+    "textDocument/documentSymbol",
+    "textDocument/documentHighlight",
+    "textDocument/prepareRename",
+    "textDocument/rename",
+    "textDocument/references",
+    "shutdown",
+];
+
+/// (h) Order-sensitive methods — and every UNRECOGNISED method — route to the
+/// ORDERED lane.
+///
+/// Compared by POINTER IDENTITY rather than by any observable behaviour, because
+/// that is the only comparison that cannot be satisfied by coincidence: two
+/// distinct lanes both answer a probe correctly, and both run it off the
+/// caller's thread. Only pointer equality says "the same queue".
+///
+/// The unknown-method rows are the ones worth having. A `matches!` over the
+/// CONCURRENCY-SAFE set with `_ => ordered` makes the safe direction structural;
+/// the opposite spelling (list the ordered set, default to the pool) would look
+/// identical in review and would hand concurrency to every future method by
+/// default. These rows are what tells the two apart.
+#[test]
+fn order_sensitive_methods_route_to_the_ordered_lane() {
+    use crate::large_stack::LSP_LANE;
+    use crate::lsp_bridge::lane_for_method;
+
+    let ordered = LSP_LANE.sender().map(std::ptr::from_ref);
+    assert!(
+        ordered.is_some(),
+        "precondition: the ordered lane must have started, or every row below \
+         would compare `None` to `None` and pass vacuously"
+    );
+
+    for method in ORDERED_METHODS {
+        assert_eq!(
+            lane_for_method(method).map(std::ptr::from_ref),
+            ordered,
+            "{method} mutates server-side state or is session lifecycle, so it \
+             must travel the single-consumer ORDERED lane — reordering two of \
+             these is corruption, not staleness"
+        );
+    }
+
+    for method in UNRECOGNISED_METHODS {
+        assert_eq!(
+            lane_for_method(method).map(std::ptr::from_ref),
+            ordered,
+            "{method:?} is not an arm `handle_request` accepts, so it must \
+             default to the ORDERED lane. A future state-mutating method must \
+             not acquire concurrency merely by not being listed."
+        );
+    }
+}
+
+/// (i) The eight read-only query methods route to the QUERY POOL.
+///
+/// The non-vacuity assertion is what stops (h) and (i) both passing against a
+/// single lane: if `LSP_POOL.sender()` and `LSP_LANE.sender()` were the same
+/// pointer, every row of both tables would hold while nothing had been split.
+#[test]
+fn query_methods_route_to_the_query_pool() {
+    use crate::large_stack::{LSP_LANE, LSP_POOL};
+    use crate::lsp_bridge::lane_for_method;
+
+    let pool = LSP_POOL.sender().map(std::ptr::from_ref);
+    let ordered = LSP_LANE.sender().map(std::ptr::from_ref);
+    assert!(
+        pool.is_some(),
+        "precondition: the query pool must have started, or every row below \
+         would compare `None` to `None` and pass vacuously"
+    );
+    assert_ne!(
+        pool, ordered,
+        "the pool and the ordered lane must be DIFFERENT queues, or (h) and (i) \
+         would both hold with nothing actually split"
+    );
+
+    for method in QUERY_METHODS {
+        assert_eq!(
+            lane_for_method(method).map(std::ptr::from_ref),
+            pool,
+            "{method} only reads server-side state, so it must travel the query \
+             pool — that is what bounds head-of-line blocking among queries"
+        );
+    }
+}
+
+/// (j) The classification is TOTAL over what the bridge can dispatch: the union
+/// of the ordered and query tables is exactly `handle_request`'s arm set.
+///
+/// Without this, a method that exists in `reify-lsp` but appears in neither
+/// table would simply take `lane_for_method`'s conservative fallthrough and no
+/// test would ever mention it. That is safe but silent — and silence is how a
+/// keystroke-frequency method ends up on the ordered lane by accident and stays
+/// there. This is the test that makes adding an arm to `reify-lsp` a decision
+/// here rather than a default.
+///
+/// Disjointness is asserted too: a method listed in BOTH tables would make (h)
+/// and (i) contradictory, and whichever ran second would look like a routing bug
+/// rather than a table bug.
+#[test]
+fn the_classification_covers_every_dispatchable_method() {
+    use std::collections::BTreeSet;
+
+    let ordered: BTreeSet<&str> = ORDERED_METHODS.into_iter().collect();
+    let queries: BTreeSet<&str> = QUERY_METHODS.into_iter().collect();
+    let arms: BTreeSet<&str> = HANDLE_REQUEST_ARMS.into_iter().collect();
+
+    let overlap: Vec<&str> = ordered.intersection(&queries).copied().collect();
+    assert!(
+        overlap.is_empty(),
+        "no method may be classified BOTH order-sensitive and concurrency-safe, \
+         got {overlap:?}"
+    );
+
+    let classified: BTreeSet<&str> = ordered.union(&queries).copied().collect();
+    assert_eq!(
+        classified, arms,
+        "every arm `InProcessLsp::handle_request` accepts must be classified \
+         exactly once. A method present in `arms` but not in `classified` would \
+         silently take the conservative fallthrough with no test naming it; one \
+         present in `classified` but not in `arms` is a stale entry in this file."
+    );
+}
+
+/// (k) The ORDERED lane still has EXACTLY ONE consumer after the `Lane`
+/// generalisation.
+///
+/// This is the invariant `didChange` correctness rests on, and it is the one the
+/// pool mechanism could most easily take away by accident — `Lane::pool` and
+/// `Lane::new` share a receive loop, so a default that spawned more than one
+/// consumer would leave every other test green while making concurrent edits
+/// applicable out of order.
+///
+/// A size-N lane would fail this rather than pass it by luck: the shared
+/// receiver lock is handed off after each dequeue, so consumers ROTATE across
+/// sequential submissions even when only one job is in flight at a time.
+#[test]
+fn the_ordered_lane_still_has_exactly_one_consumer() {
+    use crate::large_stack::{LSP_LANE, dispatch};
+    use std::collections::HashSet;
+
+    let caller = std::thread::current().id();
+    let mut ids = HashSet::new();
+    for _ in 0..16 {
+        let id = dispatch(LSP_LANE.sender(), || std::thread::current().id());
+        assert_ne!(
+            id, caller,
+            "the ordered lane must run its jobs on a lane thread, not degrade to \
+             an inline call — a degraded lane would report one ThreadId (the \
+             caller's) and pass this test vacuously"
+        );
+        ids.insert(id);
+    }
+    assert_eq!(
+        ids.len(),
+        1,
+        "the ordered lane must keep exactly ONE consumer: notifications are \
+         order-sensitive against each other, and a second consumer would let a \
+         `didChange` overtake an earlier one. Saw {ids:?}"
+    );
+}
+
+/// (l) END-TO-END: a real `textDocument/hover` completes while another consumer
+/// of the same lane is OCCUPIED — the head-of-line-blocking property, driven
+/// through the REAL production composition.
+///
+/// `large_stack_tests`' (aa) measures the mechanism with synthetic jobs; this
+/// measures the composition `lsp_request_on_worker` actually performs, via the
+/// `lsp_request_on_lane` seam whose only variable is the lane. A test that
+/// rebuilt the `dispatch_async(pool, lsp_request_future(..))` composition itself
+/// would only prove its own copy is concurrent.
+///
+/// # Why a TEST-LOCAL pool and not `LSP_POOL`
+///
+/// Proving occupancy means PARKING a consumer, and `LSP_POOL` is a process-wide
+/// `static` that every test in this binary shares while cargo runs them
+/// concurrently. Parking one of its consumers would starve whichever other test
+/// is using it — hanging the suite instead of failing it. The local pool is
+/// size 2 for the same reason: park one, leave exactly one free, so the property
+/// is deterministic rather than a race.
+///
+/// Against a SINGLE-consumer lane this fails as a clean `tokio::time::timeout`
+/// elapse, not a hang, and the probe is released on every exit path.
+#[tokio::test]
+async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
+    use crate::large_stack::{Lane, dispatch};
+    use crate::lsp_bridge::lsp_request_on_lane;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const URI: &str = "file:///pool_head_of_line.ri";
+    const PREFIX: &str = "t6517-hol-";
+    static TEST_POOL: Lane = Lane::pool(PREFIX, 2);
+
+    let direct = LspBridge::new();
+    init_and_open(&direct, URI).await;
+    let pooled = Arc::new(LspBridge::new());
+    init_and_open(&pooled, URI).await;
+
+    let params = json!({
+        "textDocument": { "uri": URI },
+        "position": { "line": 1, "character": 4 }
+    })
+    .to_string();
+
+    let expected = lsp_request_impl(&direct, "textDocument/hover", params.clone())
+        .await
+        .expect("a direct hover must succeed");
+
+    // Park exactly ONE of the two consumers, from a plain thread so the runtime
+    // this test is on is never itself blocked.
+    let (parked_tx, parked_rx) = mpsc::channel::<Option<String>>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let probe = std::thread::spawn(move || {
+        dispatch(TEST_POOL.sender(), move || {
+            let _ = parked_tx.send(std::thread::current().name().map(str::to_owned));
+            // Parks until the test drops `release_tx`, which it does on EVERY
+            // exit path below — `recv` then returns `Err` and the job ends.
+            let _ = release_rx.recv();
+        });
+    });
+
+    let parked_on = parked_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the probe job must reach a consumer and report where it parked");
+    assert!(
+        parked_on.as_deref().is_some_and(|n| n.starts_with(PREFIX)),
+        "the probe must occupy a real POOL consumer; a lane that degraded to an \
+         inline call would leave both consumers free and make this test vacuous. \
+         Parked on {parked_on:?}"
+    );
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(10),
+        lsp_request_on_lane(
+            TEST_POOL.sender(),
+            Arc::clone(&pooled),
+            "textDocument/hover".to_string(),
+            params,
+        ),
+    )
+    .await;
+
+    // Read occupancy BEFORE releasing: the probe cannot have finished, because
+    // only dropping `release_tx` — which this frame still holds — can end it.
+    let probe_still_parked = !probe.is_finished();
+    drop(release_tx);
+    probe.join().expect("the probe thread must not panic");
+
+    let actual = outcome
+        .expect(
+            "a hover must not queue behind an occupied consumer: it timed out, \
+             which is what a single-consumer lane does here",
+        )
+        .expect("the hover must resolve to Ok through the pool");
+
+    assert!(
+        probe_still_parked,
+        "the hover must have completed WHILE the other consumer was occupied — \
+         if the probe had already finished, this would prove nothing about \
+         concurrency"
+    );
+    assert_eq!(
+        actual, expected,
+        "a hover served by a free pool consumer must return exactly what a \
+         direct `lsp_request_impl` call returns — the pool hop must be invisible \
+         to the frontend"
+    );
+}

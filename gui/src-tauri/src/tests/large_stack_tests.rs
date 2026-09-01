@@ -720,10 +720,20 @@ fn lsp_lane_runs_jobs_on_its_own_named_thread() {
 /// `const _: () = assert!(..)` block beside each constant in `large_stack.rs`.
 /// A runtime assertion for it cannot fail in any build that exists, so carrying
 /// one was dead weight; the const asserts are the real guard.
+///
+/// EXTENDED for task 6517 to cover [`crate::large_stack::LSP_POOL_THREAD_PREFIX`].
+/// The query pool is the first name here that is a PREFIX rather than a whole
+/// thread name, which makes distinctness sharper, not looser: a prefix that
+/// merely differed in a suffix — say `reify-lsp-w` against a pool prefixed
+/// `reify-lsp-w` — would produce consumers named `reify-lsp-w0`, and a
+/// `top -H` filter or profiler alert keyed on the ordered lane would then match
+/// pool rows too. Pairwise inequality over the raw strings is the check that
+/// rules that out at its root.
 #[test]
 fn large_stack_thread_names_are_pairwise_distinct() {
     use crate::large_stack::{
-        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME,
+        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, LSP_POOL_THREAD_PREFIX, LSP_WORKER_THREAD_NAME,
+        WORKER_THREAD_NAME,
     };
 
     let names = [
@@ -731,6 +741,7 @@ fn large_stack_thread_names_are_pairwise_distinct() {
         (ENGINE_THREAD_NAME, "the fire-and-forget engine thread"),
         (WORKER_THREAD_NAME, "the persistent ENGINE lane"),
         (LSP_WORKER_THREAD_NAME, "the persistent LSP lane"),
+        (LSP_POOL_THREAD_PREFIX, "the LSP query pool's consumer prefix"),
     ];
 
     for (i, (name, what)) in names.iter().enumerate() {
