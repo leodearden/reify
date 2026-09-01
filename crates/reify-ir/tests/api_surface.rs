@@ -683,6 +683,18 @@ fn value_types_in_scope() {
     // function.
     assert!(quaternion_is_finite(1.0, 0.0, 0.0, 0.0));
     assert!(quaternion_is_finite_mod(1.0, 0.0, 0.0, 0.0));
+
+    // Value::kind_name (task #6466): exhaustive discriminant-name method,
+    // hoisted so reify-ir/ri_literal.rs and reify-constraints delegate to
+    // one table instead of each spelling out their own. Both spellings name
+    // the same inherent method since ValueMod is Value re-exported.
+    let bb: Value = Value::BoundingBox {
+        min: Box::new(Value::Undef),
+        max: Box::new(Value::Undef),
+    };
+    assert_eq!(bb.kind_name(), "BoundingBox");
+    let bb_mod: ValueMod = bb;
+    assert_eq!(bb_mod.kind_name(), "BoundingBox");
 }
 
 #[test]

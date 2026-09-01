@@ -508,40 +508,7 @@ fn first_unrepresentable_char(s: &str) -> Option<char> {
 /// surfaces (constraint diagnostics vs. this serializer's MCP rejection text)
 /// and nothing compares them; it is not tolerable indefinitely, hence #6466.
 fn value_kind_name(value: &Value) -> &'static str {
-    match value {
-        Value::Bool(_) => "Bool",
-        Value::Int(_) => "Int",
-        Value::Real(_) => "Real",
-        Value::String(_) => "String",
-        Value::Scalar { .. } => "Scalar",
-        Value::Enum { .. } => "Enum",
-        Value::List(_) => "List",
-        Value::Set(_) => "Set",
-        Value::Map(_) => "Map",
-        Value::Option(_) => "Option",
-        Value::Field { .. } => "Field",
-        Value::Lambda { .. } => "Lambda",
-        Value::Tensor(_) => "Tensor",
-        Value::Point(_) => "Point",
-        Value::Vector(_) => "Vector",
-        Value::Complex { .. } => "Complex",
-        Value::Orientation { .. } => "Orientation",
-        Value::Frame { .. } => "Frame",
-        Value::Transform { .. } => "Transform",
-        Value::Plane { .. } => "Plane",
-        Value::Axis { .. } => "Axis",
-        Value::Direction { .. } => "Direction",
-        Value::BoundingBox { .. } => "BoundingBox",
-        Value::Range { .. } => "Range",
-        Value::Matrix(_) => "Matrix",
-        Value::SampledField(_) => "SampledField",
-        Value::StructureInstance(_) => "StructureInstance",
-        Value::GeometryHandle { .. } => "GeometryHandle",
-        Value::AffineMap { .. } => "AffineMap",
-        Value::Selector(_) => "Selector",
-        Value::Feature(_) => "Feature",
-        Value::Undef => "Undef",
-    }
+    value.kind_name()
 }
 
 /// The magnitude that would be written in front of `unit`, but ONLY when it

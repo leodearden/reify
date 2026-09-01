@@ -112,40 +112,15 @@ fn classify_undef(
 }
 
 /// A short human-readable label for the kind of a defined `Value`.
+///
+/// Delegates to [`Value::kind_name`] for every plain arm; the two enriched
+/// arms below (`Scalar<{dimension}>`, `Enum<{type_name}>`) are the only
+/// local special cases this crate needs.
 fn value_kind_label(v: &Value) -> String {
     match v {
-        Value::Bool(_) => "Bool".to_string(),
-        Value::Int(_) => "Int".to_string(),
-        Value::Real(_) => "Real".to_string(),
-        Value::String(_) => "String".to_string(),
         Value::Scalar { dimension, .. } => format!("Scalar<{}>", dimension),
         Value::Enum { type_name, .. } => format!("Enum<{}>", type_name),
-        Value::Tensor(_) => "Tensor".to_string(),
-        Value::Matrix(_) => "Matrix".to_string(),
-        Value::List(_) => "List".to_string(),
-        Value::Set(_) => "Set".to_string(),
-        Value::Map(_) => "Map".to_string(),
-        Value::Option(_) => "Option".to_string(),
-        Value::Point(_) => "Point".to_string(),
-        Value::Vector(_) => "Vector".to_string(),
-        Value::Complex { .. } => "Complex".to_string(),
-        Value::Orientation { .. } => "Orientation".to_string(),
-        Value::Frame { .. } => "Frame".to_string(),
-        Value::Transform { .. } => "Transform".to_string(),
-        Value::Plane { .. } => "Plane".to_string(),
-        Value::Axis { .. } => "Axis".to_string(),
-        Value::Direction { .. } => "Direction".to_string(),
-        Value::BoundingBox { .. } => "BoundingBox".to_string(),
-        Value::Range { .. } => "Range".to_string(),
-        Value::Field { .. } => "Field".to_string(),
-        Value::Lambda { .. } => "Lambda".to_string(),
-        Value::SampledField(_) => "SampledField".to_string(),
-        Value::StructureInstance(_) => "StructureInstance".to_string(),
-        Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
-        Value::AffineMap { .. } => "AffineMap".to_string(),
-        Value::Selector(_) => "Selector".to_string(),
-        Value::Feature(_) => "Feature".to_string(), // task 4808 / P1 γ
-        Value::Undef => "Undef".to_string(),
+        other => other.kind_name().to_string(),
     }
 }
 

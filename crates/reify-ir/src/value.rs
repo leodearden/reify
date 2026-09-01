@@ -2319,6 +2319,53 @@ impl Value {
         matches!(self, Value::Bool(_))
     }
 
+    /// The bare discriminant name for this value's variant (e.g. `"Scalar"`,
+    /// `"BoundingBox"`), with NO payload interpolated.
+    ///
+    /// This is the single source of truth for `Value`'s variant-name table —
+    /// see the module-level rationale in `ri_literal.rs`'s and
+    /// `reify-constraints`'s callers, which both delegate here rather than
+    /// spelling out their own copy of this match. Exhaustive with no `_`
+    /// arm, so adding a new `Value` variant is a compile error here (and at
+    /// every delegating call site) until the new arm is added — the same
+    /// shape [`Value::format_hover`] already uses.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Value::Bool(_) => "Bool",
+            Value::Int(_) => "Int",
+            Value::Real(_) => "Real",
+            Value::String(_) => "String",
+            Value::Scalar { .. } => "Scalar",
+            Value::Enum { .. } => "Enum",
+            Value::List(_) => "List",
+            Value::Set(_) => "Set",
+            Value::Map(_) => "Map",
+            Value::Option(_) => "Option",
+            Value::Field { .. } => "Field",
+            Value::Lambda { .. } => "Lambda",
+            Value::Tensor(_) => "Tensor",
+            Value::Point(_) => "Point",
+            Value::Vector(_) => "Vector",
+            Value::Complex { .. } => "Complex",
+            Value::Orientation { .. } => "Orientation",
+            Value::Frame { .. } => "Frame",
+            Value::Transform { .. } => "Transform",
+            Value::Plane { .. } => "Plane",
+            Value::Axis { .. } => "Axis",
+            Value::Direction { .. } => "Direction",
+            Value::BoundingBox { .. } => "BoundingBox",
+            Value::Range { .. } => "Range",
+            Value::Matrix(_) => "Matrix",
+            Value::SampledField(_) => "SampledField",
+            Value::StructureInstance(_) => "StructureInstance",
+            Value::GeometryHandle { .. } => "GeometryHandle",
+            Value::AffineMap { .. } => "AffineMap",
+            Value::Selector(_) => "Selector",
+            Value::Feature(_) => "Feature",
+            Value::Undef => "Undef",
+        }
+    }
+
     /// Format this value for user-friendly display (e.g., hover tooltips).
     ///
     /// Unlike the [`Display`](std::fmt::Display) impl which shows raw
