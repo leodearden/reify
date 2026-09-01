@@ -61,7 +61,7 @@ pub enum NodeCommitmentOverride {
 
 /// Per-node commitment policy overrides, settable per instance and per type.
 ///
-/// Implements the precedence chain from architecture §7.3 (lines 751–767):
+/// Implements the precedence chain from architecture §7.3:
 ///   1. **Instance override** — highest priority; set via [`set_instance`](Self::set_instance)
 ///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
 ///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
