@@ -1429,6 +1429,15 @@ fn seed_box_from_intervals(
 /// teaching [`derive_from_expr`] the missing shapes, not tightening the test
 /// here.
 ///
+/// That consequence is PINNED, not merely narrated (review suggestion 2):
+/// `gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved`
+/// (`tests/cost_robustness_tradeoff_blend.rs`) builds exactly the losing
+/// shape — a genuinely unbounded upper side plus ONE redundant, unreadable
+/// conjunct mentioning the same param — and measures both arms: without the
+/// conjunct every λ errors `ConstraintNonUnique`; with it every λ reports
+/// `Solved { unique: true }`, λ=0 landing on [`default_bounds_for`]'s 10 m
+/// `Length` ceiling. Re-deciding the rule means re-deciding that test.
+///
 /// Conjuncts are split on `And` before the test, by the SAME
 /// [`for_each_leaf_conjunct`] walk [`derive_param_intervals`] drives — one
 /// recursion, so the two cannot disagree about what a leaf is (review

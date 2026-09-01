@@ -629,3 +629,123 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
         ),
     }
 }
+
+/// The ACCEPTED RISK of the esc-5711-3 abstention, pinned in the direction
+/// that actually LOSES safety — the half `gamma_flat_blend_over_bracket_is_
+/// accepted_as_unique` does not reach (review suggestion 2).
+///
+/// `params_in_underivable_constraints` is deliberately general: a strict auto
+/// mentioned by ANY constraint the derivation cannot read abstains, including
+/// one whose missing side really is `default_bounds_for`'s. The unit tests
+/// pin the set-building half and `strict_autos_constraint_bracketed_abstains_
+/// for_underivable_param` pins the predicate, but nothing pinned the COMPOSED
+/// verdict for a model that is genuinely unbounded on a side AND carries one
+/// unreadable conjunct. This is that model.
+///
+/// The two arms are the SAME model up to one extra constraint, so the contrast
+/// is the whole point:
+///
+/// - CONTROL (`t > 1mm` alone) — the shape of
+///   `gamma_strict_auto_one_sided_stays_non_unique` and of
+///   `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`: t's upper side
+///   comes from `default_bounds_for`, so every λ errors `ConstraintNonUnique`.
+/// - ABSTENTION DOOR (`t > 1mm ∧ 2*t > 1mm`) — the added conjunct is REDUNDANT
+///   (it restates `t > 0.5mm`, already implied) and changes the feasible region
+///   not at all, but it is a COEFFICIENT form, so the derivation cannot read
+///   it, `t` lands in the abstention set, and the missing upper side stops
+///   counting as evidence. Every λ now reports `Solved { unique: true }`.
+///
+/// MEASURED at the same commit as this test, and this is the safety loss:
+/// λ=0 resolves `t = 10.0 m` — literally `default_bounds_for(Length)`'s ceiling,
+/// a value pinned by a solver-internal default the user never authored, for a
+/// mm-scale part. λ=0.5 and λ=1 resolve `t = 1.1 mm` (cost pulls to the lower
+/// bound). That is the SAME regression class `gamma_strict_auto_one_sided_
+/// stays_non_unique` exists to block — a loud error becoming a silent 10 m —
+/// reached through the abstention door rather than through a blanket
+/// `return true`.
+///
+/// It is accepted rather than fixed because the alternative direction of error
+/// is worse: reading a blind spot as evidence was measured to REJECT valid,
+/// bounded models (the three `..._is_not_non_unique` fixtures above). Narrowing
+/// it means teaching `derive_from_expr` the missing shapes — coefficient forms
+/// first, which would close this exact fixture — not tightening the abstention
+/// test. Tracked as task #6465 (γ quality: seed-invariance, or a precise
+/// diagnostic for default-bounds-determined γ models). Do not re-file.
+///
+/// A CHARACTERISATION test: it asserts today's behaviour, not desired
+/// behaviour. If a future change makes this error again, that is progress —
+/// re-decide it deliberately here and in `params_in_underivable_constraints`'
+/// "ACCEPTED CONSEQUENCE" note, rather than discovering it as a surprise.
+#[test]
+fn gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+
+    for lambda in [0.0_f64, 0.5, 1.0] {
+        // CONTROL: `t > 1mm` alone — no abstention evidence, so the missing
+        // upper side is read as default-bounds-determined.
+        let control = strict_problem_with(
+            std::slice::from_ref(&t_id),
+            &t_id,
+            lambda,
+            vec![gt_expr(&t_id, 0.001)],
+        );
+        match DimensionalSolver.solve(&control) {
+            SolveResult::Infeasible { diagnostics } => assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+                "λ={lambda}: control must stay ConstraintNonUnique; got {diagnostics:?}"
+            ),
+            other => panic!(
+                "λ={lambda}: the control arm is the same shape as \
+                 `gamma_strict_auto_one_sided_stays_non_unique` and must error; got {other:?}"
+            ),
+        }
+
+        // ABSTENTION DOOR: `2*t > 1mm` adds NO feasible-region information
+        // (it restates `t > 0.5mm`), only unreadability.
+        let with_blind_spot = strict_problem_with(
+            std::slice::from_ref(&t_id),
+            &t_id,
+            lambda,
+            vec![gt_expr(&t_id, 0.001), scaled_gt_expr(&t_id, 2.0, 0.001)],
+        );
+        match DimensionalSolver.solve(&with_blind_spot) {
+            SolveResult::Solved { values, unique } => {
+                assert!(
+                    unique,
+                    "λ={lambda}: ACCEPTED RISK — one unreadable conjunct mentioning `t` makes \
+                     its genuinely-unbounded upper side abstain, so a model that errors \
+                     without that conjunct reports unique instead"
+                );
+                let t_si = values
+                    .get(&t_id)
+                    .and_then(|v| v.as_f64())
+                    .expect("solved value for t missing or non-numeric");
+                if lambda == 0.0 {
+                    // Pinned as a MAGNITUDE, not the exact 10.0 measured, so a
+                    // blend/seed retune cannot red this on a technicality — the
+                    // fact being pinned is "orders of magnitude outside the
+                    // user's mm design scale", not the precise artifact value.
+                    assert!(
+                        t_si >= 1.0,
+                        "λ=0: the accepted loss is that `t` resolves to the \
+                         `default_bounds_for(Length)` ceiling (measured: 10.0 m) rather than \
+                         erroring. Got {t_si:.6e} m — if this is now mm-scale the abstention \
+                         no longer reaches the default box and this test needs re-deciding"
+                    );
+                } else {
+                    assert!(
+                        t_si > 0.001,
+                        "λ={lambda}: cost pulls `t` to its lower bound (measured: 1.1mm); it \
+                         must still satisfy `t > 1mm`, got {t_si:.6e} m"
+                    );
+                }
+            }
+            other => panic!(
+                "λ={lambda}: expected Solved via the abstention door (measured: \
+                 unique=true, t=10.0 m at λ=0 and t=1.1mm otherwise); got {other:?}"
+            ),
+        }
+    }
+}
