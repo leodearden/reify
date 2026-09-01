@@ -155,7 +155,9 @@ class where the intuition "small feature ⇒ worse ratio" is backwards.
 
 Every class shows a **floor** at coarse `d`: achieved stops falling because the
 tessellator has hit its minimum facet count. Sphere is pinned at `6.006e-2` for all
-`d ≥ 50 mm`; cone is identical at 100 mm and 20 mm; torus identical at 40 mm and 20 mm.
+`d ≥ 50 mm`; cone is identical at 100 mm and 20 mm; torus identical at 40 mm and 20 mm;
+nurbs_surface identical at 400 mm, 200 mm and 100 mm (§1.5) — the sharpest instance here,
+since its entire mandated topmost rung (100 mm) sits inside the floor.
 In the floor regime `a/d < 1` **trivially**, so a coarse sweep reports a falsely
 comfortable envelope. This is the trap the non-analytic classes could not escape (§2.4).
 
