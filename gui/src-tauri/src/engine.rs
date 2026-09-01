@@ -3176,6 +3176,15 @@ impl EngineSession {
     ///
     /// Distinct from [`Self::is_stale`], which reports the *hot-reload* banner
     /// (`last_reload_error`) rather than the recorded failing SOURCE.
+    ///
+    /// Gated to match its consumers, exactly as [`source_key_matches_path`] is:
+    /// the only production caller is `debug_server`, which is itself
+    /// `#[cfg(feature = "gui")]` in lib.rs, so an ungated definition is dead
+    /// code in the default-feature build that `scripts/verify.sh`'s
+    /// `clippy … -- -D warnings` pass runs. `test` is in the `any` so
+    /// `engine_tests::holds_rejected_source_tracks_the_compile_failure` still
+    /// runs in BOTH feature configurations rather than only under `gui`.
+    #[cfg(any(test, feature = "gui"))]
     pub(crate) fn holds_rejected_source(&self) -> bool {
         self.compile_failure.is_some()
     }
