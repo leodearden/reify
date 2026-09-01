@@ -520,6 +520,66 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
     }
 }
 
+/// Pin the premise the shared corpus helpers rest on: THIS crate's
+/// manifest-relative path to `examples/` and
+/// [`reify_test_support::examples_corpus::examples_dir`] name the same
+/// directory.
+///
+/// # Why this test must outlive the migration to the shared module
+///
+/// `relative_to_examples_dir` strips a **lexical** prefix, and after the hoist
+/// that prefix is spelled from reify-test-support's manifest dir
+/// (`…/crates/reify-test-support/../../examples`), not this crate's
+/// (`…/crates/reify-compiler/../../examples`). The two strings differ by
+/// construction and only the directories they resolve to are expected to match
+/// — which holds only while reify-test-support sits at the same depth as this
+/// crate. A future crate relocation or workspace re-layout that changed that
+/// depth would make `examples_dir()` name a wrong or non-existent directory,
+/// and every corpus guard in this file would silently degrade to walking
+/// nothing rather than failing. This is the only test that pins that premise
+/// for reify-compiler; the premise is per-consumer-crate (each crate's
+/// `CARGO_MANIFEST_DIR` is its own), so reify-eval carries its own counterpart.
+///
+/// The file-count comparison is what makes "silently degrade to walking
+/// nothing" unrepresentable: a shared helper pointing at a same-named but
+/// different directory could not match it.
+#[test]
+fn shared_examples_dir_agrees_with_this_crates_manifest_relative_path() {
+    let local = std::fs::canonicalize(EXAMPLES_DIR)
+        .unwrap_or_else(|e| panic!("canonicalize this crate's EXAMPLES_DIR ({EXAMPLES_DIR}): {e}"));
+    let shared_raw = reify_test_support::examples_corpus::examples_dir();
+    let shared = std::fs::canonicalize(shared_raw).unwrap_or_else(|e| {
+        panic!(
+            "canonicalize reify_test_support::examples_corpus::examples_dir() ({}): {e}",
+            shared_raw.display()
+        )
+    });
+
+    assert_eq!(
+        local, shared,
+        "the shared corpus root and this crate's own manifest-relative path must resolve to \
+         the same directory — the two lexical spellings differ by construction, so only the \
+         canonicalized forms are compared. If reify-test-support ever moves to a different \
+         depth under the repo root, examples_dir() silently starts naming the wrong \
+         directory and every corpus guard in this file goes vacuous."
+    );
+
+    let local_count = discover_ri_files().len();
+    let shared_count = reify_test_support::examples_corpus::discover_ri_files(shared_raw).len();
+    assert_eq!(
+        local_count, shared_count,
+        "the two walks must discover the same number of `.ri` files ({local_count} local vs \
+         {shared_count} shared); an equal-but-empty pair would also mean the corpus root is \
+         wrong, which the assertion above rules out"
+    );
+    assert!(
+        shared_count > 0,
+        "the shared walk discovered no `.ri` files under {} — a corpus walk that degraded to \
+         walking nothing would make every guard in this file vacuously pass",
+        shared_raw.display()
+    );
+}
+
 /// Freshness ratchet for [`MIN_EXERCISED_RI_FILES`]: this floor is a
 /// discovery-regression TRIPWIRE, not a corpus-size target, so it only
 /// stays useful while it tracks the live corpus size. Checking this
