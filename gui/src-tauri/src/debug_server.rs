@@ -1990,10 +1990,24 @@ async fn handle_reify_set_parameter(
 ///
 /// `update_source` reaches `EngineSession::post_engine_call_telemetry` by
 /// construction, so mechanism 1 of the §6.2 pair needs no extra call here;
-/// the shared seam supplies mechanism 2. On a compile rejection
-/// `update_source` leaves the session completely unchanged and returns `Err`,
-/// which short-circuits the seam before the refresh — so there is no
-/// half-advanced baseline.
+/// the shared seam supplies mechanism 2.
+///
+/// # What a compile rejection actually leaves behind
+///
+/// On a compile rejection `update_source` returns `Err`, which short-circuits
+/// the seam before the refresh — so there is no half-advanced baseline. It
+/// does NOT, however, leave the session unchanged: it calls
+/// `record_compile_failure` with the REJECTED text, which
+/// `build_files_with_live_edit` then splices into `files[].content` to hold
+/// the one-snapshot invariant. What it leaves untouched is the COMMITTED
+/// state, and that is the whole of why the baseline cannot half-advance.
+///
+/// The distinction is load-bearing rather than pedantic: the narrower claim is
+/// what makes it visible that a subsequent `reify_save_file` would otherwise
+/// PERSIST that rejected source over the user's canonical `.ri`. The interlock
+/// against it is [`EngineSession::holds_rejected_source`], checked in
+/// [`reify_save_file_on_engine_and_refresh_baseline`] (task #5097 δ, review
+/// finding).
 ///
 /// Extracted from [`handle_reify_update_source`] so the routing is
 /// unit-testable without a [`DebugServerState`]/`AppHandle`.
@@ -2235,12 +2249,38 @@ async fn handle_reify_update_source(
 /// holds UNIFORMLY for all five write tools and θ's structural anchor has no
 /// exceptions to enumerate. The refresh is free here — nothing changed, so
 /// the delta it computes is empty.
+///
+/// **It persists the SESSION's buffer, not a caller-supplied one** — and
+/// `files[0].content` is not unconditionally the committed text: after a
+/// failed `reify_update_source` it is the source the engine REJECTED (see
+/// [`reify_update_source_on_engine_and_refresh_baseline`]'s note on what a
+/// compile rejection leaves behind). So a rejected buffer is REFUSED here via
+/// [`EngineSession::holds_rejected_source`] rather than written. Recovery is a
+/// `reify_update_source` that compiles, or a native edit the FS-watcher
+/// reloads. The human GUI save path is unaffected: it carries the frontend's
+/// own content rather than reading it back out of the engine.
 pub async fn reify_save_file_on_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     file_path: Option<String>,
 ) -> Result<crate::types::GuiState, String> {
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        // The write-back interlock, FIRST — ahead of `build_gui_state`, so the
+        // refusal is atomic: no `save_file_impl`, and the seam short-circuits
+        // before the baseline refresh (the same no-half-advance shape a
+        // compile rejection already has). Covers BOTH the default-target and
+        // explicit-target branches: writing source the engine rejected to a
+        // NEW path while answering `success: true` is the same lie, just less
+        // destructive.
+        if s.holds_rejected_source() {
+            return Err(
+                "refusing to save: the in-memory buffer does not compile (the engine \
+                 recorded a compile failure, and build_gui_state surfaces that REJECTED \
+                 source in files[].content). Recover with a reify_update_source that \
+                 compiles, or edit the file directly and let the FS-watcher reload it."
+                    .to_string(),
+            );
+        }
         let active = s.canonical_file_path().map(|p| p.to_string_lossy().into_owned());
         let gs = s.build_gui_state()?;
         // Single-file model, exactly as the reify-mcp surface reads it.

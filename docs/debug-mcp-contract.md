@@ -112,7 +112,13 @@ uses (#5757), with the value written back preserving the REPLACED literal's
 unit. `reify_update_source` is the live-buffer edit: it recompiles in memory
 and writes no disk, so nothing reconciles the editor buffer on its own —
 which is why its `apply_gui_state` push carries the optional
-`file: {path, content}` member (see `write_tool_frontend_payload`).
+`file: {path, content}` member (see `write_tool_frontend_payload`). That
+member's `path` is the SESSION's canonical path
+(`resolve_update_source_push_path`), never the caller's raw spelling: the
+active-file guard below deliberately accepts non-canonical spellings, and
+`canonicalizeKey` returns any non-absolute path unchanged, so echoing one back
+would fork a second editor tab while the real one kept stale text (the
+duplicate-tab shape of #3892).
 
 **`reify_update_source` is ACTIVE-FILE ONLY.** `EngineSession::update_source`
 deliberately ignores the caller's path once a `load_file` has set
@@ -147,6 +153,24 @@ name; keep it that way so the two surfaces' envelopes stay in parity.
 engine state and push nothing to the frontend, but they still route through
 `write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds uniformly
 across all five and the structural anchor has no exceptions to enumerate.
+
+**`reify_save_file` refuses a buffer the engine rejected.** It persists the
+SESSION's buffer, not a caller-supplied one — and `GuiState.files[0].content`
+is *not* unconditionally the committed text. After a failed
+`reify_update_source`, `EngineSession::record_compile_failure` has stored the
+REJECTED source and `build_files_with_live_edit` splices it into that entry, so
+`files[]` and `compile_diagnostics` describe the same snapshot (right for a
+read-only `engine_state` read; catastrophic for a write-back). So the save
+consults `EngineSession::holds_rejected_source` FIRST — ahead of
+`build_gui_state`, making the refusal atomic — and returns
+`"refusing to save: the in-memory buffer does not compile …"` for BOTH the
+default target and an explicit "save as" target; writing non-compiling text to
+a new path while answering `success: true` is the same lie, just less
+destructive. The interlock is transient, not a wedge: any `reify_update_source`
+that compiles clears the failure via `commit_state`, as does a native
+Write/Edit the FS-watcher reloads. The human GUI save path is unaffected — it
+carries the frontend's own content rather than reading it back out of the
+engine.
 
 ### REST-only handlers (not advertised in tools/list)
 
