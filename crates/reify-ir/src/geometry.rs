@@ -1021,6 +1021,37 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         /// Curated face selection. Empty = all draftable faces (3-arg back-compat).
         faces: Vec<GeometryHandleId>,
+        /// Draft angle. The `Value`'s SI magnitude is RADIANS — see
+        /// [`GeometryOp::Rotate`] for the full angular unit contract
+        /// (INV-AD-4; #6184).
+        ///
+        /// This position is weaker than every site #6184 touched: being a
+        /// `Value` rather than an `f64`, it carries neither a `_rad` suffix nor
+        /// an f64's implied convention, so the contract has nowhere to live but
+        /// here. The kernel DISCARDS the dimension tag — `extract_f64`
+        /// in the `GeometryOp::Draft` dispatch arm
+        /// (`reify-kernel-occt/src/lib.rs`) takes the SI magnitude and hands
+        /// the bare f64 to `BRepOffsetAPI_DraftAngle::Add`, which reads
+        /// radians. `Value::angle(x)` and `Value::Real(x)` are therefore
+        /// DELIBERATELY equivalent here, not accidentally so: pinned at the
+        /// `Value` layer by `angle_and_real_agree_bit_exactly_under_as_f64`
+        /// (`reify-ir/src/value.rs`) and at real OCCT output by
+        /// `draft_angle_dimensioned_matches_bare_real_volume`
+        /// (`reify-kernel-occt/src/lib.rs`).
+        ///
+        /// **Not pinned:** that a draft angle of `0.1` means 0.1 RADIANS
+        /// rather than 0.1 degrees. Both tests above prove tag-transparency,
+        /// not magnitude, and `draft_angle_on_box` is a smoke test that
+        /// tolerates `OperationFailed`. The radian-vs-degree separation is
+        /// ~57x, so a behavioural pin is achievable — it needs a measured
+        /// numeric oracle over OCCT draft geometry and is filed as follow-up
+        /// work rather than guessed at here.
+        ///
+        /// **Ungated today**, like [`GeometryOp::Arc`]'s two angles: a bare
+        /// number is silently radians. `draft.angle` is chartered for the
+        /// `angle_spec()` typed-`Angle` gate by live task #5780, leaf δ of
+        /// `docs/prds/v0_6/angle-units-surface-convergence.md` (whose C1
+        /// gated-position list carries this position and Arc's together).
         angle: Value,
         plane: GeometryHandleId,
     },
