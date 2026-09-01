@@ -197,6 +197,15 @@ _guard_exits_nonzero() {
     ! OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" bash "$GUARD" >/dev/null 2>&1
 }
 
+# _out_contains <haystack> <needle> — literal (grep -F semantics) substring
+# containment, used by every output assert in this file.
+#
+# Extracted verbatim from _guard_output_names' inline pipeline so the primitive
+# is nameable and directly testable by the self-check section below.
+_out_contains() {
+    printf '%s' "$1" | grep -qF -- "$2"
+}
+
 # _guard_output_names <lib_dir> <include_dir> <needle>...
 # Combined stdout+stderr of the guard must contain every needle (literal).
 _guard_output_names() {
@@ -393,6 +402,112 @@ _setup_dev_occt_version() {
 # non-empty assert lives with the SONAME section below.
 _ACCEPTED_SONAMES="$(_bash_guard_array OCCT_ACCEPTED_SONAMES)"
 _ACCEPTED_FIRST="$(printf '%s\n' "$_ACCEPTED_SONAMES" | head -1)"
+
+# ---------------------------------------------------------------------------
+# 0. SELF-CHECK — the needle-containment primitive itself.
+#
+# Placed AHEAD of every guard case deliberately: a broken containment primitive
+# would otherwise surface as a random guard assertion failing, and be
+# attributed to the guard (or to /opt/reify-deps contention, or to arm
+# ordering) rather than to the test harness. That misattribution is exactly
+# what kept this flake unroot-caused for a full task cycle.
+#
+# WHAT IS UNDER TEST: `_out_contains` must report containment DETERMINISTICALLY.
+# A `printf | grep -q` implementation does not: `grep -q` exits the instant it
+# matches and closes the pipe, the bash-builtin `printf` writer is killed by
+# SIGPIPE (141), and `set -o pipefail` (line 96 of this file) makes the
+# PIPELINE report 141 — so a MATCH is returned as a MISS. Measured over 20000
+# iterations on the real ~1.1KB guard payload: 28 misses, PIPESTATUS "141 0"
+# (writer killed, grep succeeded) every time — 0.14% per call, ~2.8% per run
+# across this file's ~20 output asserts.
+#
+# WHY THE LOOP IS STATISTICAL AND NOT A SINGLE DETERMINISTIC CASE: an
+# oversized (>64KiB) payload with the needle at byte 0 was MEASURED not to
+# reproduce it (0 misses / 50 at 200011 bytes), so no deterministic behavioural
+# reproduction exists. At the measured 0.0014/call rate, N=5000 gives
+# P(false pass | defect present) = (1-0.0014)^5000 ~= 9e-4. The loop breaks on
+# the FIRST miss, so RED is cheap; the fixed form is fork-free, so GREEN pays
+# ~0.7s for the full 5000.
+#
+# The paired STRUCTURAL assert makes regression detection deterministic even on
+# a statistically lucky run: the primitive's body must contain no `| grep`
+# pipeline at all, which is the hazard CLASS rather than one instance of it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 0: self-check — the needle-containment primitive is not itself flaky ---"
+
+# A real guard payload (lib resolves, headers do not), captured ONCE — the same
+# ~1.1KB stdout+stderr every output assert in this file is matched against.
+_SELF_LIB_OK="$(_mk_lib_fixture selfcheck-lib "$_ACCEPTED_FIRST")"
+_SELF_INC_MISSING="$(_mk_empty_fixture selfcheck-include)"
+_SELF_PAYLOAD="$(OCCT_LIB_DIR="$_SELF_LIB_OK" OCCT_INCLUDE_DIR="$_SELF_INC_MISSING" bash "$GUARD" 2>&1 || true)"
+_SELF_NEEDLE="Standard_Failure.hxx"
+_SELF_STRESS_N=5000
+
+assert "self-check captured a non-empty real guard payload to match against" \
+    test -n "$_SELF_PAYLOAD"
+
+# Reference oracle, asserted BEFORE the stress loop so that loop can only ever
+# fail for the SIGPIPE reason and never because the needle is genuinely absent.
+# Run under `bash -c` (default shell options — no pipefail) using bash's own
+# fork-free `==` pattern match, which has no pipeline and cannot take SIGPIPE.
+assert "self-check needle '$_SELF_NEEDLE' is genuinely PRESENT in that payload (bash [[ == * ]] oracle)" \
+    bash -c '[[ "$1" == *"$2"* ]]' _ "$_SELF_PAYLOAD" "$_SELF_NEEDLE"
+
+# _containment_is_deterministic — $_SELF_STRESS_N calls of the primitive on a
+# payload/needle pair already proven to match. Breaks on the FIRST miss and
+# reports the iteration index; the echoes land in assert's per-assert tmpfile,
+# so a failure carries its own evidence in the archived verify log.
+_containment_is_deterministic() {
+    local i
+    for ((i = 1; i <= _SELF_STRESS_N; i++)); do
+        if ! _out_contains "$_SELF_PAYLOAD" "$_SELF_NEEDLE"; then
+            echo "_out_contains reported a MISS at iteration $i of $_SELF_STRESS_N"
+            echo "needle: $_SELF_NEEDLE"
+            echo "payload bytes: ${#_SELF_PAYLOAD}"
+            echo "the needle IS present (asserted above), so this is the"
+            echo "pipefail + SIGPIPE defect, not a real miss."
+            return 1
+        fi
+    done
+    return 0
+}
+
+assert "_out_contains reports a PRESENT needle deterministically over $_SELF_STRESS_N calls" \
+    _containment_is_deterministic
+
+# Negative control, run in THIS shell (the primitive is a shell function, not
+# an exported command, so it is not reachable from a `bash -c` child): the
+# primitive must still MISS a needle that is genuinely absent. Without this, a
+# bare `return 0` would satisfy the stress assert above.
+_containment_negative_control() {
+    ! _out_contains "$_SELF_PAYLOAD" "__no_such_needle_6493__"
+}
+
+assert "_out_contains still reports a genuinely ABSENT needle as a miss (negative control)" \
+    _containment_negative_control
+
+# _containment_has_no_grep_pipeline — DETERMINISTIC structural pin on the
+# hazard class. `declare -f` re-renders the live function body, so this reads
+# the primitive actually in force rather than a grep of the file. It is the
+# half that still reds on a statistically lucky run of the loop above, and it
+# is what stops the fork-free form being "simplified" back into a pipeline.
+_containment_has_no_grep_pipeline() {
+    local body
+    body="$(declare -f _out_contains)" || return 1
+    [ -n "$body" ] || return 1
+    case "$body" in
+        *'| grep'* | *'|grep'*)
+            echo "_out_contains' body still contains a grep pipeline:"
+            printf '%s\n' "$body"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+assert "_out_contains' body contains no '| grep' pipeline (no pipefail/SIGPIPE exposure)" \
+    _containment_has_no_grep_pipeline
 
 # ---------------------------------------------------------------------------
 # 1. Guard script exists and is executable
