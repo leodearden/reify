@@ -10,18 +10,16 @@
 //! records in-layer and inter-layer bead adjacency.
 //!
 //! This module stores native G-code millimetres / mm·min⁻¹ / °C exactly as
-//! parsed, losslessly. Its two consumers each convert for themselves, so the
-//! native units stop here and are not a unit regime anyone else inherits:
+//! parsed, losslessly: it is a *parser* output that owes fidelity to its
+//! source, and `serialize_toolpath_canonical` renders those values at 6
+//! decimals in a determinism golden. The native units stop here — each consumer
+//! converts for itself, so this is not a regime anyone else inherits:
 //!
 //!   * [`crate::r0`] — the Rust-side consumer that builds the constitutive
 //!     field — reads these fields as millimetres and applies its own `MM_TO_M`;
 //!   * `reify_eval::compute_targets::fdm_slice::toolpath_to_value` — the
-//!     DSL-visible projection — converts to SI at the marshalling boundary,
-//!     emitting dimensioned `Value::Scalar`s and `Point3<Length>`.
-//!
-//! The two regimes are a deliberate split, not an inconsistency: the struct is
-//! a parser output that owes fidelity to its source, the DSL Value is a
-//! projection into model space, where the language's rule is SI + dimensioned.
+//!     DSL-visible projection — converts to SI at the marshalling boundary and
+//!     is the canonical statement of that regime (see its doc comment).
 //!
 //! # Why this lives here and not in reify-gcode
 //!
@@ -130,7 +128,9 @@ pub struct Bead {
     /// `bead.nominal_temp > 0K` is TRUE for every such toolpath and is not an
     /// "is a temperature known" test. Making the distinction representable
     /// (`Option<f64>`) would ripple through the parser and both r0 consumers,
-    /// and is deliberately not done here.
+    /// and is deliberately not done here; it is filed as follow-up ticket
+    /// `tkt_0RT4PVCX2Y5ZA5HAPGKJEZT85Y` (escalation id `agent-followup-6301`),
+    /// which also covers the DSL-surface half of the gap.
     pub nominal_temp: f64,
     /// Active feedrate in mm·min⁻¹ when the bead began extruding.
     pub speed: f64,

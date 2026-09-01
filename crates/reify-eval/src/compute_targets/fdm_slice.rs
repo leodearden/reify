@@ -42,20 +42,12 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// explicit `* 1000.0` (see `read_slice_settings`, and the STL write reached
 /// from `export_body_stl`).
 ///
-/// Task #6301 surveyed every OTHER G-code-derived marshalling into a DSL
-/// `Value` for this same mislabelled-unit shape, recorded here so it is not
-/// redone: `as_printed_material_r0.rs` already applies its own `MM_TO_M` in
-/// `toolpath_aabb` and emits `point3_length`, and its `Value::Field { source:
-/// AsPrintedZones }` payload is SI-in-metres per
-/// `reify_fdm::zone::ZoneProcessParams` — clean; `as_printed_material.rs`
-/// touches no G-code at all (its AABB comes from the realization mesh, already
-/// SI) — clean; the `reify-fdm` crate has no `reify-ir` dependency, so nothing
-/// in it can produce a `Value`, and `r0.rs` converts on its own — clean. The
-/// one remaining bare-`Real` G-code→`Value` site is `reify-stdlib`'s
-/// `trajectory::gcode_import::waypoint_to_value`, which is NOT this defect: its
-/// payload is an untyped `Value::Map` behind the bare `Profile` marker in
-/// `stdlib/trajectory.ri`, so no `.ri` declaration claims a dimension for it —
-/// undimensioned rather than mislabelled. Out of scope here, tracked as #6478.
+/// Every other G-code→`Value` marshalling was surveyed under task #6301 and
+/// found already-converting; the one remaining unconverted seam is
+/// `reify-stdlib`'s `trajectory::gcode_import::waypoint_to_value`, out of scope
+/// here and tracked as #6478. The survey's per-file findings live in those two
+/// task records rather than here: four of the five files it characterises are
+/// in other crates, so restating them at this `const` would rot silently.
 const MM_TO_M: f64 = 1.0e-3;
 
 /// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
@@ -87,8 +79,11 @@ const DEG_C_TO_K_OFFSET: f64 = 273.15;
 ///
 /// # Units: the DSL-visible surface is SI and dimensioned
 ///
-/// This projection converts at the boundary, and does so for EVERY dimensional
-/// field — a half-SI surface would leave the rule unstatable:
+/// THIS FUNCTION IS THE UNIT-REGIME BOUNDARY, and this is its canonical
+/// statement — `reify_fdm::Toolpath` stays in native G-code millimetres /
+/// mm·min⁻¹ / °C (see that struct's docs for why), and the projection built
+/// here converts, for EVERY dimensional field, because a half-SI surface would
+/// leave the rule unstatable:
 ///
 /// - `width` / `height` / `layer_z` / `Layer.z` → `Length` (SI metres)
 /// - the centerline → `Point3<Length>`, the shape `resolve_point3_length_arg`
@@ -99,16 +94,11 @@ const DEG_C_TO_K_OFFSET: f64 = 273.15;
 ///
 /// `layer_index` / `index` / `bead_indices` stay `Int`: dimensionless by
 /// nature. Because each field's declared type now names its own unit, there is
-/// no carve-out left to remember or to document.
-///
-/// `reify_fdm::Toolpath` deliberately stays in native G-code millimetres /
-/// mm·min⁻¹: it is a *parser* output whose job is lossless fidelity to the
-/// source, and `serialize_toolpath_canonical` renders those values at 6
-/// decimals in a determinism golden. The two regimes are a deliberate split at
-/// this marshalling boundary, not an inconsistency — `reify_fdm::r0` performs
-/// its own independent mm→SI on the Rust struct (its own `MM_TO_M`) and never
-/// observes this Value, because `fdm::as_printed_material_r0` consumes raw
-/// G-code text and re-parses it.
+/// no carve-out left to remember or to document. The `.ri` half of the
+/// contract is `crates/reify-compiler/stdlib/fdm_slice.ri`, whose declared
+/// field types must agree with the list above; `fdm_slice_e2e.rs`'s
+/// `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime` is what
+/// keeps the two in agreement.
 pub fn toolpath_to_value(tp: &Toolpath) -> Value {
     structure(
         "Toolpath",
@@ -689,20 +679,56 @@ mod tests {
     }
 
     /// Assert that `v` is a `Value::Point` of EXACTLY three LENGTH-dimensioned
-    /// `Value::Scalar` components — the shape `resolve_point3_length_arg`
-    /// (`geometry_ops.rs`) requires of any point fed to a geometry builtin.
-    /// Bare-`Real` components fail it (returning None + a Warning), so a
-    /// centerline built from them is a dead end in the language; this is the
-    /// property that makes `Bead.centerline` actually usable.
-    fn assert_point3_length(v: &Value, expected_m: [f64; 3], what: &str) {
+    /// `Value::Scalar` components, returning their SI-metre magnitudes — the
+    /// shape `resolve_point3_length_arg` (`geometry_ops.rs`) requires of any
+    /// point fed to a geometry builtin. Bare-`Real` components fail it
+    /// (returning None + a Warning), so a centerline built from them is a dead
+    /// end in the language; this is the property that makes `Bead.centerline`
+    /// actually usable.
+    ///
+    /// The single shape check for marshalled centerline points: callers that
+    /// know the expected coordinates use [`assert_point3_length`], callers that
+    /// only bound them (the end-to-end SI-envelope check) use this directly.
+    fn point3_length_coords(v: &Value, what: &str) -> [f64; 3] {
         match v {
             Value::Point(coords) => {
                 assert_eq!(coords.len(), 3, "{what}: expected exactly 3 components");
-                for (i, (c, e)) in coords.iter().zip(expected_m.iter()).enumerate() {
-                    assert_length(c, *e, &format!("{what} component {i}"));
+                let mut out = [0.0_f64; 3];
+                for (i, c) in coords.iter().enumerate() {
+                    match c {
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
+                            assert_eq!(
+                                *dimension,
+                                DimensionVector::LENGTH,
+                                "{what} component {i}: expected LENGTH, got {dimension:?}"
+                            );
+                            out[i] = *si_value;
+                        }
+                        other => panic!(
+                            "{what} component {i}: expected a dimensioned Scalar, got {other:?}"
+                        ),
+                    }
                 }
+                out
             }
             other => panic!("{what}: expected a Value::Point, got {other:?}"),
+        }
+    }
+
+    /// [`point3_length_coords`] plus an expected-value check on each coordinate
+    /// (to [`assert_scalar`]'s relative tolerance).
+    fn assert_point3_length(v: &Value, expected_m: [f64; 3], what: &str) {
+        let coords = point3_length_coords(v, what);
+        for (i, (c, e)) in coords.iter().zip(expected_m.iter()).enumerate() {
+            let what_i = format!("{what} component {i}");
+            let tol = e.abs() * 1e-12;
+            assert!(
+                (c - e).abs() <= tol,
+                "{what_i}: expected si_value ~= {e} (tol {tol}), got {c}"
+            );
         }
     }
 
@@ -816,14 +842,6 @@ mod tests {
             "1800 mm/min must marshal to exactly 0.03 m/s; got {speed:?} \
              (multiplying by a rounded 1.0/60_000.0 reciprocal yields \
              0.030000000000000002)"
-        );
-        // Control: the reciprocal-multiply spelling this test rules out really
-        // does differ, so the assertion above is not vacuous on some platform
-        // where both happen to round the same way.
-        assert_ne!(
-            1800.0_f64 * (1.0_f64 / 60_000.0_f64),
-            1800.0_f64 / 60_000.0_f64,
-            "the two spellings must genuinely differ for this pin to bite"
         );
     }
 
@@ -1130,37 +1148,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gcode_text_marshals_into_the_si_regime_end_to_end() {
-        /// The three SI-metre coordinates of a marshalled centerline point, after
-        /// checking the `Point3<Length>` shape `resolve_point3_length_arg` requires.
-        fn point_coords_m(v: &Value, what: &str) -> [f64; 3] {
-            match v {
-                Value::Point(coords) => {
-                    assert_eq!(coords.len(), 3, "{what}: expected exactly 3 components");
-                    let mut out = [0.0_f64; 3];
-                    for (i, c) in coords.iter().enumerate() {
-                        match c {
-                            Value::Scalar {
-                                si_value,
-                                dimension,
-                            } => {
-                                assert_eq!(
-                                    *dimension,
-                                    DimensionVector::LENGTH,
-                                    "{what} component {i}: expected LENGTH, got {dimension:?}"
-                                );
-                                out[i] = *si_value;
-                            }
-                            other => panic!(
-                                "{what} component {i}: expected a dimensioned Scalar, got {other:?}"
-                            ),
-                        }
-                    }
-                    out
-                }
-                other => panic!("{what}: expected a Value::Point, got {other:?}"),
-            }
-        }
-
         let dir = tempfile::tempdir().expect("tempdir");
         let counter = dir.path().join("run-count");
         let stub = write_stub_script(
@@ -1247,7 +1234,7 @@ mod tests {
                 centerline.len()
             );
             for (k, p) in centerline.iter().enumerate() {
-                let coords = point_coords_m(p, &format!("bead {i} centerline point {k}"));
+                let coords = point3_length_coords(p, &format!("bead {i} centerline point {k}"));
                 // The fixture's part occupies 0..10 mm in X/Y and 0.2..0.4 mm in Z, so
                 // in SI every coordinate lies within [0, 1.1e-2] m. Read as millimetres
                 // the same points are 0..10 — 1000x outside this envelope — which makes

@@ -72,22 +72,35 @@ fn slicer_on_path() -> bool {
     reify_fdm::discover_slicer(&path_var, reify_fdm::DEFAULT_SLICER_NAMES).is_some()
 }
 
-/// Read the `beads` field of a `Toolpath` `StructureInstance` value as a slice,
-/// asserting the value is a `Toolpath` structure carrying a `beads` List.
-fn toolpath_beads(tp: &Value) -> &[Value] {
-    let fields = match tp {
+/// Read a named field off a `StructureInstance` Value, asserting both the
+/// structure's `type_name` and the field's presence.
+fn struct_field<'a>(v: &'a Value, type_name: &str, field: &str) -> &'a Value {
+    match v {
         Value::StructureInstance(d) => {
             assert_eq!(
-                d.type_name, "Toolpath",
-                "fdm_slice output must be a `Toolpath` StructureInstance, got type_name {}",
+                d.type_name, type_name,
+                "expected a `{type_name}` StructureInstance, got type_name {}",
                 d.type_name
             );
-            &d.fields
+            d.fields.get(field).unwrap_or_else(|| {
+                panic!(
+                    "`{type_name}` must carry a `{field}` field; has: {:?}",
+                    d.fields.keys().collect::<Vec<_>>()
+                )
+            })
         }
-        other => panic!("fdm_slice output must be a StructureInstance, got {other:?}"),
-    };
-    match fields.get("beads") {
-        Some(Value::List(items)) => items,
+        other => panic!("expected a `{type_name}` StructureInstance, got {other:?}"),
+    }
+}
+
+/// Read the `beads` field of a `Toolpath` `StructureInstance` value as a slice,
+/// asserting the value is a `Toolpath` structure carrying a `beads` List.
+/// Delegates the structure-shape + field-presence half to [`struct_field`], so
+/// there is ONE place in this file that knows how a `StructureInstance` is
+/// unwrapped.
+fn toolpath_beads(tp: &Value) -> &[Value] {
+    match struct_field(tp, "Toolpath", "beads") {
+        Value::List(items) => items,
         other => panic!("Toolpath must carry a `beads` List field, got {other:?}"),
     }
 }
@@ -252,20 +265,26 @@ fn assert_compiles_clean(src: &str, what: &str) {
 }
 
 /// Assert `src` is REJECTED with a `ParamDefaultTypeMismatch` whose message
-/// renders the initializer's type as `rendered`.
+/// mentions the dimension token `token`.
 ///
 /// The escape hatch for types the binding check itself does not descend into:
-/// the rejection message spells the initializer type out in full
-/// (`Point3<Scalar[m]>` vs `Point3<Real>`), so a deliberate wrong-dimension
-/// binding turns an otherwise-invisible element type into an observable string.
-fn assert_rejection_renders_initializer_type(src: &str, rendered: &str, what: &str) {
+/// the rejection message spells the initializer type out, so a deliberate
+/// wrong-dimension binding turns an otherwise-invisible element dimension into
+/// an observable string. Deliberately matches the DIMENSION TOKEN only
+/// (`Scalar[m]`), not a full rendered type: the surrounding spelling
+/// (`Point3<…>`, the ordering of the two types in the message) is the
+/// diagnostic renderer's presentation choice, and pinning it would turn a
+/// cosmetic renderer change into a fake unit-regime failure.
+fn assert_rejection_mentions_dimension(src: &str, token: &str, what: &str) {
     let errors = compile_errors(src);
     assert!(
         errors.iter().any(|(code, msg)| *code
             == Some(DiagnosticCode::ParamDefaultTypeMismatch)
-            && msg.contains(rendered)),
-        "{what}: expected a ParamDefaultTypeMismatch naming the initializer type \
-         `{rendered}`, got: {errors:?}"
+            && msg.contains(token)),
+        "{what}: expected a ParamDefaultTypeMismatch whose message mentions the \
+         dimension token `{token}`. Either the field lost its dimension, OR the \
+         diagnostic's type renderer changed how it spells that dimension — check \
+         the second before concluding the first. Got: {errors:?}"
     );
 }
 
@@ -298,10 +317,15 @@ fn assert_param_default_type_mismatch(src: &str, what: &str) {
 /// mechanism does not inspect List element types or `Point3` component types,
 /// so `param c : List<Int> = Bead().centerline` and `param p : Point3<Real> =
 /// Bead().centerline[0]` BOTH compile clean — a revert to `List<Point3<Real>>`
-/// would sail past any binding-shaped assertion. What is expressible is the
-/// type the compiler *renders* in a deliberate wrong-dimension rejection, so
-/// that is the observation point used for it below. The marshaller-side
-/// counterpart is `fdm_slice.rs`'s `assert_point3_length`.
+/// would sail past any binding-shaped assertion. (That laxness is recorded
+/// below but deliberately not asserted; a test that reds when the checker gets
+/// STRICTER is a reverse ratchet, not coverage.) What is expressible is the
+/// dimension the compiler *mentions* in a deliberate wrong-dimension
+/// rejection, so that is the observation point used for it below — a weaker
+/// pin than the scalar fields get, and the reason the executable centerline
+/// coverage lives on the marshaller side: `fdm_slice.rs`'s
+/// `assert_point3_length` and its `gcode_text_marshals_into_the_si_regime_
+/// end_to_end` per-coordinate LENGTH check.
 ///
 /// Pure compile-level: no OCCT, no PrusaSlicer, no beads — so unlike the two
 /// tests above it carries no `OCCT_AVAILABLE` / `slicer_on_path` guard and runs
@@ -385,49 +409,26 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
 
     // `centerline` — the one field whose type actually gates usability
     // (`resolve_point3_length_arg` rejects bare-`Real` components). Neither
-    // binding half above can see it, so it is pinned by the RENDERED type in a
-    // wrong-dimension rejection instead: `Point3<Scalar[m]>` today, which a
-    // revert to `List<Point3<Real>>` turns into `Point3<Real>`.
-    assert_rejection_renders_initializer_type(
+    // binding half above can see it, so it is pinned by the dimension token the
+    // compiler mentions in a wrong-dimension rejection instead: a revert to
+    // `List<Point3<Real>>` renders bare `Real` components and drops it.
+    assert_rejection_mentions_dimension(
         "structure P { param m : Mass = Bead().centerline[0] }",
-        "Point3<Scalar[m]>",
+        "Scalar[m]",
         "Bead.centerline elements stay Point3<Length>",
     );
-    // Control for that pin: the two spellings the mechanism CANNOT distinguish,
-    // recorded so nobody mistakes them for coverage. Both compile clean today
-    // and would still compile clean after a revert.
-    assert_compiles_clean(
-        "structure P { param c : List<Int> = Bead().centerline }",
-        "List element types are not checked (so this pins nothing)",
-    );
-    assert_compiles_clean(
-        "structure P { param p : Point3<Real> = Bead().centerline[0] }",
-        "Point3 component types are not checked (so this pins nothing)",
-    );
+    // Recorded, deliberately NOT asserted: `param c : List<Int> =
+    // Bead().centerline` and `param p : Point3<Real> = Bead().centerline[0]`
+    // both compile clean today, because the binding check descends into neither
+    // List element types nor Point3 component types — the mechanism cannot
+    // distinguish those two spellings from the correct ones. Asserting that
+    // laxness would build a reverse ratchet: tightening the checker to descend
+    // into element types is exactly the improvement that would make this
+    // regime directly pinnable, and it must not have to red a unit-regime test
+    // on its way in.
 }
 
 // ── The 0 °C not-observed sentinel (task #6301) ─────────────────────────────
-
-/// Read a named field off a `StructureInstance` Value, asserting both the
-/// structure's `type_name` and the field's presence.
-fn struct_field<'a>(v: &'a Value, type_name: &str, field: &str) -> &'a Value {
-    match v {
-        Value::StructureInstance(d) => {
-            assert_eq!(
-                d.type_name, type_name,
-                "expected a `{type_name}` StructureInstance, got type_name {}",
-                d.type_name
-            );
-            d.fields.get(field).unwrap_or_else(|| {
-                panic!(
-                    "`{type_name}` must carry a `{field}` field; has: {:?}",
-                    d.fields.keys().collect::<Vec<_>>()
-                )
-            })
-        }
-        other => panic!("expected a `{type_name}` StructureInstance, got {other:?}"),
-    }
-}
 
 /// A one-bead `Toolpath` whose bead never saw an `M104`/`M109` — i.e. carries
 /// `Sweep::new()`'s untouched `temp: 0.0` accumulator

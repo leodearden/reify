@@ -16,21 +16,12 @@
 //   `reify_eval::compute_targets::fdm_slice::toolpath_to_value`, which builds the
 //   `Value::StructureInstance{"Toolpath"}` the `@optimized("fdm::slice")` node
 //   returns. That surface is **SI and dimensioned**, like the rest of the
-//   language: `toolpath_to_value` emits `Value::Scalar`s and `Point3<Length>`,
-//   converting at the marshalling boundary.
-//
-//   `reify_fdm::Toolpath` — the Rust struct behind it — deliberately stays in
-//   native G-code millimetres / mm·min⁻¹ / °C. It is a *parser* output whose job
-//   is lossless fidelity to the source, and `serialize_toolpath_canonical`
-//   renders its values at 6 decimals in a determinism golden. `reify_fdm::r0`
-//   performs its own independent mm→SI on that struct. The two regimes are a
-//   deliberate split at the marshalling boundary, not an inconsistency.
-//
-//   Because each field below now declares its own unit, there is no carve-out
-//   left to remember: `bead.width > 0.1mm` simply works, and `bead.width > 0.45`
-//   no longer silently means a 1000x-wrong thing. `fdm_slice_e2e.rs`'s
-//   `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime` is the
-//   guard that keeps this block honest — it fails if a field reverts to `Real`.
+//   language; `toolpath_to_value`'s doc comment is the canonical statement of the
+//   regime and of the per-field mapping. Every field below declares its own unit,
+//   so there is no carve-out left to remember: `bead.width > 0.1mm` simply works,
+//   and `bead.width > 0.45` no longer silently means a 1000x-wrong thing.
+//   `fdm_slice_e2e.rs`'s `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime`
+//   is the guard that keeps this block honest — it fails if a field reverts to `Real`.
 
 // ── BeadRole ────────────────────────────────────────────────────────────────
 //
@@ -75,6 +66,16 @@ structure def Bead {
     // could disagree. Consumers MUST NOT read 0degC as a measurement: in
     // particular `bead.nominal_temp > 0K` is TRUE for every temperature-less
     // toolpath and is not an "is a temperature known" test.
+    //
+    // KNOWN GAP: that warning has to live in prose because nothing in this
+    // surface encodes it — 273.15K is an in-range, plausible absolute
+    // temperature no predicate can tell from a measurement, so a design author
+    // gating on this field silently gets 0degC physics for temperature-less
+    // G-code. Making "not observed" OBSERVABLE (an Option-shaped field, a
+    // `temp_observed : Bool` companion, or a W_FDM_NO_TEMPERATURE Info
+    // diagnostic from the ζ parser) is out of scope for #6301, which decided
+    // the unit regime only; it is filed as follow-up ticket
+    // tkt_0RT4PVCX2Y5ZA5HAPGKJEZT85Y (escalation id agent-followup-6301).
     param nominal_temp : Temperature = 0degC
     // Active feedrate when the bead began extruding.
     param speed : Velocity = 0m/s
