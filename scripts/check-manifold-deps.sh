@@ -175,7 +175,8 @@ esac
 # conda env ships OCCT 7.9 as a transitive of gmsh=4.15.2 while reify links
 # system OCCT 7.8. Rust stays the source of truth; this block is a declared
 # mirror, pinned equal INCLUDING ORDER by
-# tests/infra/test_occt_deps_preflight.sh.
+# tests/infra/test_occt_deps_preflight.sh — so an edit on either side fails
+# that guard rather than silently leaving the gate and the build disagreeing.
 OCCT_LIB_CANDIDATES=(
     /usr/lib/x86_64-linux-gnu
     /usr/lib
