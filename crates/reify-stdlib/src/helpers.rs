@@ -2076,4 +2076,112 @@ mod tests {
         );
     }
 
+
+    // ── PRD 5 §6 decision 8: validate_dimensioned_scalar as an accept_arg ─────
+    // ── adapter — what that must and must NOT change ─────────────────────────
+
+    /// (a) The ONE observable behaviour change the adapter makes, and exactly
+    /// PRD §7 I3: at a DIMENSIONLESS expectation, a bare `Real`/`Int` is now
+    /// accepted, inheriting `accept_arg`'s guarded bare arm.
+    ///
+    /// MEASURED SAFE: none of the 8 production call sites passes DIMENSIONLESS.
+    /// `fea/loads.rs:161` passes `accel_dim` (ACCELERATION); `stackup.rs:32`
+    /// and `tolerancing.rs:86`/`:87`/`:116`/`:117`/`:178`/`:190` all pass
+    /// LENGTH. So this widening is unreachable from every shipped caller and is
+    /// here for the readers PRD §3 Leg B's "deliberately bare" list will route
+    /// through it.
+    #[test]
+    fn validate_dimensioned_scalar_accepts_bare_numbers_at_a_dimensionless_expectation() {
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Real(0.3), DimensionVector::DIMENSIONLESS),
+            Some(0.3),
+            "a bare Real at a DIMENSIONLESS expectation must now be accepted \
+             (PRD §7 I3, inherited from accept_arg's guarded bare arm)"
+        );
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Int(7), DimensionVector::DIMENSIONLESS),
+            Some(7.0),
+            "a bare Int at a DIMENSIONLESS expectation must now be accepted, \
+             widened to f64"
+        );
+    }
+
+    /// (b) The load-bearing floor that must NOT move: the 1000x bare-metres
+    /// hazard stays closed at every real call site.
+    #[test]
+    fn validate_dimensioned_scalar_still_rejects_bare_numbers_at_a_length_expectation() {
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Real(10.0), DimensionVector::LENGTH),
+            None,
+            "a bare Real at a LENGTH expectation must stay None — `10` is not \
+             `10mm`, and reading it as 10 SI metres is the 1000x hazard"
+        );
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Int(10), DimensionVector::LENGTH),
+            None,
+            "a bare Int at a LENGTH expectation must stay None"
+        );
+    }
+
+    /// (c) The DELIBERATE DIVERGENCE from `accept_arg`, written as an explicit
+    /// TWO-SIDED comparison so a later "simplification" that drops the filter
+    /// turns this red rather than silently letting NaN through.
+    ///
+    /// `accept_arg` ACCEPTS a non-finite Scalar — it IS the right dimension,
+    /// merely NaN/±inf — and `crates/reify-ir/src/arg_acceptance.rs`'s module
+    /// doc assigns promoting non-finite handling into the shared family to
+    /// **task 6157**, not to this adapter. This helper's finiteness post-filter
+    /// is therefore its own INTENTIONAL narrowing of the shared predicate, and
+    /// is NOT PRD §7 I4's non-finite work.
+    #[test]
+    fn validate_dimensioned_scalar_keeps_its_finiteness_filter_over_accept_arg() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, force_spec};
+
+        for (label, si) in [("NaN", f64::NAN), ("+inf", f64::INFINITY)] {
+            let v = Value::Scalar {
+                si_value: si,
+                dimension: DimensionVector::FORCE,
+            };
+
+            match accept_arg(&v, &force_spec()) {
+                Acceptance::Accepted(got) => assert!(
+                    !got.is_finite(),
+                    "{label}: accept_arg must ACCEPT a non-finite FORCE Scalar \
+                     and carry the non-finite SI through (task 6157 owns \
+                     changing that, not this adapter)"
+                ),
+                other => panic!(
+                    "{label}: accept_arg must Accept a non-finite FORCE Scalar, got {other:?}"
+                ),
+            }
+
+            assert_eq!(
+                validate_dimensioned_scalar(&v, DimensionVector::FORCE),
+                None,
+                "{label}: the adapter's finiteness post-filter must still turn \
+                 that Accepted into None — this divergence is deliberate"
+            );
+        }
+    }
+
+    /// (d) Parity for `Value::Undef`: `accept_arg` classifies it as
+    /// `Undefined`, and the adapter — which has only `Option<f64>` to say it
+    /// with — collapses that to `None`, exactly as it does today.
+    #[test]
+    fn validate_dimensioned_scalar_maps_accept_arg_undefined_to_none() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, force_spec};
+
+        assert_eq!(
+            accept_arg(&Value::Undef, &force_spec()),
+            Acceptance::Undefined,
+            "accept_arg must classify Undef as Undefined"
+        );
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Undef, DimensionVector::FORCE),
+            None,
+            "the adapter collapses Undefined to None (its return type cannot \
+             carry the distinction)"
+        );
+    }
+
 }
