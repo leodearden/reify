@@ -387,6 +387,96 @@ fn refine_marked_elements_errors_on_non_multiple_tet_indices() {
     );
 }
 
+/// A correctly-SHAPED tet buffer carrying an out-of-range index VALUE must be
+/// rejected at the same chokepoint.
+///
+/// The structural guards (connectivity family, length divisibility) pass here:
+/// 4 indices at P1 stride 4 is exactly one element. Only the index *value* is
+/// wrong — 99 with 4 vertices — which used to reach
+/// `project_per_element_sizes_to_vertices` and abort the process on its
+/// unguarded `vertex_sizes[99]`. This pins the structured error in place of
+/// that panic (mirrors `reify-mesh-morph`'s `InvalidTetIndex`).
+#[test]
+fn refine_with_size_field_errors_on_out_of_range_tet_index() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 12], // 4 vertices × 3 coords ⇒ valid ids are 0..=3
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    // One hint for one element: the size-hint length check would pass, so the
+    // only thing standing between this mesh and the panic is the index gate.
+    let result = refine_with_size_field(&surface, &vm, &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4
+            })
+        ),
+        "expected InvalidTetIndex {{vertex_index: 99, vertex_count: 4}} rather \
+         than an index-out-of-bounds panic in the projector, got: {result:?}",
+    );
+}
+
+/// The out-of-range index must be rejected through the `adaptive` entry point
+/// too, and the STRUCTURAL check must win when a buffer is both mis-sized and
+/// out-of-range.
+#[test]
+fn refine_marked_elements_errors_on_out_of_range_tet_index() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 12], // 4 vertices
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4
+            })
+        ),
+        "expected InvalidTetIndex {{vertex_index: 99, vertex_count: 4}}, got: {result:?}",
+    );
+
+    // Both defects at once (5 indices AND index 99): the structural check runs
+    // first, so the report names the shape, not the value.
+    let both = VolumeMesh {
+        vertices: vec![0.0_f32; 12],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99, 3],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let result = refine_marked_elements(&surface, &both, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "a mesh that is both mis-sized and out-of-range must report the \
+         structural defect first, got: {result:?}",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // step-7: localized refinement integration test (runtime-gated on GMSH_AVAILABLE)
 // ---------------------------------------------------------------------------

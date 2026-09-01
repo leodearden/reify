@@ -68,6 +68,24 @@ pub enum RefineError {
         /// Per-element node count (4 for P1, 10 for P2).
         stride: usize,
     },
+    /// A tet index addresses a vertex that does not exist
+    /// (`vertex_index >= volume_mesh.vertices.len() / 3`).
+    ///
+    /// The *semantic* companion to [`RefineError::MalformedTetIndices`]'s
+    /// *structural* check — the same split
+    /// `reify_mesh_morph::elasticity::ElasticityFailure` draws between
+    /// `MalformedTetIndices` and `InvalidTetIndex`. Without it a mesh of the
+    /// right shape but with an out-of-range index aborts the process in
+    /// [`project_per_element_sizes_to_vertices`], which indexes
+    /// `vertex_sizes[v]` unguarded.
+    InvalidTetIndex {
+        /// The offending index VALUE read out of the tet index buffer (not its
+        /// position in that buffer — unlike the `index` field on the
+        /// `size_hints` variants above).
+        vertex_index: u32,
+        /// `volume_mesh.vertices.len() / 3`, the exclusive upper bound.
+        vertex_count: usize,
+    },
 }
 
 impl fmt::Display for RefineError {
@@ -104,6 +122,14 @@ impl fmt::Display for RefineError {
                 f,
                 "malformed tet connectivity: {len} indices is not a whole multiple \
                  of the {stride}-node per-element stride"
+            ),
+            RefineError::InvalidTetIndex {
+                vertex_index,
+                vertex_count,
+            } => write!(
+                f,
+                "tet index {vertex_index} is out of range (mesh has {vertex_count} \
+                 vertices)"
             ),
         }
     }
@@ -158,15 +184,24 @@ pub(crate) struct TetShape {
 ///
 /// # Scope of the guarantee
 ///
-/// The checks here are about buffer SHAPE (connectivity family and length),
-/// not about index VALUES.
+/// Two structural checks (connectivity family, buffer length) plus one
+/// semantic check (index values in range). Together they are what make
+/// [`project_per_element_sizes_to_vertices`] panic-free for a gated mesh:
+/// length divisibility rules out the short remainder chunk, and the
+/// index-range scan rules out its unguarded `vertex_sizes[v]` indexing.
+///
+/// Vertex ORDERING, element quality and degeneracy are explicitly NOT checked
+/// — a gated mesh is well-formed enough not to abort this pipeline, not
+/// necessarily meshable by gmsh.
 ///
 /// # Errors
 ///
 /// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
-/// connectivity is `Hex` or `Wedge`, or
-/// [`RefineError::MalformedTetIndices`] if `tet_indices.len()` is not a whole
-/// multiple of the per-element node count.
+/// connectivity is `Hex` or `Wedge`, [`RefineError::MalformedTetIndices`] if
+/// `tet_indices.len()` is not a whole multiple of the per-element node count,
+/// or [`RefineError::InvalidTetIndex`] if any index is `>= vertices.len() / 3`.
+/// The structural checks run before the semantic one, so a buffer that is both
+/// mis-sized and out-of-range reports `MalformedTetIndices`.
 pub(crate) fn tet_shape(volume_mesh: &VolumeMesh) -> Result<TetShape, RefineError> {
     let tet_indices = volume_mesh
         .tet_indices()
@@ -180,9 +215,24 @@ pub(crate) fn tet_shape(volume_mesh: &VolumeMesh) -> Result<TetShape, RefineErro
             stride,
         });
     }
-    // Same guard: `Tet` connectivity ⇒ `element_order()` is `Some`. Reading it
-    // HERE, inside the gate that proves it, is what keeps the `None` arm out
-    // of the callers as a phantom error path.
+    // Semantic check, after the two structural ones: every index must address
+    // a vertex that exists. `project_per_element_sizes_to_vertices` indexes
+    // `vertex_sizes[v]` (sized `vertices.len() / 3`) with no bounds check, so
+    // an out-of-range VALUE in a correctly-SHAPED buffer would abort the
+    // process instead of returning a `RefineError`. Mirrors the
+    // structural-then-semantic ordering `reify_mesh_morph::elasticity` uses
+    // for `MalformedTetIndices` → `InvalidTetIndex`.
+    let vertex_count = volume_mesh.vertices.len() / 3;
+    if let Some(&vertex_index) = tet_indices.iter().find(|&&i| i as usize >= vertex_count) {
+        return Err(RefineError::InvalidTetIndex {
+            vertex_index,
+            vertex_count,
+        });
+    }
+    // Same guard as the connectivity gate: `Tet` connectivity ⇒
+    // `element_order()` is `Some`. Reading it HERE, inside the gate that
+    // proves it, is what keeps the `None` arm out of the callers as a phantom
+    // error path.
     let order = volume_mesh
         .element_order()
         .ok_or(RefineError::UnsupportedConnectivity)?;
@@ -222,8 +272,10 @@ pub(crate) fn tet_shape(volume_mesh: &VolumeMesh) -> Result<TetShape, RefineErro
 /// safe caller is [`refine_with_size_field`], which performs this length
 /// validation up front (see its `size_hints.len() != n_elements` check).
 /// [`tet_shape`], which supplies that expected length, also rejects a
-/// non-multiple-of-stride index buffer, so the `chunks(nodes_per_elem)` walk
-/// below cannot see a short remainder chunk.
+/// non-multiple-of-stride index buffer and any index `>= n_verts`, so the
+/// `chunks(nodes_per_elem)` walk below can see neither a short remainder chunk
+/// nor an out-of-range `vertex_sizes[v]` — the two panic paths a gated mesh
+/// would otherwise still reach.
 ///
 /// The panic contract is pinned by the regression test
 /// `project_panics_on_too_short_per_element_sizes` in the in-module `tests`
@@ -291,12 +343,13 @@ pub(crate) fn project_per_element_sizes_to_vertices(
 /// # Errors
 ///
 /// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
-/// connectivity is `Hex` or `Wedge` — this refiner is tet-only — or
+/// connectivity is `Hex` or `Wedge` — this refiner is tet-only —
 /// [`RefineError::MalformedTetIndices`] if its tet index buffer is not a
-/// whole multiple of the per-element node count. Both gates are the shared
-/// `tet_shape` chokepoint and run **first**, ahead of the size-hint
-/// validation below and before any gmsh work, so a mis-shaped mesh fails fast
-/// and build-agnostically.
+/// whole multiple of the per-element node count, or
+/// [`RefineError::InvalidTetIndex`] if an index addresses a vertex that does
+/// not exist. All three gates are the shared `tet_shape` chokepoint and run
+/// **first**, ahead of the size-hint validation below and before any gmsh
+/// work, so a malformed mesh fails fast and build-agnostically.
 ///
 /// Otherwise returns `RefineError::SizeHintsLengthMismatch` if
 /// `size_hints.len() != element_count`, `RefineError::NonFiniteSize` on NaN

@@ -506,7 +506,7 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 ///
 /// # Errors
 ///
-/// Four malformed-input guards run **before** any gmsh work (and before
+/// Five malformed-input guards run **before** any gmsh work (and before
 /// [`dorfler_size_hints`] indexes the sizes), so a bad call fails fast and
 /// build-agnostically:
 ///
@@ -515,8 +515,10 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 /// * [`RefineError::MalformedTetIndices`] when the tet index buffer length is
 ///   not a whole multiple of the per-element node count, so it describes no
 ///   whole number of elements.
+/// * [`RefineError::InvalidTetIndex`] when an index addresses a vertex that
+///   does not exist (`>= volume_mesh.vertices.len() / 3`).
 ///
-///   Those two are the shared `tet_shape` chokepoint and run **first**,
+///   Those three are the shared `tet_shape` chokepoint and run **first**,
 ///   ahead of both checks below: it is called before either the length or the
 ///   marked-index validation.
 /// * [`RefineError::SizeHintsLengthMismatch`] when
