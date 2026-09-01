@@ -939,15 +939,20 @@ pub enum GeometryOp {
     /// Arc — not [`GeometryOp::Helix`] — is the wireframe op on that path.
     ///
     /// **Why these two carry no `_rad` suffix.** Unlike `Rotate`'s `angle_rad`,
-    /// the names are not internal: they are the user-facing DSL keyword
-    /// arguments, emitted as string literals by
-    /// `reify-compiler/src/geometry_curve.rs`, matched by name in `curve_arc`
-    /// (`reify-eval/src/geometry_ops.rs`), and published as the `arc(...)`
-    /// signature in `docs/reify-stdlib-reference.md`. Renaming them would be a
-    /// DSL-visible breaking change whose failure mode is silent — the string
-    /// matches are runtime lookups, so the rename would compile — so `Rotate`'s
-    /// "the `_rad` suffix IS the contract" is discharged HERE, by this comment,
-    /// instead. The rename was CONSIDERED AND DECLINED (#6521); the absence is
+    /// the names are not private to this crate: they are the UNTYPED STRING KEY
+    /// shared across the compiler→eval boundary, emitted as string literals by
+    /// `compile_curve_op` (`reify-compiler/src/geometry_curve.rs`) and looked
+    /// up by name in `curve_arc` (`reify-eval/src/geometry_ops.rs`), and they
+    /// are also the published `arc(...)` signature in
+    /// `docs/reify-stdlib-reference.md`. No `.ri` source names them — the
+    /// compiler checks an exact 9-argument count and assigns these keys
+    /// POSITIONALLY — so a rename would break no design file. What it would do
+    /// is fail SILENTLY: the lookups are runtime string matches, so a rename
+    /// that missed one end still compiles and merely drops the op with a
+    /// warning, and it desyncs the published signature — a silent, cross-crate,
+    /// docs-desyncing change for cosmetic gain. So `Rotate`'s "the `_rad`
+    /// suffix IS the contract" is discharged HERE, by this comment, instead.
+    /// The rename was CONSIDERED AND DECLINED (#6521); the absence is
     /// a recorded decision, not an oversight, and #5779 below supersedes the
     /// question anyway: once a position is typed `Angle`, a suffix asserting a
     /// raw-f64 convention would be actively wrong.
@@ -958,9 +963,12 @@ pub enum GeometryOp {
     /// radians — `curve_arc` reads both positions through `eval_named_arg_f64`,
     /// which takes `Value::as_f64`'s SI magnitude and ignores the dimension
     /// tag. That is a deliberate triage decision rather than an omission (see
-    /// the note in `curve_arc` itself), and both positions are chartered for
-    /// the `angle_spec()` typed-`Angle` gate by live task #5779, leaf γ of
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md`.
+    /// the note in `curve_arc` itself), and both positions are chartered
+    /// (currently DEFERRED) for the `angle_spec()` typed-`Angle` gate by #5779,
+    /// leaf γ of `docs/prds/v0_6/angle-units-surface-convergence.md`. Deferred
+    /// is non-terminal, so the charter stands — but the gate is parked, not
+    /// in flight, and the ungated behaviour above is the status quo until it
+    /// moves.
     Arc {
         center: [f64; 3],
         radius: f64,
@@ -989,12 +997,19 @@ pub enum GeometryOp {
     /// INTERNAL quantity, so it is declared for the reader rather than gated:
     /// there is no angular argument here to gate.
     ///
-    /// **Helix is not on the wireframe STEP angle path**; [`GeometryOp::Arc`]
-    /// is. Nothing exports a helix handle to STEP — a helix reaches STEP only
-    /// after being consumed as a sweep/pipe spine into a solid, i.e. as BRep,
-    /// and #6184's wireframe pin
+    /// **Helix is not on the wireframe STEP angle path AS EXERCISED TODAY**;
+    /// [`GeometryOp::Arc`] is. #6184's wireframe pin
     /// (`export_step_declares_si_radians_for_wireframe_curve_parameters`,
-    /// `reify-kernel-occt/src/handle.rs`) is fixtured on an arc.
+    /// `reify-kernel-occt/src/handle.rs`) is fixtured on an arc, and no test in
+    /// the tree exports a helix handle. That is a statement about the FIXTURES,
+    /// not a property of the system: `OcctKernel::export`
+    /// (`reify-kernel-occt/src/lib.rs`) is shape-type agnostic — it resolves
+    /// any handle through `get_shape` and hands it straight to
+    /// `ffi::export_step` — so a helix WIRE can be exported directly, exactly
+    /// as that pin exports a bare arc wire, at which point its pcurve on the
+    /// `Geom_CylindricalSurface` carries the radian u-parameter above into the
+    /// STEP output. In practice a helix usually reaches STEP as BRep instead,
+    /// after being consumed as a sweep/pipe spine into a solid.
     Helix {
         radius: f64,
         pitch: f64,
@@ -1044,12 +1059,13 @@ pub enum GeometryOp {
         /// not magnitude, and `draft_angle_on_box` is a smoke test that
         /// tolerates `OperationFailed`. The radian-vs-degree separation is
         /// ~57x, so a behavioural pin is achievable — it needs a measured
-        /// numeric oracle over OCCT draft geometry and is filed as follow-up
-        /// work rather than guessed at here.
+        /// numeric oracle over OCCT draft geometry, and is filed as #7119
+        /// rather than guessed at here.
         ///
         /// **Ungated today**, like [`GeometryOp::Arc`]'s two angles: a bare
-        /// number is silently radians. `draft.angle` is chartered for the
-        /// `angle_spec()` typed-`Angle` gate by live task #5780, leaf δ of
+        /// number is silently radians. `draft.angle` is chartered (currently
+        /// DEFERRED, like Arc's #5779) for the `angle_spec()` typed-`Angle`
+        /// gate by #5780, leaf δ of
         /// `docs/prds/v0_6/angle-units-surface-convergence.md` (whose C1
         /// gated-position list carries this position and Arc's together).
         angle: Value,
