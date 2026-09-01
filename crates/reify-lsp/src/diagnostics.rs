@@ -975,6 +975,7 @@ mod tests {
     // drift apart.
     use super::auto_type_param_fixtures::{
         AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, BT8_CONSTANT_CONSTRAINT_SRC,
+        NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC, UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
         assert_auto_fail_fixture_is_newly_reachable, assert_bt8_fixture_still_diverges,
     };
 
@@ -1316,6 +1317,127 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
              flat `compiled.templates` scan would fire here and suppress eval \
              on a healthy module"
         );
+    }
+
+    /// The containment guard's NARROWNESS, pinned at the PRODUCTION ENTRY
+    /// POINTS rather than only on the predicate.
+    ///
+    /// The predicate-level test above proves
+    /// `compiled_graph_has_unrepresentable_cell` answers `false` for a
+    /// non-`auto:` compile error. It cannot prove the CALL SITES ask it: a
+    /// future edit widening either site to `reify check`'s blanket
+    /// `compiled.diagnostics.iter().any(|d| d.severity == Severity::Error)`
+    /// gate would leave that test green and silently stop every eval-time
+    /// diagnostic on any document carrying a compile error. This test is the
+    /// wiring-level half — it goes RED on exactly that edit.
+    ///
+    /// Asserts BOTH halves reach the LSP output: the compile-stage
+    /// `UnresolvedName` error (the LSP does not swallow it) and the eval-stage
+    /// circular let-binding (the LSP evaluated THROUGH it, on purpose).
+    #[test]
+    fn non_auto_compile_error_still_yields_eval_diagnostics() {
+        let unresolved_code = Some(lsp_types::NumberOrString::String(
+            "UnresolvedName".to_string(),
+        ));
+        let has_compile_error =
+            |diags: &[lsp_types::Diagnostic]| diags.iter().any(|d| d.code == unresolved_code);
+        // The engine's exact message: "circular let-binding dependency in
+        // template S: [a, b]" — matched the same way
+        // `eval_diagnostics_surfaced_in_stateful_pipeline` matches it.
+        let has_eval_diag = |diags: &[lsp_types::Diagnostic]| {
+            diags.iter().any(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.contains("circular let-binding dependency")
+                    && d.message.contains("in template S")
+            })
+        };
+
+        // --- Stateless surface: compute_diagnostics ---
+        let diags = compute_diagnostics(NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC, &test_uri());
+        assert!(
+            has_compile_error(&diags) && has_eval_diag(&diags),
+            "narrowness (compute_diagnostics): an Error-severity compile \
+             diagnostic that is NOT an `auto:` failure must not suppress the \
+             eval pass — the LSP evaluates through non-fatal compile errors on \
+             purpose. Missing the eval diagnostic means a call site has drifted \
+             into `reify check`'s blanket error gate. got: {:#?}",
+            diags
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(
+            &mut state,
+            NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC,
+            &test_uri(),
+        );
+        assert!(
+            has_compile_error(&result.diagnostics) && has_eval_diag(&result.diagnostics),
+            "narrowness (compute_diagnostics_with_state): the live server's \
+             keystroke path must keep surfacing eval-time diagnostics on a \
+             document that also carries a non-`auto:` compile error. got: {:#?}",
+            result.diagnostics
+        );
+    }
+
+    /// The guard must not fire on a failed `auto:` resolution that is provably
+    /// SAFE to evaluate — the measured OVER-FIRE of the `AutoTypeParam*`
+    /// diagnostic-code proxy this guard replaced, pinned end-to-end.
+    ///
+    /// [`UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC`] leaves `T` UNUSED in
+    /// `Bearing`'s body, so the failed resolution creates no `TypeParam`-typed
+    /// value cell and there is nothing for
+    /// `assert_value_cell_types_representable` to panic on. Under the code
+    /// proxy the single `auto:` clause nonetheless blanked the whole
+    /// document's eval pass; all three findings below were lost.
+    ///
+    /// Anti-vacuity: the fixture must still actually FAIL `auto:` resolution
+    /// (asserted via the compile-stage `AutoTypeParamNoCandidate`), otherwise
+    /// "the eval diagnostics survived" would be trivially true and this test
+    /// would stop being about the guard at all.
+    #[test]
+    fn failed_auto_resolution_with_unused_type_param_still_yields_eval_diagnostics() {
+        let no_candidate_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamNoCandidate".to_string(),
+        ));
+        let check = |label: &str, diags: &[lsp_types::Diagnostic]| {
+            assert!(
+                diags.iter().any(|d| d.code == no_candidate_code),
+                "anti-vacuity ({label}): the fixture must still FAIL `auto:` \
+                 resolution, or this test no longer exercises the guard at \
+                 all. got: {diags:#?}"
+            );
+            for needle in [
+                "circular let-binding dependency in template Other",
+                "constraint Other#constraint[0] violated",
+                "constraint Bearing#constraint[0] violated",
+            ] {
+                assert!(
+                    diags.iter().any(|d| d.message.contains(needle)),
+                    "over-fire ({label}): a failed `auto:` resolution with an \
+                     UNUSED type parameter is safe to evaluate, so `{needle}` \
+                     must still reach the editor. Its absence means the \
+                     containment guard has regressed to a diagnostic-code \
+                     proxy and one `auto:` clause is blanking eval for the \
+                     whole document. got: {diags:#?}"
+                );
+            }
+        };
+
+        // --- Stateless surface: compute_diagnostics ---
+        check(
+            "compute_diagnostics",
+            &compute_diagnostics(UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC, &test_uri()),
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(
+            &mut state,
+            UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
+            &test_uri(),
+        );
+        check("compute_diagnostics_with_state", &result.diagnostics);
     }
 
     /// AMENDMENT ROUND 2 (task #6798, reviewer_comprehensive / robustness) —

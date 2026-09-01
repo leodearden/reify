@@ -1064,6 +1064,58 @@ mod tests {
         );
     }
 
+    /// The containment guard's NARROWNESS at the THIRD production entry
+    /// point, `AnalysisContext::from_parsed` — which backs hover, completion,
+    /// goto-definition and document-symbols.
+    ///
+    /// This site's degradation is quieter than `diagnostics.rs`'s and so needs
+    /// its own lock: skipping the eval/check pass here empties
+    /// `check_result.values`, and hover/completion then show NO computed values
+    /// for the whole document, with no error to explain why. Under the
+    /// `AutoTypeParam*` diagnostic-code proxy this guard replaced, a single
+    /// failing `auto:` clause did exactly that even when the failure was
+    /// provably safe to evaluate.
+    ///
+    /// `UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC` leaves `T` UNUSED in
+    /// `Bearing`'s body, so the failed resolution creates no `TypeParam`-typed
+    /// cell and there is nothing for `assert_value_cell_types_representable`
+    /// to panic on. Anti-vacuity: assert the fixture still genuinely FAILS
+    /// `auto:` resolution, or "the values survived" is trivially true.
+    ///
+    /// Deliberately the mirror of, not a duplicate of,
+    /// `auto_resolution_failure_does_not_panic_analysis_context` below: that
+    /// one pins the guard FIRING (empty `CheckResult`) on the shape that needs
+    /// containment, this one pins it NOT firing on the shape that does not.
+    #[test]
+    fn failed_auto_resolution_with_unused_type_param_still_populates_check_values() {
+        use crate::diagnostics::auto_type_param_fixtures::UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC;
+
+        let ctx = AnalysisContext::new(UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC, &test_uri());
+
+        assert!(
+            ctx.compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+            "anti-vacuity: the fixture must still FAIL `auto:` resolution, or \
+             this test no longer exercises the containment guard at all. \
+             compiled diagnostics: {:#?}",
+            ctx.compiled.diagnostics
+        );
+
+        assert!(
+            !ctx.check_result.values.is_empty(),
+            "over-fire (AnalysisContext::from_parsed): a failed `auto:` \
+             resolution whose type parameter is UNUSED leaves no \
+             unrepresentable cell, so the eval/check pass is safe and MUST \
+             run — an empty `check_result.values` means hover and completion \
+             silently show no computed values for the whole document. \
+             constraint_results: {:#?}",
+            ctx.check_result.constraint_results
+        );
+    }
+
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
     /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
     // Post-GHR-α (task 3603): Physical is spec-shape (geometry : Solid +

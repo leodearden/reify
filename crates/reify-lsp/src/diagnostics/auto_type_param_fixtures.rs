@@ -130,6 +130,63 @@ structure def Bearing<T: Seal> {
 structure def Assembly { sub b = Bearing<auto: Seal>() }
 "#;
 
+/// Narrowness fixture: a FAILED `auto:` resolution that is provably SAFE to
+/// evaluate, sharing a document with independent eval-time diagnostics.
+///
+/// [`BT8_CONSTANT_CONSTRAINT_SRC`]'s `auto:` half verbatim (two candidates, a
+/// constant `constraint 0 > 1`, `T` deliberately UNUSED in `Bearing`'s body,
+/// so no `TypeParam`-typed value cell is ever created), plus an entirely
+/// unrelated `Other` structure carrying two eval-time findings: a circular
+/// let-binding and its own violated constraint.
+///
+/// This is the measured OVER-FIRE case for the `AutoTypeParam*`
+/// diagnostic-code proxy the containment guard used to be. Under that proxy
+/// the single `auto:` clause suppressed the whole document's eval pass, losing
+/// three real diagnostics — `circular let-binding dependency in template
+/// Other: [a, b]`, `constraint Other#constraint[0] violated`, and
+/// `constraint Bearing#constraint[0] violated` — and, via the identical guard
+/// in `AnalysisContext::from_parsed`, blanking `check_result.values` so
+/// hover/completion showed no computed values file-wide.
+///
+/// Do not "simplify" either half away: `T` must stay UNUSED (that is what
+/// makes eval provably safe and the suppression provably wrong), and `Other`
+/// must stay INDEPENDENT of `Bearing` (a dependency would make "eval still
+/// ran" ambiguous).
+pub(crate) const UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def OringSeal : Seal { param d : Real = 3.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    constraint 0 > 1
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+structure Other {
+    let a = b + 1
+    let b = a + 1
+    constraint 0 > 1
+}
+"#;
+
+/// Narrowness fixture: an Error-severity compile diagnostic that is NOT an
+/// `auto:` failure, sharing a document with an eval-time diagnostic.
+///
+/// `nope` is unresolved → `E_UNRESOLVED_NAME` at Error severity, while the
+/// graph stays fully representable; `S`'s cyclic let-bindings produce
+/// `circular let-binding dependency in template S: [a, b]` at eval time (the
+/// same engine finding `eval_diagnostics_surfaced_in_stateful_pipeline`
+/// exercises).
+///
+/// Exists so the "the LSP evaluates THROUGH non-fatal compile errors on
+/// purpose" claim is pinned at the production entry points rather than only at
+/// the predicate. A future widening of the call sites to the CLI's blanket
+/// `any(|d| d.severity == Severity::Error)` gate would go RED here.
+pub(crate) const NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC: &str = r#"structure S {
+    let a = b + 1
+    let b = a + 1
+}
+structure T { param x : Real = nope }
+"#;
+
 /// Anti-vacuity guard shared by the containment tests over
 /// [`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`].
 ///
