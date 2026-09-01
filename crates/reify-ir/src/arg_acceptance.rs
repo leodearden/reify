@@ -718,4 +718,132 @@ mod tests {
         );
     }
 
+
+    // ── PRD 5 §7 I3: the dimensionless position, and the freeze floor ─────────
+
+    /// PRD §7 I3 — "DIMENSIONLESS and bare are interchangeable ONLY at a
+    /// `dimensionless_spec` position", and §7:465's annotation of that position
+    /// as `Real | Int | Scalar{DIMENSIONLESS}`.
+    ///
+    /// The deliberately-bare reader positions of PRD §3 Leg B (`poisson_ratio`,
+    /// `damping_ratio`, `vibration_tolerance`, `tol`, `max_iters`, the buckling
+    /// eigenvalue λ, …) are NOT ungated: they are gated to THIS spec, so a
+    /// *dimensioned* Scalar in one of them is still a rejection.
+    #[test]
+    fn dimensionless_spec_accepts_bare_real_int_and_dimensionless_scalar() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        assert_eq!(
+            accept_arg(&Value::Real(0.3), &dimensionless_spec()),
+            Acceptance::Accepted(0.3),
+            "a bare Real must be Accepted at a dimensionless_spec position \
+             (the poisson_ratio shape)"
+        );
+        assert_eq!(
+            accept_arg(&Value::Int(7), &dimensionless_spec()),
+            Acceptance::Accepted(7.0),
+            "a bare Int must be Accepted at a dimensionless_spec position, \
+             widened to f64 (the max_iters shape)"
+        );
+        assert_eq!(
+            accept_arg(
+                &Value::Scalar {
+                    si_value: 0.3,
+                    dimension: DV::DIMENSIONLESS,
+                },
+                &dimensionless_spec()
+            ),
+            Acceptance::Accepted(0.3),
+            "an explicitly DIMENSIONLESS Scalar must be Accepted too — bare and \
+             DIMENSIONLESS are interchangeable HERE and only here"
+        );
+
+        assert!(
+            matches!(
+                accept_arg(
+                    &Value::Scalar {
+                        si_value: 2.0e11,
+                        dimension: DV::PRESSURE,
+                    },
+                    &dimensionless_spec()
+                ),
+                Acceptance::Rejected(_)
+            ),
+            "a DIMENSIONED Scalar at a dimensionless position is still WRONG \
+             (PRD §3 Leg B: these positions are gated to dimensionless_spec so \
+             a dimensioned Scalar is still rejected)"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Bool(true), &dimensionless_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "Bool is not a number and must stay Rejected"
+        );
+    }
+
+    /// LOAD-BEARING companion to the widening above, written in the SAME step
+    /// so the two can never be separated.
+    ///
+    /// `accept_arg`'s new bare arm is GUARDED on
+    /// `spec.dimension == DimensionVector::DIMENSIONLESS`. This test is the
+    /// proof that the guard holds — that the widening did NOT leak into any
+    /// DIMENSIONED spec, where accepting a bare `Real` would silently read `10`
+    /// as SI metres instead of `10mm` (the 1000x hazard task 5214 exists to
+    /// close), and would breach amendment A1's freeze of the core seam.
+    #[test]
+    fn bare_real_int_stay_rejected_at_every_dimensioned_spec() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(10.0), &length_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at a LENGTH position must stay Rejected (10 vs 10mm)"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Int(10), &length_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Int at a LENGTH position must stay Rejected (10 vs 10mm)"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(7850.0), &density_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at a Density position must stay Rejected"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(2.0e11), &pressure_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at a PRESSURE position must stay Rejected"
+        );
+
+        // The ONLY other ArgSpec constructed anywhere in the workspace is the
+        // inline literal at `reify-eval/src/geometry_ops.rs:10300`, whose lone
+        // caller (`resolve_scalar_dim_arg`, :10326) passes ANGLE. Reconstructed
+        // here byte-for-byte so the freeze is asserted over the real shape.
+        let angle_spec = ArgSpec {
+            type_name: "Angle",
+            dimension: DV::ANGLE,
+            migration_hint: None,
+        };
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(1.5708), &angle_spec),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at the inline ANGLE spec must stay Rejected — this is \
+             the shape geometry_ops.rs:10300 builds, and amendment A1 freezes \
+             its behaviour"
+        );
+    }
+
 }
