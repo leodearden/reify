@@ -1460,8 +1460,8 @@ fn analysis_reductions_over_all_nan_sampled_field_return_undef() {
 /// returns `Undef` for anything else. Closing it needs the tensor element
 /// dimension plumbed through `sample_field_at` (the wrapper's own codomain
 /// cannot recover it for `safety_factor`, whose codomain is dimensionless)
-/// plus a stride-3 variant for `principal_stresses` — edits well outside this
-/// task's file set, tracked separately.
+/// plus a stride-3 variant for `principal_stresses`, i.e. edits to `lib.rs` and
+/// `sampled.rs` that fall well outside this task's assigned file set.
 ///
 /// This is NOT a regression from task 7129: before the fix
 /// `von_mises(sampled)` was itself `Undef`, so sampling it was `Undef` too.
