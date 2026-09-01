@@ -543,6 +543,101 @@ pub fn accept_arg(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
     }
 }
 
+// ── PRD 5 §7: the STRUCT-FIELD reader surface ────────────────────────────────
+
+/// The outcome of [`accept_field`] — [`Acceptance`] plus the one distinction a
+/// struct FIELD can draw that a positional argument cannot: the field may not
+/// be there at all.
+///
+/// Declared by PRD `docs/prds/v0_6/dimension-checked-readers.md` §7.
+///
+/// # `Absent` means "field absent **OR** `Option(None)`"
+///
+/// §6 decision 3 is "Absent ≠ wrong", and amendment A2 extends it: the two
+/// spellings are INDISTINGUISHABLE to a reader and both legitimately fall back
+/// to a declared default. `Steel_AISI_1045()` with no `yield_stress` in
+/// `fields` and `Steel_AISI_1045(yield_stress: none)` mean the same thing to a
+/// consumer, so collapsing them here is the honest classification, not a lost
+/// distinction.
+///
+/// `Undefined` keeps §6 decision 2's quiet degradation — an `Undef` field is a
+/// value that has not resolved yet, not a mistake. Only [`Rejected`] is a
+/// fault.
+///
+/// [`Rejected`]: FieldAcceptance::Rejected
+#[derive(Debug, PartialEq)]
+pub enum FieldAcceptance {
+    /// The field is present and has the expected dimension; carries the SI f64.
+    Accepted(f64),
+    /// The field is not in `fields` at all, **or** is `Value::Option(None)`.
+    /// Both legitimately fall back to a declared default.
+    Absent,
+    /// The field resolved to `Value::Undef` (possibly through an `Option`);
+    /// silently degrade.
+    Undefined,
+    /// The field is present and defined, but the wrong type/dimension.
+    Rejected(ArgRejection),
+}
+
+/// Classify the field `key` of a structure instance against `spec`.
+///
+/// The struct-field sibling of [`accept_arg`], and the surface PRD §3 Leg B's
+/// material / override / options readers consume. It adds exactly two things
+/// over `accept_arg` and delegates everything else to it:
+///
+/// 1. a missing key reads as [`FieldAcceptance::Absent`] rather than as a
+///    rejection;
+/// 2. `Value::Option` is unwrapped — `Option(None)` →
+///    [`FieldAcceptance::Absent`], `Option(Some(inner))` → recurse. The
+///    recursion goes all the way down, for behavioural parity with
+///    `reify-stdlib/src/flexures/common.rs`'s `scalar_si`.
+///
+/// **Option unwrapping lives here and ONLY here.** [`accept_arg`] stays frozen
+/// (amendment A1), and every Option shape amendment A2 cites is a struct
+/// FIELD — `ElasticMaterial.yield_stress : Option<Pressure>`
+/// (`crates/reify-compiler/stdlib/materials_fea.ri:132`/`:179` and its
+/// conformers), `FDMCouponOverride`'s `ex`/`ey`/`ez`/`gxy`, and
+/// `ElasticOptions.shell_voxel_size` — so `accept_field` covers all of them
+/// without widening the positional seam.
+///
+/// # Formatting a rejection
+///
+/// A caller formats [`FieldAcceptance::Rejected`] with
+/// `ArgRejection::message(builtin, "<struct>.<field>")` — the DOTTED-PATH
+/// convention decided at PRD §11 open question 3. There is no second
+/// formatter and no second wording.
+///
+/// # One expectation, one place
+///
+/// Per §7 I1, a classifier that re-derives its own dimension expectation
+/// instead of consulting the same [`ArgSpec`] this function was handed is a
+/// DEFECT: the rejection text and the acceptance predicate would then have two
+/// sources that can drift. Pass the spec down; do not restate it.
+pub fn accept_field(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> FieldAcceptance {
+    match data.fields.get(key) {
+        None => FieldAcceptance::Absent,
+        Some(value) => accept_unwrapped(value, spec),
+    }
+}
+
+/// Unwrap any depth of `Value::Option` and delegate the rest to
+/// [`accept_arg`]. See [`accept_field`] for why the recursion is unbounded.
+fn accept_unwrapped(value: &crate::value::Value, spec: &ArgSpec) -> FieldAcceptance {
+    match value {
+        crate::value::Value::Option(None) => FieldAcceptance::Absent,
+        crate::value::Value::Option(Some(inner)) => accept_unwrapped(inner, spec),
+        other => match accept_arg(other, spec) {
+            Acceptance::Accepted(si) => FieldAcceptance::Accepted(si),
+            Acceptance::Undefined => FieldAcceptance::Undefined,
+            Acceptance::Rejected(rej) => FieldAcceptance::Rejected(rej),
+        },
+    }
+}
+
 /// Produce a short human-readable label for a `Value` used in rejection
 /// diagnostics (e.g. `"Real"`, `"Pressure Scalar"`, `"Bool"`).
 fn value_short_label(value: &crate::value::Value) -> String {
