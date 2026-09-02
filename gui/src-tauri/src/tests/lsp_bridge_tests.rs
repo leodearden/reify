@@ -1340,14 +1340,24 @@ async fn an_awaited_sequence_still_observes_its_own_edits() {
     );
 }
 
-/// (o) An ABANDONED request produces no server-side effect and does not keep a
-/// lane consumer — the end-to-end counterpart of `large_stack_tests`' (ah),
-/// through the REAL composition.
+/// (o) An ABANDONED request to a DISCARDING destination produces no server-side
+/// effect and does not keep a lane consumer — the end-to-end counterpart of
+/// `large_stack_tests`' (ah), through the REAL composition.
 ///
 /// (ah) proves the mechanism with a synthetic sender and an `AtomicBool`. This
-/// proves the claim that actually matters to the GUI: an abandoned
-/// `textDocument/didOpen` never reaches `InProcessLsp`, so it publishes no
+/// proves it against a real lane, a real `InProcessLsp` and a real notification
+/// sink: the abandoned request never reaches the server, so it publishes no
 /// diagnostics and leaves no document behind.
+///
+/// # Why a `didOpen`, on a lane production would never route one to
+///
+/// Because the assertion has to be a SERVER-SIDE EFFECT, and `didOpen` is the
+/// method with the loudest one. It is a probe here, not a claim about routing:
+/// production sends `didOpen` to the ordered lane, which is `OnAbandon::Run`
+/// precisely so this cannot happen to it — that is (o2)'s subject, and
+/// `large_stack::OnAbandon` is why. Reading this test as "an abandoned
+/// `didOpen` is dropped" inverts it; the lane is declared
+/// `Lane::cancelling_pool` below, and the discard follows from THAT.
 ///
 /// Asserting the SERVER-SIDE EFFECT rather than merely "the lane recovered" is
 /// the point. A lane that ran the abandoned job to completion and then carried
@@ -1375,7 +1385,10 @@ async fn an_abandoned_request_does_not_occupy_a_lane_consumer() {
     use std::time::Duration;
 
     const LANE_NAME: &str = "t6517-canc";
-    static CANCEL_LANE: Lane = Lane::pool(LANE_NAME, 1);
+    // `cancelling_pool`, i.e. `OnAbandon::Discard` — the policy the real
+    // `LSP_POOL` carries. See the doc above for why a `didOpen` is nonetheless
+    // the payload.
+    static CANCEL_LANE: Lane = Lane::cancelling_pool(LANE_NAME, 1);
 
     const ABANDONED_URI: &str = "file:///abandoned.ri";
     const LIVE_URI: &str = "file:///still_live.ri";
@@ -1494,6 +1507,160 @@ async fn an_abandoned_request_does_not_occupy_a_lane_consumer() {
         bridge.get_diagnostics(ABANDONED_URI).await.is_empty(),
         "the abandoned request must have left NO server-side state — no \
          document, and therefore no diagnostics, for its URI"
+    );
+}
+
+/// (o2) An abandoned `textDocument/didOpen` on an ORDERED (`OnAbandon::Run`)
+/// destination IS STILL APPLIED.
+///
+/// (o)'s inverse, and the end-to-end statement of why cancel-at-the-lane is a
+/// property of the destination rather than a blanket rule. Everything is
+/// identical to (o) except the lane's declared policy — same parked consumer,
+/// same manufactured abandonment, same sink — so a regression to the blanket
+/// `if reply_tx.is_closed()` reds exactly here.
+///
+/// # What the regression costs, which is why this is asserted end-to-end
+///
+/// Not a lost notification. A lost DOCUMENT. If the queued `didOpen` is
+/// discarded, `InProcessLsp` never learns the URI exists; a subsequent
+/// `didChange` then takes `RwState::did_change`'s `didChange for unknown URI`
+/// branch and silently applies nothing
+/// (`crates/reify-lsp/src/server.rs:226`), and every query handler answers
+/// `Ok(None)` for that URI (server.rs:272, :295, :372, :395, :415). The pane
+/// stays dark to hover, completion and diagnostics for the rest of the session,
+/// with no error anywhere. Asserting the PUBLISH (a real server-side effect)
+/// rather than "the lane recovered" is what distinguishes that outcome from a
+/// healthy one — a lane that dropped the job would satisfy "recovered"
+/// perfectly.
+///
+/// The second `didOpen` is the non-vacuity twin, exactly as in (o): without it
+/// a sink that recorded everything twice would also pass.
+#[tokio::test]
+async fn an_abandoned_request_on_the_ordered_lane_is_still_applied() {
+    use crate::large_stack::{Lane, dispatch};
+    use crate::lsp_bridge::lsp_request_on_lane;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const LANE_NAME: &str = "t6517-ord";
+    // `Lane::pool`, i.e. `OnAbandon::Run` — the policy `LSP_LANE` carries.
+    // Size 1 for (o)'s stated reason: the abandonment has to be forced, which
+    // means every consumer must be occupied. Test-local so parking it cannot
+    // starve a concurrently-running test in this binary.
+    static ORDERED_LANE: Lane = Lane::pool(LANE_NAME, 1);
+
+    const ABANDONED_URI: &str = "file:///abandoned_ordered.ri";
+    const LIVE_URI: &str = "file:///still_live_ordered.ri";
+    /// Broken source, so `didOpen` is GUARANTEED to publish error diagnostics
+    /// through the sink — a publish then means "ran", unambiguously.
+    const BROKEN: &str = "structure {";
+
+    let sink = Arc::new(RecordingSink::default());
+    let bridge = Arc::new(LspBridge::with_sink(sink.clone()));
+
+    lsp_request_impl(
+        &bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
+    lsp_request_impl(&bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+    let _ = sink.take_calls();
+
+    let did_open = |uri: &str| {
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": BROKEN
+            }
+        })
+        .to_string()
+    };
+
+    // Occupy the lane's single consumer.
+    let (parked_tx, parked_rx) = mpsc::channel::<Option<String>>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let probe = std::thread::spawn(move || {
+        dispatch(ORDERED_LANE.sender(), move || {
+            let _ = parked_tx.send(std::thread::current().name().map(str::to_owned));
+            let _ = release_rx.recv();
+        });
+    });
+    let parked_on = parked_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the probe job must reach the consumer and report where it parked");
+    assert_eq!(
+        parked_on.as_deref(),
+        Some(LANE_NAME),
+        "the probe must occupy the real lane consumer; a lane that degraded to \
+         an inline call would leave the queue free and make this test vacuous"
+    );
+
+    // Enqueue a real `didOpen` and then ABANDON it.
+    let abandoned = tokio::time::timeout(
+        Duration::from_millis(200),
+        lsp_request_on_lane(
+            ORDERED_LANE.sender(),
+            Arc::clone(&bridge),
+            "textDocument/didOpen".to_string(),
+            did_open(ABANDONED_URI),
+        ),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "precondition: with the only consumer parked the request must not have \
+         completed — that elapse is what abandons it"
+    );
+
+    // Release the consumer; it now dequeues the abandoned job and must RUN it.
+    drop(release_tx);
+    probe.join().expect("the probe thread must not panic");
+
+    // A LIVE request through the same lane, which is also the FIFO barrier: by
+    // the time it resolves the abandoned job has already been dequeued and run.
+    let live = tokio::time::timeout(
+        Duration::from_secs(10),
+        lsp_request_on_lane(
+            ORDERED_LANE.sender(),
+            Arc::clone(&bridge),
+            "textDocument/didOpen".to_string(),
+            did_open(LIVE_URI),
+        ),
+    )
+    .await
+    .expect("the lane must keep serving after an abandoned request")
+    .expect("the live didOpen must resolve to Ok");
+    assert_eq!(
+        live, "null",
+        "`didOpen` is a notification, so it answers Null through the lane"
+    );
+
+    let calls = sink.take_calls();
+    assert!(
+        calls.iter().any(|(uri, ..)| uri.as_str() == LIVE_URI),
+        "non-vacuity: the LIVE didOpen must have published diagnostics. \
+         Recorded: {:?}",
+        calls.iter().map(|(u, ..)| u.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        calls.iter().any(|(uri, ..)| uri.as_str() == ABANDONED_URI),
+        "the ABANDONED didOpen must still have reached `InProcessLsp`. It did \
+         not — so on the ordered lane a request whose caller stopped listening \
+         now silently loses the document: `didChange` for that URI applies \
+         nothing and every query answers None, for the rest of the session. \
+         Recorded: {:?}",
+        calls.iter().map(|(u, ..)| u.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        !bridge.get_diagnostics(ABANDONED_URI).await.is_empty(),
+        "the abandoned request must have left its server-side state behind — a \
+         document, and diagnostics for it"
     );
 }
 
@@ -1744,5 +1911,53 @@ async fn the_production_entry_point_runs_its_work_on_a_lane_thread() {
          worker. Diagnostics were published from {threads:?} — which is what a \
          wrapper gutted to `lsp_request_impl(..).await` would report, while \
          still returning exactly the right value."
+    );
+}
+
+/// (r) Each PRODUCTION lane declares the abandoned-job policy its work requires.
+///
+/// The structural twin of (o)/(o2), and the guard neither of them can be. Both
+/// of those measure a TEST-LOCAL lane, because forcing an abandonment means
+/// parking every consumer and doing that to a process-wide `static` would
+/// starve whichever other test in this binary is using it. So before this test,
+/// rebuilding `LSP_LANE` as `Lane::cancelling_pool(..)` — which would start
+/// silently discarding queued `didOpen`s in the shipped GUI — left every test in
+/// the binary green, exactly the way declaring `LSP_POOL` with `Lane::new` did
+/// before (p) existed.
+///
+/// It is a three-line assertion over `Lane::on_abandon()` for that reason: the
+/// property is a declaration, so a declaration is the honest thing to check.
+/// What LICENSES each value is not: `LSP_POOL` may discard only because every
+/// method `lane_for_method` routes there is read-only against server-side state,
+/// which (i)/(j) pin from the other side.
+#[test]
+fn each_production_lane_declares_the_abandon_policy_its_work_requires() {
+    use crate::large_stack::{ENGINE_LANE, LSP_LANE, LSP_POOL, OnAbandon};
+
+    assert_eq!(
+        LSP_LANE.on_abandon(),
+        OnAbandon::Run,
+        "the ORDERED LSP lane must run an abandoned job anyway. It carries \
+         `didOpen`/`didChange`/`didClose`; discarding one unrun leaves \
+         `InProcessLsp` without the document, after which `didChange` applies \
+         nothing and every query answers None for that URI — permanently, and \
+         with no error anywhere."
+    );
+    assert_eq!(
+        ENGINE_LANE.on_abandon(),
+        OnAbandon::Run,
+        "the ENGINE lane must run an abandoned job anyway: it carries the \
+         projection / incremental-re-eval commands, several of which mutate \
+         session state. It is also fed only by the BLOCKING seam today, whose \
+         submitter is parked in `recv()` and cannot be dropped — so this is the \
+         declaration that keeps it correct if an async submitter is ever added."
+    );
+    assert_eq!(
+        LSP_POOL.on_abandon(),
+        OnAbandon::Discard,
+        "the QUERY pool is the one destination that may discard — and the \
+         anti-vacuity half of this test. Without it, a change that made \
+         `OnAbandon::Run` universal would satisfy the two assertions above \
+         while deleting cancel-at-the-lane outright."
     );
 }

@@ -114,17 +114,23 @@
 //!    residual limit. The routing lives in
 //!    [`crate::lsp_bridge::lane_for_method`]; what the split buys and what it
 //!    gives up is on [`Lane`].
-//! 4. **Drop-cancellation is PARTIAL.** An abandoned request is dropped at the
-//!    lane BEFORE it starts: [`dispatch_async`]'s job body returns early when
-//!    `reply_tx.is_closed()`, which is true exactly when the awaiting side's
-//!    future was dropped. But a request already picked up by a consumer runs to
-//!    completion — there is no cancellation point inside
-//!    [`tokio::runtime::Handle::block_on`], and the four `spawn_blocking` arms
-//!    of item 1 are uninterruptible once started regardless. So the residual is
-//!    "abandoned-after-start still runs", now costing one of [`LSP_POOL_SIZE`]
-//!    consumers rather than the only LSP consumer in the process. See
-//!    [`dispatch_async`]'s "Drop-cancellation" section and
-//!    [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
+//! 4. **Drop-cancellation is PARTIAL, and on today's production path it is
+//!    UNREACHABLE.** An abandoned job is dropped at the lane before it starts
+//!    — but only on an [`OnAbandon::Discard`] destination ([`LSP_POOL`]), and
+//!    only when the awaiting side's future was genuinely dropped. Two limits,
+//!    both measured rather than assumed:
+//!    * A request already picked up by a consumer runs to completion. There is
+//!      no cancellation point inside [`tokio::runtime::Handle::block_on`], and
+//!      the four `spawn_blocking` arms of item 1 are uninterruptible once
+//!      started regardless. The residual "abandoned-after-start still runs" now
+//!      costs one of [`LSP_POOL_SIZE`] consumers rather than the only LSP
+//!      consumer in the process.
+//!    * An abandoned frontend `invoke` does NOT drop the command future in
+//!      `tauri` 2.11.2 — it is spawned detached and its handle discarded — so
+//!      the only trigger reachable in the shipped app is runtime/app teardown.
+//!      The check is a structural guarantee, not a live saving. Exact citations
+//!      are in [`dispatch_async`]'s "Drop-cancellation" section; see also
+//!      [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
 //!
 //! So the invariant this module establishes is: "compile-bearing and
 //! high-frequency engine work, plus the inline LSP dispatch arms, run on a large
@@ -434,6 +440,57 @@ pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
 /// [`run_on_worker`]'s semantics identical to [`run_on_large_stack`]'s.
 type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 
+/// What a DESTINATION does with a queued job whose awaiting side has already
+/// gone away (task 6517).
+///
+/// # Why this is a property of the destination, not of `dispatch_async`
+///
+/// Cancel-at-the-lane was first written as a blanket rule — every job whose
+/// `reply_tx` is closed is discarded, on every lane. That is wrong for a
+/// destination carrying STATE-MUTATING work, and unrecoverably so: discarding a
+/// queued `textDocument/didOpen` means `InProcessLsp` never learns the document
+/// exists, after which `RwState::did_change` takes its `didChange for unknown
+/// URI` branch and returns without applying anything
+/// (`crates/reify-lsp/src/server.rs:226`) and every query handler answers
+/// `Ok(None)` for an unknown URI (server.rs:272, :295, :372, :395, :415). The
+/// file stays permanently dark to hover/completion/diagnostics until it is
+/// closed and reopened — a silent, unbounded loss produced by an optimisation
+/// whose entire benefit is skipping work nobody is waiting for.
+///
+/// The parity argument that licensed the blanket rule does not survive contact
+/// with that: pre-task-5772 drop-cancellation could only take effect at an
+/// `.await` point AFTER the handler had begun, whereas this check drops the
+/// whole notification while it is still QUEUED behind a busy consumer. That is
+/// a strictly wider window for a state-mutating message, not the same one.
+///
+/// So the policy travels with the queue the work was routed to. Only a
+/// destination that [`crate::lsp_bridge::lane_for_method`] has already
+/// classified as concurrency-safe — read-only, no server-side effect — may
+/// discard, and the classification is made exactly once, where the LSP semantics
+/// are known.
+///
+/// # Why [`OnAbandon::Run`] is the DEFAULT
+///
+/// [`Lane::new`] and [`Lane::pool`] both declare `Run`, and the discarding
+/// policy needs the distinctly-named [`Lane::cancelling_pool`]. Spelled the
+/// other way round — discard by default, opt out for the ordered lane — a lane
+/// added later would silently acquire the state-losing behaviour by virtue of
+/// nobody having thought about it. That is the same structural-safe-direction
+/// rule [`crate::lsp_bridge::lane_for_method`] applies to method
+/// classification, applied to destinations.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OnAbandon {
+    /// RUN the job anyway. The answer is dropped (its `oneshot` receiver is
+    /// already gone), but every side effect the job would have had still
+    /// happens. Correct for any destination carrying state-mutating work, and
+    /// the conservative default for a destination nobody has classified.
+    Run,
+    /// DISCARD the job unrun, dropping its future without polling it. Correct
+    /// only where running it and not running it are indistinguishable to
+    /// everything except the caller that stopped listening.
+    Discard,
+}
+
 /// The submit end of a lane's job queue, TAGGED with the lane it feeds.
 ///
 /// The [`std::sync::Mutex`] is defensive rather than required —
@@ -455,18 +512,34 @@ pub(crate) struct JobSender {
     /// Which lane this queue feeds — the same `&'static str` that lane's thread
     /// publishes in [`CURRENT_LANE`].
     lane: &'static str,
+    /// What this destination does with a job whose awaiting side is already
+    /// gone. Copied from the [`Lane`] that built this sender, so the policy
+    /// travels with the queue rather than with the submission — see
+    /// [`OnAbandon`].
+    on_abandon: OnAbandon,
     tx: std::sync::Mutex<std::sync::mpsc::Sender<Job>>,
 }
 
 impl JobSender {
-    /// Wrap a lane's `Sender`, tagging it with that lane's name.
+    /// Wrap a lane's `Sender`, tagging it with that lane's name and its
+    /// abandoned-job policy.
     ///
     /// `pub(crate)` so a test can build a SYNTHETIC sender (typically over an
     /// already-dropped `Receiver`) to provoke the `SendError` arms of
     /// [`dispatch`] / [`dispatch_async`] deterministically.
-    pub(crate) fn new(lane: &'static str, tx: std::sync::mpsc::Sender<Job>) -> Self {
+    ///
+    /// `on_abandon` is a required argument rather than a defaulted field
+    /// precisely because a synthetic sender is how the cancel path is tested:
+    /// a test that meant to exercise one policy and silently got the other
+    /// would assert the wrong thing and stay green.
+    pub(crate) fn new(
+        lane: &'static str,
+        tx: std::sync::mpsc::Sender<Job>,
+        on_abandon: OnAbandon,
+    ) -> Self {
         Self {
             lane,
+            on_abandon,
             tx: std::sync::Mutex::new(tx),
         }
     }
@@ -682,23 +755,59 @@ pub(crate) struct Lane {
     /// [`std::thread::available_parallelism`], so the bound is the same on every
     /// machine and is directly assertable from a test.
     size: usize,
+    /// What this lane does with a queued job whose awaiting side has gone away.
+    /// See [`OnAbandon`] for why this is a property of the DESTINATION and why
+    /// [`OnAbandon::Run`] is the default.
+    on_abandon: OnAbandon,
     /// The lazily-created queue. `None` records that the OS REFUSED the mapping.
     queue: std::sync::OnceLock<Option<JobSender>>,
 }
 
 impl Lane {
+    /// The one constructor; [`Lane::new`], [`Lane::pool`] and
+    /// [`Lane::cancelling_pool`] are named façades over it that fix one argument
+    /// each.
+    ///
+    /// Kept private and shared so "one mechanism, literally" stays true of the
+    /// declaration too: there is a single place a lane's fields are assembled
+    /// and a single place the size assertion lives, no matter which façade a
+    /// call site names.
+    ///
+    /// # A zero-size lane is a COMPILE error, not a runtime one
+    ///
+    /// The `assert!` is reachable only in a `const` context: every call site is
+    /// a `static` initialiser, so it is const-evaluated and `..(name, 0, ..)`
+    /// fails the build rather than yielding a lane whose queue nobody drains —
+    /// which is a silent hang, the one outcome this module promises never to
+    /// produce.
+    const fn declare(name: &'static str, size: usize, on_abandon: OnAbandon) -> Self {
+        assert!(
+            size >= 1,
+            "a lane needs at least one consumer; a size-0 lane's queue would \
+             never be drained, which is the silent hang this module exists to \
+             rule out"
+        );
+        Self {
+            name,
+            size,
+            on_abandon,
+            queue: std::sync::OnceLock::new(),
+        }
+    }
+
     /// Declare a SINGLE-consumer lane. `const` so lanes can be `static`s created
     /// at no runtime cost; the thread itself is not spawned until
     /// [`Lane::sender`] is first called.
     ///
     /// Its consumer is named exactly `name` — no index suffix — so the lanes
     /// that predate pools keep their exact thread names.
+    ///
+    /// [`OnAbandon::Run`], the conservative default: a single-consumer lane is
+    /// the shape this module uses for ORDER-SENSITIVE, state-mutating work, and
+    /// discarding such a job unrun loses state nothing recovers. See
+    /// [`OnAbandon`].
     const fn new(name: &'static str) -> Self {
-        Self {
-            name,
-            size: 1,
-            queue: std::sync::OnceLock::new(),
-        }
+        Self::declare(name, 1, OnAbandon::Run)
     }
 
     /// Declare a lane with `size` consumers, bounding head-of-line blocking
@@ -719,25 +828,46 @@ impl Lane {
     /// and doing that to a process-wide `static` would starve whichever other
     /// test in the same binary is concurrently using it.
     ///
-    /// # A zero-size pool is a COMPILE error, not a runtime one
+    /// [`OnAbandon::Run`], like [`Lane::new`] — a pool is not cancellable by
+    /// virtue of being a pool. Concurrency-safety is a property of the WORK
+    /// routed to a destination, not of how many consumers drain it, and only the
+    /// caller that classified that work can say so. See [`OnAbandon`], and
+    /// [`Lane::cancelling_pool`] for the opt-in.
     ///
-    /// The `assert!` below is reachable only in a `const` context: every call
-    /// site is a `static` initialiser, so it is const-evaluated and
-    /// `Lane::pool(name, 0)` fails the build rather than yielding a lane whose
-    /// queue nobody drains — which is a silent hang, the one outcome this module
-    /// promises never to produce.
+    /// A zero-size pool is a COMPILE error, not a runtime one; see
+    /// [`Lane::declare`].
+    ///
+    /// The `allow` is scoped to `not(test)` for the same reason [`Lane::size`]'s
+    /// is: since the one production pool became a [`Lane::cancelling_pool`],
+    /// this façade has no production caller, and a blanket allow would also hide
+    /// the day it stopped being reachable from the tests either. It is kept
+    /// rather than deleted because a NON-discarding pool is the shape any future
+    /// multi-consumer lane carrying effectful work must have, and re-deriving
+    /// that under pressure is how the blanket-discard defect happened once.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn pool(name: &'static str, size: usize) -> Self {
-        assert!(
-            size >= 1,
-            "a lane needs at least one consumer; a size-0 lane's queue would \
-             never be drained, which is the silent hang this module exists to \
-             rule out"
-        );
-        Self {
-            name,
-            size,
-            queue: std::sync::OnceLock::new(),
-        }
+        Self::declare(name, size, OnAbandon::Run)
+    }
+
+    /// [`Lane::pool`], but declaring that a queued job whose awaiting side has
+    /// gone away may be DISCARDED unrun ([`OnAbandon::Discard`]).
+    ///
+    /// Distinctly named, and required at the declaration, because this is the
+    /// one lane property whose wrong value loses state silently: see
+    /// [`OnAbandon`] for what discarding a queued `didOpen` costs. A caller
+    /// naming this constructor is asserting that every method routed here is
+    /// read-only against server-side state — which for the one production
+    /// instance ([`LSP_POOL`]) is exactly what
+    /// [`crate::lsp_bridge::lane_for_method`]'s `matches!` arm decides.
+    ///
+    /// It is a POOL constructor rather than a general one because there is no
+    /// use for a discarding size-1 lane in this crate: the shape this module
+    /// gives size-1 lanes is order-sensitive work, which is precisely what must
+    /// not be discarded. Adding one later is a one-line `declare` call, and
+    /// would then be a decision someone made rather than a default they
+    /// inherited.
+    pub(crate) const fn cancelling_pool(name: &'static str, size: usize) -> Self {
+        Self::declare(name, size, OnAbandon::Discard)
     }
 
     /// How many consumers this lane DECLARES.
@@ -765,6 +895,23 @@ impl Lane {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn size(&self) -> usize {
         self.size
+    }
+
+    /// What this lane does with a queued job whose awaiting side has gone away.
+    ///
+    /// Exposed for the same reason [`Lane::size`] is: the module ADVERTISES that
+    /// only the query pool may discard, and until this accessor existed that
+    /// claim was checkable only by reading the three `static` initialisers.
+    /// A lane rebuilt with the wrong façade — `LSP_LANE` declared via
+    /// [`Lane::cancelling_pool`] — would start silently dropping queued
+    /// `didOpen`s while every behavioural test in the binary stayed green,
+    /// because the abandonment those tests need has to be manufactured.
+    ///
+    /// Read only by tests, with the same `not(test)`-scoped `allow` and for the
+    /// same stated reason as [`Lane::size`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const fn on_abandon(&self) -> OnAbandon {
+        self.on_abandon
     }
 
     /// Lazily create this lane's worker, yielding its queue — or `None` if the
@@ -881,7 +1028,7 @@ impl Lane {
                          smaller concurrency bound"
                     );
                 }
-                Some(JobSender::new(name, tx))
+                Some(JobSender::new(name, tx, self.on_abandon))
             })
             .as_ref()
     }
@@ -919,7 +1066,15 @@ pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 ///
 /// The classification key is LSP PROTOCOL semantics, and lives with the
 /// LSP-aware module: see [`crate::lsp_bridge::lane_for_method`].
-pub(crate) static LSP_POOL: Lane = Lane::pool(LSP_POOL_THREAD_PREFIX, LSP_POOL_SIZE);
+///
+/// Declared with [`Lane::cancelling_pool`], so this is also the ONE destination
+/// in the process that may discard an abandoned job unrun ([`OnAbandon`]). The
+/// two properties are licensed by the same fact and by nothing else: every
+/// method routed here is read-only against server-side state, so running the job
+/// and not running it are indistinguishable to everything except the caller that
+/// stopped listening. A method reclassified into this pool inherits BOTH.
+pub(crate) static LSP_POOL: Lane =
+    Lane::cancelling_pool(LSP_POOL_THREAD_PREFIX, LSP_POOL_SIZE);
 
 /// Run `f` to completion on the process-wide PERSISTENT large-stack thread,
 /// BLOCKING the caller until it returns, and hand back its value.
@@ -1214,12 +1369,44 @@ where
 /// And a `RecvError` is that loud panic rather than a hang: a disconnected
 /// `oneshot` resolves AT ONCE, so the `.await` below can never park forever.
 ///
-/// # Drop-cancellation: the job checks `reply_tx.is_closed()` before driving
+/// # Drop-cancellation: an `OnAbandon::Discard` destination checks
+/// `reply_tx.is_closed()` before driving
 ///
-/// Task 5772 removed drop-cancellation — the awaiting side could go away while
-/// the job ran to completion regardless — and disclosed it. Task 6517 restores
-/// it partially, at the LANE. Five things a reader needs and cannot infer from
-/// the `is_closed` check in the job body:
+/// ## First, what actually drops a `dispatch_async` future in production
+///
+/// MEASURED against the pinned `tauri` 2.11.2, because an earlier revision of
+/// this section asserted the opposite and was wrong. An async
+/// `#[tauri::command]` is resolved through `InvokeResolver::respond_async` /
+/// `respond_async_serialized_inner`, and BOTH do
+/// `crate::async_runtime::spawn(async move { .. })` as a statement, DISCARDING
+/// the returned handle (`tauri-2.11.2/src/ipc/mod.rs:329` and `:375`).
+/// `tauri::async_runtime::JoinHandle` is a thin enum over
+/// `tokio::task::JoinHandle` with no `Drop` impl of its own
+/// (`src/async_runtime.rs:138-160`), and dropping a tokio `JoinHandle` DETACHES
+/// the task rather than cancelling it. So the command future runs to completion
+/// no matter what the webview does — a closed window, a navigated-away pane, a
+/// keystroke's request superseded by the next one. That was true before task
+/// 5772 as well as after it.
+///
+/// The consequence, stated rather than left flattering: on today's production
+/// path `reply_tx.is_closed()` is reachable only when the SPAWNED TASK ITSELF is
+/// dropped, i.e. at runtime/app teardown (or via an explicit
+/// `JoinHandle::abort`, which nothing in this app calls). Every test that
+/// exercises the check manufactures the drop with `tokio::time::timeout`,
+/// because no production caller produces one. The guard is therefore a cheap
+/// structural correctness property, NOT a live optimisation — and it is
+/// documented as one so a later reader does not build on a benefit that is not
+/// being collected.
+///
+/// It is kept, rather than deleted as dead weight, for two reasons: teardown IS
+/// a real trigger (a queue of abandoned jobs at shutdown is work worth skipping),
+/// and the check is what makes a future `select!`/timeout wrapper safe by
+/// construction instead of by nobody having added one yet.
+///
+/// ## And what the check itself is
+///
+/// Six things a reader needs and cannot infer from the `is_closed` check in the
+/// job body:
 ///
 /// 1. **`reply_tx.is_closed()` IS the cancellation token.** It is true exactly
 ///    when the awaiting side's `dispatch_async` future was dropped, because that
@@ -1231,19 +1418,23 @@ where
 ///    `tokio-util` is not a `reify-gui` dependency at all (and the workspace pin
 ///    it would come from selects only `rt`, not the `sync` feature that gates
 ///    `CancellationToken`), and neither is `futures`.
-/// 2. **It is STRICTLY WEAKER than pre-5772 drop-cancellation, deliberately.**
-///    It can only skip work that has NOT STARTED; it never interrupts work in
-///    flight. There is no cancellation point inside
+/// 2. **It can only skip work that has NOT STARTED.** It never interrupts work
+///    in flight: there is no cancellation point inside
 ///    [`tokio::runtime::Handle::block_on`], and the four `spawn_blocking` arms
 ///    are uninterruptible once started in any case — dropping a `JoinHandle`
 ///    does not cancel a blocking task. Claiming more than "dropped from the
 ///    queue" would be false.
-/// 3. **Why it applies to BOTH lanes, not only the query pool.** A closed
-///    receiver means the whole Tauri command future is gone, and before task
-///    5772 an abandoned NOTIFICATION stopped at its next `.await` too. Skipping
-///    it is therefore faithful to the pre-5772 contract in both directions
-///    rather than a new state-loss risk: the state the notification would have
-///    written is state a pre-5772 abandoned request never wrote either.
+/// 3. **It applies ONLY to an [`OnAbandon::Discard`] destination — today, only
+///    [`LSP_POOL`].** The blanket version of this rule was a defect, and the
+///    reasoning that produced it is worth keeping visible: "a closed receiver
+///    means the whole command future is gone, and a pre-5772 abandoned request
+///    never wrote that state either" is a parity argument, and it does not
+///    hold. Pre-5772 cancellation could take effect only at an `.await` point
+///    AFTER the handler had begun; this check drops the whole job while it is
+///    still QUEUED behind a busy consumer — a strictly wider window, and one
+///    that for a `textDocument/didOpen` leaves the file permanently dark to
+///    hover/completion/diagnostics. See [`OnAbandon`] for the full failure
+///    chain and for why [`OnAbandon::Run`] is the default.
 /// 4. **Why the blocking seam [`dispatch`] gets no equivalent.**
 ///    [`std::sync::mpsc::Sender`] has no `is_closed`, and — more to the point —
 ///    its submitter is parked in `recv()` for the whole call, so it cannot be
@@ -1255,10 +1446,17 @@ where
 ///    destructors on a plain `std` thread with no ambient runtime ("there is no
 ///    reactor running") and outside any catch. Both guards are restored
 ///    explicitly at the check; see the comment there for why losing a consumer
-///    is the worst outcome available at this particular line.
+///    is the worst outcome available at this particular line. Each is pinned by
+///    its own test — `large_stack_tests`' (aj) and (ak) — rather than left as a
+///    justified line no failure would ever reach.
+/// 6. **An `OnAbandon::Run` destination still throws the ANSWER away.** The
+///    `reply_tx.send(outcome)` at the end of the job body is already
+///    `let _ = ..`, so a job whose receiver has gone completes, applies its side
+///    effects, and discards its result without erroring. "Run anyway" costs a
+///    consumer for the duration; it does not cost a panic or a hang.
 ///
 /// The RESIDUAL, stated rather than left to be discovered: a request abandoned
-/// AFTER its consumer picked it up still runs to completion. That cost is now
+/// AFTER its consumer picked it up still runs to completion. That cost is
 /// BOUNDED rather than eliminated — it occupies one of [`LSP_POOL_SIZE`] query
 /// consumers instead of the only LSP consumer in the process.
 pub(crate) async fn dispatch_async<Fut, T>(sender: Option<&JobSender>, fut: Fut) -> T
@@ -1283,14 +1481,21 @@ where
     // running on this lane could only be driven after that job returned.
     assert_not_reentrant(sender);
 
+    // Copied out before the job is boxed: `sender` is a plain borrow with no
+    // `'static` bound, and `OnAbandon` is `Copy`.
+    let on_abandon = sender.on_abandon;
+
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
-        // CANCEL AT THE LANE (task 6517). A closed `reply_tx` means the awaiting
-        // side's `dispatch_async` future was dropped, so nothing is waiting for
-        // this answer. Returning here drops `fut` WITHOUT polling it, running its
-        // destructors exactly as an abandoned Tauri command future did before
-        // task 5772. See this function's "Drop-cancellation" section for the
-        // four things that are not inferable from this line.
+        // CANCEL AT THE LANE (task 6517), and only where the DESTINATION says it
+        // is safe. A closed `reply_tx` means the awaiting side's
+        // `dispatch_async` future was dropped, so nothing is waiting for this
+        // answer; on an `OnAbandon::Discard` destination that licenses returning
+        // here, which drops `fut` WITHOUT polling it. On an `OnAbandon::Run`
+        // destination — every ordered, state-mutating lane — the job runs
+        // regardless and only its ANSWER is thrown away, because discarding a
+        // queued `didOpen` loses a document nothing recovers. See [`OnAbandon`]
+        // and this function's "Drop-cancellation" section.
         //
         // The drop is deliberately given the SAME two protections the driven
         // path has, because this is the one place `fut` is disposed of by a path
@@ -1317,7 +1522,7 @@ where
         //   `reply_tx` is already closed. `AssertUnwindSafe` is sound for the
         //   same reason it is below — the closure OWNS `fut` and is consumed by
         //   this call, so nothing observes it afterwards.
-        if reply_tx.is_closed() {
+        if on_abandon == OnAbandon::Discard && reply_tx.is_closed() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _enter = handle.enter();
                 drop(fut);

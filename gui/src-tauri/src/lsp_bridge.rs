@@ -130,30 +130,40 @@ pub async fn lsp_request_impl(
 /// keep its 2-worker runtime responsive); tracked as task #6195 rather than
 /// overclaimed here.
 ///
-/// # What this COSTS: drop-cancellation is PARTIAL
+/// # What this COSTS: an abandoned request still runs
 ///
 /// Stated alongside the coverage limit above because it is a behaviour change
-/// this routing introduced, and one it now only partly repairs.
+/// this routing introduced, and one that is only structurally repaired.
 ///
-/// Before task 5772 the body ran inside the Tauri command's own future, so a
-/// frontend `invoke` that was abandoned — window closed, pane navigated away,
-/// a keystroke's request superseded by the next one — dropped that future and
-/// the LSP work stopped at its next `.await` point. Task 5772 moved the future
-/// into a lane job driven by [`tokio::runtime::Handle::block_on`] on a thread
-/// with no cancellation point at all, so the work ran to completion regardless.
+/// Task 5772 moved the body out of the Tauri command's own future and into a
+/// lane job driven by [`tokio::runtime::Handle::block_on`] on a thread with no
+/// cancellation point, and disclosed that as a loss of drop-cancellation. Task
+/// 6517 revisited that disclosure and found HALF of it false. Measured against
+/// the pinned `tauri` 2.11.2: an async `#[tauri::command]` is resolved by
+/// `InvokeResolver::respond_async` / `respond_async_serialized_inner`, both of
+/// which `crate::async_runtime::spawn(..)` and DISCARD the returned handle
+/// (`src/ipc/mod.rs:329`, `:375`), and dropping a tokio `JoinHandle` detaches
+/// rather than cancels. A frontend `invoke` that is abandoned — window closed,
+/// pane navigated away, keystroke superseded — therefore did NOT stop the LSP
+/// work before task 5772 either. The command future was already detached and
+/// ran to completion.
 ///
-/// Task 6517 restores the NOT-YET-STARTED half.
+/// So what task 6517 adds is a guarantee, not a saving.
 /// [`crate::large_stack::dispatch_async`]'s job body returns early when
-/// `reply_tx.is_closed()` — true exactly when the awaiting side's future was
-/// dropped — so an abandoned request is discarded at the lane instead of
-/// executed, and its captured future is dropped without ever being polled.
+/// `reply_tx.is_closed()` on an `OnAbandon::Discard` destination — which for LSP
+/// is the QUERY POOL only, never the ordered lane, because discarding a queued
+/// `didOpen` would leave the document permanently unknown to the server (see
+/// [`crate::large_stack::OnAbandon`]). On the shipped app the only thing that
+/// closes that receiver is runtime/app teardown; every test that exercises it
+/// manufactures the drop with `tokio::time::timeout`.
 ///
 /// The RESIDUAL, which no doc here should be read as denying: a request already
-/// picked up by a consumer still runs to completion. `Handle::block_on` has no
+/// picked up by a consumer still runs to completion, and so does every
+/// abandoned request routed to the ordered lane. `Handle::block_on` has no
 /// cancellation point, and the four `spawn_blocking` arms above are
 /// uninterruptible once started in any case (dropping a `JoinHandle` does not
-/// cancel a blocking task). What changed is the COST of that residual: an
-/// abandoned in-flight query now occupies one of
+/// cancel a blocking task). What task 6517 genuinely changed is the COST of
+/// that residual: an abandoned in-flight query occupies one of
 /// [`crate::large_stack::LSP_POOL_SIZE`] consumers rather than the only LSP
 /// consumer in the process, so it no longer stalls every subsequent keystroke
 /// behind it.
