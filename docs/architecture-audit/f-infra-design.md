@@ -464,6 +464,48 @@ stall per flip. `scripts/release-sensitive-crates.txt` is likewise the wrong
 lever: it declares debug-vs-release TEST scope, never invokes `cargo install`,
 and is set-equality-gated by `tests/infra/test_release_scoped_scope.sh`.
 
+**The advisory needs a channel that survives rc 0 (added in review).** Making
+the guard exit 0 has a trap of its own, and it is the same one §11.1.4 records
+for `REIFY_AUDIT_PREDONE_WARN_ONLY`: `pre_done_hook.py` captures the
+subprocess's stderr with `stderr=PIPE` and surfaces it ONLY on a non-zero exit,
+so on the live hook path an rc-0 advisory is captured and **discarded**. Left at
+stderr alone, fail-open would have traded a loud outage for a *silent* one — at
+~4 commits/day the fleet would sit permanently on a stale P5 detector with no
+operator-visible signal, and the only thing that ever surfaced the token would
+be an attended `deploy-reify-audit-predone-hook.sh` run.
+
+So `reify-audit-predone-wrapper.sh` captures the guard's stderr, re-emits it
+verbatim (the rc-125 path is unchanged — that one *is* surfaced) and also
+records it on two channels the hook cannot swallow:
+
+1. the **systemd journal**, via `logger -t reify-audit-predone`. The wrapper's
+   parent is `fused-memory.service`, so `journalctl --user -t
+   reify-audit-predone` shows it with no extra wiring.
+2. a **one-line sentinel file** — `REIFY_AUDIT_ADVISORY_SENTINEL`, default
+   `${TMPDIR:-/tmp}/reify-audit-predone-advisory.$(id -u)`. Truncate-written,
+   never appended, because the condition persists across every done-flip for
+   hours-to-days and an append would turn one stale binary into unbounded
+   `/tmp` growth. Its **presence** answers "is the fleet running a stale
+   detector?", its **mtime** answers "since when?", and a fresh binary writes
+   nothing — so absence means healthy.
+
+Both are strictly best-effort and neither can change the exit code: an
+observability path that could block a done-flip would reintroduce the outage
+this task removed (pinned by Check 9g in
+`tests/infra/test_reify_audit_predone_wrapper.sh`, which points the sentinel at
+an unwritable path and asserts rc 0). Residual limits, accepted: the sentinel
+is host-local and per-uid, nothing sweeps it on a schedule today, and `logger`
+is best-effort — a host without it degrades to the sentinel alone. Wiring a
+scheduled read-only sweep over the sentinel (the `warm-lane-audit.sh` shape) is
+follow-up work, not part of this task.
+
+**A caller typo cannot reinstate the refusal (added in review).**
+`reify_audit_guard` had no mode validation, so any unrecognised mode string fell
+through to the terminal `return 125` refuse path — one slip at the wrapper's
+call site (`warm-open`) would have restored the outage with the OLD cryptic
+message. Unknown modes now emit `E_AUDIT_GUARD_BAD_MODE` and are treated as
+`warn-open`.
+
 **Consumers diverge deliberately.** Fail-open is right for the unattended
 done-flip hot path. It is wrong for an ATTENDED deploy that just claimed to
 have installed a fresh binary, so `deploy-reify-audit-predone-hook.sh` step 6

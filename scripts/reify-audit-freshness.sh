@@ -87,6 +87,13 @@
 #   only on rc 0 (:222-223) and blocks it on ANY non-zero rc, and it runs
 #   inside fused-memory's per-project write lock with a 30s timeout (:25-31,
 #   :151). See WHY FAIL-OPEN below.
+#   DELIVERY NOTE: that same hook captures stderr with stderr=PIPE and surfaces
+#   it ONLY on a non-zero rc, so the rc-0 ADVISORY this library writes to stderr
+#   is discarded on the live path. The wrapper therefore captures this stderr
+#   and tees it to the systemd journal and a sentinel file before re-emitting
+#   it (see its "Durable advisory channel" block). Any FUTURE warn-open
+#   consumer on a path that drops rc-0 stderr must do the same, or the alarm is
+#   silent exactly where it matters.
 # - /audit skill: REBUILD mode — `cargo build --release -q -p reify-audit`
 #   self-heals the release binary instead of refusing.
 # - verify.sh run_all.sh line: REBUILD-BUDGET-SAFE mode — when

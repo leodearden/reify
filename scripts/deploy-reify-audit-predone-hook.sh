@@ -8,12 +8,27 @@
 # WHAT THIS FIXES
 # ---------------
 # systemd's FUSED_MEMORY_PREDONE_HOOK_REIFY invokes ~/.cargo/bin/reify-audit
-# DIRECTLY, bypassing the wrapper's REFUSE-mode staleness guard
-# (scripts/reify-audit-freshness.sh :: reify_audit_guard ... refuse ...).  The
-# installed binary is therefore free to drift arbitrarily far behind
-# crates/reify-audit/ with nothing to say so — measured 2026-08-27 at ~11 weeks
+# DIRECTLY, bypassing the wrapper's staleness guard altogether
+# (scripts/reify-audit-freshness.sh :: reify_audit_guard ... warn-open ...).
+# The installed binary is therefore free to drift arbitrarily far behind
+# crates/reify-audit/ with NOTHING to say so — measured 2026-08-27 at ~11 weeks
 # behind the crate tip.  This script rebuilds the binary and connects the guard
-# that would have refused a stale one.
+# that DETECTS a stale one.
+#
+# "Detects", not "refuses": since task #7139 the wrapper calls the guard in
+# WARN-OPEN mode and a stale-but-runnable binary does NOT block the done-flip.
+# It emits a self-describing E_AUDIT_BIN_STALE advisory (stderr, the systemd
+# journal via `logger -t reify-audit-predone`, and a sentinel file) and runs the
+# stale detector anyway — because on a SYNCHRONOUS pre-done hook a refusal
+# wedges every done-flip in the project, which is an outage rather than a
+# safeguard.  REFUSE mode has no live consumer.  Only an UNRUNNABLE binary
+# (E_AUDIT_BIN_MISSING), or an operator who armed
+# REIFY_AUDIT_FRESHNESS_STRICT=1, still exits 125.
+#
+# THIS script diverges from that policy deliberately.  It is an ATTENDED deploy
+# that has just claimed to install a fresh binary, so step 6 treats the
+# E_AUDIT_BIN_STALE advisory as FATAL regardless of rc — without that, a
+# fail-open probe would report a green deploy over a stale fleet.
 #
 # HOW IT IS INVOKED
 # -----------------
@@ -105,7 +120,7 @@
 # RELATED
 # -------
 #   scripts/reify-audit-predone-wrapper.sh   the wrapper being wired in
-#   scripts/reify-audit-freshness.sh         the REFUSE-mode guard it sources
+#   scripts/reify-audit-freshness.sh         the WARN-OPEN guard it sources
 #   task #6939 (this deploy), #6345 (the P5 vacuity fix it waits for)
 #   provenance: reify esc-6345-6, ruled by Leo 2026-08-28
 
@@ -291,7 +306,8 @@ else
      crates/reify-audit tip commit epoch $CRATE_EPOCH. cargo install exited 0 but
      the binary on disk is unchanged (wrong --root? a shadowing binary earlier on
      PATH? an install into a different HOME?).
-     Refusing to repoint systemd at a wrapper that would immediately refuse."
+     Refusing to repoint systemd at a wrapper whose guard would immediately
+     report the binary as stale."
     fi
     note "binary mtime $BIN_MTIME >= crate epoch $CRATE_EPOCH — fresh"
 fi
