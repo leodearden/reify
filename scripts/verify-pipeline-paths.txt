@@ -43,28 +43,44 @@
 # scripts/verify-pipeline-guard.sh's emitted-gate clause, exactly as the
 # sourced libs are by its source-line clause. The clause is NOT scripts/-only:
 # it derives any directory-qualified *.sh, which is what covers
-# tests/sync_comments_test.sh (verify.sh:2627). A NEW lint/gate script wired
-# into the plan therefore needs NO row here: do not add one. This is the
-# self-healing property the per-script alternative lacks — task 6243's
-# hand-registration approach covered 2 of the 10 emitted gates, its follow-up
-# ticket named 6 more, and two others (scripts/test_pm_standardization.sh,
-# tests/sync_comments_test.sh) were in neither list.
+# tests/sync_comments_test.sh (grep `sync_comments_test.sh` in
+# scripts/verify.sh). A NEW lint/gate script wired into the plan therefore
+# needs NO row here: do not add one. This is the self-healing property the
+# per-script alternative lacks — task 6243's hand-registration approach
+# covered 2 of the 10 emitted gates, its follow-up ticket named 6 more, and
+# two others (scripts/test_pm_standardization.sh, tests/sync_comments_test.sh)
+# were in neither list.
 #
-#   ONE QUALIFICATION on "do not add one". The guard reads verify.sh's SOURCE
-#   TEXT, so auto-derivation covers a plan line that mentions the script path
-#   LITERALLY. A plan line assembled through a VARIABLE derives nothing:
+#   ONE QUALIFICATION on "do not add one" — MUCH NARROWER SINCE TASK 6426, so
+#   do not add a row on the strength of the old advice. Auto-derivation is now a
+#   UNION: a grep of verify.sh's SOURCE TEXT for literal paths in
+#   add()/add_tool() statements, PLUS the paths named by the RESOLVED plan that
+#   one canonical widest --print-plan invocation prints. A plan line assembled
+#   through a VARIABLE:
 #
-#       _cmd="./scripts/new-gate.sh"      # <- invisible to the guard
-#       add_tool "$_cmd"
+#       _cmd="./scripts/new-gate.sh"      # <- invisible to the source-text half
+#       add_tool "$_cmd"                  #    but NAMED in the resolved plan
 #
-#   That shape is already in use (_gui_cmd / _sidecar_cmd / _ts_cmd, emitted at
-#   scripts/verify.sh:2615-2617 and assembled at :2532-2538). A gate wired that
-#   way is silently fast-path eligible with no red signal anywhere, since the
-#   ground-truth tier in tests/infra/test_verify_pipeline_guard.sh Pair E is
-#   pinned to today's gates. So: prefer writing the path literally in the plan
-#   line; if it genuinely must be variable-assembled, add a row here and say
-#   why. The limitation is pinned by Pair E's LIMITATION case, so this note and
-#   the code cannot drift apart.
+#   is therefore auto-derived after all and needs NO row here, PROVIDED the
+#   canonical invocation reaches it. Inspect that half alone with
+#   `bash scripts/verify-pipeline-guard.sh --list-plan-derived`.
+#
+#   WHAT STILL NEEDS A ROW is the narrow residual: a variable-assembled plan
+#   line in a branch of build_plan the canonical invocation NEVER TAKES. Neither
+#   half sees it — the source-text half because the path is behind a variable,
+#   the plan-derived half because the line never executes — so it is silently
+#   fast-path eligible with no red signal anywhere. If you must wire a gate that
+#   way, add a row here and say why. Prefer, in order: a literal path; a branch
+#   the canonical invocation reaches; a row here as the last resort.
+#
+#   >>> CANONICAL WRITE-UP: clause 4b's block comment in
+#   scripts/verify-pipeline-guard.sh. It owns the rationale, the current
+#   measurements, which live plan lines are and are NOT covered examples, and
+#   the monotonicity argument — read it before pattern-matching on any example.
+#   This note deliberately carries no second copy of those; both the closure and
+#   the residual are pinned by Pair E in
+#   tests/infra/test_verify_pipeline_guard.sh (the SELF-HEALING and RESIDUAL
+#   LIMITATION cases respectively).
 #
 # cpu-admit.sh (task α, #4630) is intentionally omitted: verify.sh sources it
 # directly (`source "$SCRIPT_DIR/cpu-admit.sh"`), so verify-pipeline-guard.sh
@@ -110,17 +126,18 @@ scripts/lib_clock_stop.sh
 #   guard's source-line clause misses it, and when this row was added no other
 #   clause covered it either.  It is now DOUBLY redundant — the task-5256
 #   in-code tests/infra/*.sh glob covers it, and as of task 6320 so does the
-#   emitted-gate clause (verify.sh:2844 invokes it from an add_tool() plan
-#   line).  The row is kept as belt-and-braces on the same terms as the two
-#   task-6243 rows below, and for the incident rationale it records: a
-#   run_all.sh-only diff (e.g. H2's concurrent hermetic pool, task 4924)
-#   could otherwise take the merge-worker config fast-path and skip actually
-#   running the concurrent suite; a resulting dropped `FAILED <names>` marker
-#   reclassifies a real infra-suite failure as tree_sitter_generate_error (see
-#   run_all.sh's own header comment) — a thrash-escalating L1 escalation (the
-#   #4618/#4624→#4288 class; see CLAUDE.md).  Registering it here (mirrors the
-#   transitive lib_slot_acquire.sh entry above) routes run_all.sh edits to the
-#   full --scope all gate.
+#   emitted-gate clause (grep `run_all.sh` in scripts/verify.sh — an
+#   add_tool() plan line invokes it).  The row is kept as belt-and-braces on
+#   the same terms as the two task-6243 rows below, and for the incident
+#   rationale it records: a run_all.sh-only diff (e.g. H2's concurrent
+#   hermetic pool, task 4924) could otherwise take the merge-worker config
+#   fast-path and skip actually running the concurrent suite; a resulting
+#   dropped `FAILED <names>` marker reclassifies a real infra-suite failure as
+#   tree_sitter_generate_error (see run_all.sh's own header comment) — a
+#   thrash-escalating L1 escalation (the #4618/#4624→#4288 class; see
+#   CLAUDE.md).  Registering it here (mirrors the transitive
+#   lib_slot_acquire.sh entry above) routes run_all.sh edits to the full
+#   --scope all gate.
 tests/infra/run_all.sh
 #
 # tests/infra/run-all-ambient-vars.manifest: the checked-in ledger of every
@@ -161,6 +178,8 @@ scripts/check-compute-trampoline-registration.sh
 #   siblings it did not list: scripts/test_pm_standardization.sh and
 #   tests/sync_comments_test.sh (the latter found in review, and the reason the
 #   clause derives any directory-qualified *.sh rather than scripts/ only).
-#   "CLOSED" means the emitted-LITERAL-path class is closed; the
-#   variable-assembled shape is a known, documented, test-pinned exception —
-#   see the ONE QUALIFICATION paragraph in the header note.
+#   "CLOSED" means the emitted-LITERAL-path class is closed. Task 6426 then
+#   closed the variable-assembled shape too, for any plan line the canonical
+#   --print-plan invocation reaches; what remains is the narrower
+#   unreached-branch residual — see the ONE QUALIFICATION paragraph in the
+#   header note.

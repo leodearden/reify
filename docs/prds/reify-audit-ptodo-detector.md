@@ -144,6 +144,20 @@ last-touching commit); if it never existed it is presumed to-be-created and pass
 Prose-path scanning of task descriptions is **out of scope** (FP-prone — historical
 mentions, planned files, partial paths). Advisory severity; own leaf (ζ).
 
+**Renamed ≠ deleted (2026-08-12, task #5654).** An absent path whose last-touching
+commit **renamed** it, to a target still tracked at HEAD, is reported as
+`task-cites-renamed-path` carrying the old path, the new path, and the commit — a cite
+a consumer can repoint without re-running any git archaeology. Mechanism: `git show -M
+--name-status --format= <sha>` on the commit `git log -1` already resolved (one bounded
+single-commit diff, not a history walk), matching the `R`-status line whose old side is
+the cited path. `-M` is explicit so a user/global `diff.renames=false` cannot silently
+disable detection. Everything else stays `task-cites-deleted-path`, and the fall-back is
+total: no matching `R` line, a **merge** commit (`git show` defaults to `--cc` and prints
+no diff for a merge, so a rename landed directly in a merge is not detected), any git
+error, or a rename target that is itself no longer tracked → the deleted kind. A git
+failure can therefore only ever cause a MISSED reclassification, never a false renamed
+finding. Copies (`C` status) are not resolved — only `-M` is passed. See §17.
+
 ### 6.4 Citation grammar — **canonical `#NNNN`, strict from day one, one migration sweep**
 
 Canonical forms (normative spec in §8): `TODO(#NNNN):` for comment markers; `#NNNN`
@@ -183,8 +197,13 @@ a committed baseline of **fingerprints** (`path :: kind :: normalized marker tex
 no line numbers; they drift). Any violation not in the baseline fails the check
 immediately — a fresh untracked `TODO:` is red at verify time from the moment ε lands,
 even while grandfathered violations are being burned down. Baseline is shrink-only
-(ratchet-above-baseline oracle pattern, Leo-ratified jun11 on 4521). After δ the
-baseline should be ≈ empty.
+(ratchet-above-baseline oracle pattern, Leo-ratified jun11 on 4521) — **a convention
+enforced by nothing**: the implemented oracle is subset-of, and no assertion anywhere
+requires the baseline to shrink, or a baseline entry to still be live. Adding that second
+assertion was considered and **declined** on measurement — **§18** (2026-08-28, task
+#6859), the single home for that ruling. After δ the baseline should be ≈ empty —
+**an aspiration with no mechanism**: measured unchanged from the 2026-08-07 seed through
+2026-08-28 (**§18**).
 
 **Sequencing rule for a new lane — re-seed in the same diff (2026-08-07, task #6087).**
 Widening marker recognition necessarily discovers pre-existing debt, so the lane's own
@@ -440,6 +459,7 @@ one live cite suffices for tracking.
 | `unknown-id` | cite parses but id not in the task DB | liveness |
 | `orphaned` | cited task status ∈ {done, cancelled} — reported with cited id + status | liveness |
 | `task-cites-deleted-path` | non-terminal task `metadata.files` path absent from tracked set but present in git history | inverse |
+| `task-cites-renamed-path` | non-terminal task `metadata.files` path absent from tracked set, whose last-touching commit renamed it to a path still tracked at HEAD — reported with both paths + the commit | inverse |
 | `parked-on-anchor` | cited task is non-terminal but `metadata.do_not_complete == true` (a permanently-parked / never-completing anchor) and no other cite on the marker is genuinely live | liveness |
 
 **`#[ignore]` reason policy:** reasons containing a cite → liveness-checked; reasons
@@ -507,6 +527,10 @@ Consequences, recorded so they are not re-derived:
 - **A non-zero PTODO exit on main is the steady state, not an alarm.** Measured on main
   2026-08-27: **65 findings, 11 High, exit code 11** — 10 `untracked` + 1 `orphaned`
   (High), 3 `malformed-cite`, 51 `task-cites-deleted-path`. No gate observes any of it.
+  (That ζ kind breakdown predates §17: after #5654 the same population splits between
+  `task-cites-deleted-path` and `task-cites-renamed-path`. The two are mutually
+  exclusive per cited path and both Medium, so the 51 total and the exit code are
+  unchanged — only the kind labels move.)
 - **What the ratchet actually reaches is narrower than "all findings".**
   `ptodo-baseline-gen` filters to path-keyed source-marker findings
   (`is_swept_ext(&f.task_id) && !is_g_allow_finding(f)`), so of those 65 only **14** are
@@ -536,6 +560,13 @@ flag — NOT bare `deferred` (genuine paused/human-owned deferred tasks like #45
 would be false positives) and NOT `do_not_dispatch` (#4642 is human-owned and will
 complete). See §15 for the full design-decision record.
 
+`task-cites-renamed-path` emits **Medium** (advisory, exit-neutral), exactly like the
+`task-cites-deleted-path` it refines: `reify-audit`'s exit code is the High count, and
+the inverse lane must never hard-fail verify — a stale-but-repointable citation is a
+cleanup prompt, not a blocker. The two kinds are mutually exclusive by construction (a
+cited path either resolves to a rename target still tracked at HEAD, or it does not), so
+adding the kind changes no exit class and no finding count. See §17.
+
 ## 9. Boundary-test sketch
 
 Fixture-driven, both directions across the detector↔repo and detector↔DB seams
@@ -561,6 +592,9 @@ Fixture-driven, both directions across the detector↔repo and detector↔DB sea
 | 15 | Deferred without flag (FP guard a) | `// TODO(#42):`, DB has 42=deferred, NULL metadata | no finding |
 | 15b | do_not_dispatch-only (FP guard b) | `// TODO(#42):`, DB has 42=deferred + `{"do_not_dispatch":true}` | no finding |
 | 16 | One genuinely-live co-cite (§8.2 preservation) | marker cites #42 (deferred+do_not_complete) AND #43 (pending) | no finding |
+| 17 | Inverse: renamed path, target tracked | metadata.files names a path whose last-touching commit renamed it to a path still tracked at HEAD | one `task-cites-renamed-path` Medium finding naming BOTH paths + the sha; no `task-cites-deleted-path` |
+| 18 | Inverse: renamed path, target itself absent | same, but the rename target is not tracked either (renamed again / later deleted) | `task-cites-deleted-path` (never advertise a target that is itself gone) |
+| 19 | Inverse: genuine delete (regression pin) | metadata.files names a deleted path, no rename target resolvable (also the merge-commit and git-error shapes) | `task-cites-deleted-path`, unchanged — and carrying no `File` evidence ref |
 
 ## 10. Cross-PRD relationship (G4)
 
@@ -620,9 +654,12 @@ Labels are PRD-relative; ids assigned at decompose. All signals CLI-observable.
   introducing an untracked `TODO:` in a tracked file flips the infra check red
   (scenario 13); the no-`--pattern` sweep lists PTODO findings; CLAUDE.md documents
   the convention.
-- **ζ — inverse lane** (dep β). `task-cites-deleted-path` per §6.3. **Leaf.** Signal:
-  a non-terminal fixture task whose `metadata.files` names a git-deleted path is
-  reported with the path + last-touching commit (scenarios 11/12).
+- **ζ — inverse lane** (dep β). `task-cites-deleted-path` + `task-cites-renamed-path`
+  per §6.3. **Leaf.** Signal: a non-terminal fixture task whose `metadata.files` names
+  a git-deleted path is reported with the path + last-touching commit; one whose cited
+  path was RENAMED to a still-tracked target is reported with both paths + the renaming
+  commit (scenarios 11/12/17/18/19). Renamed-vs-deleted landed 2026-08-12 (task #5654,
+  §17) — a within-lane refinement, not a new leaf.
 - **η — ratchet to hard gate** (dep ε). Flip `untracked`/`orphaned`/`bare-ignore` to
   High (§8.4); infra check fails hard accordingly. Dispatch condition (checked at
   dispatch, not a dep edge): PTODO reports **zero** violations on main — if not,
@@ -915,3 +952,191 @@ Re-open δ-B once §8.2 can classify a PRD-relative `#N` as `malformed-cite` rat
 task cite; re-measure the 25-hit population before adopting anything. Any further widening
 of §8.1 must arrive with the same shape of evidence: a fresh live-corpus enumeration, a
 hand-inspected FP count, and a dated row here — including a row when the answer is no.
+
+## 17. Amendment 2026-08-12 (task #5654): inverse lane distinguishes renamed from deleted
+
+**DECISION: the ζ inverse lane reports a renamed-not-deleted `metadata.files` citation as
+its own kind, `task-cites-renamed-path`, carrying old path + new path + commit. A class
+fix, chosen over another instance sweep of the live backlog.**
+
+**Measured evidence.**
+
+1. **The instance backlog has a half-life in hours.** Re-measured 2026-07-28 at HEAD
+   `3e54addf4a`: 350 non-terminal master tasks, 301 `metadata.files` paths absent from the
+   tracked set, **12** live `task-cites-deleted-path` findings — with **zero** overlap
+   against the 24 enumerated one day earlier. A sweep fixes the 12 it can see and is stale
+   before it lands; only a detector change survives the churn.
+2. **Half the findings were renames, not deletions.** 6 of those 12 were exact `R100`
+   renames landed by #5477, i.e. the file is still in the tree under a new name and the
+   citation is repointable — reported to the reader as "deleted" with no pointer to where
+   it went. 2 renamed paths accounted for 6 citing tasks, which is also the argument for
+   the per-run memo on the added `git show`.
+3. **The mechanism resolves the real case.** `git show -M --name-status --format=
+   60be72d922` prints two status lines, the second of which is
+   `R100<TAB>crates/reify-compiler/tests/geometry_chunk_smoke.rs<TAB>crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs`
+   (the first is an unrelated `A` line — which is why the parse scans every line rather
+   than only the first), and `git log -1 -- <old path>` returns that same sha — so the two
+   seam calls compose on the commit the lane already resolved, with no history walk.
+4. **Every degenerate input measured collapses to the unchanged deleted kind.** A genuine
+   delete prints only `D<TAB><path>` lines; a merge commit prints **0** lines (`git show`
+   defaults to `--cc`); a bogus sha exits non-zero with `fatal: bad object`, which
+   `RealGitOps::run` turns into `Err` and `run_or_warn` into `None`.
+
+**Outcome.** `GitOps::rename_target_for_path(path, sha)` shells `git show -M
+--name-status --format= <sha>` through the existing `run_or_warn` (no new
+`Command::new("git")` call site, so `git_env.rs`'s sanitization and sweep-status inventory
+are inherited unchanged), and `resolve_inverse` emits `task-cites-renamed-path` (Medium,
+§8.4) when — and only when — an `R` line's old side is the cited path AND the target is
+still present in the tracked set, per the same `path_present_in_tracked` helper the cited
+path is tested with. Findings stay keyed on the numeric task id, so inverse findings
+remain outside `ptodo-baseline.txt` (both `ptodo-baseline-gen` and the ratchet test filter
+on `is_swept_ext(task_id)`) and no ratchet, `VALID_KINDS`, or generator change was needed.
+Scenarios 17/18/19 (§9) pin the split; the real-git seam has its own temp-repo test.
+
+**Known limits, recorded honestly.** (a) A rename landed **directly in a merge commit** is
+not detected — `git show` prints no diff for a merge — and degrades to
+`task-cites-deleted-path`. (b) **Copies** (`C` status) are not resolved, because only `-M`
+is passed. Both are misses, never mislabels.
+
+**Revisit condition.** Revisit if a live sweep shows a material share of absent-path
+findings whose rename landed inside a merge commit (the fix would be `-m --first-parent`
+on the `git show`, at the cost of a wider diff per lookup), or if `C`-status copies show
+up in practice. A further inverse kind must arrive with the same shape of evidence: a
+dated live-corpus measurement, the fail-safe argument for why git failure cannot
+manufacture it, and a row here.
+
+## 18. Assessment 2026-08-28 (task #6859): baseline liveness assertion — NO
+
+**DECISION: NO.** The §6.6 ratchet oracle stays `comm -23 <live> <baseline>` (subset-of).
+No second `comm -13 <live> <baseline>` (baseline ⊆ live) assertion is added — in neither
+the full set-equality form nor the structural-kinds-only variant (c) below. This section
+is the **single home** for that ruling; §6.6 carries a pointer, not a restatement.
+
+**The question.** The ratchet asserts only that the live violation set is a *subset* of
+the committed baseline. Nothing asserts the converse, and two consequences follow — both
+real: (1) there is **no drain forcing function** — a grandfathered entry may sit in
+`ptodo-baseline.txt` forever at zero cost; (2) a grandfathered fingerprint is a
+**re-entry permit** — since fingerprints erase line numbers (§6.6), the same marker text
+may be re-introduced *anywhere in the same file* without the gate noticing. Should the
+ratchet also assert `baseline ⊆ live`?
+
+### Measurements (2026-08-28, this branch tip — re-measured, not copied from analysis)
+
+| Measure | Value |
+|---|---|
+| Degraded live set (`env -u REIFY_PTODO_TASKS_DB` — the mode the gate actually runs in) | **4** fingerprints: `untracked` ×3, `malformed-cite` ×1 |
+| Committed `crates/reify-audit/ptodo-baseline.txt` | **5** fingerprints |
+| `comm -13 <live> <baseline>` (baseline entries NOT live) | **exactly 1** — the `orphaned` entry (`engine_build.rs`, cite #4744 `done`), a DB-dependent liveness-lane kind that §6.7 drops in the no-task-DB mode |
+| `comm -23 <live> <baseline>` (the implemented oracle) | **empty** — green |
+| Scan evidence, same run | `@@PTODO_SCAN@@ files_scanned=3069 markers_examined=42` |
+| Fingerprint **multiplicity** in the tree | `T12 layer-B seam …` **×8**; `deferred to task 4050` ×3; `GHR-ζ` ×1; `RBD-ε RNEA` ×1; `pending task #4744` ×1 |
+| **Churn** since 2026-06-01, the three baseline-bearing files | `engine_build.rs` **351**; `significance_filter.rs` 13; `joints.rs` 17 commits |
+| Baseline history | seeded `96961ab605` (2026-08-07), amended `48dbd973a3` (2026-08-09) — **never shrunk** in 21 days |
+| DB-present regeneration | exceeded **5 minutes** without completing (the ζ inverse lane walks git history per finding). Measured at analysis time and deliberately not re-run: regenerating the baseline is **not** a fast local action |
+
+### 1. The premise is false — set-equality is not a drain forcing function
+
+Consequence (1) above is real, but the proposed mechanism does not address it. Set-equality
+constrains the **baseline** to track the **live set**; it places *zero* pressure on the live
+set to shrink. A tree in which all five entries stay live forever satisfies set-equality
+forever. Recording this correction is the most valuable output of this assessment: it stops
+a future reader from re-proposing set-equality as a drain mechanism. **The drain mechanism
+is doing the work** — fixing the markers — not guarding it.
+
+### 2. The re-entry permit is real, but the mechanism's reach is anti-correlated with the risk
+
+`ptodo-baseline-gen` dedupes through a `BTreeSet`, so a fingerprint leaves the live set only
+when its population in the file reaches **zero**. Crossing multiplicity with churn:
+
+- `engine_build.rs :: untracked :: T12 layer-B seam …` — **8 copies**, in a file at ~351
+  commits/quarter, where copy-paste re-introduction of byte-identical rationale text is a
+  **demonstrated mechanism**, not a hypothesis: `1812b5cce9` added 4 (2026-05-30) and the
+  later `c7bd324106` added 4 more the same day. This is where the permit is *maximally*
+  exercisable — and set-equality is **inert** here: it needs all 8 copies gone.
+- `significance_filter.rs` and `joints.rs` — **1 copy each**, 13 and 17 commits. Set-equality
+  is fully effective, but the exposure is minimal.
+
+The proposal is strongest exactly where the risk is smallest and weakest exactly where the
+risk is largest. Bounding re-entry would require ratcheting the **count**, not set
+membership — see the alternatives below.
+
+### 3. The permit is the price of line-number erasure, which §6.6 chose deliberately
+
+§6.6 erases line numbers because "they drift". A grandfather list of **texts** rather than
+**sites** is precisely what makes re-entry free. Set-equality does not buy back what
+line-number erasure gave away; it only detects the **last** removal. That is not
+proportionate to a kind-partition, a new generator machine-contract, and a new false-RED
+surface on the hottest file in the crate.
+
+### 4. Constraint (a) is confirmed by measurement — and it bites twice
+
+The committed baseline is generated **with** the task DB and therefore carries liveness-lane
+kinds (§6.7) that a degraded structural-only run cannot reproduce. Every context the gate
+actually runs in — task worktrees and the `_merge-verify` lane — lacks `.taskmaster/`.
+
+1. **On the assertion.** A naive set-equality assert REDs *today*, in every no-DB context,
+   on that one `orphaned` line. Not argued — measured.
+2. **On the remediation path.** The natural fix ("just regenerate") is *unavailable in a
+   task worktree*: regenerating in degraded mode drops the `orphaned` line, yielding a
+   4-line baseline that then REDs the **subset** direction wherever the DB *is* present. A
+   correct regen also takes >5 minutes. So the cost lands on third parties — authors of the
+   ~4 commits/day into `engine_build.rs` who have never heard of `ptodo-baseline.txt` — with
+   no cheap remedy available to them.
+
+### 5. Variant (c) — structural-kinds-only — is implementable, but disproportionate
+
+Restricting the converse assertion to the structural kinds is **measured green today**: all
+4 structural baseline entries are live in degraded mode. But per constraint (b) the kind
+partition must **not** live in bash. Task #6241 removed exactly that list and restored the
+"derivation lives only in `ptodo-baseline-gen`" invariant **in full** (§6.6). Re-establishing
+it correctly costs: a generator-emitted machine token or emit-mode, Rust unit tests for the
+partition, a shell parse, and a two-directional wiring meta-test — roughly the size of the
+#6241 change — to close a hole whose *effective* reach, per §18.2, is **2 cold-file
+fingerprints**.
+
+### 6. For the record — set-equality would NOT recreate the #6127 false-RED
+
+State this so a future reader does not re-litigate constraint (b) on the wrong ground. The
+retired #6127 floor keyed on the live finding **count** and fired when it hit 0, which is
+why a burn-down commit false-RED it. Set-equality compares two **sets**, and a burn-down
+that shrinks the baseline in the same diff leaves both sides equal (empty ⊆ empty). The bite
+of constraint (b) is the **kind list**, not the false-RED — which is why §18.5, not (b),
+carries the decision.
+
+### Alternatives considered and rejected
+
+| Alternative | Why rejected |
+|---|---|
+| (a) Full set-equality (`comm -13` unconditionally) | REDs today in every no-DB context (§18.4), and does not do the job it is named for (§18.1). |
+| (b) Structural-kinds-only (variant (c)) | Implementable and green today, but re-introduces a kind partition that #6241 deliberately removed; ~#6241-sized cost for 2 cold-file fingerprints (§18.5). |
+| (c) DB-conditional set-equality — assert only when the task DB is reachable | Needs no kind list at all, which is its appeal. But it would be **dark everywhere the gate actually runs**: both task worktrees and the `_merge-verify` lane lack `.taskmaster/`. A guard that never executes in the gate is not a guard. |
+| (d) Count-ratcheting the baseline (`live_count <= baseline_count`) | The **only** shape that actually bounds re-entry, and named here so a future YES starts from it rather than from set-equality. Rejected on cost: it changes the baseline format and re-couples the gate to line-level churn in the hottest file in the crate — strictly worse on friction than the permit it closes. |
+
+### What this ruling does NOT claim
+
+It does not claim the two consequences are acceptable in general — only that **this**
+mechanism does not buy them down at a proportionate price. They stand as **known
+limitations** of §6.6, now stated in print rather than implied away.
+
+### Revisit condition
+
+Re-open when the cost/benefit inverts — measurably, either:
+
+- **no baseline fingerprint has multiplicity > 1** (at which point set-equality's reach
+  becomes total and its false-RED surface is one commit per drain); or
+- **a baseline fingerprint is ever observed re-entering after its population reached zero**
+  (the permit exercised in fact rather than in principle).
+
+Re-measure the multiplicity and churn table before adopting anything, per the §16 evidence
+standard — including a dated row here when the answer is again no.
+
+### Mechanical pin
+
+Prose-only guidance in *this* PRD has a measured track record of failing: §12's η signal was
+wrong for two months (esc-6088-2), and §6.6's "keeps the gate green" needed an amendment for
+the same reason. §6.6's surviving "shrink-only" phrasing is exactly what invites the naive
+`comm -13` edit — the edit this assessment declines. The ruling is therefore pinned by
+`tests/infra/test_reify_audit_ptodo_ratchet_superset.sh`, which asserts both directions: a
+committed-baseline entry absent from the live set must **not** red the ratchet, and a live
+fingerprint absent from the baseline must **still** red it (the second direction exists so
+the guard cannot degenerate into a constant-true after the oracle it pins is disarmed).

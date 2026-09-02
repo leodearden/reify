@@ -26,6 +26,25 @@
 //! All tests use the production-path `load_stdlib_module()` helper that
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
+//!
+//! OUT-OF-SCOPE LODGERS — read this before changing the structure-ctor
+//! argument binder in `crates/reify-compiler/src/expr.rs`. Two tests near the
+//! bottom of this file pin GENERIC ctor BINDING semantics (task 4522's
+//! by-name resolution, unlabelled args filling only the REMAINING slots in
+//! declaration order, an unknown label DIAGNOSED since task 5303 (ε) as
+//! `DiagnosticCode::CtorUnknownField` at the `CTOR_FIELD_CONFORMANCE_SEVERITY`
+//! knob — Warning pre-δ, Error at δ — while STILL taking the lenient
+//! `__arg{i}` push it always did, and a duplicate label diagnosed as a
+//! codeless Error) rather than anything modal:
+//!   - `structure_ctor_args_bind_by_name_not_positionally`
+//!   - `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`
+//!
+//! `RayleighDamping` is only their vehicle — they landed here because task
+//! 6093 held this file's lock and not the binder's. Their contract home is
+//! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`; the
+//! relocation is filed as follow-up (escalation id
+//! `agent-followup-6093-mishomed-tests`). Until it happens, a binder change
+//! must run THIS binary too.
 
 use reify_compiler::*;
 use reify_core::*;
@@ -108,6 +127,79 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
         .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
 }
 
+/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
+/// field-conformance pass (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
+///
+/// Severity-agnostic ON PURPOSE: `CTOR_FIELD_CONFORMANCE_SEVERITY`
+/// (the const of that name in `reify-compiler/src/conformance/mod.rs` — cited
+/// by SYMBOL, never by line, so the cite cannot rot) is `Warning` pre-δ, and
+/// the planned Warning→Error flip must not move any pin that filters here.
+///
+/// THIRD verbatim copy of this set — `harness_compilation_surface/
+/// examples_smoke.rs` and `struct_ctor_field_conformance_tests.rs` hold the
+/// other two, because integration tests are separate binaries and cannot share
+/// a private helper without a support-crate hop. At three copies the
+/// duplication no longer pays for itself: a new member of `DiagnosticCode`'s
+/// conformance family has to be added in three places, and a miss is SILENT
+/// (the stale copy simply stops matching rather than failing to build). The
+/// hoist into `reify-test-support` is filed as #6323 — it is out of this task's
+/// module locks, so it is cited here rather than done here.
+fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
+    matches!(
+        code,
+        Some(
+            DiagnosticCode::ArgTypeMismatch
+                | DiagnosticCode::SelectorKindMismatch
+                | DiagnosticCode::TypeNotConformingToTrait
+                | DiagnosticCode::TypeNotConformingToStructureRef
+                | DiagnosticCode::TypeNotConformingToVector
+                | DiagnosticCode::CtorUnknownField
+                | DiagnosticCode::CtorArity
+        )
+    )
+}
+
+/// The prefix `emit_arg_type_mismatch` puts before the offending param label in
+/// every ctor-conformance message it words
+/// (`reify-compiler/src/conformance/mod.rs`; full shape `argument 'X' has type
+/// 'A' but param 'X' requires type 'B'`).
+///
+/// Mirrors `CTOR_DIAGNOSTIC_ARG_PREFIX` in
+/// `harness_compilation_surface/examples_smoke.rs`, and rides the same #6323
+/// hoist as [`is_ctor_conformance_code`].
+const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
+
+/// The two `RayleighDamping` params task #6093 retyped, in declaration order.
+const RAYLEIGH_PARAMS: [&str; 2] = ["alpha", "beta"];
+
+/// True when `message` is a ctor-conformance diagnostic naming exactly `param`.
+///
+/// Matched on the QUOTED label (`argument 'beta'`), never a bare
+/// `contains(param)`: a module compiled through `compile_source_with_stdlib`
+/// carries the diagnostics of the probe source AND of the whole stdlib prelude,
+/// so an unquoted match would also catch any prelude message that merely
+/// contains the word. Same reasoning as the `names_typo` closure in
+/// [`misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`].
+fn names_ctor_arg(message: &str, param: &str) -> bool {
+    message.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{param}'"))
+}
+
+/// True when `d` is a ctor-conformance diagnostic naming one of
+/// [`RAYLEIGH_PARAMS`] — i.e. one attributable to a `RayleighDamping` ctor
+/// rather than to some unrelated prelude construct.
+///
+/// This is the narrowing every count-based pin below filters through. Without
+/// it a pin counts EVERY conformance diagnostic in the module, prelude
+/// included, so a future stdlib ctor emitting one would flip the pin red with a
+/// message pointing at RayleighDamping. `CTOR_FIELD_CONFORMANCE_SEVERITY` is
+/// `Warning` pre-δ, so such a diagnostic need not even break the build to do it.
+fn judges_rayleigh_ctor_arg(d: &Diagnostic) -> bool {
+    is_ctor_conformance_code(d.code)
+        && RAYLEIGH_PARAMS
+            .iter()
+            .any(|p| names_ctor_arg(&d.message, p))
+}
+
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
 
 /// The std/modal/analysis module must load through the production stdlib path
@@ -173,7 +265,7 @@ fn damping_descriptor_trait_declared() {
 // ─── step-5: NoDamping marker structure ──────────────────────────────────────
 
 /// `NoDamping` is a zero-field marker structure refining `DampingDescriptor`.
-/// Semantically equivalent to `RayleighDamping(alpha: 0, beta: 0)` but a
+/// Semantically equivalent to `RayleighDamping(alpha: 0.0Hz, beta: 0.0s)` but a
 /// distinct nominal type so the future `modal_analysis` trampoline can
 /// discriminate the no-damping fast path via SIR-α nominal type-tag.
 ///
@@ -224,15 +316,22 @@ fn no_damping_marker_structure() {
 
 /// `RayleighDamping` declares two PRD §4.2 params with the canonical types:
 ///
-///   - `alpha : Real`  (mass-proportional damping coefficient)
-///   - `beta  : Real`  (stiffness-proportional damping coefficient)
+///   - `alpha : Frequency`  (mass-proportional damping coefficient, = s⁻¹)
+///   - `beta  : Time`       (stiffness-proportional damping coefficient, = s)
 ///
 /// Per-mode damping ratio: ζ_i = (α + β·ω_i²) / (2·ω_i). Preserves mode-shape
 /// orthogonality so transient response stays in real arithmetic.
 ///
 /// Assertions:
-///   (a) exactly 2 params, (b) the two params are (alpha, beta) of type Real
-///       in declaration order,
+///   (a) exactly 2 params, (b) the declared (name, dimension) PAIRS are
+///       (alpha, Frequency) and (beta, Time). Declaration ORDER is not part
+///       of the claim — it appears only because the assertion loop below
+///       walks `params` positionally. That ctor args bind by NAME, and that
+///       the mislabel path still binds leniently to `__arg{i}` (so a renamed
+///       param falls back to its default, under a Warning pre-δ), are pinned
+///       executably by
+///       [`structure_ctor_args_bind_by_name_not_positionally`] and
+///       [`misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`],
 ///   (c) neither carries a `default_expr` (input-only fields without a
 ///       canonical default — PRD §4.2 lists no defaults),
 ///   (d) no constraints — alpha and beta are conventionally non-negative
@@ -255,9 +354,23 @@ fn rayleigh_damping_param_shape() {
     );
 
     // (b) param names + types in declaration order
+    // `RayleighDamping.alpha` / `.beta` tightened from the `Real` PLACEHOLDER
+    // to their registered named dimensions — task #6093, following the
+    // `Mode.frequency` precedent from task 4548 below. The units previously
+    // lived ONLY in the stdlib prose comment; they now live in the type.
     let expected: &[(&str, Type)] = &[
-        ("alpha", Type::dimensionless_scalar()),
-        ("beta", Type::dimensionless_scalar()),
+        (
+            "alpha",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        (
+            "beta",
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            },
+        ),
     ];
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
         let cell = &params[i];
@@ -310,6 +423,601 @@ fn rayleigh_damping_param_shape() {
         "RayleighDamping should refine DampingDescriptor; got trait_bounds: {:?}",
         template.trait_bounds
     );
+}
+
+// ─── task-6093 amendment: ctor args bind BY NAME (an `expr.rs` binder
+//     contract, not a modal one — see OUT-OF-SCOPE LODGERS above) ────────────
+
+/// Structure-ctor arguments bind BY NAME, not positionally.
+///
+/// The guard for a claim three example files in this task's scope state in
+/// prose (`printer_gantry_modes.ri`, `transient_step_response.ri`,
+/// `printer_print_envelope.ri`) — all three previously asserted the OPPOSITE
+/// ("binding is POSITIONAL; `name:` labels are cosmetic"), which task-4522's
+/// by-name binder in `expr.rs` had already made false. A prose-only correction
+/// would rot the same way, so it is pinned here.
+///
+/// Compiles a `RayleighDamping` ctor in each argument FORM the prose claims
+/// about and asserts the lowered `ordered_args` always re-key to
+/// `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`. A positional binder would instead
+/// produce alpha = 0.0003 s and beta = 0.0 s⁻¹ for the reverse-labelled form,
+/// i.e. the same two names carrying each other's value.
+///
+/// Five arms, because the prose makes a TWO-clause claim and an all-labelled
+/// probe only exercises the first:
+///   (a) all-labelled, in REVERSE declaration order — the by-name clause;
+///   (b) MIXED, `beta` labelled, positional first (`0.0Hz, beta: 0.0003s`);
+///   (c) MIXED, `beta` labelled, positional last (`beta: 0.0003s, 0.0Hz`);
+///   (d) MIXED, `alpha` labelled, positional last (`alpha: 0.0Hz, 0.0003s`);
+///   (e) MIXED, `alpha` labelled, positional first (`0.0003s, alpha: 0.0Hz`).
+///
+/// (d) and (e) are the two that carry the second clause — "only UNLABELLED args
+/// fill the REMAINING slots in declaration order" — because they are the only
+/// forms whose result CHANGES if the binder's positional pass stops skipping
+/// already-named-bound slots (`reify-compiler/src/expr.rs`, pass 2's
+/// `while … param_arg[next_slot].is_some() { next_slot += 1 }`). With the skip
+/// removed, both bind the unlabelled `0.0003s` at slot 0, clobbering `alpha`
+/// and leaving `beta` unbound — so `ordered_args` becomes `[("alpha", 0.0003 s)]`
+/// and the key-list assertion goes red.
+///
+/// (b) and (c) do NOT discriminate that: `beta` occupies slot 1, so the
+/// positional pass lands on slot 0 either way. They are kept as the
+/// mixed-form PARSE + by-name coverage the prose also claims, not as skip
+/// pins — recorded here so a later reader does not mistake them for the guard.
+#[test]
+fn structure_ctor_args_bind_by_name_not_positionally() {
+    // (a) all-labelled, reverse declaration order.
+    assert_rayleigh_ctor_binds_canonically("CtorBindByNameProbe", "beta: 0.0003s, alpha: 0.0Hz");
+    // (b)/(c) mixed with `beta` labelled — the unlabelled arg fills slot 0.
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelLastProbe", "0.0Hz, beta: 0.0003s");
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelFirstProbe", "beta: 0.0003s, 0.0Hz");
+    // (d)/(e) mixed with `alpha` labelled — the unlabelled arg must SKIP the
+    //     named-bound slot 0 and land on slot 1 (`beta`). The skip pins.
+    assert_rayleigh_ctor_binds_canonically(
+        "CtorMixedAlphaLabelFirstProbe",
+        "alpha: 0.0Hz, 0.0003s",
+    );
+    assert_rayleigh_ctor_binds_canonically("CtorMixedAlphaLabelLastProbe", "0.0003s, alpha: 0.0Hz");
+}
+
+/// Compile `structure {probe} { let damping = RayleighDamping({ctor_args}) }`
+/// and assert the ctor lowers to exactly `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`
+/// — the canonical binding, whatever the argument FORM.
+///
+/// Shared by every arm of [`structure_ctor_args_bind_by_name_not_positionally`]
+/// so a new form is one call, not a copied block.
+fn assert_rayleigh_ctor_binds_canonically(probe: &str, ctor_args: &str) {
+    let source = format!(
+        r#"
+structure {probe} {{
+    let damping = RayleighDamping({ctor_args})
+}}
+"#
+    );
+    let module = compile_source_with_stdlib(&source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "`RayleighDamping({ctor_args})` must compile clean, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == probe)
+        .unwrap_or_else(|| panic!("{probe} template should be compiled"));
+    let damping_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "damping")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `damping` let cell should carry its ctor expression");
+
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &damping_expr.kind else {
+        panic!(
+            "`damping` should lower to a StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+
+    let bound: Vec<(&str, Option<&Value>)> = ordered_args
+        .iter()
+        .map(|(name, e)| {
+            (
+                name.as_str(),
+                match &e.kind {
+                    CompiledExprKind::Literal(v) => Some(v),
+                    _ => None,
+                },
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        bound.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        vec!["alpha", "beta"],
+        "`RayleighDamping({ctor_args})`: ordered_args must be re-keyed into \
+         template declaration order, with each label routed to its OWN param \
+         and each UNLABELLED arg filling the next REMAINING slot (never a \
+         synthetic `__arg{{i}}`); got: {:?}",
+        bound
+    );
+
+    let expected: &[(&str, f64, DimensionVector)] = &[
+        ("alpha", 0.0, DimensionVector::FREQUENCY),
+        ("beta", 0.0003, DimensionVector::TIME),
+    ];
+    for (i, (name, si, dim)) in expected.iter().enumerate() {
+        match bound[i].1 {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert_eq!(
+                    (*si_value, *dimension),
+                    (*si, *dim),
+                    "`RayleighDamping({ctor_args})`: `{}` must carry the value \
+                     written against ITS OWN label (a positional binder that \
+                     ignored labels, or one whose positional pass did not skip \
+                     named-bound slots, would swap the two)",
+                    name
+                );
+            }
+            other => panic!(
+                "`RayleighDamping({ctor_args})`: `{}` should bind a dimensioned \
+                 Scalar literal, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
+
+// ─── task-6093 amendment: the MISLABEL path is diagnosed but still lenient
+//     (an `expr.rs` binder contract, not a modal one — see OUT-OF-SCOPE
+//     LODGERS above) ───────────────────────────────────────────────────────
+
+/// An UNKNOWN ctor label is DIAGNOSED — task 5303 (ε) emits
+/// `E_CTOR_UNKNOWN_FIELD` / [`DiagnosticCode::CtorUnknownField`] at the
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning pre-δ, Error at δ) — and is
+/// STILL appended as a positional `__arg{i}`, so the param it was meant for
+/// falls back to its default (or stays unbound).
+///
+/// The diagnostic and the lenient push carry DIFFERENT predicates on purpose
+/// (`crates/reify-compiler/src/expr.rs`, the by-name binder): ε is
+/// diagnostics-only and left the IR byte-for-byte what it was before, which is
+/// why (b) and (c) below are unchanged from this pin's pre-ε shape while (a)
+/// is inverted.
+///
+/// The hazard three example files in this task's scope describe in prose;
+/// pinned here so their wording cannot rot. If the diagnosis moves again —
+/// δ's Warning→Error flip is the scheduled one — update this pin AND the
+/// binding notes in `examples/modal/printer_gantry_modes.ri`,
+/// `examples/modal/transient_step_response.ri` and
+/// `examples/trajectory/printer_print_envelope.ri`.
+#[test]
+fn misspelled_ctor_label_is_diagnosed_but_still_leniently_appended() {
+    // `bta` is a typo for `beta`. Nothing REJECTS it: ε diagnoses it at
+    // Warning and binds it leniently anyway, so the compile still succeeds.
+    let module = compile_source_with_stdlib(
+        r#"
+structure CtorMisspelledLabelProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, bta: 0.0003s)
+}
+"#,
+    );
+
+    // (a) the typo IS judged. Deliberately NOT counted over
+    // `module.diagnostics` whole: that ranges over the probe source AND the
+    // whole stdlib prelude, so any unrelated future lint would turn this red
+    // with a message that actively misdirects. Narrowed to the diagnostics
+    // naming the typo'd label `bta` — a SOURCE IDENTIFIER that occurs nowhere
+    // in the prelude, so the count below is exact — with the code, severity
+    // and wording then asserted on the single hit.
+    //
+    // Narrowing on the IDENTIFIER rather than on the ctor-conformance code set
+    // is also what keeps this pin able to see a CODELESS emission. Codeless is
+    // no longer the shape of THIS diagnostic — ε (task 5303) gave it
+    // `DiagnosticCode::CtorUnknownField`, which is what (a) now asserts — but
+    // it is still a live shape on this surface: the sibling duplicate-named-arg
+    // diagnostic in the same binder is built with a bare `Diagnostic::error`
+    // and carries no code at all, so a code-set filter alone would miss a
+    // re-emission in that style.
+    //
+    // The label match is QUOTED (`'bta'` / `` `bta` ``), never a bare
+    // `contains("bta")`: the bare form matches the substring inside ordinary
+    // English words — "o(bta)in" is the obvious one — which would reintroduce
+    // exactly the unrelated-axis false red this narrowing exists to remove.
+    // Both quotings are accepted because the live emitters disagree:
+    // `E_CTOR_UNKNOWN_FIELD` says `argument 'bta'` and the duplicate-named-arg
+    // error says `duplicate named argument 'x'`, while backtick-quoting is
+    // common elsewhere in the diagnostic corpus. Passing this filter at all is
+    // therefore the "message names the offending label" assertion; the
+    // constructor half is asserted separately below.
+    let names_typo = |m: &str| m.contains("'bta'") || m.contains("`bta`");
+    let judging: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| names_typo(&d.message))
+        .collect();
+    assert_eq!(
+        judging.len(),
+        1,
+        "an unknown ctor label must emit exactly one diagnostic naming it \
+         (ε, task 5303 — before that it was silently accepted). Got {}: {:#?}",
+        judging.len(),
+        judging
+    );
+    assert_eq!(
+        judging[0].code,
+        Some(DiagnosticCode::CtorUnknownField),
+        "the unknown-label diagnostic must carry the CtorUnknownField code — \
+         `reify check` never prints the code, so this is the only place the \
+         machine-readable half is pinned from this file. Got: {:?}",
+        judging[0]
+    );
+    assert!(
+        is_ctor_conformance_code(judging[0].code),
+        "…and the LOCAL copy of the ctor-conformance code set must recognise \
+         it. A stale copy stops matching rather than failing to build, which \
+         is exactly the SILENT miss that copy's docstring warns about. Got: \
+         {:?}",
+        judging[0].code
+    );
+    assert_eq!(
+        judging[0].severity,
+        Severity::Warning,
+        "ε emits at the `CTOR_FIELD_CONFORMANCE_SEVERITY` knob, whose value is \
+         `Warning` pre-δ. The knob is `pub(crate)` inside a private \
+         `conformance` module, so an integration-test binary cannot name it \
+         and has to restate the value — δ's one-const flip must therefore move \
+         THIS line together with the contract-home pin in \
+         `struct_ctor_field_conformance_tests.rs`. Got: {:?}",
+        judging[0]
+    );
+    assert!(
+        judging[0].message.starts_with("E_CTOR_UNKNOWN_FIELD: "),
+        "the mnemonic must be a message PREFIX — `reify check` renders \
+         `{{severity}}: {{message}}` and never prints the DiagnosticCode, so \
+         without it the signal is invisible at the CLI. Got: {:?}",
+        judging[0].message
+    );
+    assert!(
+        judging[0].message.contains("RayleighDamping"),
+        "the message must name the CONSTRUCTOR as well as the offending \
+         label, or a reader cannot tell which call is wrong. Got: {:?}",
+        judging[0].message
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "CtorMisspelledLabelProbe")
+        .expect("CtorMisspelledLabelProbe template should be compiled");
+    let damping_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "damping")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `damping` let cell should carry its ctor expression");
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &damping_expr.kind else {
+        panic!(
+            "`damping` should lower to a StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+    let bound: Vec<&str> = ordered_args.iter().map(|(n, _)| n.as_str()).collect();
+
+    // (b) the typo survives lowering as a synthetic positional key.
+    assert!(
+        bound.iter().any(|n| n.starts_with("__arg")),
+        "the unknown label must survive as a synthetic `__arg{{i}}` key; \
+         got ordered_args keys: {:?}",
+        bound
+    );
+
+    // (c) …and `beta` — the param the author meant — never got a value.
+    assert!(
+        !bound.contains(&"beta"),
+        "`beta` must be left unbound when its label is misspelled (it falls \
+         back to its default, which RayleighDamping does not have); got \
+         ordered_args keys: {:?}",
+        bound
+    );
+}
+
+// ─── task-6093 amendment: the REAL corpus carries the dimension ──────────────
+
+/// The migrated ctor args in `examples/modal/transient_step_response.ri` lower
+/// to DIMENSIONED `Value::Scalar` literals — a debug-runnable pin over the real
+/// corpus file, not a synthetic snippet.
+///
+/// Compiles the file itself (no eigensolve, so no release gate) and destructures
+/// the lowered `RayleighDamping` ctor args. RED before task #6093's migration,
+/// while the file still said `alpha: 0.0, beta: 0.0003`. Companion to the
+/// release-gated value-layer pin (e) in
+/// `reify-eval-fea-tests/tests/modal_transient_e2e.rs`. The other migrated
+/// corpus sites are guarded by
+/// `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`,
+/// which gates at ANY severity.
+#[test]
+fn corpus_rayleigh_ctor_args_lower_to_dimensioned_literals() {
+    let module = compile_source_with_stdlib(include_str!(
+        "../../../examples/modal/transient_step_response.ri"
+    ));
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "examples/modal/transient_step_response.ri must compile clean; got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "CantileverStepResponse")
+        .expect("CantileverStepResponse template should be compiled");
+    let opts_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "opts")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `opts` let cell should carry its ModalOptions ctor");
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &opts_expr.kind else {
+        panic!("`opts` should lower to a StructureInstanceCtor, got {:?}", opts_expr.kind);
+    };
+    let damping_expr = ordered_args
+        .iter()
+        .find(|(name, _)| name == "damping")
+        .map(|(_, e)| e)
+        .expect("ModalOptions ctor should carry a `damping` arg");
+    let CompiledExprKind::StructureInstanceCtor {
+        type_name,
+        ordered_args: damping_args,
+        ..
+    } = &damping_expr.kind
+    else {
+        panic!(
+            "`damping` should lower to a nested StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+    assert_eq!(type_name, "RayleighDamping");
+
+    // Exact SI equality: both `Hz` and `s` have unit factor 1.0, so the
+    // migration must reproduce the previous bare-`Real` magnitudes bit-for-bit.
+    let expected: &[(&str, f64, DimensionVector)] = &[
+        ("alpha", 0.0, DimensionVector::FREQUENCY),
+        ("beta", 0.0003, DimensionVector::TIME),
+    ];
+    for (name, si, dim) in expected {
+        let arg = damping_args
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, e)| e)
+            .unwrap_or_else(|| {
+                panic!(
+                    "RayleighDamping ctor should bind `{}`; got keys: {:?}",
+                    name,
+                    damping_args.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                )
+            });
+        match &arg.kind {
+            CompiledExprKind::Literal(Value::Scalar {
+                si_value,
+                dimension,
+            }) => assert_eq!(
+                (*si_value, *dimension),
+                (*si, *dim),
+                "RayleighDamping.{} in transient_step_response.ri must lower to \
+                 a dimensioned literal with the pre-migration SI magnitude",
+                name
+            ),
+            CompiledExprKind::Literal(Value::Real(r)) => panic!(
+                "RayleighDamping.{} is still a BARE Real({}) — the corpus file \
+                 has been reverted to a dimensionless literal (task #6093)",
+                name, r
+            ),
+            other => panic!(
+                "RayleighDamping.{} should lower to a Scalar literal, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
+
+// ─── task-6093: declared dimensions propagate to field reads ─────────────────
+
+/// The retype's user-observable consequence: a field READ now carries the
+/// declared dimension. Asserts (i) that `damping.beta + 1.0s` and
+/// `damping.alpha + 1.0Hz` type-check (RED while the params were `Real`), and
+/// (ii) that adding a bare `1.0` to `damping.beta` is now REJECTED (RED the
+/// other way — this is what proves the retype tightened rather than widened).
+/// Asserted on diagnostic substance, "dimension mismatch in addition", not
+/// exact prose.
+///
+/// The CTOR-ARG half is pinned separately by
+/// [`bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch`]; the eval-side
+/// reader is a third seam again, owned by
+/// docs/prds/v0_6/dimension-checked-readers.md and deliberately left tolerant.
+#[test]
+fn rayleigh_damping_fields_propagate_declared_dimensions() {
+    // (i) Dimensioned reads must type-check: alpha is a Frequency, beta a Time.
+    let dimensioned = r#"
+structure DampingFieldReadProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)
+    let beta_plus_time  = damping.beta + 1.0s
+    let alpha_plus_freq = damping.alpha + 1.0Hz
+}
+"#;
+    let module = compile_source_with_stdlib(dimensioned);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "adding `1.0s` to RayleighDamping.beta and `1.0Hz` to .alpha must \
+         type-check once the params carry their declared dimensions. \
+         RED while the params are `Real` (`dimension mismatch in addition: \
+         Real vs Scalar[s]`). Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+
+    // (ii) Inversely, adding a BARE dimensionless literal to a now-dimensioned
+    // field must be rejected. This arm is what proves the retype actually
+    // tightened something rather than merely widening what is accepted.
+    let bare = r#"
+structure DampingFieldBareProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)
+    let beta_plus_bare = damping.beta + 1.0
+}
+"#;
+    let bare_module = compile_source_with_stdlib(bare);
+    let bare_errors = errors_only(&bare_module);
+    // Filtered on `DiagnosticCode` IDENTITY, not on the message prose:
+    // `DimensionMismatch` is minted with Add/Sub-specific semantics
+    // (`reify-core/src/diagnostics.rs:497`) and is attached by the single
+    // producer `type_compat::format_dimension_mismatch_diagnostic`
+    // (`type_compat.rs:1369`), so a wording touch-up to that message must not
+    // read here as a semantic regression. The messages stay in the failure
+    // output for diagnosability.
+    assert!(
+        bare_errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch)),
+        "adding a bare dimensionless `1.0` to RayleighDamping.beta (declared \
+         `Time`) must raise a `DimensionMismatch` error (message shape today: \
+         \"dimension mismatch in addition: Real vs Scalar[s]\"). RED while the \
+         param is `Real`, where this snippet compiles clean. Got {}: {:#?}",
+        bare_errors.len(),
+        bare_errors
+    );
+}
+
+// ─── task-6093 amendment: the ctor-arg half of the retype ────────────────────
+
+/// A bare-`Real` ctor arg at the now-dimensioned `alpha` / `beta` slots is
+/// REJECTED with `ArgTypeMismatch`, and the migrated corpus form is silent.
+///
+/// This is task #6093's originally-stated acceptance signal, and it IS
+/// deliverable — the retype is what makes these slots dimensioned, and the
+/// struct-ctor field-conformance pass judges dimensioned slots under strict
+/// `DimensionVector` equality since docs/prds/v0_6/dimensioned-construction-
+/// strictness.md §7.1 (task #5627) landed. Measured on this branch: the same
+/// snippet against the pre-retype `Real` params was silent.
+///
+/// Judged through [`judges_rayleigh_ctor_arg`]: severity-agnostic (the
+/// `Warning`→`Error` flip of `CTOR_FIELD_CONFORMANCE_SEVERITY` must not move
+/// this pin) and narrowed to diagnostics naming `alpha`/`beta`, so an unrelated
+/// future prelude conformance diagnostic cannot flip this red with a message
+/// that misdirects at RayleighDamping.
+#[test]
+fn bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch() {
+    let bare = compile_source_with_stdlib(
+        r#"
+structure BareCtorArgProbe {
+    let damping = RayleighDamping(alpha: 0.0, beta: 0.0003)
+}
+"#,
+    );
+    let mismatches: Vec<&str> = bare
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && judges_rayleigh_ctor_arg(d))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        mismatches.len(),
+        2,
+        "a bare dimensionless literal at each of the two dimensioned slots must \
+         raise exactly one ArgTypeMismatch naming that slot; got {:?} out of \
+         module diagnostics {:#?}",
+        mismatches,
+        bare.diagnostics
+    );
+    for param in RAYLEIGH_PARAMS {
+        assert!(
+            mismatches.iter().any(|m| names_ctor_arg(m, param)),
+            "one ArgTypeMismatch must name `{param}`; got: {:?}",
+            mismatches
+        );
+    }
+
+    // The migrated corpus form is the silent one — otherwise
+    // `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`
+    // (which gates at ANY severity) would be red on the whole modal corpus.
+    let migrated = compile_source_with_stdlib(
+        r#"
+structure MigratedCtorArgProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)
+}
+"#,
+    );
+    let migrated_judged: Vec<&Diagnostic> = migrated
+        .diagnostics
+        .iter()
+        .filter(|d| judges_rayleigh_ctor_arg(d))
+        .collect();
+    assert!(
+        migrated_judged.is_empty(),
+        "the migrated unit-literal form must be accepted — no ctor-conformance \
+         diagnostic at ANY severity may name `alpha` or `beta`; got: {:#?}",
+        migrated_judged
+    );
+}
+
+/// TRANSPOSED units at CORRECT labels — `RayleighDamping(alpha: 0.0003s,
+/// beta: 0.0Hz)` — are rejected with one `ArgTypeMismatch` per slot.
+///
+/// This is the retype's highest-value failure mode, and the one seam that ONLY
+/// the compile-time ctor gate can catch. At the value layer a transposition is
+/// invisible: `read_scalar_si` (`reify-eval/src/modal_ops.rs`) folds
+/// `Value::Scalar` to its bare `si_value` and drops the dimension entirely, so
+/// a swap evaluates to a silently wrong damping curve with no error anywhere
+/// downstream. Gating that reader is a separate seam, owned by
+/// docs/prds/v0_6/dimension-checked-readers.md and deliberately left tolerant
+/// here.
+///
+/// Distinct from [`bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch`]: that
+/// probe pins Real-vs-`Scalar`, i.e. that the slot is dimensioned AT ALL. This
+/// one pins that the conformance walker compares under strict
+/// `DimensionVector` EQUALITY, so two well-formed dimensioned args at the two
+/// correct labels still fail when their dimensions are transposed.
+///
+/// Judged through [`judges_rayleigh_ctor_arg`], for the reasons recorded there.
+#[test]
+fn swapped_rayleigh_ctor_unit_dimensions_emit_arg_type_mismatch() {
+    let swapped = compile_source_with_stdlib(
+        r#"
+structure SwappedCtorArgProbe {
+    let damping = RayleighDamping(alpha: 0.0003s, beta: 0.0Hz)
+}
+"#,
+    );
+    let mismatches: Vec<&str> = swapped
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && judges_rayleigh_ctor_arg(d))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        mismatches.len(),
+        2,
+        "a `Time` literal at the `Frequency` slot and a `Frequency` literal at \
+         the `Time` slot must EACH raise ArgTypeMismatch — strict \
+         DimensionVector equality, not merely dimensioned-vs-Real; got {:?} out \
+         of module diagnostics {:#?}",
+        mismatches,
+        swapped.diagnostics
+    );
+    for param in RAYLEIGH_PARAMS {
+        assert!(
+            mismatches.iter().any(|m| names_ctor_arg(m, param)),
+            "one ArgTypeMismatch must name `{param}` — a gate that fired only \
+             once would leave half the transposition unreported; got: {:?}",
+            mismatches
+        );
+    }
 }
 
 // ─── step-9: Mode param shape (no constraints, no defaults) ──────────────────
@@ -1794,8 +2502,8 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
 // ─── task-4578: Part structure_def (step-1 RED) ───────────────────────────────
 
 /// `Part` must be declared as a zero-field opaque marker structure in
-/// `std/modal/analysis` (PRD §12 open-question-3: "minimal opaque
-/// structure_def first, then grow").
+/// `std/modal/analysis` (`docs/prds/v0_6/stdlib-surface-type-substrate.md`
+/// §12 open-question-3: "minimal opaque structure_def first, then grow").
 ///
 /// Mirrors `no_damping_marker_structure` (above) but asserts `trait_bounds`
 /// is EMPTY — `Part` refines no trait (unlike `NoDamping : DampingDescriptor`).

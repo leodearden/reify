@@ -296,6 +296,7 @@ impl Engine {
             last_guard_phase_group_evals: 0,
             last_role_flip_probes: 0,
             last_diff_value_cells: None,
+            last_changed_realizations: std::collections::HashSet::new(),
             last_param_override_type_kind_rejections: 0,
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
@@ -381,6 +382,12 @@ impl Engine {
             // hot path pays zero overhead (no BRepExtrema projection) when γ
             // assertions are not active. Enable via set_capture_repr_tol(true).
             capture_repr_tol: false,
+            // Task 6169: "not recorded". Only the inventory-driven constructors
+            // can answer the declared-capability question (they alone hold the
+            // KernelRegistration); they overwrite this after construction. The
+            // caller-supplied-kernel seam leaves it None and gets the
+            // benefit-of-the-doubt scan in `has_repr_capable_kernel`.
+            repr_capable_kernel: None,
             // Task 4198 (Determinacy β): empty until tessellate_realizations()
             // / tessellate_snapshot() populates it via measure_mesh_deviation.
             achieved_repr_tol: BTreeMap::new(),
@@ -775,6 +782,37 @@ impl Engine {
         self.realization_cache.clear();
     }
 
+    /// Reset all geometry kernels and drop the realization cache for a GUI
+    /// whole-file reload (task 5212).
+    ///
+    /// Must be called **exactly once per whole-file reload** — the GUI wires
+    /// it at the top of `EngineSession::check_with_solve_slot`, the single
+    /// funnel for `load_file`/`update_source`/`load_from_source`, and never on
+    /// a slider (parameter) edit. It does two coupled things, BOTH required:
+    ///
+    /// 1. Resets every registered geometry kernel (`GeometryKernel::reset`),
+    ///    freeing the previous design's resident native shapes. The reify-eval
+    ///    `Engine` and the kernels it owns are long-lived and reused across
+    ///    reloads, so without this the OCCT kernel's native `shapes` table
+    ///    grows unbounded over a long session.
+    /// 2. Clears the realization cache (via
+    ///    [`clear_realization_cache`](Self::clear_realization_cache)). GUI
+    ///    reloads preserve prior module identity, so build-2 entities collide
+    ///    on `entity_id` with build-1 and would cache-hit a build-1
+    ///    `KernelHandle` whose shape step 1 just evicted → `InvalidReference`
+    ///    → broken render. Clearing forces a cache-miss → fresh re-execution
+    ///    against the reset kernel.
+    ///
+    /// Reset alone frees the native shapes but leaves stale cache handles that
+    /// now resolve to `InvalidReference` (broken render); a cache-clear alone
+    /// keeps the render correct but frees no native memory. Together they
+    /// bound native memory AND keep the reload correct. Idempotent on a cold
+    /// engine (no kernel holds state; the cache is already empty).
+    pub fn reset_geometry_for_reload(&mut self) {
+        self.geometry_kernels.values_mut().for_each(|k| k.reset());
+        self.clear_realization_cache();
+    }
+
     /// Construct an Engine with the embedded stdlib as its prelude.
     ///
     /// **No compute trampolines are registered.** Call
@@ -910,11 +948,24 @@ impl Engine {
             crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
         let single_kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
-        Self::with_prelude(
+        // Task 6169 (review round): record the picked adapter's DECLARED BRep
+        // capability here, while the `KernelRegistration` is still in hand.
+        // `with_prelude` files the adapter under the synthetic
+        // `DEFAULT_KERNEL_NAME` key, which is absent from the static registry,
+        // so this answer is unrecoverable downstream — and every production
+        // constraint-dispatching surface (reify-cli `cmd_check`/`cmd_build`,
+        // the GUI `EngineSession`) constructs through exactly this path.
+        // `None` (empty registry) → `false`: there is no adapter at all, which
+        // matches the empty-`geometry_kernels` semantics.
+        let repr_capable = picked
+            .is_some_and(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep));
+        let mut engine = Self::with_prelude(
             constraint_checker,
             single_kernel,
             reify_compiler::stdlib_loader::load_stdlib(),
-        )
+        );
+        engine.repr_capable_kernel = Some(repr_capable);
+        engine
     }
 
     /// Construct an Engine using the inventory-driven multi-kernel registry,
@@ -1042,6 +1093,16 @@ impl Engine {
             geometry_kernels,
             default_kernel_name,
             reify_compiler::stdlib_loader::load_stdlib(),
+        );
+        // Task 6169 (review round): record declared BRep capability across the
+        // loaded set. This path keys `geometry_kernels` by real registry names,
+        // so the registry scan would also answer correctly — recording it makes
+        // both inventory-driven constructors answer from the same place rather
+        // than leaving one on a lookup shape the other cannot use.
+        engine.repr_capable_kernel = Some(
+            registry
+                .values()
+                .any(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep)),
         );
         // Wire manifest-level knobs that need a post-construction setter
         // (mirrors the set_persistent_cache_dir pattern for cache-dir wiring).
@@ -2002,6 +2063,36 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_diff_value_cells(&self) -> Option<&crate::engine_edit::ValueCellDiff> {
         self.last_diff_value_cells.as_ref()
+    }
+
+    /// The set of realizations whose INPUT-cone hash has moved since their
+    /// last EXECUTION, as recomputed by the most recent ACCEPTED `edit_param`
+    /// / `edit_source` (selective-realization-eviction PRD task β, #4729).
+    /// Empty means nothing is known to be stale.
+    ///
+    /// The measurement is against α's stored `input_cone_hash` — "the input
+    /// cone as of the last execution" — so it is cumulative until a `build()`
+    /// re-executes, NOT a per-edit delta: a realization edited but not yet
+    /// rebuilt keeps being reported across subsequent unrelated edits. A
+    /// REJECTED edit (`NotInitialized` / `CellNotFound` / a param-override
+    /// type or dimension mismatch) mutates nothing and leaves the prior
+    /// record intact. See the field doc in `lib.rs` for the full contract.
+    ///
+    /// Consumed by task γ (#4730) keyed eviction. Note this is the
+    /// INPUT-cone comparison, not the static
+    /// `RealizationNodeData::content_hash` diff that
+    /// [`Engine::last_diff_value_cells`]' realization analogue would give —
+    /// see `engine_edit::compute_changed_realizations` for why the static
+    /// hash provably never moves on a value-driven change.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_changed_realizations(
+        &self,
+    ) -> &std::collections::HashSet<reify_core::RealizationNodeId> {
+        &self.last_changed_realizations
     }
 
     /// Returns the number of param-override rejections due to `TypeKindMismatch`
@@ -3216,6 +3307,68 @@ mod tests {
         assert!(
             engine.demands_volume_mesh("test::vm-demand"),
             "re-registering the same target keeps it demanding",
+        );
+    }
+
+    // ── reset_geometry_for_reload (task 5212 — GUI whole-file reload) ──
+
+    /// `reset_geometry_for_reload()` frees per-design native kernel memory and
+    /// drops the realization cache in one call, so a GUI whole-file reload
+    /// neither leaks prior-design shapes nor re-serves a stale build-N handle
+    /// (module identity is preserved across reloads, so build-2 entities
+    /// collide on entity_id with build-1 and would otherwise cache-hit a
+    /// build-1 handle whose shape was just evicted). A reset-counting mock
+    /// kernel confirms every registered kernel is reset exactly once, and the
+    /// realization cache is emptied.
+    #[test]
+    fn reset_geometry_for_reload_resets_kernels_and_clears_realization_cache() {
+        use reify_core::ContentHash;
+        use reify_ir::{GeometryHandleId, KernelHandle, KernelId, ReprKind};
+        use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Register a reset-counting mock kernel; keep a shared handle to its
+        // reset counter before the mock is boxed into the engine.
+        let mock = MockGeometryKernel::new();
+        let reset_calls = mock.reset_calls_ref();
+        engine
+            .geometry_kernels
+            .insert("occt".to_string(), Box::new(mock));
+
+        // Seed one realization-cache entry — the stale build-N handle a reload
+        // must drop (else it would be re-served against an evicted shape).
+        engine.realization_cache.insert(
+            "Bracket",
+            ReprKind::BRep,
+            0.01,
+            ContentHash(0),
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+        assert!(
+            !engine.realization_cache().is_empty(),
+            "precondition: realization cache seeded with one entry",
+        );
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            0,
+            "precondition: no reset before the reload call",
+        );
+
+        engine.reset_geometry_for_reload();
+
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            1,
+            "reset_geometry_for_reload must reset every registered kernel exactly once",
+        );
+        assert!(
+            engine.realization_cache().is_empty(),
+            "reset_geometry_for_reload must clear the realization cache so no \
+             stale build-N handle is re-served after reload",
         );
     }
 

@@ -43,6 +43,8 @@ mod fea_loads_stdlib_smoke;
 mod fea_stress_reductions_smoke;
 #[path = "harness_fea_solver_e2e/fea_structured_detail_e2e.rs"]
 mod fea_structured_detail_e2e;
+#[path = "harness_fea_solver_e2e/jacobian_column_member_access.rs"]
+mod jacobian_column_member_access;
 #[path = "harness_fea_solver_e2e/kinematic_diagnostics_e2e.rs"]
 mod kinematic_diagnostics_e2e;
 #[path = "harness_fea_solver_e2e/kinematic_examples_e2e.rs"]
@@ -71,8 +73,6 @@ mod multi_load_case_typed_envelope;
 mod objective_inherit_ambiguous;
 #[path = "harness_fea_solver_e2e/objective_inheritance.rs"]
 mod objective_inheritance;
-#[path = "harness_fea_solver_e2e/objective_inheritance_e2e.rs"]
-mod objective_inheritance_e2e;
 #[path = "harness_fea_solver_e2e/objective_provenance.rs"]
 mod objective_provenance;
 #[path = "harness_fea_solver_e2e/objective_set_signal.rs"]
@@ -93,6 +93,8 @@ mod stress_sweep_degenerate;
 mod stress_trait_hierarchy;
 #[path = "harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs"]
 mod tensegrity_delta_combined_form_find_e2e;
+#[path = "harness_fea_solver_e2e/tensegrity_force_density_gauge.rs"]
+mod tensegrity_force_density_gauge;
 #[path = "harness_fea_solver_e2e/tensegrity_membrane_load.rs"]
 mod tensegrity_membrane_load;
 #[path = "harness_fea_solver_e2e/tensegrity_pavilion_e2e.rs"]

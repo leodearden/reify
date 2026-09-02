@@ -267,6 +267,34 @@ fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &st
     })
 }
 
+/// Resolve a `<sub>.<port>.<member>` receiver ident to the name of the structure
+/// that declares `<port>`, for the priv port-member gate in `compile_member_access`.
+///
+/// Two receiver sources, checked in order:
+///   1. A sub-component of the enclosing structure — `scope.sub_component_types`
+///      (the external-access receiver task #5171 handled: `h.secret.main` where
+///      `h` is a `sub`).
+///   2. A function-body param / local bound to a `Type::StructureRef(name)` —
+///      `scope.resolve(name)` (the fn-body receiver: `fn leak(m: PortHost) -> …
+///      { m.secret.main }`). Fn-body params/lets are registered into `scope.names`
+///      via `scope.register`, NOT `sub_component_types`, so the sub lookup misses
+///      them; this fallback lets the gate fire for the fn-body receiver too.
+///
+/// Returns the structure name (owned) or `None`. The caller keeps the
+/// `sub_name != "self"` / `!collection_sub_names` guards and the
+/// `port_member_is_priv` fire condition, so adding this receiver source cannot
+/// relax the gate or mis-claim cluster / keyed-sub accesses — it only widens
+/// *which receiver idents* the already-name-specific gate considers.
+fn receiver_structure_name(scope: &CompilationScope, sub_name: &str) -> Option<String> {
+    if let Some(name) = scope.sub_component_types.get(sub_name) {
+        return Some(name.clone());
+    }
+    if let Some((_, Type::StructureRef(name))) = scope.resolve(sub_name) {
+        return Some(name.clone());
+    }
+    None
+}
+
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
@@ -4247,10 +4275,12 @@ fn compile_expr_guarded_with_expected_inner(
                 }
             }
 
-            // Pattern: <sub>.<port>.<member> — external priv port-member
-            // access (task #5171). `h.secret.main` where `h` is a
-            // (non-collection) sub-component and `secret` is a port
-            // declared on h's structure template. Must fire BEFORE the
+            // Pattern: <sub>.<port>.<member> — priv port-member access.
+            // `h.secret.main` where the receiver is a (non-collection)
+            // sub-component (external access, task #5171) OR a function-body
+            // param/local typed as a structure (via `receiver_structure_name`'s
+            // `scope.resolve` fallback), and `secret` is a port declared on that
+            // receiver structure's template. Must fire BEFORE the
             // inner `h.secret` MemberAccess is compiled through the normal
             // path: ports are absent from `value_cells`, so `h.secret`
             // alone resolves to a non-`StructureRef` receiver
@@ -4265,11 +4295,14 @@ fn compile_expr_guarded_with_expected_inner(
             // member keeps falling through unchanged to today's generic
             // "member access not yet supported" diagnostic — full nested
             // port-member resolution is a separate, pre-existing gap this
-            // task does not close. `sub_name != "self"` is redundant with
-            // the `sub_component_types` lookup (`self` can never be a sub
-            // name) but spelled out to make the internal/external boundary
-            // explicit: internal access (bare `port.member`, handled just
-            // above) must never be gated here.
+            // task does not close. `sub_name != "self"` is load-bearing now
+            // that `receiver_structure_name` also resolves the receiver via
+            // `scope.resolve`: inside an assoc fn, `self` resolves to the
+            // enclosing `StructureRef`, so without this guard an internal
+            // `self.secret.main` access would be gated. It keeps the
+            // internal/external boundary explicit — internal access (bare
+            // `port.member`, handled just above, and `self.<port>.<member>`)
+            // must never be gated here.
             //
             // Ordering invariant: this branch sits between the cluster
             // branch (above) and the keyed-sub branch (below), so it is
@@ -4290,7 +4323,7 @@ fn compile_expr_guarded_with_expected_inner(
                 && let reify_ast::ExprKind::Ident(sub_name) = &inner_obj.kind
                 && sub_name != "self"
                 && !scope.collection_sub_names.contains(sub_name.as_str())
-                && let Some(structure_name) = scope.sub_component_types.get(sub_name.as_str())
+                && let Some(structure_name) = receiver_structure_name(scope, sub_name)
                 && let Some(registry) = scope.template_registry
                 && let Some(template) = registry.get(structure_name.as_str())
                 && port_member_is_priv(template, port_name, member)
@@ -8452,7 +8485,7 @@ pub structure Rack {
     /// - `prismatic` (driving kind) → StructureRef("Prismatic")
     /// - `couple` (coupling kind) → StructureRef("Coupling")
     /// - `bind` (JointBinding) → StructureRef("JointBinding")
-    /// - `joint_jacobian` (Twist) → StructureRef("Twist")
+    /// - `joint_jacobian` (Jacobian column) → StructureRef("JacobianColumn")
     ///
     /// Mirrors `body_mass_props_resolves_to_function_call_returning_mass_properties`.
     /// RED until step-6 wires the `is_joint_typed_fn` arm into the ladder.
@@ -8500,8 +8533,12 @@ pub structure Rack {
         );
         // JointBinding → JointBinding.
         check("bind", 2, Type::StructureRef("JointBinding".to_string()));
-        // Twist / joint Jacobian → Twist.
-        check("joint_jacobian", 1, Type::StructureRef("Twist".to_string()));
+        // Joint Jacobian → JacobianColumn (task 6102: dpose/dq, not a Twist).
+        check(
+            "joint_jacobian",
+            1,
+            Type::StructureRef("JacobianColumn".to_string()),
+        );
     }
 
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is

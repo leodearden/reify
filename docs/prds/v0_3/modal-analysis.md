@@ -49,7 +49,7 @@ let bcs = [
 let modes = modal_analysis(gantry, ModalOptions(
     n_modes: 10,
     boundary_conditions: bcs,
-    damping: RayleighDamping(alpha: 0.0, beta: 1e-4),
+    damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
 ));
 
 // modes : ModalResult — List<Mode> ordered by frequency
@@ -178,7 +178,7 @@ structure def Mode {
     param participation_mass : Real         // effective modal mass along
                                             //   a reference direction (set
                                             //   at modal_analysis call time)
-    param damping_ratio    : Real           // ζ_i = (αω_i² + β)/(2ω_i)
+    param damping_ratio    : Real           // ζ_i = (α + β·ω_i²)/(2·ω_i)
                                             //   for Rayleigh; 0 for undamped
 }
 
@@ -212,8 +212,8 @@ structure def NoDamping : DampingDescriptor {
 }
 
 structure def RayleighDamping : DampingDescriptor {
-    param alpha : Real    // mass-proportional coefficient (1/s)
-    param beta  : Real    // stiffness-proportional coefficient (s)
+    param alpha : Frequency    // mass-proportional coefficient
+    param beta  : Time         // stiffness-proportional coefficient
 }
 ```
 
@@ -222,6 +222,12 @@ Per-mode damping ratio derived from Rayleigh parameters:
 ```
 ζ_i = (α + β·ω_i²) / (2·ω_i)
 ```
+
+`ω_i` is the ANGULAR frequency in rad/s (= 2π·`Mode.frequency`), so both
+coefficients are consumed on the rad/s scale: a caller reading cycles/s must
+scale α by 2π and β by 1/2π. The convention lives in ω and moves α and β
+symmetrically, which is why the declared pair stays the SI typing implied by
+C = α·M + β·K (α = s⁻¹, β = s) rather than α being typed `AngularVelocity`.
 
 This preserves mode-shape orthogonality (the decoupled modal ODEs stay
 1D-second-order), so transient response stays in real arithmetic.

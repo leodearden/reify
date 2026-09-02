@@ -338,6 +338,10 @@ Checked against the overlay's three known contested pairs: no overlap, no fourth
   #5790's slice), `examples/best_practices/angle_crossings.ri` + INDEX row, reify-design
   SKILL.md index line, discoverability transcript.
   *Signal:* B5 second half + B6. *Prereqs:* β.
+  *Placement settled — do not re-open.* Relocating the crossing doctrine out of
+  `chunks/units.md` into its own topic (lever a) and compressing its `Which ratio,
+  though.` paragraph (lever b) were both costed and **declined** by #6290; see
+  `docs/notes/angle-crossing-doctrine-placement-2026-08-19.md`.
 - **δ — ANGULAR_ACCELERATION + rotational-closure exemplar.** New constant + NAMED_DIMENSIONS
   row + CI example (`examples/dynamics/rotational_closure.ri` or best_practices slot).
   *Signal:* B3. *Prereqs:* **#5844** (hard edge).

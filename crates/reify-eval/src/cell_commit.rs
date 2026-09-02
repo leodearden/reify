@@ -14,24 +14,30 @@
 //!
 //! ## Known scope gaps for migration leaves (γ/δ/ε/ι)
 //!
-//! Both gaps below are deliberately left as documented limitations rather
-//! than closed by extending an enum now, since closing them would deviate
-//! from the two-variant `CacheLeg` shape the PRD's §2.4 contract sketch
-//! fixes for this task. A migration leaf that hits either gap must address
-//! it explicitly (extend the enum, or document why the site is left
-//! unmigrated) — not silently paper over it by routing through the existing
-//! variants as-is.
+//! The freshness gap below is now **CLOSED** (task #5238); three gaps remain
+//! OPEN — the `Skip`-outcome placeholder, the determinacy dimension, and the
+//! failure-path commit shape. Each is deliberately left as a documented
+//! limitation rather than closed by widening this module's enums or by
+//! changing `journal.rs`'s `EventKind` shape. A migration leaf that hits one
+//! of them must address it explicitly (extend the enum, or document why the
+//! site is left unmigrated) — not silently paper over it by routing through
+//! the existing variants as-is.
 //!
-//! - **No freshness dimension.** [`CacheLeg::Record`] always writes
-//!   `Freshness::Final` (see its doc comment) — there is no path to
-//!   `CacheStore::record_evaluation_propagating_freshness` (arch §7.2). The
-//!   dominant let/param commit sites in `engine_eval.rs`
-//!   (`evaluate_params_and_lets_unified`, `evaluate_let_bindings`) use the
-//!   propagating variant to derive freshness, so a migration leaf touching
-//!   them cannot represent that commit through `commit_cell_result` as
-//!   currently shaped.
+//! - **Freshness dimension — CLOSED (task #5238).** [`CacheLeg::Record`]
+//!   still writes `Freshness::Final`, but [`CacheLeg::RecordPropagating`] now
+//!   routes to `CacheStore::record_evaluation_propagating_freshness` (deriving
+//!   the output freshness from the just-computed trace, arch §7.2) and
+//!   [`CacheLeg::RecordWithFreshness`] routes to
+//!   `CacheStore::record_evaluation_with_freshness` (writing an explicit
+//!   caller-supplied freshness). The dominant let/param commit sites in
+//!   `engine_eval.rs` (`evaluate_params_and_lets_unified`,
+//!   `evaluate_let_bindings`) and the `eval_cached` Param/Let
+//!   preserve-freshness re-serves are migrated onto these variants; the
+//!   latter two stamp [`TraceSource::CachedReuse`], distinct from the
+//!   cache-MISS arm's [`TraceSource::CachedServe`], so the journal alone
+//!   separates a re-serve from a miss.
 //! - **`CacheLeg::Skip`'s journal `Completed.outcome` is an unspecified
-//!   placeholder**, not a meaningful `EvalOutcome` — see the doc comment at
+//!   placeholder — OPEN**, not a meaningful `EvalOutcome` — see the doc comment at
 //!   the `Completed` event construction inside [`commit_cell_result`], and
 //!   the `commit_skip_writes_values_snapshot_journal_but_no_cache_entry`
 //!   test that pins it. The authoritative signal that nothing was cached is
@@ -40,6 +46,43 @@
 //!   type-safe (e.g. `EventKind::Completed { outcome: Option<EvalOutcome> }`)
 //!   would change `journal.rs`'s `EventKind` shape — out of scope for this
 //!   module.
+//! - **Determinacy dimension — OPEN (discovered by task #5238).**
+//!   [`DeterminacyRule::resolve`] yields only `DeterminacyState::Determined`
+//!   or `Undetermined` — never `Auto` or `Provisional`. So a commit site that
+//!   must PRESERVE a stored `Auto` cannot be expressed through this
+//!   primitive at all, whichever [`CacheLeg`] it picks. That is what leaves
+//!   `Engine::eval_cached`'s **Auto-cell pre-seed re-serve** (`engine_eval.rs`;
+//!   the `cell.kind.is_auto()` cache-reuse block) unmigrated while its Param
+//!   and Let cache-reuse re-serve siblings in the same function are migrated:
+//!   the Auto pre-seed writes `(Value::Undef, Auto)`, and re-serving it
+//!   through a `DeterminacyRule` would silently rewrite that `Auto` to
+//!   `Determined`/`Undetermined`. [`DeterminacyRule::preserving`] names
+//!   exactly this boundary — it returns `None` for `Auto`/`Provisional`, and
+//!   the two migrated re-serves degrade to a direct write on `None` rather
+//!   than assuming unreachability. A future leaf closing this gap needs a
+//!   determinacy-PRESERVING `DeterminacyRule` VARIANT (carry the stored state
+//!   through `resolve` verbatim rather than resolving from the value);
+//!   deliberately out of #5238's freshness scope, since adding it would
+//!   smuggle an untested determinacy change into a freshness task. Both the
+//!   unmigrated Auto pre-seed re-serve and the two migrated re-serves' `None`
+//!   fallback share ONE direct-write body —
+//!   `engine_eval.rs`'s `reserve_preserving_determinacy_direct` — so closing
+//!   this gap is a single-site change and, until then, no second hand-synced
+//!   copy of the four-leg shape exists to drift.
+//! - **Failure-path commit shape — OPEN (by design; discovered by task
+//!   #5238).** [`commit_cell_result`] always writes the values and snapshot
+//!   legs and always emits a `Started`/`Completed` pair. The four propagating
+//!   failure-path writes in `engine_eval.rs` — the compute-dispatch `Failed`
+//!   path and the panic-recovery path, one of each in
+//!   `Engine::evaluate_params_and_lets_unified`'s Let arm and in
+//!   `Engine::evaluate_let_bindings` — have the opposite shape: they journal `EventKind::Failed` (no pair), write
+//!   NEITHER the values nor the snapshot leg, and follow the cache write with
+//!   `mark_failed`. No freshness fidelity is lost by leaving them direct —
+//!   `mark_failed` immediately overwrites the just-propagated freshness with
+//!   `Freshness::Failed { error }` — so these are documented-as-unmigrated
+//!   rather than blocked. A future leaf would need a failure-shaped commit
+//!   entry point (or a `CommitLegs` whose values/snapshot legs are optional),
+//!   which is a shape change to the primitive, not a new enum variant.
 
 use std::time::Instant;
 
@@ -54,7 +97,6 @@ use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 /// evaluated [`Value`]. Encodes today's three implicit determinacy rules as
 /// explicit, typed variants so a future edit cannot silently erase the
 /// intentional divergence between them (INV-EVAL-1).
-#[allow(dead_code)] // constructed by migration call sites from leaves γ/δ/ε/ι; tests only until then
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeterminacyRule {
     /// Main-pass let/param binds: stamps `Determined` unconditionally,
@@ -88,19 +130,68 @@ impl DeterminacyRule {
             DeterminacyRule::Undetermined => DeterminacyState::Undetermined,
         }
     }
+
+    /// Selects the rule that REPRODUCES an already-stored `det` exactly, for a
+    /// commit site that must re-serve a cached `(value, determinacy)` pair
+    /// verbatim rather than derive a fresh determinacy from the value.
+    ///
+    /// Both returned rules resolve value-INDEPENDENTLY
+    /// ([`DeterminacyRule::UnconditionalDetermined`] always yields
+    /// `Determined`, [`DeterminacyRule::Undetermined`] always yields
+    /// `Undetermined`), so `preserving(det).unwrap().resolve(v) == det` for
+    /// every `v`. That exactness is load-bearing at the `eval_cached`
+    /// preserve-freshness re-serves: reproducing the stored pair byte-for-byte
+    /// keeps `CacheStore::record_evaluation_with_freshness` on its
+    /// content-hash EARLY-CUTOFF branch, which is the only branch that
+    /// preserves the entry's `pending_cause` and `diagnostics` (the Changed
+    /// branch resets both) — see `cache.rs`.
+    ///
+    /// Returns `None` for `Auto` and `Provisional`: no [`DeterminacyRule`]
+    /// yields either, so those states are NOT expressible through
+    /// [`commit_cell_result`] at all. This is the single site naming that
+    /// caveat — see the "Determinacy dimension — OPEN" bullet in this module's
+    /// doc. Callers must degrade gracefully on `None` (write the stored state
+    /// through directly), never assume unreachability.
+    pub fn preserving(det: DeterminacyState) -> Option<Self> {
+        match det {
+            DeterminacyState::Determined => Some(DeterminacyRule::UnconditionalDetermined),
+            DeterminacyState::Undetermined => Some(DeterminacyRule::Undetermined),
+            DeterminacyState::Auto | DeterminacyState::Provisional => None,
+        }
+    }
 }
 
 /// Provenance tag recorded on a commit's journal `Started` event: which
 /// call-path produced this value. Makes the journal self-describing so the
 /// §2.6 divergence audit (a later leaf) can attribute a mismatch to its
 /// producing path.
-#[allow(dead_code)] // variants other than ColdEval used from step-7 onwards
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceSource {
     /// First-time (cold) evaluation of a node with no prior cache entry.
     ColdEval,
-    /// Result served from an existing fresh cache entry.
+    /// Produced by the `eval_cached` warm pass's cache-MISS arm — a cold eval
+    /// inside the cached-serve pass. Deliberately distinct from
+    /// [`TraceSource::CachedReuse`]: this arm recomputes a value and writes
+    /// `Freshness::Final` via `CacheLeg::Record`.
     CachedServe,
+    /// Re-served verbatim from an existing non-dirty cache entry by one of
+    /// `eval_cached`'s preserve-freshness re-serves (Param and Let), which
+    /// reproduce the stored `(value, determinacy)` pair and carry the entry's
+    /// own freshness forward via `CacheLeg::RecordWithFreshness`. Split out
+    /// from [`TraceSource::CachedServe`] (task #5238) so the journal alone
+    /// separates a re-serve from a miss — a §2.6 divergence audit reading the
+    /// slug must not have to reach for the in-memory `CacheLeg`, which
+    /// [`commit_cell_result`] consumes and never records.
+    ///
+    /// Named `CachedReuse`/`"cached-reuse"`, NOT `CachedReserve`/
+    /// `"cached-reserve"`: sitting directly beside [`TraceSource::CachedServe`]
+    /// / `"cached-serve"`, a one-letter difference would have carried the whole
+    /// semantic load, and "reserve" (to set aside) is a different English word
+    /// from "re-serve" (to serve again) — the intended sense. "Reuse" is also
+    /// what the producing blocks in `engine_eval.rs` already call themselves
+    /// (`// Cache-reuse: not dirty + entry exists`). Renamed before the slug
+    /// shipped; [`TraceSource::as_str`]'s freeze rule now applies to it.
+    CachedReuse,
     /// Re-evaluation triggered by an edit to an upstream cell.
     EditReeval,
     /// Part of a guarded-group re-evaluation (the `GuardedParamCtx` family).
@@ -114,14 +205,22 @@ pub enum TraceSource {
 impl TraceSource {
     /// A stable, kebab-case slug identifying this provenance path. Recorded
     /// on the journal `Started` event's [`EventPayload::Custom`] payload —
-    /// verbatim on `CacheLeg::Record`, or with a `|cache-skip=<reason>`
-    /// suffix appended on `CacheLeg::Skip` (see [`commit_cell_result`]) — and
+    /// verbatim on every cache-WRITING [`CacheLeg`] (`Record`,
+    /// `RecordPropagating`, `RecordWithFreshness`), or with a
+    /// `|cache-skip=<reason>` suffix appended on `CacheLeg::Skip` (see
+    /// [`commit_cell_result`]) — and
     /// intended as the stable key a future divergence audit attributes a
     /// mismatch to, so these strings, once shipped, should not be renamed.
+    ///
+    /// Every variant's slug is pinned — for uniqueness AND for its exact
+    /// frozen string — by `trace_source_provenance_is_recorded_on_started_event`
+    /// in this module's tests, over the `ALL_TRACE_SOURCES` array that
+    /// `trace_source_enumeration_is_exhaustive` forces to stay exhaustive.
     pub fn as_str(&self) -> &'static str {
         match self {
             TraceSource::ColdEval => "cold-eval",
             TraceSource::CachedServe => "cached-serve",
+            TraceSource::CachedReuse => "cached-reuse",
             TraceSource::EditReeval => "edit-reeval",
             TraceSource::GuardedGroup => "guarded-group",
             TraceSource::PostPassOverwrite => "post-pass-overwrite",
@@ -130,27 +229,46 @@ impl TraceSource {
     }
 }
 
-/// Whether a commit writes the cache leg, and if not, why.
+/// Whether a commit writes the cache leg, how, and if not, why.
 ///
-/// `Record` is a unit variant (not value-carrying) — the cache leg's
-/// `DependencyTrace` rides as a separate `commit_cell_result` parameter,
-/// used only on that arm.
+/// The cache-writing variants (`Record`, `RecordPropagating`) do not carry
+/// the `DependencyTrace` — it rides as a separate `commit_cell_result`
+/// parameter, consumed by whichever cache-writing arm runs.
 ///
-/// **Freshness scope gap:** `Record` always writes `Freshness::Final` (see
-/// its doc below) — there is no variant routing to
-/// `CacheStore::record_evaluation_propagating_freshness` (arch §7.2). See
-/// the module doc's "Known scope gaps" section before wiring a migration
-/// site that needs freshness propagation.
-#[allow(dead_code)] // constructed by migration call sites from leaves γ/δ/ε/ι; tests only until then
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// **Freshness routing:** `Record` writes `Freshness::Final`;
+/// [`CacheLeg::RecordPropagating`] DERIVES freshness from the just-computed
+/// trace (arch §7.2); [`CacheLeg::RecordWithFreshness`] writes an EXPLICIT
+/// caller-supplied freshness. Because `reify_ir::Freshness` is not `Copy`,
+/// this enum is `Clone` but deliberately NOT `Copy` — `commit_cell_result`
+/// borrows the leg for the `Started`-payload match and consumes it for the
+/// cache-write match.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheLeg {
     /// Write the cache leg via [`CacheStore::record_evaluation`], which is a
     /// thin wrapper that hard-codes `Freshness::Final` (see its own doc
-    /// comment in `cache.rs`). Does NOT call
-    /// `record_evaluation_propagating_freshness` — a commit site that needs
-    /// derived freshness per arch §7.2 cannot be represented by this variant
-    /// as currently shaped.
+    /// comment in `cache.rs`). For a commit site that needs a non-Final
+    /// freshness, use [`CacheLeg::RecordPropagating`] (derive from trace) or
+    /// [`CacheLeg::RecordWithFreshness`] (explicit) instead.
     Record,
+    /// Write the cache leg via
+    /// [`CacheStore::record_evaluation_propagating_freshness`], which DERIVES
+    /// the output freshness from the just-computed `dependency_trace` (arch
+    /// §7.2): `still_refining: true` short-circuits to `Freshness::Intermediate`,
+    /// otherwise freshness is propagated from the reads (an all-`Final` trace
+    /// yields `Final`). Used by the main let/param evaluators in
+    /// `engine_eval.rs` (`evaluate_params_and_lets_unified`,
+    /// `evaluate_let_bindings`).
+    RecordPropagating {
+        /// Forwarded to `record_evaluation_propagating_freshness`: `true`
+        /// marks the just-computed result as still-refining (→ `Intermediate`).
+        still_refining: bool,
+    },
+    /// Write the cache leg via
+    /// [`CacheStore::record_evaluation_with_freshness`], writing the supplied
+    /// [`reify_ir::Freshness`] verbatim. Used by the `eval_cached`
+    /// preserve-freshness re-serves, which carry the cached entry's own
+    /// freshness forward unchanged.
+    RecordWithFreshness(reify_ir::Freshness),
     /// Omit the cache leg. Carries the reason, surfaced on
     /// [`CommitOutcome::skip_reason`] for later divergence-audit exemptions.
     Skip(&'static str),
@@ -158,15 +276,28 @@ pub enum CacheLeg {
 
 /// Outcome of a [`commit_cell_result`] call.
 ///
-/// Carries the `(value, determinacy)` pair so callers that previously read
-/// back the inserted tuple keep working, plus the cache/skip/provenance
-/// metadata the four-leg commit produced. Fields are private — migration
-/// call sites in other modules (leaves γ/δ/ε/ι) read them via the
-/// `pub(crate)` accessor methods below, not by reaching into the struct.
-#[allow(dead_code)] // fields read by tests/accessors only until migration leaves γ/δ/ε/ι land
+/// Carries the resolved `determinacy` plus the cache/skip/provenance metadata
+/// the four-leg commit produced. Fields are private — migration call sites in
+/// other modules (leaves γ/δ/ε/ι) read them via the `pub(crate)` accessor
+/// methods below, not by reaching into the struct.
+///
+/// Deliberately does NOT carry the committed `Value` (#5238 amendment). It
+/// once did, purely so a caller could read the inserted tuple back — but no
+/// production call site ever did, and holding a 4th owner of the value forced
+/// an extra deep `Value` clone on EVERY commit. `Value` is not `Arc`-backed
+/// (`Value::List(Vec<Value>)`, `Value::Enum { payload: Vec<_> }`,
+/// `Value::String`), and the `eval_cached` preserve-freshness re-serves run
+/// this path for every clean cell on every warm pass, so that clone was a real
+/// per-cell-per-pass cost. A caller that needs the value back already owns it
+/// at the call site (it passed it in); the committed copies are readable from
+/// the `values`/`snapshot` legs.
+// #5238: migration call sites discard the returned CommitOutcome, so
+// `determinacy`, `skip_reason` and `trace_source` are read only by the accessors
+// below + tests until the §2.6 divergence-audit consumer (a future leaf) reads
+// them from non-test code. (`cache_outcome` is already read by non-test code.)
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CommitOutcome {
-    value: Value,
     determinacy: DeterminacyState,
     /// `Some` on `CacheLeg::Record` (forwarded from `record_evaluation`),
     /// `None` on `CacheLeg::Skip` — the authoritative in-memory signal that
@@ -182,14 +313,11 @@ pub struct CommitOutcome {
 /// Read-only accessors for [`CommitOutcome`] — the shape migration call
 /// sites in other modules (leaves γ/δ/ε/ι) use to consume a commit's result,
 /// since the struct's fields are private to this module.
-#[allow(dead_code)] // called by migration call sites from leaves γ/δ/ε/ι; a test exercises them until then
+// #5238: migration call sites discard the returned CommitOutcome, so these
+// accessors are exercised only by tests until the §2.6 divergence-audit consumer
+// (a future leaf) consumes a commit's result from non-test code.
+#[allow(dead_code)]
 impl CommitOutcome {
-    /// The committed value — mirrors what was written to the values and
-    /// snapshot legs.
-    pub(crate) fn value(&self) -> &Value {
-        &self.value
-    }
-
     /// The resolved determinacy state — mirrors what was written to the
     /// snapshot leg's tuple and, on `CacheLeg::Record`, the cache leg's
     /// `CachedResult::Value`.
@@ -235,9 +363,64 @@ pub(crate) struct CommitLegs<'a> {
 /// additionally carries a `cache-skip=<reason>` marker (see body), so the
 /// journal alone — with no access to the in-memory [`CommitOutcome`] — is
 /// sufficient to tell a genuine cache write apart from a skip.
-#[allow(dead_code)] // wired in by migration leaves γ/δ/ε/ι; exercised by tests until then
+///
+/// The emitted `Started`/`Completed` pair brackets the COMMIT only: `Started`
+/// is timestamped at entry and `Completed`'s `EventPayload::Duration` measures
+/// from it. A caller that already captured an `Instant` before the work this
+/// commit concludes should call [`commit_cell_result_at`] with that instant
+/// instead, so the pair brackets the real evaluation — see its doc for why
+/// that matters.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn commit_cell_result(
+    legs: CommitLegs<'_>,
+    node: ValueCellId,
+    value: Value,
+    determinacy: DeterminacyRule,
+    trace: TraceSource,
+    dependency_trace: DependencyTrace,
+    version: VersionId,
+    cache_leg: CacheLeg,
+) -> CommitOutcome {
+    commit_cell_result_at(
+        Instant::now(),
+        legs,
+        node,
+        value,
+        determinacy,
+        trace,
+        dependency_trace,
+        version,
+        cache_leg,
+    )
+}
+
+/// [`commit_cell_result`], but with the journal `Started` event's timestamp —
+/// and therefore the `Completed` event's `EventPayload::Duration` span —
+/// supplied by the caller rather than captured at commit entry.
+///
+/// task #5238 amendment. `engine_eval.rs`'s `record_eval_completed` documents
+/// the house convention: "`start` is the `Instant` captured before the matching
+/// `EventKind::Started` record so that `Duration` spans the full resolution".
+/// The main let commits in `evaluate_params_and_lets_unified` and
+/// `evaluate_let_bindings` honoured that before being migrated onto this
+/// primitive — their `Completed` carried `start.elapsed()` measured from the
+/// top of the loop body, i.e. the whole evaluation. Routing them through
+/// [`commit_cell_result`], which captures its own `Instant`, silently narrowed
+/// those Durations to the commit's own (sub-microsecond) cost, while every
+/// non-migrated sibling sub-path in the SAME loop kept the full-resolution
+/// span — so one pass's journal would have mixed two incompatible `Duration`
+/// semantics per cell. No consumer reads a `Duration`'s MAGNITUDE today —
+/// every one existence-matches `EventPayload::Duration(_)` (the same
+/// "presence only" wording `engine_eval.rs`'s own migration notes use) —
+/// which is why nothing failed; a future profiler reading the journal would
+/// simply have got wrong numbers for exactly the dominant cells.
+///
+/// Passing `started_at` also back-dates the `Started` event's own timestamp to
+/// the same instant, matching `record_subpath_started`'s behaviour, so the pair
+/// really does bracket the work rather than merely reporting its length.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_cell_result_at(
+    started_at: Instant,
     legs: CommitLegs<'_>,
     node: ValueCellId,
     value: Value,
@@ -256,7 +439,10 @@ pub(crate) fn commit_cell_result(
 
     let det = determinacy.resolve(&value);
     let node_id = NodeId::Value(node.clone());
-    let start = Instant::now();
+    // Supplied by the caller (see this fn's doc): the `Started` event is
+    // stamped with it and `Completed`'s Duration measures from it, so the pair
+    // brackets the caller's work, not just this commit.
+    let start = started_at;
 
     // The `Started` event's payload doubles as the journal-only source of
     // truth for the cache leg's fate: the trace-source slug always, plus a
@@ -265,8 +451,10 @@ pub(crate) fn commit_cell_result(
     // `CommitOutcome` — discover that the cache leg was omitted, and why; the
     // `Completed` event constructed below is NOT such a signal on the Skip
     // path (see its `outcome` field's doc comment).
-    let started_payload = match cache_leg {
-        CacheLeg::Record => trace.as_str().to_string(),
+    let started_payload = match &cache_leg {
+        CacheLeg::Record
+        | CacheLeg::RecordPropagating { .. }
+        | CacheLeg::RecordWithFreshness(_) => trace.as_str().to_string(),
         CacheLeg::Skip(reason) => format!("{}|cache-skip={reason}", trace.as_str()),
     };
 
@@ -278,17 +466,16 @@ pub(crate) fn commit_cell_result(
         payload: Some(EventPayload::Custom(started_payload)),
     });
 
-    // Every commit needs 3 independently-owned copies of `value` (values leg,
-    // snapshot leg, and the returned `CommitOutcome`); `CacheLeg::Record`
-    // needs a 4th (the cache leg). `Value` is not `Copy` and can hold large
-    // payloads, so each extra owner costs a real clone — the two clones below
-    // cover values+snapshot, the cache leg's clone (Record arm only, below)
-    // is the 3rd, and the original `value` is reused via a move into
-    // `CommitOutcome` at the end of this function rather than a 4th clone.
-    // That is already the minimum possible for however many legs actually
-    // write; reordering cannot reduce it further (some owner must always be
-    // the one that "spends" the original via move, and one is all that's
-    // available).
+    // A cache-writing commit needs exactly 3 independently-owned copies of
+    // `value` (values leg, snapshot leg, cache leg). `Value` is not `Copy` and
+    // is not `Arc`-backed, so each extra owner costs a real deep clone. The two
+    // clones below cover values+snapshot; the ORIGINAL `value` is then MOVED
+    // into whichever cache-writing arm runs, so no third clone is made and
+    // `CommitOutcome` holds no value at all (#5238 amendment — see its doc).
+    // `CacheLeg::Skip` needs only 2 copies and simply drops the original. That
+    // is the minimum possible for however many legs actually write; reordering
+    // cannot reduce it further (some owner must always "spend" the original via
+    // move, and one is all that's available).
     values.insert(node.clone(), value.clone());
     snapshot_values.insert(node, (value.clone(), det));
 
@@ -296,9 +483,29 @@ pub(crate) fn commit_cell_result(
         CacheLeg::Record => {
             let outcome = cache.record_evaluation(
                 node_id.clone(),
-                CachedResult::Value(value.clone(), det),
+                CachedResult::Value(value, det),
                 version,
                 dependency_trace,
+            );
+            (Some(outcome), None)
+        }
+        CacheLeg::RecordPropagating { still_refining } => {
+            let outcome = cache.record_evaluation_propagating_freshness(
+                node_id.clone(),
+                CachedResult::Value(value, det),
+                version,
+                dependency_trace,
+                still_refining,
+            );
+            (Some(outcome), None)
+        }
+        CacheLeg::RecordWithFreshness(freshness) => {
+            let outcome = cache.record_evaluation_with_freshness(
+                node_id.clone(),
+                CachedResult::Value(value, det),
+                version,
+                dependency_trace,
+                freshness,
             );
             (Some(outcome), None)
         }
@@ -329,7 +536,6 @@ pub(crate) fn commit_cell_result(
     });
 
     CommitOutcome {
-        value,
         determinacy: det,
         cache_outcome,
         skip_reason,
@@ -341,7 +547,7 @@ pub(crate) fn commit_cell_result(
 mod tests {
     use super::*;
     use reify_core::{ValueCellId, VersionId};
-    use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
+    use reify_ir::{DeterminacyState, ErrorRef, Freshness, PersistentMap, Value, ValueMap};
 
     use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
     use crate::deps::DependencyTrace;
@@ -451,11 +657,11 @@ mod tests {
         assert!(matches!(events[0].kind, EventKind::Started));
         assert!(matches!(events[1].kind, EventKind::Completed { .. }));
 
-        // Returned CommitOutcome mirrors what was written to all four legs.
-        // Read via the pub(crate) accessors (not the private fields
-        // directly) to prove the accessors migration call sites will use
-        // return the right data.
-        assert_eq!(*outcome.value(), Value::Bool(true));
+        // Returned CommitOutcome mirrors the commit's metadata. Read via the
+        // pub(crate) accessors (not the private fields directly) to prove the
+        // accessors migration call sites will use return the right data. The
+        // committed VALUE is deliberately not carried on the outcome (#5238
+        // amendment); it is asserted above, on the legs that actually hold it.
         assert_eq!(outcome.determinacy(), DeterminacyState::Determined);
         assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
         assert_eq!(outcome.skip_reason(), None);
@@ -723,31 +929,352 @@ mod tests {
 
         assert_eq!(outcome.trace_source, TraceSource::EditReeval);
 
-        // Every variant maps to a distinct, stable kebab slug.
-        let slugs = [
-            TraceSource::ColdEval.as_str(),
-            TraceSource::CachedServe.as_str(),
-            TraceSource::EditReeval.as_str(),
-            TraceSource::GuardedGroup.as_str(),
-            TraceSource::PostPassOverwrite.as_str(),
-            TraceSource::ConeReeval.as_str(),
-        ];
+        // Every variant maps to a distinct, stable kebab slug. `ALL_TRACE_SOURCES`
+        // is kept exhaustive by `trace_source_enumeration_is_exhaustive` below —
+        // adding a variant without listing it here is a compile error, not a
+        // silently-unchecked slug (#5238 amendment: `CachedReuse` was shipped
+        // while this list still had six entries, so neither its uniqueness nor
+        // its frozen string was covered).
+        let slugs: Vec<&'static str> = ALL_TRACE_SOURCES.iter().map(|t| t.as_str()).collect();
         assert_eq!(
             slugs,
             [
                 "cold-eval",
                 "cached-serve",
+                "cached-reuse",
                 "edit-reeval",
                 "guarded-group",
                 "post-pass-overwrite",
                 "cone-reeval",
-            ]
+            ],
+            "TraceSource slugs are frozen once shipped (see TraceSource::as_str)"
         );
         let unique: std::collections::HashSet<_> = slugs.iter().collect();
         assert_eq!(
             unique.len(),
             slugs.len(),
             "TraceSource slugs must be distinct: {slugs:?}"
+        );
+    }
+
+    /// Every [`TraceSource`] variant, in declaration order — the list
+    /// `trace_source_provenance_is_recorded_on_started_event` pins slugs over.
+    ///
+    /// Kept exhaustive by `trace_source_enumeration_is_exhaustive`: because that
+    /// sentinel matches on `TraceSource` with no wildcard arm, adding a variant
+    /// fails to compile until it is named there, and the `ALL_TRACE_SOURCES.len()`
+    /// assertion then fails until it is added here too.
+    const ALL_TRACE_SOURCES: [TraceSource; 7] = [
+        TraceSource::ColdEval,
+        TraceSource::CachedServe,
+        TraceSource::CachedReuse,
+        TraceSource::EditReeval,
+        TraceSource::GuardedGroup,
+        TraceSource::PostPassOverwrite,
+        TraceSource::ConeReeval,
+    ];
+
+    /// Compile-time + run-time guard that `ALL_TRACE_SOURCES` really is every
+    /// variant, so the slug uniqueness/stability assertions above are checked
+    /// over the WHOLE enum rather than over a hand-maintained subset that
+    /// silently drifts (which is exactly how `CachedReuse` shipped uncovered).
+    #[test]
+    fn trace_source_enumeration_is_exhaustive() {
+        // Wildcard-free match: a new `TraceSource` variant fails to compile
+        // here until it is named, which is the whole point of the sentinel.
+        // Mapping each variant to its expected INDEX (rather than just
+        // counting) also catches a repeated or omitted entry in the array.
+        fn declaration_index(t: TraceSource) -> usize {
+            match t {
+                TraceSource::ColdEval => 0,
+                TraceSource::CachedServe => 1,
+                TraceSource::CachedReuse => 2,
+                TraceSource::EditReeval => 3,
+                TraceSource::GuardedGroup => 4,
+                TraceSource::PostPassOverwrite => 5,
+                TraceSource::ConeReeval => 6,
+            }
+        }
+        assert_eq!(
+            ALL_TRACE_SOURCES.len(),
+            7,
+            "ALL_TRACE_SOURCES must list every TraceSource variant exactly once"
+        );
+        for (i, t) in ALL_TRACE_SOURCES.iter().enumerate() {
+            assert_eq!(
+                declaration_index(*t),
+                i,
+                "ALL_TRACE_SOURCES[{i}] = {t:?} is out of order, repeated, or \
+                 omits a variant: {ALL_TRACE_SOURCES:?}"
+            );
+        }
+    }
+
+    /// Freshness analogue of `commit_record_writes_all_four_legs` for the new
+    /// `CacheLeg::RecordPropagating` variant: it routes the cache leg through
+    /// `CacheStore::record_evaluation_propagating_freshness`, which DERIVES the
+    /// output freshness from the just-computed trace. With `still_refining:
+    /// true` the derivation short-circuits to `Intermediate { generation }`
+    /// (generation = `version.0`) regardless of the trace; with `still_refining:
+    /// false` over an empty (all-Final) trace it yields `Final`. All four legs
+    /// must still be written atomically (INV-EVAL-1) — this is the propagating
+    /// counterpart to the four-leg Record test.
+    #[test]
+    fn commit_record_propagating_derives_intermediate_freshness() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        // still_refining: true → Intermediate { generation: version.0 }.
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Int(42),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::ColdEval,
+            DependencyTrace::default(),
+            VersionId(5),
+            CacheLeg::RecordPropagating {
+                still_refining: true,
+            },
+        );
+
+        // values leg
+        assert_eq!(values.get(&node), Some(&Value::Int(42)));
+
+        // snapshot leg
+        assert_eq!(
+            snapshot_values.get(&node),
+            Some(&(Value::Int(42), DeterminacyState::Determined))
+        );
+
+        // cache leg present, carrying the DERIVED Intermediate freshness.
+        let node_id = NodeId::Value(node.clone());
+        let entry = cache
+            .get(&node_id)
+            .expect("CacheLeg::RecordPropagating must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Int(42));
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.freshness,
+            Freshness::Intermediate { generation: 5 },
+            "still_refining=true derives Intermediate at generation=version.0"
+        );
+
+        // journal leg: Started then Completed recorded for this node.
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Completed, got {events:?}"
+        );
+        assert!(matches!(events[0].kind, EventKind::Started));
+        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+
+        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
+        assert_eq!(outcome.skip_reason(), None);
+
+        // Companion: still_refining: false over an empty (all-Final) trace
+        // derives Final. A distinct node avoids the early-cutoff freshness
+        // overwrite that a repeat commit on `node` would trigger.
+        let node2 = ValueCellId::new("Body", "h");
+        commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node2.clone(),
+            Value::Int(7),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::ColdEval,
+            DependencyTrace::default(),
+            VersionId(5),
+            CacheLeg::RecordPropagating {
+                still_refining: false,
+            },
+        );
+        let entry2 = cache
+            .get(&NodeId::Value(node2))
+            .expect("CacheLeg::RecordPropagating must write a cache entry");
+        assert_eq!(
+            entry2.freshness,
+            Freshness::Final,
+            "still_refining=false over an empty (all-Final) trace derives Final"
+        );
+    }
+
+    /// Freshness analogue for the new `CacheLeg::RecordWithFreshness` variant:
+    /// it routes the cache leg through
+    /// `CacheStore::record_evaluation_with_freshness`, which writes the
+    /// EXPLICIT caller-supplied freshness verbatim (used by the `eval_cached`
+    /// preserve-freshness re-serves, which carry the entry's own freshness
+    /// forward). All four legs must be written; a cold write reports
+    /// `EvalOutcome::Changed`.
+    ///
+    /// The second half pins the branch the migration actually DEPENDS on: a
+    /// repeat commit of the SAME value on the SAME node takes
+    /// `record_evaluation_with_freshness`' content-hash EARLY-CUTOFF branch
+    /// (`EvalOutcome::Unchanged`, `cache.rs`), and the supplied freshness must
+    /// be written there too. That branch is the only one preserving the
+    /// entry's `pending_cause`/`diagnostics` — the Changed branch resets both —
+    /// so if a future determinacy-rule drift knocked a re-serve off it, the
+    /// Pending chain-cause would silently vanish. Asserting `Unchanged` here
+    /// makes that drift a unit-test failure rather than a silent regression.
+    #[test]
+    fn commit_record_with_freshness_writes_supplied_freshness() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        let supplied = Freshness::Failed {
+            error: ErrorRef::new("x"),
+        };
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Bool(true),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::CachedServe,
+            DependencyTrace::default(),
+            VersionId(1),
+            CacheLeg::RecordWithFreshness(supplied.clone()),
+        );
+
+        // values + snapshot legs.
+        assert_eq!(values.get(&node), Some(&Value::Bool(true)));
+        assert_eq!(
+            snapshot_values.get(&node),
+            Some(&(Value::Bool(true), DeterminacyState::Determined))
+        );
+
+        // cache leg: the SUPPLIED freshness is written verbatim.
+        let node_id = NodeId::Value(node.clone());
+        let entry = cache
+            .get(&node_id)
+            .expect("CacheLeg::RecordWithFreshness must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Bool(true));
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.freshness, supplied,
+            "RecordWithFreshness must write the caller-supplied freshness verbatim"
+        );
+
+        // journal leg: Started + Completed.
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Completed, got {events:?}"
+        );
+        assert!(matches!(events[0].kind, EventKind::Started));
+        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+
+        // cold write → Changed.
+        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
+        assert_eq!(outcome.skip_reason(), None);
+
+        // ── EARLY-CUTOFF branch (the one the eval_cached re-serves ride) ──
+        // Re-commit the SAME value on the SAME node with a DIFFERENT supplied
+        // freshness. The content hash is unchanged, so `record_evaluation_with_-
+        // freshness` takes its early-cutoff branch and reports `Unchanged` —
+        // and must still write the newly supplied freshness verbatim.
+        let resupplied = Freshness::Intermediate { generation: 9 };
+        let outcome2 = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Bool(true),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::CachedReuse,
+            DependencyTrace::default(),
+            VersionId(2),
+            CacheLeg::RecordWithFreshness(resupplied.clone()),
+        );
+        assert_eq!(
+            outcome2.cache_outcome(),
+            Some(EvalOutcome::Unchanged),
+            "re-committing an identical (value, determinacy) pair must take \
+             record_evaluation_with_freshness' content-hash early-cutoff branch \
+             — the branch that preserves pending_cause/diagnostics, and the one \
+             the eval_cached preserve-freshness re-serves depend on"
+        );
+        let entry2 = cache
+            .get(&node_id)
+            .expect("the early-cutoff path must leave the cache entry in place");
+        assert_eq!(
+            entry2.freshness, resupplied,
+            "RecordWithFreshness must write the supplied freshness verbatim on \
+             the early-cutoff (Unchanged) path too, not only on the cold path"
+        );
+        assert_eq!(entry2.basis_version, VersionId(2));
+    }
+
+    /// Pins [`DeterminacyRule::preserving`]'s round-trip contract: for every
+    /// determinacy state it CAN express, the returned rule reproduces that
+    /// state value-independently — including on `Value::Undef`, where
+    /// `DeriveFromValue` would diverge. This is what makes the `eval_cached`
+    /// re-serves reproduce `entry.result` byte-for-byte (hence stay on the
+    /// early-cutoff branch pinned above).
+    ///
+    /// `Auto`/`Provisional` return `None` rather than panicking, so a caller
+    /// can degrade gracefully instead of aborting the whole evaluation on an
+    /// unexpected stored state (see the "Determinacy dimension — OPEN" bullet).
+    #[test]
+    fn determinacy_rule_preserving_round_trips_or_reports_inexpressible() {
+        for det in [DeterminacyState::Determined, DeterminacyState::Undetermined] {
+            let rule = DeterminacyRule::preserving(det)
+                .unwrap_or_else(|| panic!("{det:?} must be expressible"));
+            for value in [Value::Undef, Value::Bool(true), Value::Int(3)] {
+                assert_eq!(
+                    rule.resolve(&value),
+                    det,
+                    "preserving({det:?}) must reproduce {det:?} for value {value:?} \
+                     (value-independently), or the eval_cached re-serves would \
+                     rewrite the stored determinacy"
+                );
+            }
+        }
+        assert_eq!(
+            DeterminacyRule::preserving(DeterminacyState::Auto),
+            None,
+            "Auto is not expressible by any DeterminacyRule — callers must degrade"
+        );
+        assert_eq!(
+            DeterminacyRule::preserving(DeterminacyState::Provisional),
+            None,
+            "Provisional is not expressible by any DeterminacyRule — callers must degrade"
         );
     }
 }

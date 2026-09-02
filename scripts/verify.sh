@@ -1054,14 +1054,25 @@ is_occt_crate() {
 #     geometry_let_selector_consumer.ri (pushed into no_stale_undef_invariant_
 #     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
-#     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786)
+#     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
+#     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
+#     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
+#     jacobian_column_members.ri (read via std::fs::read_to_string by
+#     jacobian_column_member_access.rs's fixture_source(), task 6102),
+#     damped_material_mixin_conformance.ri + damped_material_preset_conformance.ri
+#     (both read via std::fs::read_to_string by materials_fea_tests.rs, task
+#     6877 — the mixin one pins the Damped-mixin SUBSTRATE with probe-local
+#     trait names, the preset one pins the LANDED stdlib surface)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
 #     indexed_sub_coll_arm_baseline.ri, indexed_sub_forall_range_baseline.ri,
 #     indexed_sub_inst_arm_baseline.ri, indexed_sub_spec_arm_baseline.ri
 #     (the four sub-arm baselines held as indexed_sub_grammar_tests.rs's
-#     existing_sub_arms_regression_floor, task 5481)
+#     existing_sub_arms_regression_floor, task 5481);
+#     stdlib_ns_qualified_expr.ri, stdlib_ns_qualified_type.ri (the two
+#     qualified-reference probes held as qualified_ref_grammar_tests.rs's
+#     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495)
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
 #     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri,
@@ -1080,7 +1091,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1103,11 +1114,22 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri co
 # fails on any pinned fixture missing here. Do not hand-edit without re-running
 # it; do not trust a copy of this list anywhere else.
 #
-# NOTE the two lists NEST: all 11 _RUST_COUPLED_RI_FIXTURES members are also
-# pinned in the ledger, and the rust arm already sets gui=1, so it short-circuits
-# them. They are retained here deliberately so that dropping a fixture from the
-# rust list can never silently drop its gui coverage too.
-_GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+# NOTE the two lists MOSTLY NEST: every _RUST_COUPLED_RI_FIXTURES member that is
+# also a grammar-ledger pin is listed below as well, and the rust arm already
+# sets gui=1, so it short-circuits them. They are retained here deliberately so
+# that dropping a fixture from the rust list can never silently drop its gui
+# coverage too. THREE members are not EXPECTED_CLEAN pins and so have no gui
+# entry to retain: jacobian_column_members.ri (read by a compiled Rust target
+# but never pinned, task 6102), and task 6877's
+# damped_material_{mixin,preset}_conformance.ri (deliberately not pinned — an
+# unpinned fixture is inert for that ledger, so pinning them would add the
+# PG-DRIFT-GUI obligation for no added signal).
+#
+# Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
+# MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
+# rots on the next addition — this one already had, still reading 10 after the
+# list had grown past it, when task #5784 added unit_middot_mul.ri.
+_GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
@@ -1214,13 +1236,20 @@ decide_scope() {
                 #     its own tests/fixtures + examples/, then pushes ONE
                 #     explicit prd-gate path — so ADDING a fixture provably
                 #     cannot change any Rust target's inputs. EDITING one of the
-                #     five in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
+                #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
                 #     no later gate — a red-main class outage). That
                 #     no-directory-glob premise is not left to this comment:
                 #     PG-DRIFT fails if any *.rs names the directory itself
-                #     rather than a `<name>.ri` leaf.
+                #     rather than a `<name>.ri` leaf. That residual gate gap is not
+                #     hypothetical: an UNCOUPLED prd-gate fixture carrying a
+                #     phantom-tracking marker landed exactly this way on `main`
+                #     108d1d9226, reddening post-merge verification for every task
+                #     until 9ebebcec22 reworded it (task 6817).
+                #     select_cheap_ptodo_gate (below) now runs the PTODO ratchet on
+                #     this exact --scope staged hook path, closing that gap for
+                #     both the coupled- and uncoupled-fixture shapes.
                 #   • RENAMES reach this arm by BOTH names: --name-only shows
                 #     only a rename's destination, so the source side is
                 #     recovered up-front (see the rename-source block above) —
@@ -1229,11 +1258,14 @@ decide_scope() {
                 #     basename.
                 #   • The other consumers are the scripts/prd-capability-check.py
                 #     / prd-decompose-verify.mjs probes, which are not cargo poles.
-                #   • RESIDUAL: this affects only --scope staged/branch.
-                #     DF_VERIFY_ROLE=merge still forces --scope all (contract C2),
-                #     so the merge gate remains the wholesale authority — the same
-                #     accepted latency-not-coverage trade-off documented at the
-                #     task 5125 block below.
+                #   • RESIDUAL: --scope staged is now covered by
+                #     select_cheap_ptodo_gate (below), which runs the PTODO
+                #     ratchet on this exact hook path (task 6817). --scope branch
+                #     (per-task lanes) stays uncovered here: DF_VERIFY_ROLE=merge
+                #     still forces --scope all (contract C2), so the merge gate's
+                #     run_all.sh pool remains the wholesale authority there — the
+                #     same accepted latency-not-coverage trade-off documented at
+                #     the task 5125 block below.
                 #   • GOTCHA: a bash `case` glob's `*` matches `/`, so a future
                 #     nested path under fixtures/ also lands in this arm; the
                 #     ${f##*/} basename test still applies and the direction of
@@ -1290,6 +1322,19 @@ decide_scope
 # ---------------------------------------------------------------------------
 SELECTED_INFRA_GLOBS=""
 
+# add_selected_infra_glob <glob-or-path> — append into SELECTED_INFRA_GLOBS
+# with whole-token dedup via space sentinels (prevents false dedup when one
+# glob is a substring of another, e.g. a specific path vs a broader wildcard
+# pattern). Shared by every selector below (select_infra_tests,
+# select_harness_kloc_guard, select_cheap_ptodo_gate, ...) so the sentinel
+# trick is written once instead of hand-copied per selector.
+add_selected_infra_glob() {
+    case " $SELECTED_INFRA_GLOBS " in
+        *" $1 "*) : ;;
+        *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$1" ;;
+    esac
+}
+
 select_infra_tests() {
     local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
     # Graceful degradation: absent map or empty changed-file list -> empty.
@@ -1304,14 +1349,8 @@ select_infra_tests() {
         while IFS= read -r _f; do
             [ -z "$_f" ] && continue
             if [ "$_f" = "$_artifact" ]; then
-                # Append glob to selection if not already present (whole-token
-                # dedup via space sentinels — prevents false dedup when one
-                # glob is a substring of another, e.g. a specific path vs a
-                # broader wildcard pattern).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" $_glob "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
-                esac
+                # Append glob to selection if not already present.
+                add_selected_infra_glob "$_glob"
                 break
             fi
         done <<< "$CHANGED_FILES_RAW"
@@ -1420,17 +1459,116 @@ select_harness_kloc_guard() {
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
-                # Whole-token dedup via space sentinels (mirrors select_infra_tests).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" tests/infra/test_harness_kloc_cap.sh "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_harness_kloc_cap.sh" ;;
-                esac
+                add_selected_infra_glob "tests/infra/test_harness_kloc_cap.sh"
                 return 0
                 ;;
         esac
     done <<< "$_changed"
 }
 select_harness_kloc_guard
+
+# ---------------------------------------------------------------------------
+# Cheap PTODO ratchet on the hook-gated --scope staged path (task 6817).
+#
+# hooks/pre-commit -> hooks/project-checks is the ONLY production caller of
+# `--scope staged` (grep -rn -- "--scope staged" over tracked files confirms
+# this); every per-task lane uses `--scope branch`, and merge/background force
+# `--scope all` (contract C2). A hook-gated main commit is therefore the one
+# and only landing path with NO later gate: task 5125 moved the PTODO ratchet
+# (tests/infra/test_reify_audit_ptodo.sh, scenario (a) — live ptodo-baseline-gen
+# fingerprints must be a subset of crates/reify-audit/ptodo-baseline.txt) to the
+# MERGE-tier run_all.sh pool only, so a docs-landing commit staging an
+# uncoupled tests/prd-gate/fixtures/*.ri (task 5536's no-heavy-checks carve-out
+# above) got neither the full pool nor a selective subset. 108d1d9226's
+# phantom-tracking marker landed on `main` through exactly this gap and
+# reddened post-merge verification for every task until 9ebebcec22 reworded it
+# (task 6817). Deliberately NOT extended to `--scope branch`: that would be
+# doing 5125's explicitly deferred follow-up ("a cheap per-task-only PTODO
+# precheck ... is a possible follow-up if per-task PTODO latency proves costly
+# in practice") and would add ~3.4s to every task lane for a signal the merge
+# gate already provides there.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
+# populates (mirrors select_harness_kloc_guard's precedent paragraph just
+# above), so it inherits for free: (a) merge/background suppression — the
+# selective emission block (add_tool site below) is suppressed when
+# DF_VERIFY_ROLE=merge|background, where run_all.sh already runs this exact
+# file wholesale (exactly-once, INV-5); (b) the REIFY_INFRA_SUITE_ACTIVE
+# re-entrancy guard; (c) fail-fast ordering before the cargo poles; (d)
+# add_tool's LD_LIBRARY_PATH scrub, so no new plain-`add` call site appears
+# for tests/infra/test_verify_ld_library_path_scope.sh to police. A plain path
+# is a degenerate glob, so no emission-side change is needed at all.
+#
+# Measured cost: tests/infra/test_reify_audit_ptodo.sh is 22 assertions,
+# 0m3.362s warm on 2026-08-28 (main checkout, target/release/{reify-audit,
+# ptodo-baseline-gen} already built) — a single cheap leaf, not a cargo pole.
+#
+# Extension arm landed at reify-audit's FULL swept-extension set
+# (crates/reify-audit/src/ptodo.rs::is_swept_ext) in one piece (task 6817
+# step-4), not built up path-by-path: keying on the whole extension set
+# rather than the .ri-only tests/prd-gate/fixtures/ path closes the
+# same-class docs/**/*.ri and gui/**/*.{ts,tsx,js} holes in one rule, instead
+# of enumerating decide_scope's no-heavy case arms one at a time. Kept honest
+# by a derive-from-source drift guard, test_verify_scope.sh's PT-DRIFT
+# scenario — see the case arm below for exactly what direction that guard
+# covers.
+#
+# ACCEPTED RESIDUAL: REIFY_AUDIT_NO_COLD_BUILD is deliberately NOT set on this
+# path (the merge tier sets it, paired with a pre-build and a positive
+# existence assertion). If target/release/reify-audit is stale here,
+# reify_audit_guard's rebuild-budget-safe path self-heals via `cargo build
+# --release -q -p reify-audit` inside the 10m selective-infra wall — setting
+# the knob would make the guard SKIP budget-safely instead, silently
+# reopening exactly the hole this selector closes. A cold build that blows
+# the wall fails the commit loudly, which is the correct direction of error
+# for a gate protecting a main landing.
+#
+# A THIRD outcome is accepted too, not just the two above: if
+# reify_audit_guard's rebuild attempt still leaves the binary judged stale
+# (rc=125 — e.g. a cargo no-op fingerprint match against an on-disk mtime
+# older than the last crates/reify-audit commit, such as a warm-lane target/
+# with stamped mtimes) while REIFY_AUDIT_BIN stays executable,
+# tests/infra/test_reify_audit_ptodo.sh sets RATCHET_SKIP=1 and skips exactly
+# scenario (a)+(b) — the gen-driven fingerprint ratchet this selector exists
+# to run — while still executing its (c)-(f) exit-code hard gate, which is
+# High-severity-only. phantom-tracking is MEDIUM, so that hard gate does not
+# catch it: this path can exit GREEN on a main landing without the ratchet
+# having run at all. Left accepted rather than closed here because closing it
+# needs a change to test_reify_audit_ptodo.sh, outside this task's scope
+# (scripts/verify.sh + tests/infra/test_verify_scope.sh) — e.g. an opt-in
+# REIFY_PTODO_RATCHET_REQUIRED that turns the rc=125-with-present-binary case
+# into a hard failure instead of RATCHET_SKIP=1. Filed as follow-up work
+# rather than done inline (task 6817 amendment pass).
+# ---------------------------------------------------------------------------
+select_cheap_ptodo_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _f
+    while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        # ${_f,,} (bash case-fold) mirrors is_swept_ext's path.to_lowercase().
+        # This extension list is a DERIVED COPY of is_swept_ext in
+        # crates/reify-audit/src/ptodo.rs (cited by FUNCTION NAME, not line
+        # number — a line cite rots on the next edit to that file). Its
+        # source of truth is BEHAVIOURAL, not this comment:
+        # tests/infra/test_verify_scope.sh's PT-DRIFT scenario re-derives the
+        # set from is_swept_ext's source on every infra run and goes RED if
+        # is_swept_ext GAINS an extension this list lacks. That check is
+        # ONE-DIRECTIONAL: nothing asserts the reverse (this list still
+        # carrying an extension is_swept_ext later drops), so the direction
+        # of error on THAT side is over-selection (one extra ~3.4s leaf),
+        # never a silent coverage hole. Note `*.ts` also matches `*.tsx`
+        # under a bash glob; both are listed anyway so this reads as a
+        # faithful mirror of the Rust function rather than a minimal set.
+        case "${_f,,}" in
+            *.rs|*.ri|*.sh|*.py|*.ts|*.tsx|*.js) : ;;
+            *) continue ;;
+        esac
+        add_selected_infra_glob "tests/infra/test_reify_audit_ptodo.sh"
+        return 0
+    done <<< "$CHANGED_FILES_RAW"
+}
+select_cheap_ptodo_gate
 
 # ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
@@ -2438,6 +2576,28 @@ build_plan() {
         add_tool "./scripts/tree-sitter-generate.sh"
     fi
 
+    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). The leaf
+    # above refreshes tree-sitter-reify/src/ ON DISK but does not by itself make
+    # cargo recompile it: cargo re-runs a build script only for paths declared
+    # via rerun-if-changed, and cc emits none of its own. So without this leaf
+    # the gate can link a libtree_sitter_reify.a built from different bytes than
+    # the tree it is verifying — a false GREEN for an external-scanner change.
+    # `ensure` repairs (bumps the watched inputs' mtime so cargo must rebuild)
+    # rather than hard-failing; `check` is the assert-only mode for a checkpoint.
+    #
+    # Placement is load-bearing, both halves:
+    #   AFTER tree-sitter-generate.sh  — src/parser.c must be current on disk
+    #     before it is fingerprinted, or the verdict describes a stale input set.
+    #   BEFORE `verify.sh compile-gate` and every cargo leaf — a force applied
+    #     after the compile repairs nothing.
+    # Guarded on RUN_RUST exactly as the generate leaf is, so docs-only /
+    # gui-src-only plans keep zero command leaves.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add_tool "./scripts/tree-sitter-freshness.sh ensure"
+    fi
+
     # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
     # for the jobserver's implicit-token leak (FIFO pool tokens + 1 implicit
     # token per concurrent cargo) and non-cargo load.  Emitted only when
@@ -2641,6 +2801,12 @@ build_plan() {
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"  # ld-ok: cargo — MIXED shell+cargo (gui sidecar compile check); needs OCCT
     fi
+
+    # The tree-sitter freshness POST-CONDITION leaf does NOT belong here, after
+    # the clippy/gui-check wave — it must follow the LAST cargo leaf that can
+    # compile the parser (add_test_passes), or it attests a fingerprint dir that
+    # no test binary links. It is emitted at the end of build_plan; see the
+    # `check` block there before moving it back up.
 
     # Overlap join: wait for the background node lane before infra checks / pole.
     # Maximises the concurrency window (join as late as possible while still
@@ -2921,6 +3087,53 @@ build_plan() {
     # (task #4448 fail-fast reorder)
     if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add_test_passes
+    fi
+
+    # tree-sitter freshness POST-CONDITION (task #5629, review rounds 2-3).
+    # The `ensure` leaf near the top of the plan runs BEFORE the cargo wave and
+    # only ATTEMPTS the repair — it bumps mtimes and trusts cargo to act on them,
+    # and by design it never fails for a condition it believes it repaired. So
+    # without this line the gate carried no evidence the rebuild actually
+    # happened: if the mtime force failed to trigger one, the run went green
+    # having linked an archive it never compiled — the same false-GREEN class the
+    # task exists to close, one level up. `check` closes it by ASSERTING, after
+    # the fact, that the archives cargo built match the sources on disk.
+    #
+    # EMITTED LAST — after add_test_passes — and that position is load-bearing
+    # (review round 3). Round 2 placed it right after the clippy / `cargo check -p
+    # reify-gui` wave, which attested the WRONG archive: clippy compiles into a
+    # different fingerprint dir than the test-profile build, and under
+    # `--profile both` the debug and release nextest passes each compile the
+    # parser again, all of them AFTER that point. The assertion has to follow the
+    # last cargo leaf that can compile the parser, or it attests an archive no
+    # test binary ever linked.
+    #
+    # Guard: RUN_RUST && (lint || typecheck || test). The `test` arm was missing
+    # until the amendment pass on #5629, on the reasoning that "action=test has no
+    # compile leaf before this pole, so asserting there would hard-fail a
+    # repairable pre-build condition". That reasoning contradicted this leaf's own
+    # position: it is emitted AFTER add_test_passes, and on an action=test plan
+    # add_test_passes emits `cargo nextest run --workspace`, which COMPILES the
+    # parser. So every action=test plan forced a rebuild via `ensure` and then
+    # asserted nothing — leaving the whole test-only tier carrying exactly the
+    # one-level-up false GREEN this leaf was added to close.
+    #
+    # RUN_RUST is what keeps docs-only / gui-src-only plans at zero command leaves;
+    # with RUN_RUST=1 at least one of the three action flags is always set, so the
+    # inner disjunction is documentation of intent rather than a live filter — it
+    # keeps the leaf tied to "something compiled the parser", which is what makes
+    # the assertion meaningful.
+    #
+    # `check` hard-asserts over every fingerprint dir whose build-script run marker
+    # advanced during THIS run (the epoch `ensure` stamped), so the multi-dir
+    # debug+release case is covered rather than just the single newest dir. Dirs
+    # untouched by this run stay dormant `note:` lines — a checkout carries 7-9 of
+    # them, stale forever, so a whole-tree assertion would be permanently RED.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ] \
+        && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ] || [ "$DO_TEST" -eq 1 ]; }; then
+        add_tool "./scripts/tree-sitter-freshness.sh check"
     fi
 
     # retry_failed_only HONEST MARKER (task 5290 / PRD verify-retry-failed-only

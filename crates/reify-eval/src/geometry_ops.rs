@@ -1217,6 +1217,198 @@ pub(crate) fn resolve_subhandle_list(
     Ok(canonical_subhandle_ids(ids))
 }
 
+/// The curated sub-shape selector argument names carried by a
+/// [`reify_compiler::CompiledGeometryOp::Modify`] op (task 5208).
+///
+/// **Lockstep invariant** — this set MUST mirror the selector argument names
+/// emitted by `reify_compiler::geometry_modify::compile_modify_op`: `"edges"`
+/// (3-arg `fillet` / `chamfer`, 4-arg `chamfer_asymmetric`), `"faces"` (4-arg
+/// curated `draft`) and `"open_faces"` (3-arg `shell_open`). A curated form
+/// added there without a matching name here silently loses inline-selector
+/// pre-hydration (it would fall back to the pure-eval `Undef` error path);
+/// the eval arms that consume these args are the `resolve_curated_edges_p2`
+/// call sites in `compile_geometry_op`.
+const CURATED_SELECTOR_ARG_NAMES: &[&str] = &["edges", "faces", "open_faces"];
+
+/// Per-realization-walk memo for [`prehydrate_inline_curated_selector_args`],
+/// keyed on the selector argument's [`reify_ir::CompiledExpr::content_hash`]
+/// (task 5208).
+///
+/// # Why memoize
+///
+/// The same AUTHORED op is dispatched once per realization of its parent, and
+/// an entity that is both its own named realization AND an operand of a later
+/// boolean realizes twice — `examples/topology_selectors/bottom_deck_selectors.ri`
+/// records 10 curated `Fillet` ops for 7 authored fillets for exactly that
+/// reason. A named-let selector pays its kernel query once (at its scheduled
+/// `HydrateCell` slot); without this memo the INLINE form — the authoring
+/// shape the docs steer designers toward — would pay a full
+/// `resolve_with_attributes` round-trip (out-of-process under
+/// `OcctKernelHandle::spawn()`) on every one of those dispatches.
+///
+/// # Why the key is sufficient
+///
+/// A resolution is a pure function of `(selector_expr, named_steps, values,
+/// table, realized_reprs, kernel)`. Across one call of the realization walk
+/// that owns the memo, all five non-expr inputs are FIXED: `named_steps`,
+/// `values`, `table` and `realized_reprs` are shared `&` borrows for the
+/// walk's whole lifetime, and kernel handles are immutable once created (an op
+/// produces a NEW handle rather than mutating an input), so re-resolving an
+/// already-resolved selector against an already-realized parent is guaranteed
+/// to yield the same ids. The expression's content hash therefore identifies
+/// the resolution completely. The memo MUST NOT outlive one walk — construct
+/// it at the top of the realization loop and drop it there.
+pub(crate) type InlineSelectorMemo = HashMap<reify_core::ContentHash, reify_ir::Value>;
+
+/// Pre-resolve an **inline** curated edge/face selector argument of a
+/// `Modify` op to a concrete `Value::List<Geometry>` literal, using the kernel
+/// at the in-loop slot where the op's parent solid is already realized
+/// (task 5208).
+///
+/// # Why this exists (the inline-vs-named-let reachability gap)
+///
+/// The curated eval arms (`modify_fillet` / `modify_chamfer` / …) evaluate
+/// their `edges`/`faces` argument with the **pure, kernel-free**
+/// [`reify_expr::eval_expr`]. That works when the designer binds the selector
+/// to its own `let` —
+///
+/// ```ri
+/// let e = edges_parallel_to(b, up, 1deg)   // ← a top-level value CELL
+/// let f = fillet(b, e, 3mm)                // ← arg is ValueRef(e): already a List
+/// ```
+///
+/// — because the cell is hydrated to a `List<Geometry>` by
+/// [`crate::Engine::hydrate_value_cell_in_loop`] at its scheduled `HydrateCell`
+/// slot, so the pure evaluator just reads the resolved list out of `values`.
+///
+/// It does **not** work when the selector is written INLINE at the call site —
+///
+/// ```ri
+/// let f = fillet(b, edges_parallel_to(b, up, 1deg), 3mm)   // ← no cell exists
+/// ```
+///
+/// — because an inline argument expression is not a top-level value cell, so
+/// nothing hydrates it: the kernel-free evaluator cannot execute the
+/// kernel-bearing topology query and yields `Value::Undef`, and the eval arm
+/// then rejects the op ("the edge selector cannot be resolved at the point this
+/// fillet runs"). Inline selectors are the natural authoring form (every
+/// curated fillet in `examples/topology_selectors/bottom_deck_selectors.ri`
+/// writes one), so the capability was unreachable from the production `.ri`
+/// pipeline despite the named-let path passing its e2e.
+///
+/// This helper closes that gap at the realization slot: it performs the same
+/// resolution `hydrate_value_cell_in_loop` branch (b) performs for a cell —
+/// [`resolve_selector_to_list`], the kernel-bearing query — but for an
+/// argument expression, and rewrites the argument to a literal carrying the
+/// result so the downstream pure eval arm reads a `List` exactly as it would
+/// for the named-let form. The two forms therefore converge on ONE resolution
+/// policy (`resolve_selector_to_list`), rather than the inline form getting a
+/// second, divergent one.
+///
+/// # Contract
+///
+/// * Returns `None` — meaning "use the original op unchanged" — for every op
+///   that is not a `Modify`, that carries no curated selector argument, or
+///   whose curated arguments the pure evaluator can ALREADY produce as a
+///   `List` (the named-let form). Every such op is byte-identical to
+///   pre-5208 behaviour; the fast path is a match + a name compare.
+/// * Only an argument whose pure evaluation is **not** a `Value::List` is
+///   offered to `resolve_selector_to_list`, and only a `Value::List` result is
+///   substituted. A selector that genuinely cannot resolve (`None`, or the
+///   gated `Value::Undef`) is left untouched so the eval arm emits its own
+///   actionable diagnostic — this helper never converts a hard failure into a
+///   silent all-edges fallback.
+/// * An **empty** resolved list is substituted verbatim: distinguishing
+///   "selector present but matched nothing" from "no selector at all" is the
+///   eval arm's `E_EMPTY_SELECTION` guard's job, not this helper's.
+/// * **Silent on failure.** Diagnostics that [`resolve_selector_to_list`]
+///   pushes on a path whose result is then DISCARDED (the #4812 capability
+///   gate's `QueryNotSupportedOnRepr` Error, the kernel-error / `ByRole` /
+///   provenance warnings — all of which return `Undef`) are buffered and
+///   dropped, so the eval arm stays the single reporter for a selector that
+///   did not resolve. Without this the designer would see the same authoring
+///   mistake reported twice per dispatch (and the op is re-dispatched
+///   whenever its parent realizes more than once).
+/// * **Memoized per realization walk** via `memo`: see [`InlineSelectorMemo`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prehydrate_inline_curated_selector_args(
+    op: &reify_compiler::CompiledGeometryOp,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    kernel: &mut dyn GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
+    realized_reprs: &HashMap<reify_core::identity::RealizationNodeId, reify_ir::ReprKind>,
+    memo: &mut InlineSelectorMemo,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_compiler::CompiledGeometryOp> {
+    let reify_compiler::CompiledGeometryOp::Modify { args, .. } = op else {
+        return None;
+    };
+    // Collect (arg index, resolved list) for every curated selector argument the
+    // PURE evaluator cannot already produce as a `List<Geometry>`. Collected
+    // first (rather than mutating as we go) so the common no-op case never
+    // clones the op.
+    let mut resolved: Vec<(usize, reify_ir::Value)> = Vec::new();
+    for (idx, (name, expr)) in args.iter().enumerate() {
+        if !CURATED_SELECTOR_ARG_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        // Named-let form: the cell is already hydrated, the pure eval yields the
+        // list. Leave it alone — re-resolving would re-run the kernel query.
+        if matches!(
+            reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map)),
+            reify_ir::Value::List(_)
+        ) {
+            continue;
+        }
+        // Memo hit: this exact selector expression already resolved during this
+        // realization walk (the SAME authored op re-dispatches once per parent
+        // realization). Reuse the list — a repeat is a pure kernel round-trip
+        // with no new information. A memoized entry is by construction a
+        // `List` (only the success path is inserted), and the resolution that
+        // produced it emitted no diagnostics (see below), so replaying it
+        // needs no diagnostic replay either.
+        if let Some(cached) = memo.get(&expr.content_hash) {
+            resolved.push((idx, cached.clone()));
+            continue;
+        }
+        // Buffer-then-merge — the same scratch-buffer contract
+        // [`eval_variadic_composition_symbolic`] already uses in this file:
+        // `resolve_selector_to_list` reports on paths
+        // whose value we discard, and a discarded resolution must stay silent —
+        // the eval arm's own "did not resolve to a concrete edge list" Err is
+        // the single designer-facing report for that case.
+        let mut scratch: Vec<Diagnostic> = Vec::new();
+        if let Some(value @ reify_ir::Value::List(_)) = resolve_selector_to_list(
+            expr,
+            named_steps,
+            values,
+            kernel,
+            table,
+            realized_reprs,
+            &mut scratch,
+        ) {
+            diagnostics.append(&mut scratch);
+            memo.insert(expr.content_hash, value.clone());
+            resolved.push((idx, value));
+        }
+    }
+    if resolved.is_empty() {
+        return None;
+    }
+    let mut rewritten = op.clone();
+    let reify_compiler::CompiledGeometryOp::Modify { args, .. } = &mut rewritten else {
+        unreachable!("`rewritten` is a clone of the `Modify` op matched above");
+    };
+    let list_geometry = reify_core::Type::List(Box::new(reify_core::Type::Geometry));
+    for (idx, value) in resolved {
+        args[idx].1 = reify_ir::CompiledExpr::literal(value, list_geometry.clone());
+    }
+    Some(rewritten)
+}
+
 /// Op-specific user-facing wording for the shared legacy-P2 curated-edge
 /// resolver [`resolve_curated_edges_p2`]. The resolution POLICY is identical
 /// across the three local-feature ops (Fillet, Chamfer, ChamferAsymmetric);
@@ -1234,9 +1426,9 @@ struct CuratedEdgeLabels {
     /// Short op name: the prefix of the returned `Err` strings and the
     /// "at the point this {short} runs" phrasing.
     short: &'static str,
-    /// User-actionable tail for the unresolved-selector (legacy-P2 `Undef`)
-    /// `Err`. The 2-arg fallback hint differs per op; `chamfer_asymmetric` has
-    /// no 2-arg form, so its tail only points at the η/ε follow-up.
+    /// User-actionable tail for the unresolved-selector `Err`: the all-edges
+    /// escape hatch, when the op has one. `chamfer_asymmetric` has no 2-arg
+    /// form, so its tail names the only remaining move — fix the selector.
     unresolved_hint: &'static str,
 }
 
@@ -1245,24 +1437,20 @@ impl CuratedEdgeLabels {
         call_form: "fillet(solid, edges, radius)",
         verb: "fillet",
         short: "fillet",
-        unresolved_hint: "Use 2-arg fillet(solid, radius) to fillet all edges, or \
-                          wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "Use 2-arg fillet(solid, radius) to fillet all edges instead.",
     };
     const CHAMFER: Self = Self {
         call_form: "chamfer(solid, edges, distance)",
         verb: "chamfer",
         short: "chamfer",
-        unresolved_hint: "Use 2-arg chamfer(solid, distance) to chamfer all edges, or \
-                          wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "Use 2-arg chamfer(solid, distance) to chamfer all edges instead.",
     };
     const CHAMFER_ASYMMETRIC: Self = Self {
         call_form: "chamfer_asymmetric(solid, edges, d1, d2)",
         verb: "chamfer",
         short: "chamfer_asymmetric",
-        unresolved_hint: "Wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "chamfer_asymmetric has no all-edges form, so the selector \
+                          itself must be corrected.",
     };
 }
 
@@ -1299,18 +1487,21 @@ fn resolve_curated_edges_p2(
 ) -> Result<Vec<GeometryHandleId>, String> {
     let elems = match edges_val {
         reify_ir::Value::List(elems) => elems,
-        // The selector did not resolve to a List — on the legacy pipeline it is
-        // `Undef` (the edges selector resolves in P4, after this P2 arm). This
-        // is NOT an empty selection, so do NOT emit `EmptyEdgeSelection` (that
-        // would false-positive on every legacy 3-arg/4-arg call); return a
-        // USER-ACTIONABLE `Err` so the cell stays Undef and η resolves it
-        // in-loop. Removed once engine-unified-build-dag η/ε (tasks 4360/4358)
-        // make curated selection reachable end-to-end.
+        // The selector did not resolve to a List. This is NOT an empty
+        // selection, so do NOT emit `EmptyEdgeSelection` (that would
+        // false-positive whenever the value is simply `Undef`); return a
+        // USER-ACTIONABLE `Err` and leave the cell Undef.
+        //
+        // Task 5208 rewording: curated selection IS reachable through the
+        // production `.ri` pipeline now, so this `Err` is a genuine authoring
+        // failure — THIS selector did not resolve — not a staging notice. The
+        // message must therefore describe what went wrong and what to check,
+        // never tell the designer to wait for a pending task.
         other => {
             return Err(format!(
-                "{}: curated edge selection is not yet available on the current \
-                 build pipeline — the edge selector cannot be resolved at the \
-                 point this {} runs. {} [edge selector evaluated to {:?}]",
+                "{}: the edge selector did not resolve to a concrete edge list \
+                 at the point this {} runs — check that it selects edges from a \
+                 realized solid in scope. {} [edge selector evaluated to {:?}]",
                 labels.call_form, labels.short, labels.unresolved_hint, other
             ));
         }
@@ -1396,6 +1587,99 @@ fn validate_pattern_count(
         return Err("invalid pattern count: exceeds upper bound".to_string());
     }
     Ok(raw as usize)
+}
+
+/// Read a GROUP of PROFILE DIMENSION slots — a rectangle's `width`/`height`, a
+/// circle's `radius`, an ellipse's `semi_major`/`semi_minor` — and require each
+/// to be POSITIVE.
+///
+/// This is [`required_length_values`] with one extra judgement layered on top,
+/// and the division of labour between the two is the whole design:
+///
+/// * [`required_length_args`], which this delegates to, already settles that
+///   every slot is a FINITE LENGTH — Contract C1's three-state mapping (task
+///   5743 routed the profile slots through it). A bare `Real`/`Int` or a
+///   wrong-dimension `Scalar` is an `Error` carrying
+///   [`reify_core::DiagnosticCode::DimensionedArgRejected`]; a NaN/±inf LENGTH
+///   `Scalar` is a `Warning`; an `Undef` slot drops the op with the distinct
+///   `unresolved (Undef)` wording. NONE of those states can reach the sign loop
+///   below, so this helper deliberately has no non-finite arm and no `Undef`
+///   arm — either one would be dead code implying the LENGTH gate had not run.
+/// * What that gate leaves open, and what this closes, is the SIGN.
+///   `circle(0mm)` and `rectangle(-30mm, 50mm)` are finite LENGTHs, so Contract
+///   C accepts them, and nothing downstream rejects them either: the mesher's
+///   `validate_boundary` only rejects a ring whose |signed area| falls below
+///   [`DEGENERATE_RING_AREA_TOLERANCE`], and `w*h == -0.0015` clears that
+///   comfortably. A negative dimension therefore produced a geometrically
+///   meaningless (clockwise, inside-out) cross-section with no diagnostic
+///   anywhere, and a zero one a degenerate face.
+///
+/// The OCCT kernel does already reject these inputs BY NAME inside
+/// `kernel.execute()` — `"rectangle_profile width must be a finite positive
+/// value"` and its siblings in `reify-kernel-occt/src/lib.rs` — so the gain
+/// here is NOT better wording. It is WHEN the rejection fires and WHAT it
+/// arrives as: there, a `GeometryError::OperationFailed` raised only once the
+/// op has been compiled and dispatched, and only on the OCCT path; here, a
+/// build-time `Diagnostic` ahead of dispatch, on every path.
+///
+/// # `PROFILE` is in the name because it is in the MESSAGE
+///
+/// Unlike its family-agnostic [`required_length_args`] /
+/// [`required_length_values`] siblings, this helper hardcodes the noun
+/// `profile` in its diagnostic ("… profile dropped: …", "profile dimensions
+/// must be > 0"). The same defect class exists for PRIMITIVE dimensions
+/// (`box`/`cylinder`/`sphere` — all likewise LENGTH-gated but sign-open), and
+/// reusing this verbatim there would emit "box profile dropped: …", a wrong
+/// noun in user-facing output. The name says `profile` so that mismatch is
+/// caught at the call site rather than in a user's console. Extending to the
+/// primitive family means lifting the noun to a parameter, not calling this
+/// as-is.
+///
+/// # The FIRST bad dimension short-circuits
+///
+/// [`required_length_args`] deliberately reads its whole group before
+/// returning, so a wholly bare gesture is diagnosed in one build. The SIGN loop
+/// deliberately does not: it returns on the first failure, giving exactly one
+/// `Warning` here plus one `Error` at the caller, per the anti-cascade contract
+/// on [`eval_named_arg`]. The reasoning that makes all-at-once right for the
+/// LENGTH gate does not carry over — a group is bare in every member because
+/// dimensionlessness is a property of how the author wrote the whole gesture,
+/// whereas a sign error is per-slot.
+///
+/// # An accepted dimension is stored exactly as an ungated one would be
+///
+/// The `Ok` arm hands back `si.map(reify_ir::Value::length)` — byte-identical
+/// to what [`required_length_values`] stores — so gating a profile for SIGN
+/// changes nothing about the IR representation of an accepted dimension, and
+/// the golden characterization snapshots are untouched.
+fn required_positive_profile_dimensions<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[reify_ir::Value; N], String> {
+    let si = required_length_args(
+        names,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    for (value, name) in si.iter().zip(names) {
+        if *value <= 0.0 {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} profile dropped: {}={} is not positive (profile dimensions must be > 0)",
+                kind_label, name, value
+            )));
+            return Err(format!("non-positive {} dimension '{}'", kind_label, name));
+        }
+    }
+    Ok(si.map(reify_ir::Value::length))
 }
 
 /// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
@@ -2777,13 +3061,12 @@ fn modify_shell(
             }
             other => {
                 return Err(format!(
-                    "shell_open(solid, thickness, open_faces): curated \
-                     face selection is not yet available on the current \
-                     build pipeline — the face selector cannot be resolved \
-                     at the point this shell_open runs. Use numeric \
+                    "shell_open(solid, thickness, open_faces): the face \
+                     selector did not resolve to a concrete face list at the \
+                     point this shell_open runs — check that it selects faces \
+                     from a realized solid in scope. Use numeric \
                      shell(solid, thickness, face_N) to remove specific \
-                     faces by index, or wait for curated face selection \
-                     (engine-unified-build-dag tasks 4360/4358). \
+                     faces by index instead. \
                      [face selector evaluated to {:?}]",
                     other
                 ));
@@ -2933,13 +3216,12 @@ fn modify_draft(
                     })
                 }
                 other => Err(format!(
-                    "draft(solid, faces, angle, neutral_plane): curated \
-                     face selection is not yet available on the current \
-                     build pipeline — the face selector cannot be resolved \
-                     at the point this draft runs. Use 3-arg \
+                    "draft(solid, faces, angle, neutral_plane): the face \
+                     selector did not resolve to a concrete face list at the \
+                     point this draft runs — check that it selects faces from \
+                     a realized solid in scope. Use 3-arg \
                      draft(solid, angle, neutral_plane) to draft all \
-                     faces, or wait for curated face selection \
-                     (engine-unified-build-dag tasks 4360/4358). \
+                     faces instead. \
                      [face selector evaluated to {:?}]",
                     other
                 )),
@@ -3002,6 +3284,35 @@ fn modify_zone_slab(
     })
 }
 
+/// Shared shape for 2-arg modify ops of the form `op(target, distance)`:
+/// read the single `distance` argument through the R7 LENGTH chokepoint
+/// (task 5744, units-length γ) and hand it to `build` to construct the
+/// resulting `GeometryOp`. `modify_offset_solid` and `modify_offset_surface`
+/// are identical apart from the constructed variant, so they delegate here
+/// instead of duplicating the gated-read boilerplate.
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_distance(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    build: fn(GeometryHandleId, reify_ir::Value) -> reify_ir::GeometryOp,
+) -> Result<reify_ir::GeometryOp, String> {
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(build(target_id, distance))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn modify_offset_solid(
     kind: &reify_compiler::ModifyKind,
@@ -3013,20 +3324,27 @@ fn modify_offset_solid(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // R7 LENGTH chokepoint (task 5744, units-length γ).
-    let distance = required_length_value(
-        "distance",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
-    Ok(reify_ir::GeometryOp::OffsetSolid {
-        target: target_id,
-        distance,
-    })
+    modify_offset_distance(
+        kind, target_id, args, values, functions, meta_map, diagnostics,
+        |target, distance| reify_ir::GeometryOp::OffsetSolid { target, distance },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_surface(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    modify_offset_distance(
+        kind, target_id, args, values, functions, meta_map, diagnostics,
+        |target, distance| reify_ir::GeometryOp::OffsetSurface { target, distance },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4574,7 +4892,7 @@ fn profile_rectangle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [width, height] = required_length_values(
+    let [width, height] = required_positive_profile_dimensions(
         ["width", "height"],
         kind,
         args,
@@ -4594,16 +4912,52 @@ fn profile_circle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // One gated slot — see `prim_sphere`.
-    Ok(reify_ir::GeometryOp::CircleProfile {
-        radius: required_length_value(
-            "radius", kind, args, values, functions, meta_map, diagnostics,
-        )?,
-    })
+    // One gated slot, so the group form is called at `N == 1` — nothing to
+    // short-circuit past, exactly as in `prim_sphere`. It is the GROUP form
+    // rather than `required_length_value` because the positive-dimension
+    // judgement lives there.
+    let [radius] = required_positive_profile_dimensions(
+        ["radius"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
+/// Degenerate-ring tolerance, in SI square metres.
+///
+/// NOT an independently-chosen tolerance: this is the same value
+/// `validate_boundary` already applies to the sampled outer ring (and to each
+/// hole) in `reify-solver-elastic/src/mesher.rs`, on the same SI-metre
+/// coordinates. Keeping the two equal is what makes the build-time check a
+/// strict pre-image of the existing downstream gate — a ring this check accepts
+/// can still fail later for other reasons, but a ring it rejects would
+/// certainly have failed there.
+///
+/// It is a local `const` only because the mesher's copy is still an INLINE
+/// `1e-14` literal inside a private `fn`, so there is nothing to import. Its
+/// companion [`reify_solver_elastic::ring_signed_area_2d`] no longer has that
+/// problem — task 5218 promoted it to `pub` and re-exported it at the crate
+/// root, which is why the shoelace formula itself is imported here rather than
+/// copied. Lifting the threshold to a `pub const` beside it would let this
+/// declaration go the same way.
+///
+/// That equality is load-bearing, so it is asserted in code rather than only in
+/// prose: `degenerate_ring_area_tolerance_matches_mesher_gate` (this module's
+/// tests) reads the mesher source and fails if the two values diverge.
+/// Complementary but NOT a substitute — they derive their rings from this
+/// constant and so move with it — are the two boundary tests
+/// `..._area_just_below_tolerance_returns_err` /
+/// `..._area_just_above_tolerance_returns_ok`, which pin that the gate honours
+/// whatever value this holds, with the correct sense and scale.
+const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
+
 fn profile_polygon(
-    _kind: &reify_compiler::ProfileKind,
+    kind: &reify_compiler::ProfileKind,
     args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -4632,10 +4986,13 @@ fn profile_polygon(
     //   position in one build, not just the first: the pre-5661 reader
     //   short-circuited via `collect::<Option<_>>()`.
     //
-    // The label stays the literal `"polygon"`, which here happens to equal
-    // `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
-    // which renders `interp_curve`. Spelling it out keeps today's label bytes
-    // and leaves `_kind` unused, as in `curve_interp_curve`.
+    // The Contract C label stays the literal `"polygon"`, which here happens to
+    // equal `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
+    // which renders `interp_curve`. Spelling it out keeps today's label bytes.
+    // (The parameter is now bound as `kind` rather than `_kind`, because task
+    // 5664's degenerate-ring diagnostic below renders it; the literal above is
+    // deliberately NOT switched over with it, so the Contract C wording stays
+    // byte-stable independently of `Display`.)
     let vals = eval_all_args_to_values(args, values, functions, meta_map);
     let coords = accept_variadic_length_args(
         "polygon",
@@ -4645,6 +5002,37 @@ fn profile_polygon(
         diagnostics,
     )?;
     let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+    // A well-formed-arity but ZERO-AREA ring (e.g. three collinear points)
+    // clears the compiler-side arity guard and used to survive all the way to
+    // a late, opaque `Mesh2dError::DegenerateBoundary`. Catch it here instead.
+    // The check is on `abs()`, so a clockwise (negative-area) ring is fine —
+    // winding order is not this gate's business. Self-intersection is
+    // deliberately NOT detected here (an O(n²) sweep with robust predicates is
+    // materially different engineering; tracked separately as #5666).
+    //
+    // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
+    // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
+    // calls — not a local re-derivation, so "pre-image" is a structural fact
+    // about one function rather than a claim about two copies staying in step.
+    // (`sweep_classifier.rs` already calls it, so this adds no new dependency
+    // edge.) Only the TOLERANCE is still duplicated; see the const's doc.
+    //
+    // No separate `points.len() < 3` arity guard: `ring_signed_area_2d` returns
+    // exactly 0.0 for any ring of fewer than 3 points, and `0.0 <` the
+    // tolerance, so an under-3-point ring is caught by this same area test.
+    // Adding the arity disjunct would be dead as a distinct branch and would
+    // imply the two conditions were independent.
+    let signed_area = reify_solver_elastic::ring_signed_area_2d(&points);
+    if signed_area.abs() < DEGENERATE_RING_AREA_TOLERANCE {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{} profile dropped: {} point(s) enclose a degenerate signed area of {} \
+             (the ring must enclose a non-zero area)",
+            kind,
+            points.len(),
+            signed_area
+        )));
+        return Err(format!("degenerate (zero-area) {} profile", kind));
+    }
     Ok(reify_ir::GeometryOp::PolygonProfile { points })
 }
 
@@ -4656,7 +5044,10 @@ fn profile_ellipse(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [semi_major, semi_minor] = required_length_values(
+    // Named in semi_major-then-semi_minor order: the LENGTH gate reports every
+    // bad member, then the sign check short-circuits on the first, so two
+    // negative semi-axes yield exactly one Warning naming `semi_major`.
+    let [semi_major, semi_minor] = required_positive_profile_dimensions(
         ["semi_major", "semi_minor"],
         kind,
         args,
@@ -4693,6 +5084,7 @@ static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::Thicken, modify_thicken),
     (reify_compiler::ModifyKind::ZoneSlab, modify_zone_slab),
     (reify_compiler::ModifyKind::OffsetSolid, modify_offset_solid),
+    (reify_compiler::ModifyKind::OffsetSurface, modify_offset_surface),
     (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
 ];
 
@@ -11885,16 +12277,31 @@ pub(crate) fn non_final_realization_indices(
         .map(|(t_idx, template)| {
             // Index of the final geometry-producing realization (highest r_idx
             // with a recorded terminal handle) — equals `step_handles.last()`.
+            //
+            // task 5345: a query-only realization (a hoisted `__geoq_<N>`
+            // inline geometry-query argument) is measurement scaffolding, not a
+            // body, so it is INELIGIBLE to be the final realization. Without
+            // this, `let body = box(..)  let v = volume(torus(..))` would give
+            // `body`->r0 and `__geoq_0`->r1, and the user's real box would be
+            // silently dropped from STEP/STL/3MF in favour of the torus.
             let final_idx = terminal_handles.get(t_idx).and_then(|handles| {
-                handles
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(r_idx, h)| h.is_some().then_some(r_idx))
+                handles.iter().enumerate().rev().find_map(|(r_idx, h)| {
+                    let query_only = template
+                        .realizations
+                        .get(r_idx)
+                        .is_some_and(|r| r.is_query_only);
+                    (h.is_some() && !query_only).then_some(r_idx)
+                })
             });
-            // Skip every realization that is not the final one.
+            // Skip every realization that is not the final one — and every
+            // query-only realization unconditionally (it is never `final_idx`
+            // by the guard above, so this is belt-and-braces documentation of
+            // intent rather than an extra exclusion).
             (0..template.realizations.len())
-                .filter(|r_idx| Some(*r_idx) != final_idx)
+                .filter(|r_idx| {
+                    Some(*r_idx) != final_idx
+                        || template.realizations[*r_idx].is_query_only
+                })
                 .collect()
         })
         .collect()
@@ -12055,6 +12462,19 @@ pub(crate) fn surface_subtree(
     // contains misleading 0.0 entries (honest absence = missing key, B3).
     achieved_repr_tol: &mut BTreeMap<String, f64>,
 ) {
+    // Tessellation surfaces all *bodies*, so there is no path filter — but a
+    // query-only realization (task 5345: a hoisted `__geoq_<N>` inline
+    // geometry-query argument) is not a body at all. Without this gate the
+    // viewer/mesh list would show a phantom solid the user never declared,
+    // while the export walk correctly omits it (`non_final_realization_indices`)
+    // — the two lists must agree.
+    let not_query_only = |t: usize, r: usize, _path: &str| {
+        !module
+            .templates
+            .get(t)
+            .and_then(|tpl| tpl.realizations.get(r))
+            .is_some_and(|real| real.is_query_only)
+    };
     walk_placed_realizations(
         module,
         t_idx,
@@ -12070,9 +12490,7 @@ pub(crate) fn surface_subtree(
         functions,
         meta_map,
         diagnostics,
-        // Tessellation surfaces all bodies (no path filter needed); pass None to
-        // avoid any pre-filter overhead on the hot path.
-        None,
+        Some(&not_query_only),
         &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
             let budget = tessellation_budgets[t][r];
             match kernel.tessellate(placed_id, budget) {

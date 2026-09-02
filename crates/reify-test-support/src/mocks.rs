@@ -4,6 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
+// `reify-expr` is an optional dependency enabled by `eval-helpers`; see the
+// rationale on its entry in Cargo.toml. Only the ContainmentQuery double below
+// needs it, so both the import and that double carry the same gate.
+#[cfg(feature = "eval-helpers")]
+use reify_expr::ContainmentQuery;
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -914,6 +919,11 @@ pub struct MockGeometryKernel {
     /// default-Err (drives the honest-degradation projection path). Mirrors
     /// the configurable-output pattern of the query-result builders above.
     volume_mesh_output: Option<VolumeMesh>,
+    /// Number of `GeometryKernel::reset()` calls received (task 5212). Held
+    /// behind an `Arc<Mutex<…>>` — like the `operations` recorder — so a test
+    /// can observe the count across the engine ownership boundary after the
+    /// mock is moved into `Engine::geometry_kernels`. Read via `reset_count()`.
+    reset_calls: Arc<Mutex<usize>>,
 }
 
 impl MockGeometryKernel {
@@ -928,7 +938,27 @@ impl MockGeometryKernel {
             extracted_faces: HashMap::new(),
             extracted_vertices: HashMap::new(),
             volume_mesh_output: None,
+            reset_calls: Arc::new(Mutex::new(0)),
         }
+    }
+
+    /// Number of `GeometryKernel::reset()` calls this mock has received
+    /// (task 5212). Reads through the shared `Arc<Mutex<…>>`, so it stays
+    /// observable after the mock is moved into `Engine::geometry_kernels` —
+    /// letting reload-wiring tests assert reset fires exactly once per
+    /// whole-file reload and never on a slider edit. Mirrors `op_count()`.
+    pub fn reset_count(&self) -> usize {
+        *self.reset_calls.lock().unwrap()
+    }
+
+    /// Shared handle to the `reset()` call counter (task 5212). Clone this
+    /// BEFORE the mock is boxed into `Engine::geometry_kernels` /
+    /// `EngineSession::new`, then read `*handle.lock().unwrap()` afterward to
+    /// observe reset calls across the ownership boundary — `reset_count()`
+    /// itself needs `&MockGeometryKernel`, which the boxed `dyn GeometryKernel`
+    /// no longer exposes. Mirrors `operations_ref()`.
+    pub fn reset_calls_ref(&self) -> Arc<Mutex<usize>> {
+        self.reset_calls.clone()
     }
 
     /// Configure a generic query response for a specific handle (fallback for all query types).
@@ -1675,6 +1705,14 @@ impl Default for MockGeometryKernel {
 }
 
 impl GeometryKernel for MockGeometryKernel {
+    /// Record a `reset()` call (task 5212). Overrides the trait no-op default
+    /// so reload-wiring tests can assert the engine invokes `reset()` on every
+    /// registered kernel exactly once per whole-file reload. Increments the
+    /// shared counter read by `reset_count()`.
+    fn reset(&mut self) {
+        *self.reset_calls.lock().unwrap() += 1;
+    }
+
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let id = GeometryHandleId(self.next_id);
         self.next_id += 1;
@@ -2164,6 +2202,49 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         self.captured.lock().unwrap().push(problem.clone());
         self.inner.solve(problem)
+    }
+}
+
+/// A [`ContainmentQuery`] that answers every query with a pre-programmed
+/// `Option<bool>`, ignoring the region and point it is handed.
+///
+/// Requires the `eval-helpers` feature (which is what supplies `reify-expr`).
+///
+/// The trivial stub for tests that do not exercise real `restrict`/`sample`
+/// containment resolution but must still supply the capability: constructing
+/// it needs no `Engine` and no geometry kernel.
+///
+/// One parameterized double rather than a family of zero-field ones (a struct
+/// per answer): the answers a `ContainmentQuery` can give are exactly the three
+/// inhabitants of `result`, so a test needing a different answer sets the field
+/// instead of adding another struct here.
+///
+/// Choose `result` by the semantics [`ContainmentQuery`] documents for its
+/// return value — the three are NOT interchangeable, even where two of them
+/// produce the same observable `Value`:
+/// - `Some(true)` — the point is inside the region.
+/// - `Some(false)` — the point is strictly outside.
+/// - `None` — containment is *indeterminate* (non-geometry region, malformed
+///   point, kernel error). This yields `Value::Undef`, the same value
+///   `Some(false)` yields, but for a different reason — so a test that means
+///   "outside" must say `Some(false)`, not `None`.
+///
+/// Name, field and body are deliberately identical to the hand-rolled double
+/// in `crates/reify-expr/tests/field_op_dispatch_tests.rs`, which cannot reach
+/// this one under the `eval-helpers` gate (see the `reify-expr` entry in this
+/// crate's Cargo.toml for the measured reason the gate stays). Re-pointing
+/// that file once the gate allows it is then an import swap, not a call-site
+/// rewrite.
+#[cfg(feature = "eval-helpers")]
+pub struct MockContainmentQuery {
+    /// The answer returned for every `(region, point)` pair.
+    pub result: Option<bool>,
+}
+
+#[cfg(feature = "eval-helpers")]
+impl ContainmentQuery for MockContainmentQuery {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        self.result
     }
 }
 
@@ -3135,7 +3216,7 @@ mod tests {
             .execute(&GeometryOp::Draft {
                 target: target.id,
                 faces: vec![],
-                angle: Value::Real(0.05),
+                angle: Value::angle(0.05),
                 plane: plane.id,
             })
             .unwrap();
@@ -3150,7 +3231,15 @@ mod tests {
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert!(faces.is_empty(), "expected empty faces for back-compat draft");
-                assert_eq!(*angle, Value::Real(0.05));
+                assert_eq!(
+                    *angle,
+                    Value::angle(0.05),
+                    "Draft fixtures are retyped to ANGLE ahead of δ's (5780) draft \
+                     gate — task 5777. Production's draft path is still an ungated \
+                     raw-Value passthrough (`let angle = eval_arg(\"angle\")?` in \
+                     reify-eval's modify_draft), so for a bare .ri literal it still \
+                     emits Value::Real today"
+                );
                 assert_eq!(*plane, GeometryHandleId(2));
             }
             other => panic!("expected Draft, got {:?}", other),
@@ -4613,4 +4702,16 @@ mod tests {
             "extract_vertices must not increment is_orientable"
         );
     }
+
+    // No unit test pins `MockContainmentQuery` here: one could only restate its
+    // own one-line body (`self.result`), and sampled argument pairs cannot
+    // establish the "for every (region, point)" claim anyway. The double is
+    // already load-bearing in the consuming tests, which fail loudly on any
+    // behaviour change — reify-eval's
+    // `cell_eval_ctx_containment_resolves_via_wired_query` only reaches
+    // `Value::Real(42.0)` because its `result: Some(true)` instance answers
+    // inside, and the determinacy assertions in the same module fail if a
+    // `result: None` instance ever starts resolving. Those tests also perform
+    // the `&dyn ContainmentQuery` coercion, so it needs no separate guard here
+    // either.
 }

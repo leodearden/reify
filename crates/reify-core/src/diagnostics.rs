@@ -2920,6 +2920,43 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 δ).
     RelateExpectsRelation,
+    /// Origin: `crates/reify-compiler/src/relation_signatures.rs` (the `tangent`
+    /// arm of `check_relation_arg_types`, geometric-relations tangent).
+    ///
+    /// Canonical message form:
+    /// ``"tangent: no tangency between `Direction` and `Direction`; supported: \
+    /// cylinder/cylinder tangent(Axis, Axis, r1, r2), …"``
+    ///
+    /// Emitted as `Severity::Error` when a `tangent` call's first two operand
+    /// types do not classify into one of the four curated tangency combos
+    /// (cylinder/cylinder `(Axis, Axis)`, cylinder/plane `(Axis, Plane)`,
+    /// sphere/plane `(Point, Plane)`, sphere/sphere `(Point, Point)` — the plane
+    /// combos in either operand order), or when the call's arity does not match
+    /// the radius count that combo requires (one radius per CURVED surface: 3
+    /// args for the plane combos, 4 for the curved/curved ones).
+    ///
+    /// Unlike the rest of the relation family, tangent's legality is a property
+    /// of the operand PAIR rather than of either slot alone — `(Axis, Plane)` is
+    /// a cylinder resting on a plane while `(Plane, Plane)` is two planes that
+    /// never touch — so it cannot be policed through `relation_operand_datum`'s
+    /// single-`ExpectedDatum`-across-both-slots table and gets its own arm.
+    ///
+    /// This must be a COMPILE-time rejection because the residual layer cannot
+    /// fail loudly: an unhandled operand shape there contributes zero Jacobian
+    /// rows, which the rank partition files as *redundant* with a 0 rank
+    /// contribution and post-solve verification reads as residual `0.0` — a
+    /// tangency request wholly ignored and reported as satisfied (the
+    /// silent-failure class `docs/legibility/design-invariants.md` forbids).
+    /// With this gate the residual layer's unsupported arm is unreachable from
+    /// `.ri`.
+    ///
+    /// A radius slot carrying the wrong physical dimension is NOT this code — it
+    /// draws the UNIT layer's `ArgTypeMismatch`, so a unit error and an
+    /// unsupported geometry pairing stay distinguishable.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TANGENT_OPERANDS_UNSUPPORTED`
+    /// (severity convention: `E_*` → Error).
+    TangentOperandsUnsupported,
     /// Origin: `crates/reify-eval/src/relate_solve.rs` (the pre-solve
     /// trace-to-ground connectivity check in `solve_relate_scope`,
     /// geometric-relations η).
@@ -4052,6 +4089,43 @@ pub enum DiagnosticCode {
     /// automatically (same non-breaking argument as `ExpressionNestingTooDeep`
     /// and `DimensionedArgRejected` above).
     RepresentationBoundUnenforcedOnExport,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::Engine::eval_cached`
+    /// (task **5240**) — the guarded-groups fall-through at the head of that
+    /// function.
+    ///
+    /// Emitted as a `Severity::Warning` when `eval_cached` is handed a module
+    /// whose templates carry a non-empty `guarded_groups` (a `where`-block).
+    /// The incremental path cannot evaluate guarded cells, so it delegates
+    /// wholesale to the cold `eval()` — which handles them correctly — and
+    /// tags the delegation with this code.
+    ///
+    /// **This is an INTERNAL engine note, not a user fault.** Unlike every
+    /// other eval-time diagnostic (circular let-binding, param-override
+    /// mismatch, sub-component lookup failure, solver Infeasible/NoProgress),
+    /// nothing about the user's source is wrong when it fires: the values
+    /// returned are the correct cold-eval ones. It exists so a caller can tell
+    /// "the incremental cache was bypassed for this call" from "the cache
+    /// served everything" — the two are otherwise indistinguishable, because
+    /// the bypass branch's `CacheStats` hit/miss/early-cutoff counters are all
+    /// zero either way.
+    ///
+    /// Because it is not user-facing, `reify-lsp`'s eval-diagnostic merge
+    /// (`crates/reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state`)
+    /// is the one consumer that deliberately DROPS it: every valid `.ri` file
+    /// using `where` — including the shipped stdlib
+    /// `crates/reify-compiler/stdlib/determinacy_purposes.ri` and
+    /// `examples/m5_guarded_enum.ri` — would otherwise show a spurious editor
+    /// warning that flickers in and out as the user types, depending on
+    /// whether that keystroke took the warm path. That filter matches on this
+    /// code, never on the message prose, so a copy-edit to the wording cannot
+    /// silently re-open the leak.
+    ///
+    /// Minting rationale: same as `RepresentationBoundUnenforcedOnExport`
+    /// above — `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self anywhere in the workspace, so adding one variant is
+    /// non-breaking and round-trips through the feature-gated serde derives
+    /// automatically.
+    EvalCachedGuardedGroupsFallback,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4967,6 +5041,36 @@ mod tests {
     fn diagnostic_code_relate_expects_relation_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::RelateExpectsRelation).unwrap();
         assert_eq!(s, "\"RelateExpectsRelation\"");
+    }
+
+    // --- TangentOperandsUnsupported tests (task 5540 — E_TANGENT_OPERANDS_UNSUPPORTED) ---
+    // Pairs with the `tangent` arm of `check_relation_arg_types` in
+    // `crates/reify-compiler/src/relation_signatures.rs`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // severity tests are added here.
+
+    /// `DiagnosticCode::TangentOperandsUnsupported` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::TangentOperandsUnsupported)`.
+    /// Pins the error-severity contract for E_TANGENT_OPERANDS_UNSUPPORTED.
+    #[test]
+    fn tangent_operands_unsupported_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("tangent: no tangency between `Plane` and `Plane`")
+            .with_code(DiagnosticCode::TangentOperandsUnsupported);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::TangentOperandsUnsupported));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TangentOperandsUnsupported`
+    /// serializes as `"TangentOperandsUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_tangent_operands_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TangentOperandsUnsupported).unwrap();
+        assert_eq!(s, "\"TangentOperandsUnsupported\"");
     }
 
     // --- AssemblyGlobalFloat tests (task 4387 η — E_ASSEMBLY_GLOBAL_FLOAT) ---

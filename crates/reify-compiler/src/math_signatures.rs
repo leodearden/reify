@@ -176,6 +176,19 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // `n` is fixed from the NAME; only the quantity slot comes from the
         // first variadic scalar component.
         //
+        // Component [0] decides the WHOLE vector's/point's quantity — the same
+        // first-element inference `list_shape` / `matrix_shape` carry, but
+        // reached INLINE here rather than through either, so a fix to those two
+        // would not cover this arm. Concretely: `vec3(1m, 0, 0)` at a
+        // `Vec3<Dimensionless>` param is REJECTED while `vec3(0, 1m, 0)` at the
+        // same param stays SILENT.
+        //
+        // First-element quantity inference; load-bearing for a REJECTION
+        // diagnostic since tasks 5766/6159. Rule, residual and fix: the "Point /
+        // Vector quantity-slot convention" section of
+        // `crates/reify-core/src/ty.rs`, owned by task 5889 — whose scope covers
+        // this inline arm alongside the two shape helpers.
+        //
         // The point twins also make the VALUE constructor agree with the
         // same-named TYPE constructor: `Type::point3(q)` is an established
         // `reify_core` helper for `Type::Point { n: 3, quantity: q }`, so
@@ -523,6 +536,14 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
 /// - otherwise → `(0, <innermost List element>)` — the DEGRADE path (D7):
 ///   length unknown, quantity recovered from the arg's `Type::List` where
 ///   possible, defaulting to `Type::dimensionless_scalar()`.
+///
+/// Element `[0]` decides the WHOLE literal's quantity — the same weakness as
+/// [`matrix_shape`] one rank down, here feeding `vec` / `diag`.
+///
+/// First-element quantity inference; load-bearing for a REJECTION diagnostic
+/// since tasks 5766/6159. Rule, residual and fix: the "Point / Vector
+/// quantity-slot convention" section of `crates/reify-core/src/ty.rs`, owned by
+/// task 5889.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
         let quantity = elems
@@ -541,6 +562,13 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 ///   `(cells.len(), cells[0].result_type)` — exact column count (an M×N matrix
 ///   projects to `n = N`, per design decision D5).
 /// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
+///
+/// Cell `[0][0]` decides the WHOLE matrix's quantity, so the inference is sound
+/// only for dimension-HOMOGENEOUS literals.
+///
+/// First-cell quantity inference; load-bearing for a REJECTION diagnostic since
+/// tasks 5766/6159. Rule, residual and fix: the "Point / Vector quantity-slot
+/// convention" section of `crates/reify-core/src/ty.rs`, owned by task 5889.
 fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(rows) = &arg.kind
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)

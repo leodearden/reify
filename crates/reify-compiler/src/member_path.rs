@@ -772,6 +772,10 @@ mod tests {
             id: RealizationNodeId::new(entity, index),
             name: Some(name.to_string()),
             is_aux: false,
+            // Hand-built member-path fixtures are always product geometry; the
+            // `__geoq_<N>` query-only flag is minted only by the inline
+            // geometry-query hoist in entity.rs (task 5345).
+            is_query_only: false,
             operations: Vec::new(),
             span: SourceSpan::new(0, 0),
         }

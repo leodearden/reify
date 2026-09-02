@@ -98,9 +98,10 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
 //   - Value → AlwaysCancelWhenStale                      (IMMEDIATE, no COMMITTABLE; Q-3 resolution)
 //
 // PRD §5 B3: "absent COMMITTABLE → always cancellable; present → CommitIfSlow".
-// The AlwaysCancelWhenStale for Value is safe because task η/3581 (B4) will
-// short-circuit Value cancellation at the scheduler before resolve_with_traits
-// is wired into scheduler dispatch.
+// The AlwaysCancelWhenStale for Value is intentional, and the mismatch stays
+// cosmetic: the IMMEDIATE→never-cancelled guard was task η (#3581, B4), and the
+// scheduler that would have consumed it was deleted with `concurrent.rs` in
+// c1b8dba3f7 (task ο, #5065), so no dispatch path observes the mismatch today.
 
 #[test]
 fn t2_default_overrides_matches_arch_kind_defaults() {

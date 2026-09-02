@@ -28,8 +28,9 @@
 //!
 //! # `EXPECTED_INDETERMINATE` is not a `SKIP_SET`
 //!
-//! `examples/best_practices/INDEX.md:13` and
-//! `.claude/skills/reify-design/SKILL.md:187-190` both forbid adding a
+//! The "Do not add a `SKIP_SET` entry to exempt one" sentence in
+//! `examples/best_practices/INDEX.md`, and its counterpart in
+//! `.claude/skills/reify-design/SKILL.md`, both forbid adding a
 //! `SKIP_SET` entry to this corpus — but that prohibition is scoped to the
 //! COMPILE gate ("a file that cannot reach a clean compile does not belong
 //! here"). `EXPECTED_INDETERMINATE` exempts no file from anything: every
@@ -44,7 +45,7 @@
 //! `snapshot_cache_divergence_gate.rs`), which shard ~251-file sweeps across
 //! 24 `#[test]` fns to stay under the verify pipeline's heartbeat-idle
 //! backstop, this gate runs as a single test. `examples/best_practices/` is
-//! ~6 files, and the full in-process sweep measures ~0.3s — far short of the
+//! ~7 files, and the full in-process sweep measures ~0.3s — far short of the
 //! backstop, so sharding would be dead weight (`examples_smoke.rs` is
 //! likewise un-sharded on purpose, for the same reason).
 
@@ -86,8 +87,6 @@ structure def SeededConstraintGateDemo {
 /// MUST be reported as `Satisfaction::Violated`. A `constraint_statuses` that
 /// always returned `Satisfaction::Satisfied` — or an empty vec — would make
 /// the eventual corpus sweep's zero-Violated assertion vacuously green.
-///
-/// RED until `constraint_statuses` exists.
 #[test]
 fn seeded_violated_constraint_is_reported() {
     let statuses = constraint_statuses(SEED_VIOLATED_SOURCE);
@@ -107,8 +106,6 @@ fn seeded_violated_constraint_is_reported() {
 /// `Satisfaction::Satisfied`, never `Violated`. Without this test, a
 /// `constraint_statuses` that reported `Violated` unconditionally would still
 /// pass the test above.
-///
-/// RED until `constraint_statuses` exists.
 #[test]
 fn seeded_satisfied_constraint_is_reported() {
     let statuses = constraint_statuses(SEED_SATISFIED_SOURCE);
@@ -351,18 +348,17 @@ fn corpus_relative(path: &std::path::Path) -> String {
 /// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
 /// count measured on this branch — a floor that catches a silently-emptied
 /// or mis-resolved directory, the same class of guard as
-/// `examples_smoke.rs`'s `total >= 40`), every returned path a `.ri` file
+/// `harness_compilation_surface/examples_smoke.rs`'s
+/// `total >= MIN_DISCOVERED_RI_FILES`), every returned path a `.ri` file
 /// sitting directly inside a `best_practices` directory (FLAT — a nested
 /// subdirectory must NOT be swept, matching
-/// `examples_smoke.rs::corpus_ri_files()`, whose comment records that a
-/// nested subdirectory here is a structural change that should be reviewed
-/// rather than silently absorbed), sorted (deterministic failure output),
-/// and containing the known exemplars `bolt_circle.ri` and
-/// `clearance_oracle.ri` by basename (proving path resolution actually
-/// reached the real directory rather than returning an empty vec that would
-/// make every later assertion vacuous).
-///
-/// RED until `corpus_files` exists.
+/// `harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`, whose
+/// comment records that a nested subdirectory here is a structural change
+/// that should be reviewed rather than silently absorbed), sorted
+/// (deterministic failure output), and containing the known exemplars
+/// `bolt_circle.ri` and `clearance_oracle.ri` by basename (proving path
+/// resolution actually reached the real directory rather than returning an
+/// empty vec that would make every later assertion vacuous).
 #[test]
 fn corpus_discovery_finds_the_flat_best_practices_drawer() {
     let files = corpus_files();
@@ -424,8 +420,9 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 ///
 /// # This is NOT a `SKIP_SET`
 ///
-/// `examples/best_practices/INDEX.md:13` and
-/// `.claude/skills/reify-design/SKILL.md:187-190` forbid adding a `SKIP_SET`
+/// The "Do not add a `SKIP_SET` entry to exempt one" sentence in
+/// `examples/best_practices/INDEX.md`, and its counterpart in
+/// `.claude/skills/reify-design/SKILL.md`, forbid adding a `SKIP_SET`
 /// entry to this corpus — but that prohibition is scoped to the COMPILE gate
 /// ("a file that cannot reach a clean compile does not belong here"). This
 /// const exempts NO file from anything: every listed constraint is still
@@ -444,16 +441,18 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
         0,
         "`constraint not fouls` — `intersects` is a geometry-consumer builtin: it needs \
          a realized kernel and resolves only on the build()/tessellate() path, not the \
-         pure value-eval surface this gate (and `reify check`) runs on. Documented at \
-         clearance_oracle.ri:25-35, which states verbatim \"THAT IS EXPECTED, NOT A \
-         FAILURE\", and echoed by INDEX.md:44.",
+         pure value-eval surface this gate (and `reify check`) runs on. Documented by \
+         the EVAL/BUILD ONLY bullet in clearance_oracle.ri, which states verbatim \
+         \"THAT IS EXPECTED, NOT A FAILURE\", and echoed by the `clearance_oracle.ri` \
+         row of examples/best_practices/INDEX.md.",
     ),
     (
         "clearance_oracle.ri",
         1,
         "`constraint gap > min_gap` — same class as constraint[0] above, via the \
-         geometry-consumer builtin `distance`. Documented at clearance_oracle.ri:25-35 \
-         and echoed by INDEX.md:44.",
+         geometry-consumer builtin `distance`. Documented by the EVAL/BUILD ONLY \
+         bullet in clearance_oracle.ri and echoed by the `clearance_oracle.ri` row of \
+         examples/best_practices/INDEX.md.",
     ),
     (
         "discrete_choice.ri",
@@ -475,8 +474,6 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
 /// pairs, and every entry's reason string is non-empty — the
 /// auditable-justification contract `SKIP_SET`'s `(&str, &str)` tuple shape
 /// encodes (`examples_smoke.rs:20-22`).
-///
-/// RED until `EXPECTED_INDETERMINATE` exists.
 #[test]
 fn expected_indeterminate_entries_are_well_formed() {
     let files = corpus_files();
@@ -612,15 +609,9 @@ fn run_corpus_gate() -> Vec<GateFailure> {
 /// `audit_file` against `EXPECTED_INDETERMINATE`. Asserts ZERO
 /// `GateFailure`s on the live corpus.
 ///
-/// This is expected GREEN on the measured baseline (16 Satisfied / 3
-/// Indeterminate / 0 Violated, with all 3 Indeterminate listed in
-/// `EXPECTED_INDETERMINATE` above) — its RED-ness right now is only that
-/// `run_corpus_gate` does not exist yet. Note for a future reader: in-flight
-/// task #6181 will add `examples/best_practices/angle_crossings.ri`; the
-/// directory walk (`corpus_files`) picks it up with no edit needed here, and
-/// #6181's own recorded evidence is 12/12 OK, so this gate stays green.
-///
-/// RED until `run_corpus_gate` exists.
+/// This is expected GREEN on the measured baseline (7 files, 31 constraints:
+/// 28 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
+/// listed in `EXPECTED_INDETERMINATE` above).
 #[test]
 fn best_practices_corpus_satisfies_every_constraint() {
     let failures = run_corpus_gate();

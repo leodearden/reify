@@ -473,6 +473,50 @@ describe('FeaModeToolbar — max readout (step-3 RED)', () => {
   });
 });
 
+describe('FeaModeToolbar \u2014 max-readout unit label (task #6185)', () => {
+  /** Render with the store pre-enabled so the readout row is visible. */
+  function renderWithUnit(props: { maxValue?: number | null; unitLabel?: string | null }) {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => <FeaModeToolbar store={store} {...props} />);
+    return store;
+  }
+
+  it('(a) appends the unit label after the formatted value', () => {
+    renderWithUnit({ maxValue: 1.234e6, unitLabel: 'Pa' });
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    // The composed string, not just "contains Pa" \u2014 pins channel, value and
+    // unit in the right order with the right separators.
+    expect(readout.textContent).toMatch(/max vonMises: 1\.23e\+6 Pa/);
+  });
+
+  it('(b) renders byte-identically to today when unitLabel is omitted', () => {
+    renderWithUnit({ maxValue: 1.234e6 });
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    // No trailing space, and certainly no "undefined"/"null" leaking into the UI.
+    expect(readout.textContent).toBe('max vonMises: 1.23e+6');
+  });
+
+  it('(c) renders byte-identically to today when unitLabel is null', () => {
+    // channelUnit returns null for untagged channels, so this is the common path.
+    renderWithUnit({ maxValue: 1.234e6, unitLabel: null });
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toBe('max vonMises: 1.23e+6');
+  });
+
+  it('(d) keeps the readout hidden when maxValue is null, unit label or not', () => {
+    renderWithUnit({ maxValue: null, unitLabel: 'Pa' });
+    expect(screen.queryByTestId('fea-mode-max-readout')).toBeNull();
+  });
+
+  it('(e) renders a NEGATIVE max alongside its unit \u2014 the signed-channel legend', () => {
+    renderWithUnit({ maxValue: -0.25, unitLabel: 'rad' });
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/-0\.25/);
+    expect(readout.textContent).toMatch(/rad/);
+  });
+});
+
 describe('FeaModeToolbar — convergence badge (task 3001 step-13)', () => {
   it('(a) convergence={converged:false, reason:"MaxDofs"} renders a badge containing "MaxDofs"', () => {
     renderEnabled({ convergence: { converged: false, reason: 'MaxDofs' } });

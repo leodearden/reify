@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, find_moi_principal_constraint,
@@ -2058,7 +2058,7 @@ fn dimension_for_ladder_name(name: &str) -> reify_core::DimensionVector {
 /// from being read as 3 CUBIC METRES.
 #[test]
 fn parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings() {
-    use crate::engine::normalize_unit_label;
+    use crate::engine::{normalize_unit_label, superscript_label_spelling};
 
     // Any magnitude works; a non-unit one keeps a stray `* 1.0` from passing.
     // Kept integral so `format!` renders it without an exponent or a decimal
@@ -2082,7 +2082,19 @@ fn parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings() {
         );
         for opt in &ladder.units {
             let expected_si = MAGNITUDE * opt.si_scale;
-            for spelling in [opt.label.clone(), normalize_unit_label(&opt.label)] {
+            // All three spellings, so this stays a statement about the ASCII
+            // form AND the superscript one whichever of the two the curated
+            // table currently carries: before task λ (#5788) the label WAS the
+            // superscript form and `normalize_unit_label` supplied the other;
+            // since λ it is the ASCII form and `superscript_label_spelling`
+            // does. Iterating only the first two would silently have become
+            // "the ASCII spelling, twice" — and `COMPOSED_UNIT_INDEX` registers
+            // all three, so this must range over all three too.
+            for spelling in [
+                opt.label.clone(),
+                normalize_unit_label(&opt.label),
+                superscript_label_spelling(&opt.label),
+            ] {
                 let literal = format!("{MAGNITUDE}{spelling}");
                 let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
                     panic!(
@@ -2251,7 +2263,7 @@ fn parse_value_string_resolves_every_builtin_unit_symbol() {
 /// guard is precisely what licenses that flat lookup.
 #[test]
 fn curated_ladder_labels_are_unique_across_every_dimension() {
-    use crate::engine::normalize_unit_label;
+    use crate::engine::{normalize_unit_label, superscript_label_spelling};
     use std::collections::BTreeMap;
 
     let ladders = crate::display_units::unit_ladders();
@@ -2261,7 +2273,19 @@ fn curated_ladder_labels_are_unique_across_every_dimension() {
     let mut seen: BTreeMap<String, (String, f64)> = BTreeMap::new();
     for ladder in &ladders {
         for opt in &ladder.units {
-            for spelling in [opt.label.clone(), normalize_unit_label(&opt.label)] {
+            // All three spellings, so this stays a statement about the ASCII
+            // form AND the superscript one whichever of the two the curated
+            // table currently carries: before task λ (#5788) the label WAS the
+            // superscript form and `normalize_unit_label` supplied the other;
+            // since λ it is the ASCII form and `superscript_label_spelling`
+            // does. Iterating only the first two would silently have become
+            // "the ASCII spelling, twice" — and `COMPOSED_UNIT_INDEX` registers
+            // all three, so this must range over all three too.
+            for spelling in [
+                opt.label.clone(),
+                normalize_unit_label(&opt.label),
+                superscript_label_spelling(&opt.label),
+            ] {
                 if let Some((prev_dim, prev_scale)) =
                     seen.insert(spelling.clone(), (ladder.dimension.clone(), opt.si_scale))
                 {
@@ -10854,13 +10878,18 @@ structure Kinematic {
 /// TWO DIFFERENT THINGS ARE PINNED HERE; only the first is a designed boundary.
 ///
 /// (a) THE BOUNDARY. The curated display labels `L`, `mm³`, `kg/m³`, `mm^3` are
-/// not DSL unit symbols at all and must never resolve here — admitting them
-/// would let the GUI read a literal by a table the compiler does not share. They
-/// cannot be tested through the engine: `L` is declared nowhere
-/// (`reify-compiler/stdlib/units.ri` declares no SI volume units and
-/// `si_units.rs` generates none), superscripts have never been lexable, so the
-/// compiler rejects such a source outright with `unknown unit:` and no `.ri`
-/// file can carry one into this site. The table is the only observable.
+/// not `BUILTIN_UNITS` symbols and must never resolve here — admitting them
+/// would let the GUI read a literal by a table the compiler does not share.
+///
+/// The superscript spellings cannot be tested through the engine at all: they
+/// have never been lexable, so the compiler rejects such a source outright with
+/// `unknown unit:` and no `.ri` file can carry one into this site. The table is
+/// the only observable for those. `L` and `mm^3` ARE `.ri`-writable since task
+/// λ (#5788) declared `pub unit L : Volume` in `reify-compiler/stdlib/units.ri`
+/// and relabelled the curated ladders to the ASCII exponent alphabet — but they
+/// resolve through the compiler's unit machinery (a `units.ri` declaration for
+/// `L`, the unit-expression grammar for `mm^3`), never through
+/// `unit_symbol_to_si`, so the boundary this asserts is untouched by that.
 ///
 /// (b) THE DEFERRED GAP, `5MPa`. `MPa` is a curated Pressure rung that the
 /// compiler DOES resolve — `si_units.rs` generates `Pa` with the `k`/`M`/`G`
@@ -12427,6 +12456,7 @@ fn make_test_mesh_data() -> crate::types::MeshData {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -12745,6 +12775,86 @@ fn apply_fea_channels_without_error_indicator_omits_error_indicator_channel() {
     );
 }
 
+// --- scalar_channel_tags producer stamping (task #6185) ---
+//
+// The FEA channel producers must stamp `ScalarChannelTag::pressure()` beside
+// each channel they insert, so the GUI legend can name the unit and the range
+// computation knows the channel is unsigned.  Compiles after step-2; FAILS on
+// the empty tags map until step-4 wires the stamping into engine.rs.
+
+/// apply_fea_channels tags the vonMises channel with the declared pressure unit.
+#[test]
+fn apply_fea_channels_tags_von_mises_as_pressure() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let mut meshes = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    assert_eq!(
+        mesh.scalar_channel_tags.get("vonMises"),
+        Some(&crate::types::ScalarChannelTag::pressure()),
+        "vonMises must be tagged as an unsigned Pa channel"
+    );
+}
+
+/// apply_fea_channels tags errorIndicator as pressure when the indicator is
+/// populated, and stamps NO errorIndicator tag when it is absent — an orphan
+/// tag would trip the step-2 serialize contract.
+#[test]
+fn apply_fea_channels_tags_error_indicator_as_pressure() {
+    // (a) Populated indicator ⇒ channel present AND tagged.
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        Some(make_scalar_field()),
+    );
+    let mut meshes = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+    assert_eq!(
+        meshes[0].scalar_channel_tags.get("errorIndicator"),
+        Some(&crate::types::ScalarChannelTag::pressure()),
+        "errorIndicator must be tagged as an unsigned Pa channel when populated"
+    );
+
+    // (b) Absent indicator ⇒ NO channel and, critically, NO orphan tag.
+    let map_none = make_elastic_result_value_map(make_stress_field(), make_disp_field());
+    let mut meshes_none = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes_none, &map_none, None);
+    assert!(
+        !meshes_none[0]
+            .scalar_channels
+            .contains_key("errorIndicator"),
+        "errorIndicator channel must be absent when error_indicator is Option(None)"
+    );
+    assert!(
+        !meshes_none[0]
+            .scalar_channel_tags
+            .contains_key("errorIndicator"),
+        "no errorIndicator TAG may be stamped when the channel is absent — an \
+         orphan tag hard-fails MeshData::serialize"
+    );
+}
+
+/// The tagged mesh the producers actually emit satisfies the step-2 serialize
+/// contracts on real FEA data.  This is the check that would catch a genuinely
+/// negative von-Mises sample reaching an unsigned-tagged channel.
+#[test]
+fn apply_fea_channels_tagged_mesh_serializes() {
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        Some(make_scalar_field()),
+    );
+    let mut meshes = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    serde_json::to_value(&meshes[0])
+        .expect("a tagged FEA mesh must satisfy the orphan-tag and unsigned-negative contracts");
+}
+
 // ── Task 3001 step-7: RED — extract_fea_convergence ───────────────────────────
 //
 // `extract_fea_convergence(values, active_case)` resolves the active
@@ -12883,6 +12993,7 @@ fn apply_shell_channels_populates_matching_mesh() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -12932,6 +13043,41 @@ fn apply_shell_channels_populates_matching_mesh() {
         .expect("populated shell MeshData must serialize (length contracts hold)");
 }
 
+/// apply_shell_channels tags all three vonMises variants as pressure channels
+/// (task #6185).
+#[test]
+fn apply_shell_channels_tags_all_three_von_mises_variants_as_pressure() {
+    let mut meshes = vec![crate::types::MeshData {
+        entity_path: "FeaShellFlexure#realization[0]".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 9.0, 9.0, 9.0, 3.0, 3.0, 3.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    }];
+    let views = vec![make_test_shell_view()];
+
+    crate::engine::apply_shell_channels(&mut meshes, &views);
+
+    let mesh = &meshes[0];
+    for key in ["vonMises_top", "vonMises_mid", "vonMises_bottom"] {
+        assert_eq!(
+            mesh.scalar_channel_tags.get(key),
+            Some(&crate::types::ScalarChannelTag::pressure()),
+            "{key} must be tagged as an unsigned Pa channel"
+        );
+    }
+
+    serde_json::to_value(mesh)
+        .expect("a tagged shell MeshData must satisfy the scalar_channel_tags contracts");
+}
+
 /// apply_shell_channels leaves a non-matching mesh entirely untouched.
 #[test]
 fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
@@ -12941,6 +13087,7 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -12994,6 +13141,7 @@ fn element_kind_count_histograms_element_kind_bytes() {
         indices: Vec::new(),
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind,
         region_tags: None,
@@ -17966,6 +18114,53 @@ fn update_source_emits_fea_diagnostics() {
     );
 }
 
+/// apply_param_to_source_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4;
+/// task 5096 γ).
+///
+/// Behavioural regression covering the `apply_param_to_source` production
+/// entry point — and, more precisely, the COUNT. `apply_param_to_source`
+/// deliberately has no emit of its own: its emit rides the `update_source`
+/// recompile it already performs, which fires `post_engine_call_telemetry`
+/// after `commit_state`. EXACTLY ONE event is therefore the guard that the
+/// write-back inherits the shared choke-point instead of adding a second emit
+/// path — the hook θ extends when it brings the δ MCP write tools into this
+/// cluster.
+///
+/// Setup mirrors `update_source_emits_fea_diagnostics`: prime the session
+/// first (here with the tempdir-backed `writeback_session`, since the
+/// write-back needs a canonical on-disk `.ri`), THEN install the recorder so
+/// only the write-back's emit is counted.
+#[test]
+fn apply_param_to_source_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let (_dir, _path, mut session) = writeback_session();
+
+    // Install AFTER the initial load_file so only the write-back's emit counts.
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: apply_param_to_source must fire EXACTLY ONE \
+         fea-diagnostics-changed event — one for the update_source recompile it \
+         rides, and none of its own; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
 // ── FeaConvergenceEmitter tests (#5032) ─────────────────────────────────────
 
 /// Mirrors [`RecordingFeaDiagnosticsEmitter`] for the fea-convergence-changed channel.
@@ -19662,5 +19857,1426 @@ fn resolve_param_default_span_resolves_an_occurrence_entity() {
         .resolve_param_default_span("Machining.feed_rate")
         .expect("Machining.feed_rate has a default literal");
     assert_eq!(&SRC[span.start as usize..span.end as usize], "100");
+}
+// --- task 5208: build/realization-time geometry errors reach the designer ----
+
+/// A source whose curated 3-arg `fillet` is deliberately broken: the
+/// `edges_at_height` plane (`999mm`) is nowhere near the 5mm-thick plate, so the
+/// edge selector resolves to ZERO edges and the build refuses to silently fillet
+/// all edges (`E_EMPTY_SELECTION` — the task-3295 anti-fake-done guard).
+///
+/// The source **compiles cleanly** — the breakage is a *value*, not a type or a
+/// parse error — so `load_from_source` succeeds and `compiled.diagnostics` is
+/// empty. The failure is born at build/realization time, inside
+/// `tessellate_snapshot`, which is precisely the class of error task 5208 must
+/// keep visible now that curated edge selection is genuinely reachable.
+fn broken_curated_fillet_source() -> &'static str {
+    r#"structure def BrokenFillet {
+    param plate_size: Length = 20mm
+    param plate_thickness: Length = 5mm
+    param soften: Length = 1mm
+
+    let plate = box(plate_size, plate_size, plate_thickness)
+
+    param geometry: Solid = fillet(plate, edges_at_height(plate, 999mm, 0.5mm), soften)
+}"#
+}
+
+/// Task 5208 (step-11/12): a build/realization-time geometry-op **Error** must
+/// reach the GUI's *compile-diagnostic* surface — the panel a designer actually
+/// reads — instead of vanishing into `tessellation_diagnostics` and leaving them
+/// with a blank viewport and an empty diagnostics list.
+///
+/// Task 5208 makes curated 3-arg `fillet`/`chamfer` reachable through the
+/// production `.ri` pipeline. The flip side of a live capability is that its
+/// *residual* failures become real designer-facing errors: a selector that picks
+/// zero edges, a radius the kernel cannot apply, a reference to an unrealized
+/// solid. Those are authored mistakes, and they must be reported as such.
+///
+/// Before this task `EngineSession::build_compile_diagnostics` folded in only
+/// static `compiled.diagnostics` (via `get_diagnostics`) plus live-edit and
+/// hot-reload failures. Errors raised by the build/realization pass landed only
+/// in the separate `tessellation_diagnostics` stream, so
+/// `commands::engine_state_json`'s `compile_diagnostics` came back EMPTY for a
+/// program that produced no geometry at all — the exact "silent empty viewport"
+/// failure mode task 5197 calls out.
+///
+/// Disjointness is preserved in the direction its contract states
+/// (`build_gui_state_compile_diagnostics_populated_from_warning`: compile
+/// diagnostics must not leak into `tessellation_diagnostics`). This test asserts
+/// the *reverse* flow for the Error class only — Warning/Info tessellation
+/// diagnostics (e.g. the "no topology extraction fixture" seeder warning) must
+/// stay out of `compile_diagnostics` so the designer-facing panel does not fill
+/// with kernel chatter.
+///
+/// Kernel-independent: `MockGeometryKernel` registers no extracted edges, so the
+/// selector resolves to zero edges under the mock exactly as a mis-authored
+/// `edges_at_height` does under real OCCT. No `cfg(has_occt)` gate needed.
+#[test]
+fn build_gui_state_surfaces_build_time_geometry_error_in_compile_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(broken_curated_fillet_source(), "broken_fillet")
+        .expect(
+            "load_from_source must succeed: the broken selector is a build-time value failure, \
+             not a compile error",
+        );
+
+    // The failure must be visible in the designer-facing compile-diagnostic
+    // surface, as an Error.
+    let errors: Vec<&DiagnosticInfo> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "a curated fillet that fails to build must surface an Error in compile_diagnostics — \
+         otherwise the designer gets an empty viewport with no explanation.\n\
+         compile_diagnostics: {:?}\n\
+         tessellation_diagnostics: {:?}",
+        state.compile_diagnostics,
+        state.tessellation_diagnostics
+    );
+
+    // …and it must name the offending op, not just say "something failed".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("fillet")),
+        "the surfaced Error must name the failing `fillet` op so the designer can locate it; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Only the Error class crosses over: non-Error tessellation diagnostics must
+    // NOT be duplicated into the compile-diagnostic panel.
+    let non_error_tess: Vec<&String> = state
+        .tessellation_diagnostics
+        .iter()
+        .filter(|d| d.severity != "Error")
+        .map(|d| &d.message)
+        .collect();
+    for msg in &non_error_tess {
+        assert!(
+            !state.compile_diagnostics.iter().any(|c| &&c.message == msg),
+            "non-Error tessellation diagnostic {msg:?} must not be folded into \
+             compile_diagnostics — only the Error class crosses over.\n\
+             compile_diagnostics: {:?}",
+            state.compile_diagnostics
+        );
+    }
+}
+
+/// Guard for the other half of the step-12 contract: folding build-time Errors
+/// into `compile_diagnostics` must not make a CLEAN program report errors.
+///
+/// `bracket_source` tessellates successfully under `MockGeometryKernel`, so
+/// `compile_diagnostics` must stay free of Error entries. Without this, a fold
+/// that mistakenly copied *all* tessellation diagnostics (or misclassified
+/// severity) would light up the designer's panel on every clean load.
+#[test]
+fn build_gui_state_clean_source_has_no_error_compile_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    let errors: Vec<&DiagnosticInfo> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "a clean source must produce no Error compile_diagnostics; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5096 γ — EngineSession::apply_param_to_source (INV-GUI-3 write-back)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn unit_hint_from_default_literal_reads_the_symbol_off_a_dimensioned_literal() {
+    // The hint is what keeps `width = 50mm` writing millimetres instead of
+    // hopping to the canonical ladder (see value_to_ri_literal_with_unit's
+    // doc on `preferred_unit`). Table-driven across the literal shapes the
+    // splice source can actually contain.
+    let cases: &[(&str, &str)] = &[
+        ("80mm", "mm"),
+        ("0.5m", "m"),
+        ("0.08 m", "m"), // Display-style spaced form.
+        ("1.5in", "in"),
+        ("250mm", "mm"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            unit_hint_from_default_literal(input),
+            Some(*expected),
+            "expected {input:?} to yield hint {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn unit_hint_from_default_literal_returns_none_for_a_non_dimensioned_default() {
+    // A false hint here can only make value_to_ri_literal_with_unit fall back
+    // to the canonical ladder — it validates the hint before ever honouring
+    // it — so these must read None rather than a spurious unit: bare
+    // numbers, booleans, `auto`, and plain identifiers all lack a digit/`.`
+    // predecessor to anchor a trailing alpha run.
+    //
+    // `"width - 10mm"` is deliberately NOT covered here: the helper is
+    // lexical, not a parser, and expression defaults are out of its
+    // contract.
+    let cases: &[&str] = &[
+        "3",
+        "3.0",
+        "true",
+        "false",
+        "undef",
+        "auto",
+        "auto(free)",
+        "width",
+        "base_width",
+    ];
+    for input in cases {
+        assert_eq!(
+            unit_hint_from_default_literal(input),
+            None,
+            "expected {input:?} to yield no unit hint"
+        );
+    }
+}
+
+/// Fixture for the `apply_param_to_source` cluster: a unit-mixing source (`mm`
+/// AND `m` defaults so the hint-discrimination test has something to
+/// discriminate against) whose header comment is deliberately non-ASCII (`°`)
+/// so a `chars()`-based splice would be off by the multi-byte delta while a
+/// byte-offset splice is not.
+fn writeback_source() -> &'static str {
+    r#"// header — unit-mixing fixture, non-ASCII (°) so byte offsets ≠ char offsets
+structure def Part {
+    param width: Length = 80mm
+    param depth: Length = 0.5m
+    param no_default: Length
+
+    let body = box(width, width, depth)
+}"#
+}
+
+/// tempdir-backed session: writes `writeback_source()` to `<tmp>/part.ri` and
+/// `load_file`s it, so `apply_param_to_source` has a canonical on-disk file
+/// to write back to (INV-GUI-3). Mirrors the tempdir pattern already used at
+/// `tests/commands_tests.rs:125`. The returned `TempDir` must be kept alive
+/// (bind it, don't discard it) for as long as the session is used.
+fn writeback_session() -> (tempfile::TempDir, std::path::PathBuf, EngineSession) {
+    writeback_session_from(writeback_source())
+}
+
+/// `writeback_session()` parameterized by source text, so the rejection-taxonomy
+/// cluster can use its own fixture without perturbing `writeback_source()`.
+fn writeback_session_from(source: &str) -> (tempfile::TempDir, std::path::PathBuf, EngineSession) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("part.ri");
+    std::fs::write(&path, source).expect("write part.ri should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, session)
+}
+
+#[test]
+fn apply_param_to_source_writes_disk_source_map_and_eval_state_consistently() {
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param width: Length = 120mm"),
+        "disk text should contain the rewritten default, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("80mm"),
+        "disk text should no longer contain the old default, got: {disk_text}"
+    );
+
+    // source_map ≡ disk: the in-memory buffer the engine parses from must be
+    // byte-identical to what commit_state just wrote to disk.
+    let (_key, source_map_text) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should succeed after a successful write-back");
+    assert_eq!(
+        source_map_text, disk_text,
+        "source_map text must equal disk text (INV-GUI-3 three-way consistency)"
+    );
+
+    // eval state ≡ source: the returned GuiState must already report the new
+    // value, not the pre-edit one.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!(width.value, "120");
+    assert_eq!(width.unit, "mm");
+}
+
+#[test]
+fn apply_param_to_source_rewrites_only_the_default_span() {
+    let (_dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let expected = writeback_source().replace("80mm", "120mm");
+    assert_eq!(
+        disk_text, expected,
+        "only the default span should change — comments, whitespace, and every \
+         other param must be preserved byte for byte (PRD D6 splice preserves \
+         user formatting/comments)"
+    );
+}
+
+#[test]
+fn apply_param_to_source_honours_the_replaced_literals_unit() {
+    let (_dir, path, mut session) = writeback_session();
+
+    // si_value 0.25 — must round-trip through the `m` hint read off the
+    // replaced "0.5m" literal, not hop to the canonical ladder's `250mm`.
+    // This is the case that discriminates hint-honouring from the ladder;
+    // Part.width's 80mm→120mm cannot, because `mm` is the ladder's first
+    // rung anyway.
+    session
+        .apply_param_to_source("Part.depth", &mm(250.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param depth: Length = 0.25m"),
+        "expected the replaced literal's unit (m) to be honoured, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("250mm"),
+        "must not fall back to the canonical ladder's mm when the hint is \
+         honourable, got: {disk_text}"
+    );
+}
+
+/// Rejection-taxonomy fixture for `apply_param_to_source`: one param of every
+/// shape the RESOLVE phase must discriminate between — a rewritable quantity
+/// literal (`width`), a BinOp default (`computed`), a bare-identifier default
+/// (`aliased`), a call default (`scaled`), a solver-determined `auto` default
+/// (`solved`), a param with NO default (`no_default`), a quantity literal in a
+/// MODULE-DECLARED unit (`thickness`, in `mil`) which the emitter cannot write
+/// back without silently canonicalizing it, and the three remaining admitted
+/// literal kinds — Bool (`flag`), String (`label`) and the two NumberLiteral
+/// shapes, `Int` (`count`) and dimensionless `Real` (`ratio`) — which must all
+/// stay rewritable.
+///
+/// `count`/`ratio` are the only params in the whole cluster with a bare
+/// `NumberLiteral` default, and they are what drives the `Value::Int` /
+/// `Value::Real` arms of `value_to_ri_literal_with_unit` through the write-back
+/// end to end: those are the arms where the unit hint is `None` and the
+/// emitter's own `force_decimal_point` choice decides the text that lands in
+/// the user's file (`80` vs `80.0`).
+///
+/// The four REFUSED expression kinds are the four the `apply_param_to_source`
+/// rustdoc names (`BinOp`, `Ident`, a call, `Auto`), so the doc's enumeration
+/// and the test table cover the same set rather than drifting apart.
+///
+/// Deliberately SEPARATE from `writeback_source()`: that fixture's
+/// byte-for-byte test (`apply_param_to_source_rewrites_only_the_default_span`)
+/// derives its expectation from its own text, so adding params there would
+/// silently widen an unrelated assertion.
+fn writeback_rejection_source() -> &'static str {
+    r#"unit mil : Length = 0.0000254
+
+structure def Part {
+    param width: Length = 80mm
+    param computed: Length = width * 2
+    param aliased: Length = width
+    param scaled: Length = abs(width)
+    param solved: Length = auto
+    param no_default: Length
+    param thickness: Length = 200mil
+    param flag: Bool = true
+    param label: String = "unset"
+    param count: Int = 4
+    param ratio: Real = 0.5
+
+    let body = box(width, width, computed)
+}"#
+}
+
+/// Assert the full NO-MUTATION ledger after a REJECTED `apply_param_to_source`:
+/// every one of the four state surfaces — the on-disk `.ri`, the `source_map`
+/// buffer the engine parses from, the stored `compile_failure`, and the eval
+/// state as seen through `build_gui_state` — must be exactly as the call found
+/// them ("on failure NONE are mutated", INV-GUI-3).
+fn assert_writeback_untouched(
+    session: &mut EngineSession,
+    path: &std::path::Path,
+    expected_source: &str,
+) {
+    let disk = std::fs::read_to_string(path).expect("disk file should be readable");
+    assert_eq!(
+        disk, expected_source,
+        "disk text must be byte-identical after a rejected write-back"
+    );
+
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a rejected write-back");
+        assert_eq!(
+            source_map_text, expected_source,
+            "source_map text must be byte-identical after a rejected write-back"
+        );
+    }
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a rejected write-back must not leave compile diagnostics describing text \
+         that reached neither disk nor source_map"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a rejected write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a rejected write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a rejected write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
+    // PRD §7 B7 requires a STRUCTURED error: δ (the MCP `set_parameter` tool)
+    // is the consumer that must map "you named something that does not exist"
+    // apart from "that param's default is not a literal I may rewrite". α's
+    // `Option`-returning span resolver collapses all of these into one `None`,
+    // so the discrimination has to be rebuilt here in γ.
+    //
+    // Substrings, not exact prose — the taxonomy is the contract, the wording
+    // is not.
+    let cases: &[(&str, &[&str])] = &[
+        // Entity absent from the module.
+        ("Nope.width", &["Unknown parameter", "Nope.width"]),
+        // Entity present, member absent.
+        ("Part.nope", &["Unknown parameter", "Part.nope"]),
+        // No `.` at all — never even a well-formed cell id.
+        ("width", &["Invalid cell ID", "width"]),
+        // A real, editable cell whose param simply has no default to rewrite.
+        ("Part.no_default", &["Part.no_default", "no default"]),
+        // NON-LITERAL defaults: refusing these is the point of the taxonomy —
+        // splicing over `width * 2` would silently destroy a user-authored
+        // parametric relationship, and splicing over `auto` would destroy a
+        // solver-determined value. Both must name the offending kind so the
+        // two are distinguishable from each other, and both must say the
+        // existing expression survives.
+        (
+            "Part.computed",
+            &["Part.computed", "not a literal", "BinOp", "preserved"],
+        ),
+        (
+            "Part.solved",
+            &["Part.solved", "not a literal", "Auto", "preserved"],
+        ),
+        // The other two non-literal shapes the rustdoc names. `aliased = width`
+        // is an alias one param keeps to another and `scaled = abs(width)` is a
+        // computed value; splicing a constant over either destroys the relation
+        // exactly as splicing over `width * 2` would.
+        (
+            "Part.aliased",
+            &["Part.aliased", "not a literal", "Ident", "preserved"],
+        ),
+        (
+            "Part.scaled",
+            &["Part.scaled", "not a literal", "FunctionCall", "preserved"],
+        ),
+        // A literal of an ADMITTED kind whose UNIT the emitter cannot re-emit.
+        // `200mil` resolves only through the compiled module's `UnitRegistry`,
+        // which `value_to_ri_literal_with_unit` deliberately has no view of, so
+        // the hint would be dropped and the ladder would write `5.08mm` —
+        // numerically right, and the user's own unit vocabulary silently gone
+        // from their canonical document. Discriminated apart from the
+        // non-literal refusals on purpose: the default here IS a literal, so a
+        // "not a literal" message would send δ's caller looking for a formula
+        // that is not there.
+        (
+            "Part.thickness",
+            &["Part.thickness", "'mil'", "not a built-in", "preserved"],
+        ),
+    ];
+
+    for (cell_id, expected_substrings) in cases {
+        let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+        let err = session
+            .apply_param_to_source(cell_id, &mm(250.0))
+            .expect_err(&format!("{cell_id} must be REFUSED, not written back"));
+
+        for needle in *expected_substrings {
+            assert!(
+                err.contains(needle),
+                "rejection for {cell_id:?} should mention {needle:?}, got: {err}"
+            );
+        }
+
+        assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+    }
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_trace_when_the_recompile_rejects_the_value() {
+    // PRD §7 B7's SECOND half: a type/dimension-mismatched V. Unlike the
+    // resolve-phase taxonomy above, nothing here is refusable up front —
+    // `Part.width`'s default IS a rewritable quantity literal, so the splice
+    // happens and the RECOMPILE is what rejects the result.
+    //
+    // The no-mutation ledger must nonetheless be identical to a resolve-phase
+    // rejection. Three of the four surfaces already are (the recompile fails
+    // before `commit_state`, so disk, `source_map` and eval state never move);
+    // the fourth is the leak this test exists to close. `update_source`'s
+    // failure path calls `record_compile_failure`, which stores the SPLICED
+    // text plus its diagnostics — and `build_gui_state`'s LiveEdit branch then
+    // surfaces diagnostics indexed into text that reached neither disk nor
+    // `source_map`, i.e. text no user has ever seen.
+    let cases: &[reify_ir::Value] = &[
+        reify_ir::Value::Bool(true),
+        reify_ir::Value::String("hi".to_string()),
+    ];
+
+    for value in cases {
+        let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+        let err = session
+            .apply_param_to_source("Part.width", value)
+            .expect_err(&format!(
+                "{value:?} into a `Length` param must be REFUSED by the recompile"
+            ));
+        assert!(
+            err.contains("width"),
+            "the recompile rejection should name the offending param, got: {err}"
+        );
+        // Deliberately NOT asserting the compiler's wording for the mismatch
+        // itself ("declared `Scalar[m]` but its initializer evaluates to …"):
+        // that diagnostic belongs to reify-compiler, and rewording it must not
+        // break a GUI test. What this module owns is WHICH PHASE rejected, so
+        // that is what is discriminated — the message must not read as one of
+        // the resolve-phase refusals, because those would mean the splice never
+        // happened and this test would be asserting the wrong ledger.
+        for resolve_phase_wording in ["not a literal", "Unknown parameter", "no default"] {
+            assert!(
+                !err.contains(resolve_phase_wording),
+                "this rejection must come from the RECOMPILE, not the resolve \
+                 phase — {resolve_phase_wording:?} says otherwise, got: {err}"
+            );
+        }
+
+        assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+
+        // The staleness banner is the fifth thing a user would SEE, and it is
+        // driven by `last_reload_error` rather than by `compile_failure`, so
+        // `assert_writeback_untouched` does not reach it. A write-back the
+        // engine refused is not a failed hot reload — the on-disk file the
+        // watcher would reload is exactly the one already loaded.
+        assert!(
+            !session.is_stale(),
+            "a rejected write-back must not raise the hot-reload staleness banner"
+        );
+    }
+}
+
+#[test]
+fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
+    // The OTHER direction of invariant (1)'s mutual consistency. The recompile
+    // rejection above leaves disk behind the engine's intent; this leaves the
+    // ENGINE ahead of disk: `update_source` has already committed `source_map`,
+    // `parsed_cache`, `compiled` and `last_check` to the spliced text when
+    // `fs::write` fails, so the GUI would show a value that the `.ri` on disk
+    // does not contain — and a later FS-watcher re-fire would silently revert
+    // it, with no error anywhere near the revert.
+    //
+    // Trigger: replace the `.ri` with a DIRECTORY at the same path. `fs::write`
+    // then fails EISDIR deterministically — and unlike a `chmod 0444` trigger,
+    // it still fails when the suite happens to run as root.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
+    std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a failed disk write must surface as Err, not be swallowed");
+    assert!(
+        err.contains(&path.display().to_string()),
+        "the write failure should name the path it could not write, got: {err}"
+    );
+    assert!(
+        err.contains("writing"),
+        "the write failure should say the WRITE is what failed, so it is not \
+         mistaken for a compile rejection, got: {err}"
+    );
+
+    // A failed write must also clean up after itself: the write goes through a
+    // sibling temp file, and the rename is what consumes it, so a rename that
+    // fails leaves the temp behind unless the error path removes it. One
+    // `part.ri.<pid>.<seq>.tmp` per failed edit accumulating next to the user's
+    // design would be a user-visible regression.
+    let litter: Vec<String> = std::fs::read_dir(_dir.path())
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(
+        litter.is_empty(),
+        "a failed write-back must leave no temp file behind, found: {litter:?}"
+    );
+
+    // Disk is deliberately not read back here — it is a directory now, so
+    // `assert_writeback_untouched`'s `read_to_string` cannot apply. The other
+    // three surfaces are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a failed disk write");
+        assert_eq!(
+            source_map_text,
+            writeback_rejection_source(),
+            "source_map must be rolled back to the PRE-EDIT text — the engine \
+             must never sit ahead of what is on disk"
+        );
+    }
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the rollback recompile must succeed cleanly and leave no diagnostics"
+    );
+    assert!(
+        !session.is_stale(),
+        "a failed disk write must not raise the hot-reload staleness banner"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a rolled-back write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a rolled-back write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must report the PRE-EDIT value after a failed disk write"
+    );
+}
+
+#[test]
+fn apply_param_to_source_preserves_an_existing_staleness_banner_when_the_disk_write_fails() {
+    // The write-failure sibling of
+    // `apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects`,
+    // and it needs its own test for a reason the recompile one does not cover:
+    // on THIS path BOTH `update_source` calls succeed, and a successful
+    // `commit_state` clears `compile_failure` and `last_reload_error`
+    // unconditionally. So a failed write would "roll back" the engine while
+    // silently clearing a banner it never earned the right to clear — the GUI
+    // would then claim it is in sync with a hot reload that actually failed.
+    //
+    // The sibling assertion in `..._rolls_the_engine_back_when_the_disk_write_fails`
+    // is `!session.is_stale()` on a session that was never stale, which cannot
+    // fail no matter what the rollback does; this one starts the session STALE,
+    // so the assertion has a direction to regress in.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    // Same EISDIR trigger as the sibling test: deterministic, and still fails
+    // when the suite happens to run as root. Note the divergence guard passes
+    // FIRST — it reads the file before the swap, so this exercises the write
+    // failure and not the guard.
+    std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
+    std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a failed disk write must surface as Err, not be swallowed");
+    assert!(
+        err.contains("writing"),
+        "precondition: the failure must be the WRITE, not a compile rejection, got: {err}"
+    );
+
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "a failed disk write must leave the pre-existing staleness banner exactly \
+         as it found it — the rollback recompile succeeds, and `commit_state` \
+         would otherwise clear a banner this call never earned the right to clear"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the rollback must not leave diagnostics either — the snapshot restored \
+         is the pre-edit one, which had none"
+    );
+}
+
+#[test]
+fn apply_param_to_source_is_idempotent_on_reapply() {
+    // D7: applying the SAME value twice is a no-op, not an error and not a
+    // second textual edit. This is the property that makes the FS-watcher
+    // re-fire safe — the watcher may hand the engine the file it just wrote,
+    // and a write-back that drifted on reapply would turn every save into a
+    // slow accumulation of rewrites. Green on arrival; kept as a regression
+    // guard, not manufactured as a failure.
+    let (_dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("first apply_param_to_source should succeed");
+    let disk_after_first = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let source_map_after_first = {
+        let (_key, text) = session
+            .resolve_source_for_test()
+            .expect("source_map should resolve after the first write-back");
+        text.to_string()
+    };
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("re-applying the same value must succeed, not error");
+
+    let disk_after_second = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_after_second, disk_after_first,
+        "re-applying the same value must leave disk byte-identical (D7)"
+    );
+
+    let (_key, source_map_after_second) = session
+        .resolve_source_for_test()
+        .expect("source_map should resolve after the second write-back");
+    assert_eq!(
+        source_map_after_second, source_map_after_first,
+        "re-applying the same value must leave source_map byte-identical (D7)"
+    );
+}
+
+#[test]
+fn apply_param_to_source_reload_of_the_written_file_is_an_empty_delta() {
+    // The γ-level half of PRD §7 B5: the FS-watcher re-fire that follows a
+    // write-back must be a NO-OP at the wire, so the user never sees the
+    // viewport flicker or a value round-trip through its own edit. Simulated
+    // here by feeding the on-disk text the write-back just produced back
+    // through `update_source` — exactly what the watcher does — and diffing
+    // the resulting GuiState against the one the write-back returned.
+    //
+    // The full ChatPanel-to-viewport assertion stays with ζ; this pins the
+    // engine-level property it depends on.
+    use std::sync::Mutex;
+
+    let (_dir, path, mut session) = writeback_session();
+
+    let after_write = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let path_str = path.to_str().expect("tempdir path should be UTF-8");
+    let after_reload = session
+        .update_source(path_str, &disk_text)
+        .expect("reloading the just-written file must recompile cleanly");
+
+    let tessellation_before = after_write.tessellation_diagnostics.clone();
+    let tessellation_after = after_reload.tessellation_diagnostics.clone();
+
+    let last_state: Mutex<Option<crate::types::GuiState>> = Mutex::new(Some(after_write));
+    let delta = crate::diff::compute_delta(&last_state, &after_reload);
+
+    assert!(
+        delta.changed_meshes.is_empty(),
+        "watcher re-fire must not re-push meshes; got {:?}",
+        delta
+            .changed_meshes
+            .iter()
+            .map(|m| &m.entity_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        delta.changed_values.is_empty(),
+        "watcher re-fire must not re-push values; got {:?}",
+        delta
+            .changed_values
+            .iter()
+            .map(|v| &v.cell_id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        delta.changed_constraints.is_empty(),
+        "watcher re-fire must not re-push constraints"
+    );
+    assert!(delta.removed_mesh_paths.is_empty(), "nothing was removed");
+    assert!(delta.removed_value_ids.is_empty(), "nothing was removed");
+    assert!(
+        delta.removed_constraint_ids.is_empty(),
+        "nothing was removed"
+    );
+    assert!(
+        delta.changed_compile_diagnostics.is_none(),
+        "watcher re-fire must not re-push compile diagnostics"
+    );
+    assert!(
+        delta.changed_tensegrity_wires.is_none(),
+        "watcher re-fire must not re-push tensegrity wires"
+    );
+    assert!(
+        delta.changed_tensegrity_surfaces.is_none(),
+        "watcher re-fire must not re-push tensegrity surfaces"
+    );
+    assert!(
+        delta.changed_display_panes.is_none(),
+        "watcher re-fire must not re-push display panes"
+    );
+    assert!(
+        delta.changed_display_appearance.is_none(),
+        "watcher re-fire must not re-push display appearance"
+    );
+
+    // `tessellation_diagnostics` is the ONE diffed field this test does not
+    // assert empty, and the exclusion is a TEST-FIXTURE artifact rather than a
+    // property of the write-back — stated here rather than left as a silently
+    // narrower claim than the test's name suggests.
+    //
+    // MEASURED: `MockGeometryKernel` ships no topology-extraction fixture, so
+    // every tessellation emits a warning naming the handle it failed on —
+    // `…no topology extraction fixture for GeometryHandleId(2)` after the
+    // write-back, `…GeometryHandleId(3)` after the reload. The handle counter
+    // advances per tessellation call, so two structurally identical states
+    // cannot produce byte-identical diagnostics here no matter what the engine
+    // does. A real kernel emits no such warning at all, leaving the field empty
+    // on both sides and the delta genuinely empty.
+    //
+    // What IS assertable under the mock is that the diagnostics are equal once
+    // that handle id is normalised away: same count, same severity, same
+    // failure — i.e. the reload did not introduce a NEW class of diagnostic.
+    let without_handle_id = |ds: &[DiagnosticInfo]| -> Vec<(String, String)> {
+        ds.iter()
+            .map(|d| {
+                let message = match d.message.find("GeometryHandleId(") {
+                    Some(i) => d.message[..i].to_string(),
+                    None => d.message.clone(),
+                };
+                (d.severity.clone(), message)
+            })
+            .collect()
+    };
+    assert_eq!(
+        without_handle_id(&tessellation_after),
+        without_handle_id(&tessellation_before),
+        "the watcher re-fire must not introduce a new class of tessellation \
+         diagnostic — only the mock kernel's per-call handle id may differ"
+    );
+
+    // The summary the per-field assertions above decompose into: the re-fire
+    // emits no events at all beyond the mock-kernel artifact just accounted for.
+    let event_names: Vec<String> = crate::diff::delta_to_events(&delta)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name != "tessellation-diagnostics")
+        .collect();
+    assert!(
+        event_names.is_empty(),
+        "the watcher re-fire after a write-back must emit no events beyond the \
+         mock kernel's tessellation-diagnostics artifact; got {event_names:?}"
+    );
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_bool_literal_default() {
+    // The literal-ness gate must admit the whole literal set, not just
+    // quantities: Number/Quantity/String/Bool defaults all stay rewritable.
+    // This is the guard against over-narrowing the gate added for `computed`
+    // and `solved`.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.flag", &reify_ir::Value::Bool(false))
+        .expect("a Bool literal default must stay rewritable");
+
+    let disk = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk,
+        writeback_rejection_source().replace("param flag: Bool = true", "param flag: Bool = false"),
+        "only the Bool default span should change"
+    );
+}
+
+#[test]
+fn apply_param_to_source_refuses_to_clobber_a_file_that_changed_on_disk() {
+    // The write replaces the WHOLE file with the in-memory buffer, so a session
+    // whose buffer has diverged from disk would resolve that divergence by
+    // destroying the disk side — wholesale, not merely at the spliced span.
+    // Two ordinary ways to get there: an external editor saved the `.ri` and
+    // the FS-watcher has not re-fired `update_source` yet, or the GUI editor's
+    // dirty-buffer path (per-keystroke `update_source`, never a disk write) is
+    // holding text the user did not ask to save.
+    //
+    // Simulated with the first: write the file behind the session's back, and
+    // deliberately change a param the write-back would NOT splice, so what is
+    // at stake is an edit no splice of `Part.width` could ever preserve.
+    let (_dir, path, mut session) = writeback_session();
+    let external_edit =
+        writeback_source().replace("param depth: Length = 0.5m", "param depth: Length = 0.75m");
+    std::fs::write(&path, &external_edit).expect("the external edit should be writable");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a write-back over a diverged file must be REFUSED, not silently applied");
+    assert!(
+        err.contains("disk"),
+        "the rejection should say the DISK copy is what diverged, so it is not \
+         mistaken for a compile rejection, got: {err}"
+    );
+    assert!(
+        err.contains(&path.display().to_string()),
+        "the rejection should name the file it refused to write, got: {err}"
+    );
+
+    // The whole point: the other writer's edit survives byte for byte.
+    let disk_after = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_after, external_edit,
+        "the external edit must survive untouched — a refusal that still wrote \
+         would be the exact data loss this check exists to prevent"
+    );
+
+    // ...and the refusal is resolve-phase-shaped: it happens before the
+    // recompile, so no in-process surface moved either. `assert_writeback_untouched`
+    // does not apply here (it expects disk and source_map to hold the SAME text,
+    // which is precisely what this test arranges not to be true), so the three
+    // in-process surfaces are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a refused write-back");
+        assert_eq!(
+            source_map_text,
+            writeback_source(),
+            "source_map must still hold the text this session compiled"
+        );
+    }
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+    assert!(
+        !session.is_stale(),
+        "a refused write-back must not raise the hot-reload staleness banner"
+    );
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a refused write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a refused write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a refused write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
+    // The write is temp-file-plus-rename (so a partial write can never leave a
+    // truncated `.ri` for the watcher to reload). The temp is an implementation
+    // detail and must stay one: the rename consumes it on success, and the
+    // failure path removes it — a project directory accumulating
+    // `part.ri.1234.0.tmp` siblings would be a user-visible regression.
+    let (dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let mut entries: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![
+            path.file_name()
+                .expect("fixture path has a file name")
+                .to_string_lossy()
+                .into_owned()
+        ],
+        "a successful write-back must leave the design file and nothing else"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing_it() {
+    // `rename(2)` does NOT follow a symlink at its destination. Renaming the
+    // temp straight over the session's path would therefore DELETE a symlinked
+    // `.ri` and leave a regular file where the link was, while the file the
+    // link pointed at kept the pre-edit content forever — the exact opposite of
+    // the write-through a plain `fs::write` would have done, and INVISIBLE to
+    // the divergence guard, which reads through the link and so keeps comparing
+    // against the (still matching) target's bytes.
+    //
+    // Keeping `current.ri -> versions/v3.ri` and opening the link is an
+    // ordinary way to keep a design under version control, so this is a real
+    // shape rather than a contrived one.
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let target_dir = dir.path().join("versions");
+    std::fs::create_dir(&target_dir).expect("creating the target directory should succeed");
+    let target = target_dir.join("v3.ri");
+    std::fs::write(&target, writeback_source()).expect("writing the target .ri should succeed");
+
+    let link = dir.path().join("current.ri");
+    std::os::unix::fs::symlink(&target, &link).expect("creating the symlink should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_file(&link)
+        .expect("load_file through a symlink should succeed");
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source through a symlink should succeed");
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("the link should still exist")
+            .file_type()
+            .is_symlink(),
+        "the write-back must not replace the user's symlink with a regular file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("the link target should be readable"),
+        writeback_source().replace("80mm", "120mm"),
+        "the edit must land in the file the link points AT — a detached copy at \
+         the link path would leave the versioned design stale forever"
+    );
+
+    // Same no-litter contract as the non-symlinked path, checked in BOTH
+    // directories: the temp is a sibling of the RESOLVED target (rename is only
+    // atomic within one filesystem), so it must not appear beside the link
+    // either.
+    for probe in [dir.path(), target_dir.as_path()] {
+        let litter: Vec<String> = std::fs::read_dir(probe)
+            .expect("the probed directory should be readable")
+            .map(|e| {
+                e.expect("directory entry should be readable")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            litter.is_empty(),
+            "a successful write-back must leave no temp file in {}, found: {litter:?}",
+            probe.display()
+        );
+    }
+}
+
+#[test]
+fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
+    // `compile_entry_with_imports` MERGES a direct import's pub templates into
+    // `compiled.templates`, so an imported param passes the cell-existence gate
+    // — while its text never enters `parsed_cache` or `source_map`, so there is
+    // nothing here to splice. Without a dedicated arm that combination reads as
+    // "no default expression", which is not what happened: the default is right
+    // there in the other file, and δ would surface a reason that sends its
+    // caller looking in the wrong place.
+    //
+    // Two-file fixture mirroring `load_file_with_user_import_resolves_imported_structure`.
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let helper_source = "pub structure Helper { param x: Length = 10mm }\n";
+    let entry_source = "import helper\nstructure Top { sub h = Helper() }\n";
+    let helper_path = dir.path().join("helper.ri");
+    let entry_path = dir.path().join("main.ri");
+    std::fs::write(&helper_path, helper_source).expect("write helper.ri");
+    std::fs::write(&entry_path, entry_source).expect("write main.ri");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_file(&entry_path)
+        .expect("load_file should succeed with a resolved import");
+
+    let err = session
+        .apply_param_to_source("Helper.x", &mm(20.0))
+        .expect_err("a param declared in an imported module must be REFUSED");
+    assert!(
+        err.contains("Helper"),
+        "the rejection should name the entity it refused, got: {err}"
+    );
+    assert!(
+        err.contains("imported module"),
+        "the rejection should say the declaration lives in an IMPORTED module — \
+         that is the actionable half for the caller, got: {err}"
+    );
+    assert!(
+        !err.contains("no default expression"),
+        "the misdiagnosis this arm exists to prevent: Helper.x's default is right \
+         there in helper.ri, got: {err}"
+    );
+
+    // NEITHER file moved — least of all the imported one, which this session
+    // has no business rewriting.
+    assert_eq!(
+        std::fs::read_to_string(&helper_path).expect("helper.ri should be readable"),
+        helper_source,
+        "the imported module must be byte-identical after a refused write-back"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&entry_path).expect("main.ri should be readable"),
+        entry_source,
+        "the entry module must be byte-identical after a refused write-back"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+
+    // The rejection is specifically NOT "unknown parameter": the cell exists,
+    // and the ephemeral edit path proves it by accepting the very same id. That
+    // agreement is what `require_known_cell` exists to keep true — the slider
+    // and the write-back must never disagree about which params exist, only
+    // about which are rewritable IN SOURCE.
+    assert!(
+        !err.contains("Unknown parameter"),
+        "an imported param is known, just not rewritable here, got: {err}"
+    );
+    session
+        .set_parameter("Helper.x", "20mm")
+        .expect("the ephemeral edit path must still accept the same cell id");
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_string_literal_default() {
+    // The fourth admitted literal kind. `Bool` is covered above; `String` is
+    // the one whose splice actually changes the byte LENGTH of the literal
+    // (`"unset"` → `"done"`), so it is the case where an off-by-one in the
+    // byte-offset splice would show up as a mangled neighbour rather than as a
+    // value that merely reads wrong.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.label", &reify_ir::Value::String("done".to_string()))
+        .expect("a String literal default must stay rewritable");
+
+    let disk = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk,
+        writeback_rejection_source().replace(r#""unset""#, r#""done""#),
+        "only the String default span should change"
+    );
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_bare_number_literal_default() {
+    // The FOURTH admitted `ExprKind`, and the only one the cluster did not
+    // drive end to end: `Bool`, `String` and `QuantityLiteral` were covered,
+    // `NumberLiteral` was not, because until now no fixture param had a bare
+    // number default.
+    //
+    // It is also the only shape that reaches `value_to_ri_literal_with_unit`
+    // with a `None` hint (there is no trailing unit for
+    // `unit_hint_from_default_literal` to read), so it is the ONLY path on
+    // which the emitter's `force_decimal_point` choice decides the text that
+    // lands in the user's file. That is what makes `7` vs `7.0` and `0.25` vs
+    // `.25` an assertable contract here rather than an emitter detail: the
+    // written form has to re-parse as the same param, and a `Real` default
+    // silently becoming an integer-looking literal is exactly the kind of drift
+    // a byte-for-byte assertion catches.
+    //
+    // Both `Value` variants are driven from one test because they share the
+    // whole path and differ only in that emitter arm.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.count", &reify_ir::Value::Int(7))
+        .expect("an Int NumberLiteral default must stay rewritable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_rejection_source().replace("param count: Int = 4", "param count: Int = 7"),
+        "only the Int default span should change"
+    );
+
+    session
+        .apply_param_to_source("Part.ratio", &reify_ir::Value::Real(0.25))
+        .expect("a dimensionless Real NumberLiteral default must stay rewritable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_rejection_source()
+            .replace("param count: Int = 4", "param count: Int = 7")
+            .replace("param ratio: Real = 0.5", "param ratio: Real = 0.25"),
+        "only the Real default span should change, and the Int edit must survive it"
+    );
+
+    // Both edits must be visible to the ENGINE too, not just on disk — the
+    // three-way consistency the happy-path test pins for the quantity case.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after two number write-backs");
+    for (cell_id, expected) in [("Part.count", "7"), ("Part.ratio", "0.25")] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.cell_id == cell_id)
+            .unwrap_or_else(|| panic!("{cell_id} should be present in the GuiState"));
+        assert_eq!(
+            cell.value, expected,
+            "{cell_id} should evaluate to the written-back value"
+        );
+    }
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_trace_when_the_value_cannot_be_serialized() {
+    // The SERIALIZE phase's own rejection arm, between the resolve-phase
+    // taxonomy and the recompile: `Part.width` resolves fine (its default IS a
+    // rewritable quantity literal) and the value is refused by
+    // `value_to_ri_literal_with_unit` instead. A non-finite real is the
+    // shortest trigger — there is no `.ri` literal that re-parses to NaN, so
+    // the emitter refuses rather than writing something that would not round-trip.
+    //
+    // The ledger claim being pinned is the rustdoc's "**Serialize** likewise —
+    // nothing has been mutated at that point": the splice has not been computed
+    // yet, so all four surfaces must be exactly as the call found them.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    let err = session
+        .apply_param_to_source("Part.width", &reify_ir::Value::Real(f64::NAN))
+        .expect_err("a value with no `.ri` literal form must be REFUSED");
+    assert!(
+        err.contains("serialize"),
+        "the rejection should say SERIALIZATION is what failed, so it is not \
+         mistaken for a resolve-phase refusal or a compile rejection, got: {err}"
+    );
+    assert!(
+        err.contains("Part.width"),
+        "the rejection should name the cell it could not write, got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+    assert!(
+        !session.is_stale(),
+        "a serialize rejection must not raise the hot-reload staleness banner"
+    );
+}
+
+#[test]
+fn apply_param_to_source_refuses_a_session_with_no_file_on_disk() {
+    // INV-GUI-3 writes the CANONICAL `.ri`, so a session that has no such file
+    // has nothing to be canonical about. `load_from_source` builds exactly that
+    // session — the debug bridge and several GUI entry points use it — and it
+    // must be refused rather than silently degrading to an engine-state-only
+    // edit, which is the ephemeral behaviour INV-GUI-3 exists to replace.
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(writeback_source(), "part")
+        .expect("load_from_source should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a session with no on-disk .ri must be REFUSED");
+    assert!(
+        err.contains("no on-disk"),
+        "the rejection should say the session has no file to write, got: {err}"
+    );
+
+    // Refused before any mutation, exactly like the resolve-phase arms — there
+    // is no disk surface to check here, so the other three are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a refused write-back");
+        assert_eq!(
+            source_map_text,
+            writeback_source(),
+            "source_map must be byte-identical after a refused write-back"
+        );
+    }
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a refused write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a refused write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a refused write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects() {
+    // The `last_reload_error` half of the snapshot/restore taken around the
+    // recompile. The sibling rejection tests assert `!session.is_stale()` on a
+    // session that was never stale, which cannot fail no matter what the
+    // restore does; this one starts the session STALE, so the assertion has a
+    // direction to regress in.
+    //
+    // A prior hot-reload failure is the user's banner, not this write-back's:
+    // a rejected write-back must neither clear it (the reload really did fail
+    // and still has not been retried) nor replace it with its own diagnostics
+    // (nothing on disk changed, so nothing about the reload's status did).
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    session
+        .apply_param_to_source("Part.width", &reify_ir::Value::Bool(true))
+        .expect_err("a Bool into a `Length` param must be REFUSED by the recompile");
+
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "a rejected write-back must leave the pre-existing staleness banner \
+         exactly as it found it — neither cleared nor overwritten"
+    );
+    assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+}
+
+/// Task 5212 (GUI reload wiring): every whole-file reload entry
+/// (`load_from_source` / `load_file` / `update_source`) funnels through
+/// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
+/// — freeing the prior design's resident native shapes — and clear the
+/// realization cache exactly once per reload (via
+/// `Engine::reset_geometry_for_reload`). The slider path (`set_parameter` →
+/// `edit_check`) deliberately BYPASSES that funnel, so a parameter edit must
+/// NOT reset the kernel (otherwise every slider tick would wipe the warm
+/// shapes). Together these two facts bound OCCT native-shape memory across a
+/// long dogfooding session: reset frees the shapes AND fires exactly once per
+/// reload, never on a slider drag.
+///
+/// A reset-counting `MockGeometryKernel` observes the count across the engine
+/// ownership boundary via a shared `Arc<Mutex<usize>>` handle cloned before the
+/// mock is boxed (mirrors the reify-eval
+/// `reset_geometry_for_reload_resets_kernels_and_clears_realization_cache`
+/// test). This keeps the reload-boundedness proof off the heavy real-OCCT path:
+/// the real-OCCT mechanism test pins that `reset()` bounds `shape_count`, and
+/// this wiring test pins that `reset()` fires once per reload and never on a
+/// slider edit.
+#[test]
+fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Clone the shared reset counter BEFORE the mock is boxed into the session —
+    // `reset_count()` needs `&MockGeometryKernel`, which the boxed
+    // `dyn GeometryKernel` inside the engine no longer exposes.
+    let reset_calls = kernel.reset_calls_ref();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        0,
+        "precondition: no reset before any load",
+    );
+
+    // First whole-file load — funnels through check_with_solve_slot, resets once
+    // (idempotent no-op on the cold engine, but still invokes reset()).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial whole-file load");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        1,
+        "the first whole-file load must reset the geometry kernel exactly once",
+    );
+
+    // Second whole-file reload via update_source — the primary dirty-buffer
+    // reload path; also funnels through check_with_solve_slot. Resets once more.
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("whole-file reload via update_source");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        2,
+        "each whole-file reload must reset the geometry kernel exactly once \
+         (== 2 after two reloads)",
+    );
+
+    // Slider path — set_parameter → edit_check BYPASSES check_with_solve_slot,
+    // so it must NOT reset (a reset here would wipe warm shapes on every tick).
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("slider edit should succeed");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        2,
+        "a slider (set_parameter) edit must NOT reset the geometry kernel — the \
+         reload wiring lives on the check_with_solve_slot funnel, which the \
+         slider path bypasses",
+    );
 }
 

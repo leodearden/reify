@@ -375,6 +375,19 @@ struct RealizationOpsInput<'a> {
     // `values_contain_selector(values)` probe. Hoisting it here also removes
     // the per-realization recompute of what is a module-global answer.
     module_binds_selector: bool,
+    // Task 5208: per-realization repr snapshot consulted by the inline
+    // curated-selector pre-hydration (`prehydrate_inline_curated_selector_args`)
+    // for the fail-closed region-capability gate (task #4812, P0β) inside
+    // `resolve_selector_to_list`. `None` (the default) means "no snapshot" and
+    // is fail-OPEN — an absent repr skips the gate and falls through to the
+    // generic-error path, exactly as the tessellate-path hydration call site
+    // already does (`tessellate_from_values`' `realized_reprs_tess`). The
+    // `build` surface (`build_with_geometry_output`) overrides it with the same
+    // `realized_reprs_snapshot` it already threads into
+    // `hydrate_value_cell_in_loop`, so a cell-hydrated selector and an
+    // inline-argument selector are gated identically there. `build_snapshot`
+    // runs no `HydrateCell` walk at all, so it keeps the fail-open default.
+    realized_reprs: Option<&'a HashMap<RealizationNodeId, ReprKind>>,
 }
 
 impl<'a> RealizationOpsInput<'a> {
@@ -450,6 +463,9 @@ impl<'a> RealizationOpsInput<'a> {
             // Only the two build paths (`build_snapshot`,
             // `build_with_geometry_output`) opt in with a real answer.
             module_binds_selector: true,
+            // Fail-open default (no snapshot → region-capability gate skipped
+            // for inline curated selectors); see this field's doc above.
+            realized_reprs: None,
         }
     }
 
@@ -526,6 +542,14 @@ impl<'a> RealizationOpsInput<'a> {
     /// once per build.
     fn with_module_binds_selector(mut self, v: bool) -> Self {
         self.module_binds_selector = v;
+        self
+    }
+
+    /// Override the realized-repr snapshot consulted by the inline
+    /// curated-selector pre-hydration's capability gate (default `None` — the
+    /// fail-open posture; see this field's doc on the struct).
+    fn with_realized_reprs(mut self, v: Option<&'a HashMap<RealizationNodeId, ReprKind>>) -> Self {
+        self.realized_reprs = v;
         self
     }
 }
@@ -1926,6 +1950,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
             // Surface (isosurface, task 4999): the sole parent is `grid`, not
@@ -2038,6 +2063,7 @@ fn substitute_op_parents(
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => {
                 sub(target);
@@ -2161,7 +2187,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     // `operation`. Split's row has `operation: None`, which reproduces the
     // prior unreachable!() exactly — Split is a topology selector and must
     // never reach this function (it is never inserted into the realization
-    // graph). All other 47 variants have `operation: Some(_)`.
+    // graph). All other 48 variants have `operation: Some(_)`.
     descriptor_for(op.into())
         .and_then(|d| d.operation)
         .unwrap_or_else(|| {
@@ -2209,7 +2235,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Modify — BRep-only consumers
         ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
-        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
+        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid | ModifyOffsetSurface => {
+            Some(BREP_ONLY)
+        }
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -2329,6 +2357,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Thicken => Operation::ModifyThicken,
             ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
             ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
+            ModifyKind::OffsetSurface => Operation::ModifyOffsetSurface,
             ModifyKind::OffsetCurve => Operation::ModifyOffsetCurve,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
@@ -3049,6 +3078,87 @@ fn resolve_instance_color(
     crate::appearance::resolve_color(&color_field, diagnostics)
 }
 
+/// Build-scoped bookkeeping for [`Engine::redispatch_geometry_consuming_compute_nodes`].
+///
+/// That pass runs ONCE PER TEMPLATE and scans ALL compute nodes on every call.
+/// Task #5951's content guard deliberately leaves a node a redispatch
+/// *candidate* when its rebuilt handles carry no realized content, so a later
+/// per-template call can still do the real work. The price of keeping the
+/// candidate live is that the whole pass is re-attempted for that node on every
+/// SUBSEQUENT per-template call in the same build — which, unmitigated, is
+/// O(templates declared after the consumer) repetitions of two things that must
+/// only happen once:
+///
+///   1. Part A's `kernel.tessellate()`. Free on a mock kernel; a *failing*
+///      tessellation of a pathological body on the real OCCT/gmsh path is not.
+///   2. The projection diagnostics `build_compute_realization_inputs` returns.
+///      For a `ReprKind::Mesh`/`VolumeMesh` realization
+///      `project_realization_read_handle` routes through `degrade_projection`,
+///      which emits a `Severity::Warning` — so a single failed projection would
+///      surface as N+1 duplicate warnings to the user.
+///
+/// This state makes both idempotent within a build, and additionally records
+/// which nodes the content guard skipped so the build can emit ONE diagnostic
+/// per stranded node at the end (see
+/// [`Engine::emit_contentless_redispatch_warnings`]) instead of leaving the
+/// degradation silent — the root complaint of #5951.
+///
+/// Deliberately NOT an `Engine` field: it must not survive the build. A later
+/// tick — a repaired kernel, a re-realized body — has to retry from scratch.
+/// One instance is created immediately before each per-template loop
+/// (`build_with_geometry_output` and `build_snapshot`) and threaded through
+/// every call that loop makes.
+///
+/// COVERAGE, stated honestly. `failed_pretessellations` and
+/// `contentless_skips` are each pinned by a counterfactual test in
+/// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`
+/// (`a_failed_pre_tessellation_is_not_retried_once_per_trailing_template`,
+/// `a_permanently_stranded_node_is_reported_once_at_end_of_build`), measured on
+/// a BRep body: 1 / 2 / 4 tessellation attempts for 0 / 1 / 3 trailing
+/// templates without the cache, 1 / 1 / 1 with it. `emitted_projection_diags`
+/// is NOT pinned — reaching `degrade_projection`'s Warning needs a
+/// `ReprKind::Mesh`/`VolumeMesh` realization that fails to project, which no
+/// fixture in that file builds. Treat it as reasoned-but-unmeasured until such
+/// a fixture exists.
+#[derive(Default)]
+struct RedispatchPassState {
+    /// `(realization, content_hash)` pairs whose Part A pre-tessellation
+    /// already failed in this build. Never retried.
+    failed_pretessellations: HashSet<(RealizationNodeId, reify_core::ContentHash)>,
+    /// `(compute node, diagnostic message)` pairs already extended into the
+    /// build's diagnostics, so a retried candidate does not duplicate them.
+    /// Keyed per-node so two distinct nodes with the same message both report.
+    emitted_projection_diags: HashSet<(reify_core::ComputeNodeId, String)>,
+    /// Compute nodes the content guard skipped, with the `@optimized` target
+    /// each dispatches to. Deduplicated by node id — a node skipped by three
+    /// trailing templates is recorded once.
+    contentless_skips: HashMap<reify_core::ComputeNodeId, String>,
+}
+
+impl RedispatchPassState {
+    /// Extend `diagnostics` with `proj_diags`, dropping any this build has
+    /// already surfaced for `c_id`.
+    ///
+    /// Retrying a candidate must not re-report the same projection failure:
+    /// the retry is an implementation detail of the content guard, not a new
+    /// event the user should see again.
+    fn extend_projection_diags(
+        &mut self,
+        c_id: &reify_core::ComputeNodeId,
+        proj_diags: Vec<Diagnostic>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        for d in proj_diags {
+            if self
+                .emitted_projection_diags
+                .insert((c_id.clone(), d.message.clone()))
+            {
+                diagnostics.push(d);
+            }
+        }
+    }
+}
+
 impl Engine {
     /// Snapshot the realized-repr map from `eval_state` for the fail-closed
     /// region capability gate (task #4812, P0β).
@@ -3173,6 +3283,7 @@ impl Engine {
             constraint_checker: _, // language-level checker (engine-scoped)
             geometry_kernels: _,   // registered kernels
             default_kernel_name: _, // default-kernel selection
+            repr_capable_kernel: _, // construction-recorded kernel capability (task 6169)
             solver: _,             // fallback constraint solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
@@ -3191,6 +3302,7 @@ impl Engine {
             last_guard_phase_group_evals: _, // edit instrumentation
             last_role_flip_probes: _,        // edit instrumentation
             last_diff_value_cells: _,        // edit_source diff snapshot
+            last_changed_realizations: _, // edit-produced changed-realization set, read by the following build (task β/γ)
             last_param_override_type_kind_rejections: _, // eval instrumentation
             last_param_override_dimension_rejections: _, // eval instrumentation
             last_sub_component_unknown_structure_errors: _, // eval instrumentation
@@ -3403,11 +3515,19 @@ impl Engine {
             && self.geometry_kernels.contains_key(name)
         {
             let mut step_handles: Vec<KernelHandle> = Vec::new();
+            // task 5345: query-only realizations (hoisted `__geoq_<N>` inline
+            // geometry-query arguments) are measurement scaffolding, not
+            // bodies, and are excluded from the export walk. Counting them here
+            // would turn a structure whose ONLY geometry lives inside a query
+            // arg — `structure def S { let v = volume(torus(..)) }` — into a
+            // spurious "all realized bodies are aux; no product geometry to
+            // export" error. Pre-hoist such a structure produced no realization
+            // at all and exported nothing silently; that stays true.
             let had_realization_ops = module
                 .templates
                 .iter()
                 .flat_map(|t| &t.realizations)
-                .any(|r| !r.operations.is_empty());
+                .any(|r| !r.is_query_only && !r.operations.is_empty());
 
             // θ (task 4361): record each realization's terminal handle positionally
             // by (t_idx, r_idx) for the Phase-B export walk — mirrors build()'s
@@ -3452,6 +3572,12 @@ impl Engine {
             // template loop — and threaded per-iteration, exactly like the two
             // locals above.
             let module_binds_selector_flag = module_binds_selector(module);
+            // Task #5951 (amendment): build-scoped state for the
+            // post-hydration geometry redispatch pass below. Created ONCE here,
+            // above the template loop, because the pass runs once per template
+            // and deliberately keeps a non-projectable node a candidate across
+            // all of them — see `RedispatchPassState`.
+            let mut redispatch_pass_state = RedispatchPassState::default();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3677,6 +3803,7 @@ impl Engine {
                     &mut values,
                     version_id,
                     &mut diagnostics,
+                    &mut redispatch_pass_state,
                 );
                 // Task #3787 ε: cascade re-dispatch for field-consuming nodes
                 // (e.g. solve_elastic_static) that depend on the now-hydrated
@@ -3750,6 +3877,11 @@ impl Engine {
                 // borrow it.
                 snapshot_named_steps(template, named_steps, &mut module_named_steps);
             }
+            // Task #5951 (amendment): one Warning per node the redispatch's
+            // content guard skipped and that no later template's pass rescued.
+            // Emitted here — after the loop — so a node redispatched for real
+            // during its own template is not reported.
+            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // Only emit the summary diagnostic when ops were actually declared
@@ -3928,6 +4060,34 @@ impl Engine {
         // format-from-a-flag path). Delegates to the shared realization worker
         // with the Phase-B product export ENABLED.
         self.build_with_geometry_output(module, format, true)
+    }
+
+    /// Realize geometry WITHOUT the trailing Phase-B product export — the
+    /// entry point for `reify check` (task 5748, esc-5748-6).
+    ///
+    /// Everything [`Self::build`] does *except* serializing the product bodies:
+    /// realization, `Value::GeometryHandle` hydration, `realization_handles`
+    /// population, `run_post_processes` (the geometry-query value cells —
+    /// `centroid`, `moment_of_inertia`, …) and the task-4229 post-realization
+    /// constraint re-check all run identically, because every one of them
+    /// sequences before or after the `emit_geometry_output` branch rather than
+    /// inside it.
+    ///
+    /// `check` needs this rather than [`Self::build`] because the Phase-B export
+    /// walk emits EXPORT-ONLY diagnostics ("all realized bodies are aux; no
+    /// product geometry to export", "export error: …", "compound assembly
+    /// error: …"). `reify check` writes no artifact, so surfacing those to the
+    /// user is a false error — and once leaf γ (#5403) gates the exit code on
+    /// `Severity::Error` over that same set, a false EXIT. `build()` discarded
+    /// its whole `BuildResult` before task 5748, which is why the leak only
+    /// appears now that the diagnostics are merged.
+    ///
+    /// Same reasoning and same mechanism as [`Self::build_outputs_with_result`],
+    /// which passes `false` here to avoid a redundant serialization.
+    pub fn realize_for_check(&mut self, module: &CompiledModule) -> BuildResult {
+        // `format` is irrelevant when `emit_geometry_output == false`: it is
+        // consumed only by the skipped export arm.
+        self.build_with_geometry_output(module, ExportFormat::Step, false)
     }
 
     /// Internal realization worker shared by [`Self::build`] and
@@ -4172,11 +4332,19 @@ impl Engine {
         {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<KernelHandle> = Vec::new();
+            // task 5345: query-only realizations (hoisted `__geoq_<N>` inline
+            // geometry-query arguments) are measurement scaffolding, not
+            // bodies, and are excluded from the export walk. Counting them here
+            // would turn a structure whose ONLY geometry lives inside a query
+            // arg — `structure def S { let v = volume(torus(..)) }` — into a
+            // spurious "all realized bodies are aux; no product geometry to
+            // export" error. Pre-hoist such a structure produced no realization
+            // at all and exported nothing silently; that stays true.
             let had_realization_ops = module
                 .templates
                 .iter()
                 .flat_map(|t| &t.realizations)
-                .any(|r| !r.operations.is_empty());
+                .any(|r| !r.is_query_only && !r.operations.is_empty());
 
             // T7 (task 3905): record each realization's terminal handle
             // positionally by (t_idx, r_idx) — mirrors the tessellate_from_values
@@ -4243,6 +4411,12 @@ impl Engine {
             // template loop — and threaded per-iteration, exactly like the two
             // locals above.
             let module_binds_selector_flag = module_binds_selector(module);
+            // Task #5951 (amendment): build-scoped state for the
+            // post-hydration geometry redispatch pass below. Created ONCE here,
+            // above the template loop, because the pass runs once per template
+            // and deliberately keeps a non-projectable node a candidate across
+            // all of them — see `RedispatchPassState`.
+            let mut redispatch_pass_state = RedispatchPassState::default();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4477,7 +4651,12 @@ impl Engine {
                         // L2 selector gate, resolved once above the template
                         // loop. Only the build paths opt in; tessellate/query
                         // keep the fail-open `true` default.
-                        .with_module_binds_selector(module_binds_selector_flag),
+                        .with_module_binds_selector(module_binds_selector_flag)
+                        // Task 5208: the SAME repr snapshot threaded into
+                        // `hydrate_value_cell_in_loop` above, so an inline
+                        // curated selector argument is region-capability-gated
+                        // identically to a named-let selector cell.
+                        .with_realized_reprs(Some(&realized_reprs_for_hydration)),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -4621,6 +4800,7 @@ impl Engine {
                     &mut values,
                     version_id,
                     &mut diagnostics,
+                    &mut redispatch_pass_state,
                 );
                 // Task #3787 ε: cascade re-dispatch for field-consuming nodes
                 // (e.g. solve_elastic_static) that depend on the now-hydrated
@@ -4702,6 +4882,11 @@ impl Engine {
                 // borrow it.
                 snapshot_named_steps(template, named_steps, &mut module_named_steps);
             }
+            // Task #5951 (amendment): one Warning per node the redispatch's
+            // content guard skipped and that no later template's pass rescued.
+            // Emitted here — after the loop — so a node redispatched for real
+            // during its own template is not reported.
+            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // No geometry handles available — nothing to export.
@@ -7262,6 +7447,7 @@ impl Engine {
             long_chain_threshold,
             mesh_contract_mode,
             module_binds_selector: module_binds_selector_flag,
+            realized_reprs,
         } = input;
         if Self::probe_realization_cache(
             realization_cache,
@@ -7439,7 +7625,50 @@ impl Engine {
         // so a realization with N ops sharing a counter emits ONE summed
         // diagnostic instead of N near-identical per-op lines.
         let mut topology_drop_tally = TopologyCorrespondenceDropTally::default();
+        // Task 5208: fail-open fallback for the curated-selector capability gate
+        // when the caller supplied no repr snapshot (`with_realized_reprs`
+        // unset). An absent repr skips the gate — the same posture the
+        // tessellate-path call sites already take (see their
+        // `realized_reprs_tess: HashMap<_,_> = HashMap::new()` comment).
+        let empty_realized_reprs: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
+        let realized_reprs_for_ops = realized_reprs.unwrap_or(&empty_realized_reprs);
+        // Task 5208: memo for the inline-curated-selector pre-hydration below,
+        // scoped to exactly this realization walk (see `InlineSelectorMemo`'s
+        // key-sufficiency argument — it holds only while `named_steps` /
+        // `values` / `topology_attribute_table` / `realized_reprs_for_ops` stay
+        // fixed, which is precisely this function body). The same authored op
+        // re-dispatches once per parent realization; without this each repeat
+        // pays another out-of-process kernel topology query.
+        let mut inline_selector_memo = crate::geometry_ops::InlineSelectorMemo::new();
         for (op_idx, op) in operations.iter().enumerate() {
+            // Task 5208: an INLINE curated edge/face selector argument (e.g.
+            // `fillet(b, edges_parallel_to(b, up, 1deg), 3mm)`) is not a value
+            // cell, so no `HydrateCell` step resolves it and the pure eval arm
+            // sees `Undef`. Resolve it HERE — at the realization slot where this
+            // op's parent solid is already realized — via the SAME
+            // `resolve_selector_to_list` policy `hydrate_value_cell_in_loop`
+            // applies to a named-let selector cell, and run the op with the
+            // resolved list substituted. Returns `None` (→ `op` unchanged, and
+            // no kernel work at all) for every op without an unresolved inline
+            // curated selector, so every pre-5208 path stays byte-identical.
+            //
+            // The `&mut` borrow of `kernels` is scoped to this statement: the
+            // dispatch block below re-borrows the map by name.
+            let prehydrated = kernels.get_mut(default_kernel_name).and_then(|k| {
+                crate::geometry_ops::prehydrate_inline_curated_selector_args(
+                    op,
+                    named_steps,
+                    values,
+                    functions,
+                    meta_map,
+                    k.as_mut(),
+                    topology_attribute_table,
+                    realized_reprs_for_ops,
+                    &mut inline_selector_memo,
+                    diagnostics,
+                )
+            });
+            let op = prehydrated.as_ref().unwrap_or(op);
             let geom_op = compile_geometry_op(
                 op,
                 values,
@@ -9713,14 +9942,54 @@ impl Engine {
     ///      `values` and `eval_state.snapshot.values` (step-3: non-degraded field).
     ///
     /// Gate (narrow regression scope): only nodes with `realization_inputs.is_empty()`
-    /// AND at least one arg evaluating to `Value::GeometryHandle` are re-dispatched.
+    /// AND at least one arg evaluating to a KERNEL-BACKED
+    /// `Value::GeometryHandle { kernel_handle: Some(_), .. }` are re-dispatched.
     /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
+    ///
+    /// The `kernel_handle: Some(_)` requirement states the intent of task
+    /// #5951's fix (A) at the gate. MEASURED, it is a REDUNDANT narrowing:
+    /// widening it back to `GeometryHandle { .. }` leaves every test in
+    /// `tests/harness_engine/redispatch_template_order_regression.rs` green,
+    /// because each door it closes is independently closed downstream — an
+    /// all-symbolic node is emptied by the `realization_probe_args` downgrade
+    /// and caught by the `realization_inputs.is_empty()` bail, and a
+    /// kernel-backed-but-contentless node is caught by the content guard. Keep
+    /// it as the cheap early-out that names the invariant; do NOT rely on it as
+    /// the only thing standing between a symbolic handle and the latch. The
+    /// half of fix (A) that IS independently load-bearing is the downgrade —
+    /// see the `realization_probe_args` call below, pinned by
+    /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs`.
+    ///
+    /// This pass runs ONCE PER TEMPLATE — it is called from inside `build()`'s
+    /// `for (t_idx, template)` loop and scans ALL compute nodes on every call,
+    /// not just the current template's. So when a template is declared AHEAD of
+    /// a geometry-consuming one, this runs while that consumer's body is still
+    /// a SYMBOLIC `kernel_handle: None` placeholder (minted by
+    /// `mint_symbolic_geometry_handles_into_values`). Accepting such a
+    /// placeholder as "hydrated" wrote a content-free `realization_inputs`,
+    /// which tripped the one-shot `realization_inputs.is_empty()` candidate
+    /// gate above and permanently stranded the node's degraded first-dispatch
+    /// result — silently, because the `ReprKind::BRep` arm of
+    /// `project_realization_read_handle` is identity-only by design (PRD §4 D1)
+    /// and emits no diagnostic. Skipping the candidate instead leaves
+    /// `realization_inputs` EMPTY, so the later post-hydration pass for the
+    /// consumer's own template still fires.
+    ///
+    /// `pass_state` is the BUILD-scoped [`RedispatchPassState`] — created once
+    /// before the per-template loop and threaded through every call it makes.
+    /// Keeping a node a candidate means this pass repeats for it on every
+    /// trailing template, so the state makes the expensive/user-visible halves
+    /// of that repetition idempotent (a failed pre-tessellation, a projection
+    /// diagnostic) and records the skip for
+    /// [`Self::emit_contentless_redispatch_warnings`] to report once at the end
+    /// of the build.
     fn redispatch_geometry_consuming_compute_nodes(
         &mut self,
         module: &reify_compiler::CompiledModule,
         values: &mut ValueMap,
         version_id: VersionId,
         diagnostics: &mut Vec<Diagnostic>,
+        pass_state: &mut RedispatchPassState,
     ) {
         if self.eval_state.is_none() {
             return;
@@ -9815,12 +10084,31 @@ impl Engine {
                     .collect()
             };
 
-            // Gate: at least one arg must now be a GeometryHandle (body was
-            // hydrated by `post_process_geometry_handle_cells` above).
-            if !arg_values
-                .iter()
-                .any(|v| matches!(v, reify_ir::Value::GeometryHandle { .. }))
-            {
+            // Gate: at least one arg must now be a KERNEL-BACKED GeometryHandle
+            // (body was hydrated by `post_process_geometry_handle_cells` above).
+            //
+            // Task #5951: a `kernel_handle: None` handle is the SYMBOLIC
+            // placeholder minted by `mint_symbolic_geometry_handles_into_values`
+            // for a body that has not realized yet — which is exactly what this
+            // per-template pass sees for a consumer declared AFTER the template
+            // currently being built. Treating it as hydrated wrote a
+            // content-free `realization_inputs` and latched the Phase-1
+            // candidate gate, stranding the node forever. `continue`ing leaves
+            // that gate untripped so a later pass can do the real work.
+            //
+            // This narrowing is DEFENCE IN DEPTH, not the load-bearing half of
+            // the fix — see the fn doc for the measurement. It is kept because
+            // it names the invariant at the point of decision and skips the
+            // rebuild work outright.
+            if !arg_values.iter().any(|v| {
+                matches!(
+                    v,
+                    reify_ir::Value::GeometryHandle {
+                        kernel_handle: Some(_),
+                        ..
+                    }
+                )
+            }) {
                 continue;
             }
 
@@ -9856,6 +10144,21 @@ impl Engine {
                 {
                     continue;
                 }
+                // Task #5951 (amendment): negative cache. The content guard
+                // below keeps a non-projectable node a redispatch candidate,
+                // so this pre-tessellation would otherwise be re-attempted on
+                // every per-template call that follows — O(templates declared
+                // after the consumer) failing `kernel.tessellate()` calls per
+                // build tick. `tessellate` is a pure function of
+                // `(realization, content_hash)`, so a failure here cannot
+                // become a success later in the SAME build; skip it. The state
+                // is build-scoped, so a later tick still retries for real.
+                if pass_state
+                    .failed_pretessellations
+                    .contains(&(realization_ref.clone(), content_hash))
+                {
+                    continue;
+                }
                 // Pattern from `project_realization_read_handle`'s Mesh arm:
                 // compute the owned RealizedContent BEFORE the &mut store
                 // insert to release the immutable kernel borrow first.
@@ -9874,20 +10177,115 @@ impl Engine {
                 if let Some(content) = projected {
                     self.realization_projection_store
                         .insert(realization_ref.clone(), content_hash, content);
+                } else {
+                    // If tessellation failed, leave store empty — dispatch
+                    // degrades honestly (lambda=Undef via the existing
+                    // degraded_field() path) — and record the failure so no
+                    // later per-template call in this build pays for it again.
+                    pass_state
+                        .failed_pretessellations
+                        .insert((realization_ref.clone(), content_hash));
                 }
-                // If tessellation failed, leave store empty — dispatch degrades
-                // honestly (lambda=Undef via existing degraded_field() path).
             }
 
             // Rebuild realization_inputs from the hydrated arg_values.
             // After the pre-tessellation pass above, BRep bodies hit the store
             // and project_realization_read_handle returns Some(SurfaceMesh).
+            //
+            // Task #5951: probe through `realization_probe_args`, the task γ /
+            // #4954 symbolic-handle downgrade, exactly as the two `@optimized`
+            // dispatch sites in `engine_eval.rs` do — making this the third
+            // consistent call site instead of the one that bypassed the guard.
+            //
+            // This is the LOAD-BEARING half of fix (A), and the gate above does
+            // NOT subsume it. A MIXED-arg node — one hydrated body plus one
+            // still-symbolic sibling — opens the gate on the hydrated arg, and
+            // its realized content also keeps the content guard below from
+            // firing, so the write happens. On RAW `arg_values` the symbolic
+            // sibling's `realization_ref` would ride along into
+            // `realization_inputs`: a freshness edge and a `compute_cache_key`
+            // term for a realization that produced nothing. Pinned by
+            // `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` in
+            // `tests/harness_engine/redispatch_template_order_regression.rs`,
+            // which is the ONLY case in that file that reddens when this
+            // downgrade alone is reverted.
+            //
+            // The RAW `arg_values` are left untouched for
+            // `run_compute_dispatch`/`persistent_cache_key`, so the trampoline
+            // still sees the real arg shape.
+            let probe_args = crate::engine_eval::realization_probe_args(&arg_values);
             let (realization_inputs, realization_read_handles, proj_diags) =
-                self.build_compute_realization_inputs(&arg_values, &graph_snapshot);
-            diagnostics.extend(proj_diags);
+                self.build_compute_realization_inputs(&probe_args, &graph_snapshot);
+            // Task #5951 (amendment): dedupe per (node, message) rather than a
+            // bare `extend`. The content guard below keeps a non-projectable
+            // node a candidate, so this rebuild — and any `degrade_projection`
+            // Warning it produces for a Mesh/VolumeMesh realization — repeats
+            // on every trailing template's call. The retry is an internal
+            // consequence of the guard, not a new event for the user.
+            pass_state.extend_projection_diags(&cand.c_id, proj_diags, diagnostics);
 
             if realization_inputs.is_empty() {
                 // Defensive: should not be reached on the green path.
+                continue;
+            }
+
+            // Task #5951: the second precondition on the write below, and the
+            // durable invariant behind it.
+            //
+            // Phase 1's `realization_inputs.is_empty()` candidate gate is a
+            // ONE-SHOT LATCH: the moment this pass records non-empty inputs,
+            // every later per-template call skips the node forever. So the
+            // latch must only ever be tripped by a write that actually carried
+            // realized content. If every rebuilt handle projects to `None`,
+            // this pass has nothing to deliver — Part A's pre-tessellation
+            // above could not populate the projection store, so the trampoline
+            // would run on an empty body exactly as it did at first dispatch.
+            // Writing anyway buys nothing and costs everything: the node is
+            // stranded on its degraded first-dispatch result (for the stdlib
+            // inline-fallback shape, a silently empty result), permanently and
+            // with NO diagnostic — the `ReprKind::BRep` arm of
+            // `project_realization_read_handle` is identity-only by design
+            // (PRD §4 D1) and `degrade_projection`'s Warning is never reached.
+            //
+            // `continue`ing instead leaves the node a redispatch candidate, so
+            // a later per-template call — or a later build tick — can still do
+            // the real work. That converts a permanent silent strand into a
+            // retried one, and it holds for ANY future path into this pass,
+            // not just the symbolic-handle door the gate above closes.
+            //
+            // `proj_diags` are extended above and deliberately left alone: this
+            // guard suppresses a WRITE, never a diagnostic the projection
+            // already chose to emit.
+            //
+            // WHAT THIS ALSO GIVES UP, deliberately (amendment): `continue`
+            // skips the `run_compute_dispatch` below as well as the write, so
+            // the node keeps the result it computed at first dispatch from
+            // `Value::Undef` args. An `@optimized` fn that reads its geometry
+            // through the raw `Value::GeometryHandle` — kernel queries,
+            // `realization_ref` identity, cache-key participation — rather than
+            // through `RealizationReadHandle::content()` therefore does NOT get
+            // handed the hydrated arg it would have received before this guard
+            // existed. That is a degraded→degraded transition, and decoupling
+            // the two effects (skip the write, still re-dispatch on hydrated
+            // args) was considered and REJECTED: this call site passes a
+            // hardcoded `reify_core::ContentHash(0)` persistent-cache key (see
+            // the `run_compute_dispatch` call below), so every redispatch in
+            // this pass shares one key. A content-free dispatch stored under
+            // that key would be served to a later content-BEARING dispatch,
+            // turning a per-build strand into one persisted across builds —
+            // strictly worse than the information loss it would repair. Fixing
+            // the shared key is the prerequisite for revisiting this.
+            //
+            // The strand is not left silent, though: the node is recorded here
+            // and `emit_contentless_redispatch_warnings` reports it once at the
+            // end of the build if no later pass rescued it.
+            if realization_read_handles
+                .iter()
+                .all(|h| h.content().is_none())
+            {
+                pass_state
+                    .contentless_skips
+                    .insert(cand.c_id.clone(), cand.target.clone());
                 continue;
             }
 
@@ -9936,6 +10334,68 @@ impl Engine {
                     // step-1 non-empty assertion still passes.
                 }
             }
+        }
+    }
+
+    /// Report the `@optimized` compute nodes that
+    /// [`Self::redispatch_geometry_consuming_compute_nodes`]'s content guard
+    /// skipped and that NO later pass rescued (task #5951 amendment).
+    ///
+    /// Called ONCE, immediately after the per-template loop in
+    /// `build_with_geometry_output` and `build_snapshot` — not from inside the
+    /// pass, which runs per template. A node skipped while an earlier template
+    /// was building may well be redispatched for real during its own
+    /// template's call; only a node whose `realization_inputs` are STILL empty
+    /// at the end of the build is genuinely stranded, so only that node is
+    /// reported. One `Severity::Warning` per node, never per template call.
+    ///
+    /// Why this exists: the guard's stated intent is that the strand becomes
+    /// *retried* rather than permanent. For a body that can never project
+    /// content — a mesh the kernel cannot tessellate, `resolve_realization_kernel`
+    /// returning `None`, a failed Sdf/Voxel densify — no later pass ever
+    /// succeeds, and the end state is the pre-fix one: a node stranded on its
+    /// degraded first-dispatch result. Before this, that state was reported
+    /// NOWHERE — the `ReprKind::BRep` arm of `project_realization_read_handle`
+    /// is identity-only by design (PRD §4 D1) and `degrade_projection`'s own
+    /// Warning is never reached on that arm. Silence is the root complaint of
+    /// #5951, so the recovered-in-principle state must at least be visible.
+    ///
+    /// Emission order is sorted by `(entity, index)`: `compute_nodes` is an
+    /// `im::HashMap`, whose iteration order is not stable across processes.
+    fn emit_contentless_redispatch_warnings(
+        &self,
+        pass_state: &RedispatchPassState,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if pass_state.contentless_skips.is_empty() {
+            return;
+        }
+        let Some(state) = self.eval_state.as_ref() else {
+            return;
+        };
+        let mut stranded: Vec<(&reify_core::ComputeNodeId, &String)> = pass_state
+            .contentless_skips
+            .iter()
+            .filter(|(c_id, _)| {
+                state
+                    .snapshot
+                    .graph
+                    .compute_nodes
+                    .get(*c_id)
+                    .is_some_and(|n| n.realization_inputs.is_empty())
+            })
+            .collect();
+        stranded
+            .sort_by(|(a, _), (b, _)| a.entity.cmp(&b.entity).then_with(|| a.index.cmp(&b.index)));
+        for (c_id, target) in stranded {
+            diagnostics.push(Diagnostic::warning(format!(
+                "@optimized node `{target}` on `{}` consumed a geometry body whose \
+                 realization projected no content; its result is degraded (computed \
+                 without the realized body). Task #5951: the post-hydration \
+                 redispatch left the node a candidate rather than latching it on \
+                 content-free inputs, but no later pass could deliver content either.",
+                c_id.entity,
+            )));
         }
     }
 
@@ -10536,8 +10996,10 @@ impl Engine {
     /// kernel-FREE `Value::Selector` DESCRIPTOR (task 4118 γ). A consuming curated
     /// `fillet(solid, edges, radius)` realization, however, reads its `edges` arg
     /// as a `Value::List<Geometry>` — the legacy `compile_geometry_op` Fillet arm
-    /// errors ("curated edge selection is not yet available …") on a bare
-    /// descriptor, the exact P2-before-P4 staging gap tasks 4360/4358 close. So
+    /// errors ("the edge selector did not resolve to a concrete edge list …") on
+    /// a bare descriptor — the P2-before-P4 gap tasks 4360/4358 opened and task
+    /// 5208 closed for the production `.ri` pipeline (that `Err` now fires only
+    /// for a selector that genuinely cannot resolve). So
     /// when this selector cell is read by ANY realization (`realization_read_cells`
     /// = the union of every realization trace's `reads`), the descriptor is
     /// resolved one step further to its concrete sub-handle `List` via
@@ -12604,12 +13066,29 @@ pub(crate) enum MixedRegionError {
     },
     /// An interface's tie geometry violates `MpcRow::shell_tet_tying`'s
     /// preconditions — a non-unit `normal` or a non-positive `thickness`, both
-    /// of which that builder asserts on (and would panic). `partition_body`
-    /// guarantees these invariants, so this only arises for an interface
-    /// constructed directly by a caller that bypasses the partition layer.
+    /// of which that builder asserts on (and would panic) — or has a
+    /// non-finite `location`, which `shell_tet_tying` never sees (only the
+    /// resolved DOF indices are passed downstream) but which would instead
+    /// poison this function's own nearest-node tie resolution.
+    /// `partition_body` guarantees the `normal`/`thickness` invariants, so
+    /// this only arises for an interface constructed directly by a caller
+    /// that bypasses the partition layer; [`ShellTetInterface`] documents no
+    /// invariant for `location` at all, so its finiteness is checked here
+    /// rather than assumed.
     InvalidInterfaceGeometry {
         /// Index of the offending interface in the input `interfaces` slice.
         interface_index: usize,
+    },
+    /// A unified node coordinate (shell vertex, or tet vertex offset by
+    /// `n_shell`) is NaN or ±infinite. Left unchecked, it would poison the
+    /// interface-tying comparisons — the `dot3` projection sort that assigns
+    /// the tet top/mid/bot triple, and the `dist3_sq` nearest-node picks —
+    /// silently rather than loudly. Only checked when at least one interface
+    /// is present; the pure shell/tet merge has no comparison anywhere, so a
+    /// non-finite vertex cannot scramble it.
+    NonFiniteNodeCoordinate {
+        /// Unified index (into the merged node list) of the offending node.
+        node_index: usize,
     },
 }
 
@@ -12624,8 +13103,13 @@ impl std::fmt::Display for MixedRegionError {
             MixedRegionError::InvalidInterfaceGeometry { interface_index } => write!(
                 f,
                 "interface {interface_index} has invalid tie geometry: `normal` must be \
-                 a unit vector and `thickness` must be positive \
-                 (MpcRow::shell_tet_tying preconditions)"
+                 a unit vector, `thickness` must be positive \
+                 (MpcRow::shell_tet_tying preconditions), and `location` must be finite"
+            ),
+            MixedRegionError::NonFiniteNodeCoordinate { node_index } => write!(
+                f,
+                "unified node {node_index} has a non-finite coordinate (NaN or ±infinity); \
+                 it would poison the interface-tying comparisons"
             ),
         }
     }
@@ -12654,6 +13138,12 @@ impl std::error::Error for MixedRegionError {}
 ///
 /// Returns [`MixedRegionError::InterfaceResolutionFailed`] if an interface
 /// cannot be resolved to tie nodes (empty shell or tet mesh on one side).
+/// Returns [`MixedRegionError::InvalidInterfaceGeometry`] if an interface's
+/// `normal`/`thickness`/`location` violate `MpcRow::shell_tet_tying`'s
+/// preconditions. Returns [`MixedRegionError::NonFiniteNodeCoordinate`] if
+/// any unified node coordinate is non-finite and at least one interface is
+/// present (the pure merge with no interfaces tolerates non-finite nodes,
+/// since it performs no comparison on them).
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
@@ -12696,6 +13186,31 @@ pub(crate) fn build_mixed_region_mesh(
         });
     }
 
+    // ── Node-coordinate finiteness guard (task 6378) ──────────────────────────
+    //
+    // A NaN/±Inf unified node coordinate would poison the interface-tying
+    // comparisons below (the `dot3` projection sort assigning the tet
+    // top/mid/bot triple, and the `dist3_sq` nearest-node picks) silently
+    // rather than loudly. Scoped to the ordering path via `!interfaces.is_
+    // empty()`: the merge above performs no comparison on `nodes`, so it
+    // tolerates non-finite coordinates when there is nothing to tie. Hoisted
+    // out of the interface loop below (checked once, O(n)) rather than
+    // re-scanned per interface.
+    if !interfaces.is_empty()
+        && let Some(node_index) = nodes.iter().position(|p| p.iter().any(|c| !c.is_finite()))
+    {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_node_coordinate",
+            node_index,
+            n_nodes = nodes.len(),
+            "build_mixed_region_mesh: non-finite unified node coordinate; \
+             abandoning the mixed-region build rather than emitting MPC rows \
+             from a scrambled top/mid/bot tie triple"
+        );
+        return Err(MixedRegionError::NonFiniteNodeCoordinate { node_index });
+    }
+
     // ── Interface → MPC wiring (D=6 unified DOF layout) ───────────────────────
     //
     // Shell elements force the global DOFs-per-node to 6 (shell dominates, as
@@ -12716,13 +13231,39 @@ pub(crate) fn build_mixed_region_mesh(
         // exactly, so any interface passing here also passes `shell_tet_tying`;
         // binding to booleans first keeps a NaN normal/thickness rejected (NaN
         // comparisons are false) without tripping clippy::neg_cmp_op_on_partial_ord.
+        // `location` gets the same treatment even though `shell_tet_tying` never
+        // sees it (only the resolved DOF indices are passed downstream) — it
+        // feeds this function's own `nearest_node_index` / `three_nearest_node_
+        // indices` tie resolution below, and `ShellTetInterface`
+        // (reify-shell-extract/src/partition.rs:57-71) documents invariants for
+        // `normal` and `thickness` only, so `location`'s finiteness is checked
+        // here rather than assumed.
         let normal_mag = (iface.normal[0] * iface.normal[0]
             + iface.normal[1] * iface.normal[1]
             + iface.normal[2] * iface.normal[2])
             .sqrt();
         let thickness_ok = iface.thickness > 0.0;
         let normal_is_unit = (normal_mag - 1.0).abs() < 1e-9;
-        if !thickness_ok || !normal_is_unit {
+        let location_is_finite = iface.location.iter().all(|c| c.is_finite());
+        if !thickness_ok || !normal_is_unit || !location_is_finite {
+            let reason_detail = if !location_is_finite {
+                "non-finite `location`"
+            } else if !thickness_ok {
+                "non-positive `thickness`"
+            } else {
+                "non-unit `normal`"
+            };
+            tracing::warn!(
+                target: "reify_eval::engine_build",
+                reason = "invalid_interface_geometry",
+                interface_index,
+                thickness_ok,
+                normal_is_unit,
+                location_is_finite,
+                "build_mixed_region_mesh: interface {interface_index} has invalid tie \
+                 geometry ({reason_detail}); rejecting rather than emitting an MPC row \
+                 from invalid geometry"
+            );
             return Err(MixedRegionError::InvalidInterfaceGeometry { interface_index });
         }
 
@@ -12751,7 +13292,7 @@ pub(crate) fn build_mixed_region_mesh(
         nearest3.sort_by(|&m1, &m2| {
             let p1 = dot3(nodes[n_shell + m1], iface.normal);
             let p2 = dot3(nodes[n_shell + m2], iface.normal);
-            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal)
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all node coords finite here (non-finite → early `Err(NonFiniteNodeCoordinate)` from the node-coordinate finiteness guard above) and `iface.normal` unit-checked by the `normal_is_unit` binding above, so `dot3` is finite at any physically-realizable coordinate magnitude and `partial_cmp` never returns None
         });
         let tet_top = n_shell + nearest3[0];
         let tet_mid = n_shell + nearest3[1];
@@ -12809,16 +13350,55 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 
 /// The 3 indices of `nodes` nearest `target`, nearest first. The caller
 /// guarantees `nodes.len() >= 3`.
+///
+/// Fail-closed, never panics (PRD `compute-fea-hardening.md` Resolved design
+/// decision 4): normalizes a non-finite squared distance (NaN, or an
+/// overflow-to-`+INFINITY` from a non-finite or overflowing node/target
+/// coordinate) to `+INFINITY` before comparing, so a non-finite candidate can
+/// never win the pick. The normalization must run BEFORE [`f64::total_cmp`],
+/// not be replaced by it: `total_cmp` alone is a total order, but it ranks a
+/// negative-signed NaN BELOW every finite value (and below `-infinity`) — in
+/// a nearest-node pick that would let the poisoned node win, i.e. fail OPEN
+/// in exactly the direction this guard exists to prevent. Emits one WARN
+/// (not one per non-finite node) when any candidate's squared distance was
+/// non-finite, as telemetry for the mis-selection this fallback can still
+/// cause.
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
-    let mut idx: Vec<usize> = (0..nodes.len()).collect();
-    idx.sort_by(|&a, &b| {
-        dist3_sq(nodes[a], target)
-            .partial_cmp(&dist3_sq(nodes[b], target))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    idx.truncate(3);
-    idx
+    // Latches on any non-finite dist3_sq (NaN, or +INFINITY from a non-finite
+    // or overflowing coordinate) for the WARN below, and normalizes NaN to
+    // +INFINITY so it can never win the total_cmp pick (see doc comment).
+    let saw_non_finite = std::cell::Cell::new(false);
+    let key = |i: usize| -> f64 {
+        let d = dist3_sq(nodes[i], target);
+        if !d.is_finite() {
+            saw_non_finite.set(true);
+        }
+        if d.is_nan() { f64::INFINITY } else { d }
+    };
+
+    // Precompute each node's key once, rather than inside the `sort_by`
+    // comparator (which would otherwise re-run `dist3_sq` ~O(n log n) times
+    // for a 3-element result).
+    let mut keyed: Vec<(usize, f64)> = (0..nodes.len()).map(|i| (i, key(i))).collect();
+    // `sort_by` (stable), not `sort_unstable_by`: preserves the lowest-index
+    // tie-break on equal keys that callers rely on.
+    keyed.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+    keyed.truncate(3);
+
+    if saw_non_finite.get() {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_squared_distance",
+            n_nodes = nodes.len(),
+            "three_nearest_node_indices: non-finite squared distance \
+             (non-finite or overflowing node/target coordinate); falling \
+             back to total_cmp for a deterministic 3-nearest pick (a \
+             shell↔tet tie node may consequently be mis-selected)"
+        );
+    }
+
+    keyed.into_iter().map(|(i, _)| i).collect()
 }
 
 /// Returns `true` if `expr`'s compiled tree contains a `CrossSubGeometryRef`
@@ -12911,7 +13491,15 @@ fn compute_realization_upstream_values_hash(
 /// Split out so the R3d (`#4900`) in-walk mint for the `edit_param` reeval
 /// walk can call it using graph-resident `RealizationNodeData.operations`
 /// (which is the same type but is not wrapped in a `RealizationDecl`).
-fn compute_realization_upstream_values_hash_from_ops(
+///
+/// `pub(crate)` for the same reason: `engine_edit.rs`'s
+/// `compute_changed_realizations` (selective-realization-eviction task β)
+/// recomputes the input-cone hash over graph-resident ops and compares it
+/// against α's stored `RealizationNodeData.input_cone_hash`. PRD D1 forbids a
+/// second fold — a divergent one would silently mis-classify against the very
+/// hash that GHR-β identity, the value-cell early cutoff, and the tag-28
+/// in-memory geometry cache key all agree on.
+pub(crate) fn compute_realization_upstream_values_hash_from_ops(
     operations: &[reify_compiler::CompiledGeometryOp],
     ctx: &reify_expr::EvalContext<'_>,
 ) -> [u8; 32] {

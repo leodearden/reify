@@ -104,6 +104,17 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
+        // offset_surface(surface, distance) — no 3-arg overload, unlike offset_curve.
+        "offset_surface" => compile_modify_2arg(
+            "offset_surface",
+            ModifyKind::OffsetSurface,
+            "distance",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         // offset_curve(curve, distance)            — 2-arg planar offset (overload 1)
         // offset_curve(curve, distance, reference) — 3-arg reference Surface (overload 2)
         // offset_curve(curve, distance, direction) — 3-arg direction Vector3 (overload 3)
@@ -998,6 +1009,7 @@ mod tests {
             (ModifyKind::Draft, "draft", &["angle", "plane"]),
             (ModifyKind::ZoneSlab, "zone_slab", &["width"]),
             (ModifyKind::OffsetSolid, "offset_solid", &["distance"]),
+            (ModifyKind::OffsetSurface, "offset_surface", &["distance"]),
             (ModifyKind::OffsetCurve, "offset_curve", &["distance"]),
         ];
         // Compile-time coverage lock: if CASES.len() ever falls out of step with
@@ -1018,6 +1030,7 @@ mod tests {
             | ModifyKind::Draft
             | ModifyKind::ZoneSlab
             | ModifyKind::OffsetSolid
+            | ModifyKind::OffsetSurface
             | ModifyKind::OffsetCurve => (),
         };
         CASES
@@ -1587,5 +1600,74 @@ mod tests {
                 "expected at least one diagnostic for 4-arg offset_curve"
             );
         }
+    }
+
+    // ── θ: offset_surface arity / lowering tests ──────────────────────────────
+
+    /// `offset_surface(target, distance)` is recognised by `compile_modify_op`
+    /// and lowered to named args `[target, distance]` via `compile_modify_2arg`
+    /// (mirrors the `offset_solid` / `thicken` 2-arg shape — unlike
+    /// `offset_curve`, `offset_surface` has no 3-arg overload).
+    ///
+    /// RED until step-6 adds `ModifyKind::OffsetSurface` and the
+    /// `offset_surface` dispatch arm in `compile_modify_op`.
+    #[test]
+    fn compile_modify_op_offset_surface_builds_target_distance_args() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op(
+            "offset_surface",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op offset_surface should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::OffsetSurface,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "distance"]);
+            }
+            other => panic!("expected Modify(OffsetSurface) with 2 args, got {:?}", other),
+        }
+    }
+
+    /// `offset_surface` accepts only 2 args (target, distance): a 1-arg call
+    /// returns `None` and pushes at least one diagnostic.
+    ///
+    /// RED until step-6 adds the `offset_surface` arm (today the name hits
+    /// the `_ => unreachable!()` fallthrough in `compile_modify_op`).
+    #[test]
+    fn compile_modify_op_offset_surface_rejects_1arg() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let span = SourceSpan::new(10, 20);
+        let result = compile_modify_op(
+            "offset_surface",
+            args,
+            GeomRef::Step(0),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for 1-arg offset_surface");
+        assert!(
+            !diagnostics.is_empty(),
+            "expected at least one diagnostic for 1-arg offset_surface"
+        );
     }
 }

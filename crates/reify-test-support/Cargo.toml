@@ -8,6 +8,41 @@ description = "Test builders, fixtures, and mock implementations for Reify"
 [dependencies]
 reify-ast.workspace = true
 reify-core.workspace = true
+# Needed by the library body (not just this crate's tests): `mocks.rs`'s shared
+# `ContainmentQuery` double (`MockContainmentQuery`) implements
+# `reify_expr::ContainmentQuery` — the geometry-free trait that `EvalContext`
+# carries. Hence a [dependencies] entry rather than a [dev-dependencies] one.
+#
+# Gated behind `eval-helpers` (see [features]) rather than left ungated, because
+# `crates/reify-audit` carries reify-test-support as a NORMAL dependency: an
+# ungated edge here drags reify-expr's whole closure (reify-stdlib → faer /
+# nalgebra / gemm) into the audit binary's PRODUCTION build graph. Measured with
+# `cargo tree -p reify-audit --edges normal --prefix none | sort -u | wc -l`
+# (`--prefix none` matters — tree-drawing prefixes make the same crate at two
+# depths two distinct lines): 130 crates gated vs 185 ungated, i.e. 55 crates of
+# pure compile cost for one three-line trait stub. That is precisely the
+# re-evaluation reify-audit's own manifest comment asks for ("Re-evaluate if
+# reify-test-support's deps grow significantly").
+#
+# The gate is free for the double's current consumers — reify-eval's
+# `cell_eval_ctx`/`engine_edit` test modules already dev-depend on this crate
+# with `features = ["eval-helpers"]`, and `eval-helpers` pulls `reify-eval`,
+# which itself normal-deps `reify-expr`, so reify-expr was already in the graph
+# under the feature.
+#
+# It is NOT free in general, and the cost is taken knowingly: a reify-expr-side
+# consumer already exists. `crates/reify-expr` dev-deps this crate WITHOUT
+# `eval-helpers` (crates/reify-expr/Cargo.toml), so its
+# `tests/field_op_dispatch_tests.rs` cannot see `MockContainmentQuery` and still
+# hand-rolls a byte-identical one (its `result: Some(false)` case is the
+# strictly-outside answer `mocks.rs` documents). Turning `eval-helpers` on there
+# is not the fix: it would pull reify-eval into reify-expr's own test graph.
+# Collapsing that last copy wants a finer-grained feature (e.g.
+# `containment-doubles = ["dep:reify-expr"]`) enabled from reify-expr's dev-dep
+# — an edit outside this task's locked files, filed as follow-up work.
+# Trade-off as taken: 55 crates off reify-audit's production graph, paid for
+# with one duplicated three-line double in reify-expr's tests.
+reify-expr = { workspace = true, optional = true }
 reify-ir.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
@@ -26,4 +61,4 @@ reify-core.workspace = true
 reify-ir.workspace = true
 
 [features]
-eval-helpers = ["dep:reify-eval", "dep:reify-constraints"]
+eval-helpers = ["dep:reify-eval", "dep:reify-constraints", "dep:reify-expr"]

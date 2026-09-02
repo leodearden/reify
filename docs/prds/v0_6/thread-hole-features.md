@@ -49,7 +49,9 @@ resolved interactively with Leo in that session. Substrate probes (fixtures
 - `MeshingOptions.threads` is CPU worker threads (cache-key note), **not** screw threads —
   a red-herring name collision; this PRD deliberately avoids the bare word "threads" in
   its pragma/type names (`#thread_repr`, `ThreadRepr`).
-- `iso_it_tolerance` (`crates/reify-stdlib/src/tolerancing.rs:112-128`) is the house
+- `iso_it_tolerance` (`fn iso_it_tolerance` in `crates/reify-stdlib/src/tolerancing.rs`
+  — cited by SYMBOL, not by line range: the range this bullet used to carry went stale
+  twice inside task #6091 alone, once per edit landed above the function) is the house
   pattern for standards builtins: pure `fn(&[Value]) -> Value`, dispatcher arm, `diagnose`
   classifier (`E_TolerancingOutOfEnvelope`), `.ri` derived-let caller, layered tests
   pinning published table cells.
@@ -107,7 +109,7 @@ loud-indeterminate). Geometry observables use `reify eval`/`build`.
    dep #5342; #5343 not needed.
 6. **Fit = `FitDesignation` structure with a real consumer today** (INV-SF-3/-5
    compliant): `structure def FitDesignation { param letter : String; param grade : Int;
-   let tolerance_width = iso_it_tolerance(grade, nominal…) }`. The grade half is consumed
+   let tolerance_width = iso_it_tolerance(nominal…, grade) }`. The grade half is consumed
    NOW via the existing ISO 286-1 IT builtin; the `letter` half (fundamental deviation)
    is **owned by #5391** — the String param carries a PTODO citing #5391 (live,
    non-terminal). Hole slot: `param fit : Option<FitDesignation> = none`.
@@ -202,7 +204,7 @@ structure def FitDesignation {
     param letter : String            // "H", "g", … — fundamental deviation; PTODO(#5391)
     param grade  : Int               // IT grade 5..18
     param nominal : Length           // the feature's nominal Ø (bound by the owning feature)
-    let tolerance_width = iso_it_tolerance(grade, nominal, nominal)
+    let tolerance_width = iso_it_tolerance(nominal, nominal, grade)
 }
 ```
 

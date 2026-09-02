@@ -161,14 +161,38 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
 /// round-trip contingent on the target module's imports. `sr` (SolidAngle)
 /// and `USD` (Money) are simply absent from [`unit_symbol_to_si`].
 ///
+/// # Those dimensions now have a SIBLING, not a widening
+///
+/// [`ri_compound_unit_expr`] writes exactly the dimensions this function
+/// refuses (task #6400). The split is deliberate and must stay: this table
+/// answers "which BARE symbols may be written, most-preferred first" — an
+/// ORDERED ladder the caller WALKS for bit-exactness, whose factor-1.0
+/// TERMINATOR contract is meaningless for a compound expression — while that
+/// one answers "which `UnitExpr`-shaped string spells this dimension out of SI
+/// base symbols", and is unordered and total.
+///
+/// The preconditions differ too, which is the half that actually matters: a
+/// bare symbol round-trips in ANY module because the built-in table is an
+/// unconditional `or_else` fallback, whereas a compound expression needs a
+/// seeded registry and is therefore gated behind an explicit
+/// `reify_ir::ri_literal::UnitScope`. Merging the two tables would silently
+/// attach the weaker precondition to every bare emission, and would force
+/// rewriting all four drift guards below — including
+/// `ri_emittable_units_is_empty_for_dimensionless_and_unsupported_dimensions`,
+/// whose empty-ladder assertions are what make the compound path's containment
+/// STRUCTURAL at the `reify-ir` call site. Do not "fix" this by unifying them.
+///
 /// # Intentionally NOT [`crate::display_units::unit_ladders`]
 ///
 /// That table is also an ordered per-dimension unit ladder, and unifying the
 /// two would be a mistake. It answers a different question — what a human
 /// picks in the GUI unit picker — and is unusable here on three independent
-/// grounds: its labels include forms `unit_symbol_to_si` cannot resolve and
-/// the lexer cannot tokenise (`mm²`, `cm³`, `L`, `MPa`, `kg/m³`, `N`, `J`,
-/// `W`); its Length rungs end at `in` (0.0254) rather than a factor-1.0
+/// grounds: its labels include forms `unit_symbol_to_si` cannot resolve
+/// (`mm^2`, `cm^3`, `L`, `MPa`, `kg/m^3`, `N`, `J`, `W`) — several of which
+/// ARE writable in `.ri` since task λ (#5788) relabelled the curated tables to
+/// the ASCII exponent alphabet and declared `pub unit L : Volume`, but reach
+/// source through the compiler's unit machinery, never through this table; its
+/// Length rungs end at `in` (0.0254) rather than a factor-1.0
 /// terminator; and its coverage differs in both directions. Emission order is
 /// load-bearing for round-trip exactness, display order is picker ergonomics
 /// and is free to change. The two are cross-guarded for *physical* agreement
@@ -193,9 +217,200 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
     }
 }
 
+/// SI base symbol for each [`DimensionVector`] slot that [`ri_compound_unit_expr`]
+/// may write, or `None` for a slot it must refuse.
+///
+/// The emittable SUBSET of [`crate::dimension::BASE_UNIT_SYMBOLS`], carrying the
+/// same `[_; 10]` shape and slot order deliberately: adding an 11th base
+/// dimension then breaks BOTH tables at compile time rather than silently
+/// mis-labelling a slot.
+///
+/// # Why slots 3 / 5 / 6 are `None`
+///
+/// `A` (Current), `mol` (AmountOfSubstance) and `cd` (LuminousIntensity) are in
+/// [`BUILTIN_UNITS`], but they are NEVER seeded into the compiler's
+/// `UnitRegistry` — not even under the full stdlib. `stdlib/units.ri` does not
+/// declare them, and `si_units.rs` registers them only as prefix BASES (`mA`,
+/// `kA`, …) with `SI_PREFIXES` carrying no empty prefix, so no bare declaration
+/// is ever generated. A compound naming one would therefore resolve to
+/// `UnitResolveError::UnknownUnit` at parse time: a broken round-trip, which is
+/// the exact failure this table exists to prevent. Refusing is the correct
+/// behaviour, not a gap.
+///
+/// That is an empirical fact about the stdlib, so it is not left to trust:
+/// `ri_literal_roundtrip.rs`'s
+/// `si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry` cross-guards
+/// this table against the actually-seeded registry BIDIRECTIONALLY — a `Some`
+/// slot must be present at factor exactly 1.0, and a `None` slot must be
+/// absent — so a stdlib change in EITHER direction fires and names the slot to
+/// fix.
+///
+/// Every `Some` symbol resolves to factor exactly `1.0`, and that is the whole
+/// point: see [`ri_compound_unit_expr`] for what the identity buys.
+///
+/// # What the guard actually measured
+///
+/// All seven `Some` slots are present in the stdlib-seeded registry at factor
+/// exactly `1.0` with no offset, and all three `None` slots are absent —
+/// observed, not inferred. `sr` in particular is worth naming: it is generated
+/// bare from `si_units.rs`'s `SI_DERIVED_UNITS` rather than declared in
+/// `stdlib/units.ri`, so its presence was a real open question when this table
+/// was written. It IS generated, so SolidAngle is emittable. Had it not been,
+/// the fix would have been slot 8 → `None`; the structured refusal is the
+/// correct behaviour in that case, not a defect.
+pub const RI_COMPOUND_BASE_SYMBOLS: [Option<&'static str>; 10] = [
+    Some("m"),   // 0 Length
+    Some("kg"),  // 1 Mass
+    Some("s"),   // 2 Time
+    None,        // 3 Current — bare `A` is never in the registry
+    Some("K"),   // 4 Temperature
+    None,        // 5 AmountOfSubstance — bare `mol` is never in the registry
+    None,        // 6 LuminousIntensity — bare `cd` is never in the registry
+    Some("rad"), // 7 Angle
+    Some("sr"),  // 8 SolidAngle
+    Some("USD"), // 9 Money
+];
+
+/// Render one factor of a compound unit expression, omitting `^1`.
+fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
+    if exponent == 1 {
+        symbol.to_owned()
+    } else {
+        format!("{symbol}^{exponent}")
+    }
+}
+
+/// A `UnitExpr`-shaped `.ri` string spelling `dim` out of SI base symbols, or
+/// `None` when it cannot be written exactly (task #6400).
+///
+/// The COMPOUND sibling of [`ri_emittable_units`], used by
+/// `reify_ir::ri_literal` under `UnitScope::SiBaseUnitsSeeded` to write values
+/// whose dimension has no bare symbol at all: `2.5m^2`, `101325kg/m/s^2`,
+/// `7850kg/m^3`.
+///
+/// # Why this is not a widening of [`ri_emittable_units`]
+///
+/// The two answer different questions and carry different preconditions, so
+/// merging them would be a regression dressed as a cleanup. That table answers
+/// "which BARE built-in symbols may be written, most-preferred first" — an
+/// ORDERED ladder the caller WALKS for bit-exactness, whose factor-1.0
+/// terminator contract has no meaning for a compound expression. It is guarded
+/// by four drift tests, including one that explicitly asserts
+/// AREA/VOLUME/PRESSURE/FORCE/SOLID_ANGLE/MONEY have EMPTY ladders. All four
+/// stay green and unmodified precisely because this is a separate function.
+///
+/// The preconditions differ too, and that is the load-bearing half. A bare
+/// symbol resolves as `registry.lookup(..).or_else(|| unit_to_scalar(..))`, so
+/// the built-in table is an unconditional fallback and a bare literal parses in
+/// a module that imports nothing. A compound `UnitExpr` goes through
+/// `resolve_unit_expr` (reify-compiler `units.rs`), which is registry-ONLY with
+/// NO built-in fallback — `stdlib/units.ri`'s own `STANDARD_GRAVITY` comment
+/// states the asymmetry, writing `1m / (1s * 1s)` rather than `9.80665m/s^2`
+/// for exactly this reason. So this function is pure and total, and the
+/// PRECONDITION is asserted by the caller, not by it.
+///
+/// # Exactness is structural, not measured
+///
+/// Only symbols with registry factor exactly `1.0` are ever written. For ANY
+/// tree shape the compiler folds them to exactly 1.0 — `Unit → 1.0`,
+/// `Pow: 1.0.powi(n) == 1.0`, `Mul: 1.0 * 1.0 == 1.0`, `Div: 1.0 / 1.0 == 1.0`
+/// — so `expr.rs`'s single `si_value = value * factor` multiply is the IEEE
+/// identity and the caller can write the SI value VERBATIM as the magnitude.
+/// No ladder search and no fold-order matching: the emitter is independent of
+/// `resolve_unit_expr`'s association rather than a mirror of it.
+///
+/// That is also why a caller's unit HINT must never reach here. A hinted `mm^2`
+/// would fold `0.001.powi(2)` and reintroduce exactly the fold-order hazard
+/// this structurally avoids.
+///
+/// # Shape
+///
+/// Factors appear in [`crate::dimension::BASE_UNIT_SYMBOLS`] index order:
+/// positive exponents first joined by `*`, then each negative exponent
+/// introduced by its own `/` carrying the ABSOLUTE exponent (`m*kg/s^2`,
+/// `kg/m/s^2`, `kg/m^3`); `^n` is omitted when `n == 1`. That is the same
+/// partition and ordering `impl Display for DimensionVector` uses, so the two
+/// renderers share one convention.
+///
+/// When EVERY non-zero exponent is negative the numerator would be empty, and a
+/// leading `/` is not a valid `unit_expr` at all — the rule must start with an
+/// atom. Those are written as a product of SIGNED powers instead (`s^-1`),
+/// which is also what a human writes for a frequency.
+///
+/// # Returns `None` for
+///
+/// - a dimensionless vector — nothing to emit;
+/// - a FRACTIONAL exponent, since `UnitExpr::Pow` is integral;
+/// - an exponent outside `i8`. [`crate::Rational::as_i8`] is deliberately the
+///   whole integrality-and-range test: it is exactly the bound
+///   `resolve_unit_expr` enforces via `i8::try_from`, so the emitter's
+///   acceptance set cannot drift from the compiler's by construction;
+/// - a negative exponent whose ABSOLUTE value is outside `i8` — a tighter bound
+///   than `as_i8` alone, because the denominator form writes `|n|`;
+/// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`
+///   (Current / AmountOfSubstance / LuminousIntensity).
+pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
+    // Collect first, decide the form second: whether the numerator is empty is
+    // a property of the WHOLE vector, and the two forms accept different
+    // exponents (the signed form can write `s^-128`, the denominator form
+    // cannot write `/s^128`).
+    let mut factors: Vec<(&'static str, i8)> = Vec::new();
+    for (i, r) in dim.0.iter().enumerate() {
+        // TODO(#7151): this `?` is the fracture-toughness carve-out. `Rational::as_i8`
+        // returns None on any non-integer exponent, so a rational-exponent dimension is
+        // dropped here silently — the `?` discards the reason. Today that is exactly one
+        // dimension, FRACTURE_TOUGHNESS (Length = Rational(-1, 2), see dimension.rs:262),
+        // which therefore has no unit-expression spelling and is EXCLUDED from invariant R
+        // (task #5789) rather than gated by it. The carve-out exists only because
+        // `UnitExpr::Pow` is integral; #7151 makes rational exponents round-trip end to end
+        // and retires it. Retire the sibling assertions with it: units.rs (the
+        // `no integral UnitExpr::Pow spelling` test below), reify-ir/src/ri_literal.rs,
+        // reify-syntax/src/ts_parser.rs, and the "fractional-exponent exemption" in
+        // reify-compiler/tests/struct_ctor_field_conformance_tests.rs.
+        let exponent = r.as_i8()?;
+        if exponent == 0 {
+            continue;
+        }
+        factors.push((RI_COMPOUND_BASE_SYMBOLS[i]?, exponent));
+    }
+    if factors.is_empty() {
+        return None;
+    }
+
+    if factors.iter().all(|&(_, n)| n < 0) {
+        return Some(
+            factors
+                .iter()
+                .map(|&(sym, n)| ri_unit_factor(sym, n))
+                .collect::<Vec<_>>()
+                .join("*"),
+        );
+    }
+
+    let mut out = factors
+        .iter()
+        .filter(|&&(_, n)| n > 0)
+        .map(|&(sym, n)| ri_unit_factor(sym, n))
+        .collect::<Vec<_>>()
+        .join("*");
+    for &(sym, n) in factors.iter().filter(|&&(_, n)| n < 0) {
+        // The denominator writes the ABSOLUTE exponent, so `|n|` must itself be
+        // an exponent `resolve_unit_expr` accepts. `checked_neg` is that test
+        // and nothing more: it returns `None` only for `i8::MIN`, which would
+        // otherwise be written `^128` and answered with `ExponentOutOfRange`.
+        let magnitude = n.checked_neg()?;
+        out.push('/');
+        out.push_str(&ri_unit_factor(sym, magnitude));
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The index → SI base symbol table `ri_compound_unit_expr` renders
+    // from; the structural guard below sweeps emitted atoms against it.
+    use crate::dimension::BASE_UNIT_SYMBOLS;
 
     /// Anti-vacuity floor for every guard in this module that ITERATES
     /// [`BUILTIN_UNITS`].
@@ -492,7 +707,8 @@ mod tests {
     ///
     /// `display_units::unit_ladders()` is a *display* table and is
     /// deliberately NOT reused as the emission table (its labels include
-    /// unparseable forms like `mm²`/`L`/`MPa`, its Length rungs end at `in`
+    /// forms `unit_symbol_to_si` does not resolve, like `mm^2`/`L`/`MPa`, its
+    /// Length rungs end at `in`
     /// rather than a factor-1.0 terminator, and its dimension coverage
     /// differs in both directions). This guard therefore asserts neither
     /// subset nor order — only that where the two tables name the same
@@ -542,4 +758,176 @@ mod tests {
              compared only {compared} symbols — did a table lose entries?"
         );
     }
+
+    // ─── `ri_compound_unit_expr` — the COMPOUND emission builder ─────────────
+    //
+    // Task #6400. Sibling of `ri_emittable_units`, deliberately NOT a widening
+    // of it: that table answers "which BARE built-in symbols may be written"
+    // and its four guards above (including
+    // `ri_emittable_units_is_empty_for_dimensionless_and_unsupported_dimensions`,
+    // which asserts AREA/VOLUME/PRESSURE/FORCE/SOLID_ANGLE/MONEY have empty
+    // ladders) must stay green and unmodified. This one answers "which
+    // `UnitExpr`-shaped string spells this dimension out of SI base symbols",
+    // and it carries a STRICTLY STRONGER precondition: the compiler's
+    // `resolve_unit_expr` is registry-ONLY with no `unit_to_scalar` fallback,
+    // so the caller must assert a seeded registry. The function itself is pure
+    // — the opt-in lives at `reify_ir::ri_literal::UnitScope`.
+
+    /// A `DimensionVector` with a single slot set — the escape hatch for
+    /// exponents the named constants cannot express.
+    ///
+    /// Built through the public tuple field rather than `basis_n`, which is
+    /// private to `dimension.rs`.
+    fn one_slot(index: usize, exponent: crate::Rational) -> DimensionVector {
+        let mut exps = [crate::Rational::ZERO; 10];
+        exps[index] = exponent;
+        DimensionVector(exps)
+    }
+
+    /// (a) SHAPES — the exact string emitted, in `BASE_UNIT_SYMBOLS` index
+    /// order (0:m 1:kg 2:s 3:A 4:K 5:mol 6:cd 7:rad 8:sr 9:USD).
+    ///
+    /// Positive-exponent factors come first joined by `*`, then each
+    /// negative-exponent factor is introduced by its own `/` carrying the
+    /// ABSOLUTE exponent; `^n` is omitted when `|n| == 1`. That is the same
+    /// partition and ordering `impl Display for DimensionVector` already uses
+    /// (dimension.rs), so the two renderings agree modulo separator and
+    /// denominator sign — one convention across both renderers rather than two.
+    ///
+    /// These strings are load-bearing, not cosmetic: they land in a user's
+    /// source file, and `ri_literal_roundtrip.rs` re-parses every one of them
+    /// through the real parser and `resolve_unit_expr`.
+    #[test]
+    fn ri_compound_unit_expr_emits_the_expected_shapes() {
+        let cases: &[(DimensionVector, &str)] = &[
+            (DimensionVector::AREA, "m^2"),
+            (DimensionVector::VOLUME, "m^3"),
+            (DimensionVector::FORCE, "m*kg/s^2"),
+            (DimensionVector::PRESSURE, "kg/m/s^2"),
+            (DimensionVector::MASS_DENSITY, "kg/m^3"),
+            (DimensionVector::ENERGY, "m^2*kg/s^2"),
+            (DimensionVector::SOLID_ANGLE, "sr"),
+            (DimensionVector::MONEY, "USD"),
+            // A single atom. The bare ladder still wins at the `reify-ir`
+            // policy layer (`80mm`, never `0.08m`) — this function is pure and
+            // has no opinion about that; containment lives at the call site.
+            (DimensionVector::LENGTH, "m"),
+        ];
+        for &(dim, expected) in cases {
+            assert_eq!(
+                ri_compound_unit_expr(&dim).as_deref(),
+                Some(expected),
+                "compound emission for {:?} drifted",
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// (a2) EMPTY-NUMERATOR fallback. A leading `/` is not a valid `unit_expr`
+    /// — the rule must start with an atom — so a dimension whose every
+    /// non-zero exponent is negative is written as a product of SIGNED powers
+    /// instead. `s^-1` is also simply what a human writes for a frequency.
+    #[test]
+    fn ri_compound_unit_expr_uses_signed_powers_when_the_numerator_is_empty() {
+        assert_eq!(
+            ri_compound_unit_expr(&DimensionVector::FREQUENCY).as_deref(),
+            Some("s^-1")
+        );
+    }
+
+    /// (b) REJECTIONS, each for its own distinct reason. Every one of these is
+    /// a case where emitting SOMETHING would produce a literal that does not
+    /// re-parse — the exact failure this module exists to prevent.
+    #[test]
+    fn ri_compound_unit_expr_refuses_what_it_cannot_write_exactly() {
+        // Nothing to emit.
+        assert_eq!(ri_compound_unit_expr(&DimensionVector::DIMENSIONLESS), None);
+
+        // A fractional exponent: `UnitExpr::Pow` is integral, so `m^(1/2)` has
+        // no spelling at all.
+        assert_eq!(
+            ri_compound_unit_expr(&DimensionVector::LENGTH.root(2)),
+            None,
+            "a fractional exponent has no integral `UnitExpr::Pow` spelling"
+        );
+
+        // An exponent outside `i8` — exactly the bound `resolve_unit_expr`
+        // enforces via `i8::try_from`, so accepting one here would emit a
+        // literal the compiler answers with `ExponentOutOfRange`.
+        assert_eq!(
+            ri_compound_unit_expr(&one_slot(0, crate::Rational::new(200, 1))),
+            None,
+            "an exponent outside i8 is what `resolve_unit_expr` rejects"
+        );
+
+        // Current / AmountOfSubstance / LuminousIntensity: bare `A`/`mol`/`cd`
+        // are in BUILTIN_UNITS but are NEVER seeded into the compiler's
+        // `UnitRegistry` (stdlib/units.ri does not declare them, and
+        // si_units.rs registers them only as prefix bases `mA`/`kA`/…), so a
+        // compound naming one would fail to resolve. VOLTAGE and CHARGE are
+        // the witnesses; the raw slots pin the reason rather than the pair.
+        for dim in [DimensionVector::VOLTAGE, DimensionVector::CHARGE] {
+            assert_eq!(
+                ri_compound_unit_expr(&dim),
+                None,
+                "{:?} names a base symbol the registry never carries",
+                dim.canonical_name()
+            );
+        }
+        for slot in [3usize, 5, 6] {
+            assert_eq!(
+                ri_compound_unit_expr(&one_slot(slot, crate::Rational::ONE)),
+                None,
+                "slot {slot} ({}) has no registry-resolvable bare symbol",
+                BASE_UNIT_SYMBOLS[slot]
+            );
+        }
+    }
+
+    /// (c) STRUCTURAL guard — every alphabetic atom in an emitted string is a
+    /// member of [`BASE_UNIT_SYMBOLS`].
+    ///
+    /// Fires if the builder ever reaches for a symbol outside the base table
+    /// (a prefixed `mm`, a named derived `Pa`), which would abandon the
+    /// factor-1.0 identity the whole exactness argument rests on.
+    #[test]
+    fn ri_compound_unit_expr_only_ever_names_base_unit_symbols() {
+        let dims = [
+            DimensionVector::AREA,
+            DimensionVector::VOLUME,
+            DimensionVector::FORCE,
+            DimensionVector::PRESSURE,
+            DimensionVector::MASS_DENSITY,
+            DimensionVector::ENERGY,
+            DimensionVector::SOLID_ANGLE,
+            DimensionVector::MONEY,
+            DimensionVector::LENGTH,
+            DimensionVector::FREQUENCY,
+        ];
+        let mut checked = 0usize;
+        for dim in dims {
+            let expr = ri_compound_unit_expr(&dim)
+                .unwrap_or_else(|| panic!("{:?} must be emittable", dim.canonical_name()));
+            for atom in expr.split(|c: char| !c.is_alphabetic()) {
+                if atom.is_empty() {
+                    continue;
+                }
+                assert!(
+                    BASE_UNIT_SYMBOLS.contains(&atom),
+                    "emitted expression {expr:?} for {:?} names {atom:?}, which is \
+                     not an SI base symbol — only base symbols resolve to factor \
+                     exactly 1.0, and that identity is what makes the emitted \
+                     magnitude the SI value verbatim",
+                    dim.canonical_name()
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 10,
+            "expected to sweep at least 10 atoms, saw {checked} — did the shape \
+             table lose entries?"
+        );
+    }
+
 }

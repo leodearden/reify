@@ -4762,6 +4762,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
  "reify-ir",
  "reify-syntax",
  "serde_json",

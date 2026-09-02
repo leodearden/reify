@@ -55,6 +55,7 @@ fn sample_mesh(entity_path: &str, vertices: Vec<f32>) -> MeshData {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,

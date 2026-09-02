@@ -119,7 +119,7 @@ fn std_fea_multi_case_module_loads_with_no_errors() {
 /// `loads` and `supports` are typed `List<Load>` / `List<Support>` respectively;
 /// conformance is enforced at compile time via `TypeNotConformingToTrait` (task ζ/4444
 /// tightened from the `List<Real>` placeholder). Precedent: `ModalResult.boundary_conditions
-/// : List<Support>` in `modal_analysis.ri:244`.
+/// : List<Support>` in `modal_analysis.ri`.
 ///
 /// Only `options` carries a default (`none`); the other three must be caller-supplied.
 #[test]

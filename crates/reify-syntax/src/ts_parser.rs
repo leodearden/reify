@@ -2,8 +2,9 @@
 //!
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
@@ -153,6 +154,25 @@ struct Lowering<'a> {
     errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<&'a str>,
+    /// Module-namespace bindings introduced by this file's `import`
+    /// declarations, collected in the SAME order-independent first pass as
+    /// `known_enums` (task 5495 μ). Only `ImportKind::Aliased` (the alias) and
+    /// `ImportKind::Module` (the final path segment) contribute — see
+    /// `collect_import_bindings` for why the entity-binding kinds do not.
+    /// Read by `lower_namespaced_call`'s qualifier gate.
+    namespace_bindings: HashSet<String>,
+    /// The names this file's imports bind NON-namespace-wise, each mapped to the
+    /// `ImportKind` that bound it (task 5495 μ). Populated by the same
+    /// `collect_import_bindings` pass, from exactly the three kinds
+    /// `namespace_bindings` deliberately skips — `Entity`, `EntityAliased` and
+    /// `Destructured`.
+    ///
+    /// This map is what lets `lower_namespaced_call` tell "this name is bound,
+    /// but as an entity" from "this name is not bound at all". Both are
+    /// rejections, but only the latter is fixed by declaring an import: telling
+    /// an author who wrote `import a.b.Widget` to "declare one as `import
+    /// <path>.Widget`" hands back the line they already wrote.
+    entity_bindings: HashMap<String, ImportKind>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
     /// Structured module path from a top-of-file `module a.b.c` declaration.
@@ -184,6 +204,8 @@ impl<'a> Lowering<'a> {
             declarations: Vec::new(),
             errors: RefCell::new(Vec::new()),
             known_enums,
+            namespace_bindings: HashSet::new(),
+            entity_bindings: HashMap::new(),
             module_pragmas: Vec::new(),
             declared_module_path: None,
         }
@@ -298,13 +320,17 @@ impl<'a> Lowering<'a> {
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
         // First pass: collect enum names for disambiguation of member_access
-        // vs EnumAccess in expressions. This enables order-independent declarations.
+        // vs EnumAccess in expressions, and the module-namespace bindings this
+        // file's imports introduce. This enables order-independent declarations.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "enum_declaration"
                 && let Some(name_node) = child.child_by_field_name("name")
             {
                 self.known_enums.insert(self.node_text(name_node));
+            }
+            if child.kind() == "import_declaration" {
+                self.collect_import_bindings(child);
             }
         }
 
@@ -515,6 +541,143 @@ impl<'a> Lowering<'a> {
                 _ => self.warn_unexpected_child(child, "source file"),
             }
         }
+    }
+
+    /// Record the module-namespace binding, if any, that one
+    /// `import_declaration` introduces (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` D-7).
+    ///
+    /// D-7 defines the qualifier of a qualified reference as the import's
+    /// binding name — the alias if `as` was used, else the final path segment —
+    /// so exactly two of the five `ImportKind`s contribute:
+    ///
+    /// - `Aliased { alias }` → the alias (`import a.b as pp` binds `pp`)
+    /// - `Module` → the final `.`-segment of the path (`import a.b` binds `b`)
+    ///
+    /// `Entity`, `EntityAliased` and `Destructured` deliberately contribute
+    /// NOTHING: they bind ENTITY names, not module namespaces. `Widget.mk()`
+    /// (from `import a.b.Widget`) is a method call on an entity — syntax Reify
+    /// does not have, and a hard parse error before μ — so binding those kinds
+    /// would reopen a narrower version of the very hole this gate closes.
+    ///
+    /// Those three kinds are still recorded, in `entity_bindings`, mapped to the
+    /// `ImportKind` that bound them. They must not qualify a call, but they are
+    /// not UNBOUND either, and the two cases need different remedies: only the
+    /// wholly-unbound one is fixed by declaring an import. Both maps are filled
+    /// from the same `lower_import` call, so a name can never be classified one
+    /// way here and another way by the import system.
+    ///
+    /// The name recorded is the one the AUTHOR WRITES, which for `EntityAliased`
+    /// is the alias (`import a.b.Widget as W` is used as `W`), not the entity.
+    ///
+    /// The classification is obtained by CALLING `lower_import` and matching the
+    /// returned `ImportKind`, rather than re-deriving Module-vs-Entity from the
+    /// CST: the uppercase-final-segment heuristic then has exactly one
+    /// implementation and this gate cannot drift from what the import system
+    /// actually binds. The second call is pure — `lower_import` pushes no
+    /// diagnostic — so no error is duplicated by lowering the node twice.
+    ///
+    /// Called from `lower_source_file`'s FIRST pass, the same order-independent
+    /// pass that seeds `known_enums`, so an `import parts as pp` written after
+    /// the structure that uses `pp.Pulley()` still binds.
+    ///
+    /// **This file's OWN imports only — no external seeding hook (task ν).**
+    /// `known_enums` can be pre-seeded from outside the file
+    /// (`parse_with_prelude_enums` → `with_prelude_enums`); these two maps
+    /// cannot — by construction they see only the `import_declaration` nodes of
+    /// the file being parsed. So a qualifier that `std.prelude` supplies, or
+    /// that a facade re-exports via `pub import` (PRD D-4, §10 Q1), is absent
+    /// from this file's import set and `lower_namespaced_call`'s gate rejects
+    /// it at PARSE time.
+    ///
+    /// The enum precedent is deliberately not mirrored yet: a
+    /// `with_prelude_bindings` seed has no caller until the N3 prelude work
+    /// (PRD §8 ι) ships `std.prelude`, so it would be untested surface today.
+    /// Widening the gate to prelude-supplied and re-exported bindings is
+    /// ν's (task 5505), alongside the qualified lookup that gives such a
+    /// binding a module to resolve against.
+    fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
+        let Some(import) = self.lower_import(node) else {
+            return;
+        };
+        let namespace_binding = match &import.kind {
+            ImportKind::Aliased { alias } => Some(alias.clone()),
+            ImportKind::Module => import.path.rsplit('.').next().map(str::to_string),
+            ImportKind::Entity(_) | ImportKind::EntityAliased { .. } => None,
+            ImportKind::Destructured(_) => None,
+        };
+        if let Some(binding) = namespace_binding.filter(|b| !b.is_empty()) {
+            self.namespace_bindings.insert(binding);
+            return;
+        }
+
+        let entity_names: Vec<String> = match &import.kind {
+            ImportKind::Entity(entity) => vec![entity.clone()],
+            ImportKind::EntityAliased { alias, .. } => vec![alias.clone()],
+            ImportKind::Destructured(names) => names.clone(),
+            ImportKind::Aliased { .. } | ImportKind::Module => Vec::new(),
+        };
+        for name in entity_names.into_iter().filter(|n| !n.is_empty()) {
+            self.entity_bindings.insert(name, import.kind.clone());
+        }
+    }
+
+    /// How a diagnostic should describe the NON-namespace binding an import made
+    /// for a name, per `ImportKind` (task 5495 μ).
+    ///
+    /// Kept per-kind rather than a flat "an entity" so the message reflects what
+    /// the author actually wrote — an `import a.b.Widget as W` reader needs to
+    /// be told `W` is their own alias, not hunt for a `W` in the module.
+    ///
+    /// Total over all five kinds rather than `unreachable!` on the two
+    /// namespace-binding ones: `collect_import_bindings` never records those
+    /// here, but a diagnostic path is the last place that should be able to
+    /// panic if that ever changes.
+    fn entity_binding_note(kind: &ImportKind) -> String {
+        match kind {
+            // The qualifier IS the entity name here, so naming it again would
+            // only repeat the word the message already quoted.
+            ImportKind::Entity(_) => "an entity name".to_string(),
+            ImportKind::EntityAliased { entity, .. } => {
+                format!("an alias for the entity name `{entity}`")
+            }
+            ImportKind::Destructured(_) => "an entity name destructured from it".to_string(),
+            ImportKind::Aliased { .. } | ImportKind::Module => "an entity name".to_string(),
+        }
+    }
+
+    /// The trailing caveat for the two `ImportKind`s whose entity-ness was
+    /// INFERRED rather than written, so the author whose module happens to have
+    /// a capitalised path segment has a next step (task 5495 μ).
+    ///
+    /// `lower_import` classifies a ≥2-segment import by the CAPITALISATION of
+    /// its final segment: `import geometry.Shapes` is `Entity("Shapes")` and
+    /// `import geometry.Shapes as sh` is `EntityAliased`, so neither binds a
+    /// namespace and `Shapes.Circle()` / `sh.Circle()` are rejected above — with
+    /// a confident explanation that is simply WRONG if `Shapes` is a module.
+    /// Without this sentence the author has no workaround, because their code is
+    /// not in fact wrong. The heuristic predates μ; μ is the first feature that
+    /// turns it into a user-visible hard error. Resolving module-vs-entity from
+    /// the actual module graph instead of from capitalisation is ν's (task 5505)
+    /// — see the `entity_bindings` note and PRD D-7.
+    ///
+    /// `Destructured` gets NO caveat: `import a.b.{C, D}` names its entities
+    /// explicitly, so capitalisation played no part and mentioning it would be
+    /// noise. The two namespace-binding kinds never reach this path.
+    fn entity_binding_capitalisation_hint(kind: &ImportKind) -> String {
+        let segment = match kind {
+            ImportKind::Entity(entity) => entity,
+            ImportKind::EntityAliased { entity, .. } => entity,
+            ImportKind::Destructured(_) | ImportKind::Aliased { .. } | ImportKind::Module => {
+                return String::new();
+            }
+        };
+        format!(
+            ". If `{segment}` names a MODULE rather than an entity, note that the \
+             final path segment is classified by capitalisation — a capitalised one \
+             is always read as an entity name — so it has to be lowercase to bind a \
+             namespace"
+        )
     }
 
     fn lower_import(&self, node: tree_sitter::Node) -> Option<ImportDecl> {
@@ -802,11 +965,77 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
+    /// Dot-join a `namespaced_name` node's `binding` and `name` CST fields.
+    ///
+    /// Returns `None` if `node` is not a `namespaced_name` or is missing either
+    /// field (only reachable on an error-recovery tree).
+    ///
+    /// **Encoding contract for the resolution phase (task ν).** A qualified
+    /// reference rides DOT-JOINED in the existing `String` name slots —
+    /// `TypeExprKind::Named { name }`, `SubDecl::structure_name`,
+    /// `ExprKind::FunctionCall { name }` — with no new AST variant, because `.`
+    /// is not a legal identifier character and `name.contains('.')` is therefore
+    /// an unambiguous discriminator for ν's rewrite. Rationale and alternatives:
+    /// PRD `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q1/Q3, D-7.
+    ///
+    /// Joining the two FIELDS — rather than reading the node's source text — is
+    /// what normalises interior whitespace, so `pp . Pulley` yields exactly
+    /// `"pp.Pulley"` and ν's discriminator never has to cope with a spaced
+    /// variant. Pinned by `qualified_type_whitespace_is_normalised` and
+    /// `sub_structure_name_whitespace_is_normalised` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// **Pre-ν loudness is per-POSITION, not blanket** — measured on this
+    /// branch with `target/debug/reify check`:
+    ///
+    /// - TYPE position is loud on its own: `param p : obj.width` answers
+    ///   `error: unresolved type: obj.width` (exit 1).
+    /// - `sub` structure_name is loud on its own: `sub s = obj.width()` answers
+    ///   `error: sub-component "s" references unknown structure "obj.width"`
+    ///   (exit 1).
+    /// - EXPRESSION position is NOT, because the compiler has no unknown-function
+    ///   diagnostic behind `ExprKind::FunctionCall`. Loudness there is delivered
+    ///   by `lower_namespaced_call`'s import-binding guard for an undeclared
+    ///   qualifier, and by module resolution (`error: module 'parts' not found`,
+    ///   exit 1) for a declared binding whose module is absent.
+    ///
+    /// That leaves exactly one silent case — declared binding, module resolves,
+    /// member does not — which is resolution work and therefore ν's (task 5505).
+    /// See `lower_namespaced_call` for the two-guard sequence.
+    fn namespaced_name_text(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "namespaced_name" {
+            return None;
+        }
+        let binding = node.child_by_field_name("binding")?;
+        let name = node.child_by_field_name("name")?;
+        Some(self.dot_join(binding, name))
+    }
+
+    /// The ONE implementation of μ's dot-join, shared by the two rules that
+    /// produce a qualified name — `namespaced_name_text` (type + `sub`
+    /// position, joining `binding`/`name`) and `lower_namespaced_call`
+    /// (expression position, joining the callee's `object`/`member`).
+    ///
+    /// The two CST rules have different field NAMES, so they cannot share a
+    /// single entry point — but the encoding contract the whole of μ rests on
+    /// is this join, and it must not drift between the two halves. Extracted
+    /// for exactly the reason `lower_call_arguments` gives the argument walk
+    /// exactly one implementation.
+    ///
+    /// Joining the two nodes' texts — rather than reading the parent's source
+    /// text — is what normalises interior whitespace, so both `pp . Pulley` and
+    /// `pp . Pulley()` yield exactly `"pp.Pulley"`.
+    fn dot_join(&self, first: tree_sitter::Node, second: tree_sitter::Node) -> String {
+        format!("{}.{}", self.node_text(first), self.node_text(second))
+    }
+
     /// Lower a type_expr node to a TypeExpr. Handles bare identifiers, parameterized types,
-    /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
+    /// qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`),
+    /// and namespaced references through an import binding (`pp.Pulley`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(function_type, parameterized_type, qualified_type, identifier)
+            // type_expr is choice(function_type, parameterized_type, qualified_type,
+            // namespaced_name, identifier)
             let child = node.child(0).unwrap_or(node);
             if child.kind() == "function_type" {
                 return self.lower_function_type(child);
@@ -816,6 +1045,17 @@ impl<'a> Lowering<'a> {
             }
             if child.kind() == "qualified_type" {
                 return self.lower_qualified_type(child);
+            }
+            // Namespaced reference `pp.Pulley` (task 5495 μ) — see
+            // `namespaced_name_text` for the dot-joined encoding contract.
+            if let Some(dotted) = self.namespaced_name_text(child) {
+                return TypeExpr {
+                    kind: TypeExprKind::Named {
+                        name: dotted,
+                        type_args: vec![],
+                    },
+                    span: self.span(child),
+                };
             }
             // bare identifier
             TypeExpr {
@@ -832,6 +1072,15 @@ impl<'a> Lowering<'a> {
         } else if node.kind() == "qualified_type" {
             self.lower_qualified_type(node)
         } else {
+            // NOTE: no un-wrapped `namespaced_name` arm here, deliberately.
+            // `namespaced_name` occurs in exactly two grammar positions: as a
+            // `type_expr` arm (handled above, through the wrapper) and as a
+            // `sub_declaration`'s `structure_name`. The `structure_name` field
+            // has exactly two readers — `lower_sub`, which calls
+            // `namespaced_name_text` on the node itself, and
+            // `lower_match_arm_decl_arm`, which reads it as raw text — so
+            // neither routes a bare `namespaced_name` here. An arm for it would
+            // be unreachable-and-untested code on a hot lowering path.
             // treat as bare identifier
             TypeExpr {
                 kind: TypeExprKind::Named {
@@ -2519,7 +2768,13 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let struct_node = node.child_by_field_name("structure_name")?;
-        let structure_name = self.node_text(struct_node).to_string();
+        // A `namespaced_name` structure_name (`sub p = pp.Pulley()`, task 5495 μ)
+        // is joined from its `binding`/`name` CST fields so interior whitespace
+        // is normalised — see `namespaced_name_text` for the encoding contract
+        // that ν's resolution-phase fixup reads.
+        let structure_name = self
+            .namespaced_name_text(struct_node)
+            .unwrap_or_else(|| self.node_text(struct_node).to_string());
 
         // Detect collection form: `sub name : List<StructName>` by looking for
         // the anonymous `'List'` keyword token among the DIRECT children. An
@@ -3351,6 +3606,7 @@ impl<'a> Lowering<'a> {
             }),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
+            "namespaced_call" => self.lower_namespaced_call(node),
             "list_literal" => self.lower_list_literal(node),
             "set_literal" => self.lower_set_literal(node),
             "map_literal" => self.lower_map_literal(node),
@@ -3993,9 +4249,13 @@ impl<'a> Lowering<'a> {
     ///   1. **Pow** — `base ^ exponent`. Probed first because the pow arm also
     ///      carries an `op` field (the `^`), but is uniquely identified by the
     ///      presence of `base` + `exponent` fields.
-    ///   2. **Mul/Div** — `left (*|/) right`, left-associative. Dispatch on the
+    ///   2. **Mul/Div** — `left (*|·|/) right`, left-associative. Dispatch on the
     ///      operator's source TEXT, not node kind: the `op` field aliases the two
-    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`).
+    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
+    ///      `child_by_field_name` never resolves — which is why the slice is read
+    ///      at all. `*` and `·` (U+00B7) are two spellings of one operator and
+    ///      both yield [`UnitExpr::Mul`] (task #5784, PRD
+    ///      `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2).
     ///   3. **Paren / bare unit** — a parenthesised `unit_expr` is unwrapped
     ///      transparently (no `Paren` variant — parens carry no semantics); a
     ///      `unit_name` child becomes [`UnitExpr::Unit`].
@@ -4014,28 +4274,77 @@ impl<'a> Lowering<'a> {
             return Some(UnitExpr::Pow(Box::new(base), exponent));
         }
 
-        // 2. Mul/Div: `left (*|/) right`, left-associative. The `op` field aliases
-        //    the external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
-        //    `child_by_field_name` does NOT expose — so detect the arm by the
-        //    `left`+`right` fields and read the operator from the source slice
-        //    between the two operands. Units are contiguous (no whitespace inside
-        //    a unit_expr), so that slice is exactly `*` or `/`.
+        // 2. Mul/Div: `left (*|·|/) right`, left-associative. Two facts drive it:
+        //
+        //    - The `op` field aliases the external-scanner tokens (`_unit_mul_op`
+        //      / `_unit_div_op`), which `child_by_field_name` does NOT expose. So
+        //      detect the arm by the `left`+`right` fields and read the operator
+        //      from the source slice between them.  Unit ATOMS are contiguous, so
+        //      that slice is normally exactly one of `*`, `·` or `/` — but it is
+        //      not guaranteed to be: a comment between two parenthesised groups
+        //      lands in the slice too (measured: `5(m)/*c*/*(s)` yields
+        //      `/*c*/*`), which is why `classify_unit_op` is TOTAL rather than a
+        //      three-way match.
+        //    - `*` and `·` (U+00B7 MIDDLE DOT, the SI-conventional multiply) are
+        //      two spellings of ONE operator, both yielding `UnitExpr::Mul` —
+        //      task #5784 / PRD
+        //      `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2.
+        //
+        //    `classify_unit_op` owns the match; its doc covers why the slice is
+        //    matched EXACTLY and why the fallthrough diagnoses rather than
+        //    returning a bare `None` (INV-SF-7 `parse-is-value-faithful`).
         if let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
             let left = self.lower_unit_expr(left_node)?;
             let right = self.lower_unit_expr(right_node)?;
-            let op_text = self
-                .source
-                .get(left_node.end_byte()..right_node.start_byte())?;
-            return if op_text.contains('/') {
-                Some(UnitExpr::Div(Box::new(left), Box::new(right)))
-            } else if op_text.contains('*') {
-                Some(UnitExpr::Mul(Box::new(left), Box::new(right)))
+            let op_start = left_node.end_byte();
+            let op_end = right_node.start_byte();
+            let op_text = self.source.get(op_start..op_end)?;
+            // Classify the RAW slice FIRST, and stop there when it already reads
+            // as an operator.  That is the overwhelmingly common case — unit
+            // atoms are contiguous, so the slice is normally just `*`, `·` or `/`
+            // — and this function runs on every compound quantity literal of
+            // every parse, including each keystroke of a GUI reparse.  The
+            // comment sweep below costs a `TreeCursor` plus a `Vec` per node, so
+            // it must not be paid on that path.
+            //
+            // Behaviour-preserving, not an approximation: excision can only ever
+            // SHRINK the slice, and a slice whose trimmed form is exactly `*`,
+            // `·` or `/` cannot contain a comment at all — every comment opens
+            // with `/` and is at least two bytes, so its presence would leave the
+            // trimmed slice strictly longer than the operator alone.  Hence the
+            // raw `Mul`/`Div` answer is the same answer the residue would give.
+            //
+            // Everything else falls through to the sweep.  Comments are `extras`,
+            // so one written between the operands lands INSIDE the slice —
+            // measured on a clean parse (`has_error() == false`):
+            //
+            //   5N/*c*/*m   →   unit_expr(left, block_comment, right)
+            //
+            // No parens needed, and the `·` spelling behaves identically.  Cut
+            // the comment spans out before re-classifying, so a comment-bearing
+            // `Mul`/`Div` lowers to `Mul`/`Div`: the lowered tree must agree with
+            // what the grammar ACCEPTED, and rejecting a clean parse would trade
+            // one INV-SF-7 violation (wrong value) for a spurious error on valid
+            // source.  `collect_unit_op_comment_spans` sweeps the SUBTREE rather
+            // than this node's direct children — where an `extra` attaches is a
+            // property of the generated parser, not of the grammar rule; see its
+            // doc for the measured depth case.
+            //
+            // `op_residue` is bound in THIS scope, not inside the `else`, so the
+            // `Unrecognized(&str)` borrow into it outlives the match below.
+            let op_residue: Cow<'_, str>;
+            let raw_op = classify_unit_op(op_text);
+            let op = if matches!(raw_op, UnitOp::Mul | UnitOp::Div) {
+                raw_op
             } else {
-                None
+                let comment_spans = collect_unit_op_comment_spans(node, op_start, op_end);
+                op_residue = strip_unit_op_comments(op_text, op_start, &comment_spans);
+                classify_unit_op(&op_residue)
             };
+            return self.unit_expr_from_classified_op(op, left, right, node);
         }
 
         // 3. Paren or bare unit: walk named children. A `unit_name` child is a
@@ -4052,6 +4361,53 @@ impl<'a> Lowering<'a> {
             }
         }
         None
+    }
+
+    /// Build the [`UnitExpr`] a classified operator calls for, or drop the
+    /// member — loudly for [`UnitOp::Unrecognized`], silently for
+    /// [`UnitOp::Missing`].  `node` is the whole `unit_expr` being lowered, and
+    /// is what any diagnostic is spanned to.
+    ///
+    /// Split out of [`Self::lower_unit_expr`] purely as a TEST SEAM, following
+    /// the same shape as [`Self::qualified_type_recovery_base`]: no source
+    /// reaches the two dropping arms today (see [`UnitOp`]), so a synthetic
+    /// classification handed to a real CST node is the only way to observe that
+    /// the diagnostic FIRES AT ALL, exactly once, naming the operator verbatim,
+    /// and SPANNED to the whole `unit_expr`.  (Its full wording is deliberately
+    /// not pinned — see `unit_op_seam_unrecognized_*`.)  Without that seam, the
+    /// `push_error` call
+    /// below is defensive code whose first execution would be in production —
+    /// the shape INV-SF-7 warns about.  `unit_op_seam_*` in this file's `mod
+    /// tests` drives all four arms.
+    fn unit_expr_from_classified_op(
+        &self,
+        op: UnitOp<'_>,
+        left: UnitExpr,
+        right: UnitExpr,
+        node: tree_sitter::Node,
+    ) -> Option<UnitExpr> {
+        match op {
+            UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
+            UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
+            // Silent BY DESIGN, and not the INV-SF-7 shape: error recovery
+            // spliced the operands together, so the tree already carries the
+            // ERROR/MISSING node `check_and_lower!` reports. The drop is loud
+            // where the user observes it — just not reported twice.  A slice
+            // that held ONLY comments reduces to this same case, and for the
+            // same reason: the operator token is genuinely absent from the
+            // source, so the tree is already in error.
+            UnitOp::Missing => None,
+            // Names the comment-free RESIDUE, which is the operator the user
+            // actually wrote; a comment they deliberately put there is not
+            // part of the complaint.
+            UnitOp::Unrecognized(other) => {
+                self.push_error(
+                    format!("unrecognized unit operator `{other}` in unit expression"),
+                    self.span(node),
+                );
+                None
+            }
+        }
     }
 
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -4210,6 +4566,47 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let (args, arg_names) = self.lower_call_arguments(node);
+
+        Some(Expr {
+            kind: ExprKind::FunctionCall { name, args, arg_names },
+            span: self.span(node),
+        })
+    }
+
+    /// Walk a call node's `argument_list` child and lower every argument,
+    /// returning `(args, arg_names)` as two parallel vectors (`arg_names[i]` is
+    /// `None` for a positional argument).
+    ///
+    /// Both call nodes built from `callTail($)` in the grammar share this walk —
+    /// `function_call` (`plain(1)`) and `namespaced_call` (`pp.compute(1,
+    /// scale: 2)`, task 5495 μ). Having ONE walk is what keeps the qualified and
+    /// unqualified paths at exact parity: a change to named/positional handling
+    /// cannot land on one and miss the other. Pinned by
+    /// `qualified_call_named_and_positional_args_at_parity` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// **A REJECTED ARGUMENT KEEPS ITS SLOT.** Dropping it would silently shift
+    /// the arity of the enclosing call and re-label every argument after it:
+    /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` before
+    /// this was fixed, with `3` sliding into position 1. That matters even
+    /// though the enclosing parse always carries an error, because
+    /// `reify_compiler`'s `forward_parse_errors` downgrades every parse error to
+    /// a WARNING — so a library consumer that compiles and reads diagnostics
+    /// sees the mis-arity'd call with no error at all. The slot is filled with
+    /// `ExprKind::Undef`, whose documented job is exactly this (it absorbs the
+    /// type cascade via `Type::Error`), and any label the argument carried is
+    /// preserved so `args`/`arg_names` stay length-matched and aligned.
+    ///
+    /// The placeholder is pushed ONLY when the failed lowering also pushed a
+    /// DIAGNOSTIC. A `None` with no diagnostic is a silent skip — a `line_comment`
+    /// or `block_comment` extra sitting inside the parens, or a node kind
+    /// `lower_expr` does not dispatch — and those must keep dropping out, or
+    /// `f(1, /* c */ 2)` would become a three-argument call on a CLEAN parse.
+    /// Measuring the diagnostic count around each argument is what separates the
+    /// two cases without a second "is this an argument slot" predicate that could
+    /// drift from the grammar (task 5495 μ, amendment; review suggestion #7).
+    fn lower_call_arguments(&self, node: tree_sitter::Node) -> (Vec<Expr>, Vec<Option<String>>) {
         let mut args = Vec::new();
         let mut arg_names = Vec::new();
         let mut cursor = node.walk();
@@ -4217,13 +4614,163 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
+                    let errors_before = self.errors.borrow().len();
                     if let Some((arg_name, expr)) = self.lower_call_argument(arg_child) {
                         arg_names.push(arg_name);
                         args.push(expr);
+                    } else if self.errors.borrow().len() > errors_before {
+                        arg_names.push(self.call_argument_label(arg_child));
+                        args.push(Expr {
+                            kind: ExprKind::Undef,
+                            span: self.span(arg_child),
+                        });
                     }
                 }
             }
         }
+        (args, arg_names)
+    }
+
+    /// The label of an `argument_list` child that FAILED to lower, so a
+    /// placeholder can keep both parallel vectors aligned (task 5495 μ).
+    ///
+    /// `Some(name)` for a `named_argument` whose `value` was rejected — the
+    /// label itself parsed fine and dropping it would turn a named argument into
+    /// a positional one — and `None` for everything else.
+    fn call_argument_label(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "named_argument" {
+            return None;
+        }
+        node.child_by_field_name("name")
+            .map(|name| self.node_text(name).to_string())
+    }
+
+    /// Lower a `namespaced_call` — a call through an import binding,
+    /// `pp.Pulley()` / `pp.compute(1, scale: 2)` (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q2, D-7).
+    ///
+    /// Emits the ORDINARY `ExprKind::FunctionCall` — the same variant the
+    /// unqualified path uses — with the qualifier carried DOT-JOINED in the
+    /// existing `name` slot and the arguments produced by the shared
+    /// `lower_call_arguments` walk. No new `ExprKind` variant: see
+    /// `namespaced_name_text` for the full encoding contract handed to the
+    /// resolution phase (task ν), of which this is the expression-position half.
+    ///
+    /// The qualifier is joined from the callee's `object`/`member` CST FIELDS
+    /// via the shared `dot_join`, so `pp . Pulley()` normalises to exactly
+    /// `"pp.Pulley"` — the same single implementation `namespaced_name_text`
+    /// uses for the type-position form.
+    ///
+    /// **Two guards, in this order.** Guard 1 checks the callee's SHAPE; guard 2
+    /// checks that its qualifier is a DECLARED import binding. The order is
+    /// load-bearing: a mis-shaped callee (`a.b.c()`, `arr[0].g()`) has no single
+    /// qualifier to name, so it must reach guard 1 first and keep that guard's
+    /// own wording.
+    ///
+    /// **Callee-shape guard (D-7 / PRD §9).** `grammar.js`'s `namespaced_call`
+    /// rule takes a full `member_access` as its callee (an inline `identifier
+    /// '.' identifier` would collide with `member_access` as a reduce-reduce
+    /// ambiguity), and the `member_access` rule's `object` field is in turn a
+    /// full `_expression`. So the callee's object is not necessarily a binding
+    /// identifier: a 3+-segment path (`a.b.c()`, object = `member_access`)
+    /// reaches here, and so does any other postfix chain (`arr[0].g()`, object =
+    /// `index_access`; `f(1).g()`, object = `function_call`). Every one of those
+    /// is rejected at lowering, worded around what is actually checked — the
+    /// callee must be a simple `binding.Name` — with the out-of-scope sentence
+    /// appended ONLY for the dotted-path case it describes. Rejection is
+    /// unchanged in kind: every one of these forms was an error before μ and
+    /// still is, now with a message instead of an anonymous ERROR node. The
+    /// rejection lowers nothing, so no fabricated multi-segment name reaches the
+    /// AST — and `lower_binding_value` propagates the `None`, so the enclosing
+    /// member is dropped rather than half-built.
+    ///
+    /// **Import-binding guard (D-7).** `namespaced_call` captures EVERY
+    /// two-segment `ident.ident(args)`, not only the import-qualified ones.
+    /// Without this guard μ turns hard parse errors into SILENCE: `obj.width()`,
+    /// `self.w()` and `totally.undefined_thing(1, 2)` were all `Parse error …
+    /// exit 1` before μ, and measured as exit 0 after it, because the compiler
+    /// has no unknown-function diagnostic behind `ExprKind::FunctionCall`.
+    /// Lowering is the first layer that knows the import set
+    /// (`namespace_bindings`, seeded by `collect_import_bindings` in
+    /// `lower_source_file`'s order-independent first pass), so the gate lives
+    /// here rather than on any of the three grammar surfaces — none of which
+    /// knows the imports, and restricting the callee inline would reintroduce the
+    /// reduce-reduce ambiguity with `member_access` described above.
+    ///
+    /// It runs strictly AFTER the callee-shape guard so that guard's diagnostics
+    /// are untouched, and shares its rejection shape: one `push_error` spanning
+    /// the callee, then `return None`.
+    ///
+    /// After both guards, exactly one silence remains in expression position: a
+    /// DECLARED binding whose module resolves but whose member does not. That is
+    /// resolution work by definition and therefore ν's (task 5505) — pinned as an
+    /// executable case by `declared_binding_with_unknown_member_is_left_to_resolution`
+    /// rather than assumed closed. A declared binding whose module is ABSENT is
+    /// already loud downstream (`error: module 'parts' not found`, exit 1).
+    ///
+    /// The call-LESS forms (`pp.Pulley`, `pp.FitClass.Clearance`) are NOT routed
+    /// here: they stay `member_access`, indistinguishable from `self.width` at
+    /// parse time, and their disambiguation is deferred to ν exactly as
+    /// resolution-unification D-9 defers `MemberAccess`→`EnumAccess`.
+    fn lower_namespaced_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let callee = node.child_by_field_name("callee")?;
+        let object = callee.child_by_field_name("object")?;
+        let member = callee.child_by_field_name("member")?;
+
+        if object.kind() != "identifier" {
+            let scope_note = if object.kind() == "member_access" {
+                "; bare full-path qualification is out of scope \
+                 (docs/prds/v0_6/stdlib-namespace.md §9)"
+            } else {
+                ""
+            };
+            self.push_error(
+                format!(
+                    "unsupported qualified call `{callee_text}(...)`: the callee of a \
+                     qualified call must be a simple `binding.Name(...)` through an \
+                     `import ... as binding` alias, but `{object_text}` is not a binding \
+                     name{scope_note}",
+                    callee_text = self.node_text(callee),
+                    object_text = self.node_text(object),
+                ),
+                self.span(callee),
+            );
+            return None;
+        }
+
+        let qualifier = self.node_text(object);
+        if !self.namespace_bindings.contains(qualifier) {
+            let callee_text = self.node_text(callee);
+            let message = match self.entity_bindings.get(qualifier) {
+                // Bound — but as an ENTITY name, so "declare an import" is not
+                // the remedy: one IS declared. Handing `import a.b.Widget` back
+                // the advice "declare one as `import <path>.Widget`" is worse
+                // than silence, because it is the line already in the file.
+                Some(kind) => format!(
+                    "qualifier `{qualifier}` in `{callee_text}(...)` is not a module \
+                     namespace: an import in this file binds `{qualifier}`, but as \
+                     {binding_note}, and the qualifier of a qualified call must be a \
+                     module namespace. Reify has no method-call syntax, so this cannot \
+                     be a call on the entity `{qualifier}`{capitalisation_hint}",
+                    binding_note = Self::entity_binding_note(kind),
+                    capitalisation_hint = Self::entity_binding_capitalisation_hint(kind),
+                ),
+                // Not bound at all — today's message, verbatim.
+                None => format!(
+                    "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
+                     of a qualified call must be a module namespace bound by an import, but \
+                     no import in this file binds `{qualifier}` — declare one as \
+                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. Reify has \
+                     no method-call syntax, so this cannot be a call on a value named \
+                     `{qualifier}`"
+                ),
+            };
+            self.push_error(message, self.span(callee));
+            return None;
+        }
+
+        let name = self.dot_join(object, member);
+        let (args, arg_names) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::FunctionCall { name, args, arg_names },
@@ -4317,18 +4864,13 @@ impl<'a> Lowering<'a> {
         let base = self.lower_expr(base_node)?;
         let selector = self.node_text(selector_node).to_string();
 
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        // The shared `callTail($)` argument walk — same helper `function_call`,
+        // `namespaced_call` and `trait_method_call` use, so all four call
+        // surfaces inherit its slot-preservation invariant: a rejected argument
+        // leaves an `Undef` placeholder rather than shifting this call's arity.
+        // Ad-hoc selectors don't bind named arguments, so the labels are
+        // discarded (unchanged behaviour); only `args`' arity and indexing.
+        let (args, _) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::AdHocSelector {
@@ -4415,24 +4957,19 @@ impl<'a> Lowering<'a> {
     fn lower_trait_method_call(&self, node: tree_sitter::Node) -> Option<Expr> {
         let callee_node = node.child_by_field_name("callee")?;
 
-        // Collect positional args from the `argument_list` child (same logic as
-        // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        // Collect positional args through the SHARED `callTail($)` walk
+        // `lower_call_arguments` — the one implementation `function_call`,
+        // `namespaced_call` and `ad_hoc_selector` also use, so no call surface
+        // can drift from the others. The invariant this inherits: a rejected
+        // argument leaves an `ExprKind::Undef` placeholder in its own slot
+        // rather than being dropped, because dropping it would shift this
+        // call's arity and slide every later argument down a position (task
+        // 5495 μ, amendment).
         // Trait method calls don't use named-arg binding, so any named-arg label is
         // silently dropped — only the value expression is retained.  Named-arg syntax
         // is grammatically permitted at call sites (e.g. `Trait::method(x: value)`),
         // so dropping the label here is correct and expected.
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        let (args, _) = self.lower_call_arguments(node);
 
         match callee_node.kind() {
             "qualified_access" => {
@@ -4576,6 +5113,256 @@ impl<'a> Lowering<'a> {
             },
             span: self.span(node),
         })
+    }
+}
+
+/// Classification of the operator slice between a `unit_expr`'s `left` and
+/// `right` operands — see [`Lowering::lower_unit_expr`], the sole caller.
+///
+/// Split out of the method so the non-happy-path arms are REACHABLE FROM A TEST:
+/// defensive code whose first observation is in production is exactly the shape
+/// INV-SF-7 warns about.
+///
+/// [`UnitOp::Unrecognized`] and [`UnitOp::Missing`] are both DEFENSIVE arms: no
+/// probed source reaches either.  They are not therefore removable, and the
+/// history says why the fallthrough must DIAGNOSE rather than return a bare
+/// `None`.
+///
+/// Comments are `extras`, so one written between the operands is part of the raw
+/// operator slice: `5N/*c*/*m` parses with no ERROR node and yields `/*c*/*`
+/// (measured, task #5784).  Three successive contracts for that input —
+///   1. before #5784, `op_text.contains('/')` lowered it to `Div`: a well-typed
+///      WRONG value from a clean parse, the INV-SF-7 shape itself;
+///   2. #5784's exact match made it `Unrecognized("/*c*/*")` — loud, but a
+///      spurious error on source the grammar ACCEPTED;
+///   3. today, [`strip_unit_op_comments`] cuts the comment spans out first, so
+///      the residue `*` classifies as the `Mul` the CST plainly shows.
+///
+/// READ THAT AS A SEPARATE DEFECT FROM THE `·` WIDENING.  Contract (1) is
+/// PRE-EXISTING: `contains('/')` mis-read `/*c*/*` as `Div` for the whole life of
+/// `lower_unit_expr`, with or without U+00B7, so nothing about it is `·`-specific.
+/// #5784 is what made it observable — the exact match turned a silent wrong value
+/// into a loud spurious error — and so repaired it here rather than leaving a
+/// known INV-SF-7 wrong-value bug behind a task boundary.  The `·` change itself
+/// is two lines: one scanner guard, and the `"·"` arm of [`classify_unit_op`].
+/// Everything else on this path — this enum, [`strip_unit_op_comments`],
+/// [`collect_unit_op_comment_spans`] and
+/// [`Lowering::unit_expr_from_classified_op`] — is the comment-correctness fix.
+///
+/// After (3) the residue is always exactly the operator token, because the only
+/// `extras` are whitespace (trimmed), comments (excised), and a sentinel the
+/// scanner never emits.  So `Unrecognized` now guards against a FUTURE operator
+/// token reaching this function unhandled: without the diagnostic, a bare `None`
+/// out of `lower_unit_expr` propagates through `lower_quantity_literal` and
+/// `lower_let` as a DROPPED member with no error at all.
+///
+/// Both arms are therefore observed ONLY by tests, in two layers — do not delete
+/// either as "dead":
+///   - `classify_unit_op_*` and `strip_unit_op_comments_*` pin the
+///     CLASSIFICATION, i.e. which arm a given slice lands in;
+///   - `unit_op_seam_*` pin what the CALL SITE then does with it — that
+///     `Unrecognized` emits exactly one error naming the operator verbatim and
+///     spanned to the whole `unit_expr`, and that `Missing` emits none.  They
+///     drive [`Lowering::unit_expr_from_classified_op`] directly, which exists
+///     as that seam.
+#[derive(Debug, PartialEq, Eq)]
+enum UnitOp<'a> {
+    /// `*` or `·` (U+00B7 MIDDLE DOT) — two spellings of ONE operator, both
+    /// yielding [`UnitExpr::Mul`] (task #5784).
+    Mul,
+    /// `/` → [`UnitExpr::Div`].
+    Div,
+    /// The slice is empty or whitespace-only, i.e. the operator token is
+    /// MISSING — spliced away by tree-sitter's error recovery.  The caller must
+    /// NOT diagnose: the tree already carries the ERROR/MISSING node that
+    /// `check_and_lower!` reports.
+    Missing,
+    /// Anything else, carried verbatim (already trimmed) so the caller can name
+    /// it in the diagnostic.  Never dropped silently.
+    Unrecognized(&'a str),
+}
+
+/// Classify the operator slice between a `unit_expr`'s two operands.
+///
+/// The caller classifies the RAW slice first and, only if that does not already
+/// read as `Mul`/`Div`, re-classifies the residue left by
+/// [`strip_unit_op_comments`].  Either way the trimmed input it finally acts on
+/// is exactly `*`, `·` or `/` for every parse the grammar accepts — unit atoms
+/// are contiguous and the only other `extras` are whitespace and a never-emitted
+/// sentinel.  The match is nonetheless TOTAL; see [`UnitOp`] for why the leftover
+/// arms stay.
+///
+/// Matched EXACTLY rather than by `contains`, and every arm is total, because the
+/// caller cannot afford an unhandled operator: a bare `None` out of
+/// `lower_unit_expr` propagates through `lower_quantity_literal` and `lower_let`
+/// as a DROPPED member, while `check_and_lower!` stays silent (it keys off a CST
+/// that `is_error()`, and a scanner-accepted operator produces no error node).
+/// The user then sees a binding vanish with no diagnostic — the INV-SF-7
+/// `parse-is-value-faithful` failure shape (`docs/legibility/design-invariants.md`).
+/// Returning [`UnitOp::Unrecognized`] instead of `None` closes that for the
+/// OPERATOR-CLASSIFICATION path — every operator spelling, present or future,
+/// rather than `·` alone.
+///
+/// Scope of that claim, stated exactly because the next reader will lean on it:
+/// it covers this function's fallthrough, NOT the whole `Mul`/`Div` arm.  Three
+/// bare-`None` exits still precede the classification in
+/// [`Lowering::lower_unit_expr`] — the two `self.lower_unit_expr(..)?` operand
+/// recursions and the `self.source.get(op_start..op_end)?` slice read.  All
+/// three are unreachable for a well-formed CST (the operand byte ranges are
+/// token-aligned, ascending and inside `self.source`), so they are not live
+/// INV-SF-7 defects; but they are silent, so "no silent exit anywhere in the
+/// arm" would be a false claim.  A future edit that can make any of them fail on
+/// real source must give it a diagnostic, not inherit this one.
+fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
+    match op_text.trim() {
+        "*" | "·" => UnitOp::Mul,
+        "/" => UnitOp::Div,
+        "" => UnitOp::Missing,
+        other => UnitOp::Unrecognized(other),
+    }
+}
+
+/// Collect the byte ranges of every comment lying inside a `unit_expr`'s raw
+/// operator slice `[op_start, op_end)` — the `cuts` argument
+/// [`strip_unit_op_comments`] expects, ascending and non-overlapping.
+///
+/// Sweeps the SUBTREE, not just `node`'s direct children, because WHERE
+/// tree-sitter attaches an `extra` is a property of the GENERATED parser, not of
+/// the grammar rule: it can move under a `grammar.js` edit that changes no
+/// accepted language (narrowing the paren arm to a hidden `_unit_atom`, which
+/// `grammar.js`'s own TODO contemplates, is the concrete candidate).  Comments
+/// already DO attach at depth — measured on a clean parse (task #5784 amendment
+/// pass):
+///
+/// ```text
+///   5(m/*c*/)*s  →  unit_expr(unit_expr(unit_expr(unit_name), block_comment),
+///                             unit_expr(unit_name))
+/// ```
+///
+/// i.e. a child of the INNER `unit_expr`, not the outer one.  That comment is
+/// outside the operator slice (`*`) and so is filtered out, but it shows the
+/// attachment point is not fixed at direct-child.  Were an IN-SLICE comment ever
+/// to move that way, a direct-children sweep would miss it, the residue would
+/// still carry the comment text, and [`Lowering::lower_unit_expr`] would emit a
+/// spurious `unrecognized unit operator` on source the grammar ACCEPTED — the
+/// exact failure the excision path exists to remove, and one no test would
+/// localise to attachment.  Widening costs nothing on the hot path: the caller
+/// only gets here when the RAW slice failed to classify.
+///
+/// An ANCESTOR attachment needs no handling: sibling ranges are disjoint and
+/// ordered, so a node lying strictly inside `node`'s range cannot be a child of
+/// any ancestor of `node`.  A descendant walk is complete for `[op_start,
+/// op_end)`.
+///
+/// Pre-order with children in source order, and a matched comment is never
+/// descended into (comments do not nest), so the spans come back ascending and
+/// non-overlapping.  The range filter is what keeps the wider walk safe, and
+/// [`strip_unit_op_comments`] re-validates every range regardless.
+fn collect_unit_op_comment_spans(
+    node: tree_sitter::Node,
+    op_start: usize,
+    op_end: usize,
+) -> Vec<(usize, usize)> {
+    fn walk(
+        node: tree_sitter::Node,
+        op_start: usize,
+        op_end: usize,
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let (start, end) = (child.start_byte(), child.end_byte());
+            // Siblings are ordered and non-overlapping, so a child disjoint from
+            // the operator slice cannot contain an in-slice comment either.
+            if end <= op_start || start >= op_end {
+                continue;
+            }
+            if matches!(child.kind(), "line_comment" | "block_comment") {
+                if start >= op_start && end <= op_end {
+                    out.push((start, end));
+                }
+                continue;
+            }
+            walk(child, op_start, op_end, out);
+        }
+    }
+    let mut spans = Vec::new();
+    walk(node, op_start, op_end, &mut spans);
+    spans
+}
+
+/// Cut the comment spans out of a `unit_expr`'s raw operator slice, returning
+/// what [`classify_unit_op`] should see.
+///
+/// Comments are parser `extras`, so one written between the operands sits INSIDE
+/// the slice `lower_unit_expr` cuts from the source — as a descendant of the
+/// `unit_expr` node (a DIRECT child in every shape probed so far, but
+/// [`collect_unit_op_comment_spans`] does not assume that), on a tree with no
+/// ERROR node anywhere.  Measured (task #5784 amendment pass):
+///
+/// ```text
+///   5N/*c*/*m        →  unit_expr(left, block_comment, right)   slice `/*c*/*`
+///   5N/*c*/·m        →  same shape                              slice `/*c*/·`
+///   5N/*c*//m        →  same shape                              slice `/*c*//`
+///   5N/*a*//*b*/*m   →  two block_comment children              slice `/*a*//*b*/*`
+/// ```
+///
+/// `line_comment` is accepted by the caller's filter for symmetry, but was never
+/// observed inside a `unit_expr`: a `//…` comment ends the line, and every probed
+/// spelling (`5N//c⏎*m`, `5(m)//c⏎*(s)`) reparsed as a `binary_expression`
+/// instead.
+///
+/// Classifying those raw slices would reject source the GRAMMAR ACCEPTED, so the
+/// comments come out first and the residue (`*`, `·`, `/`) classifies as the
+/// operator the CST plainly shows.
+///
+/// `slice_start` is `slice`'s byte offset in the source file; `cuts` are ABSOLUTE
+/// `(start, end)` byte ranges which the caller has already filtered to those
+/// lying inside the slice, in ascending source order.  Any entry that does not
+/// translate to an ascending, in-bounds, char-boundary-aligned range inside
+/// `slice` is SKIPPED, and a slice whose tail cannot be taken falls back to the
+/// raw text: a surprising CST then degrades to the loud `Unrecognized`
+/// diagnostic rather than to a panic or a silently wrong operator.
+///
+/// Borrows rather than allocating when `cuts` is empty.  The caller goes further
+/// and does not call this at all unless the raw slice failed to classify, so a
+/// comment-free unit expression pays neither this nor the `TreeCursor` + `Vec`
+/// needed to find the cuts.
+fn strip_unit_op_comments<'a>(
+    slice: &'a str,
+    slice_start: usize,
+    cuts: &[(usize, usize)],
+) -> Cow<'a, str> {
+    if cuts.is_empty() {
+        return Cow::Borrowed(slice);
+    }
+    let mut out = String::with_capacity(slice.len());
+    // Slice-relative offset of the first byte not yet copied into `out`.
+    let mut kept_to = 0usize;
+    for &(start, end) in cuts {
+        let (Some(rel_start), Some(rel_end)) = (
+            start.checked_sub(slice_start),
+            end.checked_sub(slice_start),
+        ) else {
+            continue;
+        };
+        if rel_start < kept_to || rel_end < rel_start || rel_end > slice.len() {
+            continue;
+        }
+        let Some(keep) = slice.get(kept_to..rel_start) else {
+            continue;
+        };
+        out.push_str(keep);
+        kept_to = rel_end;
+    }
+    match slice.get(kept_to..) {
+        Some(tail) => {
+            out.push_str(tail);
+            Cow::Owned(out)
+        }
+        // `kept_to` landed off a char boundary — unreachable for a token-aligned
+        // CST.  Hand back the raw slice so the caller diagnoses loudly.
+        None => Cow::Borrowed(slice),
     }
 }
 
@@ -6964,5 +7751,411 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // ── `classify_unit_op` — the non-happy-path arms of `lower_unit_expr` ─────
+    //
+    // Task #5784 (angle-units leaf κ).  These pin the CLASSIFICATION and the
+    // verbatim operator text handed to the diagnostic; the message wording itself
+    // is built at the single call site in `lower_unit_expr`.
+    //
+    // Both leftover arms are DEFENSIVE — no probed source reaches `Unrecognized`
+    // or `Missing` now that `strip_unit_op_comments` runs first (see the
+    // [`UnitOp`] doc for why they still must diagnose rather than return a bare
+    // `None`).  Tests are therefore their only observation, and these cover just
+    // one half of it: WHICH ARM a slice lands in.  What the call site does with
+    // that arm — that a diagnostic fires at all and names the operator, the span
+    // it attaches, and the silence of `Missing` — is pinned by `unit_op_seam_*`
+    // below.  Deleting either group as
+    // "dead code" restores the silent-member-drop hazard unobserved.
+
+    #[test]
+    fn classify_unit_op_maps_both_mul_spellings_to_one_operator() {
+        assert_eq!(classify_unit_op("*"), UnitOp::Mul);
+        assert_eq!(
+            classify_unit_op("·"),
+            UnitOp::Mul,
+            "U+00B7 MIDDLE DOT is a second spelling of `*`, not a distinct operator"
+        );
+        assert_eq!(classify_unit_op("/"), UnitOp::Div);
+    }
+
+    #[test]
+    fn classify_unit_op_treats_an_empty_slice_as_a_missing_operator() {
+        // An empty slice means error recovery spliced the operands together, so
+        // the tree already carries the real syntax error.  `Missing` is what tells
+        // `lower_unit_expr` to stay quiet rather than emit a second, confusingly
+        // worded "unrecognized unit operator ``".
+        assert_eq!(classify_unit_op(""), UnitOp::Missing);
+        assert_eq!(classify_unit_op("   "), UnitOp::Missing);
+    }
+
+    #[test]
+    fn classify_unit_op_carries_an_unknown_operator_verbatim() {
+        // Whatever the caller names in its diagnostic must be the operator the
+        // user actually wrote — trimmed, never truncated or normalised.
+        assert_eq!(classify_unit_op("×"), UnitOp::Unrecognized("×"));
+        assert_eq!(classify_unit_op(" ⋅ "), UnitOp::Unrecognized("⋅"));
+        assert_eq!(classify_unit_op("**"), UnitOp::Unrecognized("**"));
+    }
+
+    // ── `strip_unit_op_comments` — comments are `extras`, so they land in the
+    //    operator slice.  Offsets here are the real ones for the cited sources
+    //    (the caller passes ABSOLUTE byte ranges plus the slice's own start).
+
+    #[test]
+    fn strip_unit_op_comments_borrows_when_there_is_nothing_to_cut() {
+        // The overwhelmingly common path: no comment, no allocation.
+        let out = strip_unit_op_comments("*", 24, &[]);
+        assert!(matches!(out, Cow::Borrowed("*")));
+        assert_eq!(strip_unit_op_comments("·", 24, &[]).as_ref(), "·");
+    }
+
+    #[test]
+    fn strip_unit_op_comments_leaves_the_bare_operator() {
+        // `structure S { let x = 5N/*c*/*m }` — slice `/*c*/*` starts at byte 24,
+        // the block_comment spans 24..29, so the residue is the trailing `*`.
+        assert_eq!(
+            strip_unit_op_comments("/*c*/*", 24, &[(24, 29)]).as_ref(),
+            "*",
+            "a comment-bearing Mul must classify as Mul, not as an unrecognized \
+             operator — the grammar accepted this source with no ERROR node"
+        );
+        // The `·` and `/` spellings take the identical path.
+        assert_eq!(
+            strip_unit_op_comments("/*c*/·", 24, &[(24, 29)]).as_ref(),
+            "·"
+        );
+        assert_eq!(
+            strip_unit_op_comments("/*c*//", 24, &[(24, 29)]).as_ref(),
+            "/"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_handles_several_comments_before_the_operator() {
+        // `structure def S { let x = 5N/*a*//*b*/*m }` — measured: a clean parse
+        // whose `unit_expr` carries TWO block_comment children, slice
+        // `/*a*//*b*/*` at 28..39 with comments at 28..33 and 33..38.
+        assert_eq!(
+            strip_unit_op_comments("/*a*//*b*/*", 28, &[(28, 33), (33, 38)]).as_ref(),
+            "*",
+            "every comment span must come out, not just the first"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_skips_ranges_it_cannot_apply() {
+        // Defensive: a cut outside the slice, a descending pair, and one running
+        // past the end are each SKIPPED, never panicked on.  The residue then
+        // still carries the comment text and classifies as `Unrecognized` — loud,
+        // which is the correct degradation for a CST shape we did not predict.
+        let slice = "/*c*/*";
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(0, 4)]).as_ref(),
+            slice,
+            "a cut before the slice must not be re-based onto it"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(29, 24)]).as_ref(),
+            slice,
+            "a descending range must be skipped"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(24, 999)]).as_ref(),
+            slice,
+            "a range running past the slice must be skipped"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_only_ever_shrinks_toward_a_real_operator() {
+        // A slice that is NOTHING but a comment reduces to `Missing`, not to a
+        // second diagnostic: the operator token is genuinely absent, so error
+        // recovery already put an ERROR/MISSING node in the tree for
+        // `check_and_lower!` to report.
+        let residue = strip_unit_op_comments("/*c*/", 24, &[(24, 29)]);
+        assert_eq!(residue.as_ref(), "");
+        assert_eq!(classify_unit_op(&residue), UnitOp::Missing);
+    }
+
+    // ── `collect_unit_op_comment_spans` — WHICH comments feed the excision ────
+    //
+    // #5784 amendment pass.  `strip_unit_op_comments` above is pinned against
+    // hand-written ranges; these pin the step that PRODUCES those ranges from a
+    // real CST, which is where the excision path's correctness actually rests.
+    // The sweep walks the subtree rather than the node's direct children,
+    // because an `extra`'s attachment point belongs to the generated parser, not
+    // to the grammar rule — see the function's doc.
+
+    /// Parse `source`, find the outer `unit_expr`, and return its operator
+    /// slice's start offset, the slice itself, and the spans the sweep collects
+    /// from it.
+    fn unit_op_comment_spans_of(source: &str) -> (usize, &str, Vec<(usize, usize)>) {
+        let tree = unit_op_seam_tree(source);
+        assert!(
+            !tree.root_node().has_error(),
+            "`{source}` must parse CLEAN — a probe that errors would be \
+             measuring error recovery, not comment attachment"
+        );
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let left = unit_expr
+            .child_by_field_name("left")
+            .expect("expected a `left` operand");
+        let right = unit_expr
+            .child_by_field_name("right")
+            .expect("expected a `right` operand");
+        let (op_start, op_end) = (left.end_byte(), right.start_byte());
+        (
+            op_start,
+            &source[op_start..op_end],
+            collect_unit_op_comment_spans(unit_expr, op_start, op_end),
+        )
+    }
+
+    #[test]
+    fn collect_unit_op_comment_spans_finds_every_comment_in_the_slice_in_order() {
+        let source = "structure def S { let x = 5N/*c*/*m }";
+        let (op_start, slice, spans) = unit_op_comment_spans_of(source);
+        assert_eq!(slice, "/*c*/*");
+        assert_eq!(spans.len(), 1, "one comment, one span; got {spans:?}");
+        assert_eq!(&source[spans[0].0..spans[0].1], "/*c*/");
+        assert_eq!(
+            strip_unit_op_comments(slice, op_start, &spans).as_ref(),
+            "*",
+            "the collected spans must reduce the slice to the operator the CST \
+             plainly shows"
+        );
+
+        // Two comments: ascending and non-overlapping, which is what
+        // `strip_unit_op_comments` requires of `cuts`.
+        let source = "structure def S { let x = 5N/*a*//*b*/*m }";
+        let (op_start, slice, spans) = unit_op_comment_spans_of(source);
+        assert_eq!(slice, "/*a*//*b*/*");
+        assert_eq!(spans.len(), 2, "two comments, two spans; got {spans:?}");
+        assert!(
+            spans[0].1 <= spans[1].0,
+            "spans must come back in ascending, non-overlapping source order; \
+             got {spans:?}"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, op_start, &spans).as_ref(),
+            "*"
+        );
+    }
+
+    /// The source below is the one probed shape whose comment is attached BELOW
+    /// the outer `unit_expr` — measured on a clean parse:
+    ///
+    /// ```text
+    ///   5(m/*c*/)*s  →  unit_expr(unit_expr(unit_expr(unit_name), block_comment),
+    ///                             unit_expr(unit_name))
+    /// ```
+    const NESTED_COMMENT_SOURCE: &str = "structure def S { let x = 5(m/*c*/)*s }";
+
+    #[test]
+    fn collect_unit_op_comment_spans_ignores_a_comment_outside_the_slice() {
+        // Its comment sits inside the LEFT operand, so the operator slice is
+        // already exactly `*` and excising anything would corrupt it.  Two
+        // independent guards keep it out — the sibling prune skips a subtree
+        // disjoint from the slice, and the range filter rejects the comment
+        // itself — and this pins the OUTCOME, which must survive either being
+        // rewritten.
+        let (_op_start, slice, spans) = unit_op_comment_spans_of(NESTED_COMMENT_SOURCE);
+        assert_eq!(slice, "*");
+        assert!(
+            spans.is_empty(),
+            "a comment outside `[op_start, op_end)` must not be cut, however \
+             deep the walk goes; got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn collect_unit_op_comment_spans_reaches_a_comment_attached_below_the_node() {
+        // THE DEPTH CLAIM, and the only test that bites on it: this is the sole
+        // shape in which a real parse attaches a comment to a DESCENDANT of the
+        // `unit_expr` rather than to it directly, so a direct-children sweep
+        // returns nothing here while the subtree walk finds it.
+        //
+        // The range passed is the WHOLE node, not the operator slice — widened
+        // deliberately, because today no accepted source puts a depth-attached
+        // comment INSIDE a slice.  That is a fact about the generated parser's
+        // current `extras` placement, not about the grammar, which is exactly why
+        // the sweep must not assume it: if the attachment point moves, this
+        // function keeps working and no spurious `unrecognized unit operator`
+        // reaches a user.
+        let tree = unit_op_seam_tree(NESTED_COMMENT_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let comment = find_node_by_kind(unit_expr, "block_comment")
+            .expect("fixture drift: expected a block_comment somewhere under the unit_expr");
+        assert_ne!(
+            comment.parent().map(|p| p.id()),
+            Some(unit_expr.id()),
+            "fixture drift: this test means to observe a comment attached BELOW \
+             the outer `unit_expr`; it is now a direct child, so the source no \
+             longer exercises the depth the walk exists for"
+        );
+
+        let spans =
+            collect_unit_op_comment_spans(unit_expr, unit_expr.start_byte(), unit_expr.end_byte());
+
+        assert_eq!(
+            spans,
+            vec![(comment.start_byte(), comment.end_byte())],
+            "the sweep must reach a comment attached below the node it is given"
+        );
+    }
+    // ── The CALL SITE: `Lowering::unit_expr_from_classified_op` ───────────────
+    //
+    // #5784 amendment pass.  The `classify_unit_op_*` tests above stop at the
+    // classification; nothing observed what the caller then DOES with a dropping
+    // arm — not that a diagnostic fires at all, not the span it attaches, not
+    // the SILENCE of `Missing`.  Both arms are unreachable from source (the scanner
+    // emits only `*`, `·` and `/`, and comments are excised before classifying),
+    // so the classification is the synthetic half here while the NODE stays real:
+    // the span assertion is then a genuine claim about which construct an editor
+    // underlines.  Same shape as `qualified_type_recovery_base_is_bounded_named`
+    // above — a real CST node, a helper called directly.
+
+    /// The source every seam test below drives, and the `unit_expr` it targets.
+    const UNIT_OP_SEAM_SOURCE: &str = "structure def S { let x = 5N*m }";
+    const UNIT_OP_SEAM_UNIT: &str = "N*m";
+
+    /// Parse `source` with the raw tree-sitter API so the CST is reachable.
+    fn unit_op_seam_tree(source: &str) -> tree_sitter::Tree {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("set_language failed");
+        ts_parser.parse(source, None).expect("parse returned None")
+    }
+
+    /// The two operands every seam test passes in — named so an assertion that
+    /// they came back in ORDER is readable.
+    fn unit_op_seam_operands() -> (UnitExpr, UnitExpr) {
+        (
+            UnitExpr::Unit("N".to_string()),
+            UnitExpr::Unit("m".to_string()),
+        )
+    }
+
+    #[test]
+    fn unit_op_seam_unrecognized_names_the_operator_and_spans_the_expression() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        assert_eq!(
+            &UNIT_OP_SEAM_SOURCE[unit_expr.start_byte()..unit_expr.end_byte()],
+            UNIT_OP_SEAM_UNIT,
+            "fixture drift: this test means to span the WHOLE compound unit, so \
+             the node it found must be the outer `unit_expr`, not an operand"
+        );
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+
+        // `/*c*/*` is the residue shape κ used to reject before comment excision
+        // landed — kept as the probe because it is the one operator text this
+        // arm has ever really been handed.
+        let lowered = lowering.unit_expr_from_classified_op(
+            UnitOp::Unrecognized("/*c*/*"),
+            left,
+            right,
+            unit_expr,
+        );
+
+        assert_eq!(
+            lowered, None,
+            "an unrecognized operator must drop the member — but see the \
+             diagnostic below: dropping it SILENTLY is the INV-SF-7 shape"
+        );
+        let errors = lowering.errors.borrow();
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        // The two SUBSTANTIVE claims, asserted separately: exactly one
+        // diagnostic, and it quotes the operator verbatim.  Deliberately NOT a
+        // full-sentence equality against the message — this arm is unreachable
+        // from any source the grammar accepts, so the exact wording is a string
+        // no user can currently observe.  Pinning it would red this seam on a
+        // reword that changes no behaviour, while both claims below survive one
+        // (#5784 amendment pass).
+        assert_eq!(
+            messages.len(),
+            1,
+            "the drop must produce exactly ONE diagnostic — a second here means \
+             the caller is also reporting the same node through \
+             `check_and_lower!`; got {messages:?}"
+        );
+        assert!(
+            messages[0].contains("/*c*/*"),
+            "the diagnostic must quote the rejected operator VERBATIM, so the \
+             user can see WHICH operator was not understood; got {:?}",
+            messages[0]
+        );
+        let span = errors[0].span;
+        assert_eq!(
+            (span.start, span.end),
+            (unit_expr.start_byte() as u32, unit_expr.end_byte() as u32),
+            "the diagnostic must underline the whole `{UNIT_OP_SEAM_UNIT}` it \
+             rejected, not the operator alone and not the file"
+        );
+    }
+
+    #[test]
+    fn unit_op_seam_missing_drops_the_member_without_a_second_diagnostic() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+
+        let lowered =
+            lowering.unit_expr_from_classified_op(UnitOp::Missing, left, right, unit_expr);
+
+        assert_eq!(lowered, None, "a missing operator cannot build a UnitExpr");
+        assert!(
+            lowering.errors.borrow().is_empty(),
+            "`Missing` must stay SILENT: error recovery spliced the operands \
+             together, so `check_and_lower!` already reported the ERROR/MISSING \
+             node — a diagnostic here would be the second one for one mistake, \
+             got {:?}",
+            lowering.errors.borrow()
+        );
+    }
+
+    #[test]
+    fn unit_op_seam_builds_mul_and_div_in_operand_order() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+        let expected_left = Box::new(UnitExpr::Unit("N".to_string()));
+        let expected_right = Box::new(UnitExpr::Unit("m".to_string()));
+
+        assert_eq!(
+            lowering.unit_expr_from_classified_op(
+                UnitOp::Mul,
+                left.clone(),
+                right.clone(),
+                unit_expr
+            ),
+            Some(UnitExpr::Mul(
+                expected_left.clone(),
+                expected_right.clone()
+            )),
+            "`Mul` must keep the operands in source order — swapping them is \
+             invisible to every commutative-looking end-to-end assertion"
+        );
+        assert_eq!(
+            lowering.unit_expr_from_classified_op(UnitOp::Div, left, right, unit_expr),
+            Some(UnitExpr::Div(expected_left, expected_right)),
+            "`Div` is NOT commutative: numerator left, denominator right"
+        );
+        assert!(
+            lowering.errors.borrow().is_empty(),
+            "a recognised operator must not diagnose, got {:?}",
+            lowering.errors.borrow()
+        );
     }
 }

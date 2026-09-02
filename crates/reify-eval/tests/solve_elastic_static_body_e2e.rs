@@ -581,6 +581,209 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
     }
 }
 
+/// [`MULTI_CASE_BODY_SOURCE`] with ONE no-op `structure` declared AHEAD of the
+/// solving structure — and, deliberately, NO `RepresentationWithin` bound
+/// (task 5951).
+///
+/// `FeaLeading` owns no geometry, no compute node and no constraint. Its only
+/// effect is to add one iteration to `build()`'s per-template loop before
+/// `FeaBodyMultiCase`'s body realizes. `structure FeaMeshTolerance { param
+/// nominal : Real = 1.0 }` in [`NON_PRISMATIC_MULTI_CASE_BODY_SOURCE`] is
+/// byte-identical in shape — which is exactly the point: that fixture's
+/// leading structure, not its tolerance bound, is what emptied the `cases` map.
+/// Keeping this fixture bound-free states the defect with the tolerance
+/// contract removed entirely, so no future reader can re-derive the wrong
+/// attribution from it.
+#[cfg(has_gmsh)]
+const MULTI_CASE_BODY_WITH_LEADING_TEMPLATE_SOURCE: &str = r#"
+structure FeaLeading {
+    param nominal : Real = 1.0
+}
+
+structure FeaBodyMultiCase {
+    let material = Steel_AISI_1045()
+    let body     = box(1000mm, 100mm, 100mm)
+    let lc1 = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let lc2 = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
+}
+"#;
+
+/// `cfg(has_gmsh)`: task 5951 acceptance — a template declared AHEAD of the
+/// solving structure must not strand the body-arg solve.
+///
+/// This is the tolerance-INDEPENDENT, shape-INDEPENDENT statement of the
+/// defect. The fixture is the green
+/// [`multi_case_body_solve_shares_one_realization_across_cases`]'s box source
+/// verbatim, plus one no-op leading `structure` and nothing else — same body,
+/// same material, same two load cases, no `RepresentationWithin`. It is RED at
+/// this commit's grandparent and green here.
+///
+/// The mechanism, measured: `redispatch_geometry_consuming_compute_nodes` runs
+/// once per template and scans ALL compute nodes on every call, so during
+/// `FeaLeading`'s iteration it reached the solve while `body` was still a
+/// SYMBOLIC `kernel_handle: None` placeholder. It recorded a content-free
+/// `realization_inputs`, which tripped the one-shot
+/// `realization_inputs.is_empty()` candidate gate — and the LATER, correct pass
+/// for `FeaBodyMultiCase`'s own template was then skipped forever. The cell
+/// kept the stdlib inline `MultiCaseResult()` fallback: `cases = Map({})`, with
+/// NO diagnostic (`solve_multi_case_trampoline`'s pre-hydration body-path guard
+/// returns `Failed { diagnostics: vec![] }` by design, and the `ReprKind::BRep`
+/// projection arm is identity-only per PRD §4 D1).
+///
+/// The kernel-agnostic unit-level statement of the same contract lives in the
+/// `harness_engine` integration binary's `redispatch_template_order_regression`
+/// module; this test closes it on the real OCCT+gmsh path.
+///
+/// # The field bar is [`assert_box_grid_miss_measurement`]'s, same as the sibling
+///
+/// This test was authored against a base that predated both #6154's grid-miss
+/// helpers and #6200's mesh-coverage fix, so it hand-rolled an `any(is_finite)`
+/// / `all(finite || nan)` pair and recorded `len=8967 nonfinite=3165
+/// axes=[61,7,7]` for the box. RE-MEASURED post-merge, both cases and both
+/// fields now report:
+///
+/// ```text
+/// axes=[61, 7, 7] n_grid=2989 n_missed=0 (0.0%)
+///   | interior=0 face=0 edge=0 corner=0 | nonfinite_anomalies=0
+/// ```
+///
+/// i.e. the 3165 sentinel components are gone — that was the coverage defect
+/// #6200 fixed, not anything this test owns. The reproducible claim is the
+/// helper's `missed_interior == 0`, which is keyed on COVERAGE rather than on a
+/// count and so survives the drift the total is subject to; the exact-count form
+/// stays where #6154 put it. Both this test and the green no-leading-template
+/// sibling [`multi_case_body_solve_shares_one_realization_across_cases`] now
+/// state that same contract through the same helper, on the byte-identical body.
+#[cfg(has_gmsh)]
+#[test]
+fn multi_case_body_solve_survives_a_preceding_template() {
+    use reify_core::{Severity, ValueCellId};
+    use reify_ir::Value;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping multi_case_body_solve_survives_a_preceding_template: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    // Same helper as the B9 tests: fresh engine, manual trampolines,
+    // `register_volume_mesh_demand`, `ensure_gmsh_kernel`, and the
+    // provenance-vs-counter cross-check. The delta itself is not asserted here —
+    // with no tolerance contract it is 0 by the deliberate "no tolerance
+    // contract → no caching" semantic, which is the counter's business and not
+    // this test's.
+    let (_delta, build_result) =
+        build_multi_case_and_count_realizations(MULTI_CASE_BODY_WITH_LEADING_TEMPLATE_SOURCE);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the leading-template build, got: {errors:?}"
+    );
+
+    let result_cell = ValueCellId::new("FeaBodyMultiCase", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaBodyMultiCase.result not found in build values"));
+    // Shared two-level unwrap (#6154's helper), whose own panic text already
+    // names the pre-hydration Failed/Undef signature this test is about.
+    let cases_map = multi_case_cases_map(result_val);
+    assert_eq!(
+        cases_map.len(),
+        2,
+        "cases map must have exactly 2 entries (operating, overload) even though a \
+         template precedes the solving structure; got {}. An EMPTY map here is the \
+         #5951 strand: a premature per-template redispatch consumed the symbolic \
+         handle and latched the node out, leaving the stdlib inline \
+         `MultiCaseResult()` fallback — silently, with no Error diagnostic",
+        cases_map.len()
+    );
+
+    for case_name in ["operating", "overload"] {
+        let case_val = multi_case_case(&cases_map, case_name);
+        assert!(
+            !matches!(case_val, Value::Undef),
+            "case \"{case_name}\" must not be Undef"
+        );
+
+        let disp = sampled_field(case_val, "displacement");
+        assert_eq!(
+            disp.axis_grids.len(),
+            3,
+            "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
+            disp.axis_grids.len()
+        );
+        assert_ne!(
+            disp.data.len() / 3,
+            SYNTHETIC_GRID_NODES,
+            "case \"{case_name}\": must NOT reproduce the {SYNTHETIC_GRID_NODES}-node \
+             synthetic grid — the realized VolumeMesh must drive the §7a grid, which \
+             is the whole point of the redispatch this test pins"
+        );
+        // The positive half of the same statement: the realized-AABB heuristic
+        // drove the grid, exactly as it does on the green no-leading-template
+        // sibling.
+        assert_eq!(
+            disp.data.len() / 3,
+            REALIZED_BOX_GRID_NODES,
+            "case \"{case_name}\": §7a grid node count must equal the realized-AABB \
+             heuristic {REALIZED_BOX_GRID_NODES} ({REALIZED_BOX_GRID_AXES:?} for the \
+             1 m × 100 mm × 100 mm box), the same grid the green sibling produces"
+        );
+
+        let stress = sampled_field(case_val, "stress");
+
+        // ── the finiteness bar: #6154's normative bucket split ───────────────
+        // NOT `all(is_finite)`: on the REALIZED path the §7a grid spans the tet
+        // mesh AABB, so any grid point outside the solid carries the PRD §3
+        // sentinel `f64::NAN` BY DESIGN (`compute_targets/elastic_static.rs`'s
+        // field-population contract is the producer side). But the branch's
+        // hand-rolled `any(is_finite)` / `all(finite || nan)` pair is not the
+        // right replacement either — it says nothing about WHERE the sentinel
+        // fires. `assert_box_grid_miss_measurement` does, and is what the green
+        // no-leading-template sibling
+        // [`multi_case_body_solve_shares_one_realization_across_cases`] already
+        // asserts on the byte-identical body, so the two now state the same
+        // contract the same way: grid pinned per-axis to `REALIZED_BOX_GRID_AXES`,
+        // the report reconciled against the raw buffer (which subsumes
+        // `all(finite || nan)`, and strengthens it — a MIXED part-NaN point is
+        // rejected too), `stress` pinned to mark the SAME grid points as
+        // `displacement`, and the BOX-SPECIFIC prediction `missed_interior == 0`:
+        // for a prismatic body the mesh AABB IS the solid, so every
+        // strictly-index-interior grid point must lie inside some tet.
+        //
+        // That last one also subsumes `any(is_finite)` here, which is why (unlike
+        // B9's cylinder, where it is kept) it is dropped: this grid has
+        // 59 × 5 × 5 = 1475 index-interior nodes, so an ALL-sentinel field — the
+        // #5951 silent failure mode — lands as `missed_interior == 1475` and
+        // fails loudly. A non-zero interior count is otherwise a regression of
+        // the mesh-coverage defect #6200 fixed and belongs THERE, not here.
+        assert_box_grid_miss_measurement(&disp, &stress);
+
+        assert_eq!(
+            extract_field(case_val, "converged"),
+            Some(Value::Bool(true)),
+            "case \"{case_name}\": the shared realized-mesh solve must converge"
+        );
+    }
+}
+
 /// Single-case **NON-PRISMATIC** body fixture (task 4152, step-12).
 /// Structurally identical to `MULTI_CASE_BODY_SOURCE` above and to
 /// `fixtures/fea_body_cantilever.ri` — the ONLY material change is the `let body`
@@ -675,6 +878,19 @@ structure FeaBodyNonPrismatic {
 /// So the bound below is what makes the re-mesh-avoidance signal OBSERVABLE. It
 /// does not manufacture the signal: the realization count is whatever it is;
 /// the bound only decides whether the cache records it.
+///
+/// ## The bound is NOT why this fixture's `cases` map used to come back empty
+///
+/// It once was recorded here and on the B9 test that the bound ALSO emptied the
+/// solve's `cases` map, from a 2×2 over {cylinder, box} × {bound, no bound}.
+/// That 2×2 was confounded and the conclusion is retracted (task #5951): the
+/// bound requires a checker structure, so both bounded cells also declare
+/// `structure FeaMeshTolerance` AHEAD of the solving structure — and it was that
+/// LEADING TEMPLATE, not the bound, that stranded the solve. Adding a bound-free
+/// no-op leading structure to the green box fixture reproduces the empty map
+/// exactly ([`MULTI_CASE_BODY_WITH_LEADING_TEMPLATE_SOURCE`]). Keep that in mind
+/// before attributing any future behaviour here to the tolerance contract:
+/// this fixture varies TWO things at once relative to the un-bounded ones.
 ///
 /// Two mechanical notes on the shape, both load-bearing:
 ///   * `extract_output_tolerance_bound`'s gate 1 is `id.entity !=
@@ -927,9 +1143,9 @@ fn build_multi_case_and_count_realizations(
 /// (PRD `docs/prds/v0_4/fea-result-model.md` boundary-test B9, re-homed from
 /// task 4088 to task 4152).
 ///
-/// This is the half of B9 that PASSES today, split out of
+/// This half of B9 is split out of
 /// [`multi_case_non_prismatic_body_caches_one_realization_for_both_cases`]
-/// (which stays `#[ignore]`d on #5951 for its `cases`-map/Sampled-field half)
+/// (which carries the `cases`-map / Sampled-field half and is now green too)
 /// so that the counter has GREEN coverage on a real OCCT+gmsh FEA path. Without
 /// this split the only executing `realization_entries` assertions in CI are the
 /// `MockGeometryKernel` ones in `tests/tolerance_wiring_e2e.rs`, and a
@@ -1018,13 +1234,12 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 /// `ElasticOptions()`, and differ ONLY in tip force (1000 N vs 2000 N) — must
 /// each come back with their own populated result off the ONE shared mesh.
 ///
-/// **The re-mesh-avoidance assertions of B9 are NOT here.** They pass today and
-/// live, un-ignored, in the green sibling
-/// [`non_prismatic_two_case_build_realizes_body_exactly_once`] above: the
-/// two-case `realization_entries` delta == 1, and the one-case control proving a
-/// second load case adds ZERO entries. Only the `cases`-map / Sampled-field half
-/// below is blocked, so only that half is `#[ignore]`d — the counter keeps green
-/// coverage on a real OCCT+gmsh path either way.
+/// **The re-mesh-avoidance assertions of B9 are NOT here.** They live in the
+/// sibling [`non_prismatic_two_case_build_realizes_body_exactly_once`] above:
+/// the two-case `realization_entries` delta == 1, and the one-case control
+/// proving a second load case adds ZERO entries. Both halves are green; the
+/// split is kept so a counter regression and a result-shape regression are
+/// diagnosable apart from each other.
 ///
 /// **Read the `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` doc before changing this
 /// fixture.** The counter can only move because that fixture declares a
@@ -1037,52 +1252,91 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 ///   (3) `result["cases"]` is a 2-entry `Value::Map` keyed "operating"/
 ///       "overload", neither `Undef`;
 ///   (4) each case carries REAL Sampled fields — `displacement` a 3-axis
-///       Regular grid of all-finite data, `stress` present — and converged;
+///       Regular grid carrying real in-solid samples and no ±inf, `stress`
+///       likewise — and converged;
 ///   (5) per-case independence still holds
 ///       (`overload.max_von_mises > operating.max_von_mises`).
 ///
 /// (numbering kept from the original single B9 test, whose (1)/(2) are now the
 /// green sibling's)
 ///
-/// # Why this is `#[ignore]`d — (1)/(2) PASS in the sibling, (3)/(4)/(5) cannot
+/// # (4)'s finiteness bar is the PRD's — neither tightened nor weakened
 ///
-/// The assertions below are deliberately preserved VERBATIM rather than
-/// weakened. B9's two halves are currently satisfiable only by mutually
-/// exclusive fixtures, and that is a production defect (#5951), not a defect in
-/// this test or in the counter.
+/// (4) deliberately does NOT require every component to be finite. The PRD row
+/// this test encodes says so verbatim: `displacement` is "finite at grid points
+/// inside the solid, `NaN` outside"
+/// (`docs/prds/v0_4/fea-result-model.md:100`, the normative field-contract row),
+/// and §3's grid rationale calls that out-of-solid `f64::NAN` a load-bearing
+/// sentinel, "skipped uniformly by the reductions' `is_finite()` discipline"
+/// (:82). The producer side of the same contract is the `displacement` and
+/// `stress` bullets of `compute_targets/elastic_static.rs`'s
+/// "Field-population contract" module doc, each of which states the
+/// out-of-solid `f64::NAN` for its own component count. On the REALIZED path
+/// the §7a grid spans the tet mesh AABB, so for a CURVED body most grid points
+/// legitimately fall outside the solid: an `all(is_finite)` bar would measure
+/// the sampler's AABB coverage rather than the solve.
 ///
-/// Measured 2×2 on this harness — a fresh engine per build, manual trampolines,
-/// `build(&compiled, ExportFormat::Step)`:
+/// So (4) states the bar the way #6154 built it to be stated — as a
+/// BUCKET SPLIT, via [`assert_cylinder_grid_miss_measurement`], whose closed
+/// form is re-derived at that helper and not restated here. In outline:
+/// `cylinder(50mm, 200mm)` ⇒ [`REALIZED_CYLINDER_GRID_AXES`] `[4, 4, 7]` =
+/// [`REALIZED_CYLINDER_GRID_NODES`] 112 nodes, of which the 12-of-16
+/// cross-section points failing `dx² + dy² < 50²` at all 7 z-levels give
+/// [`CYLINDER_PREDICTED_MISSES`] = 84 out-of-solid nodes (252 of the 336
+/// displacement components). That is strictly stronger than the per-field
+/// `!is_empty()` / `any(is_finite)` / `all(finite || nan)` triple this test
+/// carried before the merge, in three ways: it pins the grid SHAPE the closed
+/// form is derived from, it rejects a MIXED part-NaN grid point (the old
+/// `all(finite || nan)` admitted one), and above all it hard-asserts the
+/// UNDER-firing direction — every one of the 84 predicted-outside nodes must
+/// carry the sentinel, so a later "fix" that widens `tol`, clamps, or asserts
+/// all-finite fails loudly instead of passing. PRD §11 Q2 rejects all three of
+/// those outright; do NOT weaken the sentinel to satisfy a failure here.
 ///
-/// | fixture                       | `realization_entries` delta | `cases`   |
-/// |-------------------------------|-----------------------------|-----------|
-/// | cylinder, no bound            | 0                           | populated |
-/// | cylinder + 100 µm bound       | 1                           | **empty** |
-/// | box + 100 µm bound            | 1                           | **empty** |
-/// | box, no bound                 | 0                           | populated |
+/// MEASURED on this fixture — which, unlike the single-case capstone
+/// [`non_prismatic_body_solve_runs_on_realized_volume_mesh`] that calls the
+/// same helper, additionally carries the 100 µm `RepresentationWithin` bound —
+/// both cases measure `axes=[4, 4, 7] n_grid=112 n_missed=84 (75.0%) |
+/// interior=0 face=40 edge=36 corner=8 | nonfinite_anomalies=0`, on
+/// `displacement` and `stress` alike. That is the closed form exactly — and the
+/// same split [`realized_cylinder_mesh_covers_its_own_aabb`] pins — so the bound
+/// does not move the realized AABB and nothing here needs re-deriving.
 ///
-/// (the last row is today's green `multi_case_body_solve_shares_one_realization_
-/// across_cases`). So it is the tolerance contract, not the body shape —
-/// consistent with the single-case
-/// `non_prismatic_body_solve_runs_on_realized_volume_mesh` above, which is green
-/// and carries no bound.
+/// ONE clause of the old triple survives alongside the helper, per field:
+/// `data.iter().any(is_finite)`. It is not redundant. The helper asserts only
+/// that predicted-outside nodes DO miss; the opposite direction is logged, not
+/// asserted, because an EXCESS miss is #6200's mesh-coverage territory and the
+/// gmsh/HXT tetrahedralization is not bit-reproducible. An ALL-sentinel field
+/// therefore passes the helper — and an all-sentinel field is precisely #5951's
+/// silent failure mode. `any(is_finite)` is the weakest live statement of "the
+/// solve actually ran" that no mesh drift can redden.
 ///
-/// Assertions (1) and (2) were OBSERVED PASSING before (3) panicked: the delta is
-/// exactly 1 for the two-case build, the one-case control matches it, and the
-/// provenance cross-check finds exactly one `(VolumeMesh, Gmsh)` realization —
-/// which is why they now run un-ignored in the sibling above. What fails is that
-/// the same bound which makes the counter observable also makes the solve return
-/// the stdlib's inline `MultiCaseResult()` fallback with an empty `cases` map —
-/// SILENTLY: the only diagnostic in the whole build is an unrelated
-/// `Severity::Warning` for the Indeterminate `RepresentationWithin` itself.
+/// # History — this was `#[ignore]`d on a false attribution
 ///
-/// Fixing that is out of scope here (it is FEA-solve / demand-pass territory,
-/// tasks 4870/4092), so it is filed as its own task with the full measurement
-/// set. This test goes green unchanged once #5951 lands — do not adjust the
-/// assertions to make it pass sooner.
+/// This test carried `#[ignore = "blocked on #5951"]` plus a 2×2 measurement
+/// table concluding "it is the tolerance contract, not the body shape" that
+/// empties the `cases` map, and an instruction not to adjust its assertions.
+/// That conclusion was WRONG and is retracted: the 2×2 never controlled for the
+/// bounded fixtures also declaring `structure FeaMeshTolerance` AHEAD of the
+/// solving structure. The real defect was template ORDERING — a premature
+/// per-template `redispatch_geometry_consuming_compute_nodes` pass consumed the
+/// still-SYMBOLIC (`kernel_handle: None`) body handle, recorded a content-free
+/// `realization_inputs`, and tripped the one-shot
+/// `realization_inputs.is_empty()` candidate gate, so the later correct pass was
+/// skipped forever. Task #5951 fixed that; the tolerance-free statement of the
+/// same defect is [`multi_case_body_solve_survives_a_preceding_template`], and
+/// the kernel-agnostic one is the `harness_engine` integration binary's
+/// `redispatch_template_order_regression` module.
+/// The `all(is_finite)` clause was an embellishment added along with that
+/// attribution — B9's normative content is the cache-reuse row
+/// (`docs/prds/v0_4/fea-result-model.md:243`) plus the §3 field contract, and
+/// neither ever asked for it.
+///
+/// The `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` doc's separate claim that the
+/// `RepresentationWithin` bound is what makes `realization_entries` observable
+/// ("no tolerance contract → no caching") is untouched by this and still true.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #5951 — a demanded-tolerance bound is required for realization_entries to move, but that same bound silently empties the multi-case solve's `cases` map; B9's (1)/(2) run green in non_prismatic_two_case_build_realizes_body_exactly_once, (3)+ cannot"]
 fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
     use reify_core::{Severity, ValueCellId};
     use reify_ir::Value;
@@ -1144,22 +1398,6 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
             "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
             disp.axis_grids.len()
         );
-        // ⚠ KNOWN-WRONG, and left that way ON PURPOSE (#6154). This assertion
-        // and its `stress` twin below contradict the normative out-of-solid
-        // sentinel (PRD `docs/prds/v0_4/fea-result-model.md` §3/§4.1): the body
-        // here is a CYLINDER, so its AABB is emphatically not the solid and
-        // `assert_cylinder_grid_miss_measurement` measures 84 of 112 grid nodes
-        // as correctly `NaN`. They are inert only because this test is
-        // `#[ignore]`d on #5951. WHEN #5951 UNBLOCKS IT, these two will fail,
-        // and the fix is to replace them with a bucket-split expectation — see
-        // `assert_cylinder_grid_miss_measurement` for the closed form. Do NOT
-        // weaken the sentinel to satisfy them. Rationale: PRD §11 Q2, "Hazard
-        // recorded for #5951".
-        assert!(
-            !disp.data.is_empty() && disp.data.iter().all(|v| v.is_finite()),
-            "case \"{case_name}\": displacement data must be non-empty and all-finite \
-             (a NaN/inf here means the solve diverged on the realized curved mesh)"
-        );
         assert_ne!(
             disp.data.len() / 3,
             SYNTHETIC_GRID_NODES,
@@ -1167,13 +1405,51 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
              synthetic grid — the shared realized VolumeMesh must drive the §7a grid"
         );
 
-        // `stress` must be a real Sampled field too, not merely present.
+        // `stress` must be a real Sampled field too, not merely present — it
+        // shares the grid, so it shares the out-of-solid NaN sentinels.
         let stress = sampled_field(case_val, "stress");
-        // ⚠ The `stress` twin of the known-wrong all-finite assertion above —
-        // same #6154 hazard, same resolution when #5951 unblocks this test.
+
+        // ── (4)'s finiteness bar: #6154's normative bucket split ─────────────
+        // Both fields go through `assert_cylinder_grid_miss_measurement`, the
+        // closed form for THIS body: `cylinder(50mm, 200mm)` ⇒ a §7a grid of
+        // `REALIZED_CYLINDER_GRID_AXES` = [4, 4, 7], of whose 112 nodes exactly
+        // `CYLINDER_PREDICTED_MISSES` = 84 lie outside r = 50 mm. It pins that
+        // grid shape, reconciles the report against the raw buffer (where the
+        // "no ±inf" clause now lives, strengthened to also reject a MIXED
+        // part-NaN point that the old `all(finite || nan)` admitted), pins that
+        // `stress` marks the SAME grid points as `displacement`, and
+        // hard-asserts the UNDER-firing direction — every one of the 84 must
+        // carry the normative sentinel, so a future weakening fails loudly.
+        //
+        // MEASURED on this fixture, which unlike the capstone's additionally
+        // carries the 100 µm `RepresentationWithin` bound: axes [4, 4, 7], 84
+        // of 112 nodes missed — the closed form exactly, so the bound does not
+        // move the realized AABB. Run once per case deliberately: B9's claim is
+        // that EACH case's fields come back real off the ONE shared
+        // realization, so each case's pair is measured.
+        let _report = assert_cylinder_grid_miss_measurement(&disp, &stress);
+
+        // Kept ALONGSIDE the helper, not subsumed by it — and not a weakening
+        // of anything. The helper asserts only that predicted-outside nodes DO
+        // carry the sentinel; the opposite direction (a node the geometry puts
+        // INSIDE coming back NaN) it deliberately logs rather than asserts,
+        // that being #6200's non-bit-reproducible mesh-coverage territory. An
+        // ALL-sentinel field therefore walks straight through it — and an
+        // all-sentinel field is exactly #5951's silent failure mode. This is
+        // the weakest live statement of "the solve actually ran" that no mesh
+        // drift can redden: not that any particular node is finite, only that
+        // not every one of them missed.
         assert!(
-            !stress.data.is_empty() && stress.data.iter().all(|v| v.is_finite()),
-            "case \"{case_name}\": stress data must be non-empty and all-finite"
+            disp.data.iter().any(|v| v.is_finite()),
+            "case \"{case_name}\": displacement must carry at least one finite \
+             in-solid sample — an all-sentinel field means the solve never ran \
+             on the realized curved mesh (the #5951 strand)"
+        );
+        assert!(
+            stress.data.iter().any(|v| v.is_finite()),
+            "case \"{case_name}\": stress must carry at least one finite in-solid \
+             sample — an all-sentinel field means the solve never ran on the \
+             realized curved mesh (the #5951 strand)"
         );
 
         assert_eq!(

@@ -984,11 +984,13 @@ fn get_two_case_shared_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value 
 /// bound declared in the structure that OWNS the realization does make the counter
 /// move there — asserted green (delta exactly 1 across a 2-case body solve, with a
 /// one-case control) by `non_prismatic_two_case_build_realizes_body_exactly_once`
-/// in `crates/reify-eval/tests/solve_elastic_static_body_e2e.rs`. What is not
-/// usable end-to-end yet is the per-case RESULT half, because that same bound
-/// silently empties the solve's `cases` map (#5951); it is parked verbatim as the
-/// `#[ignore]`d `multi_case_non_prismatic_body_caches_one_realization_for_both_cases`
-/// in the same file, whose doc carries the full 2×2 measurement.
+/// in `crates/reify-eval/tests/solve_elastic_static_body_e2e.rs`. The per-case
+/// RESULT half is green there too, in the un-ignored
+/// `multi_case_non_prismatic_body_caches_one_realization_for_both_cases`. That
+/// test was once parked on a claim that the `RepresentationWithin` bound itself
+/// silently emptied the solve's `cases` map — a MISREADING that has been
+/// retracted; the bound is orthogonal, and the real defect was a premature
+/// per-template geometry redispatch (see that test's "History" doc section).
 #[test]
 fn solve_load_cases_one_vs_two_cases_entry_count() {
     // ── 1-case baseline ───────────────────────────────────────────────────────

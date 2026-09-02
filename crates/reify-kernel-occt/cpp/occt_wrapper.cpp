@@ -1504,6 +1504,9 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     const OcctShape& profile,
     double ox, double oy, double oz,
@@ -2254,6 +2257,28 @@ std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, do
     });
 }
 
+// ANGULAR UNIT CONTRACT for every rotation/revolution entry point in this file
+// (INV-AD-4; #6184; docs/prds/v0_6/angle-dimension-completion.md).
+//
+// `angle_rad` arrives from reify's IR as SI RADIANS and is consumed here with
+// NO conversion, because OCCT's angular convention is radians universally:
+// `gp_Trsf::SetRotation(axis, angle)` and `BRepPrimAPI_MakeRevol(profile, axis,
+// angle)` both read radians. The reify-side `_rad` name and the OCCT-side
+// expectation therefore AGREE — and that agreement is the boundary declaration,
+// not an accident of both sides happening to pick the same unit.
+//
+// Contrast the two neighbouring conventions, so the reader does not
+// over-generalise from this one:
+//   - LENGTHS also cross this bridge unscaled (model space is SI metres), but
+//     ARE rescaled x1000 by the STEP writer at export time. Angles are not
+//     rescaled anywhere, because rad = 1 by SI coherence.
+//   - SolveSpace is the one genuine DEGREE crossing in the tree
+//     (`SLVS_C_ANGLE` reads `valA` in degrees); see
+//     `crates/reify-constraints/src/solvespace.rs`. Nothing in THIS file is in
+//     degrees.
+//
+// `rotate_around_shape`, `make_revolve` and `make_revolve_with_history` below
+// carry the same contract; this is the one place it is written out.
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad) {
     return wrap_occt_call("rotate_shape", [&]() {
         gp_Ax1 axis(gp_Pnt(0, 0, 0), gp_Dir(ax, ay, az));
@@ -2285,6 +2310,8 @@ std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, do
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted — see the ANGULAR UNIT
+// CONTRACT on `rotate_shape` above (#6184).
 std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
     double px, double py, double pz,
     double ax, double ay, double az,
@@ -2638,6 +2665,44 @@ std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double dis
         BRepGProp::VolumeProperties(result, props);
         if (props.Mass() <= Precision::Confusion()) {
             throw std::runtime_error("offset_solid_shape: result has degenerate (near-zero) volume");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = result;
+        return out;
+    });
+}
+
+// Offset a surface (open face/shell) along its normal via BRepOffsetAPI_MakeOffsetShape
+// in Skin (surface) mode -- distinct from offset_solid_shape's PerformBySimple solid
+// mode above. Positive `distance` offsets along the face's +normal (e.g. a planar
+// rectangle face built with a +Z-normal wire lands at z = +distance).
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_offset_surface", [&]() {
+        if (std::abs(distance) < Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: zero distance");
+        }
+        // Floor the tolerance at Precision::Confusion() so sub-micron (but
+        // still valid, non-zero) offsets don't get an unusably tight
+        // tolerance from the 1e-3 scale factor -- matches the fixed-scale
+        // guard used just above for the zero-distance check.
+        const double tol = std::max(1e-3 * std::abs(distance), Precision::Confusion());
+        BRepOffsetAPI_MakeOffsetShape maker;
+        maker.PerformByJoin(shape.shape, distance, tol, BRepOffset_Skin,
+            Standard_False, Standard_False, GeomAbs_Intersection);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("make_offset_surface: BRepOffsetAPI_MakeOffsetShape failed");
+        }
+        TopoDS_Shape result = maker.Shape();
+        if (result.IsNull()) {
+            throw std::runtime_error("make_offset_surface: result shape is null");
+        }
+        if (!BRepCheck_Analyzer(result).IsValid()) {
+            throw std::runtime_error("make_offset_surface: result shape is invalid");
+        }
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(result, props);
+        if (props.Mass() <= Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: result has degenerate (near-zero) area");
         }
         auto out = std::make_unique<OcctShape>();
         out->shape = result;
@@ -3739,6 +3804,9 @@ std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,
@@ -6311,6 +6379,107 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
         }
         step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
         step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
+
+        // PLANE-ANGLE UNIT REGIME. Plane angles cross this boundary as SI
+        // RADIANS in both directions, and — unlike the length regime above —
+        // there is nothing to CALL to make that so. OCCT declares radians
+        // unconditionally: STEPConstruct_UnitContext::Init, the sole builder of
+        // the write-side unit context, emits `SI_UNIT($,.RADIAN.)` with no
+        // branch on any writer option. Contrast the length unit twenty
+        // instructions above, which carries a full conditional
+        // CONVERSION_BASED_UNIT chain driven by `write.step.unit`. So reify's
+        // angular declaration is correct BY CONSTRUCTION — which is precisely
+        // why it needed a DECLARATION: rad = 1 by SI coherence is numerically
+        // right, but until #6184 it was nowhere stated (INV-AD-4).
+        //
+        // THERE IS NO WRITE-SIDE ANGLE KNOB. No SetWriteAngleUnit /
+        // WriteAngleUnit / SetLocalAngleUnit exists, and StepData_StepModel —
+        // which carries SetLocalLengthUnit / SetWriteLengthUnit and a
+        // `myLocalLengthUnit` member — has no angular counterpart of any kind.
+        // This was settled empirically across several OCCT versions; do not
+        // re-investigate. See MEASURED below for the sweep.
+        //
+        // THE TRAP: `step.angleunit.mode`. It is a REGISTERED Interface_Static,
+        // an enum of File/Rad/Deg, and STEPControl_ActorWrite::Transfer
+        // genuinely reads it —
+        // `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`.
+        // But it is HALF-WIRED: its only write-side consumer is
+        // TopoDSToStep_MakeStepFace::Init -> GeomConvert_Units::RadianToDegree,
+        // which rescales PCURVE PARAMETER space; the unit DECLARATION ignores
+        // it entirely. Setting it to Deg therefore emits degree pcurves under a
+        // radian header — a silently self-inconsistent file, NOT a degrees
+        // file. reify never sets this static, and MUST NOT.
+        //
+        // INTERACTION WITH THE LENGTH REGIME above: the two are independent
+        // here ONLY because the plane-angle factor is 1.0. StepData_Factors
+        // carries myLengthFactor and myPlaneAngleFactor as separate members,
+        // and 7.9 added DEFAULTED StepData_Factors arguments across the
+        // GeomToStep_* entry points — so a forgotten-factors regression would
+        // be INVISIBLE in the angle (factor 1.0, no observable change) and
+        // FATAL in the length (factor 1000). Do not infer from "angles are
+        // fine" that the factor plumbing is fine.
+        //
+        // THE GUARANTEE BOUNDARY. reify guarantees the declaration and the
+        // payload AGREE. It does NOT guarantee a consumer honours the
+        // declaration: a 26.565 deg cone semi-angle misread as 0.4636 deg puts
+        // the top edge 14.76 mm off its own surface on a 30 mm part — a
+        // topologically invalid face that importers resolve inconsistently.
+        // Nor do the pins below catch the `step.angleunit.mode` trap: they
+        // quantify over unit DECLARATIONS, and as measured below the
+        // declaration does not move when the payload does.
+        //
+        // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
+        // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
+        // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
+        // quantify over EVERY unit context — a compound emits one per
+        // representation_context, three for a two-cone union — rather than
+        // grepping for one ".RADIAN." token, so a partial flip fails. INV-AD-4's
+        // third arm, a runtime refusal guard, is deliberately DEFERRED to #6344
+        // so this leaf keeps its no-behaviour-change character.
+        //
+        // ------------------------------------------------------------------
+        // MEASURED 2026-08-29 (task #6184) against SYSTEM OCCT 7.8. Everything
+        // ABOVE this line is version-independent contract; everything BELOW is
+        // a DATED OBSERVATION LOG, kept because it is the evidence the contract
+        // rests on and no test asserts any of it. Read it as "what one run on
+        // one version showed", never as a claim about the OCCT you are linking
+        // today: instance numbers renumber on any writer change, so if they no
+        // longer match, the log is STALE, not the export broken — re-measure
+        // and re-date rather than trusting these numbers. (Longer-term home for
+        // this log is docs/prds/v0_6/angle-dimension-completion.md section 9
+        // B7, where dated findings belong; the move is deferred because #6184
+        // holds no lock on that file.)
+        //
+        // WHICH OCCT. This writer is SYSTEM OCCT 7.8 from
+        // /usr/lib/x86_64-linux-gnu, NOT the 7.9.3 in /opt/reify-deps:
+        // crates/reify-build-utils/src/lib.rs deliberately lists system paths
+        // first for NativeDep::Occt (the deps tree ships 7.9 only as a
+        // transitive gmsh dependency). Both are loaded into one address space,
+        // and exported files carry 'Open CASCADE STEP processor 7.8'.
+        //
+        // NO-ANGLE-KNOB SWEEP. Checked in the 7.8 headers, and additionally in
+        // V7_9_0, V7_9_3, V8_0_1 and master: all clean, and there is no 7.10.
+        // OCCT's own docs describe the one angle parameter as "obsolete ...
+        // when a STEP file is read". Both versions hardcode the radian, which
+        // is why the contract above is stated as version-independent.
+        //
+        // THE step.angleunit.mode DIFF. Exporting one 30 mm cone under each of
+        // the three enum values:
+        //   - modes 0 (File) and 1 (Rad): byte-identical DATA sections.
+        //   - mode 2 (Deg): differs in exactly ONE entity, the pcurve point
+        //     inside a DEFINITIONAL_REPRESENTATION —
+        //       mode 0/1  #39 = CARTESIAN_POINT('',(-6.28318530718,0.))  [-2*pi rad]
+        //       mode 2    #39 = CARTESIAN_POINT('',(-360.,0.))           [same angle, degrees]
+        //   - the declaration is byte-identical in ALL THREE modes:
+        //       #84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+        //     with zero CONVERSION_BASED_UNIT and zero "degree" tokens anywhere
+        //     in the file, in every mode.
+        // The payload moves; the declaration does not. That is the whole defect
+        // in one diff, and the reason the pins cannot catch this trap.
+        // ------------------------------------------------------------------
+        //
+        // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
+        // section 9 B7). Length regime above: #6186.
 
         writer.Transfer(shape.shape, STEPControl_AsIs);
 

@@ -67,7 +67,7 @@ On-shelf inventory drives the motor/drive choice:
 
 Allocation:
 - 2× Argon + 240V servos → CoreXY X/Y
-- 2× Argon + 240V servos → 4-corner electronic Z-tilt (or 2-corner with mechanical coupling to other 2)
+- 3× Argon + 240V servos → 3-column electronic Z-tilt (2026-09-01 ruling; needs one 240V servo sourced beyond the 4 on-shelf)
 - 2-3× Ioni-HC + sourced surplus motors → toolchanger lock, MMU drive(s) if servo-precision needed
 - Steppers → per-tool extruders (4×)
 
@@ -129,7 +129,7 @@ Each is a top-level reify file under `prj/printer_v01/` importing a shared `enve
 | B | Y-axis | Long stationary rails (800mm travel), paired tendons, Y counter-mass |
 | C | Gantry + X-axis | CFRP tube X rail (500mm travel), paired tendons, X counter-mass on gantry beam |
 | D | Toolhead carriage + dock | 4-tool kinematic mount, dock geometry, electrical/cooling/air connectors |
-| E | Z-bed | Mic-6 plate, 4-corner electronic-tilt servo Z, parking shutter |
+| E | Z-bed | Mic-6 plate, 3-column tendon-lift servo Z, parking shutter |
 | F | Chamber | Insulated panels, sealed, heater, circulation, lighting |
 | G | Electronics | Drive enclosure, host, breakout, wiring loom |
 | H | Air system | Compressor, filtration cascade, dryer, distribution to bearings + chamber pneumatics |
@@ -168,7 +168,7 @@ What gets exercised, and where reify is likely to bite:
 | 1 | Frame skeleton laser-cut, welded, polymer-concrete poured, levelled in container | Yes (DXF export) | Yes |
 | 2 | Y-axis: rails mounted (HIWIN), tendons routed, capstan + Y motor, drive commissioned at low accel (10-20 m/s²), counter-mass installed | Yes (geometry) | Yes |
 | 3 | Gantry + X-axis: CFRP rail, carriage with placeholder mass, tendons + capstan + X motor, CoreXY commissioning at low accel | Yes | Yes |
-| 4 | Z-bed: Mic-6 plate, heaters, ballscrew/threaded column drive, 4-corner electronic level | Yes | Yes |
+| 4 | Z-bed: Mic-6 plate, heaters, tendon + counterweight column drive, 3-column electronic level | Yes | Yes |
 | 5 | Toolhead + dock: dock geometry on frame, 2 tools for v1 (Rapido HF or equivalent), kinematic mount, electrical/cooling, tool change cycle test | Yes | Yes |
 | 6 | Chamber + heater: insulated panels, parking shutter, heater + control, commission at 80°C | Yes | Yes |
 | 7 | MMU + extruder: per-tool filament feeders, drying | Yes | Yes |
@@ -208,6 +208,7 @@ Self-contained projects that don't gate v0.1:
 - **Industrial AC servos + Granite Argon drives** chosen over drone outrunner concept once on-shelf inventory was confirmed (lower inertia, integrated encoders, better fit).
 - **Counter-masses required** by 1000 m/s² stretch goal; designed in from v0.1 even at 100 m/s² baseline.
 - **Z-bed** chosen over gantry-Z for kinematic decoupling and chamber sealing simplicity. Bed parks below build zone behind insulated shutter (no bellows).
+- **3-column tendon + counterweight Z** (2026-09-01) over 4-corner ballscrew/threaded column: three points define the bed plane exactly (4-point overconstraint becomes invisible plate strain; 3-point error is observable tilt the servos correct). Plate supported at strip-optimal inboard points (~20% in from the edges — cantilever tip sag balances mid-span droop). Drive: Vectran tendon per column with 2:1-reeved counterweight (near-zero creep — SNO precedent; power-off neutral hover; no lubricant in chamber; Z-hop reciprocation favors tendons over a dry leadscrew nut); 3 distinct servos give full 2-axis electronic tilt at the cost of sourcing one 240V servo beyond the 4 on-shelf. Modelled in prj/printer_v01/printer.ri (EZBed).
 - **HIWIN-first bearing interface, air bearings on track 2** to decouple R&D risk from build schedule.
 - **Self-compensating well-and-lip air bearing topology** (Slocum / MIT PERG pattern) resolves the orifice/restrictor question.
 - **Chamber 80°C commission, 130°C capable design** to defer high-cost material upgrades until needed.

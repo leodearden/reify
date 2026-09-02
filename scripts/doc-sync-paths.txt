@@ -40,6 +40,30 @@
 #   requires-full-gate MAY choose either cost point on exit-0 — this manifest
 #   does not need a new guard output channel to express that choice.
 #
+#   ONE QUERY POINT OVER BOTH COST POINTS (task 6857):
+#     bash scripts/verify-pipeline-guard.sh is-registered <path>
+#   exits 0 if <path> is registered as load-bearing by ANY route — either
+#   registry, the guard's static load-bearing set, or the open-ended
+#   tests/infra/*.sh glob — and 1 if by none. It is deliberately WIDER than the
+#   two registries, so exit 0 does NOT imply a manifest line anywhere: it is a
+#   load-bearing-by-some-route query, not a registry-membership oracle. Matched
+#   sets: the is-registered entry in scripts/verify-pipeline-guard.sh's header,
+#   which owns that write-up. It is also NOT a full-gate verdict — never route
+#   a diff on it.
+#
+#   ADMISSION GUIDANCE FOR NEW DOCS (forward-looking — NOT a licence to demote
+#   the entries below). is-registered is the predicate
+#   tests/infra/test_verify_pipeline_guard.sh's ANTI-DRIFT sweep asserts, so a
+#   surgical scripts/verify-pipeline-infra-tests.txt row satisfies that sweep on
+#   its own: a NEW doc does not have to be listed HERE to count as registered,
+#   and the surgical row is usually the proportionate registration. Prefer it
+#   unless the merge-worker fast-path must be closed for that doc — closing it
+#   is precisely what an entry here buys, and it is not a cost the surgical row
+#   can pay. REMOVING an existing entry is a SEPARATE decision with a real
+#   cost: the merge-worker trivial-pass seam consults requires-full-gate ONLY,
+#   so a demoted doc keeps just the task-scope select_infra_tests() pole — the
+#   tier that did not yet exist when the W8 incident above happened.
+#
 # Rationale for each entry (citing test + coupling kind):
 #   - docs/notes/verify-pipeline-knobs.md: test_verify_compile_gate.sh W8
 #     greps this doc for compile-gate knob strings (e.g.

@@ -36,6 +36,7 @@ fn resolve_boolean_arg(
     step_offset: usize,
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> Option<(GeomRef, Vec<CompiledGeometryOp>)> {
     // Task 3441: cross-sub pre-check — `self.<sub>.<member>` for a
     // non-collection sub's realised geometry member lowers to a
@@ -81,6 +82,7 @@ fn resolve_boolean_arg(
         step_offset,
         geometry_lets,
         visiting,
+        constraint_sink,
     ) {
         Some(ops) => ops,
         None => {
@@ -122,6 +124,7 @@ pub(crate) fn compile_boolean_op(
     step_offset: usize,
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     match name {
         "union" | "intersection" | "difference" => {
@@ -147,6 +150,7 @@ pub(crate) fn compile_boolean_op(
                 step_offset,
                 geometry_lets,
                 visiting,
+                &mut constraint_sink.reborrow(),
             )?;
             let right_offset = step_offset + left_ops.len();
             // Resolve right arg via the same helper.
@@ -161,6 +165,7 @@ pub(crate) fn compile_boolean_op(
                 right_offset,
                 geometry_lets,
                 visiting,
+                &mut constraint_sink.reborrow(),
             )?;
             let mut all_ops = left_ops;
             all_ops.extend(right_ops);
@@ -204,6 +209,7 @@ pub(crate) fn compile_boolean_op(
                 current_offset,
                 geometry_lets,
                 visiting,
+                &mut constraint_sink.reborrow(),
             )?;
             current_offset += first_ops.len();
             all_ops.extend(first_ops);
@@ -222,6 +228,7 @@ pub(crate) fn compile_boolean_op(
                     current_offset,
                     geometry_lets,
                     visiting,
+                    &mut constraint_sink.reborrow(),
                 )?;
                 current_offset += arg_ops.len();
                 all_ops.extend(arg_ops);

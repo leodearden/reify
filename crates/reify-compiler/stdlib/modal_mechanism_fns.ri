@@ -60,8 +60,14 @@
 //                               for API consistency.
 //
 // Return type: `ModalResult` — same 6-field structure as `modal_analysis`;
-// modes are ordered ascending by frequency; each Mode carries only `.frequency`
-// (empty `.shape`, zero `participation_mass`, zero `damping_ratio`).
+// modes are ordered ascending by frequency.  Each Mode carries `.frequency`
+// and `.damping_ratio`, the Rayleigh ratio ζ_i = (α + β·ω_i²)/(2·ω_i) read
+// from the `ModalOptions.damping` descriptor the caller supplied — the same
+// formula the FEA `modal_analysis` path uses (task #6875).  ζ_i is 0 for
+// `NoDamping`, for an absent `damping` field, and for a rigid-joint ω = 0
+// mode.  `.shape` stays empty and `.participation_mass` stays zero: the
+// lumped generalized-coordinate model has one scalar DOF per body and so has
+// no 3D mode shape to report.
 //
 // Rigid-joint note: a body whose inbound `at` joint has no `spring_rate`
 // (a rigid joint) contributes K[i,i] = 0 to the stiffness matrix.  That DOF
@@ -70,6 +76,14 @@
 // flexural mode.  A `W_MechanismModalRigidBodyMode` diagnostic is emitted for
 // each such mode.  Ensure every load-bearing body is attached via a flexure
 // joint with a non-zero `spring_rate` to obtain a meaningful first frequency.
+//
+// Unsupported-damping note: only `RayleighDamping` and `NoDamping` are honored
+// on this path.  A `DampingDescriptor` refinement this lumped model does not
+// implement emits a `W_MechanismModalUnsupportedDamping` diagnostic naming the
+// offending descriptor type, rather than silently reporting it as undamped.
+// The solve still completes (the frequencies are unaffected), every
+// `.damping_ratio` is 0, and `ModalResult.damping` echoes the descriptor you
+// supplied — so the dropped damping intent is visible rather than swallowed.
 @optimized("modal::mechanism_modal")
 pub fn mechanism_modal_analysis(
     mechanism : Mechanism,

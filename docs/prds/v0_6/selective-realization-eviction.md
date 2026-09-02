@@ -40,8 +40,14 @@ of θ (D8) — deferred until "`RealizationNodeData` result hashing exists." It 
   display-only annotation) yields `last_dispatch_count() == 0` on the next build (every realization
   cache-hits) — today it is the full all-bodies count.
 - **No stale geometry.** Across the staleness corpus (param edit, guard flip, collection grow,
-  source edit) the selective path serves a `GeometryHandleId` **byte-equivalent** to what the
-  wholesale-flush baseline would have produced — never a handle the flush would have evicted. The
+  source edit) the selective path serves geometry **content-equivalent** to what the
+  wholesale-flush baseline would have produced, and classifies every realization identically as a
+  cache **hit or miss** — never a handle the flush would have evicted. Equivalence is asserted on
+  the *content* of the served geometry (canonical shape), NOT on `GeometryHandleId`: that id is a
+  content-blind per-session counter (`crates/reify-ir/src/geometry.rs`, minted by fetch-and-increment
+  and deliberately kept monotonic across `reset`), so two regimes that execute different numbers of
+  realizations necessarily mint different ids for the same geometry. A byte-equal-id criterion would
+  therefore be false exactly when selective eviction works. See the §6 gate row. The
   superseding contract-lock tests (replacing the task-2874 "cache is empty after edit" pins) assert
   *affected realizations re-execute and unaffected ones hit*, not *the cache is empty*.
 - **Downstream re-eval correctness.** A `@optimized` ComputeNode with a direct `realization_inputs`
@@ -195,7 +201,7 @@ The unified-DAG red-team scoped this out of θ (D8) because the incremental mach
 | Collection grow (`forall`/count change) | edit raises a collection count, re-emitting realizations | new members execute; pre-existing members with unchanged inputs hit; structural re-elaboration leaves no orphaned stale entry (composes with 4530's rebuild invariant) |
 | `edit_source` recompile | source edit changes one body's op, leaves another's identical | changed body evicted; identical body's entry survives (via old-graph/new-graph input-cone diff); covers D7 (no 4713 dependency) |
 | Tolerance interplay | unaffected realization cached at `tol=1e-6`; affected one shares `entity`-adjacent buckets | partial-order lookup on survivors unchanged; only changed `(entity_id,*)` family removed |
-| Differential equivalence (the gate) | run the full staleness corpus under wholesale-flush AND selective eviction | every served `GeometryHandleId` byte-equivalent across regimes |
+| Differential equivalence (the gate) | run the full staleness corpus under wholesale-flush AND selective eviction | every served realization is **content-equivalent** across regimes (canonical shape of the served geometry), AND each realization's cache **hit/miss classification** matches. NOT `GeometryHandleId` byte-equality — the id is a content-blind session counter, so it necessarily diverges once the two regimes execute different realization counts |
 
 The δ task names the differential corpus + these boundary cases; the γ task names the superseded
 contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
@@ -264,9 +270,11 @@ dependency edges at decompose time per `preferences_cross_prd_deps_real_edges`.
   *grammar_confirmed: true.*
 - **δ — staleness differential corpus (the H boundary test).** The §6 corpus (param edit, guard
   flip, collection grow, `edit_source` recompile, tolerance interplay) under both
-  wholesale-flush and selective regimes; assert every served `GeometryHandleId` byte-equivalent.
+  wholesale-flush and selective regimes; assert every served realization is content-equivalent
+  (canonical shape) AND that each realization's cache hit/miss classification matches across
+  regimes. Do NOT assert `GeometryHandleId` byte-equality — see §6's gate row.
   *Modules:* `crates/reify-eval/tests/`. *Signal:* **leaf** — corpus green; selective ≡ wholesale on
-  served handles. *grammar_confirmed: true.*
+  served geometry content and on hit/miss classification. *grammar_confirmed: true.*
 - **ε — e2e: slider drag re-executes kernel ops only for the affected body.** Multi-body isolating
   fixture; `edit_param` feeding body A → `last_dispatch_count() == ops(A)` (`< all-bodies`);
   no-realization edit → `== 0`. `#[cfg_attr(not(feature="unified-dag"), ignore)]`. *Modules:*

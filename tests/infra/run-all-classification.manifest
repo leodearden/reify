@@ -70,7 +70,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (154, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (155, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -92,6 +92,7 @@ test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_git_rerere_guard.sh pool
 test_govtest_slice_reaper.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
@@ -100,6 +101,7 @@ test_harness_baseline_registration_gate.sh pool
 test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
 test_hooks_call_verify.sh pool
+test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
 test_jcodemunch_index_reify.sh pool
 test_jobserver_acceptance.sh pool
@@ -127,6 +129,7 @@ test_nextest_slow_priority.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
 test_no_new_wallclock_rust_deadlines.sh pool
 test_no_new_wallclock_upper_bounds.sh pool
+test_no_prebuilt_reify_bin_spawn.sh pool
 test_npm_ci_hardening.sh pool
 test_occt_deps_preflight.sh pool
 test_occt_flock_gate_bounds.sh pool
@@ -156,6 +159,7 @@ test_reify_audit_freshness.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
+test_reify_audit_ptodo_ratchet_superset.sh pool
 test_reify_audit_ptodo_ratchet_vacuity.sh pool
 test_reify_bin_freshness.sh pool
 test_reify_overlap_deploy_smoke.sh pool

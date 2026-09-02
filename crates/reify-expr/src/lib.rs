@@ -9619,9 +9619,9 @@ mod tests {
         // the matches!(result, Value::Undef) gate — an unconditional emit or
         // mis-gated success path would be caught here).
         let expr = iso_it_tolerance_call_expr(vec![
+            mm_val(30.0), // 30mm nominal_min
+            mm_val(50.0), // 50mm nominal_max
             Value::Int(6),
-            mm_val(30.0),
-            mm_val(50.0),
         ]);
 
         let values = ValueMap::new();
@@ -9634,15 +9634,15 @@ mod tests {
                 assert_eq!(
                     *dimension,
                     DimensionVector::LENGTH,
-                    "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar"
+                    "iso_it_tolerance(30mm,50mm,6) should be a LENGTH scalar"
                 );
                 assert!(
                     *si_value > 0.0,
-                    "iso_it_tolerance(6,30mm,50mm) should be positive, got {si_value}"
+                    "iso_it_tolerance(30mm,50mm,6) should be positive, got {si_value}"
                 );
             }
             other => panic!(
-                "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar, got {:?}",
+                "iso_it_tolerance(30mm,50mm,6) should be a LENGTH scalar, got {:?}",
                 other
             ),
         }
@@ -9661,9 +9661,9 @@ mod tests {
         // receives exactly one Severity::Error whose message contains
         // "E_TolerancingOutOfEnvelope". GREEN: wiring is live.
         let expr = iso_it_tolerance_call_expr(vec![
-            Value::Int(25),
-            mm_val(30.0),  // 30mm nominal_min
-            mm_val(50.0),  // 50mm nominal_max
+            mm_val(30.0),   // 30mm nominal_min
+            mm_val(50.0),   // 50mm nominal_max
+            Value::Int(25), // grade 25 — outside IT5–IT18
         ]);
 
         let values = ValueMap::new();
@@ -9700,9 +9700,9 @@ mod tests {
         // the wiring layer, independently of the grade-out-of-range path exercised
         // by iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink.
         let expr = iso_it_tolerance_call_expr(vec![
-            Value::Int(6),
-            mm_val(600.0), // 600mm nominal_min — grade valid, size oversize
+            mm_val(600.0), // 600mm nominal_min — size oversize
             mm_val(700.0), // 700mm nominal_max > 500mm → out-of-size-envelope
+            Value::Int(6), // grade 6 is valid; only the size is out of envelope
         ]);
 
         let values = ValueMap::new();
@@ -9731,6 +9731,64 @@ mod tests {
         assert!(
             diags[0].message.contains("E_TolerancingOutOfEnvelope"),
             "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn iso_it_tolerance_legacy_grade_first_emits_migration_error_into_sink() {
+        // The superseded grade-first spelling `(grade, nominal_min, nominal_max)`:
+        // arg-0 is an Int where the subject-first decode wants a LENGTH scalar, so
+        // iso_it_tolerance returns Value::Undef.
+        //
+        // Sink DELIVERY is the entire justification for the
+        // E_TolerancingLegacyArgOrder arm, and it is the half the unit-level
+        // classifier test (reify-stdlib tolerancing::tests) cannot see: that test
+        // proves `diagnose` returns Some(Diagnostic), not that anything downstream
+        // still calls `diagnose` for this shape. Without delivery the arm buys
+        // nothing over the pre-arm behaviour it exists to replace — the builtin
+        // returns Undef, nothing reaches the sink, and `reify eval` prints a bare
+        // `cell = undef` at exit 0 with nothing on stderr saying why.
+        //
+        // It is reachable today via the same route as its three siblings above
+        // (Undef result → the matches!(result, Value::Undef) gate in
+        // emit_undef_builtin_diagnostics → tolerancing_diagnose); this test is what
+        // would catch a future reorder or re-gating of that call.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(7), // grade in arg-0 — the pre-flip order
+            mm_val(30.0),  // 30mm nominal_min, displaced to arg-1
+            mm_val(50.0),  // 50mm nominal_max, displaced to arg-2
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "the grade-first spelling must not decode under the subject-first order"
+        );
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingLegacyArgOrder diagnostic must reach the sink, \
+             got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "the legacy grade-first spelling must emit Severity::Error (which is what \
+             moves a stale call site from exit 0 to exit 1 in cmd_eval)"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingLegacyArgOrder"),
+            "message must contain E_TolerancingLegacyArgOrder prefix (NOT \
+             E_TolerancingOutOfEnvelope — the legacy shape is mis-ordered, not \
+             out-of-envelope): {}",
             diags[0].message
         );
     }

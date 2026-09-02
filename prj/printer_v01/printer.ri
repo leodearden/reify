@@ -30,6 +30,13 @@ module printer
 // editing a single source would silently not propagate past the first
 // sub-bearing level. Do not rely on deep threading until #6592 lands.
 //
+// STRUCTURAL MASS GUIDELINE (Leo, 2026-09-01): concentrate mass in the
+// STATIC parts of the machine; keep the moving parts as light as possible
+// consistent with the mechanical requirements. (Already motivated the CFRP
+// gantry tubes and the 40%-fill aluminium carriage-block sketch; the
+// 90×90×300 blocks are placeholder-fat and slim in a real carriage design —
+// nothing in the moving set is epoxy granite.)
+//
 // COREXY GEOMETRY (agreed in design review):
 //  - Round rails => the X gantry is a STACKED PAIR (two rails) to constrain roll
 //    about the rail axis; their midplane coincides with the Y-rail plane.
@@ -201,8 +208,9 @@ pub structure IdlerPulley {
 
 /// Drive capstan (copied from dev_capstan.ri — single-file, no cross-file
 /// import in v0.1; the sketch's blank_volume/body_volume acceptance cells are
-/// deliberately omitted here — `volume()` is unresolvable on the check/eval
-/// surface and the machining metric belongs to the sketch). Helically-grooved
+/// deliberately omitted here — `volume()` is unresolvable on the CHECK
+/// surface (it works under kernel-backed `reify eval`, post-#4145) and the
+/// machining metric belongs to the sketch). Helically-grooved
 /// dual-anchor winch drum, axis = local +Z, centred. Both ends of each belt
 /// loop anchor to it; rotation reels one end in / pays the other out. Carries
 /// BOTH windings of the belt's ±z moment pair (axially adjacent on one drum).
@@ -1716,11 +1724,13 @@ pub structure CoreXY {
     sub tendons = DriveTendons(rail_x: y_rail_offset, z_a: tendon_outer_z) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
     // ── O6: moving masses + per-axis first-mode estimates (2026-08-26) ──────
-    // Masses are ANALYTIC volume × density: volume(body) is unresolvable on
-    // the value-eval surface (geometry-consumer builtins need a realized
-    // kernel — probed 2026-08-26, loud error), and for cylinders/tubes/boxes
-    // the closed form is exact anyway. Component dims read from the subs
-    // (one-level reads, #5360), so a resize moves the modes.
+    // Masses are ANALYTIC volume × density: volume(body) IS kernel-backed
+    // under `reify eval` (post-#4145), but stays unresolvable on the CHECK
+    // surface (kernel-free check cannot resolve geometry-consumer builtins)
+    // — analytic closed forms keep the mass constraints gateable under
+    // check, and for cylinders/tubes/boxes they are exact anyway. Component
+    // dims read from the subs (one-level reads, #5360), so a resize moves
+    // the modes.
     param rho_alu   : Density = 2700kg/m^3
     /// Rolled/ground CF tube, ~60% fibre fraction: bulk density ≈ 1600 kg/m³.
     param rho_cfrp  : Density = 1600kg/m^3
@@ -2016,128 +2026,426 @@ pub structure GantryFea {
 /// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy
 /// granite; the fill's job is DAMPING (5-10× steel) as much as stiffness.
 ///
-/// O1 v0 GEOMETRY (2026-08-26; was a one-param stub): two sandwich SIDE
-/// WALLS (YZ planes) flanking the machine in X — the primary structure the
-/// Y rails will mount on. Each wall = steel skin | epoxy-granite core |
-/// steel skin, modelled as three boxes. NOT YET MODELLED: the rail-carrier
-/// deck spanning wall-top to the rails (rails sit ~100mm inboard of the
-/// wall inner faces), the base tie, chamber openings, and the tab-and-slot
-/// skeleton inside the pour — future rounds.
+/// FRAME ROUND 2 GEOMETRY (2026-08-26, Leo's box topology): a FIVE-FACE BOX —
+/// two side walls UNDER the Y rails, a base slab, a back wall, an open front
+/// with a lintel across the pillar tops. Every face = thin sandwich FIELD
+/// (steel skin | EG core | steel skin, materially differentiated boxes)
+/// framed by thicker EDGE MEMBERS (square EG-filled plate boxes, modelled as
+/// single homogenised-density solids — their internal tab-and-slot webs stay
+/// unmodelled, same status as the in-pour skeleton). The side walls' end
+/// members extend up as the four RAIL PILLARS at the plan corners.
 ///
-/// FEA: the wall as a HOMOGENISED flexural-equivalent panel (single-body
-/// solves only — a true two-material bonded sandwich is unrepresentable;
-/// the heterogeneous-field path is a parked probe). Out-of-plane rail-mount
-/// receptance k_wall + base-clamped panel modes; skin stress ≈ homogenised
-/// surface stress × (E_skin/E_eq).
+/// Swept-envelope facts this geometry encodes (constraints below):
+///  - The annular Y bearings sweep the rails, so rails are END-supported
+///    ONLY: pillar sockets grip the outer sock_len of each rail. With 800mm
+///    rails + 150mm bearings this caps usable Y travel at travel_avail =
+///    510mm < build_y — a LATENT PRE-EXISTING defect (800 travel needs
+///    1100 rails; deferred, see the travel_avail cell note).
+///  - The wall field tops out below the lower-gantry-tube sweep (z 635);
+///    only the pillars rise to the rail.
+///  - Walls sit side_inset inboard of the rail plane: the return tendons +
+///    their rear descents hug x = ±(rail + 36mm).
+///  - REAR pillars carry a tendon-routing WINDOW (z 705..765, open outboard)
+///    so the lower rail runs (z_a/z_b below rail) can pass rearward once the
+///    drive web moves outside the back wall (agreed with Leo 2026-08-26);
+///    the upper runs clear the pillar tops. Back wall carries two wiring/air
+///    grommets; ropes never pierce a face.
+///  - Left side = mirror() of the right side (first mirror() use; probe-
+///    verified kernel-exact).
+///
+/// FEA: homogenised flexural-equivalent single-material solves only (#6660
+/// dims overloads; a bonded two-material sandwich is unrepresentable). Field
+/// panel modes bounded PINNED-PINNED — a SECOND support of ANY kind demotes
+/// the clamp (probed 2026-08-26, extends #6663: [Fixed, Pinned] returns
+/// pinned-pinned to 1.2%), so the deck-tied clamped-pinned value is the
+/// analytic ×(15.418/9.870) on the FEA bound. Pillar receptance from a stub
+/// cantilever solve; the mount chain (rail bending → pillar → drive) folds
+/// into the 2-DOF Y-chain via pinned-literal params (#6662 family-11 idiom).
 pub structure AFrame {
-    /// TOTAL sandwich thickness (core + both skins). 100 → 66 in the O1
-    /// massing round: two 100mm-core full walls weigh ~520kg, blowing the
-    /// Envelope's 400kg frame ceiling; 60mm core lands the frame at ~366kg.
-    param wall_thickness : Length = 66mm
-    param skin_t   : Length = 3mm
-    param wall_len : Length = 1100mm   // Y extent (build_y 800 + rail overtravel margin)
-    param wall_h   : Length = 900mm    // Z extent (rail axis at 805 + margin)
-    /// Inner-face-to-inner-face clearance across X. Rails sit at machine
-    /// x = −150/650 (motion centre 250 ± 400): inner faces at −250/+750
-    /// leave 100mm of rail-carrier reach (clearance pinned at Printer).
-    param wall_gap : Length = 1000mm
-    param centre_x : Length = 250mm    // == env.build_x/2 (pinned at Printer)
-    param centre_y : Length = 400mm    // == env.build_y/2 (pinned at Printer)
+    // ── Cross-cutting inputs, PINNED LITERALS (Printer pins them; #6662) ────
+    param centre_x : Length = 250mm    // == env.build_x/2
+    param centre_y : Length = 400mm    // == env.build_y/2
+    param rail_x_m : Length = 400mm    // == motion.y_rail_offset
+    param rail_z_m : Length = 805mm    // == build_z + 20 + x_rail_offset + brg_r
+    param tz_a     : Length = 80mm     // == motion.tendon_outer_z (belt A z level)
+    param tz_b     : Length = 55mm     // == DriveTendons.z_b default (2-level read
+                                       //    unavailable; literal, hand-kept)
+    param xr_off_m : Length = 140mm    // == motion.x_rail_offset (gantry tube z offset)
+    param tube_od_m : Length = 60mm    // == gantry BearingTube OD (tube_or relay ×2)
+    param rail_d_m  : Length = 60mm    // == Y-rail BearingRod diameter default
+    param rail_span_m : Length = 800mm // == motion.y_rail_len
+    param brg_len_m   : Length = 150mm // == AirBearing length default
+    /// Rear web front edge (fairlead collar face, machine y): derives from
+    /// DriveTendons cap_y − FairleadFrame.side_y (2-level; literal, hand-kept).
+    param web_front_y : Length = 0mm - 64mm
+
+    // ── Construction params ─────────────────────────────────────────────────
+    param skin_t : Length = 3mm        // laser-cut field skin stock
+    param mem_t  : Length = 3mm        // member plate stock (same gauge family)
+    /// Field EG core. THE damping/mass knob: 16 → m_frame ≈ 375 (green);
+    /// 24 → ≈ 434 (blows the 400 ceiling). Tune against the band live.
+    param core_t : Length = 16mm
+    /// Wall centreline inset inboard of the rail plane — the return tendons
+    /// and their rear descents hug x = rail + 36mm (rope surface 33mm out).
+    param side_inset : Length = 15mm
+    param wall_len  : Length = 1100mm  // Y extent (= the future 800-travel rail length)
+    param field_top : Length = 620mm   // side/back field+member top (below tube sweep)
+    param base_z    : Length = 0mm - 200mm  // base slab bottom (bed drops to ~−150)
+    param pillar_top : Length = 850mm
+    param mem_w  : Length = 50mm       // top/bottom/back edge members (square)
+    param pil_wx : Length = 70mm       // pillar section, X
+    param pil_wy : Length = 65mm       // pillar section, Y (face clears bearing sweep)
+    param lin_w  : Length = 70mm       // front lintel (square)
+    param sock_len : Length = 70mm     // rail-end socket grip length
+    param grom_d   : Length = 60mm     // back-wall wiring/air grommet bore
+    param slot_w : Length = 40mm       // tab-and-slot: slot Y extent
+    param slot_h : Length = 24mm       // slot Z extent
+    param slot_pitch : Length = 100mm
+    param slot_n : Int = 9
+
     param steel_e   : Pressure = 210GPa
     param rho_steel : Density = 7850kg/m^3
     param rho_core  : Density = 2300kg/m^3   // epoxy granite / mineral cast
-    param test_load : Real = 1000.0    // N — unit receptance probe at the wall top
-    /// Rail-mount load cases for the GUI multi-case view: X-reaction of the
-    /// head at peak accel (≈ m_head·100 m/s²) and at stretch (×10).
+    param test_load : Real = 1000.0    // N — receptance probes
     param rail_load_peak    : Real = 750.0
     param rail_load_stretch : Real = 7500.0
-    param f1_floor : Frequency = 40Hz  // == Envelope drive_f1_min (pinned at Printer)
+    param f1_floor : Frequency = 40Hz  // == Envelope drive_f1_min
 
-    let core_t   = wall_thickness - skin_t * 2
-    let wall_off = (wall_gap + wall_thickness) / 2
-    let wall_rx  = centre_x + wall_off
-    let wall_lx  = centre_x - wall_off
-    let wall_cz  = wall_h / 2
+    // ── Y-chain inputs, PINNED LITERALS (== O6/O1 derived truth; #6662) ─────
+    param k_drive  : Stiffness = 2937577N / 1m   // == CoreXY k_axis
+    param m_head_m : Mass = 7.487176kg           // == CoreXY m_head
+    param m_rest_m : Mass = 10.323258kg          // == CoreXY m_gantry − m_head
+    param k_pair_m : Stiffness = 7680396N / 1m   // == GantryFea k_pair_ss (FEA cell,
+                                                 //    undef at instance scope; pinned
+                                                 //    loosely vs 4·k_eb at Printer)
+
+    // ── Derived geometry (world frame, right side; left = mirror) ───────────
+    let side_t   = core_t + skin_t * 2
     let skin_off = (core_t + skin_t) / 2
+    let rail_x_w = centre_x + rail_x_m            // 650: world rail plane
+    let wall_cx  = rail_x_w - side_inset          // 635: wall centreline
+    let y0 = centre_y - wall_len / 2              // −150
+    let y1 = centre_y + wall_len / 2              // 950
+    let slab_top = base_z + side_t                // −178
+    let mem_top  = slab_top + mem_w               // −128: bottom member top
+    let fld_ly   = wall_len - pil_wy * 2          // 970: field between pillars
+    let fld_lz   = field_top - mem_w - mem_top    // 698: field between members
+    let fld_cy   = centre_y                       // field centred on the machine
+    let fld_cz   = mem_top + fld_lz / 2
+    let pil_h    = pillar_top - slab_top          // 1028: pillars stand on the slab
+    let pil_cz   = slab_top + pil_h / 2
+    let pil_r_cy = y0 + pil_wy / 2                // rear pillar centre
+    let pil_f_cy = y1 - pil_wy / 2                // front pillar centre
+    let base_w   = (rail_x_m - side_inset + pil_wx / 2) * 2  // 840: pillar outer faces
+    let lin_len  = (rail_x_m - side_inset - pil_wx / 2) * 2  // 700: between pillar inner faces
+    /// Centre faces (back wall, base members) also span lin_len so nothing
+    /// overlaps the pillars — analytic massing stays overlap-free.
+    let mid_w    = lin_len
+    let lin_cz   = pillar_top - lin_w / 2
+    // Rail-end socket + bridge (interim: grips TODAY's 800 rails; moves to the
+    // wall-end grip zones when the rail-length fix lands — see travel_avail).
+    let sock_x0  = wall_cx - 45mm                 // 590
+    let sock_x1  = wall_cx + 41mm                 // 676 (return rope surface at 683)
+    let sock_w   = sock_x1 - sock_x0
+    let sock_cx  = (sock_x0 + sock_x1) / 2
+    let sock_h   = 66mm
+    let sock_f_cy = centre_y + rail_span_m / 2 - sock_len / 2   // front grip 730..800
+    let sock_r_cy = centre_y - rail_span_m / 2 + sock_len / 2   // rear grip 0..70
+    let brf_y0 = centre_y + rail_span_m / 2       // front bridge 800..885
+    let brf_y1 = y1 - pil_wy
+    let brr_y0 = y0 + pil_wy                      // rear bridge −85..0
+    let brr_y1 = centre_y - rail_span_m / 2
+    let brr_x1 = wall_cx + 5mm                    // 640: dodges the rail-strand descent
+    // Rear-pillar tendon window: passes the LOWER rail runs (z_a/z_b below the
+    // rail) once the drive web externalizes; upper runs clear the pillar top.
+    let win_x0 = rail_x_w - 18mm                  // 632
+    let win_z0 = rail_z_m - tz_a - 20mm           // 705
+    let win_z1 = rail_z_m - tz_b + 15mm           // 765
+    let win_cz = (win_z0 + win_z1) / 2
 
-    // Two walls, each core + two skins — ONE inlined union tree so operands
-    // don't auto-surface (IdlerPulley convention).
-    let body = union(
+    /// Usable Y travel TODAY: 800mm rails − 150mm bearing − two sock_len end
+    /// grips = 510mm < build_y 800. PRE-EXISTING latent defect made visible:
+    /// full travel needs ~1100mm rails (= wall_len), a rear-web cascade
+    /// deferred to its own round (#5098 carries the GUI-gate scenario and
+    /// the externalization-round checklist). Pillars
+    /// already sit at the future grip zones; only the sockets are interim.
+    /// FULL TRAVEL ALSO REQUIRES WEB EXTERNALIZATION (measured 2026-09-01,
+    /// Leo confirmed): at y_head < ~46–61 the lower gantry tube (z 635–695,
+    /// all x) and the lower head bearings (z 620–710) sweep into the
+    /// fairlead collar tops (z ≤ 657, y −64..+16, x 66–434) — 22–37mm
+    /// interpenetration. No wall fits between the future moving envelope
+    /// (reaches y −75) and the web either: the web must vacate rearward
+    /// past y0 = −150. Moving the web (not this wall) is MANDATORY for the
+    /// rail-lengthening round; this back wall stays at y0 as the receiving
+    /// plane, and the two grommet pass-throughs fold into that round's
+    /// penetration design (rail bores + 8 rail-run stations + returns).
+    let travel_avail : Length = rail_span_m - brg_len_m - sock_len * 2
+
+    // ── Geometry: right side (aux operands realize hidden — Capstan idiom) ──
+    aux let side_r = difference(
         union(
-            translate(box(core_t, wall_len, wall_h), wall_rx, centre_y, wall_cz),
             union(
-                translate(box(skin_t, wall_len, wall_h), wall_rx - skin_off, centre_y, wall_cz),
-                translate(box(skin_t, wall_len, wall_h), wall_rx + skin_off, centre_y, wall_cz)
+                union(
+                    // Field sandwich: EG core + two steel skins.
+                    translate(box(core_t, fld_ly, fld_lz), wall_cx, fld_cy, fld_cz),
+                    union(
+                        translate(box(skin_t, fld_ly, fld_lz), wall_cx - skin_off, fld_cy, fld_cz),
+                        translate(box(skin_t, fld_ly, fld_lz), wall_cx + skin_off, fld_cy, fld_cz)
+                    )
+                ),
+                union(
+                    // Bottom + top edge members: proud square boxes (the
+                    // geometry matches mem_lin's 4-plate + fill section).
+                    translate(box(mem_w, fld_ly, mem_w), wall_cx, fld_cy, slab_top + mem_w / 2),
+                    translate(box(mem_w, fld_ly, mem_w), wall_cx, fld_cy, field_top - mem_w / 2)
+                )
+            ),
+            union(
+                union(
+                    // End members = rail pillars (rear, front).
+                    translate(box(pil_wx, pil_wy, pil_h), wall_cx, pil_r_cy, pil_cz),
+                    translate(box(pil_wx, pil_wy, pil_h), wall_cx, pil_f_cy, pil_cz)
+                ),
+                union(
+                    union(
+                        // Rail-end sockets (C-grip: bore breaks out outboard).
+                        translate(box(sock_w, sock_len, sock_h), sock_cx, sock_f_cy, rail_z_m),
+                        translate(box(sock_w, sock_len, sock_h), sock_cx, sock_r_cy, rail_z_m)
+                    ),
+                    union(
+                        // Socket-to-pillar bridges (rear one inboard-narrowed).
+                        translate(box(sock_w, brf_y1 - brf_y0, sock_h), sock_cx, (brf_y0 + brf_y1) / 2, rail_z_m),
+                        translate(box(brr_x1 - sock_x0, brr_y1 - brr_y0, sock_h), (sock_x0 + brr_x1) / 2, (brr_y0 + brr_y1) / 2, rail_z_m)
+                    )
+                )
             )
         ),
         union(
-            translate(box(core_t, wall_len, wall_h), wall_lx, centre_y, wall_cz),
             union(
-                translate(box(skin_t, wall_len, wall_h), wall_lx - skin_off, centre_y, wall_cz),
-                translate(box(skin_t, wall_len, wall_h), wall_lx + skin_off, centre_y, wall_cz)
-            )
+                // Rail bore: one Y-axis cylinder cuts both sockets' C-grips
+                // (R_x(−90°) maps the cylinder's +Z axis onto +Y; base at y0).
+                translate(
+                    rotate(cylinder(rail_d_m / 2 + 0.5mm, rail_span_m), 1.0, 0.0, 0.0, 0deg - 90deg),
+                    rail_x_w, centre_y - rail_span_m / 2, rail_z_m),
+                // Rear-pillar tendon-routing window (open outboard + rear).
+                translate(box(50mm, pil_wy + 10mm, win_z1 - win_z0), win_x0 + 25mm, pil_r_cy - 5mm, win_cz)
+            ),
+            // Tab-and-slot: fastener/registration slots along the bottom
+            // member (first in-anger linear_pattern in this project).
+            linear_pattern(
+                translate(box(side_t * 3, slot_w, slot_h), wall_cx, centre_y - slot_pitch * 4, slab_top + mem_w / 2),
+                0, 1, 0, slot_n, slot_pitch)
         )
     )
 
-    // Massing vs the Envelope frame budget (constraint at Printer level).
-    let m_skin  : Mass = skin_t * wall_len * wall_h * rho_steel
-    let m_core  : Mass = core_t * wall_len * wall_h * rho_core
-    let m_wall  : Mass = m_core + m_skin * 2
-    let m_frame : Mass = m_wall * 2
+    // ── Geometry: centre faces (base slab + back wall + lintel) ─────────────
+    aux let centre_faces = difference(
+        union(
+            union(
+                union(
+                    // Base slab sandwich (horizontal): core + two skins.
+                    translate(box(base_w, wall_len, core_t), centre_x, centre_y, base_z + side_t / 2),
+                    union(
+                        translate(box(base_w, wall_len, skin_t), centre_x, centre_y, base_z + side_t / 2 - skin_off),
+                        translate(box(base_w, wall_len, skin_t), centre_x, centre_y, base_z + side_t / 2 + skin_off)
+                    )
+                ),
+                union(
+                    // Base front/back edge members (on the slab; span between
+                    // the PILLAR inner faces so nothing overlaps the pillars).
+                    translate(box(mid_w, mem_w, mem_w), centre_x, y0 + mem_w / 2, slab_top + mem_w / 2),
+                    translate(box(mid_w, mem_w, mem_w), centre_x, y1 - mem_w / 2, slab_top + mem_w / 2)
+                )
+            ),
+            union(
+                union(
+                    // Back wall sandwich (vertical, at y0), slab-top..top-member,
+                    // spanning between the pillar inner faces:
+                    translate(box(mid_w, core_t, fld_lz + mem_w), centre_x, y0 + side_t / 2, slab_top + (fld_lz + mem_w) / 2),
+                    union(
+                        translate(box(mid_w, skin_t, fld_lz + mem_w), centre_x, y0 + side_t / 2 - skin_off, slab_top + (fld_lz + mem_w) / 2),
+                        translate(box(mid_w, skin_t, fld_lz + mem_w), centre_x, y0 + side_t / 2 + skin_off, slab_top + (fld_lz + mem_w) / 2)
+                    )
+                ),
+                union(
+                    // Back wall top member + the front lintel tying the pillars
+                    // (lintel gets its own y-centre: 70-deep on 65-deep pillars
+                    // overshot y1 by 2.5mm when centred at pil_f_cy).
+                    translate(box(mid_w, mem_w, mem_w), centre_x, y0 + mem_w / 2, field_top - mem_w / 2),
+                    translate(box(lin_len, lin_w, lin_w), centre_x, y1 - lin_w / 2, lin_cz)
+                )
+            )
+        ),
+        // Wiring/air grommets low in the back wall (electronics + air live
+        // outside per spec) — linear_pattern as a boolean cutter.
+        linear_pattern(
+            translate(
+                rotate(cylinder(grom_d / 2, side_t * 3), 1.0, 0.0, 0.0, 90deg),
+                centre_x - 150mm, y0 + side_t * 1.5, 0mm - 50mm),
+            1, 0, 0, 2, 300mm)
+    )
 
-    // Homogenisation: flexural-equivalent E (skins about the mid-plane
-    // dominate; core bending neglected) and mass-true density.
+    let body = union(
+        union(side_r, mirror(side_r, centre_x, 0mm, 0mm, 1.0, 0.0, 0.0)),
+        centre_faces
+    )
+
+    // ── Massing (analytic, material-exact for fields; homogenised members) ──
+    // *_lin cells are LINEAR densities (kg/m — deliberately un-annotated);
+    // areal = the field sandwich's kg/m².
+    let areal = skin_t * 2 * rho_steel + core_t * rho_core
+    let mem_steel_a = (mem_w * 4 - mem_t * 4) * mem_t
+    let mem_lin = mem_steel_a * rho_steel + (mem_w - mem_t * 2) * (mem_w - mem_t * 2) * rho_core
+    let pil_steel_a = (pil_wx * 2 + pil_wy * 2 - mem_t * 4) * mem_t
+    let pil_core_a  = (pil_wx - mem_t * 2) * (pil_wy - mem_t * 2)
+    let pil_lin = pil_steel_a * rho_steel + pil_core_a * rho_core
+    let lin_steel_a = (lin_w * 4 - mem_t * 4) * mem_t
+    let lin_lin = lin_steel_a * rho_steel + (lin_w - mem_t * 2) * (lin_w - mem_t * 2) * rho_core
+    let m_fld_side : Mass = fld_ly * fld_lz * areal
+    let m_mems_side : Mass = mem_lin * fld_ly * 2
+    let m_pils_side : Mass = pil_lin * pil_h * 2
+    let m_sock_one : Mass = (sock_w * sock_len * sock_h - pi * (rail_d_m / 2) * (rail_d_m / 2) * sock_len) * rho_steel
+    let m_bridges : Mass = (sock_w * (brf_y1 - brf_y0) * sock_h + (brr_x1 - sock_x0) * (brr_y1 - brr_y0) * sock_h) * rho_steel
+    /// Cutter corrections: slot array out of the bottom member, tendon
+    /// window out of the rear pillar (homogenised member densities).
+    let win_dx = wall_cx + pil_wx / 2 - win_x0
+    let m_slots : Mass = slot_n * mem_w * slot_w * slot_h * mem_lin / (mem_w * mem_w)
+    let m_win : Mass = win_dx * pil_wy * (win_z1 - win_z0) * pil_lin / (pil_wx * pil_wy)
+    let m_side : Mass = m_fld_side + m_mems_side + m_pils_side + m_sock_one * 2 + m_bridges - m_slots - m_win
+    let m_base : Mass = base_w * wall_len * areal + mem_lin * mid_w * 2
+    let m_back : Mass = mid_w * (fld_lz + mem_w) * areal + mem_lin * mid_w
+        - pi * (grom_d / 2) * (grom_d / 2) * areal * 2
+    let m_lintel : Mass = lin_lin * lin_len
+    let m_frame : Mass = m_side * 2 + m_base + m_back + m_lintel
+
+    // ── Volume cross-check: kernel volume vs analytic (validates the whole
+    // boolean/mirror/pattern tree; eval-only — volume() is check-opaque) ────
+    let vol_side = fld_ly * fld_lz * side_t + mem_w * mem_w * fld_ly * 2
+        + pil_wx * pil_wy * pil_h * 2
+        + (sock_w * sock_len * sock_h - pi * (rail_d_m / 2 + 0.5mm) * (rail_d_m / 2 + 0.5mm) * sock_len) * 2
+        + sock_w * (brf_y1 - brf_y0) * sock_h + (brr_x1 - sock_x0) * (brr_y1 - brr_y0) * sock_h
+        - win_dx * pil_wy * (win_z1 - win_z0)
+        - slot_n * mem_w * slot_w * slot_h
+    let vol_centre = base_w * wall_len * side_t + mid_w * mem_w * mem_w * 2
+        + mid_w * side_t * (fld_lz + mem_w) + mid_w * mem_w * mem_w
+        + lin_len * lin_w * lin_w
+        - pi * (grom_d / 2) * (grom_d / 2) * side_t * 2
+    let vol_body = volume(body)
+    let vol_vs_analytic = vol_body / (vol_side * 2 + vol_centre)
+
+    // ── Homogenisation (flexural-equivalent; see header for fidelity notes) ─
     let d_sep  = core_t + skin_t
     let e_eq   : Pressure = 12 * (steel_e * skin_t * d_sep * d_sep / 2)
-        / (wall_thickness * wall_thickness * wall_thickness)
-    let rho_eq : Density = (skin_t * 2 * rho_steel + core_t * rho_core) / wall_thickness
-    /// Peak SKIN stress ≈ homogenised surface stress × this factor.
+        / (side_t * side_t * side_t)
+    let rho_eq : Density = (skin_t * 2 * rho_steel + core_t * rho_core) / side_t
     let skin_stress_factor = steel_e / e_eq
     let material = HomogenisedPanel(youngs_modulus: e_eq, density: rho_eq)
     let mi = FEAMaterialInput(material: material)
+    /// Pillar: flexural-equivalent solid (EI of the 4-plate steel box; EG fill
+    /// bending neglected — conservative), mass-true density.
+    let pil_i_steel = (pil_wx * pil_wx * pil_wx * pil_wx
+        - (pil_wx - mem_t * 2) * (pil_wx - mem_t * 2) * (pil_wx - mem_t * 2) * (pil_wx - mem_t * 2)) / 12
+    let e_pil : Pressure = steel_e * pil_i_steel / (pil_wx * pil_wx * pil_wx * pil_wx / 12)
+    let rho_pil : Density = pil_lin / (pil_wx * pil_wy)
+    let mat_pil = HomogenisedPanel(youngs_modulus: e_pil, density: rho_pil)
 
-    // Statics: wall as a base-clamped cantilever plate, out-of-plane unit
-    // load at the top (dims solve: beam axis = wall_h, height axis = the
-    // sandwich thickness, so the default -z PointLoad is out-of-plane).
-    let mount = FixedSupport(target: "root")
-    // shell_force Off: the wall auto-classifies as a shell (t/extent 0.06 <
-    // 0.2), and SHELL results carry stress channels but displacement: undef
-    // (found 2026-08-26) — the k readback needs the solid path.
-    let r_static = solve_elastic_static(
-        material, wall_h, wall_len, wall_thickness,
-        [PointLoad(point: "tip", force: test_load)], [mount],
-        ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
-    let defl_top = max(r_static.displacement)
-    let k_wall : Stiffness = test_load * 1N / defl_top
-
-    // Panel modes, base clamp (the FEA-exact single-clamp case).
-    let fix_base = FixedSupport(target: "x_min")
-    let opts_wall = ModalOptions(
-        n_modes: 3, boundary_conditions: [fix_base], damping: NoDamping(),
+    // ── FEA: field panel first mode, PINNED-PINNED bound ────────────────────
+    // ANY second modal support demotes the clamp (extends #6663, probed
+    // 2026-08-26): [Fixed, Pinned] returns pinned-pinned. PP is the honest
+    // FEA bound for a member-framed field; the clamped-pinned estimate is
+    // the analytic ×(15.418/9.870) on it.
+    let pin_a = PinnedSupport(target: "x_min")
+    let pin_b = PinnedSupport(target: "x_max")
+    let opts_field = ModalOptions(
+        n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
         sigma: 0.0, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
-    let wall_h2 = wall_h * 1.0
-    let r_modal = modal_analysis(mi.material, wall_h2, wall_len, wall_thickness, opts_wall)
-    let f1_wall : Frequency = first_frequency(r_modal)
+    let fld_lz2 = fld_lz * 1.0
+    let r_modal_field = modal_analysis(mi.material, fld_lz2, fld_ly, side_t, opts_field)
+    let f1_field_pp : Frequency = first_frequency(r_modal_field)
+    let f1_field_cp : Frequency = f1_field_pp * (15.418 / 9.870)
 
-    // GUI FEA case view: the same wall under the two rail-reaction cases
-    // (per-case ALGEBRA must use typed single solves — see the O1 header).
+    // ── FEA: pillar receptance (stub cantilever above the wall field) ───────
+    // NOTE fidelity: L/h ≈ 2.6 is shear-dominated and the homogenised solid
+    // overstates the shear path (see header) — carry the analytic-EI value
+    // and a wide band, and use the SOFTER of the two in the chain.
+    let stub_l = rail_z_m - field_top
+    let mount = FixedSupport(target: "root")
+    let r_pil = solve_elastic_static(
+        mat_pil, stub_l, pil_wx, pil_wy,
+        [PointLoad(point: "tip", force: test_load)], [mount],
+        ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
+    let defl_pil = max(r_pil.displacement)
+    let k_pil_fea : Stiffness = test_load * 1N / defl_pil
+    let k_pil_eb  : Stiffness = 3 * steel_e * pil_i_steel / (stub_l * stub_l * stub_l)
+    let pil_fea_vs_eb = k_pil_fea / k_pil_eb
+
+    // ── Mount-stiffness chain → derated Y first mode ────────────────────────
+    // Rail bending between end sockets (SS, worst mid-span) in series with a
+    // pillar pair per rail; two rails in parallel; the lot in series with the
+    // drive. 2-DOF chain (GantryFea formula) with k1 = that series.
+    let rail_i = pi / 64 * (rail_d_m * rail_d_m * rail_d_m * rail_d_m)
+    let k_rail_ss : Stiffness = 48 * steel_e * rail_i / (rail_span_m * rail_span_m * rail_span_m)
+    let k_mount_rail : Stiffness = 1.0 / (1.0 / k_rail_ss + 1.0 / k_pil_fea)
+    let k_mount : Stiffness = k_mount_rail * 2
+    let k1_eff : Stiffness = 1.0 / (1.0 / k_drive + 1.0 / k_mount)
+    let dof2_a = m_head_m * m_rest_m
+    let dof2_b = m_rest_m * (k1_eff + k_pair_m) + m_head_m * k_pair_m
+    let dof2_c = k1_eff * k_pair_m
+    let f1_y_mounted : Frequency = sqrt((dof2_b
+        - sqrt(dof2_b * dof2_b - 4 * dof2_a * dof2_c)) / (2 * dof2_a)) / (2 * pi)
+
+    // ── GUI FEA case view: pillar under the rail-reaction cases ─────────────
+    let stub_l2 = stub_l * 1.0
     let case_peak = LoadCase(name: "rail_x_peak",
         loads: [PointLoad(point: "tip", force: rail_load_peak)], supports: [mount])
     let case_stretch = LoadCase(name: "rail_x_stretch",
         loads: [PointLoad(point: "tip", force: rail_load_stretch)], supports: [mount])
-    let wall_h3 = wall_h * 1.0
     let mc = solve_load_cases(
-        material, wall_h3, wall_len, wall_thickness, [case_peak, case_stretch],
-        ElasticOptions(element_order: ElementOrder.P2))
+        mat_pil, stub_l2, pil_wx, pil_wy, [case_peak, case_stretch],
+        ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
 
+    // ── Constraints ─────────────────────────────────────────────────────────
     constraint core_t > 0mm
-    constraint wall_gap > 0mm
-    constraint defl_top > 0mm
-    constraint k_wall > 0N / 1m
-    // The wall's first panel mode clears the servo floor (in-template: FEA
-    // cells are undef at instance scope — see the O1 header note).
-    constraint f1_wall > f1_floor
+    constraint fld_lz > 0mm
+    constraint travel_avail > 0mm
+    // Field top stays below the lower-gantry-tube sweep (bottom at
+    // rail_z − x_rail_offset − tube_od/2 = 635), with 10mm clearance:
+    constraint field_top < rail_z_m - xr_off_m - tube_od_m / 2 - 9.9mm
+    // Socket/bridge outer face clears the return-tendon rope surface
+    // (rail + 36mm − 3mm rope radius), with ≥4mm:
+    constraint sock_x1 < rail_x_w + 36mm - 3mm - 4mm
+    // Rear bridge dodges the rail-strand descent at the rail plane (rope
+    // surface 3mm inboard of it), with ≥5mm:
+    constraint brr_x1 < rail_x_w - 3mm - 5mm
+    // Pillar faces clear the FUTURE full-travel bearing sweep
+    // (centre_y ± (build-travel/2 + brg/2) = ±475 about centre):
+    constraint y1 - pil_wy > centre_y + 400mm + brg_len_m / 2 + 4.9mm
+    constraint y0 + pil_wy < centre_y - 400mm - brg_len_m / 2 - 4.9mm
+    // Tendon window brackets the LOWER run z-levels with ≥10mm:
+    constraint win_z0 < rail_z_m - tz_a - 3mm - 10mm
+    constraint win_z1 > rail_z_m - tz_b + 3mm + 10mm
+    // Upper runs pass over the pillar top:
+    constraint pillar_top < rail_z_m + tz_b - 3mm - 5mm
+    // Back wall inner face clears the (pre-externalization) rear web:
+    constraint y0 + side_t < web_front_y - 10mm
+    // Slot array stays inside the bottom member span:
+    constraint slot_pitch * (slot_n - 1) + slot_w < fld_ly - 20mm
+    // Sockets grip only unswept rail (interim 510mm-travel geometry):
+    constraint sock_len * 2 + brg_len_m < rail_span_m
+    // Field panel first mode (conservative PP bound) clears the servo floor:
+    constraint f1_field_pp > f1_floor
+    // Chain first mode WITH mount compliance folded in clears the floor:
+    constraint f1_y_mounted > f1_floor
+    // Pillar FEA vs analytic EI: wide band — the stub is shear-dominated,
+    // so FEA legitimately reads well below the pure-bending EI value:
+    constraint pil_fea_vs_eb > 0.15
+    constraint pil_fea_vs_eb < 1.15
+    constraint defl_pil > 0mm
+    // Kernel volume within 3% of the analytic tree (slivers: bore breakout,
+    // cutter overshoots) — a standing validation of mirror()+patterns:
+    constraint vol_vs_analytic > 0.97
+    constraint vol_vs_analytic < 1.03
 }
 
 /// Assembly D — Toolhead: 4-tool kinematic dock on the frame (the carriage that
@@ -2146,23 +2454,316 @@ pub structure DToolhead {
     param tool_dock_pitch : Length = 80mm
 }
 
-/// Assembly E — Z-bed: 12 mm Mic-6 plate, magnetic flexible PEI sheet, 4-corner
-/// electronic-tilt servo Z, parking shutter (no bellows). Owns the Z-travel
-/// centreline visualisation.
+/// Assembly E — Z-bed: THREE-COLUMN tendon-lifted bed (O3 round, 2026-09-01;
+/// Leo ratified 3-column over the spec's 4-corner — spec amendment queued).
+///
+/// ARCHITECTURE (all agreed with Leo this round):
+///  - 3 lift columns (ground round shaft + dry polymer bushing carriage),
+///    positions: pair on the side bands at y=col_pair_y, single rear-centre —
+///    the FRONT access aperture stays completely open.
+///  - Drive: Vectran tendon + COUNTERWEIGHT per column (single design
+///    vocabulary with the XY drive; power-off = neutral hover; ~zero servo
+///    holding torque; no lubricant in the chamber; crash-compliant). Creep
+///    vetted 2026-09-01: ~0.03%/log-decade at 50% MBL (NASA GSFC), zero
+///    measurable at fiber level ≤50% load; we run at ~0.2% MBL. Negative
+///    CTE: tendons TIGHTEN on chamber heat-up. Bedding-in dominates —
+///    pre-cycle warm, re-tension after first soak. 3 distinct servos
+///    (full 2-axis electronic tilt), drums in the rear service bay (routing
+///    detail deferred with web externalization).
+///  - Plate support at the strip-optimal INBOARD points (Leo's min-excursion
+///    principle): cantilever tip sag balances mid-span droop. The 1D strip
+///    optimum lands at a_frac ≈ 0.20 of the span from each edge (verified
+///    LIVE by the tip/mid ratio constraint below — the model checks its own
+///    optimum rather than trusting a hard-coded root).
+///  - Mounts: carriage↔subframe ROLLING Maxwell (V-ball-V, radial — tilt
+///    corrections cycle these; rolling kills stick-slip in the leveling
+///    loop); subframe↔plate SLIDING Maxwell (3 radial pin-pair V-grooves on
+///    the subframe, balls staked in the plate underside — plate thermal
+///    stroke is mm-scale, sliding returns deterministically; grooves =
+///    adhesive-bonded ground dowel pairs, Tg>150°C epoxy + mechanical
+///    capture). Carriage yaw about its single shaft is reacted through the
+///    Maxwell sandwich (tangential is a constrained direction, 170-240mm
+///    arm) — no second rod needed; drive anchors straddle the shaft plane
+///    to null yaw moment.
+///
+/// KINEMATICS SURFACE (probe-informed, 2026-09-01): NO loop closures — the
+/// .ri-reachable closed-loop path is structurally broken and SILENT (K1-K4
+/// in the round ledger: NotConverged unreported, fully-bound loops never
+/// residual-checked, closing-joint pivot double-counted, body pose absent
+/// from the residual — parallel platforms inexpressible in principle).
+/// Rotation→translation coupling is also inexpressible (revolute-parent
+/// couplings stay angular), so the drum ratio is cell algebra. The honest
+/// encoding: 3 OPEN-CHAIN prismatic joints at real pivots + closed-form
+/// plane-through-3-points pose algebra + constraint cells; sweep exercises
+/// warm-started FK. Pose readback to scalars is blocked (K7) — mechanism
+/// cells verify convergence/expressibility, the algebra carries the values.
 pub structure EZBed {
+    // ── Cross-cutting inputs, pinned literals (Printer pins; #6662 idiom) ──
     param build_x : Length = 500mm
     param build_y : Length = 800mm
     param build_z : Length = 600mm
+    param slab_top_m : Length = 0mm - 178mm   // == AFrame base_z + side_t
+    param sweep_floor_m : Length = 620mm      // gantry lower-bearing sweep floor
+    param wall_in_l : Length = 0mm - 124mm    // left wall inner face
+    param wall_in_r : Length = 624mm          // right wall inner face
+    param back_in : Length = 0mm - 128mm      // back wall inner face
 
+    // ── Bed stack ──────────────────────────────────────────────────────────
     param bed_plate_thickness : Length = 12mm
+    param rho_mic6 : Density = 2700kg/m^3
+    param e_mic6 : Pressure = 69GPa
+    param nu_mic6 : Real = 0.33
+    param m_heater : Mass = 2kg               // silicone pad, bonded
+    param m_sheet  : Mass = 1kg               // magnetic substrate + PEI sheet
+    param m_subframe : Mass = 6kg             // welded/bolted steel subframe (est)
+    param g_acc : Acceleration = 9.81 * 1m / (1s * 1s)
+    /// Gravity-sag flatness excursion budget. Thermal bow is deliberately
+    /// OUTSIDE this budget: it is soak-then-probe territory (mesh
+    /// compensation), not a modelled quantity.
+    param sag_budget : Length = 0.03mm
 
-    // Z-bed travel centreline (reference viz, not a part — hidden by default).
+    // ── Lift geometry ──────────────────────────────────────────────────────
+    /// Strip-optimal support inset fraction (min-max excursion; ~0.20 —
+    /// the tip/mid ratio constraint verifies optimality live).
+    param a_frac : Real = 0.20
+    param park_below : Length = 80mm          // park depth below build zone (spec 50–100)
+    param park_margin : Length = 20mm         // hardware clearance over the slab
+    /// Bed surface height NOW (top of travel = first-layer position).
+    param bed_z : Length = 600mm
+    param shaft_d : Length = 25mm
+    param col_w : Length = 60mm               // column footprint (shaft housing)
+    param col_top : Length = 600mm            // column/pulley crown (< sweep floor)
+    param carriage_h : Length = 60mm          // rides UP from the arm plane
+    param arm_h : Length = 20mm
+    param subframe_h : Length = 30mm
+    param maxwell_gap : Length = 8mm          // subframe→plate ball stand-off
+    param col_pair_x_l : Length = 0mm - 60mm  // left pair column centre x
+    param col_pair_x_r : Length = 560mm
+    param col_single_y : Length = 0mm - 60mm  // rear column y (rear band)
+    /// Rear column x — OFFSET, not centred: the drive web owns the rear
+    /// band's centre (fairlead collars to x=434 + the x=418 descent; the
+    /// inter-collar gap is 32mm < col_w). 480 clears collar B by 16mm; the
+    /// support point stays at (250,160) via an L-arm. Re-centre when the
+    /// web externalizes (hand-kept vs the web, like web_x_max below).
+    param col_single_x : Length = 480mm
+    /// Rear-web x outer envelope + rope margin (collar face 434 + 6):
+    /// HAND-KEPT literal — no relay chain reaches RearDrive's cap_x/frame_x
+    /// from here; re-derive at web externalization.
+    param web_x_max : Length = 440mm
+    param cw_w_s : Length = 90mm              // single cw slimmed for the RR pocket
+    param rope_dia : Length = 6mm
+    param rope_ea  : Force = 800kN            // == DriveTendons EA (same stock)
+    param rope_mbl : Force = 28.47kN
+    param cw_rho : Density = 7850kg/m^3       // steel counterweight blocks
+    param cw_w : Length = 120mm
+    /// Z-hop duty (Leo, 2026-09-01: fast sub-0.5mm moves at every rapid).
+    param hop_stroke : Length = 0.5mm
+    let hop_time = 0.03s
+
+    // ── Support points (strip-optimal, inboard — Leo's principle) ─────────
+    let sup_y_pair   = build_y * (1.0 - a_frac)         // 640: pair line (front-ish)
+    let sup_y_single = build_y * a_frac                 // 160: single (rear-ish)
+    let sup_x_a = build_x * a_frac                      // 100
+    let sup_x_b = build_x * (1.0 - a_frac)              // 400
+    let sup_x_s = build_x / 2                           // 250: single point
+
+    // ── Plate strip-sag algebra (y-axis strip; q per unit width) ──────────
+    // Roark overhanging-beam: UDL q over full length, symmetric supports.
+    // The model VERIFIES a_frac is at the min-max optimum: tip and mid
+    // excursions (both measured from the support line) must balance.
+    let plate_d = e_mic6 * bed_plate_thickness * bed_plate_thickness
+        * bed_plate_thickness / (12 * (1.0 - nu_mic6 * nu_mic6))   // N·m (plate rigidity)
+    let q_areal = rho_mic6 * bed_plate_thickness * g_acc   // N/m² (plate self-weight)
+    let ovh  = build_y * a_frac                          // overhang a
+    let span = build_y - ovh * 2                         // interior span l
+    let theta_a = q_areal * (span * span * span / 24
+        - ovh * ovh * span / 4) / plate_d                // support slope (rad)
+    let sag_tip = theta_a * ovh
+        + q_areal * ovh * ovh * ovh * ovh / (8 * plate_d)
+    let sag_mid = q_areal * span * span * (5 * span * span - 24 * ovh * ovh)
+        / (384 * plate_d)
+    let sag_ratio = sag_tip / sag_mid
+
+    // ── Masses + per-column static shares (determinate: 3 points) ─────────
+    let m_plate : Mass = build_x * build_y * bed_plate_thickness * rho_mic6
+    let m_bed : Mass = m_plate + m_heater + m_sheet + m_subframe
+    let w_bed : Force = m_bed * g_acc
+    let y_cg = build_y / 2
+    /// Lever rule about the support lines: the single point carries
+    /// share_s, the pair splits the rest.
+    let share_s = (sup_y_pair - y_cg) / (sup_y_pair - sup_y_single)   // 0.5
+    let share_p = (1.0 - share_s) / 2                                  // 0.25 each
+    let t_col_s : Force = w_bed * share_s     // single-column tendon tension
+    let t_col_p : Force = w_bed * share_p
+
+    // ── Counterweights (per column, neutral balance, 2:1 REEVED) ──────────
+    // Reeving 2:1 (elevator practice): cw stroke = travel/2, cw mass =
+    // 2× its column share — the full-stroke cw would otherwise overrun the
+    // gantry-sweep ceiling (stroke 680 + block height > column height).
+    let m_cw_s : Mass = m_bed * share_s * 2
+    let m_cw_p : Mass = m_bed * share_p * 2
+    let cw_h_s = m_cw_s / (cw_rho * cw_w_s * cw_w_s)
+    let cw_h_p = m_cw_p / (cw_rho * cw_w * cw_w)
+
+    // ── Travel + hop dynamics ──────────────────────────────────────────────
+    let travel : Length = build_z + park_below            // 680
+    let drop : Length = build_z - bed_z                   // current drop from top
+    let a_hop : Acceleration = 2 * hop_stroke / (hop_time * hop_time)
+    /// Reflected inertia on the drive tendons: bed + reeved cw at (1/2)²
+    /// each = 1.5× bed mass.
+    let m_z_eff : Mass = m_bed * 1.5
+    let f_hop_content : Frequency = 1.0 / (2 * hop_time)  // ~17Hz excitation band
+    // Worst-case (longest) drive free length: carriage at park, pulley at crown.
+    let l_rope_max : Length = col_top - slab_top_m
+    let k_col_min : Stiffness = rope_ea / l_rope_max
+    /// Bed-on-tendons vertical mode, worst case (all three at max length).
+    let f_z_min : Frequency = sqrt(k_col_min * 3 / m_z_eff) / (2 * pi)
+
+    // ── Bed pose algebra (closed-form plane through 3 support heights) ────
+    // Heights h_a/h_b (pair) and h_s (single) are the servo DOF; tilt is
+    // exact, no least-squares — the 3-column dividend.
+    param h_a : Length = 0mm     // pair-a height offset from nominal
+    param h_b : Length = 0mm
+    param h_s : Length = 0mm
+    let tilt_x = (h_b - h_a) / (sup_x_b - sup_x_a)                  // rad (small)
+    let mid_pair = (h_a + h_b) / 2
+    let tilt_y = (mid_pair - h_s) / (sup_y_pair - sup_y_single)
+    let z_centre = h_s + tilt_y * (y_cg - sup_y_single)
+    /// Leveling envelope each servo must cover (probe-measured tilt ranges).
+    param tilt_budget : Real = 0.002          // ±2 mrad
+    let h_range_needed : Length = tilt_budget * (sup_y_pair - sup_y_single)
+
+    // ── Kinematics: 3 open-chain prismatic lifts (probe idiom P1/P6) ──────
+    // Joint value = carriage height above the park datum. NOTE the geometry
+    // cell below is named bed_solid, not body — `body(...)` is also the
+    // mechanism-builder builtin and a let of that name would shadow it.
+    let j_a = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+        point3(col_pair_x_l, sup_y_pair, slab_top_m))
+    let j_b = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+        point3(col_pair_x_r, sup_y_pair, slab_top_m))
+    let j_s = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+        point3(col_single_x, col_single_y, slab_top_m))
+    let mech = body(body(body(mechanism(), "car_a", j_a), "car_b", j_b), "car_s", j_s)
+    let lift_now = travel - drop              // carriage height above park datum
+    let snap = snapshot(mech, [bind(j_a, lift_now), bind(j_b, lift_now), bind(j_s, lift_now)])
+    let sweep_snaps = sweep(mech, j_a, 0mm .. 680mm, 5)
+    let sweep_n = sweep_snaps.count
+
+    // ── Geometry (world frame; bed at bed_z) ──────────────────────────────
+    // Lift stack rises FROM the arm plane: arm, subframe, maxwell gap,
+    // plate. Carriage rides UP from the arm plane (never below it), so at
+    // park nothing reaches deeper than the arm bottom.
+    let plate_top = bed_z
+    let arm_z = plate_top - bed_plate_thickness - maxwell_gap - subframe_h - arm_h
+    let cw_z_s = slab_top_m + park_margin + drop / 2 + cw_h_s / 2  // counter-phase, 2:1
+    let cw_z_p = slab_top_m + park_margin + drop / 2 + cw_h_p / 2
+    let cw_off = (col_w + cw_w) / 2 + 10mm
+    let bed_solid = union(
+        union(
+            union(
+                // Three columns: shaft housing footprint (slab → crown).
+                union(
+                    translate(box(col_w, col_w, col_top - slab_top_m), col_pair_x_l, sup_y_pair, (col_top + slab_top_m) / 2),
+                    translate(box(col_w, col_w, col_top - slab_top_m), col_pair_x_r, sup_y_pair, (col_top + slab_top_m) / 2)
+                ),
+                union(
+                    translate(box(col_w, col_w, col_top - slab_top_m), col_single_x, col_single_y, (col_top + slab_top_m) / 2),
+                    // Carriages (up from arm plane) + arms to the support points.
+                    union(
+                        union(
+                            translate(box(col_w, col_w, carriage_h), col_pair_x_l, sup_y_pair, arm_z + carriage_h / 2),
+                            translate(box(sup_x_a - col_pair_x_l + col_w, col_w, arm_h), (col_pair_x_l + sup_x_a) / 2, sup_y_pair, arm_z + arm_h / 2)
+                        ),
+                        union(
+                            union(
+                                translate(box(col_w, col_w, carriage_h), col_pair_x_r, sup_y_pair, arm_z + carriage_h / 2),
+                                translate(box(col_pair_x_r - sup_x_b + col_w, col_w, arm_h), (col_pair_x_r + sup_x_b) / 2, sup_y_pair, arm_z + arm_h / 2)
+                            ),
+                            union(
+                                translate(box(col_w, col_w, carriage_h), col_single_x, col_single_y, arm_z + carriage_h / 2),
+                                // L-arm: y-leg out of the rear band, x-leg to
+                                // the support point at (sup_x_s, sup_y_single).
+                                union(
+                                    translate(box(col_w, sup_y_single - col_single_y + col_w, arm_h), col_single_x, (col_single_y + sup_y_single) / 2, arm_z + arm_h / 2),
+                                    translate(box(col_single_x - sup_x_s + col_w, col_w, arm_h), (col_single_x + sup_x_s) / 2, sup_y_single, arm_z + arm_h / 2)
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+            union(
+                // Subframe: pair rail + spine to the single point (atop arms).
+                union(
+                    translate(box(sup_x_b - sup_x_a + 80mm, 60mm, subframe_h), (sup_x_a + sup_x_b) / 2, sup_y_pair, arm_z + arm_h + subframe_h / 2),
+                    translate(box(60mm, sup_y_pair - sup_y_single + 60mm, subframe_h), sup_x_s, (sup_y_pair + sup_y_single) / 2, arm_z + arm_h + subframe_h / 2)
+                ),
+                // Plate stack: Mic-6 + heater pad (under) + PEI sheet (over).
+                union(
+                    translate(box(build_x, build_y, bed_plate_thickness), build_x / 2, build_y / 2, plate_top - bed_plate_thickness / 2),
+                    union(
+                        translate(box(build_x - 40mm, build_y - 40mm, 3mm), build_x / 2, build_y / 2, plate_top - bed_plate_thickness - 1.5mm),
+                        translate(box(build_x, build_y, 1mm), build_x / 2, build_y / 2, plate_top + 0.5mm)
+                    )
+                )
+            )
+        ),
+        // Counterweights: pair cws OUTBOARD in +y of their columns (the ±x
+        // sides face the walls); single cw in the right-rear pocket
+        // (x 500..624, y<0 — clear of walls AND the web envelope).
+        union(
+            union(
+                translate(box(cw_w, cw_w, cw_h_p), col_pair_x_l, sup_y_pair + cw_off, cw_z_p),
+                translate(box(cw_w, cw_w, cw_h_p), col_pair_x_r, sup_y_pair + cw_off, cw_z_p)
+            ),
+            translate(box(cw_w_s, cw_w_s, cw_h_s), col_single_x + (col_w + cw_w_s) / 2 + 10mm, col_single_y, cw_z_s)
+        )
+    )
+
+    // Z-bed travel centreline (reference viz — hidden by default).
     aux let z_bed_travel_centerline = translate(
         box(6mm, 6mm, build_z),
         build_x / 2, build_y / 2, build_z / 2
     )
 
+    // ── Constraints ────────────────────────────────────────────────────────
     constraint bed_plate_thickness > 0mm
+    // Strip optimum verified live: tip and mid excursions balance (±25%).
+    constraint sag_ratio > 0.75
+    constraint sag_ratio < 1.25
+    constraint sag_tip < sag_budget
+    constraint sag_mid < sag_budget
+    // Column crowns and top-of-travel carriage stay under the sweep floor:
+    constraint col_top < sweep_floor_m - 10mm
+    constraint arm_z + carriage_h < sweep_floor_m - 10mm
+    // Park: the arm plane (lowest lift hardware) clears the slab.
+    constraint 0mm - park_below - bed_plate_thickness - maxwell_gap - subframe_h - arm_h > slab_top_m + park_margin
+    // Columns stand clear of the bed plan and inside the walls/back bay:
+    constraint col_pair_x_l + col_w / 2 < 0mm
+    constraint col_pair_x_l - col_w / 2 > wall_in_l
+    constraint col_pair_x_r - col_w / 2 > build_x
+    constraint col_pair_x_r + col_w / 2 < wall_in_r
+    constraint col_single_y + col_w / 2 < 0mm
+    constraint col_single_y - col_w / 2 > back_in
+    // Rear column + its cw clear the drive-web envelope and the right wall:
+    constraint col_single_x - col_w / 2 > web_x_max
+    constraint col_single_x + (col_w + cw_w_s) / 2 + 10mm + cw_w_s / 2 < wall_in_r
+    // Counterweights: stroke (travel/2, reeved) + block fits under the crown,
+    // and the single cw stays inside the rear bay:
+    constraint slab_top_m + park_margin + travel / 2 + cw_h_s < col_top
+    constraint slab_top_m + park_margin + travel / 2 + cw_h_p < col_top
+    constraint col_single_y - cw_w_s / 2 > back_in
+    // Hop: never unloads a tendon (down-hop accel ≪ g) and the bed-on-
+    // tendon mode clears the hop excitation band with 2× margin:
+    constraint a_hop < g_acc * 0.5
+    constraint f_z_min > f_hop_content * 2
+    // Tendon working load stays under 20% MBL (drive convention); the cw
+    // tendon carries 2× the column share (reeved):
+    constraint t_col_s * 2 < rope_mbl * 0.2
+    // Leveling range sanity:
+    constraint h_range_needed < 5mm
+    constraint travel > build_z
+    constraint sweep_n > 4
 }
 
 /// Assembly F — Chamber: insulated panels (steel skin + mineral-wool / aerogel),
@@ -2330,11 +2931,52 @@ pub structure Printer {
     constraint self.gantry_fea.wall > self.motion.tube_or - self.motion.tube_ir - o1_pin_slack
     constraint self.gantry_fea.span < self.motion.x_rail_len + o1_pin_slack
     constraint self.gantry_fea.span > self.motion.x_rail_len - o1_pin_slack
-    // AFrame geometry pinned to the envelope/motion it wraps: walls centred
-    // on the build, inner faces clear of the Y-rail bearings.
+    // AFrame geometry pinned to the envelope/motion it wraps (frame round 2:
+    // the box frame's swept-envelope constraints live INSIDE AFrame against
+    // its pinned-literal mirrors; these pins keep the mirrors true).
     constraint self.a_frame.centre_x < self.env.build_x / 2 + o1_pin_slack
     constraint self.a_frame.centre_x > self.env.build_x / 2 - o1_pin_slack
     constraint self.a_frame.centre_y < self.env.build_y / 2 + o1_pin_slack
     constraint self.a_frame.centre_y > self.env.build_y / 2 - o1_pin_slack
-    constraint self.a_frame.wall_gap / 2 > self.motion.y_rail_offset + self.motion.x_brg_radius + 6mm
+    constraint self.a_frame.rail_x_m < self.motion.y_rail_offset + o1_pin_slack
+    constraint self.a_frame.rail_x_m > self.motion.y_rail_offset - o1_pin_slack
+    // Motion-system Z: build_z + bearing clearance 20 + x_rail_offset + brg_r
+    // (the Printer placement derivation, header comment above).
+    constraint self.a_frame.rail_z_m < self.env.build_z + 20mm + self.motion.x_rail_offset + self.motion.x_brg_radius + o1_pin_slack
+    constraint self.a_frame.rail_z_m > self.env.build_z + 20mm + self.motion.x_rail_offset + self.motion.x_brg_radius - o1_pin_slack
+    constraint self.a_frame.tz_a < self.motion.tendon_outer_z + o1_pin_slack
+    constraint self.a_frame.tz_a > self.motion.tendon_outer_z - o1_pin_slack
+    constraint self.a_frame.xr_off_m < self.motion.x_rail_offset + o1_pin_slack
+    constraint self.a_frame.xr_off_m > self.motion.x_rail_offset - o1_pin_slack
+    constraint self.a_frame.tube_od_m < self.motion.tube_or * 2 + o1_pin_slack
+    constraint self.a_frame.tube_od_m > self.motion.tube_or * 2 - o1_pin_slack
+    constraint self.a_frame.rail_span_m < self.motion.y_rail_len + o1_pin_slack
+    constraint self.a_frame.rail_span_m > self.motion.y_rail_len - o1_pin_slack
+    constraint self.a_frame.brg_len_m < self.motion.brg_len + o1_pin_slack
+    constraint self.a_frame.brg_len_m > self.motion.brg_len - o1_pin_slack
+    // AFrame's Y-chain literals pinned to the O6 truth (same ±0.5% family):
+    constraint self.a_frame.k_drive  < self.motion.k_axis * 1.005
+    constraint self.a_frame.k_drive  > self.motion.k_axis * 0.995
+    constraint self.a_frame.m_head_m < self.motion.m_head * 1.005
+    constraint self.a_frame.m_head_m > self.motion.m_head * 0.995
+    constraint self.a_frame.m_rest_m < m2_rest * 1.005
+    constraint self.a_frame.m_rest_m > m2_rest * 0.995
+    // k_pair mirror: GantryFea's FEA cell is undef at instance scope (#6662),
+    // so pin LOOSELY against the analytic 4·k_eb — the fea_vs_eb band
+    // (0.8..1.35) is exactly the legitimate spread between them.
+    constraint self.a_frame.k_pair_m < self.gantry_fea.k_eb * 4 * 1.35
+    constraint self.a_frame.k_pair_m > self.gantry_fea.k_eb * 4 * 0.95
+
+    // ── O3: EZBed lift pins (frame/motion truth → EZBed pinned literals) ───
+    constraint self.e_z_bed.slab_top_m < self.a_frame.base_z + self.a_frame.side_t + o1_pin_slack
+    constraint self.e_z_bed.slab_top_m > self.a_frame.base_z + self.a_frame.side_t - o1_pin_slack
+    // Gantry sweep floor = lower-bearing surface = build_z + bearing clearance:
+    constraint self.e_z_bed.sweep_floor_m < self.env.build_z + 20mm + o1_pin_slack
+    constraint self.e_z_bed.sweep_floor_m > self.env.build_z + 20mm - o1_pin_slack
+    constraint self.e_z_bed.wall_in_r < self.a_frame.wall_cx - self.a_frame.side_t / 2 + o1_pin_slack
+    constraint self.e_z_bed.wall_in_r > self.a_frame.wall_cx - self.a_frame.side_t / 2 - o1_pin_slack
+    constraint self.e_z_bed.wall_in_l < self.a_frame.centre_x * 2 - self.a_frame.wall_cx + self.a_frame.side_t / 2 + o1_pin_slack
+    constraint self.e_z_bed.wall_in_l > self.a_frame.centre_x * 2 - self.a_frame.wall_cx + self.a_frame.side_t / 2 - o1_pin_slack
+    constraint self.e_z_bed.back_in < self.a_frame.y0 + self.a_frame.side_t + o1_pin_slack
+    constraint self.e_z_bed.back_in > self.a_frame.y0 + self.a_frame.side_t - o1_pin_slack
 }

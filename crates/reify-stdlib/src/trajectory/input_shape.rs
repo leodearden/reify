@@ -106,6 +106,15 @@ pub fn shaper_damping_ratio(shaper: &Value) -> f64 {
 /// The Hz→rad/s conversion `ω_n = 2π·f` happens here — this is ζ's marshalling
 /// boundary; `impulse_shaper`'s entire API is in angular frequency (rad/s).
 ///
+/// That makes it a **D4 rad/cycle crossing**: 2π rad·cycle⁻¹ is its own
+/// crossing class in the angle-dimension doctrine, distinct from the η = 1 rad
+/// SI-coherence identity. The typed layer already forces the distinction
+/// (FREQUENCY ≠ ANGULAR_VELOCITY as `DimensionVector`s); this `f64` boundary is
+/// exactly where that type distinction is LOST, which is why D4 rules it gets a
+/// doctrine-citing comment rather than a retype. The inverse crossing is
+/// `modal::free_vibration::eigenvalue_to_frequency_hz`. See
+/// `docs/prds/v0_6/angle-dimension-completion.md` D4 (#6184).
+///
 /// Returns `None` for a non-`StructureInstance` argument or an unrecognised
 /// `type_name`. `pub` (re-exported at the crate root as
 /// `reify_stdlib::build_train_for_shaper`) so `reify-eval/src/trajectory_ops.rs`

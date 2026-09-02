@@ -64,4 +64,7 @@ pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;
-pub use units::{BUILTIN_UNITS, ri_emittable_units, unit_symbol_to_si};
+pub use units::{
+    BUILTIN_UNITS, RI_COMPOUND_BASE_SYMBOLS, ri_compound_unit_expr, ri_emittable_units,
+    unit_symbol_to_si,
+};

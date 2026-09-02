@@ -911,3 +911,549 @@ fn fasten_solve_grounds_sub_to_identity() {
         tol.solver_convergence()
     );
 }
+
+// ── task 5540 step-5 RED: tangent residuals + rank ───────────────────────────
+//
+// `tangent` is the one curated relation `residual_dispatch` has no arm for: it
+// falls through the catch-all and contributes ZERO rows. That is not a loud gap
+// but a SILENT one — no rows ⇒ `partition_driving_set` files the relation as
+// redundant with `rank_contribution: 0`, and `max_relation_residual` reads 0.0,
+// so a tangency request is wholly ignored yet reported satisfied. These units pin
+// the four residual forms and their exact codimensions so the gap cannot reopen.
+//
+// Radii travel as trailing `Length` scalar operands (`tangent(a, b, r)` /
+// `tangent(a, b, r1, r2)`), reusing the metric-operand plumbing `distance` /
+// `offset` / `angle` already run — the surface-carried `<HasAxis & HasRadius>`
+// form is sibling task #5588's, not this one's. Sign convention: the target
+// separation is `|r1 + r2|`, so two positive radii mean EXTERNAL tangency and a
+// negative second radius means INTERNAL (`|r1 − |r2||`), with no branch.
+//
+// Every scenario is placed to be exactly satisfied at `Pose::identity()` per the
+// module convention above, so the expected values are exact closed forms.
+//
+// RED until step-6 adds the `"tangent"` arm (and the multi-scalar plumbing the
+// two-radius combos need): today every assertion below reads residual 0.0 / rank 0.
+
+/// A trailing radius operand — a bare `Length` scalar with no owning sub, exactly
+/// the shape `build_relation_instances` pushes for a metric argument.
+fn radius(r: f64) -> Operand {
+    Operand {
+        sub: None,
+        datum: Value::length(r),
+    }
+}
+
+/// A `tangent` relation over `operands`, carrying the γ-published ΔDOF for its
+/// combo (1 for cyl/cyl, sphere/plane and sphere/sphere; 2 for cyl/plane).
+fn tangent(operands: Vec<Operand>, nominal_delta_dof: u32) -> RelationInstance {
+    relation("tangent", operands, nominal_delta_dof)
+}
+
+/// The exact-algebra tolerance for a residual closed form. Unlike the rank
+/// tolerance [`TOL`] (which absorbs finite-difference noise in the Jacobian),
+/// residual evaluation is straight-line arithmetic on the operand values, so the
+/// only slack needed is float round-off.
+const EXACT: f64 = 1e-12;
+
+/// The moving sub used by every tangent scenario.
+fn tangent_unknown() -> FrameUnknown {
+    unknown("m", false)
+}
+
+/// Residual of a single relation at the identity witness.
+fn resid_at_identity(rel: &RelationInstance) -> f64 {
+    max_relation_residual(std::slice::from_ref(rel), &tangent_unknown(), &Pose::identity())
+}
+
+/// The measured individual Jacobian rank of a single relation at identity — the
+/// geometry's own codimension, cross-checked against the published ΔDOF.
+fn measured_rank(rel: &RelationInstance) -> u32 {
+    partition_driving_set(
+        std::slice::from_ref(rel),
+        &tangent_unknown(),
+        &Pose::identity(),
+        TOL,
+    )
+    .per_relation[0]
+        .individual_rank
+}
+
+/// cylinder/cylinder `tangent(axis_a, axis_b, r1, r2)` is ONE row:
+/// `line_line_distance(a, b) − |r1 + r2|`. Two parallel `+z` axes separated
+/// perpendicularly by exactly `r1 + r2 = 12 mm` are tangent (residual 0); widening
+/// the separation to 20 mm leaves the exact excess `20 − 12 = 8 mm`.
+///
+/// Measuring LINE distance (not origin-to-origin) is what keeps an axial slide
+/// along the cylinders out of the metric, matching `distance` over axes.
+#[test]
+fn tangent_cyl_cyl_residual_is_line_distance_minus_summed_radii() {
+    let (r1, r2) = (0.005, 0.007);
+    let touching = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r1 + r2, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&touching);
+    assert!(
+        got < EXACT,
+        "two parallel cylinders whose axes are {} m apart with radii {r1} + {r2} are \
+         externally tangent ⇒ residual 0; got {got}",
+        r1 + r2
+    );
+
+    // An axial slide of 0.5 m along both axes must not move the residual — the
+    // metric is the perpendicular line distance, not the origin separation.
+    let slid = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r1 + r2, 0.0, 0.5), (0.0, 0.0, 1.0))),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&slid);
+    assert!(
+        got < EXACT,
+        "an axial slide along parallel cylinder axes must not couple into the tangency \
+         metric (perpendicular line distance); got {got}"
+    );
+
+    // Pulled apart to 20 mm: the residual is the exact 8 mm excess.
+    let apart = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((0.020, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&apart);
+    let want = 0.020 - (r1 + r2);
+    assert!(
+        (got - want).abs() < EXACT,
+        "separation 0.020 m against a {} m tangency target leaves residual {want}; got {got}",
+        r1 + r2
+    );
+}
+
+/// A NEGATIVE radius selects INTERNAL tangency without a branch: the target
+/// separation is `|r1 + r2|`, which for `r2 < 0` collapses to `|r1 − |r2||` — the
+/// small cylinder running inside the large one. A 20 mm cylinder with an 8 mm
+/// cylinder inside it touches when the axes are 12 mm apart, and the SAME geometry
+/// read with both radii positive would demand 28 mm.
+#[test]
+fn tangent_cyl_cyl_negative_radius_encodes_internal_tangency() {
+    let (r_big, r_small) = (0.020, 0.008);
+    let internal = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r_big - r_small, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r_big),
+            radius(-r_small),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&internal);
+    assert!(
+        got < EXACT,
+        "a negative second radius means INTERNAL tangency: |r1 + r2| = |{r_big} − {r_small}| \
+         = {} m, which the {} m axis separation meets exactly ⇒ residual 0; got {got}",
+        r_big - r_small,
+        r_big - r_small
+    );
+
+    // The same geometry with both radii POSITIVE is the external form, which wants
+    // 28 mm — proving the sign genuinely selects the branch rather than being
+    // absorbed by an `.abs()` on each radius.
+    let external = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r_big - r_small, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r_big),
+            radius(r_small),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&external);
+    let want = (r_big - r_small) - (r_big + r_small);
+    assert!(
+        (got - want.abs()).abs() < EXACT,
+        "with both radii positive the same {} m separation is short of the {} m external \
+         target by {want}; got {got}",
+        r_big - r_small,
+        r_big + r_small
+    );
+}
+
+/// cylinder/plane `tangent(axis, plane, r)` is TWO rows — the axis/normal
+/// perpendicularity and the SIGNED axis-origin-to-plane offset minus `r`. A `+x`
+/// axis floating 5 mm above the `z = 0` plane with `r = 5 mm` satisfies both;
+/// raising it to 9 mm leaves exactly the 4 mm offset error in row 2 while row 1
+/// stays 0.
+#[test]
+fn tangent_cyl_plane_residual_has_perpendicularity_and_signed_offset_rows() {
+    let r = 0.005;
+    let seated = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, r), (1.0, 0.0, 0.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&seated);
+    assert!(
+        got < EXACT,
+        "a +x cylinder axis {r} m above the z=0 plane with radius {r} rests on it ⇒ both \
+         rows 0; got {got}"
+    );
+
+    // Lifted to 9 mm with the SAME (parallel) orientation: row 1 stays 0, so the max
+    // residual is exactly row 2's 4 mm offset error.
+    let lifted = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.009), (1.0, 0.0, 0.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&lifted);
+    let want = 0.009 - r;
+    assert!(
+        (got - want).abs() < EXACT,
+        "a parallel axis at 0.009 m with radius {r} overshoots tangency by {want}; got {got}"
+    );
+
+    // A centre BELOW the plane is NOT tangent from above: the offset row is SIGNED,
+    // so `−r` against a `+r` request reads `−2r`, not 0. An `.abs()` form (as
+    // `distance_residual` uses) would wrongly report this satisfied.
+    let below = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, -r), (1.0, 0.0, 0.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&below);
+    assert!(
+        (got - 2.0 * r).abs() < EXACT,
+        "the cylinder/plane offset row must be SIGNED so the radius sign picks the side \
+         of the plane: an axis at −{r} against a +{r} request reads {}, not 0; got {got}",
+        2.0 * r
+    );
+}
+
+/// REGRESSION GUARD for the failure the ΔDOF table exists to prevent: a cylinder
+/// TILTED out of parallel but still at the right distance would sit at exactly zero
+/// residual if the cylinder/plane form carried only the offset row. Row 1 (the
+/// perpendicularity of the axis direction against the plane normal) is what makes
+/// this codimension 2 rather than 1.
+///
+/// The axis is tilted 45° in the xz-plane with its origin still `r` above the plane,
+/// so the offset row is exactly 0 and the whole residual IS row 1: `dot(û, n̂)` for
+/// a 45° axis is `1/√2`. Asserting that exact value also pins the normalization —
+/// an un-normalized `dot((1,0,1), (0,0,1))` would read 1.
+#[test]
+fn tangent_cyl_plane_tilted_axis_at_correct_distance_is_not_satisfied() {
+    let r = 0.005;
+    let tilted = tangent(
+        vec![
+            // Deliberately NON-unit direction: (1,0,1) has norm √2.
+            datum("m", axis((0.0, 0.0, r), (1.0, 0.0, 1.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&tilted);
+    let want = 1.0 / 2.0_f64.sqrt();
+    assert!(
+        (got - want).abs() < EXACT,
+        "a 45°-tilted cylinder at the correct {r} m offset must NOT read satisfied — the \
+         perpendicularity row is dot(û, n̂) = {want} for a UNIT-normalized axis direction \
+         (an un-normalized dot would read 1.0); got {got}"
+    );
+}
+
+/// sphere/plane `tangent(centre, plane, r)` is ONE row: the SIGNED
+/// centre-to-plane offset minus `r`. A centre 5 mm above the `z = 0` plane with
+/// `r = 5 mm` is tangent; the mirrored centre 5 mm BELOW is not — an absolute-value
+/// form would wrongly accept it, which is the whole reason the row is signed.
+#[test]
+fn tangent_sphere_plane_residual_is_signed_not_absolute() {
+    let r = 0.005;
+    let resting = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&resting);
+    assert!(
+        got < EXACT,
+        "a sphere centre {r} m above the z=0 plane with radius {r} rests on it ⇒ residual 0; \
+         got {got}"
+    );
+
+    let mirrored = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, -r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&mirrored);
+    assert!(
+        (got - 2.0 * r).abs() < EXACT,
+        "the sphere/plane row must be SIGNED: a centre at −{r} against a +{r} request reads \
+         {}, not the 0 an `.abs()` form would give; got {got}",
+        2.0 * r
+    );
+}
+
+/// A NEGATIVE sphere radius selects the FAR side of the plane: the signed row
+/// `dot(c − o, n̂) − r` is satisfied at `c·n̂ = r`, so `r = −5 mm` places the centre
+/// 5 mm BELOW the plane. This is the same sign convention the cylinder combos use,
+/// and it stays differentiable through zero.
+#[test]
+fn tangent_sphere_plane_negative_radius_lands_on_the_far_side() {
+    let r = 0.005;
+    let far_side = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, -r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(-r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&far_side);
+    assert!(
+        got < EXACT,
+        "a negative radius selects the far side of the plane: centre at −{r} with r = −{r} \
+         ⇒ residual 0; got {got}"
+    );
+
+    // Contrast: the NEAR-side centre against the same negative request is off by 2r.
+    // Without this the satisfied case above would also hold for a form that ignored
+    // the radius sign entirely (or produced no rows at all).
+    let near_side = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(-r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&near_side);
+    assert!(
+        (got - 2.0 * r).abs() < EXACT,
+        "r = −{r} requests the far side, so a centre at +{r} is off by {}; got {got}",
+        2.0 * r
+    );
+}
+
+/// sphere/sphere `tangent(a, b, r1, r2)` is ONE row:
+/// `‖pa − pb‖ − |r1 + r2|`. Centres 12 mm apart with radii 5 mm + 7 mm are
+/// externally tangent; pushed to 20 mm the residual is the exact 8 mm excess.
+#[test]
+fn tangent_sphere_sphere_residual_is_centre_distance_minus_summed_radii() {
+    let (r1, r2) = (0.005, 0.007);
+    let touching = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, 0.0)),
+            datum("anchor", point3(r1 + r2, 0.0, 0.0)),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&touching);
+    assert!(
+        got < EXACT,
+        "centres {} m apart with radii {r1} + {r2} are externally tangent ⇒ residual 0; got {got}",
+        r1 + r2
+    );
+
+    let apart = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, 0.0)),
+            datum("anchor", point3(0.020, 0.0, 0.0)),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&apart);
+    let want = 0.020 - (r1 + r2);
+    assert!(
+        (got - want).abs() < EXACT,
+        "centre separation 0.020 m against a {} m tangency target leaves residual {want}; \
+         got {got}",
+        r1 + r2
+    );
+}
+
+/// The plane combos must be operand-order symmetric: `tangent(axis, plane, r)` and
+/// `tangent(plane, axis, r)` denote the same tangency, and the type-side classifier
+/// accepts both orders — so the residual must too. `tangent_residual` reads its
+/// operands POSITIONALLY (like `on_residual`), which is exactly where an
+/// order-blind implementation silently produces the wrong rows.
+#[test]
+fn tangent_plane_combos_are_operand_order_symmetric() {
+    let r = 0.005;
+    let cyl_plane_reversed = tangent(
+        vec![
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("m", axis((0.0, 0.0, r), (1.0, 0.0, 0.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&cyl_plane_reversed);
+    assert!(
+        got < EXACT,
+        "tangent(plane, axis, r) is the same relation as tangent(axis, plane, r) ⇒ \
+         residual 0 for a seated cylinder; got {got}"
+    );
+    assert_eq!(
+        measured_rank(&cyl_plane_reversed),
+        2,
+        "the reversed cylinder/plane order must still measure codimension 2"
+    );
+
+    let sphere_plane_reversed = tangent(
+        vec![
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("m", point3(0.0, 0.0, r)),
+            radius(r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&sphere_plane_reversed);
+    assert!(
+        got < EXACT,
+        "tangent(plane, centre, r) is the same relation as tangent(centre, plane, r) ⇒ \
+         residual 0 for a resting sphere; got {got}"
+    );
+    assert_eq!(
+        measured_rank(&sphere_plane_reversed),
+        1,
+        "the reversed sphere/plane order must still measure codimension 1"
+    );
+}
+
+/// DOF accounting — each combo's MEASURED Jacobian rank at a satisfying witness
+/// must equal the ΔDOF `relation_delta_dof` publishes for it: cyl/cyl 1,
+/// cyl/plane 2, sphere/plane 1, sphere/sphere 1.
+///
+/// This is the drift guard between the two `TangentCombo` classifiers — the
+/// type-side one in `reify-compiler` (which publishes the count) and the
+/// value-side one here (which produces the rows). They cannot share code
+/// (`reify-constraints` is kernel- and compiler-free), so the binding check is
+/// this end-to-end one: rows measured, not tables compared. A relation whose rank
+/// is 0 is the silent no-solve this task exists to remove.
+#[test]
+fn tangent_measured_rank_matches_the_published_delta_dof_table() {
+    let (r1, r2) = (0.005, 0.007);
+    let cases: Vec<(&str, RelationInstance, u32)> = vec![
+        (
+            "cylinder/cylinder",
+            tangent(
+                vec![
+                    datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    datum("anchor", axis((r1 + r2, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    radius(r1),
+                    radius(r2),
+                ],
+                1,
+            ),
+            1,
+        ),
+        (
+            "cylinder/plane",
+            tangent(
+                vec![
+                    datum("m", axis((0.0, 0.0, r1), (1.0, 0.0, 0.0))),
+                    datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    radius(r1),
+                ],
+                2,
+            ),
+            2,
+        ),
+        (
+            "sphere/plane",
+            tangent(
+                vec![
+                    datum("m", point3(0.0, 0.0, r1)),
+                    datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    radius(r1),
+                ],
+                1,
+            ),
+            1,
+        ),
+        (
+            "sphere/sphere",
+            tangent(
+                vec![
+                    datum("m", point3(0.0, 0.0, 0.0)),
+                    datum("anchor", point3(r1 + r2, 0.0, 0.0)),
+                    radius(r1),
+                    radius(r2),
+                ],
+                1,
+            ),
+            1,
+        ),
+    ];
+
+    for (label, rel, want) in cases {
+        // Precondition: the witness genuinely satisfies the relation, so the rank is
+        // measured at the tangency configuration and not at an arbitrary pose.
+        let resid = resid_at_identity(&rel);
+        assert!(
+            resid < EXACT,
+            "{label}: the witness must satisfy the relation before its rank is meaningful; \
+             residual {resid}"
+        );
+
+        let part = partition_driving_set(
+            std::slice::from_ref(&rel),
+            &tangent_unknown(),
+            &Pose::identity(),
+            TOL,
+        );
+        let measured = part.per_relation[0].individual_rank;
+        assert_eq!(
+            measured, want,
+            "{label}: measured codimension must equal the published ΔDOF {want}; got {measured} \
+             (0 means the relation contributes NO Jacobian rows — the silent no-solve)"
+        );
+        assert_eq!(
+            part.per_relation[0].nominal_delta_dof,
+            Some(want),
+            "{label}: the carried nominal ΔDOF must agree with the measured rank"
+        );
+        assert_eq!(
+            part.driving,
+            vec![0],
+            "{label}: a rank-{want} tangency must be DRIVING, never filed as redundant"
+        );
+        assert_eq!(
+            part.spent, want,
+            "{label}: spent DOF must be the combo's codimension {want}"
+        );
+    }
+}

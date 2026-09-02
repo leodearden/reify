@@ -1480,8 +1480,29 @@ fn family_dimensioned_scalar_given_unit_literal_arg_is_silent() {
 /// Shared by the four value-floor guards below so each stays a one-liner and the
 /// four cases cannot drift apart in what they check.
 fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label: &str) {
-    let module = compile_source_with_stdlib(source);
-    let diags = ctor_conformance_diags(&module);
+    assert_single_arg_type_mismatch_warning_in(
+        &compile_source_with_stdlib(source),
+        param_name,
+        label,
+    );
+}
+
+/// `&CompiledModule`-taking half of [`assert_single_arg_type_mismatch_warning`],
+/// for a probe that has ALREADY compiled its fixture — e.g. to run the
+/// non-vacuity guard `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
+/// documents — so the guard and the assertion share ONE compile of the source
+/// plus the whole stdlib instead of doing it twice.
+///
+/// Returns the diagnostics it filtered, so a caller adding further assertions
+/// (the quantity sibling below) does not re-run [`ctor_conformance_diags`] over
+/// the module. Matches `assert_quantity_slot_conflict` (`conformance/mod.rs`),
+/// its fn-call twin, which returns its `Vec<Diagnostic>` for the same reason.
+fn assert_single_arg_type_mismatch_warning_in<'a>(
+    module: &'a CompiledModule,
+    param_name: &str,
+    label: &str,
+) -> Vec<&'a Diagnostic> {
+    let diags = ctor_conformance_diags(module);
     assert_eq!(
         diags.len(),
         1,
@@ -1502,6 +1523,46 @@ fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label
     assert!(
         diags[0].message.contains(param_name),
         "{label}: message must name the offending param {param_name:?}, got: {:?}",
+        diags[0].message
+    );
+    diags
+}
+
+/// Quantity-rule sibling of [`assert_single_arg_type_mismatch_warning_in`]: the
+/// same four checks, PLUS the two fragments that discriminate the quantity-slot
+/// emitter from the whole-type `emit_arg_type_mismatch`.
+///
+/// Without those fragments a quantity fixture is VACUOUS against a family/arity
+/// regression. Count, `Severity::Warning`, `ArgTypeMismatch` and "the message
+/// names the param" are all satisfied by the whole-type emitter too, so if a
+/// shape arm's own family/arity check started rejecting the arg the pre-existing
+/// `emit_arg_type_mismatch` would fire instead — same code, same severity, still
+/// naming the param — and the fixture would stay GREEN while the rule it exists
+/// to pin no longer fired at all. These `.ri` fixtures are the ONLY tests that
+/// reach the rule from real source (the `conformance/mod.rs` probes construct the
+/// `Type` directly and bypass the `math_fn_result_type` chain), so that is
+/// exactly where a masked regression costs the most.
+///
+/// Arguments run PARAM-then-ARG, matching `assert_quantity_slot_conflict`
+/// (`conformance/mod.rs`), which applies these same two fragments on the fn-call
+/// (Error) leg. This is its ctor (Warning) twin.
+fn assert_single_quantity_conflict_warning_in(
+    module: &CompiledModule,
+    param_name: &str,
+    expected_param_quantity: &str,
+    expected_arg_quantity: &str,
+    label: &str,
+) {
+    let diags = assert_single_arg_type_mismatch_warning_in(module, param_name, label);
+    let has_quantity = format!("has quantity '{expected_arg_quantity}'");
+    let requires_quantity = format!("requires quantity '{expected_param_quantity}'");
+    assert!(
+        diags[0].message.contains(&has_quantity) && diags[0].message.contains(&requires_quantity),
+        "{label}: the diagnostic must come from the QUANTITY-slot rule, naming the ARG's slot \
+         after `has quantity` ({has_quantity:?}) and the PARAM's after `requires quantity` \
+         ({requires_quantity:?}) — without this the whole-type emit_arg_type_mismatch would \
+         satisfy every other assertion here and the fixture would pass while the rule never \
+         fired. Got: {:?}",
         diags[0].message
     );
 }
@@ -2341,6 +2402,205 @@ fn vec3_matching_dimension_at_dimensioned_vector_param_stays_clean() {
     );
 }
 
+const SRC_VEC3_DIMENSIONED_AT_DIMENSIONLESS: &str = r#"module test.vec3_dimensioned_at_dimensionless
+structure def Frame { param dir : Vector3<Dimensionless> }
+structure def Root {
+    let f = Frame(dir: vec3(1m, 0m, 0m))
+}
+"#;
+
+/// THE PARAM-SIDE RULING (task 6159), `.ri`/ctor seam: a concretely-dimensioned
+/// `vec3` at a `Vector3<Dimensionless>` param is REJECTED.
+///
+/// The ctor-path (Warning) twin of `conformance/mod.rs`'s
+/// `dimensionless_quantity_param_rejects_dimensioned_vector_arg` (fn-call path,
+/// Error). Routing through [`assert_single_quantity_conflict_warning_in`] pins
+/// code + Warning severity + param name for this cell from birth — so the rule's
+/// severity split cannot drift silently at the new leg — PLUS the two quantity
+/// fragments, without which none of the other four checks could tell this
+/// emitter from the whole-type `emit_arg_type_mismatch`.
+///
+/// This INVERTS task 5766's symmetric tolerance on the param side only. Its
+/// enabling premise is task 5848's landed ruling that direction/axis fields are
+/// `Vec3<Dimensionless>` — `stdlib/constitutive.ri`'s `x_axis`/`y_axis`/`z_axis`,
+/// `stdlib/kinematic.ri`'s `axis`, `stdlib/fea_multi_case.ri`'s `direction` —
+/// which makes that spelling an assertion of unit-lessness rather than the
+/// grammar workaround `constitutive.ri` once called it. Basis and asymmetry:
+/// `crates/reify-core/src/ty.rs`.
+#[test]
+fn vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Without it a fixture that failed to resolve `Vector3<Dimensionless>` would
+    // emit zero ctor-conformance diagnostics and read as a RULE failure.
+    let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile, as the two sibling fences directly above do.
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "dir",
+        "Real",
+        "Scalar[m]",
+        "Vector3<Dimensionless> ← Vector3<Length>",
+    );
+}
+
+const SRC_VEC3_DIMENSIONED_OFF_FIRST_AT_DIMENSIONLESS: &str = r#"module test.vec3_dimensioned_off_first_at_dimensionless
+structure def Frame { param dir : Vector3<Dimensionless> }
+structure def Root {
+    let f = Frame(dir: vec3(0, 1m, 0))
+}
+"#;
+
+/// THE ACCEPTED RESIDUAL of the param-side ruling, pinned as an accepted state
+/// rather than left unnoticed: move the dimensioned component OFF index `[0]`
+/// and the very same rejection goes SILENT.
+///
+/// The one-token-different twin of
+/// [`vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`]
+/// directly above — same `Frame`, same `Vector3<Dimensionless>` param, same
+/// three components, only the ORDER differs. That twin is therefore this
+/// fixture's non-vacuity proof and no separate one is needed: the param
+/// spelling demonstrably resolves and rejects, so silence HERE can come only
+/// from `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" |
+/// "point2"` arm (`crates/reify-compiler/src/math_signatures.rs`) taking the
+/// whole vector's quantity from component `[0]` alone.
+///
+/// Worth pinning because the param-side tightening made this false negative
+/// USER-VISIBLE where it had been cosmetic: before the tightening no
+/// `Dimensionless` param could reject at all, so component order changed
+/// nothing. The two directions are now recorded together, which is what stops a
+/// one-sided change to task 5889's inference from moving one and not the other
+/// without a test noticing.
+///
+/// Task 5889 owns that inference (its scope covers this inline arm alongside
+/// `list_shape` / `matrix_shape`). When it lands, this fixture and the
+/// `matrix` sibling
+/// [`matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
+/// must be re-read as a PAIR in that same commit, because they move in opposite
+/// directions and which way depends on the fix chosen: degrading a
+/// heterogeneous literal to `Type::dimensionless_scalar()` flips the `matrix`
+/// sibling to CLEAN and leaves this one clean, whereas comparing EVERY
+/// component flips this one to a Warning and leaves the sibling warning.
+/// Neither is allowed to move silently.
+#[test]
+fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_OFF_FIRST_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "vec3(0, 1m, 0) at a Vector3<Dimensionless> param stays SILENT today. This is a \
+         KNOWN false negative owned by task 5889, NOT a design choice: the arg's quantity \
+         slot is taken from component [0] alone, so moving the `1m` to component [0] \
+         rejects (the twin directly above). If this now fires, 5889 (or an equivalent \
+         change) has landed — retarget BOTH this fixture and the matrix sibling together. \
+         Got: {diags:#?}"
+    );
+}
+
+const SRC_POINT3_DIMENSIONED_AT_DIMENSIONLESS: &str = r#"module test.point3_dimensioned_at_dimensionless
+structure def Origin { param origin : Point3<Dimensionless> }
+structure def Root {
+    let o = Origin(origin: point3(1m, 0m, 0m))
+}
+"#;
+
+const SRC_POINT3_DIMENSIONED_AT_REAL: &str = r#"module test.point3_dimensioned_at_real
+structure def Origin { param origin : Point3<Real> }
+structure def Root {
+    let o = Origin(origin: point3(1m, 0m, 0m))
+}
+"#;
+
+/// THE PARAM-SIDE RULING (task 6159) at the `Point` arm, `.ri`/ctor seam — the
+/// third arm's twin of
+/// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
+/// (`Vector`) and
+/// `matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`
+/// (`Matrix`/`Tensor`).
+///
+/// `crates/reify-core/src/ty.rs` asserts a MEASURED end-to-end result for exactly
+/// this cell — `point3(1m, 0m, 0m)` at `Point3<Dimensionless>` emits ONE
+/// `ArgTypeMismatch` requiring quantity `Real` — and until this fixture nothing
+/// pinned it: the `Point` arm had only the direct-`Type` probe
+/// `dimensionless_quantity_point_param_rejects_dimensioned_point_arg`
+/// (`conformance/mod.rs`), which constructs the `Type::Point` itself and so
+/// BYPASSES the whole inference chain. That chain is what makes the claim true:
+/// task 5344 (`3c4ee5e9ac`) claimed `point3` / `point2` into the math
+/// construction family, so `math_fn_result_type`'s collapsed
+/// `"vec3" | "vec2" | "point3" | "point2"` arm now returns a real
+/// `Type::Point { n, quantity }` with the quantity taken from the FIRST argument.
+/// The same reasoning the `Matrix` fixture states about `matrix_shape` applies
+/// here, one arm over.
+///
+/// It also retires, by demonstration, the premise that "no `.ri` source can
+/// produce a dimensioned `Type::Point` arg" — expired since 5344 landed, still
+/// written at the sites task 6436 owns.
+///
+/// **Scope fence.** This pins the cell task 6159 itself ruled and measured.
+/// Converting the pre-existing `Point`-arm probes (task 5465's) to `.ri`
+/// fixtures, and reconciling the stale erasure rationales around them, stays
+/// task 6436's.
+#[test]
+fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Load-bearing twice over: a `Point3<Dimensionless>` that failed to resolve,
+    // or a `point3(…)` call that failed to compile, would emit zero
+    // ctor-conformance diagnostics and read as a RULE failure.
+    let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile of the source plus the whole stdlib.
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "origin",
+        "Real",
+        "Scalar[m]",
+        "Point3<Dimensionless> ← Point3<Length> (from component [0] alone)",
+    );
+}
+
+/// `Real` is the SAME CELL as `Dimensionless` — the same fixture, spelled the
+/// other way, end to end.
+///
+/// `crates/reify-core/src/ty.rs` rules the two exact synonyms at every route into
+/// a quantity slot and measures this cell "identically at `Point3<Real>`, the
+/// `fdm_slice.ri` spelling". That is a claim about `resolve_type_name` and the
+/// dimension-EXPRESSION route in `type_resolution.rs`, not about the conformance
+/// rule, so only a second fixture can hold it: were the `Real` spelling ever to
+/// resolve to something other than `Type::Scalar { dimension: DIMENSIONLESS }`,
+/// the sibling above would stay green while
+/// `stdlib/fdm_slice.ri:43`'s `List<Point3<Real>>` silently left the ruling.
+#[test]
+fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_REAL);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "origin",
+        "Real",
+        "Scalar[m]",
+        "Point3<Real> ← Point3<Length> — Real and Dimensionless are the same cell",
+    );
+}
+
 const SRC_VECTOR_GIVEN_STRING: &str = r#"module test.vector_string
 structure def Joint { param axis : Vector3<Length> }
 structure def Root {
@@ -2398,7 +2658,7 @@ structure def Root {
 /// Also the empirical proof that `MomentOfInertia` in a `Matrix<3,3,…>` slot
 /// resolves through `resolve_type_expr_with_aliases` all the way to
 /// `Type::Scalar { dimension }` and not to an alias or `Applied` form — if it
-/// did not, [`quantity_slot_dimension`] would need an alias-resolution step and
+/// did not, [`param_quantity_slot_dimension`] would need an alias-resolution step and
 /// this fixture would be silent.
 ///
 /// Note the arg is a `Type::Tensor` and the param a `Type::Matrix`: Rule 3
@@ -2426,6 +2686,64 @@ fn matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch() {
 //       it is the reason strict equality is unavailable for this family.
 //   (b) `tensor_param_given_vector_stays_clean` — a `Tensor<1,3,Length>` param
 //       fed `vec3(0m, 0m, 1m)`: dimensions AGREE, so silent.
+
+const SRC_MATRIX_DIMENSIONED_CELL_AT_DIMENSIONLESS: &str = r#"module test.matrix_dimensioned_at_dimensionless
+structure def Jacobian { param jac : Matrix<3, 3, Dimensionless> }
+structure def Root {
+    let a = Jacobian(jac: matrix([[1m, 0, 0], [0, 0, 0], [0, 0, 0]]))
+}
+"#;
+
+/// THE PARAM-SIDE RULING (task 6159), `.ri`/ctor seam at the `Matrix`/`Tensor`
+/// arm — and the end-to-end pin for `matrix(…)` → `matrix_shape` → the rule.
+///
+/// `crates/reify-core/src/ty.rs` asserts a consequence specific to this arm: a
+/// heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param can now be
+/// rejected on cell `[0][0]` alone, where before only a DIMENSIONED param slot
+/// could trip it. Nothing pinned that CHAIN. Its two neighbours each cover a
+/// different half and neither covers this one:
+///
+///   * `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`
+///     (`conformance/mod.rs`) builds a `Type::tensor(2, 3, Length)` directly, so
+///     it exercises the STRICT param-side predicate but bypasses `matrix_shape`
+///     entirely;
+///   * `matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch`
+///     (directly above) routes through `matrix_shape` but is concrete×concrete,
+///     i.e. already green under task 5766's SYMMETRIC rule — it cannot tell the
+///     two param-side predicates apart.
+///
+/// Without this fixture a regression in either `matrix_shape` or this arm's
+/// routing would leave the ty.rs claim documented and every test green.
+///
+/// The literal is deliberately HETEROGENEOUS — cell `[0][0]` is `1m` and every
+/// other cell is dimensionless — so the rejection rests on the first-cell
+/// inference ALONE, which is exactly the instance ty.rs names. That inference
+/// weakness is owned by task 5889: if it lands the preferred fix (detect
+/// heterogeneous cells, degrade the inferred quantity to
+/// `Type::dimensionless_scalar()`), this fixture flips to CLEAN and must be
+/// retargeted at a HOMOGENEOUS dimensioned literal in the same commit.
+#[test]
+fn matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Load-bearing twice over here: a `Matrix<3, 3, Dimensionless>` that failed
+    // to resolve, or a heterogeneous `matrix(…)` literal that failed to compile,
+    // would emit zero ctor-conformance diagnostics and read as a RULE failure.
+    let module = compile_source_with_stdlib(SRC_MATRIX_DIMENSIONED_CELL_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile of the source plus the whole stdlib.
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "jac",
+        "Real",
+        "Scalar[m]",
+        "Matrix<3,3,Dimensionless> ← Tensor2x3<Length> (from cell [0][0] alone)",
+    );
+}
 
 const SRC_TENSOR_MATCHING_DIMENSION: &str = r#"module test.tensor_matching_dimension
 structure def Surface {

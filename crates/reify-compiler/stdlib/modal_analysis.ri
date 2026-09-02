@@ -35,7 +35,9 @@
 //      → `0.00000001`.
 //   2. `ModalResult.part`, `ForcingTimeHistory.part`, and
 //      `DisplacementTimeHistory.part` are now typed `Part`, a minimal opaque
-//      marker declared in this module (task 4578, per PRD §12 OQ3). `Part`
+//      marker declared in this module (task 4578, per
+//      `stdlib-surface-type-substrate.md` §12 open-question-3 — see
+//      `structure def Part` below for the full path and rationale). `Part`
 //      will be grown into a full geometry+material+topology structure in a
 //      later task; the single-module opaque form is non-blocking for task ζ.
 //   3. `Mode.frequency : Frequency` carries the natural-frequency dimension
@@ -50,11 +52,14 @@
 //      mᵢ = Φᵢᵀ·M·Φᵢ = kg · (1/√kg)² is dimensionless under `Φᵀ·M·Φ = I`
 //      (PRD §4.1 + §7.5). Reify's dimension grammar has no SI-root extension,
 //      so 1/√mass is not yet expressible; `Dimensionless` is the closest
-//      encoding available today. (`Vector3<Real>` is not valid .ri syntax —
-//      the `Vector3<Q>` resolver requires `Q` to resolve to a
-//      `DimensionVector`; `Real` is a primitive scalar, not a dimension
-//      name.) Tightening to a future `Scalar<InvRootMass>` (or equivalent)
-//      is left to the kinematic-completion sweep.
+//      encoding available today. (`Vector3<Real>` is in fact valid .ri
+//      syntax as of γ/4375 — `Real` and `Dimensionless` both resolve to the
+//      same dimensionless scalar quantity slot in dimension position, so
+//      `Vector3<Real>` and `Vector3<Dimensionless>` are synonyms here; the
+//      choice between the two spellings is cosmetic, not a rigor gain, and
+//      `Dimensionless` is kept as the more explicit spelling.) Tightening
+//      to a future `Scalar<InvRootMass>` (or equivalent) is left to the
+//      kinematic-completion sweep.
 //   5. `ModalOptions.reference_direction : Vector3<Dimensionless>` is the
 //      correct semantics (unit vector — dimensionless). The constraint
 //      `reference_direction.norm() > 0` is NOT expressible in Reify's
@@ -68,9 +73,10 @@
 // `DampingDescriptor` is the marker trait for every damping-strategy variant
 // (PRD §4.2). The α phase declares two refining structures:
 //   - `NoDamping`        — undamped solve; semantically equivalent to
-//                          RayleighDamping(alpha: 0, beta: 0) but a distinct
-//                          type so the future `modal_analysis` trampoline can
-//                          discriminate the no-damping fast path at dispatch.
+//                          RayleighDamping(alpha: 0.0Hz, beta: 0.0s) but a
+//                          distinct type so the future `modal_analysis`
+//                          trampoline can discriminate the no-damping fast
+//                          path at dispatch.
 //   - `RayleighDamping`  — proportional damping ζ_i = (α + β·ω_i²) / (2·ω_i),
 //                          where α (mass-proportional) and β (stiffness-
 //                          proportional) are user-supplied. Preserves mode-
@@ -88,11 +94,12 @@ trait DampingDescriptor { }
 // ── NoDamping ────────────────────────────────────────────────────────────────
 
 // `NoDamping` is the zero-field marker structure for an undamped modal solve
-// (PRD §4.2). Semantically equivalent to `RayleighDamping(alpha: 0, beta: 0)`
-// but a distinct nominal type so the future `modal_analysis` trampoline can
-// discriminate the no-damping fast path at dispatch via the SIR-α nominal
-// type-tag — same dispatch mechanism `solve_elastic_static` uses to
-// discriminate `PointLoad` vs `FixedSupport` in `fea_multi_case.ri`.
+// (PRD §4.2). Semantically equivalent to
+// `RayleighDamping(alpha: 0.0Hz, beta: 0.0s)` but a distinct nominal type so
+// the future `modal_analysis` trampoline can discriminate the no-damping fast
+// path at dispatch via the SIR-α nominal type-tag — same dispatch mechanism
+// `solve_elastic_static` uses to discriminate `PointLoad` vs `FixedSupport` in
+// `fea_multi_case.ri`.
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
 structure def NoDamping : DampingDescriptor { }
@@ -110,13 +117,37 @@ structure def NoDamping : DampingDescriptor { }
 // transient response can be integrated mode-by-mode in real arithmetic
 // rather than requiring a full complex-eigenvalue solve.
 //
-// Param semantics (PRD §4.2):
-//   alpha — mass-proportional damping coefficient (units 1/s). Damps low
-//           frequencies more than high. Often calibrated from measured
-//           damping ratio at the fundamental mode.
-//   beta  — stiffness-proportional damping coefficient (units s). Damps
-//           high frequencies more than low. Useful for suppressing
+// Param semantics (PRD §4.2). Both units are carried by the DECLARATION
+// below — `Frequency` (= s⁻¹) and `Time` — not by this prose, so they
+// cannot drift out of step with the type (task #6093, following the
+// `Mode.frequency` precedent):
+//   alpha — mass-proportional damping coefficient. Damps low frequencies
+//           more than high. Often calibrated from measured damping ratio
+//           at the fundamental mode.
+//   beta  — stiffness-proportional damping coefficient. Damps high
+//           frequencies more than low. Useful for suppressing
 //           high-frequency numerical noise from explicit time integration.
+//
+// ANGULAR-RATE TRAP: both coefficients are consumed against an ω in rad/s
+// (`rayleigh_damping_ratio` evaluates (α + β·ω²)/(2·ω); `modal_ops` builds
+// ω = 2π·f), so a caller reading cycles/s must scale α by 2π and β by 1/2π
+// itself. The convention lives in ω and hits α and β SYMMETRICALLY — which
+// is why α is not typed `AngularVelocity` while β stays `Time`: that would
+// encode the scale in one of two coupled coefficients. The declared pair is
+// the SI typing implied by C = α·M + β·K (α = [C]/[M] = s⁻¹,
+// β = [C]/[K] = s). Reify's `Frequency` cannot itself separate cycles/s
+// from plain s⁻¹ — that surface is owned by
+// docs/prds/v0_6/angle-units-surface-convergence.md, not by this
+// declaration. Pinned by
+// `modal_ops::tests::trampoline_shapes_modal_result_with_rayleigh_damping`,
+// which recomputes ω = 2π·f from the emitted `Mode.frequency` and compares
+// each mode's `damping_ratio` against `rayleigh_damping_ratio(α, β, ω)` — so
+// it is the arm that would go red if `modal_ops` stopped feeding 2π·f. The
+// SYMMETRY half (the two terms scale oppositely in ω, which is why α is not
+// typed `AngularVelocity`) is pinned secondarily by
+// `modal_ops::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
+// — an algebraic property of the closed form only; it does NOT observe the
+// producer's ω scale.
 //
 // Explicitly NOT constrained: alpha / beta are conventionally non-negative
 // but physically meaningful at zero ("stiffness-only" damping with α=0; or
@@ -127,8 +158,8 @@ structure def NoDamping : DampingDescriptor { }
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
 structure def RayleighDamping : DampingDescriptor {
-    param alpha : Real
-    param beta : Real
+    param alpha : Frequency
+    param beta : Time
 }
 
 // ── Mode ─────────────────────────────────────────────────────────────────────
@@ -167,18 +198,19 @@ structure def RayleighDamping : DampingDescriptor {
 //                        §7.5). Reify's dimension grammar has no SI-root
 //                        extension, so 1/√mass is not yet expressible;
 //                        `Dimensionless` is the closest currently-resolvable
-//                        spelling. (`Vector3<Real>` is not valid .ri syntax
-//                        — the `Vector3<Q>` resolver requires `Q` to be a
-//                        dimension name; `Real` is a primitive scalar.)
-//                        Tightening to a future `Scalar<InvRootMass>` (or
-//                        equivalent) is left to the kinematic-completion
+//                        spelling. (`Vector3<Real>` is in fact valid .ri
+//                        syntax as of γ/4375 — `Real` and `Dimensionless`
+//                        resolve to the same dimensionless scalar quantity
+//                        slot in dimension position, so the two spellings are
+//                        synonyms here; switching is cosmetic, not a rigor
+//                        gain.) Tightening to a future `Scalar<InvRootMass>`
+//                        (or equivalent) is left to the kinematic-completion
 //                        sweep. (Contrast with buckling's
-//                        `BucklingMode.mode_shape
-//                        : Field<Point3<Length>, Vector3<Length>>` where
-//                        the Length parameterization is a typing
-//                        convention, not a dimensional claim; see
-//                        the `BucklingMode.mode_shape` dimensionality note
-//                        in solver_buckling.ri.)
+//                        `BucklingMode.mode_shape : Field<Point3<Length>,
+//                        Vector3<Length>>` where the Length parameterization
+//                        is a typing convention, not a dimensional claim; see
+//                        the `BucklingMode.mode_shape` dimensionality note in
+//                        solver_buckling.ri.)
 //   participation_mass — effective modal mass projected along the user-
 //                        supplied reference_direction (PRD §4.3
 //                        ModalOptions.reference_direction). Used to rank
@@ -207,7 +239,8 @@ structure def Mode {
 // ── Part ─────────────────────────────────────────────────────────────────────
 
 // `Part` is a minimal opaque marker structure for the analysed part handle.
-// Per PRD §12 open-question-3 ("minimal opaque structure_def first, then grow"):
+// Per `docs/prds/v0_6/stdlib-surface-type-substrate.md` §12 open-question-3
+// ("minimal opaque structure_def first, then grow"):
 // declared zero-field here so all three `part : Part` params (ModalResult,
 // ForcingTimeHistory, DisplacementTimeHistory) resolve to the same nominal type
 // within this module, without depending on the F foundation / task 4574. The
@@ -328,9 +361,13 @@ structure def ModalResult {
 //                          mathematically accurate (unlike `Mode.shape`,
 //                          whose 1/√mass components are merely encoded as
 //                          Dimensionless pending an SI-root grammar
-//                          extension). `Vector3<Real>` is not valid .ri
-//                          syntax — the `Vector3<Q>` resolver requires `Q`
-//                          to be a dimension name. Required at construction
+//                          extension). `Vector3<Real>` is in fact valid
+//                          .ri syntax as of γ/4375 — `Real` and
+//                          `Dimensionless` resolve to the same
+//                          dimensionless scalar quantity slot in dimension
+//                          position, so either spelling could be written
+//                          here; `Dimensionless` is kept as the more
+//                          explicit one. Required at construction
 //                          (no default — there is no canonical excitation
 //                          direction). The `reference_direction.norm() > 0`
 //                          invariant is NOT expressible in Reify's

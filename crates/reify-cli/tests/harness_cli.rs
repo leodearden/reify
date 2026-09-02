@@ -27,6 +27,8 @@ mod cli_affine_eval;
 mod cli_affine_tapered_spacer;
 #[path = "harness_cli/cli_auto_type_param_select.rs"]
 mod cli_auto_type_param_select;
+#[path = "harness_cli/cli_bbox_eval.rs"]
+mod cli_bbox_eval;
 #[path = "harness_cli/cli_build.rs"]
 mod cli_build;
 #[path = "harness_cli/cli_build_3mf.rs"]
@@ -119,8 +121,12 @@ mod cli_keyed_forall;
 mod cli_lsp;
 #[path = "harness_cli/cli_lsp_protocol.rs"]
 mod cli_lsp_protocol;
+#[path = "harness_cli/cli_materials_starter_library_golden.rs"]
+mod cli_materials_starter_library_golden;
 #[path = "harness_cli/cli_module_visibility_example.rs"]
 mod cli_module_visibility_example;
+#[path = "harness_cli/cli_objective_inheritance_golden.rs"]
+mod cli_objective_inheritance_golden;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]
@@ -147,16 +153,24 @@ mod cli_stackup_eval;
 mod cli_string_interp_eval;
 #[path = "harness_cli/cli_structural_query_bom.rs"]
 mod cli_structural_query_bom;
+#[path = "harness_cli/cli_structure_instance_golden.rs"]
+mod cli_structure_instance_golden;
 #[path = "harness_cli/cli_sub_placement_assembly.rs"]
 mod cli_sub_placement_assembly;
 #[path = "harness_cli/cli_surface_finish_cost.rs"]
 mod cli_surface_finish_cost;
 #[path = "harness_cli/cli_test.rs"]
 mod cli_test;
+#[path = "harness_cli/cli_tensegrity_e2e.rs"]
+mod cli_tensegrity_e2e;
+#[path = "harness_cli/cli_tensegrity_t0a_golden.rs"]
+mod cli_tensegrity_t0a_golden;
 #[path = "harness_cli/cli_tolerancing_eval.rs"]
 mod cli_tolerancing_eval;
 #[path = "harness_cli/cli_trait_assoc_fn_overload.rs"]
 mod cli_trait_assoc_fn_overload;
+#[path = "harness_cli/cli_transform_twist_dimension_diag.rs"]
+mod cli_transform_twist_dimension_diag;
 #[path = "harness_cli/cli_type_hygiene_strict.rs"]
 mod cli_type_hygiene_strict;
 #[path = "harness_cli/cli_undef_self_describing.rs"]

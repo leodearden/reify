@@ -1343,7 +1343,8 @@ fn bt6b_cross_scope_value_cycle_surfaces_eval_cycle_through_engine_eval() {
 }
 
 // ---------------------------------------------------------------------------
-// [JOINT-DRIVE β] (task #5189 step-14) — BT-11, per-sub PARAMETER OVERRIDES.
+// [JOINT-DRIVE β] (task #5189 step-14) — BT-12 (PRD §7; renumbered from a
+// §7-collision by task #5764), per-sub PARAMETER OVERRIDES.
 //
 // PRD: docs/prds/v0_6/whole-model-joint-drive-seam.md §12.
 // ---------------------------------------------------------------------------
@@ -1382,7 +1383,7 @@ structure RivetedPanel {
 }
 "#;
 
-/// BT-11(b) — the per-sub override must reach the folded instance-path cost
+/// BT-12(b) — the per-sub override must reach the folded instance-path cost
 /// cell that the expanded objective actually reads.
 ///
 /// The DSL supports per-sub parameter overrides (`examples/auto_binding_sites.ri`,
@@ -1436,7 +1437,7 @@ fn bt11_per_sub_parameter_override_reaches_the_folded_instance_path_cost() {
     assert_eq!(
         aliased,
         override_cost * solved_q,
-        "BT-11: the instance-path cost cell the expanded objective reads must \
+        "BT-12: the instance-path cost cell the expanded objective reads must \
          fold against the PER-SUB OVERRIDE ({override_cost} × {solved_q}), not \
          the template default ({default_cost} × {solved_q} = {}). A \
          template-default value here means stage (g) emitted the alias as a \

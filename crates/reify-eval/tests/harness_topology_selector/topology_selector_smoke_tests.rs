@@ -16,12 +16,20 @@
 //! |--------------------------------------|-------|---------|--------------|
 //! | `all_topology_selectors_wiring.ri`   | ✓ (via examples_smoke walker) | ✓ active | ✗ (eval dispatch pending) |
 //! | `block_inertia.ri`                   | ✓     | ✓ active (`block_inertia_compiles_with_stdlib_no_errors`) | `#[ignore]` (dispatch pending) |
-//! | `fillet_top_edges.ri`                | ✓     | `#[ignore]` (3-arg fillet binding missing) | `#[ignore]` (3-arg fillet + dispatch) |
+//! | `fillet_top_edges.ri`                | ✓     | ✓ active (`fillet_top_edges_compiles_with_stdlib_no_errors`) | `#[ignore]` (bare mock cannot walk topology, #4727) |
 //!
 //! The `#[ignore]`-gated eval tests document future-state contracts and pin the
 //! API surface so a follow-up agent knows exactly what to implement to unblock them.
 //! They are not run in CI but their presence is intentional — see each test's
 //! `#[ignore]` string for the precise blocker and pointer into the code.
+//!
+//! The 3-arg `fillet(solid, edges, radius)` binding is LIVE (#3205/#4360/#4362)
+//! and, since #5208, curated 3-arg fillet is reachable through the production
+//! `.ri` pipeline (`reify eval` + GUI).  The compile tier for
+//! `fillet_top_edges.ri` was un-ignored accordingly; the remaining `#[ignore]`
+//! on its eval tier is a *test-scaffolding* gap (bare `MockGeometryKernel`),
+//! not a capability gap — real-kernel coverage lives in
+//! `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ModulePath, ValueCellId};
@@ -177,29 +185,21 @@ fn block_inertia_ri_parses_cleanly() {
 
 /// Compile-with-stdlib contract for `fillet_top_edges.ri`.
 ///
-/// **Blocked by**: the missing 3-arg `fillet(solid, edges, radius)` stdlib
-/// binding — the current compiler only wires 2-arg `fillet(solid, radius)` at
-/// `crates/reify-compiler/src/geometry_modify.rs:115`.  The example uses the
-/// 3-arg form on line 25 (`fillet(b, top_edges, 1mm)`), so this currently
-/// fails with `fillet() expects 2 arguments, got 3`.
-///
-/// This is **NOT** a task 2698/2699 gap — `single`, `flat_map`,
-/// `faces_by_normal`, `adjacent_faces`, and `shared_edges` are all landed on
-/// HEAD.  The sole remaining compile blocker is the 3-arg fillet binding.
+/// ACTIVE (un-ignored by #5208).  The 3-arg `fillet(solid, edges, radius)`
+/// stdlib binding this test once waited on is wired in
+/// `crates/reify-compiler/src/geometry_modify.rs`
+/// (`"fillet" => match compiled_args.len() { 2 | 3 => ... }`, #3205), so the
+/// example's `fillet(b, top_edges, 1mm)` compiles with no Error diagnostics.
+/// The bulk walker
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// covers the
+/// same file now that its `SKIP_SET` entry is gone; this test is kept as the
+/// named, PRD-anchored assertion for the topology-selector family.
 ///
 /// Do NOT modify `fillet_top_edges.ri` to use the 2-arg form: that would
 /// fillet ALL edges and defeat the example's pedagogic purpose (demonstrating
 /// topology-relational edge selection).
-///
-/// Remove the `#[ignore]` once a 3-arg `fillet(solid, edges, radius)` stdlib
-/// binding is wired in `crates/reify-compiler/src/geometry_modify.rs`.
 #[test]
-#[ignore = "pending 3-arg fillet(solid, edges, radius) stdlib binding — current compiler \
-            only wires 2-arg fillet(solid, radius) per \
-            crates/reify-compiler/src/geometry_modify.rs:115. \
-            The example uses the 3-arg form (line 25 of fillet_top_edges.ri). \
-            This is NOT a task 2698/2699 binding gap (those are landed); \
-            it is a separate stdlib-binding gap tracked outside this PRD."]
 fn fillet_top_edges_compiles_with_stdlib_no_errors() {
     let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
         .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
@@ -236,7 +236,7 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 /// — the kernel delivered a B-Rep — rather than checking a specific `Value`
 /// variant in `values` for the `result` cell.
 ///
-/// **Prerequisites** (all three have landed):
+/// **Prerequisites** (all landed — this is no longer a capability gap):
 ///
 /// (a) ✅ 3-arg `fillet(solid, edges, radius)` stdlib binding — landed in task
 ///     #3205 (commit b5d88c6).  `GeometryOp::Fillet` now carries an
@@ -247,12 +247,21 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 ///
 /// (c) ✅ UnifiedDag default flip — landed in task #4362 (Stage-4 cutover).
 ///
-/// **Remaining gate (#4727):** un-gating still needs a real-OCCT-kernel +
-/// `set_build_scheduler(UnifiedDag)` scaffolding rewrite (see
-/// `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`) — the bare
-/// `MockGeometryKernel` cannot resolve the topology walk.  Coverage is already
-/// provided by `fillet_curated_edges_3205_e2e`; this test may be retired in
-/// Stage-5 (#4727) rather than rewritten.
+/// (d) ✅ Production-pipeline reachability (curated 3-arg fillet through
+///     `reify eval` and the GUI, incl. selectors over boolean-result and
+///     chained named-let parents) — landed in task #5208.
+///
+/// **Remaining gate (#4727) — test scaffolding, not capability:** un-gating
+/// needs a real-OCCT-kernel + `set_build_scheduler(UnifiedDag)` rewrite (see
+/// `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`).  Re-verified with
+/// `--ignored` on 2026-07-26: under the bare `MockGeometryKernel` the last
+/// recorded op is `Box` — no `Fillet` is ever dispatched, because the mock
+/// cannot resolve the topology walk to concrete edge handles.  Real-kernel
+/// coverage already exists (`fillet_curated_edges_3205_e2e` and
+/// `bottom_deck_selectors_example_builds_clean_e2e` in that same file, plus a
+/// `reify eval` CLI e2e in
+/// `crates/reify-cli/tests/harness_cli/cli_eval_geometry.rs`), so this test is
+/// expected to be RETIRED under #4727 rather than rewritten.
 ///
 /// **Test scaffolding note**: the test plumbs `MockGeometryKernel::new()` into
 /// `Engine::new(Box::new(checker), Some(Box::new(kernel)))` — no `.with_*_result()`
@@ -264,10 +273,14 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 /// (b) land.  This is not a third semantic gap — it is an invisible test-scaffolding
 /// requirement that would otherwise confuse a future agent removing the `#[ignore]`.
 #[test]
-#[ignore = "blocked on #4727 — all prereqs landed (fillet field #3205, dispatch #4360, \
-            UnifiedDag default #4362); bare MockGeometryKernel cannot resolve the \
-            topology walk; needs real-OCCT-kernel rewrite (see fillet_curated_edges_e2e.rs). \
-            May be retired in Stage-5 (#4727) — coverage already in fillet_curated_edges_3205_e2e."]
+#[ignore = "blocked on #4727 — test-scaffolding gap, NOT a capability gap: curated 3-arg \
+            fillet is live (field #3205, dispatch #4360, UnifiedDag default #4362) and \
+            reachable through the production .ri pipeline (#5208). The bare \
+            MockGeometryKernel cannot resolve the topology walk (records Box, never \
+            dispatches Fillet), so un-gating needs a real-OCCT-kernel rewrite (see \
+            fillet_curated_edges_e2e.rs). Expected to be RETIRED under #4727 — real-kernel \
+            coverage already in fillet_curated_edges_3205_e2e and \
+            bottom_deck_selectors_example_builds_clean_e2e."]
 fn fillet_top_edges_evals_to_solid_via_topology_walk() {
     let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
         .expect("examples/topology_selectors/fillet_top_edges.ri should exist");

@@ -67,8 +67,13 @@ current main (`0d70ef1d5b`):
   (`main.rs:~672`) and `E_DFM_` message-prefix match (`main.rs:~688`,
   `dfm_has_error_diagnostic`). The bolt-on comment itself names the co-resident
   code-less healthy-path Error this PRD's allowlist must carry at seed time:
-  FEA "no registered compute trampoline" (`engine_compute.rs:654`,
-  `engine_admin.rs:1519`, `engine_eval.rs:8301`). #5386's repro (non-pub
+  FEA "no registered compute trampoline" — FOUR sites, not three, and the line
+  numbers here are stale; resolve by symbol: `engine_eval.rs`
+  (`evaluate_params_and_lets_unified`, `evaluate_let_bindings` — SOFT, body-inline),
+  `engine_admin.rs` (`dispatch_compute_node` — HARD, `Err`), `engine_compute.rs`
+  (`run_compute_dispatch` — HARD, `Err`). Corrected 2026-09-01 (esc-5311-3); the
+  soft/hard split and the ruled predicate scope live in
+  `check-diagnostic-truthfulness.md` D4's "RULING 2026-09-01" block. #5386's repro (non-pub
   structure: `error:` text printed, exit 0) is one instance of the general
   gap. `cmd_eval`/`cmd_build` already gate on `Severity::Error`
   (`main.rs:1661` region; `build_is_success` `main.rs:2286`, task 4458).

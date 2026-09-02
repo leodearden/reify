@@ -301,6 +301,8 @@ pub enum Operation {
     ModifyZoneSlab,
     /// Offset a solid outward/inward by distance.
     ModifyOffsetSolid,
+    /// Offset a surface along its normal by distance (Skin/surface mode).
+    ModifyOffsetSurface,
     /// Offset a planar curve by distance, producing a fresh curve.
     ModifyOffsetCurve,
 
@@ -696,6 +698,19 @@ pub enum GeometryOp {
         dz: f64,
     },
     /// Rotate around axis by angle.
+    ///
+    /// **Angular unit contract** (INV-AD-4; #6184). `angle_rad` is SI RADIANS,
+    /// and positive is right-handed about `axis`. The `_rad` SUFFIX IS THE
+    /// CONTRACT — it is load-bearing, not decoration, and it is the same name
+    /// the value carries all the way down: IR -> the cxx bridge
+    /// (`reify-kernel-occt/src/ffi.rs`) -> the C++ wrapper, where OCCT's
+    /// `gp_Trsf::SetRotation` takes radians too. Nothing on that path converts,
+    /// because every layer is SI-coherent (rad = 1). Contrast lengths, which
+    /// also cross unscaled here but ARE rescaled x1000 by the STEP writer at
+    /// export.
+    ///
+    /// The sibling angular variants [`GeometryOp::RotateAround`] and
+    /// [`GeometryOp::Revolve`] carry the same contract.
     Rotate {
         target: GeometryHandleId,
         axis: [f64; 3],
@@ -707,6 +722,9 @@ pub enum GeometryOp {
         factor: f64,
     },
     /// Rotate around an arbitrary axis passing through a given point.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184).
     RotateAround {
         target: GeometryHandleId,
         point: [f64; 3],
@@ -820,6 +838,10 @@ pub enum GeometryOp {
         distance: Value,
     },
     /// Create a revolved solid by rotating a profile around an axis.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis_dir` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184). A
+    /// full revolution is therefore `2.0 * PI`, not 360.
     Revolve {
         profile: GeometryHandleId,
         axis_origin: [f64; 3],
@@ -969,6 +991,18 @@ pub enum GeometryOp {
     },
     /// Offset a solid outward (positive) or inward (negative) by distance.
     OffsetSolid {
+        target: GeometryHandleId,
+        distance: Value,
+    },
+    /// Offset a surface along its normal by `distance`, using the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape` — distinct from
+    /// [`GeometryOp::OffsetSolid`]'s `PerformBySimple` solid mode. Produces
+    /// fresh `BRepKind::Face` geometry via the early-return execute path,
+    /// like the profile producers (e.g. [`GeometryOp::RectangleProfile`]).
+    ///
+    /// A positive `distance` offsets along the face's +normal (e.g. a planar
+    /// face in the XY plane with +Z normal lands at z ≈ +distance).
+    OffsetSurface {
         target: GeometryHandleId,
         distance: Value,
     },
@@ -1328,6 +1362,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleTarget,
         kind_token: "OffsetSolid",
         names: &["offset_solid"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::OffsetSurface,
+        operation: Some(Operation::ModifyOffsetSurface),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "OffsetSurface",
+        names: &["offset_surface"],
     },
     OpDescriptor {
         disc: GeometryOpDiscriminants::Shell,
@@ -2476,11 +2517,14 @@ pub enum ExportWarning {
 ///
 /// **Units:** `vertices` are in SI METRES — reify model space. Every kernel
 /// tessellation produces metres, and every consumer that needs another unit
-/// converts at its own boundary: [`write_3mf`] scales vertices to millimetres
-/// to match the `unit="millimeter"` it declares, while the STL writers emit
-/// metres verbatim (see their contract comments). Leaving this unstated is the
-/// root ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it
-/// here rather than at each use site.
+/// converts at its own boundary. In particular every export writer that carries
+/// a unit DECLARATION or targets a format with a settled unit CONVENTION scales
+/// to millimetres at its own vertex-emit site — [`write_3mf`] to match the
+/// `unit="millimeter"` it declares, [`write_stl_binary`] / [`write_stl_ascii`]
+/// to match STL's de-facto millimetre convention — so callers hand these
+/// writers metres and never pre-scale. Leaving this unstated is the root
+/// ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it here
+/// rather than at each use site.
 ///
 /// `normals` carry NO length unit: they are dimensionless unit direction
 /// vectors, invariant under the uniform positive metre→millimetre scale the
@@ -3291,18 +3335,17 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
 }
 
 /// Millimetres per metre — the single metre→millimetre conversion point for
-/// the 3MF writer.
+/// the 3MF and STL writers.
 ///
-/// **Export length regime.** Reify model space is SI METRES. Reify's
-/// declaration-carrying export formats emit MILLIMETRES, the CAD/3MF interop
-/// default, so that the unit a file DECLARES and the coordinates it CARRIES
-/// agree. [`write_3mf`] declares `unit="millimeter"`, so it applies this
-/// factor at the vertex-emit site; the STEP writer makes the same promise
-/// through OCCT's per-model length units (see `export_step` in
+/// **Export length regime.** Reify model space is SI METRES. Reify's export
+/// formats emit MILLIMETRES, the CAD/3MF/STL interop default, so that the unit
+/// a file DECLARES — or, where the format carries no unit field, the unit its
+/// consumers universally ASSUME — and the coordinates it CARRIES agree.
+/// [`write_3mf`] declares `unit="millimeter"`, so it applies this factor at the
+/// vertex-emit site; [`write_stl_binary`] / [`write_stl_ascii`] apply it at
+/// theirs against STL's de-facto millimetre convention; the STEP writer makes
+/// the same promise through OCCT's per-model length units (see `export_step` in
 /// `reify-kernel-occt`'s `occt_wrapper.cpp`).
-///
-/// The STL writers deliberately do NOT use this — see the contract comments on
-/// [`write_stl_binary`] / [`write_stl_ascii`].
 ///
 /// **Why this is `f32` and not `f64`.** [`Mesh::vertices`] is `Vec<f32>`, and
 /// the scaling is deliberately done in the source precision. Promoting to f64
@@ -3369,18 +3412,15 @@ fn triangle_verts(
 
 /// Write a mesh to the STL binary format.
 ///
-/// **Units — deliberately asymmetric with [`write_3mf`].** STL carries no unit
-/// field, so there is no declaration to keep honest and this writer emits the
-/// caller's coordinates VERBATIM — SI metres when fed straight from a reify
-/// kernel, since [`Mesh`] is metres. A consumer expecting the de-facto
-/// millimetre STL convention must scale at the call site, as
-/// `crates/reify-eval/src/compute_targets/fdm_slice.rs` already does (×1000)
-/// before handing a mesh to PrusaSlicer. Scaling here instead would silently
-/// make that existing caller 1,000,000×.
-///
-/// TODO(#6187): unify STL into the millimetre regime — scale here and strip the
-/// caller-side ×1000 in `fdm_slice.rs` in the same change, so the divergence
-/// stays deliberate rather than becoming accidental.
+/// **Units:** takes a [`Mesh`] whose vertices are SI METRES (reify model space)
+/// and emits MILLIMETRES, converting the coordinates by [`MM_PER_METRE_F32`] as
+/// it writes them. STL carries no unit field, so there is no declaration to
+/// keep honest — but every STL consumer (PrusaSlicer, Cura, every mesh viewer)
+/// reads the coordinates as millimetres, so that de-facto convention IS the
+/// promise this writer makes, and a 0.030 m cube is written as 30 mm. Scaling
+/// here — at the site that makes the promise — rather than in the callers is
+/// what makes the promise un-bypassable: no caller can obtain a 1000×-shrunk
+/// file, and callers must NOT pre-scale (doing so is 1,000,000×).
 ///
 /// **Format** (LITTLE-ENDIAN):
 /// - 80-byte header (fixed ASCII label, NOT starting with "solid")
@@ -3433,13 +3473,29 @@ pub fn write_stl_binary(
     // once per triangle, avoiding one tiny syscall per field for unbuffered sinks.
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Computed from the UNSCALED verts on purpose. The normal is a
+        // dimensionless unit direction, invariant under the uniform positive
+        // metre→millimetre scale (see [`Mesh`]), so scaling first would change
+        // nothing but the arithmetic — while magnifying the cross product by
+        // 1e6 and risking an f32 overflow on large meshes. Normalising the
+        // unscaled cross product keeps these bytes bit-identical.
         let n = compute_facet_normal(v0, v1, v2);
 
         // Pack: 3×f32 normal + 3×(3×f32) vertices = 48 bytes, then 2-byte attr count.
         let mut tri = [0u8; 50];
         let mut off = 0usize;
-        for &c in n.iter().chain(v0.iter()).chain(v1.iter()).chain(v2.iter()) {
+        for &c in n.iter() {
             tri[off..off + 4].copy_from_slice(&c.to_le_bytes());
+            off += 4;
+        }
+        // Vertices convert SI metres → millimetres AT THE EMIT SITE — no `Mesh`
+        // clone, no extra allocation, exactly as `write_3mf` does. Multiply in
+        // f32, NOT via an `f64::from(v) * 1000.0` promotion: the f32
+        // re-rounding is what lands `0.030 m` back on `30` instead of
+        // `29.999999329447746`. That is measured on `MM_PER_METRE_F32` — do not
+        // "fix" it to f64 without re-reading it.
+        for &c in v0.iter().chain(v1.iter()).chain(v2.iter()) {
+            tri[off..off + 4].copy_from_slice(&(c * MM_PER_METRE_F32).to_le_bytes());
             off += 4;
         }
         // tri[48..50] = attribute byte count 0 (already zero-initialized)
@@ -3451,12 +3507,13 @@ pub fn write_stl_binary(
 
 /// Write a mesh to the STL ASCII format.
 ///
-/// **Units — deliberately asymmetric with [`write_3mf`].** As with
-/// [`write_stl_binary`]: STL carries no unit field, so there is no declaration
-/// to keep honest and this writer emits the caller's coordinates VERBATIM (SI
-/// metres from a reify kernel). Callers needing the de-facto millimetre STL
-/// convention scale at the call site. TODO(#6187): unify STL into the
-/// millimetre regime alongside `write_stl_binary`.
+/// **Units:** as with [`write_stl_binary`], takes a [`Mesh`] whose vertices are
+/// SI METRES (reify model space) and emits MILLIMETRES, converting by
+/// [`MM_PER_METRE_F32`] as it writes them. STL carries no unit field, so there
+/// is no declaration to keep honest — but its consumers universally read
+/// millimetres, so that de-facto convention IS the promise, and scaling here
+/// rather than in the callers makes it un-bypassable. Callers must NOT
+/// pre-scale.
 ///
 /// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
@@ -3495,15 +3552,22 @@ pub fn write_stl_ascii(
     let mut line_buf = String::with_capacity(200);
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Normal from the UNSCALED verts, identically to `write_stl_binary`:
+        // it is a dimensionless unit direction, invariant under the uniform
+        // positive metre→millimetre scale, so this text stays byte-unchanged.
         let n = compute_facet_normal(v0, v1, v2);
         line_buf.clear();
+        // Vertices convert SI metres → millimetres in the same single `write!`
+        // — no second format call and no extra allocation, so the reused-String
+        // / one-`write_all`-per-triangle buffering contract above survives.
+        // Multiply in f32; see `MM_PER_METRE_F32` for why not via f64.
         let _ = write!(
             line_buf,
             "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
             nx = n[0], ny = n[1], nz = n[2],
-            x0 = v0[0], y0 = v0[1], z0 = v0[2],
-            x1 = v1[0], y1 = v1[1], z1 = v1[2],
-            x2 = v2[0], y2 = v2[1], z2 = v2[2],
+            x0 = v0[0] * MM_PER_METRE_F32, y0 = v0[1] * MM_PER_METRE_F32, z0 = v0[2] * MM_PER_METRE_F32,
+            x1 = v1[0] * MM_PER_METRE_F32, y1 = v1[1] * MM_PER_METRE_F32, z1 = v1[2] * MM_PER_METRE_F32,
+            x2 = v2[0] * MM_PER_METRE_F32, y2 = v2[1] * MM_PER_METRE_F32, z2 = v2[2] * MM_PER_METRE_F32,
         );
         writer.write_all(line_buf.as_bytes())?;
     }
@@ -4295,6 +4359,37 @@ pub trait GeometryKernel: Send + Sync {
         let handle = self.execute(op)?;
         Ok((handle, AttributeHistory::None))
     }
+
+    /// Free all resident kernel state built for the previous whole-file
+    /// design, returning the kernel to an empty-but-reusable state, so a
+    /// long-lived kernel reused across GUI whole-file reloads does not
+    /// accumulate the prior design's native geometry unbounded (task 5212).
+    ///
+    /// The **default** is a no-op, so mocks, stubs and every adapter that is
+    /// not on the reload path stay compiling unchanged. Mirrors the
+    /// default-forwarding convention of
+    /// [`execute_with_history`](GeometryKernel::execute_with_history) and
+    /// [`query_many`](GeometryKernel::query_many).
+    ///
+    /// Only the OCCT handle overrides it today — whose `OcctKernel` owns a
+    /// growing `HashMap<u64, UniquePtr<OcctShape>>` of native B-rep shapes —
+    /// routing an eviction over its actor channel. That is scope, not a claim
+    /// that the other adapters are already bounded: OCCT is the only kernel
+    /// the GUI's reload path can reach, because `Engine::with_registered_kernel`
+    /// (the production boot constructor) instantiates the single lex-min
+    /// BRep-capable registration. The Manifold, OpenVDB and Fidget adapters
+    /// each keep their own monotonic per-handle table that nothing clears
+    /// (`ManifoldKernel::shapes`/`sub_shapes`, `OpenVdbKernel::handles` —
+    /// native `cxx::UniquePtr` grids — and `FidgetKernel::trees`), so each
+    /// needs its own override before it may join a reload path; wiring one in
+    /// without that override reintroduces exactly the leak this method exists
+    /// to close. A delegating wrapper must forward instead of inheriting the
+    /// default (see `reify_geometry::SingleKernelHolder::reset`).
+    ///
+    /// Callers must invoke this exactly once per whole-file reload (see
+    /// `reify_eval::Engine::reset_geometry_for_reload`), never on a parameter
+    /// (slider) edit — a reset on every tick would needlessly wipe warm shapes.
+    fn reset(&mut self) {}
 
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
@@ -5676,11 +5771,9 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind or per-operand counter split (face vs. edge, left vs.
     /// right operand) remains an option if finer-grained diagnostics are needed;
@@ -5724,6 +5817,10 @@ pub struct LocalFeatureOpHistoryRecords {
     /// but could not map back into the result face/edge map (i.e. the child
     /// shape reported by BRep_Builder was absent from the result's TopExp
     /// map).  For well-formed BRep operations this should be zero.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -5785,11 +5882,9 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind counter split (face vs. edge) remains an option if
     /// finer-grained diagnostics are needed; the current single counter matches
@@ -5831,6 +5926,10 @@ pub struct SweepOpHistoryRecords {
     /// (`dot ≈ 2e-6`, just over `DIR_TOL = 1e-6`), using the assertion
     /// `unsynthesized_profile_edge_count == n_profile_edges − face_generated.len()`
     /// so the test is agnostic to whether OCCT covers the edge independently.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub unsynthesized_profile_edge_count: u32,
     /// Count of `face_generated` records dropped by the post-sort dedup pass
     /// because their `parent_subshape_index` duplicated the immediately
@@ -5852,6 +5951,10 @@ pub struct SweepOpHistoryRecords {
     /// == 0` in happy-path full-revolve tests. The FFI fixture
     /// `revolve_synthesis_post_sort_for_test` enables white-box testing of
     /// the dedup logic on synthetic flat inputs without real OCCT geometry.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub duplicate_parent_subshape_index_count: u32,
 }
 
@@ -8670,7 +8773,7 @@ mod tests {
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
             Operation::PrimitiveHalfSpace,
-            // Modify (8)
+            // Modify (9)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
@@ -8678,6 +8781,7 @@ mod tests {
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
+            Operation::ModifyOffsetSurface,
             Operation::ModifyOffsetCurve,
             // Transform (6)
             Operation::TransformTranslate,
@@ -8789,6 +8893,7 @@ mod tests {
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
             Operation::ModifyOffsetSolid => {}
+            Operation::ModifyOffsetSurface => {}
             Operation::ModifyOffsetCurve => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
@@ -9913,7 +10018,7 @@ mod tests {
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(2),
                 },
             ),
@@ -9943,6 +10048,13 @@ mod tests {
             (
                 "OffsetSolid",
                 GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                },
+            ),
+            (
+                "OffsetSurface",
+                GeometryOp::OffsetSurface {
                     target: GeometryHandleId(1),
                     distance: Value::Real(0.002),
                 },
@@ -10574,17 +10686,19 @@ mod tests {
             "|nz| should be ≈1 for z=0 triangle, got {nz}"
         );
 
-        // Vertex 0 at bytes 96..108: must round-trip exactly
+        // Vertices must round-trip exactly, converted to the writer's
+        // millimetre regime: the 1 m fixture edges emit as 1000 mm.
+        // Vertex 0 at bytes 96..108
         assert_eq!(le_f32(&buf, 96), 0.0_f32, "v0.x");
         assert_eq!(le_f32(&buf, 100), 0.0_f32, "v0.y");
         assert_eq!(le_f32(&buf, 104), 0.0_f32, "v0.z");
         // Vertex 1 at bytes 108..120
-        assert_eq!(le_f32(&buf, 108), 1.0_f32, "v1.x");
+        assert_eq!(le_f32(&buf, 108), 1000.0_f32, "v1.x");
         assert_eq!(le_f32(&buf, 112), 0.0_f32, "v1.y");
         assert_eq!(le_f32(&buf, 116), 0.0_f32, "v1.z");
         // Vertex 2 at bytes 120..132
         assert_eq!(le_f32(&buf, 120), 0.0_f32, "v2.x");
-        assert_eq!(le_f32(&buf, 124), 1.0_f32, "v2.y");
+        assert_eq!(le_f32(&buf, 124), 1000.0_f32, "v2.y");
         assert_eq!(le_f32(&buf, 128), 0.0_f32, "v2.z");
 
         // Attribute byte count at bytes 132..134 must be 0
@@ -10648,6 +10762,87 @@ mod tests {
         );
     }
 
+    /// The binary STL writer must emit MILLIMETRES: a `[0, 0.030]^3` cube in
+    /// reify's SI-metre model space must land on exactly 0 and exactly 30 in the
+    /// payload, not on 0.03 — the de-facto STL convention every consumer
+    /// (PrusaSlicer, Cura, every mesh viewer) assumes is millimetres.
+    ///
+    /// **Why the bound is exact `==` rather than an epsilon.** The identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED, and the table
+    /// establishing it is written out on [`MM_PER_METRE_F32`]: multiplying in
+    /// f32 re-rounds onto the f32 grid at the millimetre magnitude, whose ulp
+    /// (1.9e-6 at 30) is COARSER than the scaled input's deviation from the
+    /// round decimal (6.7e-7 at 30), so the product lands back exactly on the
+    /// decimal. The identical fixture and the identical multiply are already
+    /// pinned GREEN for the 3MF writer by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// so the exactness transfers rather than being assumed here. Any epsilon
+    /// loose enough to be worth writing would also admit the f64-route noise
+    /// (`29.999999329447746`) that exactness exists to reject.
+    #[test]
+    fn write_stl_binary_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Binary STL: 80-byte header, u32 triangle count at 80..84, then a
+        // 50-byte record per triangle = 12-byte facet normal + 9×f32 vertices
+        // + 2-byte attribute count.
+        let tri_count = le_u32(&buf, 80) as usize;
+        assert_eq!(tri_count, 12, "a 12-triangle cube must emit 12 triangles");
+
+        let mut coords: Vec<[f32; 3]> = Vec::with_capacity(tri_count * 3);
+        for t in 0..tri_count {
+            let tri_base = 84 + t * 50 + 12; // skip the facet normal
+            for v in 0..3 {
+                let o = tri_base + v * 12;
+                coords.push([le_f32(&buf, o), le_f32(&buf, o + 4), le_f32(&buf, o + 8)]);
+            }
+        }
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime binary STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm — the physical
+        // quantity a consumer actually reads off the file.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
+    }
+
     // ── ASCII serializer unit tests ──────────────────────────────────────────
 
     #[test]
@@ -10694,20 +10889,109 @@ mod tests {
             "single triangle: expected 3 'vertex ' entries"
         );
 
-        // Each specific vertex line must appear verbatim in the output.
-        // (Rust formats 0.0f32 as "0" and 1.0f32 as "1" via Display.)
+        // Each specific vertex line must appear verbatim in the output. The
+        // writer emits millimetres, so the 1 m fixture edges appear as 1000.
+        // (Rust formats 0.0f32 as "0" and 1000.0f32 as "1000" via Display.)
         assert!(
             text.contains("vertex 0 0 0"),
             "vertex (0,0,0) must appear in ascii output"
         );
         assert!(
-            text.contains("vertex 1 0 0"),
-            "vertex (1,0,0) must appear in ascii output"
+            text.contains("vertex 1000 0 0"),
+            "vertex (1,0,0) m must appear as 1000 mm in ascii output"
         );
         assert!(
-            text.contains("vertex 0 1 0"),
-            "vertex (0,1,0) must appear in ascii output"
+            text.contains("vertex 0 1000 0"),
+            "vertex (0,1,0) m must appear as 1000 mm in ascii output"
         );
+    }
+
+    /// The ASCII sibling of `write_stl_binary_emits_exact_millimetre_vertices`:
+    /// a `[0, 0.030]^3` cube in reify's SI-metre model space must reach the
+    /// emitted text as exactly 0 and exactly 30, not 0.03.
+    ///
+    /// **Why exact `==`.** Identical reasoning to the binary test: the identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED in the table on
+    /// [`MM_PER_METRE_F32`], and the same fixture through the same multiply is
+    /// already pinned GREEN for the 3MF writer. Any epsilon worth writing would
+    /// also admit the f64-route noise (`29.999999329447746`).
+    ///
+    /// Asserted on the PARSED values, not on the literal decimal text, for the
+    /// reason given on
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`:
+    /// the property under test is EXACTNESS, and pinning literal strings would
+    /// additionally freeze the writer to `{}` shortest-round-trip formatting, so
+    /// a legitimate formatting change would read here as a precision regression
+    /// when it is not. `write_stl_ascii_single_triangle_structure` keeps its
+    /// literal-string asserts — that test is about ASCII STRUCTURE.
+    #[test]
+    fn write_stl_ascii_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        // Each `vertex X Y Z` line carries three whitespace-separated f32s.
+        let coords: Vec<[f32; 3]> = text
+            .split("vertex ")
+            .skip(1)
+            .map(|tail| {
+                let mut it = tail.split_whitespace();
+                let mut next = || {
+                    it.next()
+                        .expect("a `vertex ` line must carry 3 tokens")
+                        .parse::<f32>()
+                        .expect("each vertex token must parse as f32")
+                };
+                [next(), next(), next()]
+            })
+            .collect();
+        assert_eq!(
+            coords.len(),
+            36,
+            "a 12-triangle cube must emit 36 `vertex ` entries"
+        );
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime ASCII STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
     }
 
     #[test]
@@ -10835,6 +11119,23 @@ mod tests {
         Mesh { vertices, indices, normals: None }
     }
 
+    /// Helper: [`unit_cube_mesh`]'s `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — a 30 mm cube, topology
+    /// unchanged.
+    ///
+    /// Shared by every test that pins an export writer's LENGTH REGIME (3MF and
+    /// both STL writers): 0.030 m is the fixture value whose f32 metre→mm
+    /// conversion is measured on [`MM_PER_METRE_F32`], so the same cube pins
+    /// magnitude and exactness for every writer that makes the millimetre
+    /// promise.
+    fn cube_30mm_mesh() -> Mesh {
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+        mesh
+    }
+
     #[test]
     fn write_3mf_box_produces_valid_3mf_package() {
         use std::io::Cursor;
@@ -10890,10 +11191,7 @@ mod tests {
     fn read_back_30mm_cube_3mf() -> (String, Vec<[f64; 3]>) {
         use std::io::Cursor;
 
-        let mut mesh = unit_cube_mesh();
-        for v in &mut mesh.vertices {
-            *v *= 0.030_f32;
-        }
+        let mesh = cube_30mm_mesh();
 
         let mut buf = Vec::new();
         write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
@@ -11454,7 +11752,7 @@ mod tests {
         let curated = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![GeometryHandleId(2)],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match curated {
@@ -11472,7 +11770,7 @@ mod tests {
         let all_faces = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match all_faces {

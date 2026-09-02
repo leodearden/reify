@@ -1,8 +1,19 @@
-// Fixture (stdlib-namespace decompose-phase premise, negative assertion — μ is
-// the in-batch grammar producer): qualified references via an import binding
-// (`pp.Pulley()` in expression position) do NOT parse today. tree-sitter parse
-// must FAIL (exit 1 / ERROR nodes) — pre-state for PRD §8 μ (grammar_confirmed:
-// false; μ commits the passing form of this fixture with the production).
+// Fixture (stdlib-namespace, PRD §6 last row): a qualified reference via an
+// import binding (`pp.Pulley()` in expression position) is now the PASSING
+// form. `tree-sitter parse --quiet` exits 0 with zero ERROR nodes.
+//
+// μ (task #5495) landed the production, replacing the decompose-phase negative
+// assertion this file was written to carry. Pinned on all three grammar
+// surfaces, so no surface can regress alone:
+//   - tree-sitter-reify/tests/qualified_ref_grammar_tests.rs
+//   - crates/reify-syntax/tests/harness_syntax/namespaced_ref_lowering_tests.rs
+//   - gui/src/__tests__/reifyGrammarQualifiedRef.test.ts, plus this path in the
+//     reifyGrammarCorpus.test.ts EXPECTED_CLEAN ledger
+//
+// PARSING IS THE WHOLE CLAIM HERE. μ carries `pp.Pulley` dot-joined in the
+// existing name slots and introduces no new AST variant; RESOLVING the binding
+// to the imported structure is task ν, so until that lands this file still
+// yields the ordinary unresolved-name diagnostic downstream of the parse.
 
 import parts as pp
 

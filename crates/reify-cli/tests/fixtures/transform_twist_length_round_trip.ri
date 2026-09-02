@@ -1,0 +1,21 @@
+// transform_twist_length_round_trip.ri — CLI eval fixture: the GREEN path of
+// RULING #6126. Both ends of the transform_log ↔ transform_exp seam accept a
+// Length twist, and the narrowing does NOT break pure rotations.
+//
+// This is the over-narrowing guard: it must stay clean of the dimension Warning
+// that transform_log_dimensionless.ri / transform_exp_dimensionless.ri provoke.
+//   - `twist`/`back` exercise the full Length round-trip;
+//   - `idlog` exercises the identity (pure-rotation) transform, whose translation
+//     is a LENGTH zero (transform3_identity builds Value::length(0.0)), so the
+//     narrowing leaves it accepted.
+//
+// Unlike its two sibling fixtures this one triggers NO dimension diagnostic, but
+// it lives alongside them in tests/fixtures/ because it is their paired control.
+
+module transform_twist_length_round_trip
+
+structure def TransformTwistLengthRoundTrip {
+    let twist = transform_log(transform3(orient_identity(), vec3(1mm, 2mm, 3mm)))
+    let back = transform_exp(twist)
+    let idlog = transform_log(transform3_identity())
+}

@@ -755,8 +755,9 @@ tasks:
       PRINTS `error: E_StackupDimMismatch: …` and EXITS 0 with "All constraints satisfied.",
       while `reify eval` on the same file exits 1. That is the INV-SF-2 outlier PRD
       2 owns via task 5403. A real `add_dependency` edge μ -> 5403 is wired so the
-      chunk''s guidance is TRUE when written; the two new codes must never enter PRD
-      2''s CHECK_ERROR_EXIT_ALLOWLIST.'
+      chunk''s guidance is TRUE when written; the new FeaLoadKindUnsupported and the
+      reused DimensionedArgRejected must never enter PRD 2''s
+      CHECK_ERROR_EXIT_ALLOWLIST.'
     verdict: PASS
     delivered_check:
       kind: manual

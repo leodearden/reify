@@ -33,6 +33,8 @@ mod parametric_field_resolution_tests;
 mod parametric_tensor_resolution_tests;
 #[path = "harness_langcore/parametric_vector_point_resolution_tests.rs"]
 mod parametric_vector_point_resolution_tests;
+#[path = "harness_langcore/prelude_sub_member_typing_tests.rs"]
+mod prelude_sub_member_typing_tests;
 #[path = "harness_langcore/priv_import_boundary_tests.rs"]
 mod priv_import_boundary_tests;
 #[path = "harness_langcore/priv_member_visibility_tests.rs"]

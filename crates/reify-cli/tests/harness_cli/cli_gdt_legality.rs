@@ -178,3 +178,114 @@ fn check_gdt_removed_2018_emits_warning_on_stderr() {
         "GdtRemoved2018 warning must name replacement characteristics.\nstderr: {stderr}"
     );
 }
+
+// ── task 5748 / esc-5748-7: no double-print on sub-path (c)'s build branch ───
+
+/// D2 invariant lock for `cmd_check` sub-path (c) (`--purpose`) on a
+/// GEOMETRY-BEARING module: a `GdtIllegalModifier` error must be printed
+/// EXACTLY ONCE.
+///
+/// Task 5748's D1 item 2 routes a geometry-bearing `--purpose` module through
+/// `realize_for_check` instead of `eval`. That realization internally calls
+/// `Engine::check`, which already ends with
+/// `diagnostics.extend(self.run_gdt_check_passes(module, &values))`
+/// (engine_constraints.rs) — so the legality pass has ALREADY contributed its
+/// diagnostics by the time `cmd_check` folds in its own
+/// `engine.run_gdt_check_passes(...)` call. `run_gdt_check_passes` is a pure
+/// function of `(module, values)`, so a bare `extend` there yields two
+/// byte-identical error lines, violating D2's "no diagnostic that would appear
+/// in `check()`'s own diagnostics today is ever printed twice".
+///
+/// The pre-existing `check_purpose_gdt_illegal_modifier_exits_failure` above
+/// cannot catch this: `contains("error:")` / `contains("MMC")` are both still
+/// true when the line appears twice.
+///
+/// Note the assertion is on the ERROR TEXT, not on a substring like "MMC" that
+/// also occurs in the fixture-independent parts of the report.
+#[test]
+fn check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=FlatnessMmcPurposeGeometry",
+        &common::fixture_path("gdt_illegal_modifier_purpose_geometry.ri"),
+    ]);
+
+    let needle = "`Flatness` is an RFS-only tolerance characteristic";
+    assert!(
+        stderr.contains(needle),
+        "the GdtIllegalModifier error must still reach stderr on the geometry-bearing \
+         `--purpose` path.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences,
+        1,
+        "the GD&T legality pass contributes its diagnostics ONCE via the realization's \
+         internal `Engine::check` and once more via `cmd_check`'s own fold-in; D2 \
+         requires exactly one printed line, which `strip_diagnostics_reproduced_by` \
+         achieves by withdrawing the realization's copy before the fold-in — got \
+         {occurrences}.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The GdtIllegalModifier escalation still fires (unchanged by the merge —
+    // membership is a union, so no exit code can move).
+    assert!(
+        !status.success(),
+        "reify check --purpose must still exit non-zero for a GdtIllegalModifier.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// Two DISTINCT illegal callouts of the same characteristic must print TWO
+/// lines on the geometry-bearing `--purpose` path (task 5748 amendment,
+/// reviewer_comprehensive `correctness` suggestion).
+///
+/// `illegal_modifier_error` formats its message from the characteristic name
+/// alone and anchors the location in a label, so two `Flatness`+MMC callouts
+/// are two byte-identical messages at two different spans. Sub-path (c)'s
+/// `used_build` arm is the only place where the build list is BOTH the
+/// self-dedup subject and the merge seed, so a text-only dedup key collapsed
+/// them into one printed line — silently losing the second callout's location,
+/// which is the ONLY thing that distinguishes the two reports.
+///
+/// This is the counterpart of
+/// `check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once`: that
+/// test pins that the legality pass's two RUNS (the realization's internal
+/// `Engine::check` and `cmd_check`'s own fold-in) yield one line; this one pins
+/// that two distinct CALLOUTS yield two. Both must hold at once, and no local
+/// dedup key can separate the two cases — the span is deliberately NOT part of
+/// `DiagKey` (measured: the duplicated `mirror(...)` 'ox' error carries two
+/// different spans for one problem). That is why `cmd_check` withdraws the
+/// realization's copy of the pass wholesale via
+/// `strip_diagnostics_reproduced_by` and lets its own run be the single source,
+/// instead of deduping the two runs against each other.
+///
+/// Kernel-independent: the legality pass is a static lint over post-eval
+/// values, so it produces the same two callouts with or without OCCT.
+#[test]
+fn check_purpose_gdt_two_illegal_callouts_on_geometry_module_print_twice() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=TwoFlatnessMmcPurposeGeometry",
+        &common::fixture_path("gdt_two_illegal_modifiers_purpose_geometry.ri"),
+    ]);
+
+    let needle = "`Flatness` is an RFS-only tolerance characteristic";
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences, 2,
+        "the module declares TWO illegal Flatness callouts; each is a separate \
+         report anchored at its own span, so both must reach stderr. Collapsing \
+         them to one is not deduplication — it is dropping a finding.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The escalation still fires, exactly as for the single-callout twin.
+    assert!(
+        !status.success(),
+        "reify check --purpose must still exit non-zero for a GdtIllegalModifier.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}

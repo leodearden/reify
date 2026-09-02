@@ -1,0 +1,290 @@
+prd: docs/prds/v0_6/result-field-vacuity-closure.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 7099
+  title: 'result-field vacuity α: field-disposition declaration mechanism (INV-PD-2 C1′),
+    following the PDROP declaration-syntax convention'
+  capabilities:
+  - name: pdrop-declaration-syntax-convention-upstream
+    binding: 'capability->producer (upstream task) - the declaration syntax (const table
+      vs macro) is decided by trampoline-param-drop α, task #7079, verified pending
+      2026-08-31. DAG-direction PASS: α (7099) depends_on 7079 (real edge wired at
+      decompose). α adopts that convention so PDROP and PVAC read one declaration form.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the declaration form does not exist until #7079 lands, so no grep pattern
+        can be authored now without guessing the syntax (an authored guess would be the
+        esc-6739-1 false-red shape). Behavioural cover is γ (7102) V1-V6, which cannot
+        pass unless the declaration mechanism is real and readable.'
+  - name: no-new-diagnostic-code-in-v1
+    binding: 'D2 (gate-only v1) - α mints NO DiagnosticCode variants, in deliberate
+      contrast to PDROP α. Loudness is the gate plus C2′ value honesty. INV-SF-6 binds
+      only a future runtime diagnostic.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'negative structural fact; an expect:absent on a bare token would violate
+        the reify overlay scoping rule and race legitimate prose.'
+- label: β
+  task_id: 7100
+  title: 'result-field vacuity β: vertical slice - modal family fully declared + V7/V8
+    honesty tests + degenerate-builder honest flips'
+  capabilities:
+  - name: modal-producer-sites-wired
+    binding: 'capability->producer (substrate, wired-on-main) - placeholder_part() and
+      its five production echo sites, build_modal_topology_value(), and
+      degenerate_modal_result() all live in crates/reify-eval/src/modal_ops.rs on the
+      production echo path (not test-only); verified by grep 2026-08-31. β declares
+      dispositions over these existing sites; happy-path values do not move.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'substrate fact already true on main; asserting it as a delivered check
+        would be vacuous. The behavioural twin is V7/V8 in β''s own diff.'
+  - name: undef-degraded-convention-exists
+    binding: 'capability->producer (substrate) - the honest degraded form is already the
+      house convention: degenerate_modal_result writes Value::Undef damping and its doc
+      names "the tet-result convention for unpopulated fields, cf. buckling''s
+      pre_stress"; verified 2026-08-31. V7''s premise is therefore achievable on main
+      today - C2′ promotes an existing convention, it does not invent one.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'substrate fact; V7 is the behavioural cover.'
+  - name: mechanism-modal-fake-family-allowlisted-to-7012
+    binding: 'ADV-beta-1/-4 (measured; fixtures tests/prd-gate/fixtures/adv_beta_v7_degraded_arith.ri,
+      adv_beta_v7_pm_is_real_zero.ri): mechanism_modal writes shape=[], participation_mass=0,
+      a HARD-CODED boundary_conditions=[] and mass/stiffness_matrix_norm=0.0 - C2′ fakes,
+      NOT honest Undef - so these enter as ALLOWLIST entries owned by #7012, never the
+      degraded bucket, until #7012 rules and flips the form. #7012''s description was
+      rewritten at this decompose (2026-08-31) to cover the bcs/norms extent
+      (producer-extent-short guard).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'value-form judgment plus task-store fact; V7/V8 are the behavioural cover
+        and PVAC mode (c) the continuous owner check.'
+  - name: v7-v8-not-release-gated
+    binding: 'ADV-beta-6 (measured): all four modal e2e tests driving examples/modal/*.ri
+      carry #[cfg_attr(debug_assertions, ignore)] - release-only - and the task gate runs
+      debug, so a release-gated V7/V8 would never execute in β''s own lane. V7/V8 are
+      chartered Rust-side against the cheap degenerate/mechanism-modal paths so they run
+      in the debug task gate.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'test-posture requirement; enforced by review plus the fact that a
+        release-gated V7/V8 cannot have produced β''s own green lane.'
+  - name: degraded-cite-7012-live
+    binding: 'owner-liveness - the allowlist entries for the mechanism-modal fake family
+      cite #7012, verified pending 2026-08-31 (description rewritten same day to cover
+      the full extent). Continuous enforcement thereafter is γ''s failure mode (c).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'task-store fact, not expressible as a repo grep; PVAC failure mode (c) is
+        the continuous mechanical check once γ lands.'
+  - name: part-topology-allowlist-owner-live
+    binding: 'owner-liveness - the .part allowlist entries, the .topology undeclared-write
+      registry entry (ADV-beta-3: .topology is not a declared field, so it lives in
+      C1′-2''s own registry, never the field allowlist), and the re-echo note all cite
+      owner task #7097, filed at this decompose (ζ discharge; the whole-printer-modal
+      design session had not filed its decomposition at decompose time, checked twice
+      2026-08-31, so this PRD filed the owner per the leaf-ι mirror). #7097 is deferred
+      by design (trigger-gated bookmark) - deferred is LIVE for mode (c).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'task-store fact; PVAC failure mode (c) is the continuous check.'
+- label: δ
+  task_id: 7101
+  title: 'result-field vacuity δ: full-family sweep - dispositions declared for every
+    StructureTypeId(u32::MAX) producer file (intermediate, precedes γ)'
+  capabilities:
+  - name: producer-family-enumerable
+    binding: 'capability->producer (substrate) - grep StructureTypeId(u32::MAX) measured
+      2026-08-31 at main 90e27653bb: 14 files in crates/reify-eval/src + 8 in
+      crates/reify-stdlib/src (151 sites; modal_ops.rs alone carries 16). The grep is
+      the enumeration handle; δ re-measures at implementation time (main moves).
+      ORDERING (ADV-gamma-7): δ is INTERMEDIATE and precedes γ - with only the modal
+      family declared, a real-tree PVAC run would red mode (a) on ~21 undeclared files
+      or be vacuous; δ landing first makes γ''s real-tree green honest.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'full-family coverage is not greppable until the α declaration form exists,
+        and a per-file pattern list would go stale as files move. Behavioural cover is
+        PVAC exit-0 on the real tree (γ V6) under the C4′(e) positive-control floor,
+        which together assert exactly this coverage continuously.'
+- label: γ
+  task_id: 7102
+  title: 'result-field vacuity γ: reify-audit --pattern PVAC + allowlist + liveness +
+    stats floor + same-diff drift-guard registrations'
+  capabilities:
+  - name: pattern-enum-substrate
+    binding: 'capability->producer (substrate, wired-on-main) - pub enum Pattern in
+      crates/reify-audit/src/lib.rs plus the per-pattern module family (ptodo.rs,
+      pdoccover.rs, pdssentinel.rs, puntested.rs, ...) verified live 2026-08-31; PVAC is
+      an additive variant + module for failure modes (a)-(d). CORRECTED per ADV-gamma-8
+      (measured): the findings-only check(ctx) dispatch CANNOT express the (e) vacuity
+      floor - PTODO''s check_with_stats never reaches the bin dispatch - so γ charters
+      new stats plumbing (PRD D9); the "same extension shape" claim holds for (a)-(d)
+      only. Unknown-pattern CLI exit is 125 (measured), distinct from findings-exit 1,
+      so γ''s tests can and must discriminate the two. Delivered check verified ABSENT
+      on main 2026-08-31 (red-today, flips on delivery); case-tolerant deliberately -
+      the variant casing is γ''s call, and a dispatch-gate false-red on a casing choice
+      would be the esc-6739-1 shape.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: P[Vv][Aa][Cc]
+      paths:
+      - crates/reify-audit/src/lib.rs
+      expect: present
+  - name: infra-ratchet-registration-same-diff
+    binding: 'drift-guard registration (esc-4914-162 rule) - the run-all-classification
+      manifest row for the PVAC ratchet runner lands in γ''s OWN diff, never
+      prose-ordered (tests/infra/test_run_all_classification.sh Test 5 asserts
+      declared-vs-discovered equality, so a runner without a same-diff row reds main).
+      tests/infra/run-all-classification.manifest verified present 2026-08-31; row
+      format matches the PTODO precedent. Per D8 (allowlist IS the baseline) there are
+      NO baseline-artifact guards to register. Delivered check verified ABSENT on main
+      2026-08-31 (red-today, flips on delivery).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '[Pp][Vv][Aa][Cc]'
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: liveness-lane-and-pdrop-machinery-upstream
+    binding: 'capability->producer (substrate + upstream task) -
+      crates/reify-audit/src/fused_memory_client.rs verified live 2026-08-31 (the PTODO
+      liveness-lane precedent). The .ri structure-reading + allowlist machinery is
+      landed by trampoline-param-drop η, task #7085, verified pending 2026-08-31;
+      DAG-direction PASS: γ (7102) depends_on 7085 (real edge). Extract-and-share,
+      never copy.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'upstream-task + substrate fact; the shared-machinery discipline is a
+        review-time property, not a greppable one.'
+  - name: vacuous-scan-floor
+    binding: 'C4′(e) - the ~22-file producer family is known non-empty (measured
+      2026-08-31), so zero discovered producers is a broken scanner, RED by contract.
+      V9''s hermetic producer-free fixture is the negative control. Delivery requires
+      the D9 stats plumbing (see pattern-enum-substrate correction).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural property; V9 in γ''s own suite is the cover.'
+  - name: premise-probe-harness-disposition
+    binding: 'ADV-gamma-1/-2/-3 disposition (harness-scope, not a leaf defect): every
+      γ observable is a reify-audit CLI behaviour, and the α probe harness
+      (scripts/prd-capability-check.py) dispatches only tree-sitter / reify check /
+      reify eval - it cannot execute reify-audit under any probe kind. γ''s premises
+      are therefore carried by the delivered_check greps in this manifest plus γ''s
+      in-diff Rust/infra tests (V1-V6, V9), NOT by α probe-set rows; any probe-set
+      binding for γ would be vacuous-green or permanently-red by construction.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'disposition record for the D3 verification gap; the mechanical cover is
+        the two grep checks above plus γ''s own test suite on the merge gate.'
+- label: ε
+  task_id: 7103
+  title: 'result-field vacuity ε: doc-truth cleanup - stale prose promises in
+    modal_analysis.ri / modal_ops.rs'
+  capabilities:
+  - name: stale-prose-present-today
+    binding: 'premise check - the targets exist on main, verified 2026-08-31: 5 hits of
+      the prose form "task 4578" in crates/reify-compiler/stdlib/modal_analysis.ri and
+      1 in crates/reify-eval/src/modal_ops.rs (all citing a done task as a future
+      owner). Delivered check verified RED today (targets present). Accepted gap, named
+      per the overlay absent-check rule: the pattern forbids the malformed prose form
+      only; a canonical "#4578" historical mention stays legal (and is the repo''s
+      citation convention), so the fix and the check cannot race. A legitimate future
+      prose mention of "task 4578" in these two files would false-red; accepted - these
+      are result-declaration surfaces where a task-cite should be #NNNN form anyway.
+      The live owner to cite instead is #7097.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: task 4578
+      paths:
+      - crates/reify-compiler/stdlib/modal_analysis.ri
+      - crates/reify-eval/src/modal_ops.rs
+      expect: absent
+  - name: false-consumer-claim-deleted
+    binding: 'premise check - the θ/ι claim ("Consumer tasks θ/ι locate the DOF assembly
+      via this Part at runtime") is false: the trampolines enumerate their reads and
+      part is not among them (four-agent zero-reader census 2026-08-31). Delivered
+      check verified RED today (claim present); flips when ε deletes it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: locate the DOF assembly
+      paths:
+      - crates/reify-compiler/stdlib/modal_analysis.ri
+      expect: absent
+- label: ζ-owner-part-topology
+  task_id: 7097
+  title: 'ζ discharge: live owner for the .part/.topology/re-echo entries
+    (GeometryHandleRef convergence) - filed deferred as a trigger-gated bookmark,
+    deliberately excluded from the pending flip'
+  capabilities:
+  - name: owner-filing-discharge
+    binding: 'leaf-ι mirror - filed at decompose because the whole-printer-modal design
+      session (design-reify-3830-1055491) had no result and no filed tasks at decompose
+      time (checked twice 2026-08-31). That design is expected to adopt or rescope
+      #7097; do NOT wire any PRD leaf edge onto it (would invert the liveness
+      contract). Deferred status is LIVE for PVAC mode (c).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the task IS the deliverable; liveness is enforced by PVAC failure mode (c).'
+- label: ζ-bookmark-ptodo-prose-cites
+  task_id: 7098
+  title: 'ζ discharge: bookmark - extend PTODO grammar to prose task-cites in doc
+    comments (D6)'
+  capabilities:
+  - name: bookmark-filing-discharge
+    binding: 'D6 ruling (Leo, 2026-08-31) - the prose-promise class gets an owner, not
+      just a census row. PTODO owns cite-grammar precedent; the umbrella census table
+      marks the class convention-only citing #7098 until it lands.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the task IS the deliverable.'
+- label: η
+  task_id: 7105
+  title: 'result-field vacuity η: PRD-close - terminal stamp + census-status refresh'
+  capabilities:
+  - name: terminal-stamp
+    binding: 'overlay decompose-close obligation - the SHIPPED header with landed leaf
+      ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map, copying the data-carrying-enums /
+      kernel-seam-contracts exemplar shape; matching header on the .md manifest twin.
+      Delivered check verified ABSENT on main 2026-08-31 (header reads "Status: active";
+      the §10 η row''s prose mention of SHIPPED does not match this construct-anchored
+      pattern) - red-today, flips only when the real header is stamped. Not
+      description-matchable.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\*\*Status:\*\*.*SHIPPED'
+      paths:
+      - docs/prds/v0_6/result-field-vacuity-closure.md
+      expect: present
+  - name: census-status-refresh
+    binding: 'umbrella maintenance obligation - the census table''s PVAC row flips
+      chartered to shipped when the gate lands. Delivered check verified ABSENT on main
+      2026-08-31 (row reads "chartered") - red-today.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PVAC.*shipped
+      paths:
+      - docs/legibility/design-invariants.md
+      expect: present

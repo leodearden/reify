@@ -57,6 +57,27 @@ export function convertToUnit(siValue: number, siScale: number): number {
  * addendum L3): those format the MAGNITUDE, not the unit, and are explicitly
  * out of scope. This is a pure glyph substitution with no exceptions, so it
  * must only ever be handed a unit label.
+ *
+ * SOURCE OF TRUTH: `gui/src-tauri/src/engine.rs::normalize_unit_label` is
+ * this function's same-shape Rust twin — the same total substitution over
+ * the same two glyphs — and its doc block is the canonical account of the
+ * cross-language contract: two mirror-image goldens, one per side (this
+ * file's test block is the TypeScript one), that leave an accidental
+ * one-sided drift uncaught.
+ *
+ * `reify_core::display_units::ascii_label_spelling`
+ * (crates/reify-core/src/display_units.rs) separately owns contract C2's
+ * underlying U+00B2/U+00B3 mapping rule (it returns `Option<String>`, a
+ * different shape). Both describe the curated ladders served to this file
+ * over the `get_unit_ladders` Tauri command; the duplication itself is
+ * unavoidable because TypeScript cannot call across the language boundary.
+ *
+ * The gate that fires when the curated alphabet grows a glyph — e.g. the
+ * `·` separator half, leaf κ of
+ * docs/prds/v0_6/angle-units-surface-convergence.md (#5784) — is
+ * `curated_unit_labels_carry_no_glyph_outside_the_shared_normalizer_alphabet`
+ * (gui/src-tauri/src/tests/engine_tests.rs), which sweeps the live tables
+ * and names this function in its failure message.
  */
 export function normalizeUnitLabel(label: string): string {
   return label.replace(/²/g, '^2').replace(/³/g, '^3');

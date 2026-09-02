@@ -523,22 +523,29 @@ fn bare_chamfer_asymmetric_reports_both_distances_in_one_build() {
 /// The non-vacuity control for the row above, shaped for what this build
 /// pipeline can actually do.
 ///
-/// `chamfer_asymmetric`'s `edges` argument is MANDATORY, and curated edge
-/// selection is not yet resolvable on the current build pipeline — the
-/// DIMENSIONED form is therefore also dropped, but for a wholly unrelated,
-/// PRE-EXISTING reason that carries its own distinct wording ("curated edge
-/// selection is not yet available on the current build pipeline", owned by
-/// tasks 4360/4358). So the control here cannot be "builds one op"; it is
-/// instead the sharper claim that the DIMENSIONED form raises NO units
-/// rejection at all.
+/// `chamfer_asymmetric`'s `edges` argument is MANDATORY, and this harness
+/// drives a bare `MockGeometryKernel` (`build_capturing_ops` →
+/// `build_compiled`) that answers no topology query — so the inline
+/// `edges(body)` selector cannot resolve to a concrete edge list here. The
+/// DIMENSIONED form is therefore also dropped, but for a wholly unrelated
+/// reason that carries its own distinct wording ("the edge selector did not
+/// resolve to a concrete edge list", raised by `resolve_curated_edges_p2`).
+/// So the control here cannot be "builds one op"; it is instead the sharper
+/// claim that the DIMENSIONED form raises NO units rejection at all.
 ///
 /// That is exactly the non-vacuity guarantee the pairing doctrine exists for:
 /// it proves the two `DimensionedArgRejected` Errors asserted above are caused
 /// by the BARE magnitudes and not by the fixture's shape, the `edges(..)`
-/// selector, or the pipeline limitation. Do not delete "the redundant half".
+/// selector, or the scaffolding limitation. Do not delete "the redundant half".
 ///
-/// When curated edge selection lands, this row should be upgraded to the
-/// ordinary "builds one op with both SI values unchanged" form.
+/// Task #5208 note: curated edge selection IS reachable through the production
+/// `.ri` pipeline now (inline selectors are pre-hydrated at the realization
+/// slot against a REAL kernel), and its unresolved-selector diagnostic was
+/// reworded from the old staging notice ("curated edge selection is not yet
+/// available on the current build pipeline … tasks 4360/4358") into the
+/// actionable message pinned below. What still blocks this row from the
+/// ordinary "builds one op" form is purely the bare mock kernel, not a missing
+/// capability; upgrading it needs a real-OCCT rewrite of `build_compiled`.
 #[test]
 fn dimensioned_chamfer_asymmetric_raises_no_units_rejection() {
     let (diagnostics, _ops) = build_capturing_ops(
@@ -561,17 +568,21 @@ fn dimensioned_chamfer_asymmetric_raises_no_units_rejection() {
 
     // Pin the reason the op is nonetheless absent, so this control cannot
     // silently start passing for a NEW reason (e.g. the fixture ceasing to
-    // compile) without the wording changing too.
+    // compile) without the wording changing too. The needle is the stable
+    // clause of `resolve_curated_edges_p2`'s unresolved-selector `Err`, and it
+    // is deliberately NOT the whole sentence — see the #5208 note above for why
+    // the previous "curated edge selection is not yet available" wording is
+    // gone.
     assert!(
         diagnostics.iter().any(|d| {
             d.severity == Severity::Error
                 && d.message
-                    .contains("curated edge selection is not yet available")
+                    .contains("did not resolve to a concrete edge list")
         }),
-        "the dimensioned form must still be dropped by the PRE-EXISTING curated \
-         edge-selection limitation (tasks 4360/4358) — if that has landed, \
-         upgrade this control to the ordinary `builds one op` form; got: \
-         {diagnostics:?}"
+        "the dimensioned form must still be dropped because the bare \
+         MockGeometryKernel cannot resolve `edges(body)` to a concrete edge \
+         list — if this harness gains a real kernel, upgrade this control to \
+         the ordinary `builds one op` form; got: {diagnostics:?}"
     );
 }
 

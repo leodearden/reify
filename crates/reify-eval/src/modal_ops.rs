@@ -1494,7 +1494,17 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// Builds a lumped generalized-coordinate eigenproblem from the assembled
 /// `(K, M)` (via [`assemble_mechanism_km`]), solves it with
 /// [`solve_eigen_dense`], and shapes the result as a `ModalResult`
-/// `Value::StructureInstance` with frequency-only `Mode` records.
+/// `Value::StructureInstance`.
+///
+/// **Per-mode damping (task #6875)**: each `Mode` carries the Rayleigh ratio
+/// ζ_i = (α + β·ω_i²)/(2·ω_i) computed from the `ModalOptions.damping`
+/// descriptor the caller supplied, via the same [`extract_damping`] →
+/// [`rayleigh_damping_ratio`] seam the FEA path ([`run_modal_analysis`]) uses.
+/// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
+/// give ζ_i = 0.  `Mode.shape` stays an empty list and
+/// `Mode.participation_mass` stays 0: the lumped generalized-coordinate model
+/// has one scalar DOF per body and therefore no 3D mode shape to report (which
+/// is also why `ModalOptions.reference_direction` is unused here).
 ///
 /// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
 /// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
@@ -1690,12 +1700,57 @@ fn run_mechanism_modal(
         }
     }
 
-    // ── (5) shape Mode records (frequency-only; lumped model has no 3D shape) ─
+    // ── (4c) read the caller's ModalOptions ──────────────────────────────────
+    // Hoisted above the Mode construction below because step (5) needs the
+    // `damping` descriptor per mode; step (5b) reuses the same binding for
+    // `n_modes` and step (6) for the descriptor echo.
+    //
+    // This path classifies rather than calling `extract_damping`: that helper
+    // flattens an unimplemented descriptor to (0, 0), which is indistinguishable
+    // from a genuinely undamped model.  Reporting the `Unsupported` arm is what
+    // keeps the ζ = 0 degrade honest (INV-SF-3, task #6875).  The match is
+    // deliberately exhaustive with no `_` catch-all, so adding a fourth
+    // `DampingKind` variant fails to compile HERE rather than defaulting to
+    // silence.
+    //
+    // Placement: after assembly succeeded and before the modes are shaped.  A
+    // degenerate mechanism (closed chain, unresolvable mass) early-returns above
+    // with its own `E_MechanismModal*` Error and has no modes to damp, so the
+    // Error is the louder and correct signal there.
+    let options = value_inputs.get(1).unwrap_or(&Value::Undef);
+    let (alpha, beta) = match classify_damping(options) {
+        DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+        DampingKind::Unsupported(type_name) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "W_MechanismModalUnsupportedDamping: ModalOptions.damping is a \
+                 `{type_name}` descriptor, which the lumped generalized-coordinate \
+                 mechanism-modal model does not implement. Only `RayleighDamping` \
+                 (ζ_i = (α + β·ω_i²)/(2·ω_i)) and `NoDamping` are honored here; every \
+                 Mode.damping_ratio is reported as 0 for this solve. ModalResult.damping \
+                 still echoes the `{type_name}` descriptor you supplied — the declared \
+                 damping intent is NOT applied. Use `RayleighDamping`, or use the FEA \
+                 `modal_analysis` path if it supports `{type_name}`.",
+            )));
+            (0.0, 0.0)
+        }
+        DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
+    };
+
+    // ── (5) shape Mode records (lumped model has no 3D shape) ────────────────
     // The stdlib accessors first_frequency/mode_frequency read only
-    // Mode.frequency, so frequency-only modes fully satisfy the contract.
+    // Mode.frequency, so frequency-only modes fully satisfy the contract;
+    // `damping_ratio` additionally carries the Rayleigh ratio read from
+    // `ModalOptions.damping` (task #6875).
+    //
+    // ω = 0 needs no extra guard here: `rayleigh_damping_ratio` floors at
+    // MIN_OMEGA_FOR_DAMPING = 1e-9 and returns 0.0, so a rigid-joint body
+    // (K[i,i] = 0 ⇒ f = 0 Hz, the W_MechanismModalRigidBodyMode case above)
+    // yields ζ = 0 rather than a 1/ω blow-up.
     let mut modes_list: Vec<Value> = frequencies
         .iter()
         .map(|&f| {
+            let omega = 2.0 * PI * f;
+            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
             let fields: PersistentMap<String, Value> = [
                 (
                     "frequency".to_string(),
@@ -1703,7 +1758,7 @@ fn run_mechanism_modal(
                 ),
                 ("shape".to_string(), Value::List(Vec::new())),
                 ("participation_mass".to_string(), Value::Real(0.0)),
-                ("damping_ratio".to_string(), Value::Real(0.0)),
+                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
             ]
             .into_iter()
             .collect();
@@ -1720,7 +1775,7 @@ fn run_mechanism_modal(
     // extract_eigen_knobs falls back to n_modes=10 when options is not a
     // StructureInstance or the field is absent.  Truncate only when the
     // caller explicitly asked for fewer modes than we computed.
-    let options = value_inputs.get(1).unwrap_or(&Value::Undef);
+    // (`options` is bound at step (4c) above.)
     let (requested_n_modes, _, _, _) = extract_eigen_knobs(options);
     if requested_n_modes < modes_list.len() {
         diagnostics.push(Diagnostic::warning(format!(
@@ -1735,11 +1790,22 @@ fn run_mechanism_modal(
     // ── (6) shape ModalResult (7-field, mirroring run_modal_analysis step 7) ──
     // topology is always present (Value::Undef on the mechanism path — no B-rep
     // attributed mesh; stable contract for R3b per task 4654 R3a design decision).
+    //
+    // `damping` genuinely echoes the caller's `ModalOptions.damping` descriptor
+    // (task #6875) via the same [`field_or`] read the FEA path uses — it is no
+    // longer a placeholder. `Value::Undef` now means only "the caller supplied
+    // no descriptor", which is what a bare `ModalOptions()` produces, so an
+    // undamped solve is still reported as `Undef` exactly as before.
+    // `mass_matrix_norm` / `stiffness_matrix_norm` remain 0: the lumped
+    // generalized-coordinate model never forms the norms the FEA path reports.
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
         ("boundary_conditions".to_string(), Value::List(Vec::new())),
-        ("damping".to_string(), Value::Undef),
+        (
+            "damping".to_string(),
+            field_or(options, "damping", Value::Undef),
+        ),
         ("mass_matrix_norm".to_string(), Value::Real(0.0)),
         ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
         ("topology".to_string(), build_modal_topology_value()),
@@ -2649,30 +2715,84 @@ fn extract_reference_direction(val: &Value) -> [f64; 3] {
     }
 }
 
+/// How the `damping` field of a `ModalOptions` value classifies against the
+/// `DampingDescriptor` refinements this trampoline implements.
+///
+/// This is the single extension point: a new descriptor (e.g. the
+/// damped-modal-bonded-heterogeneous PRD's `MaterialDamping`) adds ONE arm
+/// here and both the FEA ([`run_modal_analysis`]) and mechanism
+/// ([`run_mechanism_modal`]) producers inherit it — neither may re-implement
+/// the type-name match.
+#[derive(Debug, Clone, PartialEq)]
+enum DampingKind {
+    /// No `damping` field, or a non-`StructureInstance` options value.
+    /// Undamped, and silent: the caller declared no damping intent.
+    Absent,
+    /// An explicit `NoDamping` marker. Undamped, and silent: the caller
+    /// declared an undamped model and got one. Kept distinct from [`Self::Absent`]
+    /// because the two are different author intents even though both give ζ = 0.
+    NoDamping,
+    /// `RayleighDamping { alpha, beta }` — ζ_i = (α + β·ω_i²)/(2·ω_i).
+    Rayleigh { alpha: f64, beta: f64 },
+    /// A `DampingDescriptor` refinement this trampoline does not implement,
+    /// carrying its runtime `type_name` so the producer can name it in a
+    /// diagnostic instead of silently substituting zero (INV-SF-3).
+    Unsupported(String),
+}
+
+/// Classify the `damping` field of a `ModalOptions` StructureInstance.
+///
+/// The discriminator is the runtime `type_name`, matching the SIR-α nominal
+/// type-tag the structure-defs document. A missing `damping` field, a
+/// `Value::Undef` payload, a non-structure payload, and a non-structure `val`
+/// all classify as [`DampingKind::Absent`].
+fn classify_damping(val: &Value) -> DampingKind {
+    let Value::StructureInstance(data) = val else {
+        return DampingKind::Absent;
+    };
+    let Some(Value::StructureInstance(damping)) = data.fields.get("damping") else {
+        return DampingKind::Absent;
+    };
+    match damping.type_name.as_str() {
+        "RayleighDamping" => {
+            let alpha = damping
+                .fields
+                .get("alpha")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
+            let beta = damping
+                .fields
+                .get("beta")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
+            DampingKind::Rayleigh { alpha, beta }
+        }
+        "NoDamping" => DampingKind::NoDamping,
+        other => DampingKind::Unsupported(other.to_string()),
+    }
+}
+
 /// Extract the Rayleigh damping coefficients `(α, β)` from a `ModalOptions`
 /// StructureInstance's `damping` field. A `RayleighDamping { alpha, beta }`
 /// StructureInstance yields its coefficients; `NoDamping` (or any other shape)
-/// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode). The
-/// discriminator is the runtime `type_name`, matching the SIR-α nominal type-tag
-/// the structure-defs document.
+/// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode).
+///
+/// [`classify_damping`] is the discriminating seam; this fn is the lossy
+/// convenience view over it. It deliberately flattens
+/// [`DampingKind::Unsupported`] to `(0, 0)`, which means a caller using it
+/// **cannot distinguish a genuinely undamped model from a descriptor this
+/// trampoline does not implement**. A caller that must not silently drop an
+/// unrecognised descriptor calls [`classify_damping`] directly and reports the
+/// `Unsupported` arm — see [`run_mechanism_modal`]'s
+/// `W_MechanismModalUnsupportedDamping` warning (task #6875).
 fn extract_damping(val: &Value) -> (f64, f64) {
-    if let Value::StructureInstance(data) = val
-        && let Some(Value::StructureInstance(damping)) = data.fields.get("damping")
-        && damping.type_name == "RayleighDamping"
-    {
-        let alpha = damping
-            .fields
-            .get("alpha")
-            .map(read_scalar_si)
-            .unwrap_or(0.0);
-        let beta = damping
-            .fields
-            .get("beta")
-            .map(read_scalar_si)
-            .unwrap_or(0.0);
-        return (alpha, beta);
+    match classify_damping(val) {
+        DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+        // Deliberate catch-all, unlike `run_mechanism_modal`'s exhaustive match:
+        // a future descriptor SHOULD flatten to the undamped pair here without a
+        // compile error, because this fn's whole contract is the lossy view.
+        _ => (0.0, 0.0),
     }
-    (0.0, 0.0)
 }
 
 /// Extract the requested finite-element order from a `ModalOptions`
@@ -2961,10 +3081,10 @@ mod tests {
     use reify_stdlib::modal::transient::uniform_time_grid;
 
     use super::{
-        ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
-        TransientCache, assemble_mechanism_km, assemble_modal_km, build_beam_mesh,
-        build_dirichlet_bcs, degenerate_displacement_history, degenerate_modal_result,
-        displacement_at_trampoline, eigensolve_modal, extract_damping,
+        DampingKind, ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh,
+        ModalTrampolineRun, TransientCache, assemble_mechanism_km, assemble_modal_km,
+        build_beam_mesh, build_dirichlet_bcs, classify_damping, degenerate_displacement_history,
+        degenerate_modal_result, displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
         mode_shape_value, nearest_node, placeholder_part, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
@@ -4049,14 +4169,110 @@ mod tests {
 
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
     /// `extract_damping` discriminates by `type_name`.
+    ///
+    /// Fields are DIMENSIONED (`Frequency`, `Time`) to match both the stdlib
+    /// declaration (task #6093) and what the migrated corpus evaluates to, so
+    /// these fixtures cannot pass on a shape real input no longer produces.
+    /// `read_scalar_si` stays deliberately tolerant of bare `Real`; gating it
+    /// belongs to docs/prds/v0_6/dimension-checked-readers.md.
     fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
         struct_instance(
             "RayleighDamping",
             vec![
-                ("alpha".to_string(), Value::Real(alpha)),
-                ("beta".to_string(), Value::Real(beta)),
+                (
+                    "alpha".to_string(),
+                    Value::Scalar {
+                        si_value: alpha,
+                        dimension: DimensionVector::FREQUENCY,
+                    },
+                ),
+                (
+                    "beta".to_string(),
+                    Value::Scalar {
+                        si_value: beta,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
             ],
         )
+    }
+
+    /// ζ = (α + β·ω²)/(2·ω) is HOMOGENEOUS in ω with OPPOSITE exponents for the
+    /// two coefficients: rescaling ω by 2π divides the α term by 2π and
+    /// multiplies the β term by 2π.
+    ///
+    /// SCOPE — read before trusting this as the angular-rate guard. This is an
+    /// algebraic property of the closed form ALONE. It calls the pure
+    /// `reify_stdlib::modal::free_vibration::rayleigh_damping_ratio` twice with
+    /// two ω arguments of its own making; it never observes what scale
+    /// `modal_ops` actually FEEDS. Changing `run_modal_analysis`'s
+    /// `let omega = 2.0 * PI * f` to pass `f` leaves this test GREEN. It was
+    /// previously named `rayleigh_coefficients_are_consumed_on_the_angular_rate_scale`,
+    /// which overstated exactly that, and `modal_analysis.ri` cited it by that
+    /// name as the pin for its ANGULAR-RATE TRAP comment — so a reader was
+    /// being pointed at a guard that is not here. Renamed to what it pins, and
+    /// the `.ri` citation re-pointed at
+    /// [`trampoline_shapes_modal_result_with_rayleigh_damping`], which
+    /// independently recomputes ω = 2π·f from the emitted `Mode.frequency` and
+    /// compares `damping_ratio` against it at 1e-12 — the test that genuinely
+    /// observes the producer's scale.
+    ///
+    /// What it DOES buy: the two exponents move in opposite directions, which is
+    /// why `alpha` is declared `Frequency` and not `AngularVelocity` — the rad/s
+    /// convention lives in ω, and encoding it in ONE of two coupled
+    /// coefficients would be incoherent.
+    ///
+    /// The plain concrete-value anchor for the formula itself — α=2, β=0, ω=10
+    /// ⇒ ζ=0.1 — already lives one crate away in
+    /// `reify-stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_mass_proportional`
+    /// and is deliberately NOT restated here.
+    ///
+    /// MODULE-BOUNDARY NOTE: this is a unit test of a `reify-stdlib` function
+    /// sitting in `reify-eval`'s `mod tests`, an inversion relative to the four
+    /// `rayleigh_damping_ratio_*` tests that live next to the function. Its home
+    /// is `crates/reify-stdlib/src/modal/free_vibration.rs`; that file is
+    /// outside task #6093's module locks, so the move is filed as follow-up
+    /// rather than done here (#6323's neighbourhood — see the amend commit).
+    ///
+    /// Deliberately carries NO corpus-derived constant. An earlier arm anchored
+    /// on the ζ₁ ≈ 0.042 quoted in the prose of
+    /// `examples/modal/transient_step_response.ri` for that example's
+    /// fundamental — but with ω computed HERE as 2π·f it only re-evaluated
+    /// β·ω/2, adding nothing to the arms below, while coupling this test to a
+    /// number that shifts whenever that example's mesh or element order changes
+    /// (red for an unrelated reason) and drifts silently the other way (prose
+    /// edited, constant not).
+    #[test]
+    fn rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega() {
+        // Reading ω as cycles/s instead of rad/s would inflate the α
+        // contribution by 2π and deflate the β contribution by 2π. Both
+        // coefficients carry the convention, which is what makes typing only
+        // α as `AngularVelocity` (leaving β : `Time`) an incoherent pair.
+        //
+        // Any positive rate exhibits it — the claim is a RATIO, so the
+        // particular value is immaterial and is chosen to be plainly arbitrary.
+        // Compared against 1e-12 rather than an engineering tolerance: the
+        // factor is exactly 2π, and a band wide enough to absorb a nearby-but-
+        // wrong scale would not be judging the convention at all.
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let f_cyc = 7.5_f64;
+        let omega_rad = two_pi * f_cyc;
+
+        let zeta_alpha_cyc = rayleigh_damping_ratio(2.0, 0.0, f_cyc);
+        let zeta_alpha_rad = rayleigh_damping_ratio(2.0, 0.0, omega_rad);
+        assert!(
+            (zeta_alpha_cyc / zeta_alpha_rad - two_pi).abs() < 1e-12,
+            "the α term must scale by 2π with the ω convention; got {}",
+            zeta_alpha_cyc / zeta_alpha_rad
+        );
+
+        let zeta_beta_cyc = rayleigh_damping_ratio(0.0, 0.0003, f_cyc);
+        let zeta_beta_rad = rayleigh_damping_ratio(0.0, 0.0003, omega_rad);
+        assert!(
+            (zeta_beta_cyc * two_pi / zeta_beta_rad - 1.0).abs() < 1e-12,
+            "the β term must scale by 1/2π with the ω convention; got {}",
+            zeta_beta_cyc / zeta_beta_rad
+        );
     }
 
     /// Assemble a `ModalOptions`-shaped instance from the given fields.
@@ -4138,6 +4354,16 @@ mod tests {
     /// Amendment (suggestion 2): `extract_damping` returns the Rayleigh
     /// coefficients only for a `RayleighDamping` instance; `NoDamping`, a missing
     /// field, and a non-struct all read as the undamped `(0, 0)`.
+    ///
+    /// The final arm pins `read_scalar_si`'s BARE-`Value::Real` tolerance
+    /// (task #6093 amendment). Once the `rayleigh_damping` builder above
+    /// migrated to dimensioned fields — correctly, since real input no longer
+    /// produces the bare shape — nothing else in this crate exercised that arm,
+    /// so an edit making `extract_damping` reject a bare `Real` would have
+    /// passed the whole in-crate suite while the builder's docstring still
+    /// claimed the tolerance was deliberate and preserved. Tightening it is a
+    /// decision owned by `docs/prds/v0_6/dimension-checked-readers.md`; until
+    /// that lands deliberately, this is the witness.
     #[test]
     fn extract_damping_discriminates_rayleigh_from_none() {
         let damped = modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
@@ -4151,6 +4377,27 @@ mod tests {
 
         assert_eq!(extract_damping(&modal_options(vec![])), (0.0, 0.0));
         assert_eq!(extract_damping(&Value::Undef), (0.0, 0.0));
+
+        // Legacy bare-`Real` damping fields still read identically to the
+        // dimensioned shape — the reader is dimension-blind by construction.
+        let bare = modal_options(vec![(
+            "damping".to_string(),
+            struct_instance(
+                "RayleighDamping",
+                vec![
+                    ("alpha".to_string(), Value::Real(0.5)),
+                    ("beta".to_string(), Value::Real(1e-6)),
+                ],
+            ),
+        )]);
+        assert_eq!(
+            extract_damping(&bare),
+            extract_damping(&damped),
+            "extract_damping must fold bare Value::Real fields to the same \
+             (alpha, beta) as the dimensioned Value::Scalar fields — \
+             read_scalar_si's tolerance is deliberate and is not this task's \
+             to tighten (docs/prds/v0_6/dimension-checked-readers.md)"
+        );
     }
 
     /// Amendment (suggestion 2): `build_dirichlet_bcs` selects the pin-pin
@@ -6693,6 +6940,442 @@ mod tests {
             Some(&Value::Undef),
             "mechanism_modal path must emit Value::Undef topology (no attributed mesh)"
         );
+    }
+
+    /// Task #6875 step-3 (RED → GREEN in step-4): the mechanism-modal producer
+    /// honors `ModalOptions.damping` per mode AND echoes the descriptor itself
+    /// back on `ModalResult.damping`, exactly as the FEA path does.
+    ///
+    /// The echo is a distinct behaviour from the per-mode ζ landed in step-2:
+    /// step-2 only touched `Mode.damping_ratio`, so this test is still RED on
+    /// its `damping` assertions until step-4 replaces the hardcoded
+    /// `("damping", Value::Undef)` in the step-(6) result_fields map.
+    ///
+    /// Case A pins that ζ is genuinely *per mode* (a two-body mechanism whose
+    /// modes have different ω must get different ζ), so a single hoisted
+    /// constant cannot pass. Cases B and C pin the two silent-undamped
+    /// classifications, including the absent-descriptor path that keeps
+    /// `printer_z_compliant_mount.ri` bit-identical.
+    #[test]
+    fn mechanism_modal_echoes_damping_descriptor_and_per_mode_zeta() {
+        use std::f64::consts::PI;
+
+        /// Drive the trampoline and unwrap to the `ModalResult` fields, asserting
+        /// a Completed outcome with no Error diagnostics.
+        fn run(mech: Value, options: Value) -> (Box<StructureInstanceData>, Vec<Diagnostic>) {
+            let value_inputs = vec![mech, options];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "must not produce Error diagnostics; got {diagnostics:?}",
+            );
+            match result {
+                Value::StructureInstance(d) => {
+                    assert_eq!(d.type_name, "ModalResult");
+                    (d, diagnostics)
+                }
+                other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+            }
+        }
+
+        /// Read the `modes` list off a ModalResult.
+        fn modes_of(data: &StructureInstanceData) -> &Vec<Value> {
+            match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("modes must be a List; got {other:?}"),
+            }
+        }
+
+        /// Read `(frequency_hz, damping_ratio)` off a `Mode`, asserting the
+        /// frequency is a dimensioned `Scalar<Frequency>` and ζ is a `Real`.
+        fn mode_f_and_zeta(mode: &Value, i: usize) -> (f64, f64) {
+            let m = match mode {
+                Value::StructureInstance(d) => d,
+                other => panic!("modes[{i}] must be a Mode StructureInstance; got {other:?}"),
+            };
+            assert_eq!(m.type_name, "Mode");
+            let f = match m.fields.get("frequency") {
+                Some(Value::Scalar {
+                    si_value,
+                    dimension,
+                }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                other => panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}"),
+            };
+            let zeta = match m.fields.get("damping_ratio") {
+                Some(Value::Real(z)) => *z,
+                other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+            };
+            (f, zeta)
+        }
+
+        // ── Case A: damped, two bodies (direct n_dof = 2 solve, no anchor pad) ─
+        // k0/m0 = 500 and k1/m1 = 500_000 — two decades apart in ω, so a
+        // per-mode ζ is unmistakably distinguishable from a hoisted constant.
+        // (α, β) reuse the FEA-path fixture's shape: a nonzero α so the
+        // stiffness-proportional and mass-proportional terms both contribute.
+        {
+            let alpha = 0.5_f64;
+            let beta = 1e-4_f64;
+            let mech = two_body_mechanism(
+                mass_props_solid(2.0),
+                flexure_joint(1_000.0),
+                mass_props_solid(0.1),
+                flexure_joint(50_000.0),
+            );
+            let options =
+                modal_options(vec![("damping".to_string(), rayleigh_damping(alpha, beta))]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(
+                modes.len() >= 2,
+                "Case A: 2-DOF solve must return ≥ 2 modes"
+            );
+
+            let mut zetas: Vec<f64> = Vec::new();
+            for (i, mode) in modes.iter().enumerate() {
+                let (f, zeta) = mode_f_and_zeta(mode, i);
+                assert!(
+                    f.is_finite() && f > 0.0,
+                    "Case A: mode {i} frequency {f} must be finite > 0"
+                );
+                // The identity, recomputed from the SAME f64 the producer wrote
+                // into Mode.frequency — both sides evaluate the same expression
+                // on the same bits, so only fp associativity can separate them.
+                // 1e-12 is the band the landed FEA-path assertion
+                // (`trampoline_shapes_modal_result_with_rayleigh_damping`) uses;
+                // no new threshold is introduced here.
+                let omega = 2.0 * PI * f;
+                let expected = rayleigh_damping_ratio(alpha, beta, omega);
+                assert!(
+                    expected > 0.0,
+                    "Case A: fixture (α, β) must give nonzero ζ (≠ NoDamping)"
+                );
+                assert!(
+                    (zeta - expected).abs() < 1e-12,
+                    "Case A: mode {i} damping_ratio {zeta} != Rayleigh {expected} \
+                     (α={alpha}, β={beta}, ω={omega})",
+                );
+                zetas.push(zeta);
+            }
+
+            // Per-mode, not a hoisted constant: the two modes have different ω
+            // and therefore must have different ζ.
+            assert!(
+                (zetas[0] - zetas[1]).abs() > 0.0,
+                "Case A: modes at different ω must have different ζ; a single \
+                 hoisted constant would give {zetas:?}",
+            );
+
+            // ── THE STEP-3 RED ────────────────────────────────────────────────
+            // ModalResult.damping must echo the caller's descriptor verbatim,
+            // as `run_modal_analysis` does via `field_or`. RED while the
+            // mechanism producer hardcodes Value::Undef.
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&rayleigh_damping(alpha, beta)),
+                "Case A: ModalResult.damping must echo the caller's \
+                 RayleighDamping descriptor, not Value::Undef; got {:?}",
+                data.fields.get("damping"),
+            );
+        }
+
+        // ── Case B: explicit `NoDamping` — undamped, but still echoed ─────────
+        {
+            let no_damping = struct_instance("NoDamping", vec![]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let options = modal_options(vec![("damping".to_string(), no_damping.clone())]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(!modes.is_empty(), "Case B: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let (_f, zeta) = mode_f_and_zeta(mode, i);
+                assert_eq!(
+                    zeta, 0.0,
+                    "Case B: NoDamping must give exactly ζ = 0 for mode {i}"
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&no_damping),
+                "Case B: ModalResult.damping must echo the NoDamping instance, \
+                 not Value::Undef; got {:?}",
+                data.fields.get("damping"),
+            );
+        }
+
+        // ── Case C: absent descriptor — the `ModalOptions()` default ──────────
+        // This is what `examples/flexures/printer_z_compliant_mount.ri` passes,
+        // and it must stay bit-identical to the pre-#6875 output: ζ = 0 and a
+        // `Value::Undef` damping echo (the `field_or` fallback).
+        {
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let options = struct_instance("ModalOptions", vec![]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(!modes.is_empty(), "Case C: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let (_f, zeta) = mode_f_and_zeta(mode, i);
+                assert_eq!(
+                    zeta, 0.0,
+                    "Case C: an absent damping descriptor must give exactly \
+                     ζ = 0 for mode {i}"
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&Value::Undef),
+                "Case C: an absent damping descriptor must echo Value::Undef \
+                 (the field_or fallback) — this is the bit-identical-output \
+                 guarantee for printer_z_compliant_mount.ri"
+            );
+        }
+    }
+
+    /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised
+    /// `DampingDescriptor` refinement must be reported, never silently zeroed.
+    ///
+    /// `extract_damping` discriminates on the runtime `type_name` and returns
+    /// `(0.0, 0.0)` for *anything* that is not `RayleighDamping` — correct for
+    /// `NoDamping` (genuinely undamped) but silently wrong for a descriptor the
+    /// trampoline simply does not implement. The damped-modal-bonded-
+    /// heterogeneous capability manifest (`docs/prds/v0_6/`, §β) names the next
+    /// one: `MaterialDamping`. Routing the mechanism path through
+    /// `extract_damping` alone would reproduce the INV-SF-3 silent-failure
+    /// shape one descriptor later, so the seam is split: `classify_damping`
+    /// carries an explicit `Unsupported(type_name)` classification that the
+    /// producer turns into a coded warning.
+    ///
+    /// Case B is what makes the warning a signal rather than noise: the
+    /// supported descriptors must stay completely silent.
+    #[test]
+    fn mechanism_modal_warns_on_unsupported_damping_descriptor() {
+        /// Drive the trampoline, asserting a Completed outcome, and return the
+        /// `ModalResult` fields plus the diagnostics.
+        fn run(mech: Value, options: Value) -> (Box<StructureInstanceData>, Vec<Diagnostic>) {
+            let value_inputs = vec![mech, options];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected Completed outcome");
+            };
+            match result {
+                Value::StructureInstance(d) => (d, diagnostics),
+                other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+            }
+        }
+
+        const CODE: &str = "W_MechanismModalUnsupportedDamping";
+
+        // ── Case A: a descriptor this trampoline does not implement ──────────
+        {
+            let unsupported = struct_instance(
+                "MaterialDamping",
+                vec![("loss_factor".to_string(), Value::Real(0.02))],
+            );
+            let options = modal_options(vec![("damping".to_string(), unsupported.clone())]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let (data, diagnostics) = run(mech, options);
+
+            // A merely-unsupported descriptor must not abort the solve — the
+            // frequencies are still correct, only the damping intent is dropped.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "Case A: an unsupported descriptor must not produce an Error; \
+                 got {diagnostics:?}",
+            );
+
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "Case A: expected exactly one {CODE} Warning; got {diagnostics:?}",
+            );
+
+            // The author must be able to locate the dropped intent, so the
+            // offending descriptor's runtime type name appears in the message
+            // (mirroring the body-index naming in W_MechanismModalRotationalDOF).
+            assert!(
+                coded[0].message.contains("MaterialDamping"),
+                "Case A: the warning must name the offending descriptor type so \
+                 the author can locate the dropped intent; got: {}",
+                coded[0].message,
+            );
+
+            // The degrade must stay honest downstream: ζ really is 0 (we did not
+            // apply the descriptor), and the descriptor is echoed back verbatim
+            // rather than swallowed.
+            let modes = match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("Case A: modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "Case A: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let m = match mode {
+                    Value::StructureInstance(d) => d,
+                    other => panic!("Case A: modes[{i}] must be a Mode; got {other:?}"),
+                };
+                assert_eq!(
+                    m.fields.get("damping_ratio"),
+                    Some(&Value::Real(0.0)),
+                    "Case A: an unsupported descriptor must report ζ = 0 for \
+                     mode {i} — the warning is what makes that honest",
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&unsupported),
+                "Case A: ModalResult.damping must echo the unsupported \
+                 descriptor verbatim — it is reported back, never swallowed"
+            );
+        }
+
+        // ── Case B: the supported set must stay SILENT ───────────────────────
+        // Without this, the warning would be noise rather than signal.
+        {
+            let supported = [
+                (
+                    "RayleighDamping",
+                    modal_options(vec![("damping".to_string(), rayleigh_damping(0.0, 1e-4))]),
+                ),
+                (
+                    "NoDamping",
+                    modal_options(vec![(
+                        "damping".to_string(),
+                        struct_instance("NoDamping", vec![]),
+                    )]),
+                ),
+                ("absent", struct_instance("ModalOptions", vec![])),
+            ];
+            for (label, options) in supported {
+                let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+                let (_data, diagnostics) = run(mech, options);
+                assert!(
+                    !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                    "Case B/{label}: a supported damping descriptor must emit no \
+                     {CODE} diagnostic; got {diagnostics:?}",
+                );
+            }
+        }
+
+        // ── Case C: the classifier seam's own contract ───────────────────────
+        // `classify_damping` is the single extension point both producers
+        // inherit; pin its four classifications directly so a future descriptor
+        // arm has one obvious place to land.
+        {
+            assert!(
+                matches!(
+                    classify_damping(&modal_options(vec![(
+                        "damping".to_string(),
+                        rayleigh_damping(0.5, 1e-6),
+                    )])),
+                    DampingKind::Rayleigh { alpha, beta } if alpha == 0.5 && beta == 1e-6
+                ),
+                "Case C: a RayleighDamping descriptor must classify as \
+                 Rayleigh carrying its (α, β)"
+            );
+            assert!(
+                matches!(
+                    classify_damping(&modal_options(vec![(
+                        "damping".to_string(),
+                        struct_instance("NoDamping", vec![]),
+                    )])),
+                    DampingKind::NoDamping
+                ),
+                "Case C: an explicit NoDamping marker must classify distinctly \
+                 from an absent field — both are silent, but they are different \
+                 author intents"
+            );
+            assert!(
+                matches!(
+                    classify_damping(&struct_instance("ModalOptions", vec![])),
+                    DampingKind::Absent
+                ),
+                "Case C: a missing damping field must classify as Absent"
+            );
+            assert!(
+                matches!(classify_damping(&Value::Undef), DampingKind::Absent),
+                "Case C: a non-StructureInstance options value must classify as \
+                 Absent, not Unsupported"
+            );
+            match classify_damping(&modal_options(vec![(
+                "damping".to_string(),
+                struct_instance(
+                    "MaterialDamping",
+                    vec![("loss_factor".to_string(), Value::Real(0.02))],
+                ),
+            )])) {
+                DampingKind::Unsupported(type_name) => assert_eq!(
+                    type_name, "MaterialDamping",
+                    "Case C: Unsupported must carry the offending runtime \
+                     type_name so the producer can name it in a diagnostic"
+                ),
+                other => panic!(
+                    "Case C: an unimplemented DampingDescriptor refinement must \
+                     classify as Unsupported, got {other:?}"
+                ),
+            }
+
+            // The FEA seam must be bit-for-bit unchanged: `extract_damping` is
+            // re-expressed on the classifier, so re-assert exactly the inputs
+            // the landed `extract_damping_discriminates_rayleigh_from_none`
+            // covers (that test is not modified).
+            assert_eq!(
+                extract_damping(&modal_options(vec![(
+                    "damping".to_string(),
+                    rayleigh_damping(0.5, 1e-6),
+                )])),
+                (0.5, 1e-6),
+                "Case C: extract_damping must still return the Rayleigh pair"
+            );
+            assert_eq!(
+                extract_damping(&modal_options(vec![(
+                    "damping".to_string(),
+                    struct_instance("NoDamping", vec![]),
+                )])),
+                (0.0, 0.0),
+                "Case C: extract_damping must still flatten NoDamping to (0, 0)"
+            );
+            assert_eq!(
+                extract_damping(&modal_options(vec![])),
+                (0.0, 0.0),
+                "Case C: extract_damping must still flatten an absent field to (0, 0)"
+            );
+            assert_eq!(
+                extract_damping(&Value::Undef),
+                (0.0, 0.0),
+                "Case C: extract_damping must still flatten a non-struct to (0, 0)"
+            );
+        }
     }
 
     /// step-1 (RED → GREEN in step-2): `frequency_ascending_order` returns the

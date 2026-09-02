@@ -225,8 +225,11 @@ is dimensionally identical — `5N*m`, `5m^2*kg*s^-2` and their difference all e
 referenced at `:1511`), scanned in `tree-sitter-reify/src/scanner.c:244-258`
 (`if (valid_symbols[UNIT_MUL_OP] && c == '*') { … if (is_unit_start(lookahead)) …}`), with
 `is_unit_start` at `:101` matching `[A-Za-z_(]`. U+00B7 appears **nowhere** in `grammar.js` or
-`scanner.c`. The change is therefore a scanner-local widening of one character class plus a
-UTF-8-aware read — a materially smaller diff than "a grammar change" implies, but still a
+`scanner.c`. The change is therefore a scanner-local widening of one character class —
+no UTF-8-aware decoding is required, because `lexer->lookahead` is an `int32_t` carrying an
+already-decoded codepoint (see §5 C2's CORRECTION 2026-08-29) — **plus the `ts_parser.rs`
+lowering update required by §5 C2's CORRECTION 2026-08-19, without which the declaration is
+silently dropped**: a materially smaller diff than "a grammar change" implies, but still a
 parser-seam change (→ G5 B+H).
 
 ### 3.9 Migration blast radius (MEASURED at authoring; re-measure at decompose per G6)
@@ -251,9 +254,51 @@ needs no migration; it is a *consumer* datum for `Nm`, not a migration site.
 | Tests that **invert** (assert today's behaviour) | 3 | `reify-eval/tests/rotate_e2e.rs:216-235` `rotate_with_bare_radian_literal_lands_in_kernel` (its doc cites `geometry_ops.rs:437` — **[drift]**, now `:2251`); `reify-eval/tests/circular_pattern_angle.rs:47` `circular_pattern_bare_360_emits_deprecation_warning`; `:86` `circular_pattern_360deg_no_deprecation_warning` (this one *survives* — the explicit-unit path stays warning-free) |
 | Curated-label test expectations to update | ~14 | `reify-core/src/display_units.rs:722, 727, 1025, 1169, 1221, 1350, 1385, 1390, 1397, 1406`; `reify-ir/src/value.rs:10684, 10699, 10825`. `dimension.rs:912, 931` (`·` goldens) **stay** — S1 keeps the middle dot. |
 
+**Re-measured inventory — discharges this section's own "re-measure at decompose per G6"
+instruction.** `docs/notes/angle-literal-migration-ledger.md` is the re-measurement of the call
+sites tabulated above, published by task **5777** (leaf α). It is stamped **2026-08-26 at
+`181d1ec24c`** — a `main` merge commit, and therefore permanently reachable — with all four of its
+measured sections sharing that one stamp. It routes its buckets to this PRD's migration consumers:
+**γ (5779)** the rotation/sweep angle builtins (`revolve` / `rotate` / `rotate_around` / `arc` —
+all four, per the ledger's own §2.1 split), **δ (5780)** `draft`, **ε (5781)** `circular_pattern`,
+each migrating its own subset per contract C6. The counts in the table above are the
+**authoring-time snapshot** and have since moved; for sizing γ/δ/ε the ledger, not this table, is
+the live source of truth. Its numbers are deliberately **not** mirrored here — the ledger carries
+only measured data this PRD does not, and this PRD keeps the normative contract table, so a
+pointer beats a second copy to keep in sync.
+
 **`@display("…")` corpus uses: 0** (grep, whole repo). So normalizing S4's labels breaks no
 committed source, and the `@display` label validator (`annotations/schema.rs:334` + the
 dimension-phase rung check from task 5233) simply starts matching ASCII rungs.
+
+**`RayleighDamping.alpha`:** `param alpha : Frequency`, declared at
+`crates/reify-compiler/stdlib/modal_analysis.ri:161`. `crates/reify-eval/src/modal_ops.rs:1126`
+builds `ω = 2π·f` and feeds it to `rayleigh_damping_ratio(alpha, beta, omega)` at `:1127`
+— the declared `Frequency` is consumed on the rad/s scale, so a caller writing `alpha: 1.0Hz`
+— reading Hz as cycles/s, which is what Hz means — gets it consumed as `1 rad/s`: a `2π`
+error in the mass-proportional damping term. **Latent only:** `alpha` is exactly `0.0Hz` at all
+five *migrated* corpus ctor sites —
+`examples/modal/printer_gantry_modes.ri:136`, `examples/modal/transient_step_response.ri:79`,
+`examples/trajectory/printer_print_envelope.ri:97`,
+`tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri:49`,
+`crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:489`; the two remaining
+*un-migrated* ctor sites also pass a bare `alpha: 0.0` —
+`crates/reify-eval/tests/harness_mechanism/mechanism_modal_damping_e2e.rs:72` and
+`crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:633` — so no wrong answer
+is reachable today. The reasoning —
+including why `alpha` is typed `Frequency` rather than `AngularVelocity` — lives in
+`modal_analysis.ri`'s ANGULAR-RATE TRAP comment (:131-150), which already names this PRD as the
+surface's owner — not restated here. Pinned test-side by
+`modal_ops::tests::trampoline_shapes_modal_result_with_rayleigh_damping` (`modal_ops.rs:4617`),
+which recomputes `ω = 2π·f` from the emitted `Mode.frequency` and compares `damping_ratio`
+against it at `1e-12` — the arm that actually observes the producer's scale.
+`modal_ops::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
+(`:4246`) pins the algebraic symmetry only and explicitly does not observe the producer's
+scale. **Disposition:** already dimensioned, so it needs no migration; it is a *consumer* datum
+for `Frequency`, not a migration site — but honestly, §5's contract (C1-C4) does not today
+deliver the cycles/s-vs-s⁻¹ separation this site was handed off for; that gap is tracked as
+§11 item 6 for a ruling at decompose, not something C1-C4 already covers. Stamped **2026-09-01
+at `da22522934`** (a `main` merge commit).
 
 ### 3.10 Prior ruling this PRD reverses
 
@@ -355,10 +400,32 @@ parse_and_resolve(format!("1{ℓ}")) succeeds
 Empty labels (dimensionless) are excluded. `g/cm^3` resolves to `999.9999999999999` — the
 tolerance is load-bearing, not slack.
 
-**Scanner contract.** `UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`), in both
+**Scanner contract.** `UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (the decoded codepoint
+`0xB7` — `lexer->lookahead == 0xB7`, **not** the UTF-8 byte pair `0xC2 0xB7`), in both
 cases only when the following character satisfies `is_unit_start` (`scanner.c:101`). Nothing else
 changes: `_unit_div_op` stays `/`, exponent stays `^`, `signed_integer` stays `/-?\d+/`. `·`
 outside a `unit_expr` remains an error (there is no general `·` operator in Reify).
+
+> **CORRECTION 2026-08-29 (task 5949, from task 5784's decompose addendum K1).** The contract
+> sentence above previously read "`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7
+> (UTF-8 `0xC2 0xB7`)"; unlike the 2026-08-19 note below it has been corrected **in place**,
+> because an implementer coding to the byte-pair wording writes a branch that provably can
+> never fire. Source: task 5784's decompose addendum **K1** (2026-07-29), re-confirmed by the
+> sweep filed as **esc-5784-3** (2026-08-03, L0) — which also recommended the PRD amendment —
+> and promoted the same day by the orphan reaper to **esc-5784-4** (L1). **2026-08-05** is the
+> date that sweep carries where it was folded into task 5784's description, not either filing
+> date; look the escalations up by ID, not by that date. It is also binding record C1 of this
+> PRD's capability manifest. Substrate fact:
+> `tree-sitter-reify/src/tree_sitter/parser.h:49` declares `int32_t lookahead;` — tree-sitter
+> delivers **decoded codepoints**, not raw bytes. U+00B7 therefore arrives as the single value
+> `0xB7`, the lead byte `0xC2` is never observable, and one unmodified `lexer->advance()`
+> consumes the whole 2-byte codepoint. Controlled experiment (three isolated repo copies,
+> isolated `XDG_CACHE_HOME`, recompilation proven by a deliberate `#error` variant that failed
+> to build): HYP A — `(c == '*' || c == 0xB7)` — gives
+> `tree-sitter parse --quiet tests/prd-gate/fixtures/unit_middot_mul.ri` **exit 0** with the
+> correct tree (`left: N`, `right: m`); HYP B — the PRD's byte pair, `c == 0xC2` then require
+> `0xB7` — gives **exit 1**, a branch that can never fire. The same correction voids §3.8's
+> "UTF-8-aware read" phrase, corrected there too.
 
 > **CORRECTION 2026-08-19 (Leo, via esc-5784-5).** The sentence "Nothing else changes" above is
 > **wrong**, and is left in place only so the record of what task 5784 was planned against stays
@@ -367,7 +434,13 @@ outside a `unit_expr` remains an error (there is no general `·` operator in Rei
 > updated too. The rest of the paragraph stands — `_unit_div_op`, the exponent token and
 > `signed_integer` genuinely do not change, and `·` outside a `unit_expr` genuinely stays an error.
 > The correction was measured while planning task 5784 and is folded into that task's plan; it is
-> recorded here so a future reader of C2 does not repeat the omission.
+> recorded here so a future reader of C2 does not repeat the omission. **Provenance — one
+> measurement, five IDs, none of them a second finding.** It was first filed as **esc-5784-1**
+> (2026-07-31, L0) and promoted by the orphan reaper to **esc-5784-2** (L1); re-filed carrying
+> the PRD recommendation as **esc-5784-3** (2026-08-03, L0) and promoted the same way to
+> **esc-5784-4** (L1); rolled up as **esc-5784-5** (L2, `member_ids == ["esc-5784-4"]`), the ID
+> cited above. The **2026-08-05** stamp this correction once carried is the date the sweep bears
+> in task 5784's description, not the filing date of any of the five.
 
 ### C3 — Torque dimension
 
@@ -603,6 +676,12 @@ Facing both sides of each seam. These are μ's and ρ's observable signals.
 5. **Wording of the `got` label for an ANGLE-expected slot receiving a dimensionless `Scalar`.**
    `value_short_label` (`arg_acceptance.rs:134`) already prints `"dimensionless Scalar"`; confirm
    that reads well in the angle message or add a spec-level override. Cosmetic.
+6. **`Frequency` cycles/s-vs-s⁻¹ separation (`RayleighDamping.alpha`).** §3.9 measures the site:
+   `RayleighDamping.alpha` is declared `Frequency` but consumed on the rad/s scale
+   (`crates/reify-eval/src/modal_ops.rs:1126`), and `modal_analysis.ri`'s ANGULAR-RATE TRAP
+   comment names this PRD as the surface's owner — yet §5's contract (C1-C4) does not deliver a
+   cycles/s-vs-s⁻¹ separation today. *Suggested resolution:* rule at decompose whether a new leaf
+   takes this on or it is explicitly deferred to a later PRD. Decide during decompose.
 
 ## §12 — Decomposition plan
 
