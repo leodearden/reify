@@ -1500,12 +1500,13 @@ structure SphereCheck {
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
-/// CAVEAT on the 0.10mm row: `d/R` there is 1e-4, inside the separate ~1.49x
-/// branch reported below `d/R` < 2.5e-4 in
-/// `precision-nominal-representation-guarantee.md` §2 — this table's 2.078x
-/// reading for it should not be read as extending the envelope/tooth
-/// characterization that low; see `dfm_with_repr_within.ri`'s header note
-/// for that branch.
+/// CAVEAT on the 0.10mm row: `d/R` there is 1e-4, below the ~2.5e-4 floor
+/// where a separate ~1.49x branch ALSO appears, per
+/// `precision-nominal-representation-guarantee.md` §2 — but this row's own
+/// 2.078x reading shows it sits on the envelope, not that branch, in this
+/// regime. Do not read it as extending the envelope/tooth characterization
+/// that low: a third branch is known to exist down there too; see
+/// `dfm_with_repr_within.ri`'s header note for that branch.
 ///
 /// CORRECTED 2026-08-10 (gate 6060/esc-6060-1, 388-point sweep —
 /// supersedes both an earlier "sawtooth" label and the "very close to LINEAR"
@@ -1534,10 +1535,11 @@ structure SphereCheck {
 /// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper to
 /// tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves with
 /// machine load). Its safety margin does NOT rest on its measured neighbours —
-/// the tooth period near 0.30mm is ~0.006mm, so 0.25mm/0.35mm are roughly 8
-/// periods away and establish nothing about this locality; that neighbour
-/// argument is exactly the extrapolation the paragraph above labels FALSE and
-/// unsafe. The real argument — teeth deviate DOWNWARD only, so the envelope
+/// the tooth period near 0.30mm (see `dfm_with_repr_within.ri`'s header note
+/// / PRD §2 for the figure) puts 0.25mm/0.35mm roughly 8 periods away, which
+/// establishes nothing about this locality; that neighbour argument is
+/// exactly the extrapolation the paragraph above labels FALSE and unsafe.
+/// The real argument — teeth deviate DOWNWARD only, so the envelope
 /// (an OBSERVED SUPREMUM, not a proven bound — it has measured as high as
 /// 2.106x in a finer regime) is the branch to size against — is
 /// `dfm_with_repr_within.ri`'s header note; see there rather than restating
@@ -1547,12 +1549,13 @@ structure SphereCheck {
 /// 0.48mm clears the bound by only 0.12%, and 0.50mm was rejected because it
 /// clears only by landing on a tooth, with envelope violations on both sides.
 ///
-/// If BT7's `achieved` ever reads below 4e-4 m (its low-side diagnostic,
-/// below), that is this same tooth-landing risk manifesting at 0.3mm: NOT a
-/// failure, but re-measure this sweep before trusting it, and if it is a
-/// tooth, RETUNE #precision back onto the envelope rather than merely
-/// re-measuring in place — a value sitting on a tooth is one retune away
-/// from the envelope, which near the bound violates.
+/// If BT7's `achieved` ever reads below 4e-4 m, that is this same
+/// tooth-landing risk manifesting at 0.3mm: NOT a failure — BT7 asserts only
+/// the 8e-4 m ceiling, so this is not test-visible on its own — but
+/// re-measure this sweep before trusting it, and if it is a tooth, RETUNE
+/// #precision back onto the envelope rather than merely re-measuring in
+/// place — a value sitting on a tooth is one retune away from the envelope,
+/// which near the bound violates.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
@@ -1658,27 +1661,20 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // eroding the 1.61x margin fails here loudly — naming the measured value —
     // instead of silently flipping to a mysterious `Violated`.
     //
-    // The low side is a DIAGNOSTIC, not an assertion: a build that meshes FINER
-    // than when this was tuned still yields the correct verdict, so failing the
-    // gate on it would turn a fully-correct environment red for no contractual
-    // reason. (An earlier revision asserted a two-sided [4e-4, 8e-4] band and did
-    // exactly that.)
-    // This diagnostic (not the assertion below it) is advisory only: it fires
-    // inside a still-PASSING test, so it is visible solely under
-    // `cargo test -- --nocapture` — the repo's cargo output-condensation
-    // wrapper (CLAUDE.md) collapses a normal run to
-    // `PASS: N | FAIL: M | SKIP: K` and hides it entirely. The full
-    // interpretation (finer OCCT build vs. tooth-landing) and retune guidance
-    // live on `OCCT_SOURCE_FINE`'s doc comment above, where a reader retuning
-    // #precision will actually see them; this message is a short pointer.
-    if achieved < 4e-4 {
-        eprintln!(
-            "BT7 note: fine sphere deviation ({achieved:.3e} m) is well below the \
-             6.202e-4 m measured for #precision(0.3mm). NOT a failure — see \
-             OCCT_SOURCE_FINE's doc comment above for what this can mean and how to \
-             retune."
-        );
-    }
+    // The low side is intentionally unguarded — no assertion and, as of this
+    // revision, no diagnostic either. A build that meshes FINER than when
+    // this was tuned still yields the correct verdict, so failing the gate on
+    // it would turn a fully-correct environment red for no contractual
+    // reason (an earlier revision asserted a two-sided [4e-4, 8e-4] band and
+    // did exactly that). A later revision replaced that assert with an
+    // `eprintln!` here instead, but that fires inside a still-PASSING test,
+    // so it is visible solely under `cargo test -- --nocapture` — the repo's
+    // cargo output-condensation wrapper (CLAUDE.md) collapses a normal run to
+    // `PASS: N | FAIL: M | SKIP: K` and hides it entirely. A dead signal
+    // reads as coverage that isn't there, so it was removed rather than kept
+    // as decoration. The tooth-landing interpretation and retune guidance
+    // live on `OCCT_SOURCE_FINE`'s doc comment above, where a reader
+    // actually retuning #precision will see them.
     assert!(
         achieved < 8e-4,
         "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must stay under \

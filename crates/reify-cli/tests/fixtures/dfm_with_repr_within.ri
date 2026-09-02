@@ -33,13 +33,18 @@
 // margin, the drift canary, the retune recipe, and the mechanism DERIVATION
 // below — the Sphere docstring further down, and
 // `representation_within_assertion.rs`'s `OCCT_SOURCE_FINE` doc, point here
-// for those, so a retune has exactly one place to edit them. The staircase's
-// envelope/tooth/period/duty-cycle NUMBERS are owned by
-// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 (the
-// adjudication of record for gate 6060/esc-6060-1) and are cited, not
-// restated, below — this note is not the sole source for every number in
-// this area, only for the pieces named above. The `tests/harness_cli/`
-// consumers point at `OCCT_SOURCE_FINE`, not here.
+// for those, so a retune has exactly one place to edit them. Of
+// `tests/harness_cli/`'s consumers, `cli_determinacy_gate.rs` points at
+// `OCCT_SOURCE_FINE`; `cli_dfm_overhang.rs` and
+// `cli_reset_per_build_interleaving.rs` point HERE, for exactly the pieces
+// named above. The staircase's envelope/tooth ratios (~2.075x / ~0.758x) are
+// used operationally throughout this note and so recur below rather than
+// being cited once — that repetition is not the drift hazard this paragraph
+// guards against. What genuinely is NOT restated below, and is owned solely
+// by `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 (the
+// adjudication of record for gate 6060/esc-6060-1), is the exact periods,
+// duty cycle, and full regime walk. This note is not the sole source for
+// every number in this area, only for the pieces named above.
 //
 // Measured under OCCT at #precision(0.3mm): the sampled facet-chord deviation on
 // the 1m-radius sphere is 6.202e-4 m against the 1mm (1.000e-3 m) assertion bound
@@ -74,8 +79,12 @@
 //
 // Mechanism: NOT per-edge integer segment counts. A same-sweep control on
 // `cylinder(1000mm, 2000mm)`, whose curved face IS edge-segment-quantised,
-// comes back perfectly smooth (ratio 0.493-0.500, zero teeth) — this
-// falsification is the LOAD-BEARING claim here and stands on its own.
+// measures ratio 0.489 (`precision-nominal-representation-guarantee.md` §2's
+// cylinder spot value — the only cylinder figure surviving in-repo; the
+// fuller swept range behind the original "zero teeth" finding lived only in
+// gate 6060/esc-6060-1's raw sweep CSV, since reclaimed) — neither the
+// sphere's ~2.075x envelope nor its ~0.758x tooth, which is the
+// LOAD-BEARING falsification here.
 //
 // The mechanism for WHICH BRANCH (tread vs. tooth) a candidate lands on is a
 // two-ladder phase collision on the SPHERE FACE. Per
@@ -85,8 +94,8 @@
 // rejected for production use only because it depends on non-API OCCT
 // internal constants an upgrade could silently move, not because it is
 // unverified. What it is NOT YET shown to predict is the measured PERIODS
-// between teeth (~0.006mm at 0.3mm, ~0.022mm at 0.65mm) — that half remains
-// a hypothesis to re-verify, not a checked fact. Consistent with the
+// between teeth (PRD §2 above has the digits) — that half remains a
+// hypothesis to re-verify, not a checked fact. Consistent with the
 // cylinder control above.
 //
 // Measured against OCCT 7.8 — the system OCCT reify's kernel links directly
@@ -108,15 +117,14 @@
 // predict the periods themselves: treat that part as a hypothesis, not a
 // settled derivation.
 //
-// NEAR THE BOUND this dominates: the 388-point sweep's largest measured
-// swing between two points 0.01mm (~1.5%) apart in the request is 2.78x —
-// 0.68mm → 5.156e-4 m (TOOTH, ratio 0.758, clears) vs. 0.69mm → 1.434e-3 m
-// (ENVELOPE, ratio 2.078, VIOLATES). A finer-spaced pair swings 2.69x on a
-// mere 0.08% request change (PRD §2: "transitions are brutal") — so a value
-// that clears the bound only because it landed on a tooth is one retune away
-// from the envelope, which near the bound violates. Never tune onto a
-// tooth: pick a candidate whose ENVELOPE value (~2.075x the request) clears
-// the bound.
+// NEAR THE BOUND this dominates: PRD §2 records the sweep's finest-spaced
+// adjacent pair — 0.5955mm vs. 0.5960mm, a mere 0.08% request change —
+// swinging 2.69x in the achieved deviation: 0.5955mm → 1.223e-3 m
+// (ENVELOPE, VIOLATES a 1mm bound) vs. 0.5960mm → 4.541e-4 m (TOOTH,
+// clears). So a value that clears the bound only because it landed on a
+// tooth is one retune away from the envelope, which near the bound
+// violates. Never tune onto a tooth: pick a candidate whose ENVELOPE value
+// (~2.075x the request) clears the bound.
 // FARTHER BELOW THE BOUND the ~2.08x envelope ratio is an observation of the
 // upper envelope, not a guarantee — the teeth recur across the whole range,
 // and extrapolating the envelope is exactly what makes a tooth look like a
@@ -129,13 +137,16 @@
 // (~0.758x), so the envelope — not a tooth — is the branch to size against.
 // That envelope ratio is an OBSERVED SUPREMUM over the regime walked, NOT a
 // proven bound: the tread branch has measured as high as 2.079x near 0.3mm
-// (d/R = 3.12e-4, precision-refine-envelope-calibration.md §1.2) and 2.106x
-// in a finer regime (d = 0.048mm); sup(achieved/requested) is
-// regime-dependent and not pinned
-// (precision-nominal-representation-guarantee.md §4.1, rejected alternative
-// A). Sizing 0.3mm against the highest measured tread ratio (2.106x) still
-// gives 6.318e-4 m, ~1.6x inside the 1e-3 m bound — consistent with this
-// fixture's own 6.202e-4 m / 1.61x reading, stated above.
+// (d/R = 3.12e-4, precision-refine-envelope-calibration.md §1.2 — still
+// inside the d/R ≳ 2.5e-4 floor above). Separately, at d = 0.048mm
+// (d/R = 4.8e-5, BELOW that floor) the ratio reaches 2.106x;
+// `precision-nominal-representation-guarantee.md` §4.1 (rejected
+// alternative A) cites that value cross-regime, not as a tread-branch
+// reading, to show sup(achieved/requested) is regime-dependent and not
+// pinned. Sizing 0.3mm against that cross-regime supremum (2.106x) as a
+// conservative anchor still gives 6.318e-4 m, ~1.6x inside the 1e-3 m
+// bound — consistent with this fixture's own 6.202e-4 m / 1.61x reading,
+// stated above.
 //
 // To re-derive any ONE candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
@@ -143,16 +154,16 @@
 // the resulting `sampled facet deviation <X> m` message. That recipe
 // reproduces a single point — it does NOT re-establish the envelope, period,
 // duty-cycle or downward-only property above; those rest on the 388-point
-// sweep (d/R ≈ 3e-4 to at least 6.9e-4, i.e. roughly 0.3mm to at least
-// 0.69mm on this 1m-radius sphere — see the near-the-bound example above —
+// sweep (d/R ≈ 3e-4 to at least 5.96e-4, i.e. roughly 0.3mm to at least
+// 0.596mm on this 1m-radius sphere — see the near-the-bound example above —
 // plus the `cylinder(1000mm, 2000mm)` control above) that is the
-// adjudication of record for gate 6060/esc-6060-1, recorded in
-// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 — its raw
-// sweep CSV and briefing are cited there. Consult it — and do not re-open
-// that direction — before re-deriving the envelope/period claims from
-// scratch. That characterization covers d/R ≳ 2.5e-4 (≳0.25mm here) only —
-// the separate ~1.49x branch below that (§2, noted above) is untouched by
-// this recipe too.
+// adjudication of record for gate 6060/esc-6060-1. Consult
+// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 — where
+// that sweep and its provenance are recorded — and do not re-open that
+// direction, before re-deriving the envelope/period claims from scratch.
+// That characterization covers d/R ≳ 2.5e-4 (≳0.25mm here) only — the
+// separate ~1.49x branch below that (§2, noted above) is untouched by this
+// recipe too.
 
 import std.process
 
