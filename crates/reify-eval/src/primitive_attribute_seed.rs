@@ -1101,19 +1101,27 @@ mod tests {
         });
     }
 
+    // ─── task-6550 step-1: Tube IS seedable ─────────────────────────────────
+    //
+    // This positive pin REPLACES the former `seed_returns_ok_for_tube_kind`
+    // no-op pin, which asserted the exact opposite contract. Deleting that
+    // test was required rather than optional: it called `assert_seeds_nothing`,
+    // which passes EMPTY face/edge slices, so a Tube arm iterating zero faces
+    // writes nothing and the old assertion would have kept passing — leaving a
+    // silently vacuous test whose name and comment contradicted the landed
+    // behaviour.
     #[test]
-    fn seed_returns_ok_for_tube_kind() {
-        // Tube is composed via boolean_cut at the kernel layer; its
-        // attribute attachment depends on task 8's boolean propagation
-        // (or a Tube-specific compound classifier). Defer to task 8.
-        // This pin guarantees Tube is not accidentally swept into the
-        // primitive seeding arm just because it shares fields like
-        // `outer_r` / `inner_r` with the cylinder family.
-        assert_seeds_nothing(&GeometryOp::Tube {
-            outer_r: Value::Real(0.005),
-            inner_r: Value::Real(0.003),
-            height: Value::Real(0.010),
-        });
+    fn tube_is_seedable_primitive() {
+        assert!(
+            is_seedable_primitive(&GeometryOp::Tube {
+                outer_r: Value::Real(0.010),
+                inner_r: Value::Real(0.005),
+                height: Value::Real(0.020),
+            }),
+            "GeometryOp::Tube must be a seedable primitive (task #6550): it is a \
+             GeometryOp-level PRIMITIVE with zero parents, so it needs ORIGINATING \
+             seeding, not boolean history propagation"
+        );
     }
 
     // ─── step-9 — Wedge generic seeding (task-4158) ──────────────────────────
