@@ -1064,7 +1064,10 @@ is_occt_crate() {
 #     existing_sub_arms_regression_floor, task 5481)
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
-#     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri
+#     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri,
+#     cost_robustness_tradeoff_form.ri (task 5711: reify-constraints'
+#     cost_robustness_tradeoff_blend.rs and solver.rs cite it as the .ri form
+#     the in-Rust blend fixtures mirror — no read today)
 # Deliberately NO file:line citations: nothing validates them and they rot on
 # the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
 # tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
@@ -1077,7 +1080,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1100,7 +1103,7 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri ge
 # fails on any pinned fixture missing here. Do not hand-edit without re-running
 # it; do not trust a copy of this list anywhere else.
 #
-# NOTE the two lists NEST: all 10 _RUST_COUPLED_RI_FIXTURES members are also
+# NOTE the two lists NEST: all 11 _RUST_COUPLED_RI_FIXTURES members are also
 # pinned in the ledger, and the rust arm already sets gui=1, so it short-circuits
 # them. They are retained here deliberately so that dropping a fixture from the
 # rust list can never silently drop its gui coverage too.
