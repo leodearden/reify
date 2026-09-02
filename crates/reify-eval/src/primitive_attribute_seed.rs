@@ -436,6 +436,85 @@ fn classify_cylinder_face_role(nz: f64) -> Role {
     }
 }
 
+/// Classify a tube's faces into `(Role, local_index)` assignments, given one
+/// `(nz, radial_extent)` pair per face in TopExp order.
+///
+/// Returns one assignment per input face, POSITIONALLY ALIGNED with the input
+/// slice, so the caller can zip it straight back onto its face handles.
+///
+/// A tube (`boolean_cut(cylinder(outer), cylinder(inner))`) has four analytic
+/// faces: two annular caps and two lateral walls — the outer wall and the
+/// bore. The caps fall out of the shared [`classify_cylinder_face_role`]
+/// normal-z test (no new threshold is introduced; measured `|nz|` is exactly
+/// 1.0 for both annuli and exactly 0.0 for both walls, a margin of 1.0 against
+/// `NORMAL_Z_EPSILON`'s 1e-6). Both walls classify as `Role::Side`, and are
+/// disambiguated by DESCENDING radial extent: the outer wall takes
+/// `local_index` 0, the bore 1.
+///
+/// ## Why the extent is needed at all — `FaceNormal` cannot do this
+///
+/// `query_face_normal` evaluates the normal at the face's AREA CENTROID
+/// (`BRepGProp::SurfaceProperties` → `CentreOfMass`), which for a full
+/// 360° lateral wall lies ON THE AXIS and therefore not on the surface;
+/// `ShapeAnalysis_Surface::ValueOfUV` back-projects that point to an azimuth
+/// this repo documents as implementation-defined (see
+/// `kernel-occt/tests/harness_occt/surface_angle_integration.rs:277-282`).
+/// Both walls consequently return a radial unit vector with `nz == 0`. The
+/// bore IS oriented `TopAbs_REVERSED`, so its outward normal points toward the
+/// axis — but that sign flip cancels against the arbitrary azimuth, leaving
+/// nothing stable to test. The probe measured outer `{x:-1.8e-16, y:-1, z:0}`
+/// against bore `{x:+1.8e-16, y:+1, z:0}`; that opposition is COINCIDENTAL and
+/// must not be encoded.
+///
+/// ## Why a relative comparison and not an absolute threshold
+///
+/// The kernel REJECTS `inner_r >= outer_r` before building anything
+/// (`kernel-occt/src/lib.rs:2632-2636`), so any tube reaching the seeder has
+/// two strictly distinct wall radii. `Bnd_Box`'s tolerance inflation (~1e-7)
+/// is symmetric across both faces, so it cancels in a wall-vs-wall comparison
+/// rather than needing a budgeted epsilon. The sort is STABLE, so an exact tie
+/// falls back to TopExp construction order — the tiebreak convention the module
+/// rustdoc already documents for primitive `local_index` (PRD line 66) — and
+/// uses [`f64::total_cmp`] so the comparator is total and a NaN extent from a
+/// degenerate kernel response cannot panic.
+///
+/// Per-role counters are independent (mirroring the `Cylinder | Cone` arm), so
+/// the seeder can never emit two rows with an identical
+/// `(feature_id, role, local_index)` key.
+fn classify_tube_face_roles(faces: &[(f64, f64)]) -> Vec<(Role, u32)> {
+    // Pass 1: role only. The extent is irrelevant for caps — an annulus's
+    // bounding box spans the full OUTER radius, so consulting it outside the
+    // Side bucket would be actively wrong.
+    let roles: Vec<Role> = faces
+        .iter()
+        .map(|&(nz, _extent)| classify_cylinder_face_role(nz))
+        .collect();
+
+    // Pass 2: order the Side faces by descending radial extent. `sort_by` is
+    // stable, so equal extents keep their relative input (TopExp) order.
+    let mut side_positions: Vec<usize> = (0..faces.len())
+        .filter(|&i| roles[i] == Role::Side)
+        .collect();
+    side_positions.sort_by(|&a, &b| faces[b].1.total_cmp(&faces[a].1));
+
+    // Pass 3: assign local_index. Side faces get their rank in the sorted
+    // order; every other role gets the next value from its own counter.
+    let mut assigned: Vec<(Role, u32)> = roles.iter().map(|&role| (role, 0u32)).collect();
+    for (rank, &pos) in side_positions.iter().enumerate() {
+        assigned[pos].1 = rank as u32;
+    }
+    let mut role_counts: HashMap<Role, u32> = HashMap::new();
+    for (pos, role) in roles.iter().enumerate() {
+        if *role == Role::Side {
+            continue;
+        }
+        let counter = role_counts.entry(*role).or_insert(0);
+        assigned[pos].1 = *counter;
+        *counter += 1;
+    }
+    assigned
+}
+
 /// Extract the z-component of the JSON-encoded `{"x":..,"y":..,"z":..}`
 /// payload that `GeometryQuery::FaceNormal` returns.
 ///
