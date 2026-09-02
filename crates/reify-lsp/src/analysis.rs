@@ -118,8 +118,8 @@ impl AnalysisContext {
         // Containment (root cause owned by task **#6851**): a FAILED `auto:`
         // type-parameter resolution leaves an unsubstituted `Type::TypeParam`
         // value cell that panics `engine.check` in debug builds — see
-        // `crate::diagnostics::compiled_graph_has_unrepresentable_cell`'s doc
-        // comment for the mechanism. Skip the eval/check pass and hand back an
+        // `crate::diagnostics::first_unrepresentable_cell`'s doc comment for
+        // the mechanism. Skip the eval/check pass and hand back an
         // empty `CheckResult`; `compiled.diagnostics` already carries the
         // user-visible `E_AUTO_TYPE_PARAM_*` error, so hover / completion /
         // goto-def / symbols still surface the real problem. Path-qualified
@@ -133,7 +133,8 @@ impl AnalysisContext {
         // `assert_value_cell_types_representable` is elided) a silently wrong
         // `TypeKindMismatch`/`Undef`. The compile-stage
         // `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error is still delivered, and it is
-        // the actionable signal.
+        // the actionable signal; the `eprintln!` below names the offending cell
+        // in the server log so the degradation is diagnosable rather than mute.
         //
         // The five-field literal is spelled out rather than reaching for a
         // `Default` derive on `reify_eval::CheckResult` (which it does not
@@ -142,7 +143,17 @@ impl AnalysisContext {
         // explicit literal turns any future `CheckResult` field addition into a
         // loud compile error in exactly the place that must then decide what
         // the skipped-eval value should be.
-        if crate::diagnostics::compiled_graph_has_unrepresentable_cell(&compiled) {
+        if let Some((cell_id, cell_type)) =
+            crate::diagnostics::first_unrepresentable_cell(&compiled)
+        {
+            // Observability: this is the most consequential of the three guard
+            // sites — hover / completion lose every computed value here — so
+            // it must not degrade mutely. Same `eprintln!` idiom as
+            // `diagnostics.rs`'s two sites.
+            eprintln!(
+                "[reify-lsp] skipping eval/check: value cell `{cell_id}` has \
+                 unrepresentable cell_type {cell_type:?} (task #6851)"
+            );
             return Self {
                 parsed,
                 compiled,
@@ -1065,7 +1076,8 @@ mod tests {
     /// This site's degradation is quieter than `diagnostics.rs`'s and so needs
     /// its own lock: skipping the eval/check pass here empties
     /// `check_result.values`, and hover/completion then show NO computed values
-    /// for the whole document, with no error to explain why. Under the
+    /// for the whole document, with no EDITOR-visible error to explain why
+    /// (only a server-log line naming the offending cell). Under the
     /// `AutoTypeParam*` diagnostic-code proxy this guard replaced, a single
     /// failing `auto:` clause did exactly that even when the failure was
     /// provably safe to evaluate.

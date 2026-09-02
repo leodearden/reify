@@ -69,10 +69,25 @@ pub struct DiagnosticsResult {
     pub geometry_output: Option<Vec<u8>>,
 }
 
-/// True when the evaluation graph `compiled` would build carries a value
-/// cell whose `cell_type` has no runtime `Value` counterpart — the exact
-/// condition `reify-eval`'s `#[cfg(debug_assertions)]`
-/// `assert_value_cell_types_representable` panics on.
+/// `Some((id, cell_type))` when the evaluation graph `compiled` would build
+/// carries a value cell whose `cell_type` has no runtime `Value` counterpart
+/// — the exact condition `reify-eval`'s `#[cfg(debug_assertions)]`
+/// `assert_value_cell_types_representable` panics on. `None` when the graph is
+/// safe to evaluate.
+///
+/// This is THE containment predicate; [`compiled_graph_has_unrepresentable_cell`]
+/// is a test-only `bool` face over it. It returns the offender rather than a
+/// bare bit so the three guard sites can say WHICH cell suppressed their
+/// eval/check pass. Without that the degradation is silent: the document loses
+/// every eval-time diagnostic and every constraint result (and in
+/// `analysis.rs`, every hover/completion computed value) with nothing in the
+/// server log, making "my constraints stopped being checked" indistinguishable
+/// in the field from "the engine thinks they're satisfied".
+///
+/// "First" is first in `graph.value_cells`' iteration order — an `im::HashMap`,
+/// so hash order, NOT source order. A module with several unrepresentable
+/// cells reports an arbitrary one of them; the value is for a log line naming
+/// a concrete offender, never for an ordering-sensitive assertion.
 ///
 /// ## What this is for (task #6851 containment)
 ///
@@ -143,10 +158,36 @@ pub struct DiagnosticsResult {
 ///
 /// ## Cost
 ///
-/// One extra `EvaluationGraph::from_templates` per call at each of the three
-/// entry points, on the keystroke path — the SAME construction the gated
-/// eval would itself run. The guard therefore at worst doubles graph
-/// construction on a keystroke, and never adds an eval.
+/// Two-stage, because the exact question is not cheap enough to ask on every
+/// keystroke. `EvaluationGraph::from_templates` is not free — per value cell
+/// it does a `format!("{}", cell.id)` allocation, two content hashes and a
+/// map insert, and it also walks constraints, realizations and sub-component
+/// elaboration (`crates/reify-eval/src/graph.rs`).
+///
+/// Stage 1 is an allocation-free `all(is_representable_cell_type)` scan over
+/// `compiled.templates`' own `value_cells`, used ONLY to prove ABSENCE. It is
+/// sound in that one direction because every `cell_type` that reaches
+/// `graph.value_cells` is cloned verbatim from some template's `value_cells`
+/// — both in the top-level loop and in the collection/keyed sub-component
+/// elaboration arms, which draw their child cells from the SAME `templates`
+/// slice via `find_template`. So "no template cell is unrepresentable"
+/// strictly implies "no graph cell is unrepresentable", and the common case
+/// (every healthy document, every keystroke) returns without building a
+/// graph. The converse does NOT hold — a template cell can be unrepresentable
+/// while the graph is safe, which is exactly the successful-monomorphisation
+/// case rejected above — so stage 1 is never allowed to answer `true`.
+///
+/// Stage 2, reached only when stage 1 finds a candidate, is the exact
+/// `from_templates` walk. It is the SAME construction the gated eval would
+/// itself run, so on the shape that actually trips the guard the cost is at
+/// worst a doubled graph construction, and never an added eval.
+///
+/// The staging matters most on the WARM path. `compute_diagnostics_with_state`
+/// takes the `content_unchanged` branch on a repeat request, where the gated
+/// work is `eval_cached` + `check_snapshot` — neither of which calls
+/// `from_templates` (`eval_cached` builds a combined param/let graph;
+/// `check_snapshot` reuses the stored snapshot). An unconditional exact walk
+/// there would be pure new cost with no counterpart; the stage-1 scan is not.
 ///
 /// ## Blast radius: wider than `auto:`, deliberately
 ///
@@ -167,13 +208,46 @@ pub struct DiagnosticsResult {
 /// while the user is mid-edit. A compile error that leaves the graph
 /// representable does not suppress eval here — pinned at the production entry
 /// points by `tests::non_auto_compile_error_still_yields_eval_diagnostics`.
-pub(crate) fn compiled_graph_has_unrepresentable_cell(
+pub(crate) fn first_unrepresentable_cell(
     compiled: &reify_compiler::CompiledModule,
-) -> bool {
+) -> Option<(ValueCellId, reify_core::Type)> {
+    // Stage 1 — cheap ABSENCE proof, no allocation and no graph. Sound only in
+    // this direction (see the "## Cost" doc section): it may find a candidate
+    // on a module whose graph is in fact safe, so it may only ever return
+    // early with `None`, never report a hit of its own.
+    if compiled
+        .templates
+        .iter()
+        .flat_map(|t| &t.value_cells)
+        .all(|c| reify_eval::is_representable_cell_type(&c.cell_type))
+    {
+        return None;
+    }
+
+    // Stage 2 — the exact question, on the rare shape that got past stage 1.
     reify_eval::graph::EvaluationGraph::from_templates(&compiled.templates)
         .value_cells
         .iter()
-        .any(|(_, node)| !reify_eval::is_representable_cell_type(&node.cell_type))
+        .find(|(_, node)| !reify_eval::is_representable_cell_type(&node.cell_type))
+        .map(|(id, node)| (id.clone(), node.cell_type.clone()))
+}
+
+/// Boolean face of [`first_unrepresentable_cell`] — see that function's doc
+/// for the mechanism, the cost model and the rejected alternatives.
+///
+/// **Test-only.** All three production entry points need the OFFENDER, not
+/// just the bit, because they log which cell forced the skip — so nothing in
+/// the lib build calls this form. It is kept because the property the
+/// four-case unit test below pins genuinely IS a boolean ("fires / does not
+/// fire" over four compiled shapes), and spelling `.is_some()` at each of
+/// those call sites would bury the predicate's contract in an accessor.
+/// `#[cfg(test)]` states that split honestly rather than leaving a
+/// `pub(crate)` wrapper nothing builds.
+#[cfg(test)]
+pub(crate) fn compiled_graph_has_unrepresentable_cell(
+    compiled: &reify_compiler::CompiledModule,
+) -> bool {
+    first_unrepresentable_cell(compiled).is_some()
 }
 
 /// Run the stateful parse → compile → eval → check pipeline.
@@ -215,16 +289,16 @@ pub(crate) fn compiled_graph_has_unrepresentable_cell(
 /// candidate feasibility at compile time is exactly what leaves an
 /// unsubstituted `Type::TypeParam` value cell in the graph, which panics eval
 /// in debug builds (root cause owned by task **#6851**; mechanism in
-/// `compiled_graph_has_unrepresentable_cell`'s doc — private, so cited by name
-/// rather than as an intra-doc link from this public item). All three LSP
-/// production entry points therefore call
-/// `compiled_graph_has_unrepresentable_cell` after collecting the
-/// compile-stage diagnostics and skip the eval/check pass when it returns true
-/// — the user still gets the `E_AUTO_TYPE_PARAM_*` error this section is
-/// about, and the server stays alive. The guard tests the graph for an
-/// unrepresentable cell, NOT the diagnostics for an error: a compile error
-/// that leaves the graph representable does not suppress eval, because the LSP
-/// evaluates through non-fatal ones on purpose.
+/// `first_unrepresentable_cell`'s doc — private, so cited by name rather than
+/// as an intra-doc link from this public item). All three LSP production entry
+/// points therefore call `first_unrepresentable_cell` after collecting the
+/// compile-stage diagnostics, skip the eval/check pass when it answers `Some`,
+/// and log which cell forced the skip so the degradation is not mute. The user
+/// still gets the `E_AUTO_TYPE_PARAM_*` error this section is about, and the
+/// server stays alive. The guard tests the graph for an unrepresentable cell,
+/// NOT the diagnostics for an error: a compile error that leaves the graph
+/// representable does not suppress eval, because the LSP evaluates through
+/// non-fatal ones on purpose.
 ///
 /// ## Engine posture: deliberately NO compute trampolines
 ///
@@ -313,8 +387,8 @@ pub fn compute_diagnostics_with_state(
 
     // Containment (task #6851): a FAILED `auto:` resolution leaves an
     // unsubstituted `Type::TypeParam` value cell that panics eval in debug
-    // builds — see `compiled_graph_has_unrepresentable_cell`'s doc comment for
-    // the mechanism. The compile-stage diagnostics, which are the user-visible
+    // builds — see `first_unrepresentable_cell`'s doc comment for the
+    // mechanism. The compile-stage diagnostics, which are the user-visible
     // signal task #6798 is about, are already collected in the loop above, so
     // the editor still reports NoCandidate/Ambiguous; we simply never feed such
     // a graph to the engine. Same containment idiom and same reasoning as the
@@ -328,7 +402,15 @@ pub fn compute_diagnostics_with_state(
     // would create precisely the stale-cache bug the comment below warns about:
     // `eval_cached` returns empty diagnostics by construction, so a module that
     // was never evaluated would silently report none.
-    if compiled_graph_has_unrepresentable_cell(&compiled) {
+    if let Some((cell_id, cell_type)) = first_unrepresentable_cell(&compiled) {
+        // Observability: skipping eval silently costs the whole document its
+        // eval-time diagnostics and constraint results, so name the offender
+        // rather than degrading mutely. Same `eprintln!` idiom as the
+        // check_snapshot fallback below.
+        eprintln!(
+            "[reify-lsp] skipping eval/check: value cell `{cell_id}` has \
+             unrepresentable cell_type {cell_type:?} (task #6851)"
+        );
         return DiagnosticsResult {
             diagnostics,
             geometry_output: None,
@@ -945,7 +1027,11 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     // `compute_diagnostics_with_state`'s equivalent guard for the full
     // rationale (task #6851). This stateless surface panics identically and is
     // guarded identically; it has no `EvalState` to leave untouched.
-    if compiled_graph_has_unrepresentable_cell(&compiled) {
+    if let Some((cell_id, cell_type)) = first_unrepresentable_cell(&compiled) {
+        eprintln!(
+            "[reify-lsp] skipping eval/check: value cell `{cell_id}` has \
+             unrepresentable cell_type {cell_type:?} (task #6851)"
+        );
         return result;
     }
 
@@ -1300,6 +1386,14 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         // only the monomorph's same-id cell, written later into
         // `graph.value_cells`, makes it safe. A flat scan of
         // `compiled.templates` fires here; the graph-level predicate does not.
+        //
+        // This case doubles as the pin for the STAGE-1 FAST PATH inside
+        // `first_unrepresentable_cell`. That stage IS a flat template scan —
+        // the very formulation rejected here — and is sound only as an
+        // ABSENCE proof. This fixture is exactly the shape where it finds a
+        // candidate and the graph is nevertheless safe, so an edit that let
+        // stage 1 answer `true` on its own (rather than falling through to
+        // the exact `from_templates` walk) goes RED right here.
         assert!(
             !fires(
                 r#"trait Seal {}
@@ -1485,12 +1579,50 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         );
 
         // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+        //
+        // Snapshot `EvalState` first: the guard's placement BEFORE the state
+        // mutations is load-bearing, and nothing else pins it. If a refactor
+        // moved `state.version_counter += 1` or the `last_content_hash`
+        // assignment above the guard, this test would still be green on
+        // `result.diagnostics` alone while the SECOND request on the same
+        // unchanged document took the `content_unchanged` branch into
+        // `eval_cached` — which returns empty diagnostics by construction —
+        // and silently reported no eval diagnostics for a module that was
+        // never evaluated at all.
         let mut state = EvalState::new();
+        let hash_before = state.last_content_hash;
+        let version_before = state.version_counter;
+        let initialized_before = state.is_engine_initialized();
+
         let result = compute_diagnostics_with_state(
             &mut state,
             AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
             &test_uri(),
         );
+
+        assert_eq!(
+            state.last_content_hash, hash_before,
+            "containment: a guard-suppressed request must leave \
+             `last_content_hash` UNADVANCED, so the next request on the same \
+             document takes the cold-start branch rather than `eval_cached` \
+             (which returns empty diagnostics by construction). Advancing it \
+             here is the stale-cache bug the guard's placement prevents."
+        );
+        assert_eq!(
+            state.version_counter, version_before,
+            "containment: a guard-suppressed request evaluated nothing, so it \
+             must not burn a version. A bumped counter means the guard drifted \
+             BELOW `state.version_counter += 1`."
+        );
+        assert_eq!(
+            state.is_engine_initialized(),
+            initialized_before,
+            "containment: a guard-suppressed request must leave the engine \
+             UNINITIALIZED — it never fed it a snapshot. An initialized engine \
+             here means the guard drifted below the eval call it exists to \
+             skip, i.e. the panic it contains is reachable again."
+        );
+
         assert!(
             result
                 .diagnostics
@@ -3124,6 +3256,17 @@ structure S {
     /// If `register_compute_fns` gains or loses a target, update this list
     /// to match — a stale list would silently narrow the probe back to a
     /// sample.
+    ///
+    /// That instruction is HALF-ENFORCED, deliberately so. A rename or a
+    /// removal upstream is caught immediately by
+    /// [`assert_all_production_compute_targets_are_registrable`], the positive
+    /// counter-probe: without it every `compute_dispatch(target).is_none()`
+    /// assertion on a stale name passes trivially and the whole posture lock
+    /// goes vacuous without going red. An ADDITION upstream is NOT caught —
+    /// closing that half needs a public enumerator over `Engine`'s
+    /// `compute_registry.fns` in reify-eval (so the const can be asserted
+    /// set-equal to the registry), which is outside this leaf's
+    /// "Modules: `reify-lsp`" scope.
     const ALL_PRODUCTION_COMPUTE_TARGETS: &[&str] = &[
         "solver::elastic_static",
         "solver::buckling",
@@ -3144,6 +3287,37 @@ structure S {
         "trajectory::simulate",
         "trajectory::input_shape",
     ];
+
+    /// Positive counter-probe for [`ALL_PRODUCTION_COMPUTE_TARGETS`]: every
+    /// name in the const must actually be registered by
+    /// `reify_eval::compute_targets::register_compute_fns`.
+    ///
+    /// The const is a hand-maintained mirror of that function, and the posture
+    /// lock that consumes it only ever asserts `compute_dispatch(t).is_none()`.
+    /// Those assertions pass TRIVIALLY on a name that no longer exists, so an
+    /// upstream rename or removal would hollow the lock out silently — it
+    /// would keep proving that an engine carries no trampoline for eighteen
+    /// strings, none of which name a real compute target any more. Asserting
+    /// the same names ARE dispatchable on a throwaway registered engine makes
+    /// exactly that drift red, at the cost of one extra `Engine`.
+    ///
+    /// Does NOT catch an upstream ADDITION — see the const's own doc for why
+    /// that half is out of this leaf's scope.
+    fn assert_all_production_compute_targets_are_registrable() {
+        let mut registered_probe = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        reify_eval::compute_targets::register_compute_fns(&mut registered_probe);
+        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
+            assert!(
+                registered_probe.compute_dispatch(target).is_some(),
+                "ALL_PRODUCTION_COMPUTE_TARGETS is STALE: '{target}' is not \
+                 registered by reify_eval::compute_targets::register_compute_fns \
+                 any more. Every `compute_dispatch('{target}').is_none()` \
+                 assertion in the trampoline-free posture lock is therefore \
+                 passing trivially. Re-sync this const with \
+                 `register_compute_fns`."
+            );
+        }
+    }
 
     /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1) for
     /// the trampoline-free posture — see [`compute_diagnostics_with_state`]'s
@@ -3176,6 +3350,12 @@ structure S {
     /// [`EvalState::new`].
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
+        // Anti-vacuity for the probe's own vocabulary: the negative
+        // `is_none()` assertions below are only meaningful if every name in
+        // ALL_PRODUCTION_COMPUTE_TARGETS still names a real, registrable
+        // compute target.
+        assert_all_production_compute_targets_are_registrable();
+
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
