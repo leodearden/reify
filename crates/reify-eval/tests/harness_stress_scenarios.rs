@@ -31,6 +31,7 @@
 //!     mentions this harness, and both `scripts/heavy-test-filter-lib.sh` atoms that do
 //!     are test-scoped to `fea_in_the_loop_producer` and `fea_bracket_minimize_mass_e2e`
 //!     — again `fea_*`, again staying, so no filterset is silently emptied.
+//!
 //! Substantively it is also the group that does not belong: these are language and
 //! geometry robustness scenarios over `.ri` fixtures (dimensional type system, error
 //! message quality, large assembly, pattern composition, geometry query consistency,
