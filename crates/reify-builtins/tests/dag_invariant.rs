@@ -10,18 +10,32 @@
 //! future author reaching for `reify-ir` to spell an eval-side type.
 //!
 //! Mirrors `crates/reify-ast/tests/dag_invariant.rs` (the B2 invariant guard):
-//! reads `Cargo.toml` directly (no cargo subprocess) and asserts every
-//! non-comment line whose trim-start begins with `reify-` names exactly
-//! `reify-core`.
+//! reads `Cargo.toml` directly (no cargo subprocess) and asserts that every
+//! non-comment line whose trim-start begins with `reify-`, in a
+//! production-dependency section (see below), names exactly `reify-core`.
 //!
 //! The `[package] name = "reify-builtins"` line starts with `name`, not
 //! `reify-`, so the scan is unambiguous (mirrors the reify-core/reify-ast
 //! dag_invariant note).
 //!
+//! # Which sections the rule applies to
+//!
+//! Only the sections that participate in the PRODUCTION crate DAG the PRD
+//! constrains — `[dependencies]` and `[build-dependencies]`, plus their
+//! `[target.'cfg(…)'.…]` qualifications. `[dev-dependencies]` is deliberately
+//! OUT of scope: a test-only dep is invisible to every downstream consumer of
+//! this crate, so it cannot carry `Value` into `reify-builtins`' public
+//! surface, and adding the in-tree `reify-test-support.workspace = true`
+//! pattern (as `reify-stdlib` and `reify-compiler` already do) must not trip a
+//! decision-3 alarm. The section-blind version of this scan — inherited from
+//! the `reify-ast` guard this file mirrors — did trip on exactly that.
+//!
 //! NOTE: line-based scan — misses formulations like `[dependencies."reify-foo"]`
 //! table headers, quoted `"reify-foo" = …` entries, or continuation-line inline
-//! tables. Full TOML parsing is addressed by `scripts/assert-crate-dag.sh`. This
-//! guard catches the common cases and is sufficient as a per-crate fast check.
+//! tables, and reads the section suffix after the last `.` rather than parsing
+//! a real TOML key path. Full TOML parsing is addressed by
+//! `scripts/assert-crate-dag.sh`. This guard catches the common cases and is
+//! sufficient as a per-crate fast check.
 
 mod common;
 use common::{manifest_dir, resolve_manifest_dir};
@@ -31,20 +45,100 @@ fn read_manifest() -> String {
         .expect("failed to read crates/reify-builtins/Cargo.toml")
 }
 
+/// Does a `[…]` section header name a table whose dependency lines
+/// participate in the PRODUCTION crate DAG?
+///
+/// `[dependencies]` and `[build-dependencies]` do — a build script links into
+/// the build graph. `[dev-dependencies]` does not, and neither does any other
+/// table (`[package]`, `[features]`, `[lints]`, …). Target-qualified forms
+/// (`[target.'cfg(unix)'.dependencies]`) are covered because the comparison is
+/// against the suffix after the last `.`.
+fn section_is_production_deps(header: &str) -> bool {
+    let inner = header.trim().trim_start_matches('[').trim_end_matches(']');
+    let last = inner
+        .rsplit('.')
+        .next()
+        .unwrap_or(inner)
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'');
+    last == "dependencies" || last == "build-dependencies"
+}
+
+/// Collect every non-comment line whose trimmed form starts with `reify-`, from
+/// the production-dependency sections ONLY.
+///
+/// Dependency entries look like `reify-xxx.workspace = true` or
+/// `reify-xxx = { ... }`, so the crate name is the first token on the line.
+fn production_reify_dep_lines(cargo_toml: &str) -> Vec<&str> {
+    let mut in_production_section = false;
+    let mut out = Vec::new();
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_production_section = section_is_production_deps(trimmed);
+            continue;
+        }
+        if in_production_section && trimmed.starts_with("reify-") {
+            out.push(line);
+        }
+    }
+    out
+}
+
+/// `[dependencies]` / `[build-dependencies]` may name only `reify-core`;
+/// `[dev-dependencies]` is out of scope (see the module doc).
+#[test]
+fn section_classification_covers_production_deps_but_not_dev_deps() {
+    for header in [
+        "[dependencies]",
+        "[build-dependencies]",
+        "[target.'cfg(unix)'.dependencies]",
+        "[target.\"cfg(target_arch = \\\"wasm32\\\")\".build-dependencies]",
+    ] {
+        assert!(
+            section_is_production_deps(header),
+            "{header} must be scanned — it feeds the production crate DAG"
+        );
+    }
+    for header in [
+        "[dev-dependencies]",
+        "[target.'cfg(unix)'.dev-dependencies]",
+        "[package]",
+        "[features]",
+        "[lints.rust]",
+    ] {
+        assert!(
+            !section_is_production_deps(header),
+            "{header} must NOT be scanned by the decision-3 rule"
+        );
+    }
+
+    // The behaviour that motivated the fix: a test-only reify-* dep is legal.
+    let manifest = "\
+[package]
+name = \"reify-builtins\"
+
+[dependencies]
+reify-core.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true
+";
+    assert_eq!(
+        production_reify_dep_lines(manifest),
+        vec!["reify-core.workspace = true"],
+        "a [dev-dependencies] reify-* entry must not be collected"
+    );
+}
+
 #[test]
 fn reify_builtins_depends_only_on_reify_core() {
     let cargo_toml = read_manifest();
 
-    // Collect every non-comment line whose trimmed form starts with "reify-".
-    // Dependency entries look like `reify-xxx.workspace = true` or
-    // `reify-xxx = { ... }`, so the crate name is the first token on the line.
-    let reify_dep_lines: Vec<&str> = cargo_toml
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            !trimmed.starts_with('#') && trimmed.starts_with("reify-")
-        })
-        .collect();
+    let reify_dep_lines = production_reify_dep_lines(&cargo_toml);
 
     let only_reify_core = reify_dep_lines
         .iter()
@@ -53,8 +147,9 @@ fn reify_builtins_depends_only_on_reify_core() {
     assert!(
         only_reify_core,
         "PRD decision-3 invariant violated: reify-builtins/Cargo.toml must \
-         reference ONLY reify-core as a reify-* dependency (no Value, no \
-         reify-ir), but found these lines:\n{}",
+         reference ONLY reify-core as a reify-* PRODUCTION dependency \
+         ([dependencies]/[build-dependencies]; no Value, no reify-ir), but \
+         found these lines:\n{}",
         reify_dep_lines
             .iter()
             .filter(|line| !line.trim_start().starts_with("reify-core"))
@@ -67,7 +162,8 @@ fn reify_builtins_depends_only_on_reify_core() {
         !reify_dep_lines.is_empty(),
         "PRD decision-3 invariant violated: reify-builtins/Cargo.toml must \
          reference reify-core as a dependency, but no reify-* line was found \
-         — the dep was likely removed by mistake."
+         in [dependencies]/[build-dependencies] — the dep was likely removed \
+         by mistake."
     );
 }
 

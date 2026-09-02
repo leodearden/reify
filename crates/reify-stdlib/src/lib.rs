@@ -228,13 +228,28 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     // `BindingKind::EvalBuiltin` row resolves here, ahead of the surviving
     // family dispatchers. `None` falls through exactly as any other family's
     // decline does — the same registry-first coexistence shape the compiler
-    // ladder already uses. Hoisting cannot shadow a later arm: no other member
-    // of this chain claims a registered name, pinned row-derived by
-    // `tests/registry_dispatch_seed_parity.rs`'s no-shadowing sweep —
-    // `try_dispatch_answers_for_exactly_the_eval_rows_at_their_declared_arities`
-    // (the registry claims exactly its rows' declared arities) and
-    // `try_dispatch_declines_every_name_the_registry_does_not_own` (a name a
-    // later dispatcher owns falls through untouched).
+    // ladder already uses.
+    //
+    // What the hoist is actually pinned to do, row-derived in
+    // `tests/registry_dispatch_seed_parity.rs`:
+    //
+    // - It CLAIMS exactly its rows' declared arities and nothing else —
+    //   `try_dispatch_answers_for_exactly_the_eval_rows_at_their_declared_arities`.
+    // - It DECLINES every name the registry does not own, so a dispatcher
+    //   later in this chain keeps its own — `abs` and `single` are still
+    //   answered downstream:
+    //   `try_dispatch_declines_every_name_the_registry_does_not_own`.
+    // - At a NON-declared arity a seed name still reaches this fn's terminal
+    //   `Value::Undef` — `eval_builtin_yields_undef_at_a_non_declared_arity`.
+    //
+    // That third one is the only evidence bearing on shadowing, and it is
+    // PARTIAL: a later arm that claimed a seed name at a non-declared arity
+    // would answer with something other than `Undef` and fail there. The
+    // declared-arity direction is NOT observable from a test — once the
+    // registry answers first, no layer can distinguish "the registry answered"
+    // from "a later arm would have answered too". So this comment claims no
+    // no-shadowing property; see the parity test's module doc for the same
+    // ceiling stated at length.
     if let Some(v) = registry_dispatch::try_dispatch(name, args) {
         return v;
     }

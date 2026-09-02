@@ -173,17 +173,6 @@ pub fn artifact_basis_rows() -> Vec<&'static str> {
         .collect()
 }
 
-/// How many rows carry [`Basis::Artifact`](crate::row::Basis::Artifact) — the
-/// ratchet metric on its own, for callers that want the number without the
-/// names.
-///
-/// Defined AS [`artifact_basis_rows`]`().len()` rather than as a second
-/// independent scan of [`rows`], so the two can never disagree and no test has
-/// to pin that they do not.
-pub fn artifact_row_count() -> usize {
-    artifact_basis_rows().len()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,8 +547,9 @@ mod lint {
             actual.len(),
             EXPECTED_ARTIFACT_ROWS.len()
         );
-        // `artifact_row_count()` is DEFINED as `artifact_basis_rows().len()`,
-        // so their agreement is true by construction and needs no assertion.
+        // The ledger IS the metric: a caller wanting only the number writes
+        // `artifact_basis_rows().len()`. α ships no separate count accessor,
+        // so there is no second scan that could disagree with this one.
     }
 
     /// The macro takes each row's variant ident and its name literal
