@@ -127,12 +127,16 @@ impl ReifyLanguageServer {
 }
 
 /// Maximum number of CHARACTERS of a client-controlled string echoed into
-/// a stderr log line. Bounded so a single log line can never fill even a
-/// kernel-shrunk single-page (4096 B) pipe: 256 chars is at most 1024
-/// bytes of payload plus a ~75-byte prefix/marker (see task #6162).
-const LOG_URI_MAX_CHARS: usize = 256;
+/// a stderr log line. Named for the helper's generality (`truncate_for_log`
+/// is not URI-specific), not for its one caller today. Bounded so a single
+/// log line can never fill even a kernel-shrunk single-page (4096 B) pipe:
+/// 256 chars is at most 1024 bytes of payload plus a ~75-byte prefix/marker
+/// (see task #6162) — the hazard this defends against is a byte budget, so
+/// a future second call site or a larger bound should re-derive the
+/// bytes-per-char worst case rather than assume this figure carries over.
+const LOG_STR_MAX_CHARS: usize = 256;
 
-/// Truncate a client-controlled string to at most [`LOG_URI_MAX_CHARS`]
+/// Truncate a client-controlled string to at most [`LOG_STR_MAX_CHARS`]
 /// characters before it is echoed into a log line.
 ///
 /// Exists because `did_change`'s unknown-URI diagnostic formats the
@@ -149,7 +153,7 @@ const LOG_URI_MAX_CHARS: usize = 256;
 /// construction, so the resulting slice can never panic on a multi-byte
 /// codepoint straddling the cut point.
 fn truncate_for_log(s: &str) -> String {
-    match s.char_indices().nth(LOG_URI_MAX_CHARS) {
+    match s.char_indices().nth(LOG_STR_MAX_CHARS) {
         None => s.to_string(),
         Some((cut, _)) => format!("{}...[truncated, {} bytes total]", &s[..cut], s.len()),
     }
@@ -279,6 +283,13 @@ impl LanguageServer for ReifyLanguageServer {
             // `pipe_write` — degrading the runtime rather than deadlocking
             // it (the `state` lock is no longer held across the write, so
             // every other did_open/did_change/did_close stays unblocked).
+            // That containment is itself partial: `eprintln!` also acquires
+            // the process-global `io::Stderr` lock for the duration of the
+            // write, so a worker parked in `pipe_write` holds that lock too
+            // and blocks every OTHER `eprintln!` call site in the process
+            // with it — e.g. diagnostics.rs's `check_snapshot returned None`
+            // and engine-init warnings — for as long as the client leaves
+            // the pipe full, not just this handler's own log line.
             // Routing this through `window/logMessage`, or rate-limiting
             // per URI, would close that residual; it is deliberately
             // deferred as separate follow-up work rather than folded into
@@ -3067,11 +3078,11 @@ structure Assembly {
         assert_eq!(truncate_for_log("file:///tmp/a.ri"), "file:///tmp/a.ri");
         assert_eq!(truncate_for_log(""), "");
 
-        // (b) boundary: an input of EXACTLY LOG_URI_MAX_CHARS chars is
+        // (b) boundary: an input of EXACTLY LOG_STR_MAX_CHARS chars is
         // returned verbatim, not truncated. This is the off-by-one that
         // `char_indices().nth()` gets right and a naive `len() > MAX` guard
         // gets wrong.
-        let exactly_max: String = "a".repeat(LOG_URI_MAX_CHARS);
+        let exactly_max: String = "a".repeat(LOG_STR_MAX_CHARS);
         assert_eq!(truncate_for_log(&exactly_max), exactly_max);
 
         // (c) one char over the boundary: keeps EXACTLY the first 256 chars
@@ -3079,14 +3090,14 @@ structure Assembly {
         // `assert_eq!` against the whole expected string, not `starts_with`
         // — `starts_with` is satisfied by any output that keeps *at least*
         // 256 chars, so it would not catch an off-by-one that changed
-        // `nth(LOG_URI_MAX_CHARS)` to keep one char too many.
-        let one_over: String = "a".repeat(LOG_URI_MAX_CHARS + 1);
+        // `nth(LOG_STR_MAX_CHARS)` to keep one char too many.
+        let one_over: String = "a".repeat(LOG_STR_MAX_CHARS + 1);
         let truncated = truncate_for_log(&one_over);
         assert_eq!(
             truncated,
             format!(
                 "{}...[truncated, 257 bytes total]",
-                "a".repeat(LOG_URI_MAX_CHARS)
+                "a".repeat(LOG_STR_MAX_CHARS)
             )
         );
 
@@ -3104,8 +3115,8 @@ structure Assembly {
                 .chars()
                 .take_while(|&c| c == '\u{2318}')
                 .count(),
-            LOG_URI_MAX_CHARS,
-            "must keep exactly {LOG_URI_MAX_CHARS} chars of prefix, got: {truncated_multi}"
+            LOG_STR_MAX_CHARS,
+            "must keep exactly {LOG_STR_MAX_CHARS} chars of prefix, got: {truncated_multi}"
         );
         assert!(
             truncated_multi.contains("[truncated, 900 bytes total]"),
