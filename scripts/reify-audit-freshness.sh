@@ -83,6 +83,7 @@ _REIFY_AUDIT_FRESHNESS_SH_SOURCED=1
 # crates/reify-audit/src/jcodemunch_index.rs:522-543. Their literal text is
 # emitted into the message body so a plain `grep -F` matches.
 REIFY_AUDIT_E_BIN_STALE="E_AUDIT_BIN_STALE"
+REIFY_AUDIT_E_BIN_MISSING="E_AUDIT_BIN_MISSING"
 
 # Source portable helpers (portable_mtime).
 # Self-locate relative to this script so it works from any working directory.
@@ -202,8 +203,31 @@ reify_audit_guard() {
     fi
 
     if [ "$mode" = "warn-open" ]; then
-        echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch)." >&2
-        return 0
+        # Fail-open, but only onto something RUNNABLE.
+        #
+        # reify_audit_is_stale treats a MISSING binary as stale (see "Missing
+        # binary is always stale" above), so this branch is reached by two very
+        # different worlds and must split them — exactly the presence-ambiguity
+        # contract already documented for rc 75 and rc 125 below.  Handling it
+        # HERE rather than pushing it onto the caller is the point of the mode.
+        #
+        # `-x`, not `-f`: a present-but-non-executable binary is equally
+        # unrunnable, and is_stale's own presence check is only `-f`, so the
+        # guard must be the stricter of the two.
+        if [ -x "$bin" ]; then
+            # Fail OPEN: run the STALE detector rather than no detector.  It
+            # still gates on its own findings; only the freshness guard steps
+            # aside.  That is strictly the pre-existing risk profile of the
+            # binary already installed, and a far weaker risk than a
+            # project-wide inability to mark work done.
+            echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch)." >&2
+            return 0
+        fi
+        # Nothing runnable on disk.  Falling open here would exec nothing and
+        # block the flip anyway, with a worse, less diagnosable rc — so
+        # refusing is the only honest answer.
+        echo "$REIFY_AUDIT_E_BIN_MISSING: no runnable reify-audit at '$bin'." >&2
+        return 125
     fi
 
     # rc 125 means "still judged stale", NOT "no usable binary" (#5962 review).
