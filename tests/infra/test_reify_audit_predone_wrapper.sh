@@ -390,5 +390,50 @@ assert "7d: ABSENT binary — wrapper exits 125 (fail-open did not become fail-s
 assert "7d: ABSENT-binary refusal carries E_AUDIT_BIN_MISSING (not the stale token)" \
     bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_MISSING"' -- "$MISSING_STDERR_7D"
 
+# ==============================================================================
+# Check 8: the deploy script's end-to-end probe is not fooled by fail-open
+#          (task #7139)
+#
+# WHY THIS IS A REAL DEFECT, not housekeeping. scripts/deploy-reify-audit-
+# predone-hook.sh step 6 dies only when
+#   [ "$probe_rc" = "125" ] && grep -q 'reinstall with: cargo install'
+# Now that a present-but-stale binary makes the wrapper exit 0, that probe
+# would fall straight into the success branch and print "probe exit 0 —
+# freshness guard passed, detector ran". The deploy would report SUCCESS while
+# leaving the fleet on a stale binary — silently undoing the assertion its
+# step 3 exists to make.
+#
+# That false green is consequential: the deploy script is the before_done
+# action of deterministic task #6939, where exit 0 drives a real done-flip with
+# done_provenance.kind='deterministic-deploy'.
+#
+# Fail-open is the right policy for the unattended done-flip hot path. It is
+# the WRONG answer for an ATTENDED deploy that just claimed to have installed a
+# fresh binary — so the two consumers must diverge, and this check pins that.
+#
+# Same cross-script structural-contract idiom as Check 5e (:271-273) and Check
+# 6a (:209-211): a behavioural-contract pin on another script's control flow,
+# not a prose or docstring pin.
+# ==============================================================================
+echo ""
+echo "--- Check 8: deploy probe detects a fail-open advisory ---"
+
+DEPLOY_SCRIPT="$REPO_ROOT/scripts/deploy-reify-audit-predone-hook.sh"
+
+assert "8-precondition: the deploy script exists" \
+    bash -c '[ -f "$1" ]' -- "$DEPLOY_SCRIPT"
+
+# 8a: the probe must branch on the machine TOKEN, per the
+# jcodemunch_index.rs:522 convention that "Consumers must branch on this rather
+# than on message prose".
+assert "8a: deploy script branches on the E_AUDIT_BIN_STALE token" \
+    bash -c 'grep -qF "$2" "$1"' -- "$DEPLOY_SCRIPT" 'E_AUDIT_BIN_STALE'
+
+# 8b: REGRESSION PIN — the legacy substring leg must survive. It is what still
+# catches the rc-125 unrunnable-binary case, so replacing rather than adding
+# would lose coverage.
+assert "8b: deploy script still greps the legacy 'reinstall with: cargo install' substring" \
+    bash -c 'grep -qF "$2" "$1"' -- "$DEPLOY_SCRIPT" 'reinstall with: cargo install'
+
 # -- Summary ------------------------------------------------------------------
 test_summary
