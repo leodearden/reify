@@ -107,8 +107,9 @@ Everything else is **doc-reconcile** of §13 against the runtime: accessor names
 Reify has no top-level const, same reason `g`/`c` are functions); `E_KINEMATIC_CLOSED_CHAIN`
 noted reserved-but-dead (task 2671 v0.2 loop-closure recording); `center_of_mass`/
 `bounding_box` point-mass v0.1-approximation caveat; `Axis` noted as owned by the
-geometry-transforms cluster (currently `Vec3` at runtime); `joint_jacobian`/`Twist`
-live as `Map{angular,linear}` (the doc undersells it as "v0.2"); `.map`/`.windows`/`.norm`
+geometry-transforms cluster (currently `Vec3` at runtime); `joint_jacobian` (types as
+`JacobianColumn`, not `Twist` — see D8's superseding note) lives as `Map{angular,linear}`
+(the doc undersells it as "v0.2"); `.map`/`.windows`/`.norm`
 method-call forms in §13.6 marked non-Reify (free-function forms only).
 
 ## §3 — Pre-conditions for activating
@@ -221,7 +222,8 @@ Greek-letter batch `stdlib-mechanism-2026-06-03`. All filed `planning_mode=True`
   `prismatic/revolute/cylindrical/planar/spherical`→ their kind types,
   `couple/gear/screw/rack_and_pinion`→`Coupling`, `fixed`→`Fixed`,
   `mechanism/body`→`Mechanism`, `snapshot`→`Snapshot`, `body_id_of`→`BodyId`,
-  `dim`→`SweepDim`, `bind`→`JointBinding`, `joint_jacobian`→`Twist` (D8). Wired at the
+  `dim`→`SweepDim`, `bind`→`JointBinding`, ~~`joint_jacobian`→`Twist`~~
+  `joint_jacobian`→`JacobianColumn` (D8's superseding note). Wired at the
   expr.rs builtin-typing site alongside the geometry/math/dynamics families; pinned
   disjoint (units.rs test).
   *Signal:* `reify check` types `let j = prismatic(vec3(1,0,0), 0mm..1m)` as `Prismatic`
@@ -256,7 +258,8 @@ Greek-letter batch `stdlib-mechanism-2026-06-03`. All filed `planning_mode=True`
   (Joint/DrivingJoint/per-kind/Coupling/Fixed now enforced per D3; `MotionValue<J>`/
   `JointBinding`/generic `Coupling<P>`/`Twist` runtime-`Map` with the typed/generic
   spelling linked to the L3 stub; `Axis`→G-C); `center_of_mass`/`bounding_box` point-mass
-  v0.1 caveat; `joint_jacobian`/`Twist` live now; §13.6 (FK-interference works in the
+  v0.1 caveat; `joint_jacobian` lives now, returning `JacobianColumn` (not `Twist` — see
+  D8's superseding note); §13.6 (FK-interference works in the
   build path; swept `.map(interferes)` + `dock_pickup.ri` owned by KCC 3848; `.map`/
   `.windows`/`.norm` method-call forms are non-Reify → free-function forms). Flip the 10
   P19 gap-register rows.
