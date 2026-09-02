@@ -42,12 +42,35 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ── Freshness guard ──────────────────────────────────────────────────────────
-# Source the shared freshness guard library. The guard is called in REFUSE mode
-# after flag validation: if REIFY_AUDIT_BIN predates the last crates/reify-audit
-# commit, the wrapper exits 125 with a reinstall hint rather than running a
-# stale detector. REFUSE mode is used here (not REBUILD) because auto-install
-# on the synchronous per-done-flip hot path would add minutes per flip and race
-# across concurrent flips. The operator reinstall command:
+# Source the shared freshness guard library. The guard is called in WARN-OPEN
+# mode after flag validation:
+#   present + executable + stale -> loud advisory on stderr, rc 0 (FAIL OPEN:
+#                                   the stale detector still runs and still
+#                                   gates on its own findings)
+#   absent / not executable      -> E_AUDIT_BIN_MISSING, rc 125
+#   REIFY_AUDIT_FRESHNESS_STRICT=1 -> present-but-stale also refuses (rc 125)
+#
+# WHY NOT REFUSE (task #7139). This is a SYNCHRONOUS pre-done hook: dark-factory's
+# fused_memory/middleware/pre_done_hook.py allows the status flip only on rc 0
+# and blocks it on ANY non-zero rc. Under REFUSE, one stale binary therefore
+# wedged EVERY done-flip in the project until a human reinstalled — and
+# crates/reify-audit lands ~4 commits/day, so the freshness epoch advances
+# several times a day and that outage recurred by construction (~15.7h over
+# 2026-08-30/31). Running a STALE detector is strictly the pre-existing risk
+# profile of the binary already installed; being unable to mark ANY work done
+# is not. This also matches reify-audit's own house rule — p5_phantom_done.rs
+# degrades a would-be-blocking High to an "[advisory - ...]" exit 0 on
+# incomplete evidence, and binary age is weaker evidence than a degraded git
+# leg, so fail-closed here was an inversion.
+#
+# WHY NOT REBUILD either: auto-install on the per-done-flip hot path cannot fit.
+# The hook runs INSIDE fused-memory's per-project write lock with a 30s timeout
+# (pre_done_hook.py:25-31, :151), while `cargo install --path
+# crates/reify-audit` pulls the whole reify compiler stack via
+# reify-test-support. It would convert a refusal into a TIMEOUT refusal and
+# serialize every task mutation on the project behind a 30s stall per flip.
+#
+# The operator reinstall command:
 #   cargo install --path crates/reify-audit --root ~/.cargo --force
 # shellcheck source=scripts/reify-audit-freshness.sh
 source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
@@ -84,11 +107,19 @@ Environment overrides:
   FUSED_MEMORY_MCP_TIMEOUT   curl max-time in seconds (default: $MCP_TIMEOUT)
   REIFY_AUDIT_BIN            Path to reify-audit binary (default: $REIFY_AUDIT_BIN)
   REIFY_AUDIT_RUNS_DB        Path to runs.db (default: $RUNS_DB)
+  REIFY_AUDIT_FRESHNESS_STRICT  Set to 1 to REFUSE (125) on a stale binary
+                             instead of falling open with an advisory.
+                             Default (unset/0) is fail-open.
 
 Exit codes mirror reify-audit:
   0       No High-severity findings
   1-254   Count of High-severity findings
-  125     Infrastructure error (missing flag, MCP unavailable, jq failure, etc.)
+  125     Infrastructure error (missing flag, MCP unavailable, jq failure, or
+          the freshness guard refusing: no runnable reify-audit binary
+          [E_AUDIT_BIN_MISSING], or a stale one with
+          REIFY_AUDIT_FRESHNESS_STRICT=1 armed [E_AUDIT_BIN_STALE]).
+          A merely-stale binary does NOT exit 125: it emits an
+          E_AUDIT_BIN_STALE advisory and runs anyway (see Freshness guard).
 EOF
 }
 
@@ -136,10 +167,16 @@ case "$task_id" in
         ;;
 esac
 
-# ── Freshness check (fail-closed, before any MCP calls) ─────────────────────
-# Refuse if REIFY_AUDIT_BIN predates the last crates/reify-audit commit.
-# Exit code 125 carries the reinstall hint to stderr so the operator can fix it.
-reify_audit_guard "$REIFY_AUDIT_BIN" refuse "$REPO_ROOT"
+# ── Freshness check (fail-OPEN, before any MCP calls) ───────────────────────
+# A stale-but-runnable REIFY_AUDIT_BIN emits a self-describing advisory to
+# stderr and we run it anyway; only an UNRUNNABLE binary (or an operator who
+# armed REIFY_AUDIT_FRESHNESS_STRICT=1) refuses. See the Freshness guard block
+# at the top of this file for why refusing here is an outage, not a safeguard.
+#
+# The call is deliberately UNCHECKED: under `set -euo pipefail` a 125 return
+# still aborts the wrapper with 125 before any MCP call, while a 0 return falls
+# through to the snapshot and the detector. Do not wrap it in `|| true`.
+reify_audit_guard "$REIFY_AUDIT_BIN" warn-open "$REPO_ROOT"
 
 # ── Materialize snapshot from fused-memory MCP ───────────────────────────────
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
