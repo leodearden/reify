@@ -394,6 +394,98 @@ dep_searched_desc() {
     fi
 }
 
+# dep_presence_arm <PREFIX> <Label> <hint_fn>
+#
+# The ENTIRE body of a presence-only arm — override read, both resolutions,
+# report-both-halves, hint+exit, SONAME recording — for the deps whose gate is
+# presence and nothing more. Driven by DATA: every per-dep value is read out of
+# the `<PREFIX>_*` names its `# BEGIN <dep>-candidates` marker block already
+# declares, via indirect expansion, so an arm is one call and there is exactly
+# one copy of the logic.
+#
+# WHY THIS IS A FUNCTION AND NOT TWO COPIES: the Gmsh and OpenVDB arms were
+# near-verbatim duplicates of each other (~45 lines of executable shell apiece,
+# differing only in prefix, human label and hint fn). A later change — a bypass
+# env, a different error format, an extra diagnostic — then has to be applied
+# twice and can silently be applied once, which is the drift class the leaf
+# primitives above (dep_find_dir / dep_soname_ver / dep_searched_desc) already
+# exist to prevent one level down.
+#
+# WHAT IT DOES NOT COVER, deliberately: the OCCT arm stays written out inline
+# below. Its SONAME pin is FATAL and sits BETWEEN resolution and the `ok` line
+# (accepted-set comparison, two distinct multi-line diagnostics, a different
+# install hint per failure mode), so folding it in here would mean a parameter
+# for every one of those differences — a worse trade than the duplication this
+# removes. Presence-only arms share a body; OCCT's does not exist twice.
+#
+# <PREFIX> is UPPERCASE (GMSH, OPENVDB) and is the same token the marker block
+# and the override env vars use. The lowercase form used in the error text is
+# DERIVED from it rather than passed, so the two can never disagree.
+#
+# Exits 1 (terminating the whole script, which is the contract — arms run in
+# declaration order and the first failure exits) when either half is
+# unresolved. Returns 0 having printed the arm's `[ok]` recording line
+# otherwise.
+dep_presence_arm() {
+    local prefix="$1" label="$2" hint_fn="$3"
+    local lower="${prefix,,}"
+
+    local inc_env="${prefix}_INCLUDE_DIR" lib_env="${prefix}_LIB_DIR"
+    local inc_sent_ref="${prefix}_INCLUDE_SENTINEL" lib_sent_ref="${prefix}_LIB_SENTINEL"
+    local inc_cands_ref="${prefix}_INCLUDE_CANDIDATES[@]" lib_cands_ref="${prefix}_LIB_CANDIDATES[@]"
+
+    # `:-` on the override reads, same EMPTY-OVERRIDE RULE dep_find_dir
+    # documents: an exported-but-empty var counts as UNSET and falls through to
+    # the candidate list, matching find_dir_with_override's
+    # `.filter(|d| !d.is_empty())`.
+    local inc_ov="${!inc_env:-}" lib_ov="${!lib_env:-}"
+    local inc_sent="${!inc_sent_ref}" lib_sent="${!lib_sent_ref}"
+    local -a inc_cands=("${!inc_cands_ref}") lib_cands=("${!lib_cands_ref}")
+
+    # `|| true` inside the substitution: a non-resolving arm must reach the
+    # named error below, not abort under `set -e` with no message at all.
+    local inc_resolved lib_resolved
+    inc_resolved="$(dep_find_dir "$inc_ov" "$inc_sent" "${inc_cands[@]}" || true)"
+    lib_resolved="$(dep_find_dir "$lib_ov" "$lib_sent" "${lib_cands[@]}" || true)"
+
+    # Report BOTH halves before exiting, same rule as the OCCT arm: find() is
+    # None when EITHER is unresolved, so a reader whose host is missing both
+    # should not have to fix one, re-run, and discover the other.
+    local failed=0
+
+    if [ -z "$inc_resolved" ]; then
+        err "manifold-deps guard: $lower headers not found — no $inc_sent in:"
+        err "                     $(dep_searched_desc "$inc_ov" "$inc_env" "${inc_cands[@]}")"
+        failed=1
+    fi
+
+    if [ -z "$lib_resolved" ]; then
+        err "manifold-deps guard: $lower libraries not found — no $lib_sent in:"
+        err "                     $(dep_searched_desc "$lib_ov" "$lib_env" "${lib_cands[@]}")"
+        failed=1
+    fi
+
+    if [ "$failed" -ne 0 ]; then
+        "$hint_fn"
+        exit 1
+    fi
+
+    # RECORDING half of the arm — stdout, so a reviewer reading a green
+    # reify-kernel-<dep> result in the verify log can see WHICH install produced
+    # it. Read through the shared dep_soname_ver(), so the first-level-only rule
+    # (`readlink`, never `readlink -f`) is stated once for all three arms.
+    #
+    # `unknown` is NOT fatal here, unlike the OCCT arm: these crates' build.rs
+    # files link the unversioned `dylib=<dep>` dev symlink and splice no version
+    # into any link directive, so an unreadable SONAME cannot make the build link
+    # something nobody verified — it only costs this log line its specificity.
+    # Hard-failing on it would red every RUN_RUST=1 verify over a packaging
+    # detail with no correctness consequence.
+    local ver
+    ver="$(dep_soname_ver "$lib_resolved" "$lib_sent")"
+    ok "$label ${ver:-unknown} at $lib_resolved (headers: $inc_resolved)"
+}
+
 OCCT_INCLUDE_OVERRIDE="${OCCT_INCLUDE_DIR:-}"
 OCCT_LIB_OVERRIDE="${OCCT_LIB_DIR:-}"
 
@@ -524,49 +616,11 @@ gmsh_hint() {
     err " gate goes green over a mesher nothing exercised."
 }
 
-GMSH_INCLUDE_OVERRIDE="${GMSH_INCLUDE_DIR:-}"
-GMSH_LIB_OVERRIDE="${GMSH_LIB_DIR:-}"
-
-# `|| true` inside the substitution: a non-resolving arm must reach the named
-# error below, not abort under `set -e` with no message at all.
-GMSH_INCLUDE_RESOLVED="$(dep_find_dir "$GMSH_INCLUDE_OVERRIDE" "$GMSH_INCLUDE_SENTINEL" "${GMSH_INCLUDE_CANDIDATES[@]}" || true)"
-GMSH_LIB_RESOLVED="$(dep_find_dir "$GMSH_LIB_OVERRIDE" "$GMSH_LIB_SENTINEL" "${GMSH_LIB_CANDIDATES[@]}" || true)"
-
-# Report BOTH halves before exiting, same rule as the OCCT arm: find() is None
-# when EITHER is unresolved, so a reader whose host is missing both should not
-# have to fix one, re-run, and discover the other.
-gmsh_failed=0
-
-if [ -z "$GMSH_INCLUDE_RESOLVED" ]; then
-    err "manifold-deps guard: gmsh headers not found — no $GMSH_INCLUDE_SENTINEL in:"
-    err "                     $(dep_searched_desc "$GMSH_INCLUDE_OVERRIDE" GMSH_INCLUDE_DIR "${GMSH_INCLUDE_CANDIDATES[@]}")"
-    gmsh_failed=1
-fi
-
-if [ -z "$GMSH_LIB_RESOLVED" ]; then
-    err "manifold-deps guard: gmsh libraries not found — no $GMSH_LIB_SENTINEL in:"
-    err "                     $(dep_searched_desc "$GMSH_LIB_OVERRIDE" GMSH_LIB_DIR "${GMSH_LIB_CANDIDATES[@]}")"
-    gmsh_failed=1
-fi
-
-if [ "$gmsh_failed" -ne 0 ]; then
-    gmsh_hint
-    exit 1
-fi
-
-# RECORDING half of the arm — stdout, so a reviewer reading a green
-# reify-kernel-gmsh result in the verify log can see WHICH Gmsh produced it.
-# Read through the shared dep_soname_ver(), so the first-level-only rule
-# (`readlink`, never `readlink -f`) is stated once for all three arms.
-#
-# `unknown` is NOT fatal here, unlike the OCCT arm. crates/reify-kernel-gmsh's
-# build.rs links the unversioned `dylib=gmsh` dev symlink and splices no version
-# into any link directive, so an unreadable SONAME cannot make the build link
-# something nobody verified — it only costs this log line its specificity.
-# Hard-failing on it would red every RUN_RUST=1 verify over a packaging detail
-# with no correctness consequence.
-GMSH_SONAME_VER="$(dep_soname_ver "$GMSH_LIB_RESOLVED" "$GMSH_LIB_SENTINEL")"
-ok "Gmsh ${GMSH_SONAME_VER:-unknown} at $GMSH_LIB_RESOLVED (headers: $GMSH_INCLUDE_RESOLVED)"
+# The whole arm body — override read, both resolutions, report-both-halves,
+# hint+exit, SONAME recording — lives in dep_presence_arm() above, shared with
+# the OpenVDB arm below and driven entirely from the GMSH_* names the marker
+# block declares.
+dep_presence_arm GMSH Gmsh gmsh_hint
 
 # ---------- OpenVDB presence preflight (task #6493) ----------
 #
@@ -620,46 +674,8 @@ openvdb_hint() {
     err " green over a voxel kernel nothing exercised."
 }
 
-OPENVDB_INCLUDE_OVERRIDE="${OPENVDB_INCLUDE_DIR:-}"
-OPENVDB_LIB_OVERRIDE="${OPENVDB_LIB_DIR:-}"
-
-# `|| true` inside the substitution: a non-resolving arm must reach the named
-# error below, not abort under `set -e` with no message at all.
-OPENVDB_INCLUDE_RESOLVED="$(dep_find_dir "$OPENVDB_INCLUDE_OVERRIDE" "$OPENVDB_INCLUDE_SENTINEL" "${OPENVDB_INCLUDE_CANDIDATES[@]}" || true)"
-OPENVDB_LIB_RESOLVED="$(dep_find_dir "$OPENVDB_LIB_OVERRIDE" "$OPENVDB_LIB_SENTINEL" "${OPENVDB_LIB_CANDIDATES[@]}" || true)"
-
-# Report BOTH halves before exiting, same rule as the arms above.
-openvdb_failed=0
-
-if [ -z "$OPENVDB_INCLUDE_RESOLVED" ]; then
-    err "manifold-deps guard: openvdb headers not found — no $OPENVDB_INCLUDE_SENTINEL in:"
-    err "                     $(dep_searched_desc "$OPENVDB_INCLUDE_OVERRIDE" OPENVDB_INCLUDE_DIR "${OPENVDB_INCLUDE_CANDIDATES[@]}")"
-    openvdb_failed=1
-fi
-
-if [ -z "$OPENVDB_LIB_RESOLVED" ]; then
-    err "manifold-deps guard: openvdb libraries not found — no $OPENVDB_LIB_SENTINEL in:"
-    err "                     $(dep_searched_desc "$OPENVDB_LIB_OVERRIDE" OPENVDB_LIB_DIR "${OPENVDB_LIB_CANDIDATES[@]}")"
-    openvdb_failed=1
-fi
-
-if [ "$openvdb_failed" -ne 0 ]; then
-    openvdb_hint
-    exit 1
-fi
-
-# RECORDING half of the arm — stdout, so a reviewer reading a green
-# reify-kernel-openvdb result in the verify log can see WHICH OpenVDB produced it.
-# Read through the shared dep_soname_ver(), so the first-level-only rule
-# (`readlink`, never `readlink -f`) is stated once for all three arms.
-#
-# `unknown` is NOT fatal here, unlike the OCCT arm. crates/reify-kernel-openvdb's
-# build.rs links the unversioned `dylib=openvdb` dev symlink and splices no version
-# into any link directive, so an unreadable SONAME cannot make the build link
-# something nobody verified — it only costs this log line its specificity.
-# Hard-failing on it would red every RUN_RUST=1 verify over a packaging detail
-# with no correctness consequence.
-OPENVDB_SONAME_VER="$(dep_soname_ver "$OPENVDB_LIB_RESOLVED" "$OPENVDB_LIB_SENTINEL")"
-ok "OpenVDB ${OPENVDB_SONAME_VER:-unknown} at $OPENVDB_LIB_RESOLVED (headers: $OPENVDB_INCLUDE_RESOLVED)"
+# Same one-call arm as Gmsh's above, one dep over — the body is shared, so a
+# future change to the error format or an added diagnostic lands in both.
+dep_presence_arm OPENVDB OpenVDB openvdb_hint
 
 exit 0
