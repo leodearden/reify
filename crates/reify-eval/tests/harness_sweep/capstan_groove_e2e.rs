@@ -114,10 +114,13 @@
 //! are stated on the kernel-free surface: behind the OCCT gate they would cover
 //! the file only on machines that happen to have a kernel.
 
-use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, ValueCellId};
+use reify_core::{
+    ConstraintNodeId, DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan,
+    ValueCellId,
+};
 use reify_eval::{CheckResult, ConstraintCheckEntry, TessellateResult};
 use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value, ValueMap};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
@@ -1389,10 +1392,14 @@ fn capstan_surfaces_only_the_finished_drum() {
 ///      precisely the override drop (task 4147) the design file's own header
 ///      records as not working: only `at` poses come through. So the stroke
 ///      stays a hand-set param and the assembly asserts it stays honest;
-///   2. the checker actually EVALUATED what the template declares — one result
-///      per declared constraint. A declared-but-unevaluated relation would leave
-///      (3) quantifying over less than the file states — and, if none reached the
-///      surface at all, over an empty set, i.e. vacuously green;
+///   2. the checker actually EVALUATED what the template declares — every
+///      declared constraint's `ConstraintNodeId` appears among the reported
+///      results. A declared-but-unevaluated relation would leave (3) quantifying
+///      over less than the file states — and, if none reached the surface at all,
+///      over an empty set, i.e. vacuously green. Containment, not a count: the
+///      check surface also reports the active branch of any `when`-guarded group
+///      (`Engine::collect_active_constraints`), so an over-count is expected
+///      rather than a failure;
 ///   3. every one of those results is `Satisfied`.
 ///
 /// The direction of the comparison is deliberately NOT pinned: `capstan.band <=
@@ -1496,21 +1503,41 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     );
 
     // ---- (2) …the checker evaluated every constraint the template declares ----
-    assert_eq!(
-        drive_constraints.len(),
+    // Stated as CONTAINMENT by `ConstraintNodeId`, not as a count. `Engine::check`
+    // collects what it checks through `Engine::collect_active_constraints`
+    // (`crates/reify-eval/src/engine_constraints.rs`), which pushes ALL of
+    // `template.constraints` and, on top of that, the active branch of every
+    // `template.guarded_groups` entry. The reported set is therefore a SUPERSET of
+    // the unguarded ones, and `reported.len() == declared.len()` holds only while
+    // `CapstanDrive` carries no `when`-guarded constraint — which is true today but
+    // is not a property of the design. The project doc describes two capstans (one
+    // per X/Y motor), so a guarded relation here is a plausible next edit; under a
+    // count pin it would red claiming a declared relation never reached the check
+    // surface, the exact INVERSE of what happened (MORE results were reported, not
+    // fewer), sending the reader after a dropped constraint that does not exist.
+    // Containment survives that edit and is also the claim that matters: it is what
+    // makes (3)'s all-`Satisfied` sweep cover every relation the template declares
+    // rather than some subset. NOTE the guard-aware direction — a constraint MOVED
+    // into a guarded group whose guard evaluates `Undef` leaves both sides at once
+    // and is not covered here.
+    let reported: HashSet<&ConstraintNodeId> = drive_constraints.iter().map(|c| &c.id).collect();
+    let unchecked: Vec<&ConstraintNodeId> = drive_template
+        .constraints
+        .iter()
+        .map(|c| &c.id)
+        .filter(|id| !reported.contains(id))
+        .collect();
+    assert!(
+        unchecked.is_empty(),
+        "every constraint `{CAPSTAN_DRIVE_ENTITY}` declares must reach the check \
+         surface: {} of the {} declared did not — {unchecked:?}. A declared relation \
+         that is never evaluated enforces nothing, and claim (3) would then quantify \
+         over less than the file states. Containment rather than equality: the checker \
+         also reports the active branch of any `when`-guarded group, so MORE results \
+         than declared constraints is expected and not a failure. Reported: {:?}",
+        unchecked.len(),
         drive_template.constraints.len(),
-        "the checker must report one result per `{CAPSTAN_DRIVE_ENTITY}` constraint \
-         the template declares ({} declared, {} reported). A declared relation that \
-         never reaches the check surface is not enforcing anything, and claim (3) \
-         would then be quantifying over less than the file states. Entities \
-         checked: {:?}",
-        drive_template.constraints.len(),
-        drive_constraints.len(),
-        result
-            .constraint_results
-            .iter()
-            .map(|c| &c.id.entity)
-            .collect::<Vec<_>>()
+        drive_constraints.iter().map(|c| &c.id).collect::<Vec<_>>()
     );
 }
 
