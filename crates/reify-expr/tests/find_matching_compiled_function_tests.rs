@@ -870,3 +870,116 @@ fn bare_type_param_arg_resolves_a_non_generic_concrete_candidate() {
         "the concrete-param candidate is the one both sides select"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tier 3's arg-side disjunct, HEADED-arg half (#5689 amendment)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Adding `type_carries_type_param(arg_ty)` to eval's tier 3 (#5689) has TWO
+/// distinct consequences, and
+/// `bare_type_param_arg_resolves_a_non_generic_concrete_candidate` above pins
+/// only the first — a BARE `Type::TypeParam` arg.
+///
+/// This is the second: a HEADED arg that merely CARRIES a nested type param
+/// (`Option<T>`, `Applied{"Result",[T,E]}`, …). `type_carries_type_param`
+/// recurses, so such an arg is newly WILDCARD-ELIGIBLE against a non-generic
+/// concrete-param candidate, where before #5689 the same call returned `None`.
+/// It is simultaneously INELIGIBLE at tier 2 — with `type_params.is_empty()`
+/// the head tier's `heads_unifiable` arm is gated off, the arg is not a bare
+/// `Type::TypeParam`, and `Scalar<dimensionless> != Option<T>` — so this is
+/// also the concrete witness for the head-⊂-wildcard direction the doc on
+/// `find_matching_compiled_function` (crates/reify-expr/src/lib.rs) states.
+///
+/// With a single candidate the head tier is empty and falls through to tier 3,
+/// so what this test measures is exactly tier 3's admission. The ordering
+/// consequence of the same admission is pinned by
+/// `leaky_headed_arg_excludes_the_non_generic_candidate_from_the_head_tier`
+/// below.
+#[test]
+fn headed_type_param_arg_resolves_a_non_generic_concrete_candidate() {
+    let concrete = make_fn("g", Type::dimensionless_scalar());
+    let fns = vec![concrete];
+    let args = vec![CompiledExpr::literal(
+        Value::Undef,
+        Type::Option(Box::new(Type::TypeParam("T".to_string()))),
+    )];
+
+    let selected = find_matching_compiled_function(&fns, "g", &args).expect(
+        "an `Option<T>` arg CARRIES a type param, so tier 3's \
+         `type_carries_type_param(arg_ty)` disjunct (D4 / task-4232 γ) admits a \
+         non-generic concrete-param candidate. Returning None here means the \
+         arg-side disjunct stopped recursing into constructors — i.e. eval has \
+         diverged from compile-side `matches` again, on the headed-arg path \
+         rather than the bare-`TypeParam` one.",
+    );
+    assert_eq!(
+        selected.params[0].1,
+        Type::dimensionless_scalar(),
+        "the concrete-param candidate is the one both sides select"
+    );
+}
+
+/// Eval-side half of compile-side
+/// `overload_leaky_headed_arg_excludes_non_generic_candidate`
+/// (crates/reify-compiler/src/type_compat.rs), over the same three-candidate
+/// `fallback` set and the same leaky `Applied{"Result",[T,E]}` subject: two
+/// generic container overloads (`Option<T>` / `Result<T,E>`) plus a same-name
+/// NON-generic concrete one.
+///
+/// All three are wildcard-eligible — the non-generic one via the very disjunct
+/// the test above pins, which looks at the ARG only and so admits any candidate.
+/// Tier 2 is what separates them: only `Result<T,E>` head-matches the subject.
+/// `Option<T>` fails `heads_unifiable`, and the non-generic candidate fails
+/// `is_generic`, the bare-`TypeParam` wildcard AND plain equality.
+///
+/// The candidate ORDER differs deliberately from the compile-side pin, and
+/// that is the whole point of writing this half separately. Compile-side
+/// detects a tier-2 leak as `Ambiguous(2)`, which is order-insensitive; eval
+/// has no `Ambiguous` — it takes first-match-wins over the surviving set — so
+/// the leak is only observable if the non-generic candidate is declared FIRST.
+/// Declared that way, this test fails if the non-generic candidate leaks into
+/// tier 2 (it would win on order), if `Option<T>` leaks in (likewise), and if
+/// tier 2 were dropped altogether (tier-3 fallthrough would also pick the
+/// first-declared non-generic candidate). Only the correct ladder selects the
+/// `Result<T,E>` overload.
+#[test]
+fn leaky_headed_arg_excludes_the_non_generic_candidate_from_the_head_tier() {
+    let leaky_result = Type::Applied {
+        name: "Result".to_string(),
+        args: vec![
+            Type::TypeParam("T".to_string()),
+            Type::TypeParam("E".to_string()),
+        ],
+    };
+    let non_generic_first = make_generic_fn(
+        "fallback",
+        &[],
+        vec![
+            ("r".to_string(), Type::length()),
+            ("dflt".to_string(), Type::length()),
+        ],
+        b"nongeneric_fallback",
+    );
+    let result_ov = result_overload("fallback");
+    let fns = vec![
+        non_generic_first,
+        option_overload("fallback"),
+        result_ov.clone(),
+    ];
+    let args = recovery_args("fallback", leaky_result);
+
+    let selected = find_matching_compiled_function(&fns, "fallback", &args)
+        .expect("all three candidates are wildcard-eligible, so this must resolve");
+    assert_eq!(
+        selected.content_hash, result_ov.content_hash,
+        "a leaky Result<T,E> subject must select the Result<T,E> overload even \
+         with a same-name non-generic candidate declared FIRST — the non-generic \
+         one is wildcard-eligible (arg-side D4) but head-INELIGIBLE, so tier 2 \
+         must drop it rather than let table order hand it the call"
+    );
+    assert_eq!(
+        selected.type_params.len(),
+        2,
+        "the selected overload is the generic Result<T, E> one"
+    );
+}
