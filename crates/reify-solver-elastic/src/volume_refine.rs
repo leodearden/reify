@@ -152,17 +152,35 @@ impl std::error::Error for RefineError {
 /// [`tet_shape`].
 ///
 /// Carrying the order and stride alongside the element count is what lets
-/// callers avoid re-deriving them: before this struct existed,
-/// [`refine_with_size_field`] followed the gate with a second
-/// `volume_mesh.element_order().ok_or(RefineError::UnsupportedConnectivity)?`
-/// whose error arm the gate had already proved unreachable — untestable dead
-/// code that nonetheless read as a live error path.
+/// the post-gate pipeline avoid re-deriving them. Each field has a live
+/// consumer:
+///
+/// * `n_elements` — the expected `size_hints` / `current_sizes` length in
+///   [`refine_with_size_field`] and
+///   [`crate::adaptive::refine_marked_elements`], and the exclusive upper
+///   bound on the latter's marked indices.
+/// * `stride` — the chunk width
+///   [`project_per_element_sizes_to_vertices`] walks the index buffer with, so
+///   the projector chunks by the very stride the divisibility check proved the
+///   buffer to be a whole multiple of, rather than re-deriving one that could
+///   drift from it.
+/// * `order` — handed to the kernel-gmsh remesher. Before this struct existed,
+///   [`refine_with_size_field`] followed the gate with a second
+///   `volume_mesh.element_order().ok_or(RefineError::UnsupportedConnectivity)?`
+///   whose error arm the gate had already proved unreachable — untestable dead
+///   code that nonetheless read as a live error path.
+///
+/// Because [`tet_shape`] is its only constructor, a `TetShape` argument also
+/// serves as a lightweight proof token: a function that demands one cannot be
+/// reached without *some* mesh having passed the gate. It does not pin *which*
+/// mesh, so functions taking both still document a same-mesh caller contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TetShape {
     /// Number of tetrahedral elements (`tet_indices.len() / stride`, exact —
     /// [`tet_shape`] rejects a non-multiple buffer rather than truncating).
     pub(crate) n_elements: usize,
-    /// Per-element node count: 4 (P1) or 10 (P2).
+    /// Per-element node count: 4 (P1) or 10 (P2). Consumed by
+    /// [`project_per_element_sizes_to_vertices`] as its chunk width.
     pub(crate) stride: usize,
     /// The mesh's element order tag, read once at the gate.
     pub(crate) order: ElementOrderTag,
@@ -265,17 +283,19 @@ pub(crate) fn tet_shape(volume_mesh: &VolumeMesh) -> Result<TetShape, RefineErro
 ///
 /// # Caller contract
 ///
-/// The caller MUST validate
-/// `per_element_sizes.len() == volume_mesh.tet_indices.len() / nodes_per_elem`
-/// BEFORE invoking. The implementation indexes `per_element_sizes[elem_idx]`
-/// without a bounds check; an out-of-bounds element will panic. The only
-/// safe caller is [`refine_with_size_field`], which performs this length
+/// `shape` MUST be `tet_shape(volume_mesh)?` for *this* `volume_mesh`, and the
+/// caller MUST validate `per_element_sizes.len() == shape.n_elements` BEFORE
+/// invoking. The implementation indexes `per_element_sizes[elem_idx]` without
+/// a bounds check; an out-of-bounds element will panic. The only safe caller
+/// is [`refine_with_size_field_validated`], which performs that length
 /// validation up front (see its `size_hints.len() != n_elements` check).
-/// [`tet_shape`], which supplies that expected length, also rejects a
-/// non-multiple-of-stride index buffer and any index `>= n_verts`, so the
-/// `chunks(nodes_per_elem)` walk below can see neither a short remainder chunk
-/// nor an out-of-range `vertex_sizes[v]` — the two panic paths a gated mesh
-/// would otherwise still reach.
+/// [`tet_shape`], which supplies both the expected length and the `shape`
+/// argument, also rejects a non-multiple-of-stride index buffer and any index
+/// `>= n_verts`, so the `chunks(shape.stride)` walk below can see neither a
+/// short remainder chunk nor an out-of-range `vertex_sizes[v]` — the two panic
+/// paths a gated mesh would otherwise still reach. Taking the stride from
+/// `shape` rather than re-reading `volume_mesh.nodes_per_element()` is what
+/// makes the chunk width provably the one the gate validated.
 ///
 /// The panic contract is pinned by the regression test
 /// `project_panics_on_too_short_per_element_sizes` in the in-module `tests`
@@ -287,28 +307,33 @@ pub(crate) fn tet_shape(volume_mesh: &VolumeMesh) -> Result<TetShape, RefineErro
 /// finding (option (a)) chose visibility narrowing over a `Result`-typed
 /// length check; the up-front check in `refine_with_size_field` already
 /// covers the validation duty for in-tree callers.
-// At time of writing, consumed by same-file caller `refine_with_size_field`
-// (~line 199). The G-tool flags same-file callers as orphans; the call
-// site is live.
-// G-allow: same-file consumer `refine_with_size_field` (G-tool same-file-caller heuristic limitation).
+// At time of writing, consumed by same-file caller
+// `refine_with_size_field_validated` (~line 199). The G-tool flags same-file
+// callers as orphans; the call site is live.
+// G-allow: same-file consumer `refine_with_size_field_validated` (G-tool same-file-caller heuristic limitation).
 pub(crate) fn project_per_element_sizes_to_vertices(
     volume_mesh: &VolumeMesh,
+    shape: TetShape,
     per_element_sizes: &[f64],
 ) -> Vec<f64> {
     let n_verts = volume_mesh.vertices.len() / 3;
-    let nodes_per_elem = volume_mesh.nodes_per_element();
+    // The gate-validated stride, NOT a fresh `volume_mesh.nodes_per_element()`
+    // lookup: chunking by the same width `tet_shape` proved the buffer to be a
+    // whole multiple of is what rules out a short trailing remainder chunk
+    // here — a second, independent derivation could only agree by coincidence.
+    let nodes_per_elem = shape.stride;
 
     let mut vertex_sizes = vec![f64::INFINITY; n_verts];
 
-    // Guarded invariant: the only caller, `refine_with_size_field`, calls
-    // `tet_shape(volume_mesh)?` before this function, which already
-    // proves `volume_mesh.connectivity` is `Tet` (Hex/Wedge is rejected
-    // there as `RefineError::UnsupportedConnectivity`) — so this is
-    // unreachable for a Hex/Wedge mesh, not a live panic path.
+    // Guarded invariant: `shape` can only have come from
+    // `tet_shape(volume_mesh)?`, which already proves
+    // `volume_mesh.connectivity` is `Tet` (Hex/Wedge is rejected there as
+    // `RefineError::UnsupportedConnectivity`) — so this is unreachable for a
+    // Hex/Wedge mesh, not a live panic path.
     let tet_indices = volume_mesh.tet_indices().expect(
-        "project_per_element_sizes_to_vertices: caller (refine_with_size_field) \
-         already guarded via tet_shape(volume_mesh)? — Hex/Wedge connectivity \
-         cannot reach here",
+        "project_per_element_sizes_to_vertices: the `shape` argument is minted \
+         only by tet_shape(volume_mesh)?, which rejects Hex/Wedge connectivity \
+         — it cannot reach here",
     );
     for (elem_idx, chunk) in tet_indices.chunks(nodes_per_elem).enumerate() {
         let size = per_element_sizes[elem_idx];
@@ -361,16 +386,47 @@ pub fn refine_with_size_field(
     size_hints: &[f64],
     options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
-    // Mesh-shape gate: rejects Hex/Wedge and non-multiple index buffers
-    // before any other validation, panic-prone helper, or gmsh call runs. It
-    // also hands back the element order it read while proving connectivity is
+    // Mesh-shape gate: rejects Hex/Wedge, non-multiple index buffers and
+    // out-of-range indices before any other validation, panic-prone helper, or
+    // gmsh call runs.
+    let shape = tet_shape(volume_mesh)?;
+    refine_with_size_field_validated(surface, volume_mesh, shape, size_hints, options)
+}
+
+/// [`refine_with_size_field`]'s body, minus the mesh-shape gate.
+///
+/// Split out so the two public entry points run [`tet_shape`] exactly once
+/// per call *between* them: [`crate::adaptive::refine_marked_elements`] needs
+/// [`TetShape::n_elements`] for its own length and marked-index guards, and
+/// then tail-calls this rather than re-entering [`refine_with_size_field`] and
+/// paying a second O(n_indices) validation scan for a guaranteed-identical
+/// result on the same `&VolumeMesh`.
+///
+/// # Caller contract
+///
+/// `shape` MUST be `tet_shape(volume_mesh)?` for *this* `volume_mesh`. It is
+/// the proof that the panic-prone helpers below are unreachable, and it
+/// supplies the stride [`project_per_element_sizes_to_vertices`] chunks by.
+///
+/// # Errors
+///
+/// Everything [`refine_with_size_field`] documents *except* the three
+/// mesh-shape errors, which the caller's own gate has already returned.
+pub(crate) fn refine_with_size_field_validated(
+    surface: &Mesh,
+    volume_mesh: &VolumeMesh,
+    shape: TetShape,
+    size_hints: &[f64],
+    options: &MeshingOptions,
+) -> Result<VolumeMesh, RefineError> {
+    // The gate also read the element order while proving connectivity is
     // `Tet`, so the kernel call below needs no second `element_order()` lookup
     // (and no unreachable `None` arm).
     let TetShape {
         n_elements,
         order: element_order,
         ..
-    } = tet_shape(volume_mesh)?;
+    } = shape;
 
     // Validate size_hints length.
     if size_hints.len() != n_elements {
@@ -391,7 +447,8 @@ pub fn refine_with_size_field(
     }
 
     // Project per-element hints → per-volume-vertex sizes (conservative min).
-    let vol_vertex_sizes = project_per_element_sizes_to_vertices(volume_mesh, size_hints);
+    let vol_vertex_sizes =
+        project_per_element_sizes_to_vertices(volume_mesh, shape, size_hints);
 
     // Map per-volume-vertex sizes → per-surface-vertex sizes.
     //
@@ -556,8 +613,9 @@ mod tests {
     fn project_per_element_sizes_to_vertices_takes_min_over_incident_elements() {
         let vm = two_tet_bipyramid();
         let per_elem = [0.5_f64, 1.0_f64];
+        let shape = super::tet_shape(&vm).expect("bipyramid is a well-formed P1 tet mesh");
 
-        let result = super::project_per_element_sizes_to_vertices(&vm, &per_elem);
+        let result = super::project_per_element_sizes_to_vertices(&vm, shape, &per_elem);
 
         assert_eq!(
             result.len(),
@@ -576,7 +634,7 @@ mod tests {
     /// count MUST panic (unguarded indexing).
     ///
     /// This pin documents the projector's caller-validation contract: the
-    /// only safe caller is `refine_with_size_field`, which validates
+    /// only safe caller is `refine_with_size_field_validated`, which validates
     /// `size_hints.len() == n_elements` up front. Future
     /// authors who silently misbehave on short slices (e.g. via
     /// `get(elem_idx).copied().unwrap_or(...)`) will see this test fail and
@@ -585,9 +643,10 @@ mod tests {
     fn project_panics_on_too_short_per_element_sizes() {
         let vm = two_tet_bipyramid(); // 2 tets
         let too_short = [0.5_f64]; // only 1 size for 2 elements
+        let shape = super::tet_shape(&vm).expect("bipyramid is a well-formed P1 tet mesh");
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::project_per_element_sizes_to_vertices(&vm, &too_short)
+            super::project_per_element_sizes_to_vertices(&vm, shape, &too_short)
         }));
         assert!(
             result.is_err(),
