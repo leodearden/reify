@@ -11,9 +11,10 @@ module cost_robustness_tradeoff
 //     lands on the cost's own closed-form optimum, 5mm.
 //   TradeoffBlend    (λ=0.5) — a blend of both anchors: ≈7.19mm, strictly
 //     between the two.
-//   TradeoffRobust   (λ=0.0) — pure robustness: `thickness` lands on the
-//     Chebyshev centre of the feasible region, 31/3 mm ≈ 10.33mm, the identical
-//     argmax to `build_centrality_objective` by construction (PRD §8.1).
+//   TradeoffRobust   (λ=0.0) — pure robustness: `thickness` lands on the engine's
+//     centrality default — the max-min-slack point, 31/3 mm ≈ 10.33mm — the
+//     identical argmax to `build_centrality_objective` by construction (PRD §8.1).
+//     NOT the geometric Chebyshev centre; see Lever 2 below for why they differ.
 //
 // The dial is genuinely observable here — three separated values, none of them
 // the solver's own starting guess. Getting there took two deliberate levers,
@@ -45,20 +46,40 @@ module cost_robustness_tradeoff
 //
 // It makes the constraint set ASYMMETRIC. The solver seeds a constrained solve
 // from the midpoint of a box derived from the constraints, so with only the
-// two-sided `1mm < thickness < 25mm` box that seed (13mm) IS the Chebyshev
-// centre by construction — and a λ=0 result landing there proves nothing, since
+// two-sided `1mm < thickness < 25mm` box that seed (13mm) IS the centrality
+// argmax by construction — and a λ=0 result landing there proves nothing, since
 // a real centrality solve and a drift fallback are indistinguishable at that
 // point.
 //
 // Three half-spaces with DIFFERENT gradients separate them. The slacks are
 // `t − 1mm` (slope +1), `25mm − t` (slope −1) and `30mm − 2t` (slope −2);
-// max-min binds the first against the third, `t − 1 = 30 − 2t → t = 31/3 mm`,
-// where the middle slack (14.667mm) is non-binding. Meanwhile
-// `derive_from_side` (`solver.rs`) recognises only `p OP far`, `p − k OP far`
-// and `k − p OP far`, so a `Mul` on the near side contributes a centrality
-// slack but does NOT tighten the derived box — it stays `[1mm, 25mm]`, midpoint
-// 13mm. Chebyshev centre 10.33mm, seed 13mm: distinct, so the λ=0 anchor is now
-// checkable.
+// `build_centrality_objective` maximises their minimum, so max-min binds the
+// first against the third, `t − 1 = 30 − 2t → t = 31/3 mm`, where the middle
+// slack (14.667mm) is non-binding. Meanwhile `derive_from_side` (`solver.rs`)
+// recognises only `p OP far`, `p − k OP far` and `k − p OP far`, so a `Mul` on
+// the near side contributes a centrality slack but does NOT tighten the derived
+// box — it stays `[1mm, 25mm]`, midpoint 13mm. Centrality argmax 10.33mm, seed
+// 13mm: distinct, so the λ=0 anchor is now checkable.
+//
+// Two precision notes on that argmax, both load-bearing:
+//
+//   * It is the max-min-RAW-slack point, NOT the geometric Chebyshev centre.
+//     `collect_slack_terms` folds the slacks un-normalised by each constraint's
+//     gradient, so the scaled `thickness * 2 < 30mm` weighs double its geometric
+//     distance: the largest ball inscribed in the feasible region (1mm, 15mm) is
+//     centred at 8mm, while the engine's centrality default lands at 31/3 mm.
+//     λ=0 must reduce to the ENGINE's default (PRD §8.1), so 31/3 mm is the
+//     contract-correct target. The old symmetric box made the two coincide,
+//     which is why the looser "Chebyshev centre" wording was harmless here
+//     before task #5715 and is not any more.
+//   * `constraint thickness < 25mm` is deliberately RETAINED even though
+//     `thickness * 2 < 30mm` (t < 15mm) strictly dominates it. It is what keeps
+//     the derived seed box two-sided at `[1mm, 25mm]` (midpoint 13mm), and it
+//     supplies the non-binding middle slack quoted above. Dropping it as a dead
+//     constraint would leave `thickness` with no `derive_from_side`-recognisable
+//     upper side at all, so `extract_initial_point` would fall to its one-sided
+//     arm and seed at `1mm + max(0.1·1mm, 1µm) = 1.1mm` — silently changing what
+//     the e2e test measures.
 //
 // `CentralityReference` is the objectiveless control for exactly that check: the
 // same auto param and the same three constraints with NO `minimize` at all, so
@@ -89,9 +110,11 @@ module cost_robustness_tradeoff
 //
 // Integration test: crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs
 // asserts zero error-severity diagnostics, every value strictly inside the
-// feasible region, the λ=1 closed-form cost optimum, the λ=0 Chebyshev centre
-// (both against `CentralityReference` and against 31/3 mm), separation from the
-// 13mm seed, and a strictly ordered sweep with a minimum pairwise separation.
+// feasible region, the λ=1 closed-form cost optimum, the λ=0 centrality argmax
+// (both against `CentralityReference` and against the closed-form 31/3 mm), and
+// a strictly ordered sweep with a minimum pairwise separation. Each of those
+// targets is >250x the test's anchor tolerance away from the 13mm seed, so a
+// drift fallback onto the seed fails them outright.
 //
 // # Why auto(free), not strict auto
 //
