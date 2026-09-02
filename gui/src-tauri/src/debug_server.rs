@@ -1045,8 +1045,8 @@ spelling you would type in the source, e.g. '120mm', '0.5m', '45deg'. On a DIMEN
 unit suffix is REQUIRED and is parsed exactly as the property-panel edit box parses it; a bare \
 number is refused rather than silently read as an SI magnitude. The value WRITTEN BACK preserves \
 the replaced literal's unit, so editing a cell declared as '80mm' with '0.5m' stores it in \
-millimetres. Dimensionless cells take a bare number. Call reify_get_parameters or engine_state to \
-learn a cell's dimension before choosing a unit."
+millimetres. Dimensionless cells take a bare number. Call engine_state to learn a cell's \
+dimension before choosing a unit."
                     }
                 },
                 "required": ["cell_id", "value"]
@@ -1305,10 +1305,14 @@ async fn dispatch_tool(
         "engine_state" => handle_engine_state(state).await,
         "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
-        // ONE funnel, two advertised names: the debug-native `open_file` and
-        // the reify-mcp identity `reify_open_file` (task 5097 δ). The shared
-        // `open_file_path_param` accepts either spelling of the path param.
-        "open_file" | "reify_open_file" => handle_open_file(state, params).await,
+        // ONE funnel (`open_path_into_engine`), two advertised names: the
+        // debug-native `open_file` and the reify-mcp identity
+        // `reify_open_file` (task 5097 δ). The shared `open_file_path_param`
+        // accepts either spelling of the path param; the two arms differ ONLY
+        // in the result envelope they package the funnel's output into — see
+        // `handle_reify_open_file`.
+        "open_file" => handle_open_file(state, params).await,
+        "reify_open_file" => handle_reify_open_file(state, params).await,
         "load_fixture" => handle_load_fixture(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         "wait_for" => handle_wait_for(state, params).await,
@@ -1316,7 +1320,8 @@ async fn dispatch_tool(
         "set_fea_case" => handle_set_fea_case(state, params).await,
         // Task 5097 δ: the AI write tools. Every engine mutation below routes
         // through `write_on_engine_and_refresh_baseline` (§6.2 invariant (a));
-        // `reify_open_file` shares the `open_file` arm above.
+        // `reify_open_file` (arm above) reaches the same refresh through
+        // `open_source_into_engine_and_refresh_baseline` instead.
         "reify_set_parameter" => handle_reify_set_parameter(state, params).await,
         "reify_update_source" => handle_reify_update_source(state, params).await,
         "reify_save_file" => handle_reify_save_file(state, params).await,
@@ -1510,7 +1515,17 @@ fn fixture_relpath(name: &str) -> Option<String> {
 /// Shared file-open helper: canonicalise raw_path, read from disk, load into
 /// the engine on an OS thread (OCCT panics inside tokio), build GUI state, and
 /// tell the frontend to open the file.
-async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Result<Value, String> {
+///
+/// Returns `(frontend_result, content)`: the frontend `open_file` handler's own
+/// `{ok, path}`-shaped reply, plus the source text this function already read
+/// off disk. The second member exists so [`handle_reify_open_file`] can build
+/// the reify-mcp `{success, source}` envelope WITHOUT a third read of the same
+/// file or a second engine call — the funnel stays one implementation, and the
+/// two advertised names differ only in how they package its result.
+async fn open_path_into_engine(
+    state: &DebugServerState,
+    raw_path: &str,
+) -> Result<(Value, String), String> {
     // Canonicalise the path before reading so the frontend receives the same
     // absolute key regardless of whether the caller supplied a relative or
     // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
@@ -1576,10 +1591,11 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
         "content": content,
         "guiState": gui_state_json,
     });
-    state
+    let frontend = state
         .debug_bridge
         .query_frontend("open_file", file_data)
-        .await
+        .await?;
+    Ok((frontend, content))
 }
 
 // ── INV-GUI-2 (task 5035 L6): debug-mutation delta-baseline refresh ──
@@ -1662,7 +1678,41 @@ fn open_file_path_param(params: &Value) -> Result<String, String> {
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
     let raw_path = open_file_path_param(&params)?;
-    open_path_into_engine(state, &raw_path).await
+    // The debug-native name answers with the frontend handler's own reply
+    // verbatim — the `{ok, path}` shape the visual-regression harness reads.
+    Ok(open_path_into_engine(state, &raw_path).await?.0)
+}
+
+/// `reify_open_file`: the SAME funnel as [`handle_open_file`], repackaged into
+/// the reify-mcp result envelope `{"success": true, "source": <content>}`.
+///
+/// ONE implementation, two names (PRD §6.3 "do not duplicate open_file"): both
+/// arms resolve their path with [`open_file_path_param`] and do their engine
+/// work in [`open_path_into_engine`]. What legitimately differs is the ENVELOPE
+/// — and it must, because the whole point of carrying the reify-mcp identities
+/// onto this surface is that a client which learned `result.success` /
+/// `result.source` on the reify-mcp registry
+/// (`crates/reify-mcp/src/tools/write.rs`, which returns exactly those two keys
+/// for this tool name) reads the same keys here. Returning the debug-native
+/// `{ok, path}` under the reify-mcp NAME would give such a client neither key
+/// while every sibling tool honoured the envelope — the divergence the review
+/// caught. `source` is the on-disk text the funnel already read, so this costs
+/// no extra I/O and no extra engine call.
+async fn handle_reify_open_file(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let raw_path = open_file_path_param(&params)?;
+    let (_frontend, content) = open_path_into_engine(state, &raw_path).await?;
+    Ok(reify_open_file_envelope(&content))
+}
+
+/// Pure: pack an opened file's source into the reify-mcp `reify_open_file`
+/// result envelope. Separate from [`handle_reify_open_file`] so the SHAPE is
+/// unit-testable without a [`DebugServerState`]/`AppHandle`, which is the same
+/// headless-testability contract [`write_tool_frontend_payload`] follows.
+pub(crate) fn reify_open_file_envelope(source: &str) -> Value {
+    json!({ "success": true, "source": source })
 }
 
 async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<Value, String> {
@@ -1671,7 +1721,7 @@ async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<
         .ok_or_else(|| "name is required".to_string())?;
     let relpath = fixture_relpath(name)
         .ok_or_else(|| format!("unknown fixture: {name}"))?;
-    open_path_into_engine(state, &relpath).await
+    Ok(open_path_into_engine(state, &relpath).await?.0)
 }
 
 /// Pure serializer: packs a `GuiState` — and, optionally, the editor buffer
@@ -1752,14 +1802,18 @@ pub async fn set_fea_case_on_engine(
 /// rationale above [`open_source_into_engine_and_refresh_baseline`] for
 /// why/how.
 ///
-/// (a) **One seam, no exceptions.** All five write tools
-/// (`reify_set_parameter`, `reify_update_source`, `reify_open_file`,
-/// `reify_save_file`, `reify_export`) reach the baseline refresh through
-/// here, including the two that commit no new engine state — the uniformity
-/// is what makes §6.2 invariant (a) checkable structurally rather than tool
-/// by tool, and it is the anchor θ (task 5100) asserts against. A write tool
-/// that refreshes the baseline its own way is the defect that anchor exists
-/// to catch.
+/// (a) **One seam, ONE stated exception.** The FOUR engine-mutating/I-O write
+/// tools (`reify_set_parameter`, `reify_update_source`, `reify_save_file`,
+/// `reify_export`) reach the baseline refresh through here, including the two
+/// that commit no new engine state. The fifth, `reify_open_file`, reaches the
+/// SAME refresh through
+/// [`open_source_into_engine_and_refresh_baseline`] instead — see (d) for the
+/// ordering constraint that forces it. So the structural claim θ (task 5100)
+/// anchors on is "every write tool refreshes the baseline through one of the
+/// two shared `*_and_refresh_baseline` seams", with `reify_open_file` the one
+/// name to enumerate — NOT "all five route through this function", which is
+/// false. A write tool that refreshes the baseline its own way, outside both
+/// seams, is the defect that anchor exists to catch.
 ///
 /// (b) **The `StateDelta` is deliberately DISCARDED.** `compute_delta` is
 /// called for its SIDE EFFECT — advancing `last_state` — only. The full
@@ -1859,9 +1913,13 @@ async fn handle_set_fea_case(
 // Q1): it preserves those identities without clashing with the debug-native
 // bare names (`open_file`, `engine_state`, …).
 //
-// Every one of them routes its engine mutation through
-// `write_on_engine_and_refresh_baseline` — see that function for why the
-// uniformity is load-bearing and why there is no second emit path.
+// FOUR of them route their engine mutation through
+// `write_on_engine_and_refresh_baseline`; the fifth, `reify_open_file`,
+// shares the `open_file` funnel and so reaches the same refresh through
+// `open_source_into_engine_and_refresh_baseline` — see point (d) on the
+// write seam for the ordering constraint that forces that split, why the
+// two-seam uniformity is still load-bearing, and why there is no second
+// emit path.
 
 /// Extract a REQUIRED string field from a write tool's params, refusing with
 /// the reify-mcp message verbatim (`"<field> is required"`).
@@ -1877,6 +1935,32 @@ fn reify_write_str_param(params: &Value, field: &str) -> Result<String, String> 
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| format!("{field} is required"))
+}
+
+/// Extract an OPTIONAL string field from a write tool's params, distinguishing
+/// ABSENT (`Ok(None)`) from WRONG-TYPED (`Err`).
+///
+/// The optional-param counterpart of [`reify_write_str_param`]. That helper
+/// deliberately folds "wrong type" into "absent" because for a REQUIRED field
+/// both arms end in the same refusal; for an OPTIONAL one they must not, because
+/// "absent" is a live semantic — `reify_save_file`'s default target, the ACTIVE
+/// file. A bare `params[field].as_str().map(...)` would silently read
+/// `file_path: 120` as "no target supplied" and overwrite the user's canonical
+/// `.ri` when the caller plainly meant a save-as (task #5097 δ, review finding).
+///
+/// An explicit `null` is treated as ABSENT: JSON has no other way to spell
+/// "field present, no value", and a client that serializes `Option::None` that
+/// way means the default target.
+fn reify_write_optional_str_param(params: &Value, field: &str) -> Result<Option<String>, String> {
+    match &params[field] {
+        // Missing keys index to `Null` too, so this arm is both spellings of
+        // "no target supplied".
+        Value::Null => Ok(None),
+        present => present
+            .as_str()
+            .map(|s| Some(s.to_owned()))
+            .ok_or_else(|| format!("{field} must be a string")),
+    }
 }
 
 /// Engine-routing core of the `reify_set_parameter` write tool: apply
@@ -2031,28 +2115,51 @@ async fn handle_reify_set_parameter(
 /// single-file model the tool actually implements honest. Multi-file editing
 /// is §11 out of scope: Claude edits a non-active file with its own native
 /// Write/Edit tools and the FS-watcher reloads it.
+///
+/// # Why the guard runs OUTSIDE the engine lock
+///
+/// [`update_source_target_matches_active`] can do up to two
+/// `std::fs::canonicalize` syscalls, and #5193 established that the engine
+/// mutex must not be held across filesystem I/O — it is the very constraint
+/// point (d) of [`write_on_engine_and_refresh_baseline`] cites for keeping
+/// [`open_source_into_engine_and_refresh_baseline`] out of the seam. So the
+/// session's own entry path is read under a SHORT lock of its own, the guard
+/// is evaluated with no lock held, and the seam is entered only once the
+/// target is accepted. Atomicity is unaffected: a refusal still returns before
+/// any mutation, so it advances neither the engine nor the baseline.
+///
+/// Reading the path in a separate lock from the write is safe under the same
+/// SERIAL-DEBUG-OPS assumption the whole cluster documents (PRD §4 D7): only a
+/// concurrent `open_file`/`load_fixture` could move `file_path` in that window,
+/// and debug ops never overlap.
 pub async fn reify_update_source_on_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     path: &str,
     content: &str,
 ) -> Result<crate::types::GuiState, String> {
+    // Short read-only lock: the session's entry path, nothing else.
+    let active = run_on_engine(engine, |s| {
+        Ok(s.canonical_file_path().map(|p| p.to_path_buf()))
+    })
+    .await?;
+
+    // Refuse BEFORE the seam, so a mismatched call mutates nothing and never
+    // reaches the baseline refresh — the same no-half-advance shape a compile
+    // rejection already has.
+    if !update_source_target_matches_active(active.as_deref(), path) {
+        let active = active
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return Err(format!(
+            "reify_update_source can only update the active file {active}"
+        ));
+    }
+
     // Owned for the closure's `'static` bound (see the sibling tool).
     let path = path.to_owned();
     let content = content.to_owned();
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
-        // Refuse BEFORE `update_source`, so a mismatched call mutates
-        // nothing and short-circuits the seam ahead of the baseline refresh
-        // — the same no-half-advance shape a compile rejection already has.
-        let active = s.canonical_file_path().map(|p| p.to_path_buf());
-        if !update_source_target_matches_active(active.as_deref(), &path) {
-            let active = active
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            return Err(format!(
-                "reify_update_source can only update the active file {active}"
-            ));
-        }
         s.update_source(&path, &content)
     })
     .await
@@ -2077,6 +2184,11 @@ pub async fn reify_update_source_on_engine_and_refresh_baseline(
 /// `active == None` means no prior `load_file`, i.e. the `load_from_source`
 /// single-file flow where `update_source` DOES honour the caller's path.
 /// There is nothing to redirect, so anything is accepted.
+///
+/// **Call this with NO engine lock held.** The `canonicalize` fallback is
+/// filesystem I/O, and #5193 forbids holding the engine mutex across it; the
+/// sole caller reads `canonical_file_path()` in a short lock of its own and
+/// then evaluates this outside it.
 pub(crate) fn update_source_target_matches_active(
     active: Option<&std::path::Path>,
     requested: &str,
@@ -2244,11 +2356,21 @@ async fn handle_reify_update_source(
 /// the CONTENT, and its absence remains the "No source loaded" refusal, so
 /// the reify-mcp semantics are otherwise unchanged.
 ///
+/// When BOTH are absent — no explicit target and no session path, i.e. a
+/// `load_from_source` session — there is no defensible target at all, so this
+/// REFUSES rather than falling back to the stem-only key. Guessing there is the
+/// stray-relative-file bug in its other spelling: it would answer
+/// `success: true` having written somewhere the caller cannot predict.
+///
 /// **Pure I/O: this commits no new engine state.** It still routes through
 /// [`write_on_engine_and_refresh_baseline`] anyway, so §6.2 invariant (a)
-/// holds UNIFORMLY for all five write tools and θ's structural anchor has no
-/// exceptions to enumerate. The refresh is free here — nothing changed, so
-/// the delta it computes is empty.
+/// holds for the four seam-routed write tools without a per-tool exception.
+/// The delta is normally empty — nothing changed — but the `build_gui_state()`
+/// it diffs is a genuine REBUILD, not a cached snapshot, and a rebuild is not
+/// guaranteed bit-identical. That is precisely why [`handle_reify_save_file`]
+/// pushes the returned `GuiState` to the frontend rather than dropping it: a
+/// baseline refreshed from a rebuild the frontend never saw would swallow the
+/// difference.
 ///
 /// **It persists the SESSION's buffer, not a caller-supplied one** — and
 /// `files[0].content` is not unconditionally the committed text: after a
@@ -2291,7 +2413,22 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
         let target = match (&file_path, &active) {
             (Some(explicit), _) => explicit.clone(),
             (None, Some(active)) => active.clone(),
-            (None, None) => file.path.clone(),
+            // No explicit target AND no session path — the `load_from_source`
+            // flow (a fixture-loaded debug session, `EngineSession::new` +
+            // `load_from_source`). Falling back to `file.path` here would write
+            // the stem-only `source_map` key (`"part.ri"`) as a RELATIVE path
+            // into whatever CWD the GUI process happens to have: an
+            // unpredictable stray file, reported as `success: true`. REFUSE
+            // instead of guessing — the caller can always name a target
+            // explicitly (task #5097 δ, review finding).
+            (None, None) => {
+                return Err(
+                    "no active file to save; supply file_path (this session was loaded \
+                     from source, not from a file on disk, so there is no canonical \
+                     path to save back to)"
+                        .to_string(),
+                );
+            }
         };
         crate::commands::save_file_impl(&target, &file.content)?;
         Ok(gs)
@@ -2302,17 +2439,34 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
 /// Save the session's in-memory source to disk and return the reify-mcp
 /// result envelope `{"success": true}`.
 ///
-/// Pushes NOTHING to the frontend: this tool commits no new engine state, so
-/// there is nothing for `apply_gui_state` to apply. It still refreshes the
-/// baseline — see the seam above for why that uniformity is deliberate.
+/// **It pushes the rebuilt `GuiState` even though it commits no new engine
+/// state**, for the same reason [`handle_reify_export`] does: the seam's
+/// `build_gui_state()` is not observationally free. It calls
+/// `mark_demand_pruned_pending()`, re-runs `tessellate_snapshot` and resolves
+/// material appearance, and a rebuild is not bit-identical (see the mock's
+/// per-tessellation handle-id counter, called out in
+/// `reify_save_file_writes_the_session_buffer`). Refreshing the baseline from
+/// that rebuild while pushing NOTHING would advance `last_state` past what the
+/// frontend holds, and the next normal command's delta would omit the
+/// difference — the stale-baseline desync (bug #7) inverted. Pushing keeps the
+/// invariant the seam exists for: the baseline can never move past the
+/// frontend (task #5097 δ, review finding).
 async fn handle_reify_save_file(
     state: &DebugServerState,
     params: Value,
 ) -> Result<Value, String> {
     // OPTIONAL, unlike every other write-tool param: reify-mcp's schema lists
     // no `required` for this tool, and omitting it means "the active file".
-    let file_path = params["file_path"].as_str().map(str::to_owned);
-    reify_save_file_on_engine_and_refresh_baseline(&state.engine, &state.last_state, file_path)
+    // A WRONG-TYPED `file_path` is refused rather than read as absent — see
+    // `reify_write_optional_str_param`.
+    let file_path = reify_write_optional_str_param(&params, "file_path")?;
+    let gs =
+        reify_save_file_on_engine_and_refresh_baseline(&state.engine, &state.last_state, file_path)
+            .await?;
+    let payload = write_tool_frontend_payload(&gs, None)?;
+    state
+        .debug_bridge
+        .query_frontend("apply_gui_state", payload)
         .await?;
     Ok(json!({ "success": true }))
 }
@@ -2348,18 +2502,25 @@ pub async fn reify_export_on_engine_and_refresh_baseline(
 /// Export the realized geometry and return the reify-mcp result envelope
 /// `{"success": true, "path": <output_path>}`.
 ///
-/// Pushes NOTHING to the frontend, for the same reason as
-/// [`handle_reify_save_file`].
+/// Pushes the rebuilt `GuiState` to the frontend for the same reason as
+/// [`handle_reify_save_file`]: the seam's `build_gui_state()` rebuild is what
+/// the baseline refresh consumes, so it must reach the frontend too or the
+/// baseline advances past it.
 async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
     let format = reify_write_str_param(&params, "format")?;
     let output_path = reify_write_str_param(&params, "output_path")?;
-    reify_export_on_engine_and_refresh_baseline(
+    let gs = reify_export_on_engine_and_refresh_baseline(
         &state.engine,
         &state.last_state,
         &format,
         &output_path,
     )
     .await?;
+    let payload = write_tool_frontend_payload(&gs, None)?;
+    state
+        .debug_bridge
+        .query_frontend("apply_gui_state", payload)
+        .await?;
     Ok(json!({ "success": true, "path": output_path }))
 }
 
@@ -5366,6 +5527,117 @@ structure def Part {
         );
     }
 
+    // ── Task 5097 δ amendment (review finding): the two ways
+    // `reify_save_file` could pick a target it should never have picked ──
+
+    /// A `load_from_source` session HAS a buffer but no canonical path, so the
+    /// "save the ACTIVE file" default has nothing to resolve to.
+    /// `GuiState.files[0].path` is the stem-only `source_map` key
+    /// (`"bracket.ri"`), so falling back to it would write a stray RELATIVE
+    /// file into whatever CWD the GUI process happens to have — and report
+    /// `success: true`. Refusing is the only defensible answer.
+    #[tokio::test]
+    async fn reify_save_file_refuses_when_the_session_has_no_canonical_path() {
+        // `make_test_engine` is exactly this shape: `EngineSession::new` +
+        // `load_from_source(bracket_source(), "bracket")`, never `load_file`.
+        let engine = crate::tests::make_test_engine();
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        // Precondition: there IS a buffer (so this is not the "No source
+        // loaded" arm) and it is keyed by a stem-only, non-absolute path.
+        let stem_key = s0
+            .files
+            .first()
+            .expect("a load_from_source session must still expose files[0]")
+            .path
+            .clone();
+        assert!(
+            !std::path::Path::new(&stem_key).is_absolute(),
+            "the fixture's premise is that files[0].path is a stem-only \
+             source_map key, not a filesystem path; got {stem_key}"
+        );
+
+        let err = reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, None)
+            .await
+            .expect_err("a session with no canonical path must refuse the default target");
+        assert!(
+            err.contains("no active file to save"),
+            "expected the no-canonical-path refusal, got: {err}"
+        );
+
+        // The refusal is ATOMIC: no stray file, no baseline advance.
+        assert!(
+            !std::path::Path::new(&stem_key).exists(),
+            "the refusal must not have written {stem_key} into the process CWD"
+        );
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s0),
+            "a refused save must leave the baseline where it was"
+        );
+
+        // …and an EXPLICIT target still works on the very same session, so the
+        // refusal is about the missing target, not about the session kind.
+        let dir = tempfile::tempdir().unwrap();
+        let explicit = dir.path().join("saved.ri").to_string_lossy().into_owned();
+        reify_save_file_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            Some(explicit.clone()),
+        )
+        .await
+        .expect("an explicit target must still save a load_from_source session");
+        assert!(
+            std::fs::read_to_string(&explicit)
+                .expect("the explicit target must be readable")
+                .contains("structure def"),
+            "the explicit target must receive the session's in-memory source"
+        );
+    }
+
+    /// `reify_save_file`'s `file_path` is the ONE optional write-tool param, so
+    /// "absent" is a live semantic (= the active file) and a WRONG-TYPED field
+    /// must not be folded into it. Folding would turn an intended save-as into
+    /// an overwrite of the user's canonical `.ri` — which is exactly what the
+    /// bare `params["file_path"].as_str().map(...)` this replaced would do.
+    #[test]
+    fn reify_write_optional_str_param_separates_absent_from_mistyped() {
+        // Absent — and its JSON synonym, an explicit null — mean "no target".
+        assert_eq!(
+            reify_write_optional_str_param(&json!({}), "file_path"),
+            Ok(None),
+            "a missing field must read as ABSENT"
+        );
+        assert_eq!(
+            reify_write_optional_str_param(&json!({ "file_path": null }), "file_path"),
+            Ok(None),
+            "an explicit null must read as ABSENT — JSON has no other spelling"
+        );
+
+        // A value of the wrong type is a caller ERROR, never a silent default.
+        for mistyped in [
+            json!({ "file_path": 120 }),
+            json!({ "file_path": true }),
+            json!({ "file_path": ["/tmp/a.ri"] }),
+            json!({ "file_path": { "path": "/tmp/a.ri" } }),
+        ] {
+            let err = reify_write_optional_str_param(&mistyped, "file_path")
+                .expect_err("a wrong-typed file_path must be REFUSED, not read as absent");
+            assert_eq!(
+                err, "file_path must be a string",
+                "the refusal must name the field and the expected type"
+            );
+        }
+
+        // The happy path is unchanged.
+        assert_eq!(
+            reify_write_optional_str_param(&json!({ "file_path": "/tmp/a.ri" }), "file_path"),
+            Ok(Some("/tmp/a.ri".to_string())),
+        );
+    }
+
     // ── Task 5097 δ step-25: RED — a failed `reify_update_source` followed by
     // `reify_save_file` OVERWRITES the user's canonical `.ri` with source that
     // does not compile (review finding, data-loss) ──
@@ -5734,6 +6006,46 @@ structure def Part {
             open_file_path_param(&json!({"file_path": 7})),
             Err("path is required".to_string()),
             "a non-string path must be refused like an absent one"
+        );
+    }
+
+    /// …and the one thing the two names legitimately DO NOT share: the result
+    /// envelope. `reify_open_file` carries the reify-mcp identity, so a client
+    /// that learned `result.success` / `result.source` on
+    /// `crates/reify-mcp/src/tools/write.rs` must find the same two keys here
+    /// — the debug-native `{ok, path}` reply would give it neither (task #5097
+    /// δ amendment, review finding).
+    #[test]
+    fn reify_open_file_envelope_matches_the_reify_mcp_shape() {
+        let source = "structure def Part { param width: Length = 80mm }";
+        let envelope = reify_open_file_envelope(source);
+
+        assert_eq!(
+            envelope["success"].as_bool(),
+            Some(true),
+            "reify-mcp's reify_open_file answers `success: true`"
+        );
+        assert_eq!(
+            envelope["source"].as_str(),
+            Some(source),
+            "`source` must carry the opened file's text verbatim"
+        );
+        // EXACTLY those two keys: an extra one is envelope drift from the
+        // surface this identity was carried over from.
+        // Sorted rather than taken in map order, so the assertion does not
+        // silently depend on serde_json's `preserve_order` feature.
+        let mut keys: Vec<&str> = envelope
+            .as_object()
+            .expect("the envelope must be a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["source", "success"],
+            "the envelope must be exactly {{success, source}} — an extra key \
+             is drift from the reify-mcp surface this identity came from"
         );
     }
 

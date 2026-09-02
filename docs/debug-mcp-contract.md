@@ -89,19 +89,42 @@ identities an AI client may already have learned on the reify-mcp surface,
 without clashing with the debug-native bare names (`open_file`,
 `engine_state`, …) that the visual-regression harness depends on.
 
-**One seam, no second emit path.** Every one of the five routes its engine
-work through `write_on_engine_and_refresh_baseline`, which refreshes the
-delta baseline via `crate::diff::compute_delta` (§6.2 invariant (a)) and
-deliberately DISCARDS the returned `StateDelta` — the full `GuiState` reaches
-the frontend through the caller's synchronous
+**Two seams, ONE stated exception, no second emit path.** The FOUR
+engine-mutating/I-O tools (`reify_set_parameter`, `reify_update_source`,
+`reify_save_file`, `reify_export`) route their engine work through
+`write_on_engine_and_refresh_baseline`. The fifth, `reify_open_file`, shares
+the `open_file` funnel and so reaches the same refresh through
+`open_source_into_engine_and_refresh_baseline` — it must, because that path
+runs `UnresolvedGuiState::resolve` (`std::fs::canonicalize`) AFTER the engine
+lock is released (#5193), an ordering a closure returning a `GuiState` from
+inside the lock cannot express. So the structural claim to anchor on is
+"every write tool refreshes the baseline through one of the two shared
+`*_and_refresh_baseline` seams", with `reify_open_file` the one name to
+enumerate — *not* "all five route through `write_on_engine_and_refresh_baseline`".
+
+Both seams refresh the delta baseline via `crate::diff::compute_delta` (§6.2
+invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
+`GuiState` reaches the frontend through the caller's synchronous
 `query_frontend("apply_gui_state", …)` push, never `emit_delta`. There is no
 private emit path on the debug surface; do not add one.
 
 **`reify_open_file` and `open_file` are ONE funnel under two names**, not two
-implementations. Both dispatch to `handle_open_file`, whose
-`open_file_path_param` helper accepts either the reify-mcp spelling
-`file_path` or the debug-native `path` (preferring `file_path` when both are
-supplied) and keeps the debug-native `"path is required"` refusal.
+implementations. Both resolve their path with `open_file_path_param` — which
+accepts either the reify-mcp spelling `file_path` or the debug-native `path`
+(preferring `file_path` when both are supplied) and keeps the debug-native
+`"path is required"` refusal — and both do their engine work in
+`open_path_into_engine`.
+
+What the two names legitimately DO differ in is the **result envelope**, and
+they must: `open_file` answers with the frontend handler's own `{ok, path}`
+reply (what the visual-regression harness reads), while `reify_open_file`
+answers `{success: true, source}` — the two keys
+`crates/reify-mcp/src/tools/write.rs` returns for that tool name. Carrying the
+reify-mcp identities onto this surface is pointless if a client that learned
+`result.success` / `result.source` finds neither. `source` is the text the
+funnel already read off disk, so the envelope costs no extra I/O and no extra
+engine call (`reify_open_file_envelope`, pinned by
+`reify_open_file_envelope_matches_the_reify_mcp_shape`).
 
 **`reify_set_parameter` vs `reify_update_source` — the durability split.**
 `reify_set_parameter` is the INV-GUI-3 path: it edits the user's canonical
@@ -135,7 +158,13 @@ redirected: `update_source_target_matches_active` accepts the active path
 verbatim, its stem-only `"<stem>.ri"` module key, or any on-disk spelling that
 `canonicalize`s to it, and anything else returns `"reify_update_source can only
 update the active file <path>"` having mutated nothing (no engine state, no
-baseline advance, no disk). Editing a NON-active file is §11 out of scope:
+baseline advance, no disk). The guard is evaluated with **no engine lock held**
+— the session's entry path is read under a short lock of its own, then
+`update_source_target_matches_active` (up to two `std::fs::canonicalize`
+syscalls) runs outside it, and the write seam is entered only once the target is
+accepted. Holding the engine mutex across filesystem I/O is the exact pattern
+#5193 forbids, and the one that keeps `open_source_into_engine_and_refresh_baseline`
+out of the write seam in the first place. Editing a NON-active file is §11 out of scope:
 Claude uses its own native Write/Edit tools and the FS-watcher reloads them.
 
 **Diagnostics filtering.** `reify_update_source` returns diagnostics filtered
@@ -149,10 +178,37 @@ warning stream.
 which is exactly what `crates/reify-mcp/src/tools/write.rs` does for that tool
 name; keep it that way so the two surfaces' envelopes stay in parity.
 
-**`reify_save_file` and `reify_export` are pure I/O.** They commit no new
-engine state and push nothing to the frontend, but they still route through
-`write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds uniformly
-across all five and the structural anchor has no exceptions to enumerate.
+**`reify_save_file` and `reify_export` are pure I/O — but they still push.**
+Neither commits new engine state, yet both route through
+`write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds across the
+four seam-routed tools without a per-tool exception. The seam's
+`build_gui_state()` is a genuine REBUILD, not a cached snapshot: it calls
+`mark_demand_pruned_pending()`, re-runs `tessellate_snapshot` and resolves
+material appearance, and a rebuild is not guaranteed bit-identical. Refreshing
+the baseline from a rebuild the frontend never saw would advance `last_state`
+past what the frontend holds and the next normal command's delta would omit the
+difference — the stale-baseline desync (bug #7) inverted. So both handlers push
+the returned `GuiState` via `query_frontend("apply_gui_state", …)` exactly as
+the mutating tools do; the baseline can never move past the frontend.
+
+**`reify_save_file` never guesses its target.** `file_path` is the one
+OPTIONAL write-tool param, so "absent" carries the live meaning *save the
+ACTIVE file* — which makes two silent-fallback shapes reachable, and both are
+refused rather than guessed:
+
+- A **wrong-typed** `file_path` (`120`, `true`, an object) is refused with
+  `"file_path must be a string"`. It goes through
+  `reify_write_optional_str_param`, not a bare `as_str().map(…)`: folding
+  "mistyped" into "absent" would turn an intended save-as into an overwrite of
+  the user's canonical `.ri`. (The REQUIRED-param helper
+  `reify_write_str_param` deliberately *does* fold the two, because there both
+  arms end in the same refusal.)
+- **Neither** an explicit target nor a session path — a `load_from_source`
+  session, which has a buffer but no canonical path — is refused with
+  `"no active file to save; supply file_path …"`. Falling back to
+  `GuiState.files[0].path` there would write the stem-only `source_map` key
+  (`"part.ri"`) as a RELATIVE path into whatever CWD the GUI process happens
+  to have, and report `success: true`.
 
 **`reify_save_file` refuses a buffer the engine rejected.** It persists the
 SESSION's buffer, not a caller-supplied one — and `GuiState.files[0].content`
