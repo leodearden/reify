@@ -499,33 +499,15 @@ structure def StepForce : ForcingFunction {
     // mirroring `ModalOptions.n_modes > 0` above and
     // `PiecewisePolynomialProfile.waypoints.count > 0` in trajectory.ri).
     //
-    // ── DIMENSIONED-ZERO CONVENTION ─────────────────────────────────────
-    // Canonical statement. Other stdlib sites point here instead of restating
-    // the mechanism; task #3115 esc-3115-112, resolved by task-4485/β.
-    //
-    // In COMPARISON / ADDITIVE OPERAND position a syntactic zero is rewritten
-    // to `Scalar<D>(0.0)` at compile time, taking D from the sibling operand,
-    // before the dimension guard and type inference run. It covers `0`, `0.0`
-    // and negated forms; every dimension family; every relational operator
-    // (`>=` as much as `>`); and any sibling whose COMPILED TYPE is a
-    // non-dimensionless `Scalar`, a member access such as `material.density`
-    // included — the rewrite keys on that type, not on the sibling's
-    // expression shape. So a dimensioned RHS literal is never REQUIRED in this
-    // position, and the compiled RHS is dimensioned by the time `eval_cmp`
-    // checks dim-equality at runtime either way.
-    //
-    // `0N` is retained here because an explicit newton bound reads better in
-    // production code — a convention, not a requirement.
-    //
-    // In PARAM-DEFAULT position the rewrite does NOT apply; see the
-    // `phase : Angle = 0deg` note further down this file.
-    //
-    // Pinned by crates/reify-compiler/tests/polymorphic_zero_tests.rs. The
-    // TRAIT-BODY sites (`Physical.material.density`, `Insulating`) are pinned
-    // at eval level in
-    // crates/reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs
-    // instead: a trait body compiled with no conformer is not
-    // dimension-checked, so a compile-time probe written there is vacuous.
+    // DIMENSIONED-ZERO CONVENTION — canonical statement in
+    // docs/notes/dimensioned-zero-coercion.md (mechanism:
+    // `coerce_zero_operand` in reify-compiler/src/expr.rs; task #3115
+    // esc-3115-112, resolved by task-4485/β). In short: in comparison /
+    // additive operand position a syntactic zero adopts the sibling's
+    // dimension at compile time, so `0N` here is a READABILITY convention —
+    // a bare `0` compiles to the same thing. In PARAM-DEFAULT position the
+    // rewrite does NOT apply; see the `phase : Angle = 0deg` note further
+    // down this file.
     constraint magnitude > 0N
 
     // NOTE — explicitly NOT constrained:
@@ -578,7 +560,7 @@ structure def ImpulseForce : ForcingFunction {
     // `impulse : Impulse` keeps the explicit dimensioned-zero form
     // `0 * 1N * 1s` because it spells out N·s = kg·m·s⁻¹ = Impulse right at the
     // constraint site; a bare `0` would compile too. DIMENSIONED-ZERO
-    // CONVENTION — see the `StepForce.magnitude > 0N` note above.
+    // CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     //
     // By convention, `direction` carries the sign (unit vector); `impulse`
     // carries the positive scalar magnitude. Declaring the lower bound at the
@@ -651,13 +633,13 @@ structure def HarmonicForce : ForcingFunction {
     // the lower bound at the structure-def level follows the task-2544
     // explicit-contract convention (same rationale as `StepForce.magnitude
     // > 0N` and `ModalOptions.n_modes > 0`). `0N` retained per the
-    // DIMENSIONED-ZERO CONVENTION on `StepForce.magnitude > 0N` above.
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint amplitude > 0N
 
     // A zero-frequency "harmonic" is a DC offset (degenerate as a sinusoid);
     // negative frequency is symmetric to positive under sin() and physically
     // degenerate for a "harmonic" excitation. `0Hz` retained per the
-    // DIMENSIONED-ZERO CONVENTION on `StepForce.magnitude > 0N` above.
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint frequency > 0Hz
 
     // NOTE — explicitly NOT constrained:

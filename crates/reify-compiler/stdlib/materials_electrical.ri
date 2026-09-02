@@ -86,8 +86,8 @@ trait Conductive : ElectricallyCharacterized {
 // `resistivity > 1000000ohm*m` is NON-ZERO, so the dimension is REQUIRED — same
 // rule as Conductive above. `dielectric_strength > 0.0V/m` has a ZERO RHS, so a
 // bare `0.0` would compile too; `0.0V/m` is kept for readability only.
-// DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N` note in
-// modal_analysis.ri.
+// DIMENSIONED-ZERO CONVENTION — see
+// docs/notes/dimensioned-zero-coercion.md.
 trait Insulating : ElectricallyCharacterized {
     constraint resistivity > 1000000ohm*m
     constraint dielectric_strength > 0.0V/m

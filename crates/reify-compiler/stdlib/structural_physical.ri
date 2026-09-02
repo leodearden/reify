@@ -36,10 +36,10 @@
 //     succeeds at runtime after task #3111 tightened Material.density from
 //     Real to Density; `0kg/m^3` is retained by convention, not required — a
 //     bare `0` compiles too, MEMBER-ACCESS operand included. DIMENSIONED-ZERO
-//     CONVENTION — see the `StepForce.magnitude > 0N` note in
-//     modal_analysis.ri. The `moi_principal[0]` IndexAccess note below is not
-//     in tension with this: it records a deliberate choice not to lean on the
-//     coercion for a different operand shape.
+//     CONVENTION — see docs/notes/dimensioned-zero-coercion.md. The
+//     `moi_principal[0]` IndexAccess note below is not in tension with this: it
+//     records a deliberate choice not to lean on the coercion for a different
+//     operand shape.
 //
 // Historical note: prior to task 1876 this refined a trait named `Material`,
 // later renamed to `MaterialSpec`. PRD Phase 1 retires the trait edge
@@ -100,8 +100,8 @@ trait Flexible {
     param max_deflection : Length
     // Bare `0`, not the old `0.0 * 1N/1m` / `0.0 * 1m` boilerplate: it is
     // coerced to Scalar<Stiffness> / Scalar<Length> at compile time.
-    // DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N` note in
-    // modal_analysis.ri.
+    // DIMENSIONED-ZERO CONVENTION — see
+    // docs/notes/dimensioned-zero-coercion.md.
     constraint stiffness > 0
     constraint max_deflection > 0
 }

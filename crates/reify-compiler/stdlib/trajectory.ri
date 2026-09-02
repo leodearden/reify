@@ -505,9 +505,8 @@ trait Shaper { }
 //                                  `0` in the constraint below: the task-4485
 //                                  step-7 migration sweep dropped the older
 //                                  `0 * 1N` boilerplate.
-//                                  DIMENSIONED-ZERO CONVENTION — see the
-//                                  `StepForce.magnitude > 0N` note in
-//                                  modal_analysis.ri.
+//                                  DIMENSIONED-ZERO CONVENTION — see
+//                                  docs/notes/dimensioned-zero-coercion.md.
 //
 // No defaults: both fields are caller-supplied. There is no canonical "default
 // max force" (the limit is entirely application-specific).
@@ -671,8 +670,8 @@ structure def TOTSShaper : Shaper {
 //   target_frequency > 0Hz — rejects degenerate zero or negative frequency.
 //   `0Hz` is retained because it reads as an explicit frequency bound; a bare
 //   `0` compiles to the same Value::Scalar{si_value:0.0, dimension:FREQUENCY}.
-//   DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N` note in
-//   modal_analysis.ri.
+//   DIMENSIONED-ZERO CONVENTION — see
+//   docs/notes/dimensioned-zero-coercion.md.
 structure def ZVShaper : Shaper {
     param target_frequency : Frequency
     param damping_ratio : Real = 0.0

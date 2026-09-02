@@ -18,18 +18,40 @@
 //! comparison went unchecked.
 //! The eval signal (polymorphic_zero_eval.rs) proves the coercion fires at runtime
 //! and produces Satisfaction::Satisfied, including for compound dimensions (Stiffness).
-//! TRAIT-BODY shapes are unreachable from this file — a trait compiled with no
-//! conformer does not dimension-check its body, so a clean-compile probe written
-//! that way is vacuous (see `member_access_mismatched_non_zero_still_errors`).
-//! They are pinned at eval level instead, in
-//! `reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs`.
+//!
+//! TRAIT-BODY shapes ARE reachable from this file, provided a CONFORMER is
+//! declared. The vacuity condition is narrower than "trait body": a trait
+//! compiled with NO conformer is not dimension-checked at all (measured — see
+//! `trait_body_without_conformer_is_not_dimension_checked`), so only a
+//! conformer-less probe is vacuous. Add a conformer and the same body emits
+//! `DiagnosticCode::DimensionMismatch` on a mismatch, so the trait-body pins
+//! below carry real compile signal. `polymorphic_zero_trait_eval.rs` in
+//! reify-eval complements them with the RUNTIME satisfaction signal
+//! (Satisfied vs Violated), which no compile pin can express.
 //!
 //! Step-5 tests (additive position + edge/negative cases) are added in the same
 //! file: the additive tests confirm the coercion fires before the Add/Sub dimension
 //! guard, so `dimensioned ± 0` compiles without error.
+//!
+//! Mechanism digest (what these tests are pinning):
+//! `docs/notes/dimensioned-zero-coercion.md`.
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{assert_no_error_diagnostics, collect_errors, compile_source_with_stdlib};
+
+/// Assert at least one error carries `code`, quoting `context` on failure.
+///
+/// Asserting the CODE, not merely "some error", matters: an unrelated future
+/// diagnostic on an unrelated line would keep a bare non-empty check green
+/// while the dimension guard rotted away. Mirrors the `assert_has_code` idiom
+/// in `comparison_operand_guard_tests.rs` (promoting the shared copy into
+/// `reify-test-support` is out of this task's file scope).
+fn assert_has_code(errors: &[&reify_core::Diagnostic], code: DiagnosticCode, context: &str) {
+    assert!(
+        errors.iter().any(|d| d.code == Some(code)),
+        "{context}: expected DiagnosticCode::{code:?}; got errors: {errors:#?}"
+    );
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Step-3 (b): comparison-position breadth
@@ -315,6 +337,56 @@ structure S {
     assert_no_error_diagnostics(&compiled.diagnostics, "mass >= 0 comparison");
 }
 
+/// `member == 0` / `member != 0` — the EQUALITY operators.
+///
+/// The `matches!` gate in `compile_binop` that admits an operand pair to
+/// `coerce_zero_operand` lists `Eq | Ne` alongside the four relational
+/// operators and `Add | Sub`. No other test in the compiler or eval trees
+/// exercised the equality pair, so dropping `Eq`/`Ne` from that list would have
+/// left the whole suite green while making the "every relational operator"
+/// claim in `docs/notes/dimensioned-zero-coercion.md` false. No stdlib site
+/// uses this shape today; it is pinned because the note claims it.
+#[test]
+fn mass_eq_ne_zero_no_error() {
+    for op in ["==", "!="] {
+        let compiled = compile_source_with_stdlib(&format!(
+            r#"
+structure S {{
+    param mass : Mass = 1kg
+    constraint mass {op} 0
+}}
+"#
+        ));
+        assert_no_error_diagnostics(&compiled.diagnostics, &format!("mass {op} 0 comparison"));
+    }
+}
+
+/// NON-VACUITY GUARD for `mass_eq_ne_zero_no_error`.
+///
+/// The equality operators are dimension-checked exactly like the relational
+/// ones, so a mismatched NON-ZERO RHS must error. Without this, the pin above
+/// would pass even if `Eq`/`Ne` were exempted from dimension checking entirely
+/// (rather than being coerced).
+#[test]
+fn mass_eq_ne_mismatched_non_zero_still_errors() {
+    for op in ["==", "!="] {
+        let compiled = compile_source_with_stdlib(&format!(
+            r#"
+structure S {{
+    param mass : Mass = 1kg
+    constraint mass {op} 1m
+}}
+"#
+        ));
+        let errors = collect_errors(&compiled.diagnostics);
+        assert_has_code(
+            &errors,
+            DiagnosticCode::DimensionMismatch,
+            &format!("`mass {op} 1m` (Mass vs Length)"),
+        );
+    }
+}
+
 /// `member > 0.0` — bare, NON-NEGATED real-literal zero.
 ///
 /// `is_syntactic_zero_literal` matches `NumberLiteral { value == 0.0 }`
@@ -367,12 +439,12 @@ structure S {
 "#,
     );
     let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch)),
-        "expected DiagnosticCode::DimensionMismatch for `resistivity < 0.0001`          (ElectricResistivity vs dimensionless Real); got none. If this now          passes cleanly, the `trait Conductive` note in materials_electrical.ri          needs revisiting. Diagnostics: {:#?}",
-        compiled.diagnostics
+    assert_has_code(
+        &errors,
+        DiagnosticCode::DimensionMismatch,
+        "`resistivity < 0.0001` (ElectricResistivity vs dimensionless Real). If \
+         this now passes cleanly, the `trait Conductive` note in \
+         materials_electrical.ri needs revisiting",
     );
 }
 
@@ -388,11 +460,10 @@ structure S {
 /// deliberately carves out, so it is asserted rather than inferred from the
 /// plain-identifier cases above.
 ///
-/// Deliberately written as a `structure`, not the `trait Physical` it mirrors:
-/// see `member_access_mismatched_non_zero_still_errors` below for why a trait
-/// body would make this assertion vacuous. The trait-body form is pinned at
-/// eval level instead, by `trait_body_member_access_gt_bare_zero_satisfied` in
-/// `reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs`.
+/// Written as a `structure`; the `trait Physical` shape it mirrors is pinned
+/// separately by `trait_body_with_conformer_member_access_gt_zero_no_error`
+/// below (a trait body needs a CONFORMER to be dimension-checked at all — see
+/// `trait_body_without_conformer_is_not_dimension_checked`).
 #[test]
 fn member_access_lhs_gt_zero_no_error() {
     let compiled = compile_source_with_stdlib(
@@ -415,18 +486,9 @@ structure S {
 /// arm. A non-zero is never coerced, so the sibling test passing means the
 /// ZERO was coerced, not that member accesses go unchecked.
 ///
-/// Asserting the CODE, not merely "some error", matters: an unrelated future
-/// diagnostic on `param material : Material` would keep a bare non-empty check
-/// green while the dimension guard rotted away. Mirrors
-/// `comparison_operand_guard_tests.rs`'s `assert_has_code` idiom.
-///
-/// This guard is not ceremonial. When the same probe is written against a
-/// `trait` body instead of a `structure`, the guard goes silent: a trait-body
-/// `constraint material.density > 1m` — and even `mass + 1m` on a plain
-/// identifier, or a reference to a wholly undefined field — produces zero
-/// diagnostics, because a trait compiled with no conformer does not
-/// dimension-check its body. A member-access probe written in that form would
-/// therefore pass no matter what the coercion did.
+/// This guard is not ceremonial: the same probe written against a CONFORMER-LESS
+/// `trait` body goes silent — see
+/// `trait_body_without_conformer_is_not_dimension_checked` below.
 #[test]
 fn member_access_mismatched_non_zero_still_errors() {
     let compiled = compile_source_with_stdlib(
@@ -438,15 +500,160 @@ structure S {
 "#,
     );
     let errors = collect_errors(&compiled.diagnostics);
+    assert_has_code(
+        &errors,
+        DiagnosticCode::DimensionMismatch,
+        "`material.density > 1m` (Density vs Length) — the member-access \
+         dimension guard is not firing, which would make \
+         member_access_lhs_gt_zero_no_error vacuous",
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// TRAIT-BODY shapes (task 6038 amendment): the two swept stdlib sites whose
+// constraints live in a trait body rather than a structure body.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// SCOPE OF THE VACUITY CARVE-OUT — a trait body compiled with NO conformer is
+/// not dimension-checked at all.
+///
+/// Measured, not assumed: `constraint material.density > 1m` in a conformer-less
+/// trait produces ZERO diagnostics, even though the same body in a structure
+/// (`member_access_mismatched_non_zero_still_errors` above) errors with
+/// `DimensionMismatch`. This is why every trait-body pin below declares a
+/// conformer — and it bounds the carve-out to exactly that case, rather than to
+/// "trait bodies" generally.
+#[test]
+fn trait_body_without_conformer_is_not_dimension_checked() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+trait HasBody {
+    param material : Material
+    constraint material.density > 1m
+}
+"#,
+    );
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(
-        errors
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch)),
-        "expected DiagnosticCode::DimensionMismatch for `material.density > 1m` \
-         (Density vs Length); got none — the member-access dimension guard is \
-         not firing, which would make member_access_lhs_gt_zero_no_error vacuous. \
-         Diagnostics: {:#?}",
-        compiled.diagnostics
+        errors.is_empty(),
+        "a conformer-less trait body is expected to go unchecked (that is the \
+         documented vacuity condition). If this now errors, the carve-out in \
+         this file's module doc and in docs/notes/dimensioned-zero-coercion.md \
+         is stale and should be deleted. Diagnostics: {errors:#?}"
+    );
+}
+
+/// TRAIT BODY + MEMBER ACCESS, WITH CONFORMER — the `structural_physical.ri`
+/// `trait Physical` / `constraint material.density > 0kg/m^3` shape, compiled
+/// at the level where it is actually checked.
+///
+/// Non-vacuous by construction: `trait_body_with_conformer_mismatch_errors`
+/// below shows the identical shape with a mismatched non-zero RHS DOES error,
+/// so a clean compile here means the bare zero was coerced.
+#[test]
+fn trait_body_with_conformer_member_access_gt_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+trait HasBody {
+    param material : Material
+    constraint material.density > 0
+}
+
+structure Widget : HasBody {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+"#,
+    );
+    assert_no_error_diagnostics(
+        &compiled.diagnostics,
+        "conformed trait-body `material.density > 0`",
+    );
+}
+
+/// NON-VACUITY GUARD for the conformed trait-body pins.
+///
+/// Same trait/conformer shape, mismatched NON-ZERO RHS (`Scalar[kg·m^-3]` vs
+/// `Scalar[m]`) — must be rejected with `DiagnosticCode::DimensionMismatch`.
+#[test]
+fn trait_body_with_conformer_mismatch_errors() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+trait HasBody {
+    param material : Material
+    constraint material.density > 1m
+}
+
+structure Widget : HasBody {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+"#,
+    );
+    let errors = collect_errors(&compiled.diagnostics);
+    assert_has_code(
+        &errors,
+        DiagnosticCode::DimensionMismatch,
+        "conformed trait-body `material.density > 1m` (Density vs Length) — \
+         without this, trait_body_with_conformer_member_access_gt_zero_no_error \
+         would be vacuous",
+    );
+}
+
+/// TRAIT BODY + INHERITED PARAM, WITH CONFORMER — the
+/// `materials_electrical.ri` `trait Insulating` / `dielectric_strength > 0.0V/m`
+/// shape: the constraint lives in a REFINING trait while the param it names is
+/// declared by the parent trait. Uses the plain `0.0` Real literal, matching the
+/// stdlib site.
+#[test]
+fn trait_body_inherited_param_gt_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+trait Charged {
+    param dielectric_strength : DielectricStrength
+}
+
+trait NonDegenerate : Charged {
+    constraint dielectric_strength > 0.0
+}
+
+structure Insulator : NonDegenerate {
+    param dielectric_strength : DielectricStrength = 20000000.0V/m
+}
+"#,
+    );
+    assert_no_error_diagnostics(
+        &compiled.diagnostics,
+        "conformed refining-trait `dielectric_strength > 0.0`",
+    );
+}
+
+/// NON-VACUITY GUARD for `trait_body_inherited_param_gt_zero_no_error`.
+///
+/// The inherited-param shape with a NON-ZERO dimensionless RHS must error —
+/// which is also the `trait Insulating` neighbour `resistivity >
+/// 1000000ohm*m`'s rationale for keeping its unit.
+#[test]
+fn trait_body_inherited_param_mismatch_errors() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+trait Charged {
+    param dielectric_strength : DielectricStrength
+}
+
+trait NonDegenerate : Charged {
+    constraint dielectric_strength > 1.0
+}
+
+structure Insulator : NonDegenerate {
+    param dielectric_strength : DielectricStrength = 20000000.0V/m
+}
+"#,
+    );
+    let errors = collect_errors(&compiled.diagnostics);
+    assert_has_code(
+        &errors,
+        DiagnosticCode::DimensionMismatch,
+        "conformed refining-trait `dielectric_strength > 1.0` \
+         (DielectricStrength vs dimensionless Real)",
     );
 }
 
