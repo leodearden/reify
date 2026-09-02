@@ -19,6 +19,8 @@
 #  17:   warn-open still REFUSES (125) when there is nothing runnable to fall
 #        open onto (absent, or present-but-not-executable), + a regression pin
 #        that `refuse` mode is unchanged (task #7139)
+#  18:   REIFY_AUDIT_FRESHNESS_STRICT=1 restores fail-closed behaviour under
+#        warn-open — the operator's opt-in escape hatch (task #7139)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -460,6 +462,80 @@ set -e
 
 assert "regression pin: refuse mode STILL exits 125 for the same binary warn-open passes" \
     bash -c 'test "$1" -eq 125' -- "$WO_RC_17D"
+
+# ==============================================================================
+# Check 18: REIFY_AUDIT_FRESHNESS_STRICT=1 restores fail-closed behaviour
+#           under warn-open (task #7139)
+#
+# The opt-in escape hatch for an operator who would rather block done-flips
+# than run a stale detector. It is an ENV KNOB, not a fourth mode, because the
+# wrapper's call site is fixed in the script while the systemd unit is where
+# an operator can actually set something — the same delivery path
+# REIFY_AUDIT_PREDONE_WARN_ONLY already uses
+# (docs/architecture-audit/f-infra-design.md:371-376).
+#
+# NOTE for future editors: do NOT add REIFY_AUDIT_FRESHNESS_STRICT to
+# tests/infra/run-all-ambient-vars.manifest. That ledger records only vars
+# ambiently INJECTED into the run_all.sh pool (from verify.sh's plan line or
+# dark-factory-orchestrator.yaml's verify_env); this var is injected by
+# neither, and test_run_all_ambient_isolation.sh asserts SET EQUALITY, so an
+# unwarranted row would RED the gate.
+# ==============================================================================
+echo ""
+echo "--- Check 18: REIFY_AUDIT_FRESHNESS_STRICT=1 restores fail-closed under warn-open ---"
+
+# 18a: strict armed + present/executable/stale → 125, NOT 0.
+set +e
+env REIFY_AUDIT_FRESHNESS_STRICT=1 bash -c \
+    "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_STALE_BIN' warn-open '$REPO_ROOT'" 2>/dev/null
+WO_RC_18A=$?
+set -e
+
+assert "warn-open + REIFY_AUDIT_FRESHNESS_STRICT=1: stale binary exits 125 (fail-closed)" \
+    bash -c 'test "$1" -eq 125' -- "$WO_RC_18A"
+
+# 18b: the strict refusal must stay DISTINGUISHABLE from the unrunnable-binary
+# refusal (17b/17c). Both exit 125, so only the token separates them — and a
+# consumer must never misread "the operator chose strict" as "no binary on
+# disk". The binary IS present here, so E_AUDIT_BIN_STALE must be the token
+# and E_AUDIT_BIN_MISSING must be ABSENT.
+set +e
+WO_ERR_18=$(env REIFY_AUDIT_FRESHNESS_STRICT=1 bash -c \
+    "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_STALE_BIN' warn-open '$REPO_ROOT'" 2>&1 >/dev/null)
+set -e
+
+assert "warn-open strict refusal carries E_AUDIT_BIN_STALE (the binary exists, it is merely old)" \
+    bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_STALE"' -- "$WO_ERR_18"
+
+assert "warn-open strict refusal does NOT carry E_AUDIT_BIN_MISSING (nothing is missing)" \
+    bash -c '! printf "%s" "$1" | grep -qF "E_AUDIT_BIN_MISSING"' -- "$WO_ERR_18"
+
+# 18c: only the literal "1" arms strict. Anything else (unset, empty, "0",
+# "true") leaves the default fail-open in force. Follows Check 13/14's
+# precedent of testing both the set and the unset state of an env knob.
+set +e
+env REIFY_AUDIT_FRESHNESS_STRICT=0 bash -c \
+    "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_STALE_BIN' warn-open '$REPO_ROOT'" 2>/dev/null
+WO_RC_18C=$?
+set -e
+
+assert "warn-open + REIFY_AUDIT_FRESHNESS_STRICT=0: stale binary exits 0 (default fail-open)" \
+    bash -c 'test "$1" -eq 0' -- "$WO_RC_18C"
+
+# 18d: strict must not break the fresh fast path — a FRESH binary is not stale
+# at all, so the guard returns before any policy decision is reached.
+WO_FRESH_BIN="$WO_TMPDIR/reify-audit-fresh"
+touch "$WO_FRESH_BIN"
+chmod +x "$WO_FRESH_BIN"
+
+set +e
+env REIFY_AUDIT_FRESHNESS_STRICT=1 bash -c \
+    "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_FRESH_BIN' warn-open '$REPO_ROOT'" 2>/dev/null
+WO_RC_18D=$?
+set -e
+
+assert "warn-open + REIFY_AUDIT_FRESHNESS_STRICT=1: FRESH binary still exits 0 (fast path intact)" \
+    bash -c 'test "$1" -eq 0' -- "$WO_RC_18D"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
