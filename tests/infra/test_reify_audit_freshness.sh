@@ -13,6 +13,9 @@
 #  11:   reify_audit_guard rebuild-mode: fake cargo that does NOT freshen → non-zero
 #  12:   is_stale warns (stderr) when inside a git repo with no crates/reify-audit
 #        history — fail-open (fresh) but not silent (likely renamed crate path)
+#  13-15: reify_audit_guard rebuild-budget-safe mode (task #4624)
+#  16:   reify_audit_guard warn-open mode: a present, executable, stale binary
+#        FAILS OPEN (exit 0) with a loud, greppable alarm on stderr (task #7139)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -322,6 +325,67 @@ assert "rebuild-budget-safe: fresh bin + REIFY_AUDIT_NO_COLD_BUILD=1 → exit 0 
 
 assert "rebuild-budget-safe: fresh bin + REIFY_AUDIT_NO_COLD_BUILD unset → exit 0 (fast path)" \
     bash -c "unset REIFY_AUDIT_NO_COLD_BUILD; source '$FRESHNESS_LIB' && reify_audit_guard '$BS_FRESH_BIN' rebuild-budget-safe '$REPO_ROOT' 2>/dev/null"
+
+# ==============================================================================
+# Check 16: reify_audit_guard warn-open — present + executable + stale binary
+#           FAILS OPEN (exit 0) with a loud alarm on stderr (task #7139)
+#
+# WHY THIS MODE EXISTS. The predone wrapper is a SYNCHRONOUS pre-done hook:
+# dark-factory's fused_memory/middleware/pre_done_hook.py allows the status
+# flip only on rc 0 and blocks it on ANY non-zero rc, so `refuse` mode's 125
+# wedges EVERY done-flip in the project until a human reinstalls the binary.
+# crates/reify-audit lands ~4 commits/day, so the freshness epoch advances
+# several times a day and that outage recurs by construction (it ran ~15.7h
+# over 2026-08-30/31). Falling open runs the STALE detector rather than no
+# detector — strictly the pre-existing risk profile of the binary that is
+# already installed, and a far weaker risk than a project-wide inability to
+# mark work done. This also aligns the shell guard with reify-audit's OWN
+# house rule: p5_phantom_done.rs degrades a would-be-blocking High to an
+# "[advisory - ...]" exit 0 whenever its evidence is incomplete. Binary age is
+# strictly WEAKER evidence than a degraded git leg, so fail-closed here was an
+# inversion.
+# ==============================================================================
+echo ""
+echo "--- Check 16: guard warn-open fails OPEN for a present, executable, stale binary ---"
+
+WO_TMPDIR=$(mktemp -d /tmp/test-warn-open-XXXXXX)
+# Cumulative trap rewrite — bash EXIT traps do not stack, so the whole list
+# must be re-declared (same as :104, :152, :213, :254 above).
+trap 'rm -rf "$TMPDIR_FRESHNESS" "$NON_GIT_DIR" "$REBUILD_TMPDIR" "$GIT_NO_HIST_DIR" "$BS_TMPDIR" "$WO_TMPDIR"' EXIT
+
+# Executability is LOAD-BEARING here, unlike the empty non-executable fakes
+# used by Checks 4-15: warn-open splits on `[ -x "$bin" ]` (Check 17), so a
+# non-executable fixture would exercise the refusal leg instead. chmod first,
+# then `touch -t` — chmod moves ctime, not mtime, so the staling must come last.
+WO_STALE_BIN="$WO_TMPDIR/reify-audit"
+touch "$WO_STALE_BIN"
+chmod +x "$WO_STALE_BIN"
+touch -t 200001010000 "$WO_STALE_BIN"
+
+# 16a: exit code must be 0 — the done-flip is NOT blocked.
+set +e
+(source "$FRESHNESS_LIB" && reify_audit_guard "$WO_STALE_BIN" warn-open "$REPO_ROOT") 2>/dev/null
+WO_RC_16A=$?
+set -e
+
+assert "warn-open: present+executable+stale binary exits 0 (FAILS OPEN)" \
+    bash -c 'test "$1" -eq 0' -- "$WO_RC_16A"
+
+# 16b: falling open must be LOUD, not silent. Capture stderr only, using the
+# `2>&1 >/dev/null` ordering (stderr to the pipe, stdout to /dev/null).
+set +e
+WO_ERR_16=$(bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_STALE_BIN' warn-open '$REPO_ROOT'" 2>&1 >/dev/null)
+set -e
+
+assert "warn-open: stale binary emits a NON-EMPTY alarm on stderr (loud, not silent)" \
+    bash -c 'test -n "$1"' -- "$WO_ERR_16"
+
+# 16c: the alarm carries a stable machine token. Consumers (the deploy probe,
+# the wrapper suite, a triaging agent's grep) must branch on this token rather
+# than on message prose — the pub-const convention from
+# crates/reify-audit/src/jcodemunch_index.rs:522-543.
+assert "warn-open: stale-binary alarm carries the stable token E_AUDIT_BIN_STALE" \
+    bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_STALE"' -- "$WO_ERR_16"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
