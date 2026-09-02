@@ -12,6 +12,9 @@
 #
 # See: docs/architecture-audit/f-infra-design.md §11.1
 #      task 3731 (root-cause: dead .taskmaster/tasks/tasks.json default)
+#      task 7139 (Check 7b inverted: a stale-but-PRESENT binary now FAILS OPEN
+#                 rather than blocking every done-flip project-wide; Check 7d
+#                 pins that an ABSENT binary still refuses)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -261,7 +264,7 @@ assert "wrapper propagates child exit code 0 (no High findings)" \
 # Check 7: freshness guard integration (RED until step-6 wires the guard)
 # ==============================================================================
 echo ""
-echo "--- Check 7: freshness guard (stale binary refuses with exit 125) ---"
+echo "--- Check 7: freshness guard (stale binary FAILS OPEN; unrunnable binary refuses) ---"
 
 # 7a: Static wiring — the wrapper must have an actual `source` line for the
 # freshness guard library (not just a mention in a comment). A commented-out
@@ -272,34 +275,67 @@ assert "wrapper has an actual 'source' line for reify-audit-freshness.sh" \
     bash -c 'grep -qE '"'"'^[[:space:]]*(source|\.)[[:space:]]+.*reify-audit-freshness\.sh'"'"' "$1"' \
     -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
 
-# 7b: Behavioral — stale binary should refuse (exit 125) BEFORE MCP is called.
-# Reuse the existing BEHAVIORAL_TMPDIR shim harness (fake curl + REIFY_AUDIT_BIN
-# override). The fake reify-audit shim in BEHAVIORAL_TMPDIR was just created
-# (see Check 6 setup). We need it to have a STALE mtime so the guard fires.
-# Touch the shim to year 2000 (definitely before any crate commit).
+# 7b: Behavioral — a stale but PRESENT binary must FAIL OPEN (task #7139).
+#
+# DELIBERATE CONTRACT CHANGE. This check previously asserted the opposite:
+#   "wrapper exits 125 when REIFY_AUDIT_BIN is stale"
+#   "stale guard exit (125) is distinct from child propagation codes 7 and 0"
+# Those two assertions WERE the defect, expressed as a test. This wrapper is a
+# SYNCHRONOUS pre-done hook: dark-factory's
+# fused_memory/middleware/pre_done_hook.py allows the status flip only on rc 0
+# (:222-223) and blocks it on ANY non-zero rc, so a 125 here wedges EVERY
+# done-flip in the project until a human runs `cargo install`. crates/reify-audit
+# lands ~4 commits/day, so the freshness epoch advances several times a day and
+# that outage recurs by construction — it ran ~15.7h over 2026-08-30/31 and
+# produced three escalations (esc-7042-2, esc-6315-2, esc-6120-5), none of which
+# identified the real cause.
+#
+# This is NOT a weakened test. Coverage moves rather than shrinking: 7b-ii is a
+# stronger assertion than the one it replaces (it pins the exact regression that
+# caused the outage), and 7d below is entirely new — it pins that fail-open did
+# not become fail-SILENT.
+#
+# Reuses the existing BEHAVIORAL_TMPDIR shim harness (fake curl +
+# REIFY_AUDIT_BIN override) from Check 6's setup. The shim is already `chmod +x`
+# at :231, which now matters: the guard splits on `[ -x "$bin" ]`.
+# Touch it to year 2000 (definitely before any crate commit) so the guard fires.
 touch -t 200001010000 "$BEHAVIORAL_TMPDIR/reify-audit"
 
+# 7b-i: the child's exit code propagates — the flip is gated by the DETECTOR's
+# own findings, not blocked by the freshness guard.
 set +e
-STALE_STDERR_7B=$(PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=7 \
     REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
-    bash "$WRAPPER" --task abc --pre-done 2>&1 >/dev/null)
-actual_rc_7b=$?
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+actual_rc_7b_7=$?
 set -e
 
-assert "wrapper exits 125 when REIFY_AUDIT_BIN is stale" \
-    bash -c 'test "$1" -eq 125' -- "$actual_rc_7b"
+assert "7b-i: stale-but-present binary — wrapper propagates child exit code 7" \
+    bash -c 'test "$1" -eq 7' -- "$actual_rc_7b_7"
 
-assert "wrapper stderr mentions 'stale' when REIFY_AUDIT_BIN is stale" \
-    bash -c 'echo "$1" | grep -qi "stale"' -- "$STALE_STDERR_7B"
+# 7b-ii: THE regression that would have prevented the outage. A stale binary
+# that finds nothing must let the done-flip through.
+set +e
+STALE_STDERR_7B=$(PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=0 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done 2>&1 >/dev/null)
+actual_rc_7b_0=$?
+set -e
 
-# Also confirm the guard fires BEFORE the MCP path: the fake reify-audit shim
-# would print nothing meaningful, but fake curl would have been called if the
-# MCP path ran. We can't directly detect curl was NOT called, but we can
-# confirm the stale exit code (125) is distinct from the child binary exit codes
-# (7 and 0 tested in 6b/6c) — the guard path is the only source of exit 125
-# before the child binary is reached.
-assert "stale guard exit (125) is distinct from child propagation codes 7 and 0" \
-    bash -c 'test "$1" -eq 125 && test "$1" -ne 7 && test "$1" -ne 0' -- "$actual_rc_7b"
+assert "7b-ii: stale-but-present binary — wrapper exits 0, the done-flip is ALLOWED" \
+    bash -c 'test "$1" -eq 0' -- "$actual_rc_7b_0"
+
+# 7b-iii: falling open is LOUD, not silent. The token is what a consumer
+# branches on (the deploy probe does, after step-12).
+assert "7b-iii: falling open is loud — stderr carries E_AUDIT_BIN_STALE" \
+    bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_STALE"' -- "$STALE_STDERR_7B"
+
+# 7b-iv: and the operator's fix survives into the hook's captured stderr, which
+# dark-factory clips to 2000 chars and surfaces to the MCP caller.
+assert "7b-iv: fail-open stderr still tells the operator to 'cargo install'" \
+    bash -c 'printf "%s" "$1" | grep -qF "cargo install"' -- "$STALE_STDERR_7B"
 
 # 7c: Regression — re-verify 6b/6c still pass now that the shim is touched
 # to a FRESH mtime (so the guard passes and child exit codes propagate normally).
@@ -327,6 +363,32 @@ set -e
 
 assert "7c regression: wrapper propagates child exit code 0 with fresh binary" \
     bash -c 'test "$1" -eq 0' -- "$actual_rc_7c_0"
+
+# 7d: ABSENT binary — the wrapper must still REFUSE (task #7139).
+#
+# This pins that fail-open did NOT become fail-SILENT. Fail-open means "run the
+# stale detector anyway", which presupposes a detector exists. With nothing on
+# disk there is nothing to fall open onto, so exiting 0 here would let a
+# done-flip through having asserted NOTHING — and dying with 127 from the shell
+# would be a worse, less diagnosable block than a guard code. 125 with a named
+# token is the only honest answer.
+#
+# The `set -euo pipefail` interaction is what delivers this: the guard call in
+# the wrapper is unchecked, so a 125 return still aborts the wrapper with 125.
+NO_SUCH_BIN="$BEHAVIORAL_TMPDIR/no-such-reify-audit"
+
+set +e
+MISSING_STDERR_7D=$(PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    REIFY_AUDIT_BIN="$NO_SUCH_BIN" \
+    bash "$WRAPPER" --task abc --pre-done 2>&1 >/dev/null)
+actual_rc_7d=$?
+set -e
+
+assert "7d: ABSENT binary — wrapper exits 125 (fail-open did not become fail-silent)" \
+    bash -c 'test "$1" -eq 125' -- "$actual_rc_7d"
+
+assert "7d: ABSENT-binary refusal carries E_AUDIT_BIN_MISSING (not the stale token)" \
+    bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_MISSING"' -- "$MISSING_STDERR_7D"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
