@@ -4745,17 +4745,34 @@ structure Assembly {
     /// insert unconditionally, or that recorded a bogus entry on a source
     /// miss, would not be caught by an engine-level test without this.
     ///
-    /// Uses [`reify_ir::GeometryOp::Tube`] as the non-seeded parent:
-    /// `is_seedable_primitive` (primitive_attribute_seed.rs) recognises only
-    /// Box/Cylinder/Sphere/Cone/Wedge/Torus/HalfSpace — `Tube` is a
-    /// `PrimitiveKind` at the compiler level (composed at the kernel layer as
-    /// `boolean_cut` of two cylinders) but is deliberately excluded from that
-    /// match, so `record_solid_attribute` is never called for its result
-    /// handle. This is a real, already-shipped "non-seeded parent", not a
-    /// synthetic op, and it needs zero extra mock staging:
-    /// `seed_primitive_attributes_for_handle` short-circuits to `Ok(())` for
-    /// a non-seedable op before touching the kernel at all
-    /// (primitive_attribute_seed.rs:144-151).
+    /// Uses [`reify_ir::GeometryOp::Tube`] as the non-seeded parent. The
+    /// MECHANISM that makes it non-seeded changed in task #6550 — read this
+    /// before touching the fixture staging below.
+    ///
+    /// Before #6550, `Tube` was excluded from `is_seedable_primitive`
+    /// (primitive_attribute_seed.rs), so `seed_primitive_attributes_for_handle`
+    /// short-circuited to `Ok(())` without touching the kernel. #6550 made
+    /// `Tube` a seeded primitive, so that route is gone: EVERY `GeometryOp`
+    /// primitive (Box/Cylinder/Sphere/Tube/Cone/Wedge/Torus/HalfSpace) is
+    /// seedable now, and there is no parentless non-seedable op left to
+    /// retarget this test onto.
+    ///
+    /// What actually happens today: the seeder DOES call
+    /// `extract_faces(GeometryHandleId(1))` for the Tube. The mock below
+    /// deliberately stages extraction fixtures only for the BOX's handle
+    /// (id 2), so the Tube's call returns `Err`, the engine pushes a WARNING
+    /// (not an Error) diagnostic, and `record_solid_attribute` is skipped
+    /// because it is gated on `seed_result.is_ok()`. The Tube is therefore
+    /// still a genuine non-seeded parent, and every assertion below still
+    /// holds as written — the diagnostics assertion filters on
+    /// `Severity::Error`, so the new warning passes through.
+    ///
+    /// CAUTION — the UNSTAGED fixture for handle 1 is now LOAD-BEARING, not
+    /// incidental. A future author who "helpfully" stages `with_extracted_*`
+    /// for `GeometryHandleId(1)` would make the Tube seed successfully and
+    /// silently destroy this test's premise (it would then assert nothing).
+    /// That is the exact mirror of the failure mode the staging comment below
+    /// already warns about for the Box.
     ///
     /// Unions the unseeded Tube (step0/left) with a normally-seeded Box
     /// (step1/right) so both the negative and positive forwarding outcomes

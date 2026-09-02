@@ -298,8 +298,8 @@ fn engine_build_records_topology_attributes_for_multi_realization_module() {
 
 /// After `Engine::build()` on a `tube(...)` realization, the engine's
 /// `topology_attribute_table()` must contain entries for the tube's 4 faces
-/// + N edges (N ≥ 4: at minimum two cap circles per annulus, plus OCCT's seam
-/// edges), plus the one per-solid representative entry from
+/// and its N edges (N ≥ 4: at minimum two cap circles per annulus, plus
+/// OCCT's seam edges), plus the one per-solid representative entry from
 /// `record_solid_attribute` (task #4636).
 ///
 /// Per-role distribution — 1×Cap(Top), 1×Cap(Bottom), and 2×Side whose
@@ -327,8 +327,13 @@ fn engine_build_records_topology_attributes_for_tube_realization() {
     assert_no_geometry_errors(&build_result);
 
     let table = engine.topology_attribute_table();
+    // Named so the decomposition stays readable: 4 faces, at least 4 edges,
+    // and the 1 per-solid representative entry. (Written as a const rather
+    // than inline because clippy::int_plus_one rewrites a literal `>= a + 1`
+    // into `> a`, which would erase exactly that decomposition.)
+    const MIN_TUBE_ENTRIES: usize = 4 + 4 + 1;
     assert!(
-        table.len() >= 4 + 4 + 1,
+        table.len() >= MIN_TUBE_ENTRIES,
         "topology_attribute_table must hold 4 face + ≥4 edge + 1 solid-representative \
          entries after a tube realization, got {}",
         table.len()

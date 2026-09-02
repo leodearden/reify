@@ -9,7 +9,8 @@
 //!   This module covers the *seeding* phase — originating attributes for the
 //!   leaves of the feature tree (primitives), which have no parent.
 //!
-//! Scope of this task (#2574), extended by task #4156 (Cone), task #4158 (Wedge):
+//! Scope of this task (#2574), extended by task #4156 (Cone), task #4158
+//! (Wedge), task #6550 (Tube):
 //! - `GeometryOp::Box` / `GeometryOp::Sphere` / `GeometryOp::Wedge` — every
 //!   face seeded `Role::Side`; every edge seeded `Role::NewEdge`. `local_index`
 //!   is the construction-order (TopExp) position within `(feature_id, role)`.
@@ -20,6 +21,28 @@
 //!   z-component; every edge seeded `Role::NewEdge`. A pointed cone
 //!   (top_radius == 0) emits only 2 faces (no top cap), so `Cap(Top)` count
 //!   is 0 in that case.
+//! - `GeometryOp::Tube` (task #6550) — four analytic faces. The two annuli
+//!   are classified `Cap(Top)` / `Cap(Bottom)` by the same
+//!   `GeometryQuery::FaceNormal` z-component test the Cylinder/Cone arm uses
+//!   (no new threshold). The outer wall and the bore are BOTH `Role::Side`,
+//!   disambiguated by DESCENDING `GeometryQuery::BoundingBox` radial extent —
+//!   outer wall `local_index` 0, bore 1. Every edge is `Role::NewEdge`; no
+//!   vertex seeding. See `classify_tube_face_roles` below for why `FaceNormal`
+//!   structurally cannot separate the two walls and why the wall ordering is
+//!   a relative comparison rather than an absolute threshold.
+//!
+//!   The bore did NOT get its own `Role` variant. A new variant is a
+//!   cross-crate change (the `reify-ir` enum plus its wildcard-free frozen
+//!   `content_hash_bytes` discriminant table, `role_is_face` / `role_sort_key`
+//!   here, and `reify-shell-extract`'s frozen `ROLE_TAG_*` wire tags), and it
+//!   buys no resolution power today: `resolve_unique_by_attribute` matches on
+//!   BOTH `role` and `local_index`, so `Side/0` and `Side/1` are already
+//!   unambiguously addressable. `record_solid_attribute`'s doc records the
+//!   same trade-off being resolved the same way. Consequence worth knowing:
+//!   `cap_kind_translation("side")` yields `(Role::Side, 0)`, so `@face("side")`
+//!   on a tube resolves to the OUTER WALL — the intuitive default. There is no
+//!   `"bore"` surface label yet; `@face("bore")` would need a
+//!   `cap_kind_translation` entry mapping to `(Role::Side, 1)`.
 //! - All other variants are intentional no-ops; the dispatch is widened in
 //!   subsequent tasks.
 //!
@@ -37,9 +60,12 @@
 //! later refinement tasks if/when selector vocabulary requires it.
 //!
 //! Variants intentionally deferred:
-//! - `GeometryOp::Tube` — composed via `boolean_cut` at the kernel layer; its
-//!   per-result attribute attachment lands with task 8 (booleans) or a Tube-
-//!   specific follow-up.
+//! - `GeometryOp::Tube` was wired by task #6550 — it is composed via
+//!   `boolean_cut` at the kernel layer, but it is a `GeometryOp`-level
+//!   PRIMITIVE with zero parents (`parent_handles_for_op` returns empty), so
+//!   it needed ORIGINATING seeding here rather than the boolean history
+//!   propagation this bullet once deferred it to. Its arm lives below; the
+//!   semantics are in "Scope of this task" above.
 //! - `GeometryOp::Torus` was wired end-to-end by task 4157 — its seeding arm
 //!   now lives below, sharing the Sphere semantics: all faces `Role::Side`,
 //!   all edges `Role::NewEdge`. (`Cone`/`Wedge` likewise have generic arms.)
