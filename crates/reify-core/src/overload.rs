@@ -1161,6 +1161,26 @@ mod tests {
             domain: Box::new(Type::dimensionless_scalar()),
             codomain: Box::new(Type::length()),
         }));
+        // The two "constructor present, no param inside it" near-misses — a
+        // recursion that returned `true` for the constructor itself rather than
+        // for its contents would pass every positive above and fail only here.
+        // (Ported from the compile-side `type_carries_type_param_applied_*` /
+        // `_projection_*` tests, deleted by #5689 once this crate owned the
+        // implementation.)
+        assert!(
+            !super::type_carries_type_param(&Type::Applied {
+                name: "C".to_string(),
+                args: vec![Type::StructureRef("X".to_string())],
+            }),
+            "Applied with only concrete args must not carry a type param"
+        );
+        assert!(
+            !super::type_carries_type_param(&Type::Projection {
+                base: Box::new(Type::StructureRef("X".to_string())),
+                member: "M".to_string(),
+            }),
+            "Projection with concrete base must not carry a type param"
+        );
     }
 
     /// `type_carries_dim_param` is the mirror image of

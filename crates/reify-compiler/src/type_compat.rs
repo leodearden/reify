@@ -3144,52 +3144,6 @@ mod tests {
         }
     }
 
-    // ── task 4231 β amendment: type_carries_type_param coverage parity ───────
-
-    #[test]
-    fn type_carries_type_param_recurses_through_all_constructors() {
-        // The predicate must recognize a type-param embedded in ANY
-        // inner-Type-bearing constructor, in parity with unify /
-        // substitute_type_params — not just the bare leaf + Option/List/Set/Map.
-        // Positive cases across the widened constructor set:
-        assert!(type_carries_type_param(&tp("T")));
-        assert!(type_carries_type_param(&Type::Field {
-            domain: Box::new(tp("D")),
-            codomain: Box::new(Type::dimensionless_scalar()),
-        }));
-        assert!(
-            type_carries_type_param(&Type::List(Box::new(Type::Field {
-                domain: Box::new(tp("D")),
-                codomain: Box::new(Type::dimensionless_scalar()),
-            }))),
-            "recursion must pass through List into Field"
-        );
-        assert!(type_carries_type_param(&Type::Function {
-            params: vec![Type::dimensionless_scalar(), tp("T")],
-            return_type: Box::new(Type::dimensionless_scalar()),
-        }));
-        assert!(type_carries_type_param(&Type::Union(vec![
-            Type::Int,
-            tp("T")
-        ])));
-        assert!(type_carries_type_param(&Type::Tensor {
-            rank: 2,
-            n: 3,
-            quantity: Box::new(tp("Q")),
-        }));
-        assert!(type_carries_type_param(&Type::Keyed(Box::new(tp("T")))));
-        assert!(type_carries_type_param(&Type::Complex(Box::new(tp("T")))));
-        assert!(type_carries_type_param(&Type::Range(Box::new(tp("T")))));
-
-        // Negative: no type-param anywhere → false (leaves + concrete nesting).
-        assert!(!type_carries_type_param(&Type::dimensionless_scalar()));
-        assert!(!type_carries_type_param(&Type::Field {
-            domain: Box::new(Type::dimensionless_scalar()),
-            codomain: Box::new(Type::length()),
-        }));
-        assert!(!type_carries_type_param(&Type::List(Box::new(Type::Int))));
-    }
-
     // ── task γ #4031 amendment: type_mentions_conflicted_param ───────────────
 
     #[test]
@@ -4022,63 +3976,15 @@ mod tests {
         );
     }
 
-    // ── task 4235 ζ: type_carries_dim_param + overload dim-param wildcard ─────
+    // ── task 4235 ζ: overload dim-param wildcard ──────────────────────────────
+    //
+    // `type_carries_dim_param`'s own arm coverage moved to
+    // `reify_core::overload` with the predicate (#5689); what stays here is the
+    // COMPILER-side policy it feeds — `resolve_function_overload`'s ladder.
 
     /// Helper: ScalarParam shorthand.
     fn sp(name: &str) -> Type {
         Type::ScalarParam(name.to_string())
-    }
-
-    /// `type_carries_dim_param(ScalarParam("Q"))` must return true.
-    ///
-    /// RED until step-6: the function does not exist (compile error).
-    #[test]
-    fn type_carries_dim_param_bare_scalar_param_is_true() {
-        assert!(
-            type_carries_dim_param(&sp("Q")),
-            "ScalarParam should carry a dim-param"
-        );
-    }
-
-    /// `type_carries_dim_param(Vector3<ScalarParam("Q")>)` must return true
-    /// (dim-param in the quantity slot).
-    ///
-    /// RED until step-6.
-    #[test]
-    fn type_carries_dim_param_vector3_quantity_is_true() {
-        let vec3_q = Type::Vector {
-            n: 3,
-            quantity: Box::new(sp("Q")),
-        };
-        assert!(
-            type_carries_dim_param(&vec3_q),
-            "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
-        );
-    }
-
-    /// `type_carries_dim_param(Scalar{LENGTH})` must return false.
-    ///
-    /// RED until step-6.
-    #[test]
-    fn type_carries_dim_param_concrete_scalar_is_false() {
-        assert!(
-            !type_carries_dim_param(&Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }),
-            "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
-        );
-    }
-
-    /// `type_carries_dim_param(TypeParam("T"))` must return false — a type-param
-    /// is not a dimension-param.
-    ///
-    /// RED until step-6.
-    #[test]
-    fn type_carries_dim_param_type_param_is_false() {
-        assert!(
-            !type_carries_dim_param(&tp("T")),
-            "TypeParam should NOT carry a dim-param"
-        );
     }
 
     /// Overload wildcard for dim-param: `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real)`
@@ -4364,9 +4270,12 @@ mod tests {
 
     // ── task 4602 β: Applied / Projection coverage ──────────────────────────
     // Tests for the new behavioral branches: unify (element-wise Applied,
-    // Projection base, and structural-mismatch fallthrough), substitute_type_params
-    // (Applied arg rebuild and Projection base rebuild), and type_carries_type_param
-    // / type_carries_dim_param recursion into Applied args and Projection base.
+    // Projection base, and structural-mismatch fallthrough) and
+    // substitute_type_params (Applied arg rebuild and Projection base rebuild)
+    // — the two that are still compiler-owned. The matching
+    // `type_carries_type_param` / `type_carries_dim_param` Applied-args and
+    // Projection-base recursion cases moved to `reify_core::overload` with the
+    // predicates themselves (#5689), near-misses included.
 
     /// unify(Applied{C,[TypeParam(T)]}, Applied{C,[StructureRef(X)]}) must bind T=X.
     #[test]
@@ -4439,37 +4348,6 @@ mod tests {
         assert!(
             subst.is_empty(),
             "Applied-vs-StructureRef must bind nothing in β (see unify doc β note)"
-        );
-    }
-
-    /// type_carries_type_param returns true for Applied whose args contain a TypeParam.
-    #[test]
-    fn type_carries_type_param_applied_with_type_param_arg() {
-        let t = Type::applied("C", vec![tp("T")]);
-        assert!(
-            type_carries_type_param(&t),
-            "Applied with TypeParam arg must carry a type param"
-        );
-        // Applied with no TypeParam in args → false.
-        let t2 = Type::applied("C", vec![Type::StructureRef("X".to_string())]);
-        assert!(
-            !type_carries_type_param(&t2),
-            "Applied with only concrete args must not carry a type param"
-        );
-    }
-
-    /// type_carries_type_param returns true for Projection whose base is a TypeParam.
-    #[test]
-    fn type_carries_type_param_projection_with_type_param_base() {
-        let t = Type::projection(tp("T"), "M");
-        assert!(
-            type_carries_type_param(&t),
-            "Projection with TypeParam base must carry a type param"
-        );
-        let t2 = Type::projection(Type::StructureRef("X".to_string()), "M");
-        assert!(
-            !type_carries_type_param(&t2),
-            "Projection with concrete base must not carry a type param"
         );
     }
 
