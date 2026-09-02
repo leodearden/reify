@@ -180,9 +180,34 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 // §8.2 citation resolution (canonical vs malformed)
 // -----------------------------------------------------------------------
 
-/// §8.2 PRD-relative index: `true` when the `#` at `cite_start` (with parsed
-/// value `id`) names an index INSIDE a PRD document — a task/invariant/row/
-/// open-question number local to some `docs/prds/**` file — rather than a
+/// §8.2 PRD-relative families.  Which of the three registers a `#N` sits in is
+/// load-bearing in exactly ONE place — [`has_malformed_cite`] — so the
+/// recogniser reports the family rather than a bare boolean and the two
+/// questions cannot drift apart.
+///
+/// "Not a canonical cite" and "a botched citation" are different claims.  Only
+/// [`PrdCiteFamily::TaskCite`] spells an attempt to cite a task, so only it can
+/// be MALFORMED; a `§7#5` or `invariant #2` mention is an ordinary
+/// cross-reference into a document and asserts no tracking at all.  Treating
+/// the latter as `malformed-cite` would DEMOTE a marker that never claimed to
+/// be tracked from `untracked` (High, hard gate per §8.4) to Medium/advisory
+/// purely because its text names a PRD section or row — a demotion §6.6's
+/// `live ⊆ baseline` ratchet is as blind to as it is to a lost finding.  Pinned
+/// by `marker_with_prd_reference_only_is_untracked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrdCiteFamily {
+    /// Families 1 and 2 — a glued PRD-artifact namespace (`§7#5`, `T#11`,
+    /// `OQ#1`) or a spaced PRD-local noun (`invariant #2`, `rows #1`,
+    /// `design decision #5`).  A cross-reference INTO a document.
+    Reference,
+    /// Family 3 — `task(s) #N`.  The one register whose spelling is a citation
+    /// attempt, and therefore the one that can be malformed.
+    TaskCite,
+}
+
+/// §8.2 PRD-relative index: `Some(family)` when the `#` at `cite_start` (with
+/// parsed value `id`) names an index INSIDE a PRD document — a task/invariant/
+/// row/open-question number local to some `docs/prds/**` file — rather than a
 /// canonical task id.  Inspects ONLY the bytes to the LEFT of the `#`.
 ///
 /// CLAUDE.md's TODO-citation convention already bans this register
@@ -197,7 +222,9 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 ///    `invariant(s)` / `row(s)` / `boundary` / `open-question` /
 ///    `design decision` token.
 /// 3. **`task(s)`** — exactly one space between the `#` and a `task`/`tasks`
-///    token.
+///    token.  This is the only family that reports
+///    [`PrdCiteFamily::TaskCite`]; the other two report
+///    [`PrdCiteFamily::Reference`].
 ///
 /// Three properties are load-bearing; each is stated in the code below and
 /// pinned by a test, and the live-corpus measurements behind them (per-family
@@ -239,12 +266,12 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 /// [`extract_g_allow_owner_cites`] runs an independent scan and never calls
 /// [`extract_cites`] — so the duplication is contained and is pinned by the
 /// pre-existing `extract_g_allow_owner_cites_*` tests staying green.
-fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
+fn prd_relative_cite_family(bytes: &[u8], cite_start: usize, id: u32) -> Option<PrdCiteFamily> {
     // The shared digit bound, applied ONCE for all three families — see the
     // "UNIFORM" and "fail-DANGEROUS" paragraphs above.  Placed here rather than
     // inside a family arm so a family added later cannot forget it.
     if id > 99 {
-        return false;
+        return None;
     }
 
     /// The token alphabet for the spaced-noun families: [`is_word_byte`] plus
@@ -274,7 +301,7 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
         s -= 1;
     }
     if s >= 2 && left[s - 2] == 0xC2 && left[s - 1] == 0xA7 {
-        return true;
+        return Some(PrdCiteFamily::Reference);
     }
     // `OQ#N` / `DD#N` / `Q#N` / `T#N` — an uppercase artifact abbreviation with
     // a left word boundary.  All candidates are tried: `OQ#1` would fail the
@@ -283,7 +310,7 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
         if let Some(head) = left.strip_suffix(abbrev)
             && head.last().is_none_or(|&b| !is_word_byte(b))
         {
-            return true;
+            return Some(PrdCiteFamily::Reference);
         }
     }
 
@@ -292,15 +319,27 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
     // would classify MORE cites as PRD-relative, and every such classification
     // suppresses a cite, so the narrow form is the fail-safe direction.
     if left.last() != Some(&b' ') || (left.len() >= 2 && left[left.len() - 2] == b' ') {
-        return false;
+        return None;
     }
-    // Families 2 and 3 share one noun table: family 3's `task`/`tasks` is safe
-    // here only because of the hoisted `id > 99` early return at the top of
-    // this fn, which is not re-spelled per family.  Compared on the raw bytes
-    // (`eq_ignore_ascii_case`) rather than via a lowercased `String`, so
-    // classifying a cite allocates nothing — the `decision` arm below always
-    // did this, and the two halves now agree.
-    const PRD_LOCAL_NOUNS: [&[u8]; 9] = [
+    let (token, token_start) = token_before(left, left.len() - 1);
+
+    // Family 3 is matched FIRST and kept in its own table, because it is the
+    // one register that spells a citation ATTEMPT — see [`PrdCiteFamily`].
+    // It is safe under the shared bound only because of the hoisted `id > 99`
+    // early return at the top of this fn, which is not re-spelled per family.
+    if [b"task".as_slice(), b"tasks".as_slice()]
+        .iter()
+        .any(|n| token.eq_ignore_ascii_case(n))
+    {
+        return Some(PrdCiteFamily::TaskCite);
+    }
+
+    // Family 2's noun table.  Compared on the raw bytes (`eq_ignore_ascii_case`)
+    // rather than via a lowercased `String`, so classifying a cite allocates
+    // nothing — the `decision` arm below always did this, and the two halves
+    // now agree.  `design_decision` is the snake_case spelling of the two-word
+    // `design decision` handled by that arm; both are live PRD idioms.
+    const PRD_LOCAL_NOUNS: [&[u8]; 7] = [
         b"invariant",
         b"invariants",
         b"row",
@@ -308,21 +347,31 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
         b"boundary",
         b"open-question",
         b"design_decision",
-        b"task",
-        b"tasks",
     ];
-    let (token, token_start) = token_before(left, left.len() - 1);
     if PRD_LOCAL_NOUNS.iter().any(|n| token.eq_ignore_ascii_case(n)) {
-        return true;
+        return Some(PrdCiteFamily::Reference);
     }
     // `design decision #5` — the bare noun `decision` is only PRD-local when
     // `design` immediately qualifies it (one space, as above).
-    token.eq_ignore_ascii_case(b"decision")
+    (token.eq_ignore_ascii_case(b"decision")
         && token_start > 0
         && left[token_start - 1] == b' '
         && token_before(left, token_start - 1)
             .0
-            .eq_ignore_ascii_case(b"design")
+            .eq_ignore_ascii_case(b"design"))
+    .then_some(PrdCiteFamily::Reference)
+}
+
+/// §8.2 boolean face of [`prd_relative_cite_family`]: `true` when the `#N` is
+/// PRD-relative in ANY family.
+///
+/// This is the right question for the two halves of canonical-cite recognition
+/// ([`has_canonical_cite`] / [`extract_cites`]) — a `#N` in any of the three
+/// registers names a position inside a document, so none of them can anchor
+/// tracking.  [`has_malformed_cite`] deliberately asks the NARROWER question;
+/// see [`PrdCiteFamily`].
+fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
+    prd_relative_cite_family(bytes, cite_start, id).is_some()
 }
 
 /// §8.2 cite occurrences — the SINGLE `#`+digit-run scanner. Yields
@@ -411,20 +460,29 @@ fn is_greek(c: char) -> bool {
 
 /// §8.2/§6.4 malformed citation: the case-insensitive token `task` immediately
 /// followed — after an optional single space — by a Greek letter, OR
-/// `task-`/`task_`/`task `+ ASCII digit (legacy forms), OR a `#N` sitting in
-/// PRD-relative left-context ([`prd_relative_cite`]). Banned from day one; δ
-/// migrates valid cites to canonical `#NNNN`.
+/// `task-`/`task_`/`task `+ ASCII digit (legacy forms), OR a `task(s) #N`
+/// sitting in PRD-relative left-context ([`PrdCiteFamily::TaskCite`]). Banned
+/// from day one; δ migrates valid cites to canonical `#NNNN`.
 ///
 /// The `#N` register is the second half of the §8.2 grammar fix and DELEGATES
-/// to [`prd_relative_cite`] rather than re-spelling its three families, so the
+/// to [`prd_relative_cite_family`] rather than re-spelling its families, so the
 /// two halves — "this `#N` is not a canonical cite" (`has_canonical_cite` /
 /// `extract_cites`) and "this `#N` is a banned citation form" (here) — cannot
-/// drift apart. Without it, a marker line whose only cite is PRD-relative loses
+/// drift apart. Without it, a marker line whose only cite is `task #N` loses
 /// its canonical anchor and collapses into `untracked`, which §8.4 rates High
 /// (hard gate) where a malformed cite is Medium (advisory) — over-reporting an
 /// author who cited imprecisely as untracked debt. CLAUDE.md's TODO-citation
 /// convention already mandates the `malformed-cite` disposition for
 /// PRD-relative indices; this closes the `#N` spelling of it.
+///
+/// **The delegation is deliberately NARROWER than `has_canonical_cite`'s**: it
+/// accepts only [`PrdCiteFamily::TaskCite`], never [`PrdCiteFamily::Reference`].
+/// The asymmetry is the point — a `§7#5` / `invariant #2` mention makes the
+/// `#N` unusable as an anchor (so canonical-cite recognition must reject it)
+/// without being a citation attempt (so it must not soften the verdict). A
+/// marker that never cited anything is `untracked` at High whether or not its
+/// prose happens to name a PRD row; see [`PrdCiteFamily`] for why the
+/// alternative is fail-dangerous.
 ///
 /// The `#N` register is scanned in a SEPARATE pass, via the shared
 /// [`cite_occurrences`] iterator, rather than being fused into the `char` loop
@@ -440,14 +498,19 @@ fn is_greek(c: char) -> bool {
 /// decoupled lane. The pre-existing `extract_g_allow_owner_cites_*` tests
 /// staying green is the proof of that decoupling.
 fn has_malformed_cite(line: &str) -> bool {
-    // Pass 1 (§8.2 `#N` register): the shared [`cite_occurrences`] scan, with
-    // the verdict INVERTED relative to `has_canonical_cite` — the line is
-    // malformed when ANY occurrence lands in PRD-relative left-context. "Any",
-    // not "all", because arm (3) consults this only AFTER `has_canonical_cite`
-    // has already returned false, so reaching here means no occurrence on the
-    // line was a genuine cite.
+    // Pass 1 (§8.2 `task(s) #N` register): the shared [`cite_occurrences`]
+    // scan, with the verdict INVERTED relative to `has_canonical_cite` — the
+    // line is malformed when ANY occurrence lands in `task(s)` left-context.
+    // "Any", not "all", because arm (3) consults this only AFTER
+    // `has_canonical_cite` has already returned false, so reaching here means
+    // no occurrence on the line was a genuine cite.
+    //
+    // `Reference` occurrences are deliberately NOT accepted here — see this
+    // fn's rustdoc and [`PrdCiteFamily`].
     let bytes = line.as_bytes();
-    if cite_occurrences(line).any(|(at, id)| prd_relative_cite(bytes, at, id)) {
+    if cite_occurrences(line)
+        .any(|(at, id)| prd_relative_cite_family(bytes, at, id) == Some(PrdCiteFamily::TaskCite))
+    {
         return true;
     }
 
@@ -2720,10 +2783,23 @@ mod tests {
         assert!(!has_malformed_cite("// TODO: schedule multitask 5 jobs"));
     }
 
-    /// A PRD-relative index on a REAL marker line is a banned citation form —
-    /// the behaviour CLAUDE.md's TODO-citation convention already mandates
-    /// ("PRD-relative indices … resolve to `malformed-cite`") and which §8.2's
-    /// grammar missed for the `#N` spelling.
+    /// A PRD-relative `task(s) #N` on a REAL marker line is a banned citation
+    /// form — the behaviour CLAUDE.md's TODO-citation convention already
+    /// mandates ("PRD-relative indices … resolve to `malformed-cite`") and
+    /// which §8.2's grammar missed for the `#N` spelling.
+    ///
+    /// The two OTHER families are the negative half, and the asymmetry is
+    /// deliberate: `§7#5` / `invariant #2` are cross-references into a
+    /// document, not citation attempts, so a marker carrying one and nothing
+    /// else never claimed to be tracked and must stay `untracked` (High) rather
+    /// than soften to the Medium advisory merely because its prose names a PRD
+    /// section.  See [`PrdCiteFamily`]; the end-to-end disposition is pinned by
+    /// `marker_with_prd_reference_only_is_untracked`.
+    ///
+    /// Every line here is a lone PRD-relative cite: a marker whose `#N` is NOT
+    /// in PRD-relative context (`// TODO(#10): …`) is `Cited` at arm (3) and
+    /// never consults this fn at all, so pinning such a line here would assert
+    /// a state the detector cannot reach.
     ///
     /// **Vacuous on the live corpus today, deliberately.** A sweep of every
     /// marker-lane line (`#[ignore]`, TODO/FIXME/HACK, stub macro, δ-A) found
@@ -2733,12 +2809,15 @@ mod tests {
     /// `malformed-cite` finding to the live corpus.
     #[test]
     fn malformed_cite_prd_relative() {
-        // Family 3 — `task #N` under the ≤ 99 digit bound.
-        assert!(has_malformed_cite("// TODO(#10): wire the diagnostic per PRD task #10"));
-        // Family 2 — a spaced PRD-local noun.
-        assert!(has_malformed_cite("// FIXME: blocked on PRD invariant #2"));
-        // Family 1 — a glued PRD-artifact namespace.
-        assert!(has_malformed_cite("// HACK: see §7#5"));
+        // Family 3 — `task #N` under the ≤ 99 digit bound, the only register
+        // that spells a citation attempt.
+        assert!(has_malformed_cite("// TODO: wire the diagnostic per PRD task #10"));
+        assert!(has_malformed_cite("// FIXME: subsumed by PRD tasks #12"));
+        // Family 2 — a spaced PRD-local noun. NOT a citation attempt.
+        assert!(!has_malformed_cite("// FIXME: blocked on PRD invariant #2"));
+        // Family 1 — a glued PRD-artifact namespace. NOT a citation attempt.
+        assert!(!has_malformed_cite("// HACK: see §7#5"));
+        assert!(!has_malformed_cite("// HACK: see OQ#1"));
         // Mirror image: a genuine cite is NOT malformed, and neither are the
         // three-digit legacy ids the digit bound has to let through.
         assert!(!has_malformed_cite("// TODO(#4092): real task"));
@@ -2774,6 +2853,38 @@ mod tests {
                 "// TODO: deferred to PRD task #10".to_string()
             )]
         );
+    }
+
+    /// The mirror image of the test above, and the boundary that keeps §8.2's
+    /// `#N` fix from LOWERING the gate: a marker whose only `#N` is a family-1
+    /// or family-2 PRD REFERENCE made no citation attempt, so it must land in
+    /// `untracked` (High, hard gate per §8.4) — not in the Medium advisory
+    /// `malformed-cite`.
+    ///
+    /// Pinned end to end rather than only on `has_malformed_cite`, because what
+    /// a wider pass-1 predicate actually costs is a SEVERITY, and severity is
+    /// invisible at the recogniser. §6.6's ratchet asserts `live ⊆ baseline`,
+    /// which catches a GAINED finding and is blind to a DEMOTED one, so nothing
+    /// downstream would report the regression.
+    ///
+    /// Vacuous on the live corpus today (no marker-lane line carries a 1–2-digit
+    /// `#N` in either register), which is why it is pinned hermetically here.
+    #[test]
+    fn marker_with_prd_reference_only_is_untracked() {
+        for line in [
+            // Family 1 — glued PRD-artifact namespace.
+            "// TODO: revisit §7#5 handling",
+            "// HACK: mirrors OQ#1 until the rewrite",
+            // Family 2 — spaced PRD-local noun.
+            "// FIXME: fix invariant #2 first",
+            "// TODO: widen boundary #3 once the shape settles",
+        ] {
+            assert_eq!(
+                classify_file(line, true),
+                vec![(1, Kind::Untracked, line.to_string())],
+                "a PRD reference is not a citation attempt: {line}"
+            );
+        }
     }
 
     // -------------------------------------------------------------------

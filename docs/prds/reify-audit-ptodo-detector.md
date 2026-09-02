@@ -464,13 +464,8 @@ directly above; (ignores) inside the reason string. Multiple cites: all are vali
 one live cite suffices for tracking.
 
 **The PRD-relative register is NOT a cite (task #6103).** A `#N` whose left context places it
-in a PRD-local register does not name a task, and the grammar now says so in **both**
-directions: it is invisible to canonical-cite recognition AND it is a `malformed-cite`
-trigger (§8.3) — the disposition `CLAUDE.md`'s TODO-citation convention already mandates and
-which the `#N` spelling previously escaped. Without the second half, a marker line whose only
-cite is PRD-relative would lose its canonical anchor and collapse into `untracked` (High,
-hard gate) where §8.4 rates a malformed cite Medium/advisory. Three measured families, all
-governed by one shared digit bound:
+in a PRD-local register does not name a task, so it is invisible to canonical-cite
+recognition. Three measured families, all governed by one shared digit bound:
 
 1. **Glued PRD-artifact namespace** — `§<section>#N` (`§7#5`; the section number is scanned
    back over digits and dots), or an uppercase artifact abbreviation with a left word
@@ -481,6 +476,22 @@ governed by one shared digit bound:
    separator rule would classify MORE cites as PRD-relative, and every such classification
    *suppresses* a cite, so the narrow form is the fail-safe direction.
 3. **`task(s) #N`**, exactly one space to the left of a `task`/`tasks` token.
+
+**Only family 3 is a `malformed-cite` trigger (§8.3) — the two halves of the grammar are
+deliberately ASYMMETRIC (2026-09-02 review correction, task #6103).** "This `#N` cannot
+anchor tracking" and "this `#N` is a botched citation" are different claims, and only
+`task(s) #N` spells a citation *attempt*. A marker whose text merely cross-references a
+document (`// TODO: revisit §7#5 handling`, `// FIXME: fix invariant #2 first`) never claimed
+to be tracked at all, so it stays `untracked` — High, hard gate. Reporting it as
+`malformed-cite` instead would silently DEMOTE genuinely untracked debt to Medium/advisory
+purely because its prose names a PRD section or row number, and §6.6's `live ⊆ baseline`
+ratchet is as blind to a demotion as it is to a lost finding. Family 3 keeps the second half
+for the reason it was added: a marker line whose only cite is `task #10` HAS lost a canonical
+anchor it tried to state, and collapsing that into `untracked` would over-report an author
+who cited imprecisely at hard-gate severity. Both dispositions are vacuous on the live corpus
+today — no marker-lane line in any swept extension carries a 1–2-digit `#N` in any of the
+three registers (re-swept 2026-09-02) — so the split is pinned hermetically, by
+`malformed_cite_prd_relative` and `marker_with_prd_reference_only_is_untracked`.
 
 **The `N ≤ 99` bound governs all three families** — applied once, as a single early return,
 not per family. It is a property of the PRD-relative *register* (a document-local index is
@@ -526,7 +537,7 @@ ptodo.rs`'s `prd_relative_cite` rustdoc points here rather than restating it.
 | Kind | Trigger | Lane |
 |---|---|---|
 | `untracked` | marker with no citation, excluding `#[ignore]` reasons with no blocker-prose (see below); includes a δ-A allow-rationale that defers with no cite | structural |
-| `malformed-cite` | Greek-letter or PRD-relative cite ("task-5", "task δ"), or legacy form ("task NNNN") | structural |
+| `malformed-cite` | Greek-letter or PRD-relative cite ("task-5", "task δ", "task #5"), or legacy form ("task NNNN") — the `#N` spelling only in the `task(s) #N` register, never a bare `§7#5` / `invariant #2` document reference (§8.2) | structural |
 | `phantom-tracking` | prose claims: "tracked separately", "tracked as a follow-up", "tracked in project memory", "follow-up task will" (case-insensitive) without a cite | structural |
 | `bare-ignore` | `#[ignore]` with no reason string | structural |
 | `unknown-id` | cite parses but id not in the task DB | liveness |
