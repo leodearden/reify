@@ -502,7 +502,24 @@ window fails in both directions: a long path can push `PRD` outside any sane win
 (`crates/reify-compiler/src/stdlib_loader.rs:257`) would have a symmetric window kill a
 GENUINE cite. The bound is safe **by construction** against the legacy short task ids: every
 three-digit-and-up id falls outside it, so no `#NNN` cite can be suppressed (the corpus's
-legacy ids include `#333`, `#479`, `#630`). Re-measured per-family maxima (2026-08-30):
+legacy ids include `#333`, `#479`, `#630`).
+
+**The sub-100 id space is real, and the loss there is an ACCEPTED, bounded one (2026-09-02
+review correction, task #6103).** The "three-digit-and-up" argument above covers only ids
+≥ 100; ids 1–100 all exist in the task DB, so the bound genuinely overlaps live id space. It
+is bounded on both ends. (i) Every one of ids 1–100 is `done` — measured over the full range
+on 2026-09-02 via `get_statuses` — so a cite to one could only ever have resolved to an
+`orphaned` finding against a terminal id, never to a live-task finding. (ii) The range is
+CLOSED: allocation runs monotonically from 1 upward and the live head is past 6100, so no
+future task can be issued an id inside the bound; the accepted loss cannot grow. (iii) No
+such cite exists today — every 1–2-digit `#N` in the covered registers in tracked `.rs` is
+genuinely PRD-relative. The alternative — making the bound resolution-aware for family 3, so
+a sub-100 id that resolves to a real DB row is read as a cite — was considered and rejected:
+it drags a task-DB lookup into a pure recogniser whose whole contract is that liveness
+belongs to the separate β lane (and, under §6.7's no-DB degradation, would make the *grammar*
+worktree-dependent). The 99/100 step itself is pinned in both directions by
+`prd_relative_cite_positives` / `prd_relative_cite_negatives`. Re-measured per-family maxima
+(2026-08-30):
 family 1 **11** (`PRD T#11`), family 2 **18** (`boundary #18`), family 3 one- and two-digit
 throughout (max **27**) — every one comfortably inside the bound, so the bound costs no
 recall.

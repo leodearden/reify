@@ -220,7 +220,10 @@ enum PrdCiteFamily {
 ///    match.
 /// 2. **Spaced PRD-local noun** — exactly one space between the `#` and an
 ///    `invariant(s)` / `row(s)` / `boundary` / `open-question` /
-///    `design decision` token.
+///    `design_decision` token, or the two-word `design decision` (matched by
+///    its own arm, since `decision` alone is not PRD-local).  Both spellings
+///    of the last are live PRD idioms and both are pinned by
+///    `prd_relative_cite_positives`.
 /// 3. **`task(s)`** — exactly one space between the `#` and a `task`/`tasks`
 ///    token.  This is the only family that reports
 ///    [`PrdCiteFamily::TaskCite`]; the other two report
@@ -238,7 +241,19 @@ enum PrdCiteFamily {
 ///   to remember it.  It keys on DIGIT COUNT, not on a `PRD` left-context
 ///   window, because a window measurably fails in BOTH directions (a long path
 ///   pushes `PRD` out of range; a symmetric window kills the genuine
-///   `task #333 per PRD §Slice B`).  Pinned by `prd_relative_cite_negatives`.
+///   `task #333 per PRD §Slice B`).  Pinned by `prd_relative_cite_negatives`,
+///   including the 99/100 boundary itself.
+/// - **The bound DOES overlap the real id space, and that loss is accepted.**
+///   Ids 1–100 all exist in the task DB.  They are also all `done` — measured
+///   2026-09-02 over the full range — and the range is CLOSED: allocation runs
+///   monotonically from 1 upward and the live head is past 6100, so no future
+///   task can land inside the bound.  A `task #42` cite in the covered register
+///   can therefore only ever have been an `orphaned` finding against a terminal
+///   id, never a live-task one, and the corpus carries no such cite today (all
+///   1–2-digit `#N` in these registers in tracked `.rs` are genuinely
+///   PRD-relative).  Making the bound resolution-aware would drag a DB lookup
+///   into a pure recogniser that the β liveness lane already owns; the bounded
+///   loss is the cheaper trade.  Recorded in PRD §8.2.
 /// - **An UNBOUNDED family is fail-DANGEROUS in the one direction §6.6's
 ///   ratchet cannot see.**  A real task id in family-2 register
 ///   (`invariant #5238`, `done`) is either DOWNGRADED from a High `orphaned`
@@ -2599,6 +2614,15 @@ mod tests {
             "// PRD docs/prds/v0_6/stdlib-namespace.md §7 boundary #3. The observable the PRD",
             // Plural `tasks` under the ≤ 99 bound.
             "/// until PRD tasks #10 land the engine",
+            // The snake_case spelling of the family-2 `design decision` noun,
+            // which the two-word case above does NOT exercise (that one is
+            // matched by the trailing `decision`-qualified-by-`design` arm,
+            // this one by the noun table itself).
+            "/// see design_decision #5 for the landed shape",
+            // The digit bound's own boundary, inclusive side: `#99` is the
+            // largest id the recogniser suppresses.  Its `#100` mirror is in
+            // `prd_relative_cite_negatives`.
+            "/// deferred to PRD task #99 (the last id inside the bound)",
         ];
         for line in lines {
             assert!(
@@ -2648,6 +2672,11 @@ mod tests {
             ("//! Re-establishes the deliverable from task #479 that was lost when commit 00a86da53", 479),
             // crates/reify-expr/tests/field_eval_tests.rs
             ("/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient", 630),
+            // The digit bound's own boundary, exclusive side.  `#99` (its
+            // mirror in `prd_relative_cite_positives`) is suppressed and `#100`
+            // is not: the single most load-bearing constant in the recogniser,
+            // pinned at the step rather than only at 2-vs-3 digits.
+            ("/// deferred to PRD task #100 (the first id outside the bound)", 100),
             // ---- the digit bound must be UNIFORM across all three families ----
             // The one tracked line repo-wide that puts a REAL task id in
             // family-2 register: `git grep -nE '(invariants?|rows?|boundary)
