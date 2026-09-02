@@ -44,6 +44,9 @@
 //! replay child's hard failure needs an EARNED mark, not mere child-ness.
 //! Two rules, two homes, everything else a pointer.
 
+use std::path::Path;
+use std::process::{Command, ExitStatus};
+
 use reify_test_support::run_orphan_audit;
 
 mod common;
@@ -400,6 +403,217 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     );
 }
 
+/// stdout, exit status, and stderr from one
+/// [`audit_script_stdout_poisoned_and_sanitized`] invocation.
+///
+/// All three are load-bearing, not just diagnostics: the audit script emits
+/// empty stdout BOTH when the hook environment redirects its scan into an
+/// empty tree (exit 0, stderr `no source files matched`) and when it aborts
+/// before scanning at all (non-zero, git's own `fatal:` line). A caller that
+/// reads only `stdout` cannot tell a demonstrated hazard from a broken
+/// fixture.
+struct AuditRun {
+    stdout: String,
+    status: ExitStatus,
+    stderr: String,
+}
+
+/// Run `scripts/audit-orphan-producers.sh --scope <scope> --quiet --format
+/// json` TWICE against one shared [`common::git_env::decoy_repo`]: once with
+/// the hook poison ambient in the child, once with
+/// [`reify_audit::git_env::sanitize`] applied
+/// — the same baseline `reify_test_support::sanitize` strips in production,
+/// not just the three vars this helper poisons. Returns `(poisoned,
+/// sanitized)` as [`AuditRun`]s.
+///
+/// Both commands are built from one closure against one decoy, so the poison
+/// is the only difference between them apart from that sanitize call —
+/// structural rather than a comment two call sites could drift apart on.
+/// Calling the canonical [`reify_audit::git_env::sanitize`] directly, instead
+/// of hand-rolling a second removal loop over `REPO_REDIRECT_VARS`, is what
+/// keeps "sanitized" meaning what production means by it with no second copy
+/// of the strip list to drift out of sync — `common::git_env`'s own assertion
+/// that every var it poisons is one `sanitize` removes is what makes "the
+/// poisoned set is a subset of the sanitized set" a fact about the code
+/// rather than a claim in this comment.
+///
+/// # Graceful-skip protocol — delegated, not re-implemented
+///
+/// Returns `None`, with an explanatory `stderr` note, exactly when
+/// `reify_test_support::run_orphan_audit` declines to hand back an envelope
+/// for `scope`. That one call IS the protocol — the `python3`/`git` presence
+/// probes, the script-on-disk check, the `repo_root`-is-a-git-work-tree probe
+/// and the `EXCLUDE_CRATES` membership test. Do not re-implement any of it
+/// here: its most fragile element is a git diagnostic string that probe keys
+/// on, so a second copy drifts the moment either git's wording or production's
+/// probe changes.
+///
+/// That gate is a THIRD script run, and deliberately so: it duplicates the
+/// sanitized spawn's work (same script, same scope, same `current_dir`, same
+/// sanitize) and discards its envelope. Deriving the skip from the sanitized
+/// run instead would mean re-deciding "was this a skip?" from stdout and
+/// stderr here — the re-implementation the section above rules out, and it
+/// would lose the LOUD half below. The redundant spawn is what that costs.
+///
+/// Every cause of that `None` empties BOTH halves below — without `python3`
+/// the script exits 3 with no stdout either way; an `EXCLUDE_CRATES` scope
+/// legitimately emits nothing, reachable by any future caller since this
+/// helper is generic over `scope`. So a caller comparing the two halves would
+/// fail its "sanitized is non-empty" assertion while passing its "poisoned is
+/// empty" one: a spurious RED that says nothing about the hazard. Skipping is
+/// the only honest answer.
+///
+/// Delegating also inherits the protocol's LOUD half. A `git rev-parse
+/// --show-toplevel` that fails for a reason OTHER than "no repository here" —
+/// a corrupt `.git`, dubious ownership under this project's shared
+/// warm-lane/worktree topology — is a condition where a repository IS expected
+/// to exist. Production panics on it, naming the probe's status and stderr;
+/// the re-implementation here swallowed both and fell through, so the caller
+/// blamed a broken `--scope` instead: the wrong diagnosis, with the right one
+/// already measured and discarded.
+///
+/// Must NOT be called from inside a poisoned replay child: the gate call
+/// would hit `run_orphan_audit`'s repo-root mismatch panic rather than
+/// skipping. Refused below via
+/// [`common::git_env::assert_not_in_replay_child`] rather than left to this
+/// comment plus the replay filter's substring choice, so widening that filter
+/// — or adding a test to this binary whose name happens to match it — fails on
+/// the precondition instead of three frames down inside `reify-test-support`.
+///
+/// Spawn failures are hard failures, matching `run_orphan_audit`. This helper
+/// asserts nothing about either run itself; it reports stdout, status and
+/// stderr on [`AuditRun`] and leaves every judgement to the caller, which
+/// needs all three to tell "redirected into the empty decoy and ran to
+/// completion" (exit 0) from "aborted before scanning" (non-zero).
+fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, AuditRun)> {
+    common::git_env::assert_not_in_replay_child(
+        "audit_script_stdout_poisoned_and_sanitized",
+        "its `run_orphan_audit` gate would hit the repo-root mismatch panic instead \
+         of skipping",
+    );
+
+    // The ENTIRE graceful-skip protocol, in one delegated call — see this
+    // function's doc for why it is delegated rather than re-implemented, and
+    // for why every cause of a `None` makes the comparison below meaningless.
+    if run_orphan_audit(scope).is_none() {
+        eprintln!(
+            "reify_test_support::run_orphan_audit({scope:?}) produced no envelope \
+             (an environment skip, or the scope is in EXCLUDE_CRATES); skipping the \
+             hook-git-env audit probe, which would otherwise compare two empty runs"
+        );
+        return None;
+    }
+
+    // CARGO_MANIFEST_DIR is evaluated in THIS crate, which always sits at
+    // <repo>/crates/reify-audit; two `.parent()` walks reach the repo root.
+    //
+    // A SECOND COPY of the `resolve_script_and_root` walk inside
+    // `reify_test_support`, and of the argv `build_audit_command` builds a few
+    // lines below — same shape, same depth. It is here only because both of
+    // those are module-private, and the gate above hands back an envelope
+    // rather than the paths it resolved, while the two spawns below need the
+    // script path itself.
+    //
+    // TODO(#6153): delete this walk and the argv below in favour of a public
+    // seam on `reify_test_support::orphan_audit`, and drop the two premise
+    // checks that exist only to bound them. That file is outside the lock set
+    // of the task that owns this one, which is why the copy is here at all.
+    // (This crate is on the ptodo detector's own allowlist — `reify-audit` is
+    // the tool — so this cite documents rather than enrols; the task is the
+    // record either way.)
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let script = Path::new(manifest_dir)
+        .parent()
+        .expect("crates/reify-audit has a parent (crates/)")
+        .parent()
+        .expect("crates/ has a parent (repo root)")
+        .join("scripts/audit-orphan-producers.sh");
+
+    let repo_root = script
+        .parent()
+        .expect("scripts/ dir exists")
+        .parent()
+        .expect("repo root exists");
+
+    // Premise checks on the walk directly above — NOT a second copy of the
+    // skip protocol. The gate already ran the script to completion, so it
+    // provably exists at the path `reify-test-support` resolved from its own
+    // manifest dir; anything wrong here is a bug in this helper, never an
+    // environmental condition, so both fail loudly rather than skipping.
+    //
+    // Check 1: the script is where this walk says it is.
+    assert!(
+        script.exists(),
+        "reify_test_support::run_orphan_audit({scope:?}) just ran the audit script \
+         successfully, but this crate's own CARGO_MANIFEST_DIR walk resolves it to \
+         {script:?}, where nothing exists — the two `.parent()` walks disagree, so \
+         this helper would spawn a different script (or none) than the one the skip \
+         protocol vetted"
+    );
+
+    // Check 2: this root is one from which the OTHER walk reproduces this
+    // same root. `reify_test_support`'s `resolve_script_and_root` walks two
+    // `.parent()`s off ITS manifest dir, so if `crates/reify-test-support`
+    // sits here, that walk lands back on `repo_root` by construction.
+    //
+    // Check 1 alone cannot see this: it only rejects a walk that resolves to
+    // NOTHING. Two walks resolving to existing but DIFFERENT roots — a nested
+    // checkout, a vendored copy, either crate moved out of `crates/` — pass it
+    // silently while spawning a script the gate never vetted. That is the case
+    // this check adds.
+    //
+    // Bounded, deliberately: it does not distinguish this repo from a byte
+    // identical vendored copy laid out the same way. Closing that needs the
+    // path itself rather than a reconstruction of it — the same public seam
+    // task #6153 tracks above, not a second piece of work.
+    let sibling_manifest = repo_root.join("crates/reify-test-support");
+    assert!(
+        sibling_manifest.join("Cargo.toml").exists(),
+        "this crate's CARGO_MANIFEST_DIR walk resolves the repo root to \
+         {repo_root:?}, but {sibling_manifest:?} holds no Cargo.toml — so \
+         `reify_test_support`'s own two-`.parent()` walk, which the skip protocol \
+         above just ran through, cannot have landed on this same root. The two \
+         walks resolve DIFFERENT roots and this helper is about to spawn a script \
+         the gate never vetted"
+    );
+
+    let decoy = common::git_env::decoy_repo();
+
+    // One closure, so the two spawns are provably identical apart from the
+    // environment delta below.
+    let build = || {
+        let mut cmd = Command::new(&script);
+        cmd.args(["--scope", scope, "--quiet", "--format", "json"])
+            .current_dir(repo_root);
+        cmd
+    };
+
+    let mut poisoned_cmd = build();
+    common::git_env::poison_with_hook_git_env(&mut poisoned_cmd, &decoy);
+
+    let mut sanitized_cmd = build();
+    common::git_env::poison_with_hook_git_env(&mut sanitized_cmd, &decoy);
+    // The canonical sanitizer, not a hand-rolled removal loop — see this
+    // function's doc for why.
+    reify_audit::git_env::sanitize(&mut sanitized_cmd);
+
+    let run = |mut cmd: Command, label: &str| -> AuditRun {
+        let out = cmd.output().unwrap_or_else(|e| {
+            panic!("failed to invoke audit-orphan-producers.sh ({label}): {e}")
+        });
+        AuditRun {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            status: out.status,
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    };
+
+    let poisoned = run(poisoned_cmd, "poisoned");
+    let sanitized = run(sanitized_cmd, "sanitized");
+
+    Some((poisoned, sanitized))
+}
+
 /// An ambient hook git environment really does defeat
 /// `scripts/audit-orphan-producers.sh`, and stripping exactly those variables
 /// really does cure it.
@@ -469,9 +683,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
 /// a later maintainer.
 #[test]
 fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
-    let Some((poisoned, sanitized)) =
-        common::git_env::audit_script_stdout_poisoned_and_sanitized(SCOPE)
-    else {
+    let Some((poisoned, sanitized)) = audit_script_stdout_poisoned_and_sanitized(SCOPE) else {
         // The helper gates on `reify_test_support::run_orphan_audit`, so this
         // is that function's own graceful-skip protocol verbatim — python3 /
         // git / the script absent, `repo_root` outside any git work tree, or a
