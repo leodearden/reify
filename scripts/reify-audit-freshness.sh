@@ -46,14 +46,43 @@
 # USAGE
 # -----
 #   source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
-#   reify_audit_guard "$BIN" refuse "$REPO_ROOT"          # fail-closed (predone wrapper)
+#   reify_audit_guard "$BIN" warn-open "$REPO_ROOT"       # fail-open + alarm (predone wrapper)
+#   reify_audit_guard "$BIN" refuse "$REPO_ROOT"          # fail-closed (NO live consumer)
 #   reify_audit_guard "$BIN" rebuild "$REPO_ROOT"         # self-heal (audit skill)
 #   reify_audit_guard "$BIN" rebuild-budget-safe "$REPO"  # budget-safe skip (verify.sh)
 #
+# MACHINE TOKENS AND KNOBS
+# -------------------------
+# Every warn-open message is prefixed with a stable, greppable token, and
+# consumers must branch on the TOKEN rather than on message prose (the
+# convention from crates/reify-audit/src/jcodemunch_index.rs:522-543):
+#   E_AUDIT_BIN_STALE    the binary exists and runs, it is merely old.
+#                        rc 0 by default (advisory); rc 125 under strict.
+#   E_AUDIT_BIN_MISSING  there is no runnable binary at all. Always rc 125.
+# The distinction is load-bearing: both refusals exit 125, so only the token
+# tells a reader whether the operator chose to fail closed or whether nothing
+# is on disk.
+#
+# REIFY_AUDIT_FRESHNESS_STRICT=1 makes warn-open refuse (125) on a stale-but-
+# runnable binary instead of falling open. Only the literal "1" arms it. It is
+# an env knob, not a mode, because the wrapper's call site is fixed in the
+# script while the systemd unit is where an operator can actually set
+# something — the delivery path REIFY_AUDIT_PREDONE_WARN_ONLY already uses.
+# The two gate DIFFERENT things: WARN_ONLY gates a FINDING's severity,
+# FRESHNESS_STRICT gates BINARY freshness policy.
+#
 # CONSUMER POLICY
 # ----------------
-# - Predone wrapper: REFUSE mode — exits 125 with a reinstall hint so stale
-#   installs are loud and operators are forced to reinstall.
+# - Predone wrapper: WARN-OPEN mode (#7139).
+#     present + executable + stale -> loud E_AUDIT_BIN_STALE advisory, rc 0.
+#                                     The stale detector runs and still gates
+#                                     on its own findings.
+#     unrunnable, or STRICT armed  -> rc 125.
+#   Measured reason: dark-factory's
+#   fused_memory/middleware/pre_done_hook.py returns None (allowing the flip)
+#   only on rc 0 (:222-223) and blocks it on ANY non-zero rc, and it runs
+#   inside fused-memory's per-project write lock with a 30s timeout (:25-31,
+#   :151). See WHY FAIL-OPEN below.
 # - /audit skill: REBUILD mode — `cargo build --release -q -p reify-audit`
 #   self-heals the release binary instead of refusing.
 # - verify.sh run_all.sh line: REBUILD-BUDGET-SAFE mode — when
@@ -68,7 +97,53 @@
 # - rc 125 is presence-ambiguous in the same way, and for the same reason: see
 #   the `return 125` site at the bottom of reify_audit_guard.  A caller that
 #   treats it as "no usable detector" without checking `-x $bin` will hard-fail
-#   on binaries that run perfectly well (#5962 review).
+#   on binaries that run perfectly well (#5962 review).  warn-open does this
+#   split INTERNALLY, which is the main thing distinguishing it from refuse.
+# - REFUSE mode is still supported and still exercised (Checks 8/9), but it has
+#   NO live consumer.  It must NEVER be wired to a SYNCHRONOUS done-flip path
+#   again: on such a path its 125 is not a safeguard, it is a project-wide
+#   outage (see WHY FAIL-OPEN).  It remains appropriate for an ATTENDED, manual
+#   invocation where a human reads the refusal and acts on it.
+#
+# WHY FAIL-OPEN ON THE PREDONE PATH (task #7139)
+# -----------------------------------------------
+# The predone wrapper is a synchronous pre-done hook.  Under REFUSE, one stale
+# binary blocked EVERY done-flip in the project until a human reinstalled.
+# crates/reify-audit lands ~4 commits/day, so the freshness epoch advances
+# several times a day and the outage recurred by construction — it ran ~15.7h
+# over 2026-08-30/31 and produced three escalations (esc-7042-2, esc-6315-2,
+# esc-6120-5), none of which identified the real cause; all three blamed
+# metadata.files or the done_provenance ancestor check.  Hence the messages
+# below explicitly disclaim both.
+#
+# Running a STALE detector is strictly the pre-existing risk profile of the
+# binary already installed; being unable to mark ANY work done is not.  This
+# also aligns the shell guard with reify-audit's OWN house rule:
+# crates/reify-audit/src/p5_phantom_done.rs:953-954 degrades a would-be-
+# blocking High to an "[advisory - <reason>] " exit 0 whenever its evidence is
+# incomplete.  Binary AGE is strictly weaker evidence than a degraded git leg,
+# so fail-closed here was an inversion of the crate's own policy.
+#
+# RESIDUAL RISK, accepted: a stale detector may miss findings a fresh one would
+# catch, or emit a stale false positive that blocks the flip on its own merits.
+# REIFY_AUDIT_PREDONE_WARN_ONLY=1 remains the break-glass for a misfiring
+# finding, and REIFY_AUDIT_FRESHNESS_STRICT=1 the opt-out from fail-open.
+#
+# TWO ALTERNATIVES REJECTED, both on measurement rather than taste:
+# - Auto-reinstall inline (i.e. REBUILD mode here).  It cannot fit: the hook's
+#   budget is a 30s timeout held under fused-memory's per-project write lock,
+#   while `cargo install --path crates/reify-audit` pulls the whole reify
+#   compiler stack via reify-test-support.  It would convert a refusal into a
+#   TIMEOUT refusal AND serialize every task mutation on the project behind a
+#   30s stall per flip.
+# - Adding reify-audit to scripts/release-sensitive-crates.txt.  Wrong
+#   mechanism: that file declares which crates have tests whose behaviour
+#   differs between debug and release, so the merge-gate RELEASE pass runs
+#   them.  It never invokes `cargo install` and never touches ~/.cargo/bin.
+#   Worse, tests/infra/test_release_scoped_scope.sh asserts SET EQUALITY
+#   between that list and a grep-derived set, so an unjustified entry reds the
+#   gate.  A real post-landing install path is orchestrator/merge-worker
+#   territory, not this library's.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_AUDIT_FRESHNESS_SH_SOURCED:-}" = "1" ]; then
@@ -147,8 +222,16 @@ reify_audit_is_stale() {
 
 # reify_audit_guard <bin> <mode> [repo_root]
 #
+# mode=warn-open: If fresh, return 0 silently.
+#               If stale AND [ -x $bin ] AND not REIFY_AUDIT_FRESHNESS_STRICT=1,
+#               print a self-describing E_AUDIT_BIN_STALE advisory and return 0
+#               (FAIL OPEN — the stale detector runs anyway).
+#               If stale AND unrunnable, print E_AUDIT_BIN_MISSING, return 125.
+#               If stale AND strict armed, print E_AUDIT_BIN_STALE, return 125.
+#               This is the mode for any SYNCHRONOUS done-flip path.
 # mode=refuse:  If stale, print a reinstall hint to stderr and exit 125.
 #               If fresh, return 0 silently.
+#               NO live consumer — never wire this to a done-flip path (#7139).
 # mode=rebuild: If stale, run `cargo build --release -q -p reify-audit`
 #               (cwd=repo_root), then re-check freshness.
 #               If still stale after rebuild, print hint and return 125.

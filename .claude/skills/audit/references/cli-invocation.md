@@ -286,6 +286,29 @@ dark-factory's `pre_done_hook.py` surfaces the subprocess's captured stderr only
 on a non-zero exit. Rollout sequence:
 `docs/architecture-audit/f-infra-design.md` §11.1.4.
 
+**A blocked done-flip is not always a finding.** Since task 7139 the predone
+wrapper's BINARY FRESHNESS guard no longer blocks on staleness. If you are
+triaging a refused flip, split these three before reading anything into
+`metadata.files` or `done_provenance`:
+
+| stderr carries | rc | meaning |
+|---|---|---|
+| `E_AUDIT_BIN_STALE` | 0 | the installed `reify-audit` predates `crates/reify-audit`; the wrapper FELL OPEN and ran it anyway. Nothing is blocked — this is an advisory. Fix with `cargo install --path crates/reify-audit --root ~/.cargo --force`. |
+| `E_AUDIT_BIN_STALE` | 125 | same condition, but an operator armed `REIFY_AUDIT_FRESHNESS_STRICT=1`, so it refuses. Unset it, or reinstall. |
+| `E_AUDIT_BIN_MISSING` | 125 | there is no runnable `reify-audit` at `$REIFY_AUDIT_BIN` at all — nothing to fall open onto. Reinstall. |
+
+None of the three is an audit finding, and none is about task records. This
+matters because the outage that motivated 7139 produced three escalations
+(esc-7042-2, esc-6315-2, esc-6120-5) that all misattributed it to stale
+`metadata.files` or the `done_provenance` ancestor check. A real P5 refusal
+exits with the High COUNT and says `pre-done gate:` — an infrastructure
+refusal exits `125` and leads with one of the tokens above.
+
+`REIFY_AUDIT_FRESHNESS_STRICT` and `REIFY_AUDIT_PREDONE_WARN_ONLY` gate
+DIFFERENT things and are not substitutes: the former is binary-freshness
+policy (fall open vs refuse), the latter is a FINDING's severity
+(`High` → advisory `Low`). Neither affects the other.
+
 **Never refuses on incomplete evidence.** Every git leg fail-safes to
 `false`/empty, which on this path would converge on a blocking `High`, so four
 guards downgrade to an advisory `Low` (exit 0) instead, prefixing
