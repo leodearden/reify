@@ -349,6 +349,66 @@ pub fn seed_primitive_attributes(
             record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
             Ok(())
         }
+        GeometryOp::Tube { .. } => {
+            // A tube is `boolean_cut(cylinder(outer_r), cylinder(inner_r))` at
+            // the kernel layer, but it is a GeometryOp-level PRIMITIVE with
+            // zero parents (`parent_handles_for_op` returns empty for it), so
+            // it needs ORIGINATING seeding here rather than boolean history
+            // propagation. OCCT 7.8 emits exactly 4 analytic faces: the outer
+            // wall, the top annulus, the bottom annulus, and the bore.
+            //
+            // Two kernel queries per face:
+            //  - FaceNormal, whose z-component splits the annuli (|nz| == 1)
+            //    from the lateral walls (nz == 0) through the SHARED
+            //    `classify_cylinder_face_role`. No new threshold: the measured
+            //    margin is 1.0 against NORMAL_Z_EPSILON's 1e-6.
+            //  - BoundingBox, whose radial extent separates the outer wall
+            //    from the bore. FaceNormal structurally cannot do this — see
+            //    `classify_tube_face_roles`' rustdoc for why.
+            //
+            // Errors propagate with `?`, same contract as the Cylinder arm:
+            // the engine call site downgrades a seeding error to a Warning
+            // diagnostic and continues (engine_build.rs:8690-8694).
+            //
+            // One pass over `face_handles` collects the query results; the
+            // pure classifier is then the ONLY place that reasons about
+            // ordering, which is what keeps that logic unit-testable without
+            // a kernel (the in-module MockKernel errors from every method).
+            let mut face_metrics: Vec<(f64, f64)> = Vec::with_capacity(face_handles.len());
+            for &face_id in face_handles.iter() {
+                let normal_value = kernel.query(&GeometryQuery::FaceNormal(face_id))?;
+                let nz = parse_normal_z(&normal_value)?;
+                let bbox_value = kernel.query(&GeometryQuery::BoundingBox(face_id))?;
+                let (xmin, ymin, _zmin) = parse_bbox_xyz_min(&bbox_value)?;
+                // Reusing the min-only parser is sound because both walls are
+                // full 360° revolutions centred on the z axis, so
+                // |xmin| == |ymin| == r up to Bnd_Box's symmetric ~1e-7 gap.
+                // (No `parse_bbox_xyz_max` is needed or wanted.)
+                face_metrics.push((nz, xmin.abs().max(ymin.abs())));
+            }
+            for (&face_id, (role, local_index)) in face_handles
+                .iter()
+                .zip(classify_tube_face_roles(&face_metrics))
+            {
+                table.record(
+                    KernelHandle {
+                        kernel: kernel_id,
+                        id: face_id,
+                    },
+                    TopologyAttribute {
+                        feature_id: feature_id.clone(),
+                        role,
+                        local_index,
+                        user_label: None,
+                        mod_history: Vec::new(),
+                    },
+                );
+            }
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
+            // `vertex_handles` is intentionally ignored: a tube has no analytic
+            // corner vertices, and only the Box arm seeds vertices at all.
+            Ok(())
+        }
         // All other variants are intentional no-ops. Per-op auto-population
         // for sweep / local-feature / boolean variants lands in PRD tasks 5,
         // 7, 8 respectively. The `_ => Ok(())` arm is the closed-extension
