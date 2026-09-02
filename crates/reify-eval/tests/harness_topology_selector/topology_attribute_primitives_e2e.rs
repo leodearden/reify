@@ -293,3 +293,44 @@ fn engine_build_records_topology_attributes_for_multi_realization_module() {
          the table was likely reset between realizations within a single build"
     );
 }
+
+// ─── task-6550: Engine::build records topology attributes for tube ───────────
+
+/// After `Engine::build()` on a `tube(...)` realization, the engine's
+/// `topology_attribute_table()` must contain entries for the tube's 4 faces
+/// + N edges (N ≥ 4: at minimum two cap circles per annulus, plus OCCT's seam
+/// edges), plus the one per-solid representative entry from
+/// `record_solid_attribute` (task #4636).
+///
+/// Per-role distribution — 1×Cap(Top), 1×Cap(Bottom), and 2×Side whose
+/// `local_index` is ordered by descending radial extent so the outer wall is 0
+/// and the bore is 1 — is pinned by the direct-kernel test
+/// `seed_primitive_attributes_tube_classifies_annuli_and_orders_walls_by_radius`
+/// in `topology_attribute_primitives_direct.rs`. See this file's module
+/// rustdoc for why iteration-based assertions live there, not here. This e2e
+/// test pins only the count contract: that the seeder is invoked from
+/// `Engine::execute_realization_ops` for the `tube(...)` constructor (a missed
+/// wire would leave the table empty).
+///
+/// Measured total on OCCT 7.8 is 11 (4 faces + 6 edges + 1 solid); the `>=`
+/// lower bound absorbs per-version seam variance per this file's convention.
+#[test]
+fn engine_build_records_topology_attributes_for_tube_realization() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors("structure A { let body = tube(10mm, 5mm, 20mm) }");
+    let mut engine = engine_with_occt();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&build_result);
+
+    let table = engine.topology_attribute_table();
+    assert!(
+        table.len() >= 4 + 4 + 1,
+        "topology_attribute_table must hold 4 face + ≥4 edge + 1 solid-representative \
+         entries after a tube realization, got {}",
+        table.len()
+    );
+}

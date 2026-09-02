@@ -20,8 +20,8 @@ use std::collections::HashSet;
 use reify_core::RealizationNodeId;
 use reify_eval::{seed_primitive_attributes, seed_primitive_attributes_for_handle};
 use reify_ir::{
-    AxisSign, CapKind, FeatureId, GeometryOp, KernelHandle, KernelId, Role, TopologyAttributeTable,
-    Value,
+    AxisSign, CapKind, FeatureId, GeometryOp, GeometryQuery, KernelHandle, KernelId, Role,
+    TopologyAttributeTable, Value,
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
@@ -85,6 +85,19 @@ fn torus_op() -> GeometryOp {
     GeometryOp::Torus {
         major_radius: Value::Real(TORUS_MAJOR_R_M),
         minor_radius: Value::Real(TORUS_MINOR_R_M),
+    }
+}
+
+/// Tube (task #6550): 10mm outer radius, 5mm bore radius, 20mm height.
+const TUBE_OUTER_R_M: f64 = 10.0e-3;
+const TUBE_INNER_R_M: f64 = 5.0e-3;
+const TUBE_HEIGHT_M: f64 = 20.0e-3;
+
+fn tube_op() -> GeometryOp {
+    GeometryOp::Tube {
+        outer_r: Value::Real(TUBE_OUTER_R_M),
+        inner_r: Value::Real(TUBE_INNER_R_M),
+        height: Value::Real(TUBE_HEIGHT_M),
     }
 }
 
@@ -1235,6 +1248,267 @@ fn seed_primitive_attributes_cone_pointed_has_no_top_cap() {
             attr.role,
             Role::NewEdge,
             "pointed cone edge #{idx} must be Role::NewEdge"
+        );
+    }
+}
+
+// ─── task-6550: Tube → 1×Cap(Top) + 1×Cap(Bottom) + 2×Side (outer wall + bore) ─
+
+/// Parse the radial extent of a face's bounding box: `max(|xmin|, |ymin|)`.
+///
+/// Format (same as everywhere else `GeometryQuery::BoundingBox` is consumed):
+/// `{"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}`.
+///
+/// Reading the MIN corner alone is sound here because both of a tube's lateral
+/// walls are full 360° revolutions centred on the z axis, so
+/// `|xmin| == |ymin| == r` up to `Bnd_Box`'s symmetric ~1e-7 tolerance gap.
+/// This mirrors what the seeder itself does with its `parse_bbox_xyz_min`
+/// helper (which is `pub(crate)` and therefore not reachable from an
+/// integration test).
+fn parse_bbox_radial_extent(s: &str) -> f64 {
+    let mut xmin = f64::NAN;
+    let mut ymin = f64::NAN;
+    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
+    for pair in trimmed.split(',') {
+        let mut parts = pair.splitn(2, ':');
+        let key = parts.next().unwrap().trim().trim_matches('"');
+        let val: f64 = parts.next().unwrap().trim().parse().unwrap();
+        match key {
+            "xmin" => xmin = val,
+            "ymin" => ymin = val,
+            _ => {}
+        }
+    }
+    assert!(
+        xmin.is_finite() && ymin.is_finite(),
+        "BoundingBox payload missing xmin/ymin: {s:?}"
+    );
+    xmin.abs().max(ymin.abs())
+}
+
+/// A tube is `boolean_cut(cylinder(outer_r), cylinder(inner_r))` at the kernel
+/// layer, and OCCT 7.8 emits exactly 4 analytic faces for it: the outer wall,
+/// the top annulus, the bottom annulus, and the bore.
+///
+/// The two annuli are classified `Cap(Top)` / `Cap(Bottom)` by the shared
+/// `FaceNormal` z-component test — nothing new there. The interesting contract
+/// is the two LATERAL walls: both are `Role::Side`, disambiguated by a
+/// radius-ordered `local_index` (outer wall 0, bore 1). See the plan's design
+/// decisions for why the bore did not get its own `Role` variant, and why
+/// `FaceNormal` structurally cannot separate the two walls (its evaluation
+/// point is the face's area centroid, which for a full 360° wall lies on the
+/// axis, so the back-projected azimuth is implementation-defined).
+///
+/// The ordering assertion below deliberately DERIVES its expectation from the
+/// queried geometry rather than hardcoding which TopExp position is the outer
+/// wall: OCCT is free to reorder its explorer output across versions, and the
+/// whole point of the radius ordering is that `local_index` survives that.
+#[test]
+fn seed_primitive_attributes_tube_classifies_annuli_and_orders_walls_by_radius() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let tube_id = kernel.execute(&tube_op()).expect("tube should build").id;
+
+    // Pre-extract ONCE and reuse — extract_* allocates fresh handle ids per
+    // call, so the seeding vectors must be the same ones we look up against.
+    let face_handles = kernel
+        .extract_faces(tube_id)
+        .expect("extract_faces(tube) should succeed");
+    let edge_handles = kernel
+        .extract_edges(tube_id)
+        .expect("extract_edges(tube) should succeed");
+    let vertex_handles = kernel
+        .extract_vertices(tube_id)
+        .expect("extract_vertices(tube) should succeed");
+
+    // MEASURED on OCCT 7.8: exactly 4 faces. Pinned exactly, mirroring the
+    // cylinder test's `== 3` — a tube's face set is fully analytic.
+    assert_eq!(
+        face_handles.len(),
+        4,
+        "a 10mm-outer / 5mm-bore / 20mm-high tube should have exactly 4 faces \
+         (outer wall + top annulus + bottom annulus + bore), got {}",
+        face_handles.len()
+    );
+    // The four cap circles (two per annulus) are non-negotiable; OCCT also
+    // emits two seam edges (measured total 6). `>=` absorbs that per-version
+    // seam variance, exactly as the cylinder sub-case of
+    // `seed_primitive_attributes_records_new_edge_for_every_extracted_edge`
+    // does.
+    assert!(
+        edge_handles.len() >= 4,
+        "tube should emit at least 4 edges (two cap circles per annulus), got {}",
+        edge_handles.len()
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes(
+        &mut table,
+        KernelId::Occt,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
+        &vertex_handles,
+        &feature_id,
+        &tube_op(),
+    )
+    .expect("seed_primitive_attributes for a tube should succeed");
+
+    assert_eq!(
+        table.len(),
+        face_handles.len() + edge_handles.len(),
+        "tube: one entry per face + one per edge, and nothing else"
+    );
+
+    // ── Faces: per-role counts + the task-1 invariants ───────────────────────
+    let mut cap_top_count = 0;
+    let mut cap_bottom_count = 0;
+    let mut side_local_indices: Vec<u32> = Vec::new();
+    // (face handle, local_index) for the Side faces, so the ordering contract
+    // below can re-query their bounding boxes.
+    let mut side_faces: Vec<(reify_ir::GeometryHandleId, u32)> = Vec::new();
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "tube face #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, face_id
+                )
+            });
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "tube face #{idx} feature_id should equal Body#realization[0]"
+        );
+        assert_eq!(
+            attr.user_label, None,
+            "tube face #{idx} user_label should be None per task-1 invariant"
+        );
+        assert!(
+            attr.mod_history.is_empty(),
+            "tube face #{idx} mod_history should be empty per task-1 invariant"
+        );
+        match attr.role {
+            Role::Cap(CapKind::Top) => {
+                cap_top_count += 1;
+                assert_eq!(
+                    attr.local_index, 0,
+                    "tube face #{idx}: the single Cap(Top) annulus must have local_index 0"
+                );
+            }
+            Role::Cap(CapKind::Bottom) => {
+                cap_bottom_count += 1;
+                assert_eq!(
+                    attr.local_index, 0,
+                    "tube face #{idx}: the single Cap(Bottom) annulus must have local_index 0"
+                );
+            }
+            Role::Side => {
+                side_local_indices.push(attr.local_index);
+                side_faces.push((face_id, attr.local_index));
+            }
+            other => panic!("tube face #{idx} role should be Cap(Top|Bottom) or Side, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        cap_top_count, 1,
+        "exactly one tube face (the top annulus) must be Role::Cap(CapKind::Top), got {cap_top_count}"
+    );
+    assert_eq!(
+        cap_bottom_count, 1,
+        "exactly one tube face (the bottom annulus) must be Role::Cap(CapKind::Bottom), got {cap_bottom_count}"
+    );
+    assert_eq!(
+        side_faces.len(),
+        2,
+        "exactly two tube faces (the outer wall and the bore) must be Role::Side, got {}",
+        side_faces.len()
+    );
+    side_local_indices.sort_unstable();
+    assert_eq!(
+        side_local_indices,
+        vec![0, 1],
+        "the two Role::Side faces must carry local_index 0 and 1 (as a SET — the order in \
+         which TopExp happens to yield them is not part of the contract)"
+    );
+
+    // ── THE ORDERING CONTRACT: local_index 0 is the LARGER-radius wall ───────
+    //
+    // Derived from the queried geometry, not from TopExp position, so this
+    // still holds if a future OCCT reorders its explorer output.
+    let mut extent_by_local_index: Vec<(u32, f64)> = side_faces
+        .iter()
+        .map(|&(face_id, local_index)| {
+            let bbox = kernel
+                .query(&GeometryQuery::BoundingBox(face_id))
+                .expect("BoundingBox on a tube wall face should succeed");
+            let Value::String(s) = bbox else {
+                panic!("BoundingBox should return a JSON string, got {bbox:?}")
+            };
+            (local_index, parse_bbox_radial_extent(&s))
+        })
+        .collect();
+    extent_by_local_index.sort_by_key(|&(local_index, _)| local_index);
+    let (_, outer_extent) = extent_by_local_index[0];
+    let (_, bore_extent) = extent_by_local_index[1];
+    assert!(
+        outer_extent > bore_extent,
+        "the Role::Side face with local_index 0 must be the OUTER wall — i.e. have a \
+         strictly larger radial bbox extent than the bore at local_index 1; \
+         got outer={outer_extent} vs bore={bore_extent}"
+    );
+
+    // ── Edges: every one Role::NewEdge with construction-order local_index ───
+    for (idx, &edge_id) in edge_handles.iter().enumerate() {
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: edge_id,
+            })
+            .unwrap_or_else(|| panic!("tube edge #{idx} (handle {edge_id:?}) must have an entry"));
+        assert_eq!(attr.role, Role::NewEdge, "tube edge #{idx} must be Role::NewEdge");
+        assert_eq!(
+            attr.local_index, idx as u32,
+            "tube edge #{idx} local_index must be its construction-order position"
+        );
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "tube edge #{idx} feature_id should equal Body#realization[0]"
+        );
+        assert_eq!(
+            attr.user_label, None,
+            "tube edge #{idx} user_label should be None per task-1 invariant"
+        );
+        assert!(
+            attr.mod_history.is_empty(),
+            "tube edge #{idx} mod_history should be empty per task-1 invariant"
+        );
+    }
+
+    // ── No vertex entries ────────────────────────────────────────────────────
+    //
+    // Tube is not `GeometryOp::Box`, so `seed_primitive_attributes_for_handle`
+    // passes an EMPTY vertex slice and the Tube arm ignores `vertex_handles`
+    // outright. Mirrors `cylinder_and_sphere_do_not_record_any_vertex_entries`.
+    // (Measured: OCCT emits 4 vertices for a tube — the seam endpoints.)
+    for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
+        assert!(
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: vertex_id,
+                })
+                .is_none(),
+            "tube vertex #{idx} (handle {vertex_id:?}) must NOT have an entry — \
+             only the Box arm seeds vertices"
         );
     }
 }
