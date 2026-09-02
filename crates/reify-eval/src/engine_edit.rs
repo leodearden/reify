@@ -64,7 +64,10 @@
 //!      write-back (same exclusion as `eval`'s merged-cluster branch).
 //!    - [`Engine::edit_param`] — `commit_cell_result` for both the main
 //!      write-back and its wave-2 driver-order reseed. No un-journaled
-//!      write-back.
+//!      *resolution* write-back — the reseed's inactive-guarded-member
+//!      leg instead calls [`deactivate_if_not_auto`], which
+//!      writes `values`/snapshot only (no cache, no journal), by
+//!      design; see the canonical Auto-cell lifecycle rule above.
 //!    - [`Engine::edit_source`] — main write-back journals via
 //!      `commit_cell_result`; its wave-2 ("Second propagation wave")
 //!      does NOT — a bare `values`/snapshot insert plus
@@ -82,9 +85,13 @@
 //!
 //! Legs 6-7 are a deliberate, documented divergence, not drift:
 //! `dispatch_merged_cluster_solve_cached`'s own doc records that its arm
-//! still emits no `resolved_params` and no `objective_provenance` — see
-//! that symbol's doc for the rationale before "fixing" `eval_cached` to
-//! write them.
+//! still emits no `resolved_params` and no `objective_provenance` —
+//! consult that doc's `resolved_params`/`objective_provenance` clause
+//! for the rationale before "fixing" `eval_cached` to write them. That
+//! doc's separate "migrated per-template sibling" remark is about a
+//! different topic (task #5118's `commit_cell_result` migration, not
+//! legs 6-7) and is not authoritative for leg 5 above — treat leg 5 as
+//! this file's canonical account of journal behavior per arm.
 //!
 //! Check all eight legs when modifying warm Resolution back-prop.
 //!
