@@ -1667,6 +1667,26 @@ pub(crate) fn has_usable_realized_solver_mesh(
 /// ids are unioned and mapped to node indices via
 /// [`super::bc_resolve::boundary_node_set`] against `realized.boundary()`.
 ///
+/// # Multi-support UNION invariant (normative; task 6663)
+///
+/// Every support's resolved face handles are UNIONED into ONE clamp node set,
+/// and all three translational DOFs are applied to all of them. There is no
+/// count-based branch and no degradation: a second support ADDS a face rather
+/// than reinterpreting the model, and a third naming an already-covered face is
+/// a no-op on the union. Pinned that way by
+/// `loads_supports_to_bc_node_sets_unions_multiple_support_faces`.
+///
+/// This is deliberately CONTRASTED with `modal_ops::build_dirichlet_bcs`, which
+/// until task 6663 DID reinterpret: two supports naming both beam-axis end faces
+/// flipped the whole model to the pin-pin realization regardless of support kind,
+/// silently dropping any third support. The static path never had that defect.
+///
+/// Realizing a pinned face as a full clamp is also physically right here: a
+/// solid tet body records `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`
+/// (`reify-solver-elastic/src/shell_boundary.rs:133-140`), i.e. face-pin equals
+/// face-clamp per face. What differs in the modal case is the STRUCTURE two
+/// clamped END FACES describe, not any single face's DOF count.
+///
 /// Returns `(clamp_nodes, load_nodes, diagnostics)`:
 /// - `clamp_nodes` — `Some(sorted node set)` when ≥1 support carried a `target`;
 ///   `None` when NO support carried one (→ the trampoline keeps the coordinate
@@ -1690,8 +1710,8 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 ) -> (Option<Vec<u32>>, Option<Vec<u32>>, Vec<Diagnostic>) {
     let boundary = realized.boundary();
     let mut diagnostics = Vec::new();
-    let clamp = target_node_set(supports, boundary, "FixedSupport", &mut diagnostics);
-    let load = target_node_set(loads, boundary, "PointLoad", &mut diagnostics);
+    let clamp = target_node_set(supports, boundary, &mut diagnostics);
+    let load = target_node_set(loads, boundary, &mut diagnostics);
     (clamp, load, diagnostics)
 }
 
@@ -1704,12 +1724,21 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 /// set)`; if that set is empty (absent realized boundary, empty handle list, or
 /// no resolved handle matched a boundary face) a `FeaFailure::SelectorNoMatch`
 /// Error is pushed into `diagnostics` — the trampoline turns it into `Failed`
-/// rather than silently applying an empty BC (step-16). `kind` (`"FixedSupport"`
-/// / `"PointLoad"`) names the offending side in the diagnostic.
+/// rather than silently applying an empty BC (step-16).
+///
+/// The diagnostic names the offending item(s) by their own
+/// `StructureInstance.type_name`, so a `PinnedSupport` is reported as a
+/// `PinnedSupport` (task 6663 — it used to be reported as a `FixedSupport`,
+/// hard-coded by the caller). That leaves the message byte-identical for
+/// `FixedSupport` / `PointLoad` inputs, which is why no caller-supplied fallback
+/// label is needed: `any_target` and the `target_bearing_types` push happen on
+/// the SAME iteration, and the `!any_target` early return above means the label
+/// is only ever read when at least one type name was collected. The old
+/// `kind: &str` parameter existed solely to fill an unreachable
+/// `target_bearing_types.is_empty()` arm and was dropped as dead code.
 fn target_node_set(
     list: &Value,
     boundary: Option<&reify_ir::BoundaryAssociation>,
-    kind: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<u32>> {
     let items = match list {
@@ -1718,6 +1747,9 @@ fn target_node_set(
     };
     let mut faces: Vec<reify_ir::GeometryHandleId> = Vec::new();
     let mut any_target = false;
+    // Distinct type names of the items that actually carried a target — the
+    // label the SelectorNoMatch diagnostic names below (task 6663).
+    let mut target_bearing_types: Vec<&str> = Vec::new();
     for item in items {
         let Value::StructureInstance(data) = item else {
             continue;
@@ -1726,6 +1758,9 @@ fn target_node_set(
             continue;
         };
         any_target = true;
+        if !target_bearing_types.contains(&data.type_name.as_str()) {
+            target_bearing_types.push(data.type_name.as_str());
+        }
         for hv in handles {
             if let Some(ghr) = reify_ir::value::GeometryHandleRef::from_geometry_handle(hv)
                 && let Some(id) = ghr.kernel_handle
@@ -1748,8 +1783,21 @@ fn target_node_set(
         // an empty boundary condition (design_decision[6], step-16). The
         // `selector` string names the side and the resolved face handles for
         // debuggability; `nearest` stays None (no nearest-match heuristic here).
+        //
+        // The label comes from the offending item's OWN `type_name` so a
+        // `PinnedSupport` is not reported as a `FixedSupport` (task 6663).
+        //
+        // Non-empty by construction: `any_target` is set on the SAME iteration
+        // that pushes into `target_bearing_types`, and `!any_target` returned
+        // above — so there is no fallback branch to take here, only an invariant
+        // to state.
+        debug_assert!(
+            !target_bearing_types.is_empty(),
+            "any_target implies at least one collected type_name",
+        );
+        let label = target_bearing_types.join("/");
         let selector = format!(
-            "{kind} target resolved to {} face handle(s) {:?} but matched no boundary node \
+            "{label} target resolved to {} face handle(s) {:?} but matched no boundary node \
              on the realized mesh",
             faces.len(),
             faces,
@@ -6086,6 +6134,161 @@ mod tests {
         );
         // shell9_result_fields panics unless the outcome is Completed.
         let _fields = shell9_result_fields(outcome);
+    }
+
+    // ── task 6663: static-path multi-support union + diagnostic labelling ─────
+
+    /// Build a `Value::List` of supports, each `(type_name, face handle)` pair
+    /// becoming one `StructureInstance` with a one-element `target` handle list.
+    ///
+    /// Shared by the two task-6663 tests below; mirrors the `support_with_target`
+    /// closure in `face_selector_targets_drive_bc_node_sets`, generalized to N
+    /// supports and to a caller-chosen support type name.
+    fn supports_with_targets(items: &[(&str, u64)]) -> Value {
+        use reify_ir::{GeometryHandleId, PersistentMap, StructureInstanceData, StructureTypeId};
+        Value::List(
+            items
+                .iter()
+                .map(|(type_name, id)| {
+                    let handle = Value::GeometryHandle {
+                        realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                        upstream_values_hash: [0u8; 32],
+                        kernel_handle: Some(GeometryHandleId(*id)),
+                    };
+                    let fields: PersistentMap<String, Value> =
+                        [("target".to_string(), Value::List(vec![handle]))]
+                            .into_iter()
+                            .collect();
+                    Value::StructureInstance(Box::new(StructureInstanceData {
+                        type_id: StructureTypeId(u32::MAX),
+                        type_name: (*type_name).to_string(),
+                        version: 1,
+                        fields,
+                    }))
+                })
+                .collect(),
+        )
+    }
+
+    /// The realized box fixture shared by the two task-6663 tests: `[0,2] × [0,0.5]
+    /// × [0,0.5]`, reps `[2,1,1]` → 12 nodes, `node_idx = iz·6 + iy·3 + ix`.
+    /// Face handle 201 is attributed the x_min nodes `{0,3,6,9}`, handle 202 the
+    /// x_max nodes `{2,5,8,11}`. Same construction as
+    /// `face_selector_targets_drive_bc_node_sets`.
+    fn task6663_two_face_handle() -> (RealizationReadHandle, Vec<u32>, Vec<u32>) {
+        use reify_ir::{BoundaryAssociation, GeometryHandleId, NodeAttachment};
+        let dims = [2.0_f64, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let x_min_face = vec![0u32, 3, 6, 9];
+        let x_max_face = vec![2u32, 5, 8, 11];
+        let mut boundary = BoundaryAssociation::default();
+        for &n in &x_min_face {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(201)));
+        }
+        for &n in &x_max_face {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(202)));
+        }
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        vm.boundary = Some(boundary);
+        (vm_read_handle(vm), x_min_face, x_max_face)
+    }
+
+    /// Task 6663 acceptance clause 2 — the STATIC path does NOT share the modal
+    /// defect, pinned as a durable artifact rather than asserted in prose.
+    ///
+    /// `modal_ops::build_dirichlet_bcs` used to REINTERPRET the whole model once
+    /// two supports named both beam-axis end faces (dropping any third support and
+    /// flipping to pin-pin). `loads_supports_to_bc_node_sets` does the opposite:
+    /// every support's resolved face handles are UNIONED into one clamp node set,
+    /// sorted and deduped, with no count-based branch, no degradation to a single
+    /// face and no partial-DOF realization — a second support ADDS a face.
+    ///
+    /// Expected to pass on first run; that pass IS the investigation result.
+    #[test]
+    fn loads_supports_to_bc_node_sets_unions_multiple_support_faces() {
+        let (handle, x_min_face, x_max_face) = task6663_two_face_handle();
+
+        // TWO supports carrying DISTINCT resolved face targets.
+        let supports = supports_with_targets(&[("FixedSupport", 201), ("FixedSupport", 202)]);
+        let loads = shell9_make_point_loads(1000.0); // no target → None
+
+        let (clamp, load, diags) = loads_supports_to_bc_node_sets(&handle, &loads, &supports);
+
+        let mut expected: Vec<u32> = x_min_face.iter().chain(x_max_face.iter()).copied().collect();
+        expected.sort_unstable();
+        assert_eq!(
+            clamp,
+            Some(expected),
+            "two supports with distinct face targets must UNION into one clamp node \
+             set (sorted, deduped) — no count-based branch, no degradation to a \
+             single face",
+        );
+        assert_eq!(load, None, "a load with no target must stay None (coordinate fallback)");
+        assert!(diags.is_empty(), "a fully-matched support set emits no diagnostics, got {diags:?}");
+
+        // A THIRD support naming an already-covered face must not drop anything or
+        // change the realization — it is idempotent on the union, not a trigger.
+        let supports3 = supports_with_targets(&[
+            ("FixedSupport", 201),
+            ("FixedSupport", 202),
+            ("FixedSupport", 201),
+        ]);
+        let (clamp3, _, diags3) = loads_supports_to_bc_node_sets(&handle, &loads, &supports3);
+        assert_eq!(
+            clamp3, clamp,
+            "a third support must ADD a face (or be a no-op on an already-covered \
+             one), never reinterpret the model",
+        );
+        assert!(diags3.is_empty(), "expected no diagnostics, got {diags3:?}");
+    }
+
+    /// Task 6663: a `SelectorNoMatch` diagnostic must name the OFFENDING support
+    /// type, not a hard-coded one.
+    ///
+    /// `loads_supports_to_bc_node_sets` used to pass the literal `"FixedSupport"`
+    /// as a hard-coded `kind` label, so a `PinnedSupport` whose target resolves
+    /// to zero boundary nodes was reported as a `FixedSupport` — the wrong
+    /// support type in the only message the author sees. RED until
+    /// `target_node_set` derived the label from the item's own
+    /// `StructureInstance.type_name`; that parameter has since been dropped
+    /// entirely (its only remaining use was an unreachable fallback arm), so
+    /// this test now guards the sole surviving label path.
+    #[test]
+    fn selector_no_match_diagnostic_names_the_offending_support_type() {
+        let (handle, _, _) = task6663_two_face_handle();
+
+        // A lone PinnedSupport whose target handle matches no boundary face.
+        let supports = supports_with_targets(&[("PinnedSupport", 999)]);
+        let loads = shell9_make_point_loads(1000.0); // no target → no diagnostic
+
+        let (clamp, _, diags) = loads_supports_to_bc_node_sets(&handle, &loads, &supports);
+
+        assert_eq!(
+            clamp,
+            Some(Vec::new()),
+            "a present-but-unmatched target still returns Some(empty) — the caller \
+             Fails on the diagnostic rather than silently applying an empty BC",
+        );
+        let selector_no_match: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::FeaSelectorNoMatch))
+            .collect();
+        assert_eq!(
+            selector_no_match.len(),
+            1,
+            "expected exactly one SelectorNoMatch diagnostic, got {diags:?}",
+        );
+        let message = &selector_no_match[0].message;
+        assert!(
+            message.contains("PinnedSupport"),
+            "the SelectorNoMatch diagnostic must name the offending support type \
+             (PinnedSupport), got: {message}",
+        );
+        assert!(
+            !message.contains("FixedSupport"),
+            "the SelectorNoMatch diagnostic must not mislabel a PinnedSupport as a \
+             FixedSupport, got: {message}",
+        );
     }
 
     // ── task 4092: present-but-empty target → SelectorNoMatch (step-15 RED) ────
