@@ -719,12 +719,20 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// Three consequences worth stating, because none is inferable from "N
 /// consumers":
 ///
-/// * **Dequeue order is still FIFO, and jobs still run concurrently.** Each
-///   consumer takes the shared lock, `recv()`s, and RELEASES the lock before
-///   running the job body. So the lock is held only across a dequeue — exactly
-///   one consumer is parked in `recv` at a time and the rest are queued on the
-///   mutex, which preserves arrival order; but no consumer holds it while
-///   working, so `size` job bodies genuinely run at once.
+/// * **Dequeue order is still FIFO, and jobs still run concurrently.** The FIFO
+///   comes from [`std::sync::mpsc`], which delivers in send order; the mutex
+///   contributes NOTHING to it and must not be read as if it did.
+///   [`std::sync::Mutex`] offers no fairness or FIFO guarantee, so which blocked
+///   consumer wins a freed lock is arbitrary. What the shared lock does is
+///   serialise the DEQUEUE — one `recv()` at a time, so no two consumers can
+///   take the same job — and each consumer RELEASES it before running the job
+///   body, which is what lets `size` bodies run at once.
+///
+///   The consequence to state rather than gloss: on a size-N pool, the order in
+///   which job BODIES start is not guaranteed to follow arrival order at all.
+///   Only the size-1 [`LSP_LANE`] gives strict start-order, and it gives it
+///   because there is one consumer — which is precisely why the order-sensitive
+///   methods stay on it.
 /// * **The uniform `Arc<Mutex<Receiver>>` costs a size-1 lane one UNCONTENDED
 ///   lock acquisition per job.** That is a handful of nanoseconds against a
 ///   channel round trip, and it is paid deliberately: special-casing size 1 to
@@ -1036,11 +1044,13 @@ impl Lane {
                             CURRENT_LANE.with(|l| l.set(Some(name)));
                             loop {
                                 // Take the lock, dequeue, RELEASE it — then run
-                                // the job. Holding it across `recv` is what
-                                // keeps dequeue order FIFO (exactly one consumer
-                                // parks in `recv`; the rest queue on the mutex);
-                                // releasing it before the body is what lets
-                                // `size` bodies run at once. Poisoning is
+                                // the job. The lock SERIALISES the dequeue so no
+                                // two consumers take the same job; it does not
+                                // order them — `std::sync::Mutex` is not fair,
+                                // so which blocked consumer wins is arbitrary.
+                                // Dequeue order is FIFO because `std::sync::mpsc`
+                                // is. Releasing the lock before the body is what
+                                // lets `size` bodies run at once. Poisoning is
                                 // recovered rather than propagated, mirroring
                                 // `JobSender::send` — and a job body cannot
                                 // poison this lock anyway, because the job's own
@@ -1105,11 +1115,14 @@ impl Lane {
 /// [`run_on_worker`]. Named [`WORKER_THREAD_NAME`].
 pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
 
-/// The ORDERED LSP lane: the state-mutating and lifecycle methods
-/// (`initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
-/// `shutdown`) plus, conservatively, any method
-/// `InProcessLsp::handle_request` does not recognise. Named
-/// [`LSP_WORKER_THREAD_NAME`].
+/// The ORDERED LSP lane: the six state-mutating and lifecycle methods plus,
+/// conservatively, any method `InProcessLsp::handle_request` does not recognise.
+/// Named [`LSP_WORKER_THREAD_NAME`].
+///
+/// WHICH six is not restated here. [`crate::lsp_bridge::lane_for_method`]'s
+/// `matches!` arm is the single authoritative list, and it is the only copy
+/// under test (`lsp_bridge_tests`' (j) executes every entry against the real
+/// dispatcher). A prose copy beside it is a second list that nothing checks.
 ///
 /// Separate from [`ENGINE_LANE`] so a hover never queues behind a geometry
 /// evaluation — see [`Lane`]'s "Why more than one lane".
@@ -1121,10 +1134,13 @@ pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
 /// [`crate::lsp_bridge::lane_for_method`]'s decision, not this module's.
 pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 
-/// The LSP QUERY POOL: the eight read-only query methods (`completion`,
-/// `hover`, `definition`, `documentSymbol`, `documentHighlight`,
-/// `prepareRename`, `rename`, `references`), on [`LSP_POOL_SIZE`] consumers
-/// named `{LSP_POOL_THREAD_PREFIX}{i}` (task 6517).
+/// The LSP QUERY POOL: the eight read-only query methods, on [`LSP_POOL_SIZE`]
+/// consumers named `{LSP_POOL_THREAD_PREFIX}{i}` (task 6517).
+///
+/// WHICH eight is [`crate::lsp_bridge::lane_for_method`]'s `matches!` arm — the
+/// single authoritative list, and the only copy any test executes. The count is
+/// repeated here because it is load-bearing against [`LSP_POOL_SIZE`]; the
+/// membership is not.
 ///
 /// This is what BOUNDS head-of-line blocking among LSP queries instead of
 /// leaving them serialized: a query that gains nothing from the large stack —

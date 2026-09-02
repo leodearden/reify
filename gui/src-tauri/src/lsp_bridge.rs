@@ -106,14 +106,20 @@ pub async fn lsp_request_impl(
 ///
 /// Since task 6517 there are TWO destinations, chosen by [`lane_for_method`]:
 ///
-/// * ORDERED lane ([`crate::large_stack::LSP_LANE`], one consumer) —
-///   `initialize`, `initialized`, `textDocument/didOpen`,
-///   `textDocument/didChange`, `textDocument/didClose`, `shutdown`, plus any
-///   method `handle_request` does not recognise.
+/// * ORDERED lane ([`crate::large_stack::LSP_LANE`], one consumer) — the six
+///   state-mutating and lifecycle methods, plus any method `handle_request`
+///   does not recognise.
 /// * QUERY pool ([`crate::large_stack::LSP_POOL`],
-///   [`crate::large_stack::LSP_POOL_SIZE`] consumers) —
-///   `textDocument/completion`, `hover`, `definition`, `documentSymbol`,
-///   `documentHighlight`, `prepareRename`, `rename`, `references`.
+///   [`crate::large_stack::LSP_POOL_SIZE`] consumers) — the eight read-only
+///   queries.
+///
+/// The membership of each set is deliberately NOT restated here.
+/// [`lane_for_method`]'s `matches!` arm is the single authoritative list, and
+/// the only copy under test — `lsp_bridge_tests`' (j) drives every entry of its
+/// `ORDERED_METHODS` / `QUERY_METHODS` constants through the real dispatcher, so
+/// a method renamed or added in `reify-lsp` reds there. Prose copies are
+/// unguarded by construction; only the COUNTS are repeated, because they are
+/// load-bearing (six + eight = the fourteen arms `handle_request` accepts).
 ///
 /// What the LARGE STACK covers is a different cut and is unchanged by that
 /// split. Four of the pooled arms — `definition`, `prepareRename`, `rename`,
@@ -190,6 +196,19 @@ pub async fn lsp_request_on_worker(
 /// Which large-stack lane a given LSP method travels: the size-1 ORDERED lane,
 /// or the [`crate::large_stack::LSP_POOL_SIZE`]-consumer QUERY POOL (task 6517).
 ///
+/// # This `matches!` arm is the AUTHORITATIVE classification
+///
+/// Every other site that describes the split — [`lsp_request_on_worker`]'s
+/// "Which lane", [`crate::large_stack::LSP_LANE`] and
+/// [`crate::large_stack::LSP_POOL`], the `large_stack` module docs,
+/// `main.rs::lsp_request`, both test-file section headers — carries the COUNTS
+/// and points here for the membership. That is deliberate: prose copies of a
+/// list are unguarded, so reclassifying one method (or `reify-lsp` adding an
+/// arm) used to leave six stale lists reading as authoritative. The only other
+/// copies are `lsp_bridge_tests`' `ORDERED_METHODS` / `QUERY_METHODS`
+/// constants, and those are guarded — (j) relates them to `HANDLE_REQUEST_ARMS`
+/// and drives every entry through the real dispatcher.
+///
 /// # The classification key is LSP PROTOCOL semantics
 ///
 /// The question this answers is "does this method mutate server-side document or
@@ -248,8 +267,11 @@ pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stac
     if concurrency_safe {
         crate::large_stack::LSP_POOL.sender()
     } else {
-        // `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
-        // `shutdown` — and, conservatively, anything unrecognised.
+        // Everything else: the state-mutating and lifecycle methods, and —
+        // conservatively — anything `InProcessLsp::handle_request` does not
+        // recognise. Defined by EXCLUSION from the arm above rather than
+        // enumerated, which is the structural half of "Why the fallthrough is
+        // the ORDERED lane".
         crate::large_stack::LSP_LANE.sender()
     }
 }

@@ -616,7 +616,9 @@ fn mcp_tool_call(
 /// recognise — to the single-consumer ORDERED lane, and the eight read-only
 /// queries to a `LSP_POOL_SIZE`-consumer QUERY POOL. Notification ordering is
 /// therefore unchanged (one FIFO consumer), while head-of-line blocking among
-/// queries is bounded at the pool size rather than total. The frontend sees no
+/// queries is bounded at the pool size rather than total. WHICH methods are in
+/// which set is `lane_for_method`'s `matches!` arm and is not restated here —
+/// see that function; this comment carries counts only. The frontend sees no
 /// difference: this command's signature, its arguments and its return type are
 /// exactly as task 5772 left them.
 ///

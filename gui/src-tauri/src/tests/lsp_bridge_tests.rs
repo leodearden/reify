@@ -802,12 +802,15 @@ async fn lsp_request_impl_valid_json_passes_json_parse_step() {
 // the coupling: work that gains nothing from the big stack merely occupies one
 // of N consumers instead of the only one.
 //
-// * ORDERED lane (`LSP_LANE`, size 1, unchanged): `initialize`, `initialized`,
-//   `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
-//   `shutdown` — plus, conservatively, ANY unrecognised method.
-// * QUERY pool (`LSP_POOL`, size `LSP_POOL_SIZE`): the eight read-only queries
-//   `completion`, `hover`, `definition`, `documentSymbol`, `documentHighlight`,
-//   `prepareRename`, `rename`, `references`.
+// * ORDERED lane (`LSP_LANE`, size 1, unchanged): the six state-mutating and
+//   lifecycle methods — plus, conservatively, ANY unrecognised method.
+// * QUERY pool (`LSP_POOL`, size `LSP_POOL_SIZE`): the eight read-only queries.
+//
+// The membership is spelled out ONCE per direction of the check: authoritatively
+// in `lane_for_method`'s `matches!` arm, and as the `ORDERED_METHODS` /
+// `QUERY_METHODS` constants below, which (j) relates to `HANDLE_REQUEST_ARMS`
+// and executes against the real dispatcher. A third prose copy here would be a
+// list nothing checks, so this comment carries only the counts.
 //
 // Ordering among NOTIFICATIONS is therefore preserved exactly — one FIFO
 // consumer, which is what `didChange` correctness rests on, pinned by (k). The
