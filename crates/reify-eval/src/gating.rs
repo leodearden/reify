@@ -68,8 +68,7 @@ fn entry_has_non_final_inputs(cache: &CacheStore, entry: &NodeCache) -> bool {
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
 /// See arch §7.3 and §3.5.
-// G-allow: no production consumer; scheduler deleted, see module doc above —
-// retain-or-remove decision tracked in #7073
+// G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see module doc above
 pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
     match cache.get(node) {
         Some(entry) => entry_has_non_final_inputs(cache, entry),
@@ -102,8 +101,7 @@ pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
 /// See arch §3.5 ("freshness propagation can unlock gated work").
-// G-allow: no production consumer; scheduler deleted, see module doc above —
-// retain-or-remove decision tracked in #7073
+// G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see module doc above
 pub fn unblocked_gated_nodes<'a, I>(cache: &CacheStore, gated: I) -> HashSet<NodeId>
 where
     I: IntoIterator<Item = &'a NodeId>,
