@@ -352,11 +352,9 @@ pub structure def Box {
 /// This is the positive counterpart to
 /// `trait_static_fn_call_emits_no_spurious_deprecation_warning`.
 ///
-/// RED after the grammar-only change (step-2): the source now parses and the
-/// fn registers, but `lower_trait_members` drops the annotation so
-/// `FnDef.annotations` is empty → `CompiledFunction.annotations` empty →
-/// no warning emitted.
-/// GREEN after the `lower_trait_members` annotation-attach change (step-4).
+/// `lower_trait_members` (ts_parser.rs) drains pending annotations onto Fn
+/// members, so `CompiledFunction.annotations` carries `@deprecated` and the
+/// `TraitStaticCall` arm's `deprecation_message` check (expr.rs) fires.
 #[test]
 fn trait_static_fn_call_emits_deprecation_warning() {
     let source = r#"
