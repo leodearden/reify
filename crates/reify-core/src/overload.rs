@@ -32,14 +32,14 @@
 //!
 //! Tier 2 MUST be applied as a filter over the set surviving tier 3, never
 //! standalone. It is narrower than tier 3 on the type-param-param disjunct,
-//! but it is **not a subset** of it: [`heads_unifiable`]'s erased-subject arm
+//! but it is **not a subset** of it: `heads_unifiable`'s erased-subject arm
 //! (`Applied{name, ..}` vs `Enum(name)`) accepts a pair tier 3 rejects
 //! outright, because tier 3 only ever compares an `Applied` param to an `Enum`
 //! arg by plain equality. Concretely, for param `Applied{"Result",[Int,
 //! String]}` and arg `Enum("Result")` with `is_generic == true`,
 //! [`slot_matches_head_tier`] is `true` while [`slot_matches_wildcard_tier`]
 //! is `false`. The relation is confined to GENERIC candidates: with
-//! `is_generic == false` the head tier's [`heads_unifiable`] arm is gated off
+//! `is_generic == false` the head tier's `heads_unifiable` arm is gated off
 //! and head genuinely IS a subset — so screening is load-bearing exactly for
 //! the generic overloads tier 2 exists to disambiguate.
 //!
@@ -322,7 +322,16 @@ pub fn type_carries_dim_param(t: &Type) -> bool {
 /// - The catch-all is `param == arg` (plain equality) rather than `unify`'s
 ///   permissive `Ok(())` — a head mismatch (or two leaves) must agree
 ///   exactly to count as "unifiable" here.
-pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
+///
+/// DELIBERATELY `pub(crate)`, not `pub`. This is the *implementation* of the
+/// head tier, not a rung of the ladder: both consumers reach it only through
+/// [`slot_matches_head_tier`], and this module's own tests are in-crate. Its
+/// eval-side predecessor was `#[doc(hidden)] pub` purely for cross-crate test
+/// reachability — a concession #5689 was meant to retire, so do not re-widen
+/// it to `pub` (that would advertise it as `reify-core` API and pull it into
+/// `tests/api_surface.rs`). Public intra-doc links to it are written as plain
+/// code spans for the same reason.
+pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
         (Type::TypeParam(_), _) => true,
@@ -478,7 +487,7 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
 /// Tier 2 of the ladder — the middle tie-break gate (HEAD).
 ///
 /// Narrower than [`slot_matches_wildcard_tier`] on the type-param-param
-/// disjunct: structural [`heads_unifiable`] instead of a full wildcard. This
+/// disjunct: structural `heads_unifiable` instead of a full wildcard. This
 /// disambiguates two GENERIC overloads with different container heads — e.g. a
 /// user `unwrap_or<T,E>(r: Result<T,E>, ..)` vs the stdlib
 /// `unwrap_or<T>(o: Option<T>, ..)` — which would otherwise both

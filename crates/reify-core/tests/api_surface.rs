@@ -82,11 +82,10 @@ use reify_core::units::{
 
 // ── overload ─────────────────────────────────────────────────────────────────
 use reify_core::{
-    heads_unifiable, slot_matches_head_tier, slot_matches_wildcard_tier,
-    type_carries_dim_param, type_carries_trait_object, type_carries_type_param,
+    slot_matches_head_tier, slot_matches_wildcard_tier, type_carries_dim_param,
+    type_carries_trait_object, type_carries_type_param,
 };
 use reify_core::overload::{
-    heads_unifiable as heads_unifiable_mod,
     slot_matches_head_tier as slot_matches_head_tier_mod,
     slot_matches_wildcard_tier as slot_matches_wildcard_tier_mod,
     type_carries_dim_param as type_carries_dim_param_mod,
@@ -353,9 +352,14 @@ fn overload_flat_and_module_path() {
     // `fn(&Type) -> bool` annotations below are the assertion — they fail to
     // compile if an arity or argument shape moves). The ladder's SEMANTICS
     // belong to `overload.rs`, where the corpus and per-arm tests live.
+    //
+    // `heads_unifiable` is deliberately ABSENT: it is `pub(crate)` in
+    // `overload.rs` (the head tier's implementation, reached only through
+    // `slot_matches_head_tier`), so it is not part of this crate's API surface
+    // and must not be pinned here. Re-adding it would re-advertise a symbol
+    // #5689 deliberately un-published.
     let wildcard: fn(&Type, &Type, bool) -> bool = slot_matches_wildcard_tier;
     let head: fn(&Type, &Type, bool) -> bool = slot_matches_head_tier;
-    let heads: fn(&Type, &Type) -> bool = heads_unifiable;
     let carries_to: fn(&Type) -> bool = type_carries_trait_object;
     let carries_tp: fn(&Type) -> bool = type_carries_type_param;
     let carries_dp: fn(&Type) -> bool = type_carries_dim_param;
@@ -363,7 +367,6 @@ fn overload_flat_and_module_path() {
     // Module-path aliases must resolve to the same functions.
     assert!(std::ptr::fn_addr_eq(wildcard, slot_matches_wildcard_tier_mod as fn(&Type, &Type, bool) -> bool));
     assert!(std::ptr::fn_addr_eq(head, slot_matches_head_tier_mod as fn(&Type, &Type, bool) -> bool));
-    assert!(std::ptr::fn_addr_eq(heads, heads_unifiable_mod as fn(&Type, &Type) -> bool));
     assert!(std::ptr::fn_addr_eq(carries_to, type_carries_trait_object_mod as fn(&Type) -> bool));
     assert!(std::ptr::fn_addr_eq(carries_tp, type_carries_type_param_mod as fn(&Type) -> bool));
     assert!(std::ptr::fn_addr_eq(carries_dp, type_carries_dim_param_mod as fn(&Type) -> bool));
@@ -377,8 +380,6 @@ fn overload_flat_and_module_path() {
     assert!(slot_matches_wildcard_tier_mod(&concrete, &param, false));
     assert!(head(&concrete, &param, false));
     assert!(slot_matches_head_tier_mod(&concrete, &param, false));
-    assert!(heads(&param, &concrete));
-    assert!(heads_unifiable_mod(&param, &concrete));
     assert!(!carries_to(&param) && !type_carries_trait_object_mod(&param));
     assert!(carries_tp(&param) && type_carries_type_param_mod(&param));
     assert!(!carries_dp(&param) && !type_carries_dim_param_mod(&param));

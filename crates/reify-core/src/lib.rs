@@ -61,8 +61,8 @@ pub use source_location::{
     line_col_to_byte_offset_with_offsets,
 };
 pub use overload::{
-    heads_unifiable, slot_matches_head_tier, slot_matches_wildcard_tier,
-    type_carries_dim_param, type_carries_trait_object, type_carries_type_param,
+    slot_matches_head_tier, slot_matches_wildcard_tier, type_carries_dim_param,
+    type_carries_trait_object, type_carries_type_param,
 };
 pub use panic_payload::panic_payload_to_string;
 pub use persistent_cache::PersistentlyCacheable;
