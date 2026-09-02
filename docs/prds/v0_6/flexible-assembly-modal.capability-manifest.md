@@ -122,8 +122,14 @@ misjudge:
   `PinnedSupport.target` are `String` placeholders (`crates/reify-compiler/stdlib/fea_multi_case.ri`),
   the consume half (`target_node_set`, via `loads_supports_to_bc_node_sets`) expects a
   `Value::List` of `Value::GeometryHandle`, and the produce half (`build_face_anchors` /
-  `resolve_selector_faces` in `bc_resolve.rs`) has **only `#[cfg(test)]` callers**. Nothing in
-  production bridges them. Retired by the edges A2 → #5312 and A2 → #5313.
+  `resolve_selector_faces` in `bc_resolve.rs`) does not bridge them — but the two halves of that
+  produce pair differ, and conflating them misreads the verdict. `resolve_selector_faces` is
+  genuinely **test-only** (its only callers are the `#[cfg(test)]` tests in its own module).
+  `build_face_anchors` is **production-wired**: `engine_build.rs:9345`, the Task-4092
+  boundary-attribution branch of `execute_realization_ops`, gated on `demanded_boundary` — but
+  that path is fed by *realization* boundary demand, never by an `.ri`-declared support `target`,
+  so it is not the missing bridge either. What is absent is the `target : String` → `Selector`
+  flip itself. Retired by the edges A2 → #5312 and A2 → #5313.
 
 ### Numeric premises (G6 branches 1–2)
 

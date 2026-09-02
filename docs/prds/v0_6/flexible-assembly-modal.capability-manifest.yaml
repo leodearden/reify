@@ -128,7 +128,14 @@ tasks:
       called from loads_supports_to_bc_node_sets (crates/reify-eval/src/compute_targets/elastic_static.rs),
       expects a Value::List of Value::GeometryHandle. Produce half: build_face_anchors
       / resolve_selector_faces (crates/reify-eval/src/compute_targets/bc_resolve.rs)
-      — whose ONLY callers are its own #[cfg(test)] module. Nothing in production
+      — and the two differ, so state them separately. resolve_selector_faces IS
+      test-only: its ONLY callers are the #[cfg(test)] tests in that same module.
+      build_face_anchors is NOT test-only — it has a production call site in the
+      Task-4092 boundary-attribution branch of execute_realization_ops
+      (crates/reify-eval/src/engine_build.rs:9345, present at this manifest as-of
+      commit 4818478dff, outside any #[cfg(test)] module), gated on demanded_boundary.
+      That path is reached from REALIZATION boundary demand, never from an .ri-declared
+      support target, so it does not bridge this seam. Nothing in production
       populates a target field from the .ri-declared String into the List<GeometryHandle>
       shape; the only place that shape exists is hand-built test StructureInstanceData.
       So the String -> Selector flip is genuinely absent, is owned by #5312 (Bmig2)
