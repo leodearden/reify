@@ -13736,11 +13736,13 @@ mod dispatch_volume_mesh_tests;
 // below exercise the helper's contract but cannot verify the one-shot guarantee
 // at the call-site level.
 //
-// Not yet wired into the engine's realization pipeline; blocked on task
-// #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in
-// dispatch_volume_mesh). See compute-node-contract.md §6 for the full task
-// history and rejected-alternative rationale.
-#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β)
+// Not yet wired into the engine's realization pipeline; blocked on #4746
+// (hex/wedge Phase A activation), whose WHAT-TO-DO names this helper
+// explicitly — it emits this diagnostic at the `dispatch_volume_mesh`
+// production edge. The cite here was previously task 4744, which is now done
+// and landed WITHOUT wiring this helper. See compute-node-contract.md §6 for
+// the full task history and rejected-alternative rationale.
+#[allow(dead_code)] // production wiring pending #4746 (hex/wedge Phase A activation: emits this diagnostic at the dispatch_volume_mesh production edge)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
