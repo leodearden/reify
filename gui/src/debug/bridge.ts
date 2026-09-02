@@ -1541,6 +1541,29 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // (editorStore.ts, task-5359), which owns the dirty/clean split; adding a
     // second reconciliation here would be a fork of that rule.
     //
+    // WHAT THAT SPLIT MEANS HERE — deliberate, and pinned by the
+    // `apply_gui_state` cases in debugContract.test.ts (task 5097 δ amendment,
+    // review finding).  `openFile`'s contract is "reopen from DISK", but this
+    // caller's `content` is an IN-MEMORY buffer that no disk write produced, so
+    // the two arms land differently from a watcher re-fire:
+    //
+    //  - CLEAN tab → the buffer is replaced and the tab stays CLEAN, so it now
+    //    differs from disk with no unsaved-changes indicator, and a later clean
+    //    reopen of the same path (an FS-watcher re-fire from
+    //    `reify_set_parameter`, File→Open) overwrites the AI's edit.  Accepted:
+    //    the engine holds the same text, `reify_save_file` is the commit step,
+    //    and forcing the tab dirty from here would fork `openFile`'s rule and
+    //    mean a debug push could block the user's own save behind a conflict
+    //    prompt.  `reify_update_source` is explicitly the volatile,
+    //    try-it-and-read-the-diagnostics tool; `reify_set_parameter` is the
+    //    durable one (it writes disk, so its push carries no `file` member).
+    //  - DIRTY tab → `openFile` does NOT clobber unsaved edits; it raises
+    //    `externallyChanged` when the incoming text diverges.  The engine then
+    //    holds the AI's text while the editor keeps the user's, and that
+    //    divergence is SURFACED as the existing conflict rather than silently
+    //    resolved in either direction.  Resolving it here would be this
+    //    handler picking a winner between the user and the AI.
+    //
     // A malformed `file` is refused BEFORE either store moves: applying the
     // GuiState but not the buffer is the very desync this member exists to
     // close, so a half-applied push is worse than a refused one.

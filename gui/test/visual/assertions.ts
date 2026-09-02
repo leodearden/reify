@@ -505,7 +505,9 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "set_fea_case",
   "open_file",
   // AI write tools (task 5097 δ) — reify-mcp identities on the reify-debug
-  // surface; reify_open_file shares the open_file dispatch arm.
+  // surface. reify_open_file has its own dispatch arm but shares open_file's
+  // funnel (`open_path_into_engine`); the arms differ only in the result
+  // envelope, since the reify-mcp identity owes its clients {success, source}.
   "reify_set_parameter",
   "reify_update_source",
   "reify_open_file",

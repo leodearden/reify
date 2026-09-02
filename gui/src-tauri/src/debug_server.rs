@@ -1963,6 +1963,66 @@ fn reify_write_optional_str_param(params: &Value, field: &str) -> Result<Option<
     }
 }
 
+// ── Result envelopes ──
+//
+// Each write tool's success reply, built by a PURE function rather than inline
+// in its handler. The handlers themselves need a `DebugServerState`/`AppHandle`
+// and so cannot be driven headlessly (see the test module's note), which left
+// the response SHAPES — the half of the contract an AI client actually reads —
+// untested: dropping `new_value`, or letting `diagnostics_count` drift from
+// `diagnostics`, changed the wire shape with the whole suite green (task #5097
+// δ amendment, review finding). Extracted here, each shape is pinned directly
+// by `reify_write_tool_envelopes_match_the_reify_mcp_shapes`.
+//
+// The fifth envelope, `reify_open_file_envelope`, lives beside
+// `handle_reify_open_file` because it is what distinguishes that tool from its
+// debug-native twin.
+
+/// `reify_set_parameter` → `{success, new_value, unit, diagnostics}`.
+///
+/// `new_value`/`unit` are `Option` because the committed cell may be absent
+/// from the rebuilt `GuiState`; they serialize to `null` rather than vanishing,
+/// so the key set is invariant. Diagnostics are UNFILTERED, matching what
+/// `crates/reify-mcp/src/tools/write.rs` returns for this tool name.
+pub(crate) fn reify_set_parameter_envelope(
+    new_value: Option<String>,
+    unit: Option<String>,
+    diagnostics: Vec<reify_core::DiagnosticInfo>,
+) -> Value {
+    json!({
+        "success": true,
+        "new_value": new_value,
+        "unit": unit,
+        "diagnostics": diagnostics,
+    })
+}
+
+/// `reify_update_source` → `{success, diagnostics_count, diagnostics}`.
+///
+/// Taking the already-filtered list and deriving the count from it is what
+/// makes the two members unable to disagree — reporting
+/// `diagnostics_count: 0` beside a non-empty list (or vice versa) is precisely
+/// the vacuous-filter defect step-18/19 fixed, and this keeps it unrepeatable.
+pub(crate) fn reify_update_source_envelope(diagnostics: Vec<reify_core::DiagnosticInfo>) -> Value {
+    json!({
+        "success": true,
+        "diagnostics_count": diagnostics.len(),
+        "diagnostics": diagnostics,
+    })
+}
+
+/// `reify_save_file` → `{success}`. Bare by design: reify-mcp returns exactly
+/// this, and the tool commits nothing the client could not already read back.
+pub(crate) fn reify_save_file_envelope() -> Value {
+    json!({ "success": true })
+}
+
+/// `reify_export` → `{success, path}`, echoing the caller's `output_path` so a
+/// client that resolved a relative spelling knows what was actually written.
+pub(crate) fn reify_export_envelope(output_path: &str) -> Value {
+    json!({ "success": true, "path": output_path })
+}
+
 /// Engine-routing core of the `reify_set_parameter` write tool: apply
 /// `value` to `cell_id`'s default literal IN THE `.ri` SOURCE (INV-GUI-3,
 /// via γ's [`EngineSession::apply_param_to_source_str`]), then refresh the
@@ -2053,12 +2113,7 @@ async fn handle_reify_set_parameter(
         .query_frontend("apply_gui_state", payload)
         .await?;
 
-    Ok(json!({
-        "success": true,
-        "new_value": new_value,
-        "unit": unit,
-        "diagnostics": diagnostics,
-    }))
+    Ok(reify_set_parameter_envelope(new_value, unit, diagnostics))
 }
 
 /// Engine-routing core of the `reify_update_source` write tool: recompile
@@ -2338,11 +2393,7 @@ async fn handle_reify_update_source(
         .query_frontend("apply_gui_state", payload)
         .await?;
 
-    Ok(json!({
-        "success": true,
-        "diagnostics_count": filtered.len(),
-        "diagnostics": filtered,
-    }))
+    Ok(reify_update_source_envelope(filtered))
 }
 
 /// Engine-routing core of the `reify_save_file` write tool: write the
@@ -2468,7 +2519,7 @@ async fn handle_reify_save_file(
         .debug_bridge
         .query_frontend("apply_gui_state", payload)
         .await?;
-    Ok(json!({ "success": true }))
+    Ok(reify_save_file_envelope())
 }
 
 /// Engine-routing core of the `reify_export` write tool: export the realized
@@ -2521,7 +2572,7 @@ async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<
         .debug_bridge
         .query_frontend("apply_gui_state", payload)
         .await?;
-    Ok(json!({ "success": true, "path": output_path }))
+    Ok(reify_export_envelope(&output_path))
 }
 
 // --- MCP Streamable HTTP handler ---
@@ -6046,6 +6097,103 @@ structure def Part {
             vec!["source", "success"],
             "the envelope must be exactly {{success, source}} — an extra key \
              is drift from the reify-mcp surface this identity came from"
+        );
+    }
+
+    /// The other four write tools' response SHAPES — the half of the contract
+    /// an AI client actually reads, and the half nothing covered: every Rust
+    /// test drives the `*_on_engine_and_refresh_baseline` cores (which return
+    /// a `GuiState`, not an envelope), and `debugParity.test.ts` only checks
+    /// that the NAMES are advertised. Dropping `new_value`, or letting
+    /// `diagnostics_count` drift from `diagnostics`, changed the wire shape
+    /// with the whole suite green (task #5097 δ amendment, review finding).
+    #[test]
+    fn reify_write_tool_envelopes_match_the_reify_mcp_shapes() {
+        /// Exact key set, sorted so the assertion does not depend on
+        /// serde_json's `preserve_order` feature.
+        fn keys(v: &Value) -> Vec<&str> {
+            let mut k: Vec<&str> = v
+                .as_object()
+                .expect("every envelope must be a JSON object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            k.sort_unstable();
+            k
+        }
+
+        fn stamped(message: &str) -> reify_core::DiagnosticInfo {
+            reify_core::DiagnosticInfo {
+                file_path: "part.ri".to_string(),
+                line: 2,
+                column: 5,
+                end_line: 2,
+                end_column: 9,
+                severity: "Warning".to_string(),
+                message: message.to_string(),
+                code: None,
+                has_location: true,
+            }
+        }
+
+        // `reify_set_parameter` — {success, new_value, unit, diagnostics}.
+        let set_param = reify_set_parameter_envelope(
+            Some("120".to_string()),
+            Some("mm".to_string()),
+            vec![stamped("a warning")],
+        );
+        assert_eq!(
+            keys(&set_param),
+            vec!["diagnostics", "new_value", "success", "unit"]
+        );
+        assert_eq!(set_param["success"].as_bool(), Some(true));
+        assert_eq!(set_param["new_value"].as_str(), Some("120"));
+        assert_eq!(set_param["unit"].as_str(), Some("mm"));
+        assert_eq!(set_param["diagnostics"].as_array().map(Vec::len), Some(1));
+
+        // An absent cell keeps the KEY SET invariant — `null`, never missing,
+        // so a client can read `result.new_value` unconditionally.
+        let absent = reify_set_parameter_envelope(None, None, vec![]);
+        assert_eq!(
+            keys(&absent),
+            vec!["diagnostics", "new_value", "success", "unit"],
+            "an uncommitted cell must null the values, not drop the keys"
+        );
+        assert!(absent["new_value"].is_null() && absent["unit"].is_null());
+
+        // `reify_update_source` — {success, diagnostics_count, diagnostics},
+        // and the count is DERIVED, so the two can never disagree.
+        for diags in [
+            vec![],
+            vec![stamped("one")],
+            vec![stamped("one"), stamped("two")],
+        ] {
+            let expected = diags.len();
+            let env = reify_update_source_envelope(diags);
+            assert_eq!(
+                keys(&env),
+                vec!["diagnostics", "diagnostics_count", "success"]
+            );
+            assert_eq!(env["diagnostics_count"].as_u64(), Some(expected as u64));
+            assert_eq!(
+                env["diagnostics"].as_array().map(Vec::len),
+                Some(expected),
+                "diagnostics_count must equal the list it reports on"
+            );
+        }
+
+        // The two pure-I/O tools.
+        assert_eq!(keys(&reify_save_file_envelope()), vec!["success"]);
+        assert_eq!(
+            reify_save_file_envelope()["success"].as_bool(),
+            Some(true)
+        );
+        let export = reify_export_envelope("/tmp/out.step");
+        assert_eq!(keys(&export), vec!["path", "success"]);
+        assert_eq!(
+            export["path"].as_str(),
+            Some("/tmp/out.step"),
+            "`path` must echo the caller's output_path verbatim"
         );
     }
 
