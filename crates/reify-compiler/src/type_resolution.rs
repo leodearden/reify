@@ -5633,11 +5633,17 @@ mod tests {
     /// the builtin `Type::Orientation(3)` (the lint is advisory — it must not
     /// let the user declaration win in type position).
     ///
-    /// Home note: the natural home for this row is
+    /// Home note: the natural home for this test — and for
+    /// `orientation_annotations_compile_clean` below — is
     /// `tests/harness_modules_ports/reserved_name_lint_tests.rs`, alongside
-    /// `structure_named_frame_emits_reserved_type_name_warning`. That file is
-    /// outside task 6384's module-lock scope, so the coverage lives here
-    /// instead; fold it over if that file is ever touched for another reason.
+    /// `structure_named_frame_emits_reserved_type_name_warning` and
+    /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`,
+    /// reusing that file's `find_template` / `find_param_cell` instead of the
+    /// `probe_param_o_type` above. Both are full-prelude compile tests living
+    /// in a unit-test module, which is the wrong altitude. They are here only
+    /// because that file is outside task 6384's module-lock scope; fold both
+    /// over (and drop `compile_orientation_probe` / `probe_param_o_type` with
+    /// them) the next time that file is open for another reason.
     #[test]
     fn orientation_declaration_draws_reserved_type_name_warning() {
         for (label, source) in [
@@ -5649,6 +5655,17 @@ mod tests {
             (
                 "type Orientation = Bool",
                 "pub type Orientation = Bool\n\
+                 structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            // The enum row is NOT redundant with the two above: an enum name
+            // reaches type position through `resolve_enum_type`, a chain
+            // separate from the alias-registry / structure-name arms, so its
+            // shadowing is only assertable here (the arm comment claims all
+            // three declaration forms; this is what stops the enum third of
+            // that claim from being prose alone).
+            (
+                "enum Orientation { A, B }",
+                "enum Orientation { A, B }\n\
                  structure S {\n    param o : Orientation = orient_identity()\n}",
             ),
             (

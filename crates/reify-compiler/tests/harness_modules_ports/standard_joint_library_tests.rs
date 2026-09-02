@@ -306,7 +306,14 @@ fn assert_single_dof_mismatch(
 ///  2. `coincident_body` — the mutation companion for BOTH (b) clean tests
 ///     above: the same `coincident(c, d)` body they use, but over-declaring
 ///     `{ orientation: Orientation, extra: Angle }` = (3,0) + (1,0)
-///     = (4 rot, 0 trans) against the residual (3 rot, 0 trans).
+///     = (4 rot, 0 trans) against the residual (3 rot, 0 trans). It is
+///     declared under the unused name `spherical_probe`, deliberately NOT
+///     `spherical`: the prelude already defines that joint, and whether a user
+///     may redefine a prelude joint name is a variable this row does not mean
+///     to test — if that ever starts being diagnosed (or silently skipped),
+///     this row must fail for an Orientation reason or not at all. Only the
+///     BODY has to stay byte-identical to `stdlib/joints.ri`'s
+///     `spherical`/`ball`, and it does.
 ///
 /// Row 2 is what makes both `spherical_joint_definition_is_self_check_clean`
 /// and `ball_joint_definition_is_self_check_clean` non-vacuous, and one row
@@ -333,7 +340,7 @@ fn orientation_dof_is_classified_not_skipped() {
             "coincident_body (the shared spherical/ball shape): over-declared \
              {orientation: Orientation, extra: Angle} (4rot,0trans) \
              vs coincident residual (3rot,0trans)",
-            "joint spherical(c: Point3<Length>, d: Point3<Length>) \
+            "joint spherical_probe(c: Point3<Length>, d: Point3<Length>) \
              with { orientation: Orientation, extra: Angle } = coincident(c, d)",
             "declared 4 rotational free DOF",
             "3 rot + 0 trans",
