@@ -76,6 +76,14 @@ if [ "${_REIFY_AUDIT_FRESHNESS_SH_SOURCED:-}" = "1" ]; then
 fi
 _REIFY_AUDIT_FRESHNESS_SH_SOURCED=1
 
+# Stable, greppable machine tokens. Consumers (the deploy probe, the predone
+# wrapper's test suite, a triaging agent's grep over the hook's captured
+# stderr) must branch on these rather than on message prose — the same
+# convention as the pub-const refusal codes in
+# crates/reify-audit/src/jcodemunch_index.rs:522-543. Their literal text is
+# emitted into the message body so a plain `grep -F` matches.
+REIFY_AUDIT_E_BIN_STALE="E_AUDIT_BIN_STALE"
+
 # Source portable helpers (portable_mtime).
 # Self-locate relative to this script so it works from any working directory.
 _FRESHNESS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -191,6 +199,11 @@ reify_audit_guard() {
             return 0
         fi
         # Still stale after rebuild — fall through to the refuse message.
+    fi
+
+    if [ "$mode" = "warn-open" ]; then
+        echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch)." >&2
+        return 0
     fi
 
     # rc 125 means "still judged stale", NOT "no usable binary" (#5962 review).
