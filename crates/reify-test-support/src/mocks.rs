@@ -3682,6 +3682,74 @@ mod tests {
         assert_eq!(vol, mm3(1000.0)); // typed wins
     }
 
+    // Task #6471 step-2: pin the DOCUMENTED precedence of the coarse
+    // `fail_after_n_dispatches` gate relative to the per-query-type maps.
+    // Full chain: `typed_query_errors` -> gate -> `typed_queries` ->
+    // OwnerBody special-case -> generic `queries` fallback.
+
+    #[test]
+    fn mock_fail_after_n_dispatches_overrides_seeded_success() {
+        // The gate must fire for a handle past the ceiling even when
+        // `with_volume_result` seeded a success for it — `with_*_result`
+        // writes to `typed_queries`, which is the ordinary seeding path, so
+        // if that shadowed the gate the gate would be near-inert in practice.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(5), Value::Real(1.0))
+            .fail_after_n_dispatches(2);
+
+        let result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(5)));
+        assert!(
+            result.is_err(),
+            "handle 5 is past ceiling 2 — the gate must win over the seeded \
+             typed_queries success, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn mock_fail_after_n_dispatches_leaves_handles_at_or_below_ceiling_seeded() {
+        // Guard against over-correction: the gate must not fail everything.
+        // Handles at/below the ceiling keep returning their seeded value.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(1), mm3(1000.0))
+            .with_volume_result(GeometryHandleId(2), mm3(2000.0))
+            .fail_after_n_dispatches(2);
+
+        let below = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .expect("handle 1 is below ceiling 2 — seeded success must survive");
+        assert_eq!(below, mm3(1000.0));
+
+        let at_ceiling = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(2)))
+            .expect("handle 2 is AT ceiling 2 — seeded success must survive");
+        assert_eq!(at_ceiling, mm3(2000.0));
+    }
+
+    #[test]
+    fn mock_typed_query_error_overrides_fail_after_n_dispatches() {
+        // `typed_query_errors` stays the highest-precedence knob: a handle
+        // below the ceiling seeded via `with_volume_error` returns that
+        // SPECIFIC error, not the gate's generic message. Tests match on the
+        // specific diagnostic text, so the coarse gate must not replace it.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_error(
+                GeometryHandleId(1),
+                QueryError::QueryFailed("deliberate volume failure".to_string()),
+            )
+            .fail_after_n_dispatches(2);
+
+        let err = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .expect_err("with_volume_error must make this handle fail");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(
+                msg, "deliberate volume failure",
+                "the specific seeded error must win over the gate's generic message"
+            ),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+    }
+
     // step-15: integration test — multi-op workflow with queries + inspection
     #[test]
     fn mock_multi_op_workflow_with_queries_and_inspection() {
