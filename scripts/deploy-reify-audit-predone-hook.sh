@@ -61,7 +61,14 @@
 #   5. daemon-reload + restart, then wait for `is-active` and confirm the unit's
 #      effective Environment now names the wrapper.
 #   6. Sanity-check the guard is live end-to-end by invoking the wrapper for a
-#      real task id: it must NOT exit 125 with the stale/reinstall hint.
+#      real task id: it must NOT exit 125 with the stale/reinstall hint, and —
+#      since task #7139 made the wrapper FAIL OPEN on a stale-but-runnable
+#      binary — a rc-0 run whose stderr carries the E_AUDIT_BIN_STALE advisory
+#      is EQUALLY fatal here.  Step 3 has already hard-asserted the installed
+#      binary is fresh, so either signal means the deploy did not achieve its
+#      purpose.  Fail-open is the right policy for the unattended done-flip hot
+#      path; it is the wrong answer for an attended deploy that just claimed to
+#      have installed a fresh binary.
 #
 # USAGE
 # -----
@@ -398,6 +405,23 @@ else
         probe_err="$(mktemp /tmp/reify-predone-probe-XXXXXX)"
         probe_rc=0
         "$WRAPPER" --task "$PROBE_TASK_ID" --pre-done >/dev/null 2>"$probe_err" || probe_rc=$?
+
+        # Task #7139: the wrapper now FAILS OPEN on a stale-but-runnable binary
+        # (rc 0 + an E_AUDIT_BIN_STALE advisory on stderr), so an rc-only test
+        # would fall through to the success branch below and report a green
+        # deploy over a stale fleet.  Check the token regardless of rc, and
+        # branch on the TOKEN rather than message prose (the convention in
+        # crates/reify-audit/src/jcodemunch_index.rs:522).
+        if grep -qF 'E_AUDIT_BIN_STALE' "$probe_err"; then
+            msg="$(head -8 "$probe_err")"
+            rm -f "$probe_err"
+            die "the wrapper judges '$AUDIT_BIN' STALE after the deploy (exit $probe_rc):
+       $msg
+     Step 3 already asserted the freshly-installed binary is fresh, so this
+     contradicts it — the deploy did not achieve its purpose.  Note the wrapper
+     FELL OPEN (or refused under REIFY_AUDIT_FRESHNESS_STRICT=1): done-flips are
+     not blocked, but every one of them is now running a stale detector."
+        fi
 
         if [ "$probe_rc" = "125" ] && grep -q 'reinstall with: cargo install' "$probe_err"; then
             msg="$(head -5 "$probe_err")"
