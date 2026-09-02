@@ -759,6 +759,10 @@ pub(crate) struct Lane {
     /// See [`OnAbandon`] for why this is a property of the DESTINATION and why
     /// [`OnAbandon::Run`] is the default.
     on_abandon: OnAbandon,
+    /// How many consumers actually STARTED, as opposed to how many `size`
+    /// declares. 0 until [`Lane::sender`] has run; see [`Lane::started`] for why
+    /// the realised count is recorded rather than only warned about.
+    started: std::sync::atomic::AtomicUsize,
     /// The lazily-created queue. `None` records that the OS REFUSED the mapping.
     queue: std::sync::OnceLock<Option<JobSender>>,
 }
@@ -791,6 +795,7 @@ impl Lane {
             name,
             size,
             on_abandon,
+            started: std::sync::atomic::AtomicUsize::new(0),
             queue: std::sync::OnceLock::new(),
         }
     }
@@ -914,6 +919,40 @@ impl Lane {
         self.on_abandon
     }
 
+    /// How many consumers this lane actually STARTED — 0 until [`Lane::sender`]
+    /// has run, and thereafter fixed for the process.
+    ///
+    /// [`Lane::size`] is what the lane DECLARES; this is what it got. They differ
+    /// exactly when [`Lane::sender`] hit a partial spawn failure, which is a real
+    /// state rather than a theoretical one: a pool that started 1 of 4 consumers
+    /// under memory pressure serializes every LSP query again — precisely the
+    /// regression task 6517 exists to prevent — while `LSP_POOL.size()` still
+    /// reports 4 and every routing test stays green. Before this accessor the
+    /// only evidence was one `eprintln!` on a stderr nobody reads in a packaged
+    /// build.
+    ///
+    /// So the advertised head-of-line bound is READABLE at runtime, not merely
+    /// declared. The module insists elsewhere that a limit which stopped being
+    /// total did not stop existing; the same standard says the realised bound
+    /// should be observable.
+    ///
+    /// # Why `Relaxed`, and why it is 0 before initialisation
+    ///
+    /// The store happens inside [`std::sync::OnceLock::get_or_init`]'s closure,
+    /// and the `OnceLock` itself publishes with the acquire/release pair every
+    /// reader necessarily goes through — so a caller that has obtained a
+    /// [`JobSender`] from this lane already happens-after the store, and no
+    /// stronger ordering here would add anything. A caller that has NOT called
+    /// [`Lane::sender`] reads 0, which is the truth: no consumer has started,
+    /// because the lane has not been created.
+    ///
+    /// Read only by tests, with the same `not(test)`-scoped `allow` and for the
+    /// same stated reason as [`Lane::size`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn started(&self) -> usize {
+        self.started.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Lazily create this lane's worker, yielding its queue — or `None` if the
     /// OS refused the [`COMPILE_STACK_SIZE`] mapping.
     ///
@@ -941,6 +980,26 @@ impl Lane {
     /// strictly better than discarding the consumers that did start, and it
     /// keeps the "never lose a result, never block" invariant intact under
     /// partial OS refusal.
+    ///
+    /// The realised count is also RECORDED, not merely warned about — see
+    /// [`Lane::started`]. A pool that started 1 of 4 consumers advertises a
+    /// bound it is not honouring, and a warning on stderr is not something any
+    /// other part of the process (or any test) can observe.
+    ///
+    /// # Why the warnings stay `eprintln!` rather than `tracing::warn!`
+    ///
+    /// MEASURED, because the obvious improvement is a regression here.
+    /// `tracing` is a dependency of this crate and `tracing::warn!` would be the
+    /// idiomatic call — but `tracing` macros are no-ops unless a global
+    /// subscriber is installed, and NOTHING in this workspace installs one:
+    /// `tracing-subscriber` appears in no `Cargo.toml` in the repo, and no
+    /// source file under `gui/src-tauri` calls `set_global_default` or any
+    /// `fmt::init` equivalent. There is no "app log" for these to land in.
+    /// Converting them would make a lane that failed to spawn warn NOWHERE
+    /// instead of on stderr — strictly less visible, for a cosmetic gain.
+    /// Revisit if and when the GUI grows a subscriber; the existing
+    /// `tracing::warn!` calls elsewhere in this crate are in the same position
+    /// and are not evidence to the contrary.
     pub(crate) fn sender(&'static self) -> Option<&'static JobSender> {
         self.queue
             .get_or_init(|| {
@@ -1010,6 +1069,14 @@ impl Lane {
                         }
                     }
                 }
+
+                // Record what actually started, so the realised head-of-line
+                // bound is readable rather than only warned about. Ordered
+                // before the two warnings and the `return` so BOTH exits — the
+                // degraded `None` and the partial-pool `Some` — leave a truthful
+                // count behind. See `Lane::started`.
+                self.started
+                    .store(started, std::sync::atomic::Ordering::Relaxed);
 
                 if started == 0 {
                     // Nothing will drain the queue, so record the degrade

@@ -2152,3 +2152,58 @@ async fn a_panicking_destructor_on_the_cancel_path_does_not_kill_the_sender() {
         "the follow-up submission's future must actually be POLLED"
     );
 }
+
+/// (al) `Lane::started()` reports 0 before creation and the full `size` after —
+/// on a TEST-LOCAL pool, so both halves are observable.
+///
+/// `Lane::size()` is what a lane DECLARES; `Lane::started()` is what it got.
+/// They diverge exactly when `Lane::sender` hit a partial spawn failure, which
+/// it deliberately survives (a pool with three of four consumers still drains
+/// its queue on a large stack, so degrading it would be strictly worse). The
+/// cost of surviving it silently is that a pool which started 1 of 4 consumers
+/// serializes every LSP query again — the exact regression task 6517 exists to
+/// prevent — while `size()` still reports 4 and every routing test stays green.
+///
+/// `lsp_bridge_tests`' (p) asserts the AFTER half against the production
+/// `LSP_POOL`. It cannot assert the BEFORE half: `LSP_POOL` is process-wide and
+/// this binary runs its tests in parallel, so another test may already have
+/// created it. A lane declared inside this fn body is touched by nothing else,
+/// which is what makes "0 before, `size` after" a fact here rather than a race.
+#[test]
+fn a_lane_reports_the_consumers_it_actually_started() {
+    use crate::large_stack::Lane;
+
+    const SIZE: usize = 3;
+    static POOL: Lane = Lane::pool("t6517-started", SIZE);
+
+    assert_eq!(
+        POOL.started(),
+        0,
+        "a lane nobody has submitted to must report ZERO started consumers — \
+         lanes are created lazily on the first `sender()` call, and a session \
+         that never submits must pay nothing for them. A non-zero count here \
+         means either eager creation or a `started()` that echoes `size()`, and \
+         the second would make (p)'s partial-spawn guard vacuous."
+    );
+
+    POOL.sender()
+        .expect("the pool must start at least one consumer under test conditions");
+
+    assert_eq!(
+        POOL.started(),
+        SIZE,
+        "after creation the lane must report every consumer it actually \
+         spawned. `Lane::sender` warns and continues on a partial spawn \
+         failure, so this is the one number that distinguishes `size` \
+         consumers from one — and the assertion is against `SIZE` rather than \
+         `>= 1` because a shortfall is exactly the silent narrowing worth \
+         seeing."
+    );
+    assert_eq!(
+        POOL.started(),
+        POOL.size(),
+        "on a healthy machine the realised count is the declared one; when it \
+         is not, THAT is the fact worth reporting, and until `started()` \
+         existed nothing in the process could state it."
+    );
+}

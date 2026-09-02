@@ -1773,6 +1773,27 @@ fn the_query_pool_runs_the_consumers_it_declares() {
          calls on the caller — a degraded lane would report the caller's own \
          thread name and make the naming assertions meaningless. Saw {seen:?}"
     );
+
+    // REALISED, via `Lane::started()`, and placed after the loop because the
+    // count is meaningful only once `sender()` has run. The two assertions above
+    // are both about what the pool DECLARES; `Lane::sender` warns and continues
+    // on a partial spawn failure, so a pool that started 1 of 4 consumers passes
+    // every one of them while serializing LSP queries again. This is the only
+    // line in either file that can tell those apart.
+    assert_eq!(
+        LSP_POOL.started(),
+        LSP_POOL_SIZE,
+        "the query pool must have STARTED every consumer it declares, not just \
+         declared them. A shortfall is not a code defect — `Lane::sender` \
+         deliberately keeps a partially-spawned pool rather than degrading it — \
+         but it means the advertised head-of-line bound is not the one in \
+         force, and it is silent everywhere else."
+    );
+    // The anti-vacuity twin — that `started()` reports 0 for a lane nobody has
+    // used — is `large_stack_tests`' (al), on a TEST-LOCAL pool. It cannot live
+    // here: every `static` in this module is process-wide, and any of the ~dozen
+    // concurrently-running tests in this binary may have created `LSP_LANE`
+    // already, so "0 before use" is not a property this test can observe.
 }
 
 /// A [`NotificationSink`] that records the NAME of the thread each
