@@ -46,6 +46,15 @@
 //!    `&str` param" rule would inflate the ledger with entries that name no
 //!    dispatch at all.
 //!
+//! 4. [`SiteKind::UnresolvedArmHead`] — not a shape at all, but the scanner
+//!    admitting it could not decide: the arm-head walk reached end of source
+//!    without resolving `=>` (arm) or a non-pattern token (not an arm), and
+//!    nothing else claimed the literal. Reported rather than dropped, on the
+//!    same reasoning as the `#[cfg(not(test))]` case below — the two ways this
+//!    file can be wrong fail in OPPOSITE directions, and only over-reporting
+//!    is loud. Under-reporting certifies a clean workspace over residue the
+//!    scan never looked at. No site in the tree is classified this way today.
+//!
 //! # What deliberately does NOT count
 //!
 //! - **Anything under `#[cfg(test)]`.** A test may legitimately name a builtin
@@ -183,6 +192,16 @@ enum SiteKind {
     /// `eval_builtin(<that parameter>, …)` — the same defect as
     /// [`SiteKind::EvalCall`], one hop later. See [`Forwarder`].
     ForwardedEvalCall,
+    /// The arm-head walk ran off the end of the file without reaching either
+    /// verdict, and no other shape claimed the literal — so the site is
+    /// UNCLASSIFIED.
+    ///
+    /// Reported rather than dropped, deliberately. "Could not decide" and "is
+    /// definitely not dispatch" fail in opposite directions, and only the
+    /// first is safe to make loud: silently reading an undecided site as clean
+    /// is the exact failure mode this file exists to prevent (see
+    /// [`match_arm_head`]).
+    UnresolvedArmHead,
 }
 
 impl SiteKind {
@@ -192,6 +211,9 @@ impl SiteKind {
             SiteKind::EvalCall => "eval_builtin call keyed by name string",
             SiteKind::ForwardedEvalCall => {
                 "name string forwarded one hop into an eval_builtin call"
+            }
+            SiteKind::UnresolvedArmHead => {
+                "arm-head scan reached end of file undecided — site UNCLASSIFIED"
             }
         }
     }
@@ -555,8 +577,25 @@ fn literal_mask(len: usize, lits: &[StrLit]) -> Vec<bool> {
     mask
 }
 
-/// Is the string literal at `lits[idx]` in match-PATTERN position — i.e. does
-/// the arm it opens reach `=>`?
+/// The verdict of an arm-head walk. Three-valued on purpose — see
+/// [`ArmHead::Inconclusive`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArmHead {
+    /// The walk reached `=>`: the literal was in match-PATTERN position.
+    Arm,
+    /// The walk hit a token that cannot appear in an arm head. A DECIDED
+    /// negative.
+    NotArm,
+    /// The walk ran off the end of the source before either verdict. NOT the
+    /// same thing as [`ArmHead::NotArm`], and never collapsed into it: an
+    /// undecided site is escalated to [`SiteKind::UnresolvedArmHead`] and
+    /// reported, because a scanner that reads "I ran out of input" as "clean"
+    /// certifies a residue it never looked at.
+    Inconclusive,
+}
+
+/// Is the string literal ending at `idx_end` in match-PATTERN position — i.e.
+/// does the arm it opens reach `=>`?
 ///
 /// Two states, because the two halves of an arm head have different grammar:
 ///
@@ -569,11 +608,22 @@ fn literal_mask(len: usize, lits: &[StrLit]) -> Vec<bool> {
 ///   `if args.len() == 1 && matches!(&args[0], Value::Field { .. }) =>`). Only
 ///   `=>` at depth 0 accepts; `;` at depth 0 or a depth going negative
 ///   rejects.
-fn is_match_arm(code: &[u8], lit_end_at: &[Option<usize>], idx_end: usize) -> bool {
+///
+/// # No lookahead cap
+///
+/// The walk is bounded by the source, not by a fixed byte window. An earlier
+/// revision capped it at 800 bytes, which silently returned "not an arm" for
+/// any guard longer than that — a real shape here, where guards are
+/// `matches!(…)` chains. The cost of an unbounded walk is negligible (it runs
+/// only for a literal that already matched a seed name, and the pattern half
+/// terminates on the first non-pattern token), and the exhaustion case is now
+/// [`ArmHead::Inconclusive`] rather than a false clean.
+fn match_arm_head(code: &[u8], lit_end_at: &[Option<usize>], idx_end: usize) -> ArmHead {
     let mut i = idx_end;
-    let limit = (i + 800).min(code.len());
+    let limit = code.len();
 
     // ── pattern position ────────────────────────────────────────────────────
+    let mut entered_guard = false;
     while i < limit {
         if let Some(end) = lit_end_at[i] {
             i = end;
@@ -585,17 +635,22 @@ fn is_match_arm(code: &[u8], lit_end_at: &[Option<usize>], idx_end: usize) -> bo
             continue;
         }
         if c == b'=' && i + 1 < limit && code[i + 1] == b'>' {
-            return true;
+            return ArmHead::Arm;
         }
         if c == b'i' && i + 1 < limit && code[i + 1] == b'f' {
             let after_ok =
                 i + 2 >= limit || !(code[i + 2].is_ascii_alphanumeric() || code[i + 2] == b'_');
             if after_ok {
                 i += 2;
+                entered_guard = true;
                 break;
             }
         }
-        return false;
+        return ArmHead::NotArm;
+    }
+    if !entered_guard {
+        // Whitespace, `|` and literals all the way to EOF: undecided.
+        return ArmHead::Inconclusive;
     }
 
     // ── guard position ──────────────────────────────────────────────────────
@@ -607,22 +662,22 @@ fn is_match_arm(code: &[u8], lit_end_at: &[Option<usize>], idx_end: usize) -> bo
         }
         let c = code[i];
         if c == b'=' && i + 1 < limit && code[i + 1] == b'>' && depth == 0 {
-            return true;
+            return ArmHead::Arm;
         }
         match c {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => {
                 depth -= 1;
                 if depth < 0 {
-                    return false;
+                    return ArmHead::NotArm;
                 }
             }
-            b';' if depth == 0 => return false,
+            b';' if depth == 0 => return ArmHead::NotArm,
             _ => {}
         }
         i += 1;
     }
-    false
+    ArmHead::Inconclusive
 }
 
 /// Is the string literal at `lit` the first argument of an `eval_builtin(…)`
@@ -1056,12 +1111,19 @@ fn classify_text(
         if code[lit.start] != b'"' {
             continue;
         }
-        let kind = if is_match_arm(&code, &lit_end_at, lit.end) {
+        // Ladder order is deliberate: a DECIDED classification always wins,
+        // and `ArmHead::Inconclusive` only survives to become a site when no
+        // other shape claimed the literal — so "undecided" never masks a
+        // sharper answer, and never silently becomes "clean" either.
+        let arm = match_arm_head(&code, &lit_end_at, lit.end);
+        let kind = if arm == ArmHead::Arm {
             SiteKind::MatchArm
         } else if is_eval_call(&code, lit.start) {
             SiteKind::EvalCall
         } else if forwarded.contains(&lit.start) {
             SiteKind::ForwardedEvalCall
+        } else if arm == ArmHead::Inconclusive {
+            SiteKind::UnresolvedArmHead
         } else {
             continue;
         };
@@ -1214,19 +1276,71 @@ fn every_ledger_entry_names_a_site_that_still_exists() {
 
 /// The scan itself must keep its teeth: if it silently stopped SEEING the
 /// sites the ledger accepts, it would report a clean workspace while the
-/// residue sat untouched. Pinning the count means a scanner regression fails
-/// here rather than passing vacuously.
+/// residue sat untouched.
+///
+/// # Two granularities, two assertions
+///
+/// The ledger models `(file, name)` PAIRS — deliberately de-lined, and
+/// [`is_ledgered`] keys on exactly that pair. [`scan`] returns per-OCCURRENCE
+/// sites. The two coincide today (one occurrence per pair), but a `sites.len()
+/// == LEDGER.len()` comparison would CONFLATE the two ways they can diverge,
+/// which are opposite defects with opposite fixes:
+///
+/// - a pair the scan no longer sees is a SCANNER regression — the gate goes
+///   quietly vacuous;
+/// - a pair that grew a SECOND occurrence is NEW RESIDUE, which the primary
+///   gate accepts silently precisely because `is_ledgered` is pair-keyed.
+///
+/// So each is asserted on its own, with a message naming its own cause.
 #[test]
 fn the_scan_still_finds_every_ledgered_site() {
     let root = workspace_root();
     let sites = scan(&root, &seed_names());
+
+    // (a) Pair-level agreement — the granularity the ledger actually models.
+    let found: BTreeSet<(&str, &str)> = sites
+        .iter()
+        .map(|s| (s.file.as_str(), s.name.as_str()))
+        .collect();
+    let ledgered: BTreeSet<(&str, &str)> = SEED_STRING_DISPATCH_LEDGER
+        .iter()
+        .map(|e| (e.file, e.name))
+        .collect();
     assert_eq!(
-        sites.len(),
-        SEED_STRING_DISPATCH_LEDGER.len(),
-        "expected the scan to find exactly the {} ledgered site(s), found {}: \
-         {sites:#?}",
-        SEED_STRING_DISPATCH_LEDGER.len(),
-        sites.len()
+        found, ledgered,
+        "the scan's (file, name) set must equal the ledger's. A pair MISSING \
+         from the scan is a scanner regression — the gate would report a clean \
+         workspace over untouched residue. An EXTRA pair is an unledgered \
+         site, reported with file/line/kind by \
+         no_unledgered_seed_name_string_dispatch_outside_reify_builtins.\n\n\
+         Sites found:\n{sites:#?}"
+    );
+
+    // (b) Occurrence-level: a ledgered pair must not quietly grow a second
+    //     dispatch site. Nothing else in this file would notice — the primary
+    //     gate is pair-keyed by design, so this is the only place the addition
+    //     surfaces.
+    let mut by_pair: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    for site in &sites {
+        by_pair
+            .entry((site.file.as_str(), site.name.as_str()))
+            .or_default()
+            .push(site.line);
+    }
+    let duplicated: Vec<String> = by_pair
+        .iter()
+        .filter(|(_, lines)| lines.len() > 1)
+        .map(|((file, name), lines)| format!("  {file} \u{2014} {name:?} at lines {lines:?}"))
+        .collect();
+    assert!(
+        duplicated.is_empty(),
+        "{} already-ledgered (file, name) pair(s) grew an ADDITIONAL dispatch \
+         site \u{2014} new residue, not a scanner regression. The primary gate \
+         accepts these silently because the ledger is keyed on (file, name), \
+         so they are named here instead: re-home them onto `BuiltinId`, or \
+         widen the ledger entry's WHY so the addition is reviewed.\n{}",
+        duplicated.len(),
+        duplicated.join("\n")
     );
 }
 
@@ -1277,7 +1391,7 @@ mod tests {
         .iter()
         .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
         .filter_map(|l| {
-            if is_match_arm(&code, &lit_end_at, l.end) {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
                 Some((l.content.clone(), SiteKind::MatchArm))
             } else if is_eval_call(&code, l.start) {
                 Some((l.content.clone(), SiteKind::EvalCall))
@@ -1383,7 +1497,7 @@ fn only_for_tests(name: &str) -> u8 {
         .iter()
         .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
         .filter_map(|l| {
-            if is_match_arm(&code, &lit_end_at, l.end) {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
                 Some((l.content.clone(), SiteKind::MatchArm))
             } else {
                 None
@@ -1435,7 +1549,7 @@ fn dispatch(name: &str, args: &[Value]) -> Value {
         .iter()
         .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
         .filter_map(|l| {
-            if is_match_arm(&code, &lit_end_at, l.end) {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
                 Some((l.content.clone(), SiteKind::MatchArm))
             } else if is_eval_call(&code, l.start) {
                 Some((l.content.clone(), SiteKind::EvalCall))
@@ -1459,6 +1573,90 @@ fn dispatch(name: &str, args: &[Value]) -> Value {
         "a guarded arm, an or-pattern alternative, and an eval_builtin call \
          must all be recognised"
     );
+}
+
+/// The arm-head walk must have no silent ceiling — the defect that motivated
+/// [`ArmHead`]'s third state.
+///
+/// The walk used to stop after a fixed 800-byte lookahead and return "not an
+/// arm". A guard longer than the window was therefore classified CLEAN, in the
+/// same silent direction the `#[cfg]` masking rule is careful about, and no
+/// fixture exercised it. Both halves are pinned here:
+///
+/// - (a) an over-long `matches!(…)` guard chain is still recognised as an arm;
+/// - (b) a head the walk cannot finish (source ends mid-guard, or mid-pattern)
+///   is reported as [`SiteKind::UnresolvedArmHead`], never dropped.
+#[test]
+fn an_over_long_guard_is_recognised_and_an_unfinished_head_is_reported() {
+    let seed_names: BTreeSet<String> = ["von_mises", "max_shear", "safety_factor"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    // (a) A guard far wider than the retired 800-byte window (~60 clauses,
+    //     ~2.5 kB). Built programmatically so the fixture cannot silently
+    //     shrink back under a cap someone re-adds.
+    let long_guard = (0..60)
+        .map(|n| format!("matches!(&args[{n}], Value::Field {{ .. }})"))
+        .collect::<Vec<_>>()
+        .join("\n            && ");
+    assert!(
+        long_guard.len() > 800,
+        "fixture guard must exceed the retired 800-byte cap to test anything, \
+         got {} bytes",
+        long_guard.len()
+    );
+    let src = format!(
+        "fn dispatch(name: &str, args: &[Value]) -> Value {{\n\
+         \x20   match name {{\n\
+         \x20       \"von_mises\"\n\
+         \x20           if {long_guard} =>\n\
+         \x20       {{\n\
+         \x20           field_von_mises(&args[0])\n\
+         \x20       }}\n\
+         \x20       _ => Value::Undef,\n\
+         \x20   }}\n\
+         }}\n"
+    );
+    let sites = classify_text("fixture/long_guard.rs", &src, &[], &seed_names);
+    assert_eq!(
+        sites
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind))
+            .collect::<Vec<_>>(),
+        vec![("von_mises", SiteKind::MatchArm)],
+        "a guard wider than the retired lookahead window must still be \
+         recognised as a match arm, not silently read as clean: {sites:#?}"
+    );
+
+    // (b) Heads the walk cannot finish. Both end the source mid-arm-head — one
+    //     in guard position, one in pattern position — so neither verdict is
+    //     reachable and the site must be REPORTED, not dropped.
+    // Source ends mid-guard: the walk enters guard position and never reaches
+    // `=>`, a `;` at depth 0, or an unbalanced closer.
+    let unfinished_guard = "match name {\n    \"max_shear\" if args.len() == 1 &&\n";
+    // Source ends mid-pattern: only whitespace follows the literal.
+    let unfinished_pattern = "match name {\n    \"safety_factor\"\n";
+    for (rel, src, name) in [
+        ("fixture/unfinished_guard.rs", unfinished_guard, "max_shear"),
+        (
+            "fixture/unfinished_pattern.rs",
+            unfinished_pattern,
+            "safety_factor",
+        ),
+    ] {
+        let sites = classify_text(rel, src, &[], &seed_names);
+        assert_eq!(
+            sites
+                .iter()
+                .map(|s| (s.name.as_str(), s.kind))
+                .collect::<Vec<_>>(),
+            vec![(name, SiteKind::UnresolvedArmHead)],
+            "{rel}: an arm head the walk cannot finish must surface as \
+             UnresolvedArmHead \u{2014} \"could not decide\" must never be \
+             read as \"clean\": {sites:#?}"
+        );
+    }
 }
 
 // ── the one-hop forwarder rule (step-22/23) ─────────────────────────────────
