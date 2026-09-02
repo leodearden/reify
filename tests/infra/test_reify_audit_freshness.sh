@@ -15,7 +15,9 @@
 #        history — fail-open (fresh) but not silent (likely renamed crate path)
 #  13-15: reify_audit_guard rebuild-budget-safe mode (task #4624)
 #  16:   reify_audit_guard warn-open mode: a present, executable, stale binary
-#        FAILS OPEN (exit 0) with a loud, greppable alarm on stderr (task #7139)
+#        FAILS OPEN (exit 0) with a loud, greppable alarm on stderr, and an
+#        UNKNOWN mode string is reported (E_AUDIT_GUARD_BAD_MODE) and treated
+#        as warn-open rather than falling through to a refusal (task #7139)
 #  17:   warn-open still REFUSES (125) when there is nothing runnable to fall
 #        open onto (absent, or present-but-not-executable), + a regression pin
 #        that `refuse` mode is unchanged (task #7139)
@@ -394,6 +396,29 @@ assert "warn-open: stale binary emits a NON-EMPTY alarm on stderr (loud, not sil
 # crates/reify-audit/src/jcodemunch_index.rs:522-543.
 assert "warn-open: stale-binary alarm carries the stable token E_AUDIT_BIN_STALE" \
     bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_STALE"' -- "$WO_ERR_16"
+
+# 16d/16e: an UNKNOWN mode must NOT reinstate the outage (#7139 review).
+# Before the mode-validation arm there was none: any unrecognised mode string
+# fell through every `if [ "$mode" = ... ]` test to the terminal `return 125`
+# refuse path once the binary was judged stale. So a one-character slip at the
+# wrapper's call site — `warm-open` is literally the spelling this task's own
+# RED steps used — would block every done-flip again, with the OLD
+# non-self-describing message and none of the tokens above. Nothing else in
+# this suite can catch that: every other assertion passes a VALID mode.
+set +e
+(source "$FRESHNESS_LIB" && reify_audit_guard "$WO_STALE_BIN" warm-open "$REPO_ROOT") 2>/dev/null
+WO_RC_16D=$?
+set -e
+
+assert "warn-open: a TYPO'd mode ('warm-open') on a stale binary still exits 0, not 125" \
+    bash -c 'test "$1" -eq 0' -- "$WO_RC_16D"
+
+set +e
+WO_ERR_16D=$(bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_STALE_BIN' warm-open '$REPO_ROOT'" 2>&1 >/dev/null)
+set -e
+
+assert "warn-open: a TYPO'd mode names ITSELF via the token E_AUDIT_GUARD_BAD_MODE" \
+    bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_GUARD_BAD_MODE"' -- "$WO_ERR_16D"
 
 # ==============================================================================
 # Check 17: warn-open still REFUSES when there is nothing runnable to fall

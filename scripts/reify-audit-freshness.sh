@@ -59,9 +59,13 @@
 #   E_AUDIT_BIN_STALE    the binary exists and runs, it is merely old.
 #                        rc 0 by default (advisory); rc 125 under strict.
 #   E_AUDIT_BIN_MISSING  there is no runnable binary at all. Always rc 125.
-# The distinction is load-bearing: both refusals exit 125, so only the token
-# tells a reader whether the operator chose to fail closed or whether nothing
-# is on disk.
+#   E_AUDIT_GUARD_BAD_MODE  the CALLER passed a mode string this library does
+#                        not know (a typo at a call site). Reported on EVERY
+#                        call, fresh or stale; the call is then treated as
+#                        warn-open. See the mode-validation arm below.
+# The STALE/MISSING distinction is load-bearing: both refusals exit 125, so
+# only the token tells a reader whether the operator chose to fail closed or
+# whether nothing is on disk.
 #
 # REIFY_AUDIT_FRESHNESS_STRICT=1 makes warn-open refuse (125) on a stale-but-
 # runnable binary instead of falling open. Only the literal "1" arms it. It is
@@ -159,6 +163,7 @@ _REIFY_AUDIT_FRESHNESS_SH_SOURCED=1
 # emitted into the message body so a plain `grep -F` matches.
 REIFY_AUDIT_E_BIN_STALE="E_AUDIT_BIN_STALE"
 REIFY_AUDIT_E_BIN_MISSING="E_AUDIT_BIN_MISSING"
+REIFY_AUDIT_E_GUARD_BAD_MODE="E_AUDIT_GUARD_BAD_MODE"
 
 # Source portable helpers (portable_mtime).
 # Self-locate relative to this script so it works from any working directory.
@@ -236,10 +241,39 @@ reify_audit_is_stale() {
 #               (cwd=repo_root), then re-check freshness.
 #               If still stale after rebuild, print hint and return 125.
 #               If fresh (before or after rebuild), return 0.
+# mode=<other>: UNKNOWN mode — print E_AUDIT_GUARD_BAD_MODE and proceed as
+#               warn-open. Never falls through to a refusal (#7139 review).
 reify_audit_guard() {
     local bin="$1"
     local mode="$2"
     local repo_root="${3:-$PWD}"
+
+    # ── Mode validation (#7139 review) ───────────────────────────────────────
+    # Before this arm there was NO mode validation: an unrecognised mode string
+    # fell through every `if [ "$mode" = ... ]` test below to the terminal
+    # `return 125` refuse path whenever the binary was judged stale.  On the
+    # synchronous done-flip path that is precisely the outage this task exists
+    # to remove, so a single-character slip at the wrapper's call site
+    # (`warm-open` — literally the RED-step spelling in this task's own plan —
+    # or `refuse-open`, `warnopen`, ...) would silently reinstate it, with the
+    # OLD non-self-describing message and none of the tokens above.  The tests
+    # cannot catch that on their own: they only ever pass VALID mode strings.
+    #
+    # The fallback is warn-open, not refuse, for the same reason the wrapper
+    # uses warn-open: on the one path where the mode string is hardcoded and
+    # therefore mistypeable, blocking every done-flip is by far the worse
+    # failure, and a caller typo is not evidence about the binary.
+    #
+    # Validated BEFORE the fresh fast-path below, deliberately: a typo must be
+    # reported on every call, not only on the day the binary happens to go
+    # stale — otherwise it stays invisible until it is already an incident.
+    case "$mode" in
+        warn-open|refuse|rebuild|rebuild-budget-safe) ;;
+        *)
+            echo "$REIFY_AUDIT_E_GUARD_BAD_MODE: unknown reify_audit_guard mode '$mode' (expected one of: warn-open, refuse, rebuild, rebuild-budget-safe). Treating this call as warn-open so a caller typo cannot block done-flips. Fix the call site in the calling script." >&2
+            mode="warn-open"
+            ;;
+    esac
 
     if ! reify_audit_is_stale "$bin" "$repo_root"; then
         return 0
