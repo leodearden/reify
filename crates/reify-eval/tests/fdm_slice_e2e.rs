@@ -35,7 +35,7 @@
 //! `fdm_slice` `@optimized("fdm::slice")` surface; until then `fdm_slice` is an
 //! unresolved name and `parse_and_compile_with_stdlib` panics on the compile error.
 
-use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
 use reify_eval::compute_targets::fdm_slice::toolpath_to_value;
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::{ExportFormat, Value};
@@ -288,6 +288,45 @@ fn assert_rejection_mentions_dimension(src: &str, token: &str, what: &str) {
     );
 }
 
+/// Read the DECLARED type of `<template>.<member>` straight off the compiled
+/// prelude, so an expectation below is an exact `Type` equality rather than a
+/// guess about how the diagnostic renderer spells a dimension.
+///
+/// This is the direct observation point the binding-shaped assertions above
+/// cannot reach: `TopologyTemplate::value_cells` carries the fully-resolved
+/// `cell_type` for every `param`, including the List element and `Point3`
+/// component types the `ParamDefaultTypeMismatch` check never descends into.
+/// Same shape as `reify-compiler`'s
+/// `harness_langcore/prelude_sub_member_typing_tests.rs::prelude_member_type`
+/// — both `stdlib_loader::load_stdlib` and `find_template` are public API and
+/// `reify-compiler` is a normal dependency of this crate, so no new seam is
+/// opened to get it.
+fn prelude_member_type(template_name: &str, member: &str) -> Type {
+    let prelude = reify_compiler::stdlib_loader::load_stdlib();
+    let tmpl = prelude
+        .iter()
+        .find_map(|m| reify_compiler::find_template(&m.templates, template_name))
+        .unwrap_or_else(|| panic!("prelude has no template {template_name}"));
+    tmpl.value_cells
+        .iter()
+        .find(|c| c.id.member == member)
+        .unwrap_or_else(|| {
+            let members: Vec<&str> = tmpl
+                .value_cells
+                .iter()
+                .map(|c| c.id.member.as_str())
+                .collect();
+            panic!("prelude template {template_name} has no member {member}; have: {members:?}")
+        })
+        .cell_type
+        .clone()
+}
+
+/// `Scalar[<dimension>]`, the declared type of a unit-bearing `param`.
+fn scalar_ty(dimension: DimensionVector) -> Type {
+    Type::Scalar { dimension }
+}
+
 /// Assert `src` is REJECTED with at least one `ParamDefaultTypeMismatch`.
 fn assert_param_default_type_mismatch(src: &str, what: &str) {
     let errors = compile_errors(src);
@@ -313,19 +352,39 @@ fn assert_param_default_type_mismatch(src: &str, what: &str) {
 /// positive half fails if a field stops being its own dimension, the negative
 /// half fails if it reverts to bare `Real`.
 ///
-/// `centerline` is NOT reachable that way. The `ParamDefaultTypeMismatch`
-/// mechanism does not inspect List element types or `Point3` component types,
-/// so `param c : List<Int> = Bead().centerline` and `param p : Point3<Real> =
-/// Bead().centerline[0]` BOTH compile clean — a revert to `List<Point3<Real>>`
-/// would sail past any binding-shaped assertion. (That laxness is recorded
-/// below but deliberately not asserted; a test that reds when the checker gets
-/// STRICTER is a reverse ratchet, not coverage.) What is expressible is the
-/// dimension the compiler *mentions* in a deliberate wrong-dimension
-/// rejection, so that is the observation point used for it below — a weaker
-/// pin than the scalar fields get, and the reason the executable centerline
-/// coverage lives on the marshaller side: `fdm_slice.rs`'s
-/// `assert_point3_length` and its `gcode_text_marshals_into_the_si_regime_
-/// end_to_end` per-coordinate LENGTH check.
+/// `centerline` is not reachable through that mechanism: the
+/// `ParamDefaultTypeMismatch` check inspects neither List element types nor
+/// `Point3` component types, so `param c : List<Int> = Bead().centerline` and
+/// `param p : Point3<Real> = Bead().centerline[0]` BOTH compile clean — a
+/// revert to `List<Point3<Real>>` would sail past any binding-shaped
+/// assertion. (That laxness is recorded below but deliberately not asserted; a
+/// test that reds when the checker gets STRICTER is a reverse ratchet, not
+/// coverage.) It is instead pinned DIRECTLY, by reading the declared cell type
+/// off the compiled prelude via [`prelude_member_type`] and asserting an exact
+/// `Type` equality against `List<Point3<Length>>`. That closes the blind spot:
+/// the equality is a property of the DECLARATION, so it is immune both to how
+/// the diagnostic renderer spells a dimension and to how strict the binding
+/// check happens to be. The scalar fields get the same exact-type treatment
+/// alongside their binding assertions, so every dimensional field is pinned
+/// twice over — once through what a design author's code actually sees, once
+/// against the declaration itself.
+///
+/// MEASURED RED for the equality (temporarily reverting the `.ri` declaration
+/// to `List<Point3<Real>>`): `left: List(Point { n: 3, quantity: Scalar {
+/// dimension: <all-zero> } })`. Note what that shows — a `Real` quantity slot
+/// lowers to a DIMENSIONLESS `Scalar`, not to a distinct `Type` variant, so the
+/// revert is only visible by comparing dimension exponents. That is exactly the
+/// distinction an equality against the declared type makes and a
+/// variant-shaped or renderer-prose check does not.
+///
+/// The one field-level claim still resting on diagnostic prose is the
+/// SECONDARY `centerline[0]` observation (`assert_rejection_mentions_dimension`
+/// with `Scalar[m]`), retained because it exercises the rejection surface
+/// rather than the declaration; it is no longer this field's only pin.
+/// Executable centerline coverage also lives on the marshaller side:
+/// `fdm_slice.rs`'s `assert_point3_length` and its
+/// `gcode_text_marshals_into_the_si_regime_end_to_end` per-coordinate LENGTH
+/// check.
 ///
 /// Pure compile-level: no OCCT, no PrusaSlicer, no beads — so unlike the two
 /// tests above it carries no `OCCT_AVAILABLE` / `slicer_on_path` guard and runs
@@ -408,24 +467,77 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
     );
 
     // `centerline` — the one field whose type actually gates usability
-    // (`resolve_point3_length_arg` rejects bare-`Real` components). Neither
-    // binding half above can see it, so it is pinned by the dimension token the
-    // compiler mentions in a wrong-dimension rejection instead: a revert to
-    // `List<Point3<Real>>` renders bare `Real` components and drops it.
+    // (`resolve_point3_length_arg` rejects bare-`Real` components). No binding
+    // half above can see it, so it is pinned DIRECTLY off the prelude instead:
+    // an exact `Type` equality against the declared cell type, which a revert to
+    // `List<Point3<Real>>` fails outright.
+    assert_eq!(
+        prelude_member_type("Bead", "centerline"),
+        Type::List(Box::new(Type::Point {
+            n: 3,
+            quantity: Box::new(scalar_ty(DimensionVector::LENGTH)),
+        })),
+        "Bead.centerline must be declared `List<Point3<Length>>` — a bare-`Real` \
+         component makes every centerline point unusable at \
+         `resolve_point3_length_arg`, and no binding-shaped assertion can see it"
+    );
+    // Secondary observation on the same field, kept because it exercises a
+    // DIFFERENT surface — that a wrong-dimension read THROUGH `centerline[0]`
+    // is rejected at all, and that the rejection names the element dimension a
+    // design author would see. Weaker than the equality above (a substring of
+    // rendered diagnostic prose, so a renderer change reds it spuriously), so
+    // it is deliberately no longer the only pin on this field.
     assert_rejection_mentions_dimension(
         "structure P { param m : Mass = Bead().centerline[0] }",
         "Scalar[m]",
-        "Bead.centerline elements stay Point3<Length>",
+        "a wrong-dimension read through Bead.centerline[0] names Scalar[m]",
     );
+
+    // The scalar fields get the same direct treatment, so each one is pinned
+    // both through the binding mechanism above (which observes what a design
+    // author's code actually sees) and by exact declared type (which cannot be
+    // satisfied by an implicit conversion or a laxer checker).
+    assert_eq!(
+        prelude_member_type("Bead", "width"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Bead.width must be declared `Length`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "height"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Bead.height must be declared `Length`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "layer_z"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Bead.layer_z must be declared `Length`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "speed"),
+        scalar_ty(DimensionVector::VELOCITY),
+        "Bead.speed must be declared `Velocity`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "nominal_temp"),
+        scalar_ty(DimensionVector::TEMPERATURE),
+        "Bead.nominal_temp must be declared `Temperature` (absolute kelvin)"
+    );
+    assert_eq!(
+        prelude_member_type("Layer", "z"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Layer.z must be declared `Length`"
+    );
+
     // Recorded, deliberately NOT asserted: `param c : List<Int> =
     // Bead().centerline` and `param p : Point3<Real> = Bead().centerline[0]`
     // both compile clean today, because the binding check descends into neither
     // List element types nor Point3 component types — the mechanism cannot
     // distinguish those two spellings from the correct ones. Asserting that
     // laxness would build a reverse ratchet: tightening the checker to descend
-    // into element types is exactly the improvement that would make this
-    // regime directly pinnable, and it must not have to red a unit-regime test
-    // on its way in.
+    // into element types is exactly the improvement that would make the regime
+    // pinnable through the binding mechanism too, and it must not have to red a
+    // unit-regime test on its way in. (The prelude equality above is unaffected
+    // either way — it reads the declaration, not the checker.)
 }
 
 // ── The 0 °C not-observed sentinel (task #6301) ─────────────────────────────
