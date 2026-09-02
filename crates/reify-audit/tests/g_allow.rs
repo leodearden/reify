@@ -68,6 +68,13 @@ const TARGET_TEST: &str = "reify_audit_pub_fns_are_g_allow_marked";
 
 #[test]
 fn reify_audit_pub_fns_are_g_allow_marked() {
+    // A no-op outside an envelope-marked replay child. Inside one it is the
+    // breadcrumb `replay_self_under_hook_git_env_expecting_envelope` asserts on,
+    // which is the only thing pinning that the spawner really stamps the mark
+    // this test's tightening below keys on. Unconditional and first, so the
+    // breadcrumb is out before anything here can skip or panic.
+    common::git_env::announce_replay_mark();
+
     let audit = run_orphan_audit(SCOPE);
 
     // Defence-in-depth against `run_orphan_audit`'s public contract, which

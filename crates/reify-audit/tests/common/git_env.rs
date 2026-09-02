@@ -150,6 +150,37 @@ pub fn replay_child_expects_envelope() -> bool {
     std::env::var(REPLAY_GUARD).as_deref() == Ok(REPLAY_ENVELOPE_MARK)
 }
 
+/// The line a replay child emits when [`replay_child_expects_envelope`] holds
+/// in it, and which
+/// [`replay_self_under_hook_git_env_expecting_envelope`] reads back out of that
+/// child's stderr.
+const ENVELOPE_BREADCRUMB: &str = "replay child: replay_child_expects_envelope() == true";
+
+/// Emit [`ENVELOPE_BREADCRUMB`] iff this process is a replay child carrying the
+/// envelope mark. A no-op everywhere else, so it is safe to call
+/// unconditionally from a test's first line.
+///
+/// Call it from every test a
+/// [`replay_self_under_hook_git_env_expecting_envelope`] caller selects. That
+/// spawner asserts the breadcrumb came back, and that round trip is the only
+/// thing pinning the envelope path end-to-end: stamping [`ReplayMark::Plain`]
+/// there instead is a ONE-TOKEN change that otherwise leaves every test in this
+/// crate green while silently disabling the tightening
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` bounds.
+/// Deleting this call from the target test reddens that spawner for the same
+/// reason — fail-closed in both directions.
+///
+/// Keyed on the PREDICATE rather than on the mark's name, deliberately: the
+/// breadcrumb then also dies if [`replay_child_expects_envelope`] stops
+/// recognising the value the spawner stamps, which is the other half of the
+/// wiring and is invisible to a check that merely re-prints `mark`.
+#[allow(dead_code)]
+pub fn announce_replay_mark() {
+    if replay_child_expects_envelope() {
+        eprintln!("{ENVELOPE_BREADCRUMB}");
+    }
+}
+
 /// A pre-sanitized `git -C <dir>` command for fixture-repo setup.
 ///
 /// Thin by design: the sanitized variable list lives once, in
@@ -498,7 +529,7 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
 /// is unaffected because the child is spawned by us, not by nextest.
 #[allow(dead_code)]
 pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
-    replay_with_mark(filters, expected_min, ReplayMark::Plain);
+    let _child_stderr = replay_with_mark(filters, expected_min, ReplayMark::Plain);
 }
 
 /// [`replay_self_under_hook_git_env`], but stamping the marker that entitles
@@ -515,9 +546,36 @@ pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
 /// the decoy, the poison, the status assertion and both post-run count checks
 /// — is shared verbatim with the plain variant, so the two spawn paths cannot
 /// drift apart.
+///
+/// The breadcrumb assertion below is what makes THIS function's own claim
+/// checkable rather than merely asserted — see [`announce_replay_mark`], which
+/// the selected test must call. It lives here and not in [`replay_with_mark`]
+/// on purpose: a check keyed on that function's `mark` parameter would simply
+/// not run under the one-token mutation it exists to catch.
 #[allow(dead_code)]
 pub fn replay_self_under_hook_git_env_expecting_envelope(filters: &[&str], expected_min: usize) {
-    replay_with_mark(filters, expected_min, ReplayMark::Envelope);
+    let Some(child_stderr) = replay_with_mark(filters, expected_min, ReplayMark::Envelope) else {
+        // We are ourselves a replay child, so nothing was spawned and there is
+        // no breadcrumb to read.
+        return;
+    };
+
+    assert!(
+        child_stderr.contains(ENVELOPE_BREADCRUMB),
+        "the replay child spawned for filters {:?} never reported \
+         {ENVELOPE_BREADCRUMB:?}, so nothing establishes that it carried the \
+         envelope mark — and a child that does not carry it can never reach the \
+         tightening this variant exists to arm. Two causes, both real: this \
+         function stamps a mark other than `ReplayMark::Envelope` (or \
+         `replay_child_expects_envelope` no longer recognises the value it \
+         stamps), or the selected test dropped its \
+         `common::git_env::announce_replay_mark()` call. Use \
+         `replay_self_under_hook_git_env` if you did not mean to arm the \
+         tightening.\n\
+         --- child stderr (truncated) ---\n{:.800}",
+        filters,
+        child_stderr,
+    );
 }
 
 /// The `Command` shape EVERY replay child is spawned with: this test binary,
@@ -542,14 +600,19 @@ fn replay_child_command(filters: &[&str], mark: ReplayMark) -> Command {
 
 /// The shared body of both replay variants; `mark` is the value stamped into
 /// [`REPLAY_GUARD`] for the child, and the ONLY difference between them.
-fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) {
+///
+/// Returns the child's stderr, or `None` when this process is itself a replay
+/// child and so spawned nothing. Only
+/// [`replay_self_under_hook_git_env_expecting_envelope`] reads it, to check its
+/// own spawn against [`ENVELOPE_BREADCRUMB`].
+fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) -> Option<String> {
     // Re-entrancy guard: we ARE the replayed child. Do not recurse. The
     // question is child-ness and nothing more, so it goes through the one
     // predicate that answers it — never a second hand-rolled read of
     // `REPLAY_GUARD`, which a change to what counts as "set" would reach only
     // half of.
     if in_replay_child() {
-        return;
+        return None;
     }
 
     let exe = std::env::current_exe().expect("current_exe");
@@ -629,6 +692,8 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) {
         expected_min.max(1),
         stdout,
     );
+
+    Some(stderr.into_owned())
 }
 
 /// Spawn ONE replay child in an environment that genuinely CANNOT run the
