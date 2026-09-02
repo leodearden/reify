@@ -1128,6 +1128,169 @@ mod tests {
         );
     }
 
+    // ─── task-6550 step-3: pure `classify_tube_face_roles` classifier ────────
+    //
+    // These tests are deliberately KERNEL-FREE. The in-module `MockKernel`
+    // errors from every method by construction — that is precisely what makes
+    // the closed-extension no-op pins above meaningful — so it cannot serve
+    // staged `FaceNormal` / `BoundingBox` responses. Any classification logic
+    // living inside the `seed_primitive_attributes` match arm would therefore
+    // be unreachable from this unit layer and testable only behind the
+    // `OCCT_AVAILABLE` runtime guard, which silently no-ops on hosts without
+    // OCCT. Extracting the ordering + role assignment into a pure function
+    // over `(nz, radial_extent)` pairs makes the interesting logic testable
+    // with plain literals.
+    //
+    // The literal values below are MEASURED from a real OCCT 7.8 tube
+    // (outer_r = 10mm, inner_r = 5mm, height = 20mm): 4 faces — outer wall
+    // (nz = 0, bbox |xmin| = 0.0100001), top annulus (nz = +1), bottom annulus
+    // (nz = -1), bore (nz = 0, bbox |xmin| = 0.0050001). The `…0001` tails are
+    // `Bnd_Box`'s ~1e-7 tolerance inflation, kept verbatim so the fixture
+    // matches what the kernel actually returns.
+
+    /// Measured radial extent of the tube's OUTER wall (outer_r = 10mm plus
+    /// `Bnd_Box`'s symmetric ~1e-7 gap).
+    const PROBE_OUTER_EXTENT: f64 = 0.0100001;
+    /// Measured radial extent of the tube's BORE (inner_r = 5mm plus the gap).
+    const PROBE_BORE_EXTENT: f64 = 0.0050001;
+
+    /// Assert no two entries share a `(role, local_index)` pair.
+    ///
+    /// This is the invariant that keeps reverse lookups keyed on
+    /// `(feature_id, role, local_index)` unambiguous — `record` would happily
+    /// write two rows with an identical key, so the classifier must never
+    /// produce one. Applied to every case below.
+    fn assert_role_index_pairs_unique(assigned: &[(Role, u32)], case: &str) {
+        let mut seen: Vec<(Role, u32)> = Vec::new();
+        for pair in assigned {
+            assert!(
+                !seen.contains(pair),
+                "{case}: duplicate (role, local_index) pair {pair:?} in {assigned:?} — \
+                 per-role counters must be independent so no two seeded rows collide"
+            );
+            seen.push(*pair);
+        }
+    }
+
+    /// (a) Canonical measured TopExp order.
+    ///
+    /// Also pins that the extent field is consulted for `Side` faces ONLY: an
+    /// annulus's bbox spans the FULL outer radius, so both caps carry the
+    /// outer wall's extent here and must still land on `local_index` 0.
+    #[test]
+    fn classify_tube_face_roles_canonical_topexp_order() {
+        let assigned = classify_tube_face_roles(&[
+            (0.0, PROBE_OUTER_EXTENT),  // outer wall
+            (1.0, PROBE_OUTER_EXTENT),  // top annulus (spans the full outer radius)
+            (-1.0, PROBE_OUTER_EXTENT), // bottom annulus (likewise)
+            (0.0, PROBE_BORE_EXTENT),   // bore
+        ]);
+        assert_eq!(
+            assigned,
+            vec![
+                (Role::Side, 0),
+                (Role::Cap(CapKind::Top), 0),
+                (Role::Cap(CapKind::Bottom), 0),
+                (Role::Side, 1),
+            ],
+            "the larger-radius wall must take local_index 0 and the bore 1; caps are \
+             unaffected by their (irrelevant) extent"
+        );
+        assert_role_index_pairs_unique(&assigned, "canonical order");
+    }
+
+    /// (b) Permuted input — the wall ordering must be driven by RADIUS, not by
+    /// TopExp position. This is the property that makes `local_index` stable
+    /// across OCCT versions (which are free to reorder `TopExp_Explorer`).
+    #[test]
+    fn classify_tube_face_roles_orders_walls_by_radius_not_input_position() {
+        let assigned = classify_tube_face_roles(&[
+            (0.0, PROBE_BORE_EXTENT),   // bore FIRST this time
+            (-1.0, PROBE_OUTER_EXTENT), // bottom annulus
+            (0.0, PROBE_OUTER_EXTENT),  // outer wall
+            (1.0, PROBE_OUTER_EXTENT),  // top annulus
+        ]);
+        assert_eq!(
+            assigned,
+            vec![
+                (Role::Side, 1),
+                (Role::Cap(CapKind::Bottom), 0),
+                (Role::Side, 0),
+                (Role::Cap(CapKind::Top), 0),
+            ],
+            "the bore must keep local_index 1 even when it comes FIRST in TopExp order — \
+             the ordering is by descending radial extent, not input position"
+        );
+        assert_role_index_pairs_unique(&assigned, "permuted order");
+    }
+
+    /// (c1) Degenerate robustness: more than two `Side` faces still get
+    /// sequential `local_index` values in descending-extent order.
+    #[test]
+    fn classify_tube_face_roles_assigns_sequential_indices_to_three_sides() {
+        let assigned = classify_tube_face_roles(&[
+            (0.0, 0.005), // smallest
+            (0.0, 0.020), // largest
+            (0.0, 0.010), // middle
+        ]);
+        assert_eq!(
+            assigned,
+            vec![(Role::Side, 2), (Role::Side, 0), (Role::Side, 1)],
+            "N side faces must take local_index 0..N-1 in DESCENDING extent order"
+        );
+        assert_role_index_pairs_unique(&assigned, "three sides");
+    }
+
+    /// (c2) An exact extent tie falls back to input (TopExp construction)
+    /// order, matching the construction-order tiebreak convention the module
+    /// rustdoc documents for primitive `local_index` (PRD line 66).
+    #[test]
+    fn classify_tube_face_roles_breaks_extent_ties_by_construction_order() {
+        let assigned = classify_tube_face_roles(&[
+            (0.0, PROBE_OUTER_EXTENT),
+            (0.0, PROBE_OUTER_EXTENT),
+        ]);
+        assert_eq!(
+            assigned,
+            vec![(Role::Side, 0), (Role::Side, 1)],
+            "on an exact extent tie the EARLIER input position must win (stable sort)"
+        );
+        assert_role_index_pairs_unique(&assigned, "extent tie");
+    }
+
+    /// (d) Per-role counters are independent, and the empty input is a no-op.
+    #[test]
+    fn classify_tube_face_roles_counters_are_per_role_and_empty_is_empty() {
+        assert!(
+            classify_tube_face_roles(&[]).is_empty(),
+            "an empty face slice must produce no assignments"
+        );
+
+        // Two of every role: each role's counter runs 0,1 independently, so
+        // Cap(Top)/Cap(Bottom)/Side never borrow each other's indices.
+        let assigned = classify_tube_face_roles(&[
+            (1.0, PROBE_OUTER_EXTENT),
+            (1.0, PROBE_OUTER_EXTENT),
+            (-1.0, PROBE_OUTER_EXTENT),
+            (-1.0, PROBE_OUTER_EXTENT),
+            (0.0, PROBE_OUTER_EXTENT),
+            (0.0, PROBE_BORE_EXTENT),
+        ]);
+        assert_eq!(
+            assigned,
+            vec![
+                (Role::Cap(CapKind::Top), 0),
+                (Role::Cap(CapKind::Top), 1),
+                (Role::Cap(CapKind::Bottom), 0),
+                (Role::Cap(CapKind::Bottom), 1),
+                (Role::Side, 0),
+                (Role::Side, 1),
+            ],
+            "each role's local_index counter must start at 0 and advance independently"
+        );
+        assert_role_index_pairs_unique(&assigned, "two of every role");
+    }
+
     // ─── step-9 — Wedge generic seeding (task-4158) ──────────────────────────
     //
     // RED until step-10 adds:
