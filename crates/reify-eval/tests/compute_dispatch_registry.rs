@@ -1544,6 +1544,130 @@ fn instance_scope_optimized_decline_warning_does_not_scale_with_instance_count()
     );
 }
 
+/// amend (#6662 review round 3): the per-template-cell dedupe must not swallow
+/// a SIBLING cell's decline through a prefix collision.
+///
+/// `report_optimized_instance_decline`'s dedupe key is an UNDELIMITED prefix of
+/// the emitted message — `format!("@optimized target {:?} on {}.{}", target,
+/// template, member)` — scanned with `starts_with`. The target is delimited by
+/// `{:?}`'s closing quote and the template name by the following `.`, so only
+/// the trailing `{member}` is open-ended: when two members of ONE child
+/// template share ONE `@optimized` target and the shorter member name is a
+/// proper prefix of the longer (`r`/`r2`, `k`/`k2`, `defl`/`deflection`), the
+/// longer member's already-emitted warning matches the shorter member's key and
+/// the shorter cell's decline is SILENTLY DROPPED — defeating the LOUD contract
+/// for exactly the cells the report exists to surface.
+///
+/// No existing test can see this: every decline fixture in the corpus uses a
+/// single member name (`r`, `result`, `p`, `computed`), including the
+/// instance-count dedupe test above, which pins only the intended per-instance
+/// dedupe.
+///
+/// ORDER IS LOAD-BEARING. `starts_with` is asymmetric, so `r2`'s key does NOT
+/// match `r`'s message; a fixture emitting `r` first would report both and go
+/// green against the live bug. The cells are chained (`r = dblpc(r2)`) so
+/// topological order forces the LONGER member `r2` to be emitted FIRST.
+///
+/// MEASURED before the fix: `TPL r2=Some(Int(6)) r=Some(Int(12))`,
+/// `INST r2=Some(Int(0)) r=Some(Int(0))` — two genuinely degraded instance
+/// cells — but only ONE warning, naming `InnerPC.r2`.
+#[test]
+fn instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix() {
+    let source = r#"
+        @optimized("test::dblpc")
+        fn dblpc(x : Int) -> Int {
+            0
+        }
+
+        structure InnerPC {
+            param x : Int = 3
+            let r2 = dblpc(x)
+            let r = dblpc(r2)
+        }
+
+        structure OuterPC {
+            sub a = InnerPC(x: 10)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    // Reuse `double_fn` under a fixture-private target name: its
+    // input-sensitivity is exactly the discriminator needed here, and the
+    // distinct target keeps this fixture's warning count independent of every
+    // other test's.
+    engine.register_compute_fn("test::dblpc", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (1) Value pins — BOTH instance cells genuinely declined and genuinely
+    //     degraded, so the test cannot go green by the declines never
+    //     happening.
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("InnerPC", "r2")),
+        Some(&Value::Int(6)),
+        "template-scope InnerPC.r2 must be the dispatched 2*3 == 6"
+    );
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("InnerPC", "r")),
+        Some(&Value::Int(12)),
+        "template-scope InnerPC.r must be the dispatched 2*6 == 12"
+    );
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("OuterPC.a", "r2")),
+        Some(&Value::Int(0)),
+        "OuterPC.a.r2 overrides x (10 vs 3), so it declines and body-inlines \
+         dblpc's sentinel 0"
+    );
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("OuterPC.a", "r")),
+        Some(&Value::Int(0)),
+        "OuterPC.a.r reads the degraded r2 (0 vs the template's 6), so it is a \
+         SECOND, independently declining cell — not a knock-on of the first"
+    );
+
+    // (2) THE RED: two distinct template cells declined, so two warnings.
+    let warnings: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::dblpc"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "InnerPC.r2 and InnerPC.r are two distinct authoring facts and must each \
+         be reported. An undelimited dedupe key makes InnerPC.r's key a proper \
+         prefix of InnerPC.r2's already-emitted message, silently dropping the \
+         InnerPC.r decline. Got {} warning(s): {:?}",
+        warnings.len(),
+        warnings
+    );
+
+    // (3) The two warnings name DIFFERENT cells. Assert on the delimited forms:
+    //     a bare `contains("InnerPC.r")` is also satisfied by InnerPC.r2's
+    //     message, which would let a one-warning result pass this assertion.
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|d| d.message.contains("InnerPC.r2:"))
+            .count(),
+        1,
+        "exactly one warning must name the template cell InnerPC.r2, got: {:?}",
+        warnings
+    );
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|d| d.message.contains("InnerPC.r:"))
+            .count(),
+        1,
+        "exactly one warning must name the template cell InnerPC.r — this is \
+         the decline the undelimited prefix key swallows, got: {:?}",
+        warnings
+    );
+}
+
 /// amend (#6662 reviewer_comprehensive, suggestion #5 — design-coherence).
 ///
 /// `elaborate_child_params_only`'s `default_expr` arm consumed `Unreusable`
