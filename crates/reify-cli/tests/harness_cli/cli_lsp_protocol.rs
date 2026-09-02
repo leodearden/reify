@@ -1044,14 +1044,23 @@ fn lsp_full_interactive_loop_through_binary() {
 /// server's stderr must not wedge the server process.
 ///
 /// Unlike `lsp_full_interactive_loop_through_binary`, this test never spawns
-/// a reader for the child's stderr pipe. `child.stderr` is taken into the
-/// named `stderr_pipe` binding and deliberately never read. Holding the
-/// read end alive (rather than dropping it) is load-bearing: dropping it
-/// would give the child EPIPE/SIGPIPE on its next stderr write instead of
-/// pipe-full backpressure — a different failure mode that would make this
-/// test silently vacuous. The explicit `drop(stderr_pipe)` at the end
-/// documents that its lifetime must span every assertion above it, so a
-/// future refactor cannot accidentally shorten it by accident.
+/// a background reader for the child's stderr pipe. `child.stderr` is taken
+/// into the named `stderr_pipe` binding and deliberately not read while the
+/// process is alive. Holding the read end alive (rather than dropping it) is
+/// load-bearing: dropping it would give the child EPIPE/SIGPIPE on its next
+/// stderr write instead of pipe-full backpressure — a different failure mode
+/// that would make this test silently vacuous.
+///
+/// After the exit assertion below, `stderr_pipe` IS drained with a plain
+/// `read_to_string`: by then the child has already exited and closed its
+/// write end, so the read returns immediately without ever having drained
+/// the pipe during the undrained window under test. This is this test's own
+/// non-vacuity anchor — without it, a future reify-lsp change that stopped
+/// emitting the unknown-URI log line entirely (or moved its trigger) could
+/// leave this test green while proving nothing about a stderr write ever
+/// happening under backpressure. `stderr_pipe`'s lifetime must still span
+/// every assertion above the drain, so a future refactor cannot accidentally
+/// shorten it.
 ///
 /// stdout IS drained via `spawn_reader` (the same helper
 /// `lsp_full_interactive_loop_through_binary` uses): a blocked stdout pipe
@@ -1100,9 +1109,11 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
         mut child,
         mut stdin,
         rx,
-        stderr_pipe,
+        mut stderr_pipe,
     } = spawn_lsp_undrained();
-    // Deliberately NEVER read — see doc comment above.
+    // Deliberately NEVER read while the process is alive — see doc comment
+    // above. Drained only after exit, below, so this test gets its own
+    // non-vacuity anchor without reopening the backpressure window.
 
     // Task #6162's trigger (see `huge_unknown_uri_did_change`'s doc
     // comment): a never-opened URI with a deliberately huge (160 KiB) path,
@@ -1159,11 +1170,27 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
          unknown-URI didChange with stderr piped but never drained"
     );
 
-    // Documents that stderr_pipe must outlive every assertion above: a
-    // future refactor cannot accidentally drop (and thus close) the read
-    // end early, which would turn this test's backpressure into EPIPE and
-    // make it silently vacuous.
-    drop(stderr_pipe);
+    // stderr_pipe must outlive every assertion above: a future refactor
+    // cannot accidentally drop (and thus close) the read end early, which
+    // would turn this test's backpressure into EPIPE and make it silently
+    // vacuous. Only now, after the process has exited, do we read it — the
+    // write end is closed, so this returns immediately without having
+    // drained the pipe during the undrained window under test. This is the
+    // test's own non-vacuity anchor (see doc comment above): it fails if a
+    // future change stopped emitting the unknown-URI log line entirely, or
+    // moved its trigger, even though the exit assertion above would still
+    // pass.
+    let mut stderr_after_exit = String::new();
+    stderr_pipe
+        .read_to_string(&mut stderr_after_exit)
+        .expect("reading stderr after the child has already exited should not fail");
+    let stderr_summary = elide(&stderr_after_exit);
+    assert!(
+        stderr_after_exit.contains("didChange for unknown URI"),
+        "expected the child's stderr, drained only after it exited, to contain did_change's \
+         unknown-URI log line, proving the eprintln! this test is about actually fired under \
+         undrained-pipe backpressure. Captured stderr: {stderr_summary}"
+    );
 }
 
 /// Spawns `/bin/sh -c script` with stdin/stdout null and stderr piped,
