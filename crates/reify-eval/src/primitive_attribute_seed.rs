@@ -191,6 +191,7 @@ pub(crate) fn is_seedable_primitive(op: &GeometryOp) -> bool {
             | GeometryOp::Wedge { .. }
             | GeometryOp::Torus { .. }
             | GeometryOp::HalfSpace { .. }
+            | GeometryOp::Tube { .. }
     )
 }
 
@@ -823,7 +824,10 @@ mod tests {
     //! single `_ => Ok(())` catch-all. A pin per variant kind protects
     //! against a future refactor that introduces an unintended catch-all
     //! that branches based on op shape (e.g. accidentally treating
-    //! `Tube` as a primitive because it has a `radius` field).
+    //! `Pipe` as a primitive because it has a `radius` field — it is a
+    //! sweep along a path wire and remains a genuine no-op). `Tube` used
+    //! to be this illustration; task #6550 made it a seeded primitive, so
+    //! the example was retargeted onto a variant that is still deferred.
     use super::*;
     use reify_ir::{
         ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryQuery,
