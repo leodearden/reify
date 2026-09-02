@@ -14,7 +14,9 @@
 #      task 3731 (root-cause: dead .taskmaster/tasks/tasks.json default)
 #      task 7139 (Check 7b inverted: a stale-but-PRESENT binary now FAILS OPEN
 #                 rather than blocking every done-flip project-wide; Check 7d
-#                 pins that an ABSENT binary still refuses)
+#                 pins that an ABSENT binary still refuses; Check 9 pins that
+#                 the rc-0 advisory reaches a channel fused-memory does not
+#                 drop, so fail-open is not fail-SILENT)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -217,6 +219,13 @@ assert "wrapper uses idiomatic non-set-e-aborting exit-code pattern" \
 BEHAVIORAL_TMPDIR=$(mktemp -d /tmp/test-wrapper-rc-XXXXXX)
 # Update the EXIT trap to cover both tmpdirs.
 trap 'rm -rf "$FILTER_TMPDIR" "$BEHAVIORAL_TMPDIR"' EXIT
+
+# Redirect the wrapper's durable-advisory sentinel (Check 9) into the tmpdir for
+# EVERY invocation below. Exported deliberately: several checks run the wrapper
+# against a deliberately-stale shim, and without this they would stamp the
+# host-wide default path — making a real operator sweep report a stale fleet
+# because a test ran. Cleaned up with BEHAVIORAL_TMPDIR by the trap above.
+export REIFY_AUDIT_ADVISORY_SENTINEL="$BEHAVIORAL_TMPDIR/advisory-sentinel"
 
 # Fake curl: ignores all args, emits a valid empty-tasks JSON-RPC envelope.
 # The sidecar filter expects .result.content[0].text | fromjson | .tasks → []
@@ -434,6 +443,117 @@ assert "8a: deploy script branches on the E_AUDIT_BIN_STALE token" \
 # would lose coverage.
 assert "8b: deploy script still greps the legacy 'reinstall with: cargo install' substring" \
     bash -c 'grep -qF "$2" "$1"' -- "$DEPLOY_SCRIPT" 'reinstall with: cargo install'
+
+# ==============================================================================
+# Check 9: the fail-open advisory reaches a channel that survives rc 0
+#          (task #7139 review)
+#
+# WHY THIS IS A REAL DEFECT, not belt-and-braces. Check 7b-iii pins the advisory
+# on the wrapper's STDERR — necessary, but NOT sufficient on the one path this
+# task exists to fix. dark-factory's fused_memory/middleware/pre_done_hook.py
+# launches the wrapper with stderr=PIPE and surfaces the captured text ONLY on a
+# non-zero exit (`if returncode == 0: return None`, :222-223). This repo already
+# records that exact trap for the sibling knob:
+# docs/architecture-audit/f-infra-design.md §11.1.4 — "warn-only makes the gate
+# SILENT on the live hook path, not advisory ... captured and discarded ... A
+# soak run through the live hook observes nothing".
+#
+# Since #7139 makes a stale-but-runnable binary exit 0, stderr ALONE would mean
+# the E_AUDIT_BIN_STALE alarm is captured and dropped on every live done-flip.
+# With crates/reify-audit landing ~4 commits/day, the steady state would be a
+# fleet permanently running a stale P5 detector with zero operator-visible
+# signal — a loud outage traded for a silent, indefinite degradation, with the
+# token surfacing only under an attended deploy probe. The advisory must
+# therefore ALSO reach a channel the hook cannot swallow.
+# ==============================================================================
+echo ""
+echo "--- Check 9: fail-open advisory survives rc 0 (durable channel) ---"
+
+ADVISORY_SENTINEL="$BEHAVIORAL_TMPDIR/advisory-sentinel"
+
+# Re-stale the shim (7c freshened it) so the guard fires and falls open.
+touch -t 200001010000 "$BEHAVIORAL_TMPDIR/reify-audit"
+rm -f "$ADVISORY_SENTINEL"
+
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=0 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+actual_rc_9a=$?
+set -e
+
+# 9a: the flip is still allowed — recording must never become a second gate.
+assert "9a: fail-open run still exits 0 (the durable record is not a new gate)" \
+    bash -c 'test "$1" -eq 0' -- "$actual_rc_9a"
+
+# 9b: ...and it left a record behind on a channel fused-memory does not drop.
+assert "9b: an rc-0 fail-open run leaves a durable sentinel behind" \
+    bash -c '[ -f "$1" ]' -- "$ADVISORY_SENTINEL"
+
+# 9c: the record is greppable by the same machine token as the stderr form, so
+# a triager greps ONE string across both channels
+# (jcodemunch_index.rs:522 convention).
+assert "9c: the sentinel carries the stable token E_AUDIT_BIN_STALE" \
+    bash -c 'grep -qF "E_AUDIT_BIN_STALE" "$1" 2>/dev/null' -- "$ADVISORY_SENTINEL"
+
+# 9d: and the operator's remedy, so the sentinel is self-describing standalone.
+assert "9d: the sentinel carries the reinstall remedy" \
+    bash -c 'grep -qF "cargo install" "$1" 2>/dev/null' -- "$ADVISORY_SENTINEL"
+
+# 9e: BOUNDED. The condition persists for hours-to-days across every done-flip
+# in the project, so the record must be truncate-written, never appended — an
+# append would turn a stale binary into unbounded /tmp growth.
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=0 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+set -e
+
+assert "9e: the sentinel stays ONE line across repeated runs (truncate, not append)" \
+    bash -c 'test "$(wc -l < "$1")" -le 1' -- "$ADVISORY_SENTINEL"
+
+# 9f: no FALSE alarm. A fresh binary must leave no sentinel at all, or a sweep
+# reading it would report a stale fleet forever after one stale day.
+rm -f "$ADVISORY_SENTINEL"
+touch "$BEHAVIORAL_TMPDIR/reify-audit"
+
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=0 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+set -e
+
+assert "9f: a FRESH binary writes no sentinel (silence means healthy)" \
+    bash -c '[ ! -f "$1" ]' -- "$ADVISORY_SENTINEL"
+
+# 9g: BEST-EFFORT. Recording is a diagnostic, never a gate: if the sentinel path
+# is unwritable the done-flip must still go through, or the observability added
+# here would reintroduce the very outage this task removed.
+touch -t 200001010000 "$BEHAVIORAL_TMPDIR/reify-audit"
+
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=0 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    REIFY_AUDIT_ADVISORY_SENTINEL="$BEHAVIORAL_TMPDIR/no-such-dir/sentinel" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+actual_rc_9g=$?
+set -e
+
+assert "9g: an UNWRITABLE sentinel path does not block the flip (best-effort)" \
+    bash -c 'test "$1" -eq 0' -- "$actual_rc_9g"
+
+# 9h: STRUCTURAL — the journal is the channel an operator actually watches on
+# the live host (the wrapper's parent is fused-memory.service), but asserting on
+# journald from a test would need a live journal and a writable syslog socket.
+# Pinned structurally instead, the same idiom as Check 6a (:209-211) and Check
+# 8a: a contract pin on the script's control flow, not on prose.
+assert "9h: the wrapper also emits the advisory to the journal via logger" \
+    bash -c 'grep -qE "logger[^|]*-t[[:space:]]+reify-audit-predone" "$1"' \
+    -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
 
 # -- Summary ------------------------------------------------------------------
 test_summary

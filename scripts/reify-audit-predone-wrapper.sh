@@ -72,6 +72,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #
 # The operator reinstall command:
 #   cargo install --path crates/reify-audit --root ~/.cargo --force
+#
+# The advisory that fail-open emits is NOT delivered on stderr alone — see
+# "Durable advisory channel" below for why stderr is a dead channel on an rc-0
+# run through the live hook.
 # shellcheck source=scripts/reify-audit-freshness.sh
 source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 
@@ -80,6 +84,11 @@ MCP_URL="${FUSED_MEMORY_MCP_URL:-http://localhost:8002/mcp}"
 MCP_TIMEOUT="${FUSED_MEMORY_MCP_TIMEOUT:-10}"
 REIFY_AUDIT_BIN="${REIFY_AUDIT_BIN:-/home/leo/.cargo/bin/reify-audit}"
 RUNS_DB="${REIFY_AUDIT_RUNS_DB:-$REPO_ROOT/data/orchestrator/runs.db}"
+# One-line durable stamp for whatever the freshness guard says; see the
+# "Durable advisory channel" block below for why stderr alone is not enough.
+# Defined here (not there) because usage() interpolates it and --help
+# short-circuits above that point.
+ADVISORY_SENTINEL="${REIFY_AUDIT_ADVISORY_SENTINEL:-${TMPDIR:-/tmp}/reify-audit-predone-advisory.$(id -u)}"
 
 # ── Usage ────────────────────────────────────────────────────────────────────
 usage() {
@@ -110,6 +119,10 @@ Environment overrides:
   REIFY_AUDIT_FRESHNESS_STRICT  Set to 1 to REFUSE (125) on a stale binary
                              instead of falling open with an advisory.
                              Default (unset/0) is fail-open.
+  REIFY_AUDIT_ADVISORY_SENTINEL  Path of the one-line durable advisory stamp
+                             (default: $ADVISORY_SENTINEL). Written only when
+                             the freshness guard has something to say; absent
+                             means healthy. See "Durable advisory channel".
 
 Exit codes mirror reify-audit:
   0       No High-severity findings
@@ -167,16 +180,101 @@ case "$task_id" in
         ;;
 esac
 
-# ── Freshness check (fail-OPEN, before any MCP calls) ───────────────────────
-# A stale-but-runnable REIFY_AUDIT_BIN emits a self-describing advisory to
-# stderr and we run it anyway; only an UNRUNNABLE binary (or an operator who
-# armed REIFY_AUDIT_FRESHNESS_STRICT=1) refuses. See the Freshness guard block
-# at the top of this file for why refusing here is an outage, not a safeguard.
+# ── Durable advisory channel (task #7139 review) ────────────────────────────
+# On the LIVE hook path, stderr is a DEAD channel for an rc-0 run. dark-factory's
+# fused_memory/middleware/pre_done_hook.py launches this wrapper with
+# stderr=PIPE and surfaces the captured text (clipped to 2000 chars) ONLY on a
+# non-zero exit — `if returncode == 0: return None` discards it. The same trap
+# is already on record for the sibling knob in
+# docs/architecture-audit/f-infra-design.md §11.1.4: "warn-only makes the gate
+# SILENT on the live hook path, not advisory ... captured and discarded ... A
+# soak run through the live hook observes nothing."
 #
-# The call is deliberately UNCHECKED: under `set -euo pipefail` a 125 return
-# still aborts the wrapper with 125 before any MCP call, while a 0 return falls
-# through to the snapshot and the detector. Do not wrap it in `|| true`.
-reify_audit_guard "$REIFY_AUDIT_BIN" warn-open "$REPO_ROOT"
+# That matters precisely because the freshness guard now falls OPEN (rc 0) on a
+# stale-but-runnable binary. On stderr alone the E_AUDIT_BIN_STALE alarm would
+# be dropped on EVERY live done-flip, and since crates/reify-audit lands ~4
+# commits/day the steady state would be a fleet permanently running a stale P5
+# detector with zero operator-visible signal — the loud outage traded for a
+# silent, indefinite degradation, with the token surfacing only under an
+# attended deploy probe. So whatever the guard says is ALSO written to two
+# channels the hook cannot swallow:
+#
+#   1. the systemd journal, via `logger -t reify-audit-predone`. This wrapper's
+#      parent is fused-memory.service, so `journalctl --user -t
+#      reify-audit-predone` shows it with no extra wiring.
+#   2. a single-line sentinel file. TRUNCATE-written, never appended: the
+#      condition persists across every done-flip for hours-to-days, so
+#      appending would turn one stale binary into unbounded /tmp growth. Its
+#      PRESENCE answers "is the fleet running a stale detector?" and its MTIME
+#      answers "as of when?" for any read-only sweep. A healthy run writes
+#      nothing, so absence means healthy — the file is never emptied in place.
+#
+# Both are strictly BEST-EFFORT and neither can change the exit code:
+# observability that could block a done-flip would reintroduce exactly the
+# outage this task removed.
+#
+# ADVISORY_SENTINEL itself is defined up in the Constants block, not here:
+# usage() interpolates it, and the --help short-circuit runs before this point,
+# so a definition here would make `--help` die on an unbound variable under
+# `set -u`.
+
+# reify_audit_record_advisory <file-containing-the-guard-stderr>
+# Always returns 0.
+reify_audit_record_advisory() {
+    local msg_file="$1"
+    local msg_1line
+    # Collapse to ONE line: the guard's messages are deliberately multi-line for
+    # a human reading stderr, but both channels here want a single record, and
+    # the remedy ("cargo install ...") lives on a later line than the token — so
+    # truncating to the first line would drop the fix.
+    msg_1line=$(tr '\n' ' ' < "$msg_file" 2>/dev/null | tr -s ' ' || true)
+    [ -n "$msg_1line" ] || return 0
+
+    if command -v logger >/dev/null 2>&1; then
+        logger -t reify-audit-predone -p user.warning -- "$msg_1line" 2>/dev/null || true
+    fi
+
+    # Atomic truncate-write (temp + mv) so a concurrent sweep never reads a
+    # half-written record.
+    local tmp="${ADVISORY_SENTINEL}.tmp.$$"
+    if printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg_1line" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$ADVISORY_SENTINEL" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    else
+        rm -f "$tmp" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# ── Freshness check (fail-OPEN, before any MCP calls) ───────────────────────
+# A stale-but-runnable REIFY_AUDIT_BIN emits a self-describing advisory and we
+# run it anyway; only an UNRUNNABLE binary (or an operator who armed
+# REIFY_AUDIT_FRESHNESS_STRICT=1) refuses. See the Freshness guard block at the
+# top of this file for why refusing here is an outage, not a safeguard.
+#
+# The guard's stderr is CAPTURED rather than left to flow, so it can be teed to
+# the durable channel above. It is then re-emitted verbatim and unconditionally:
+# on the rc-125 path stderr IS surfaced by the hook, and it is what an attended
+# or manual invocation reads. The rc is captured explicitly and re-raised, which
+# preserves the previous `set -euo pipefail` behaviour (a 125 aborts before any
+# MCP call) while keeping this recording step reachable. Do not collapse the
+# `|| guard_rc=$?` back into a bare call, and do not add `|| true`.
+GUARD_ERR=$(mktemp /tmp/reify-audit-guard-err-XXXXXX)
+trap 'rm -f "$GUARD_ERR"' EXIT
+
+guard_rc=0
+reify_audit_guard "$REIFY_AUDIT_BIN" warn-open "$REPO_ROOT" 2>"$GUARD_ERR" || guard_rc=$?
+
+if [ -s "$GUARD_ERR" ]; then
+    cat "$GUARD_ERR" >&2
+    reify_audit_record_advisory "$GUARD_ERR"
+fi
+
+rm -f "$GUARD_ERR"
+trap - EXIT
+
+if [ "$guard_rc" -ne 0 ]; then
+    exit "$guard_rc"
+fi
 
 # ── Materialize snapshot from fused-memory MCP ───────────────────────────────
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
