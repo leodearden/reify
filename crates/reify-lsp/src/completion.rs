@@ -223,38 +223,25 @@ fn push_builtins(items: &mut Vec<CompletionItem>) {
 /// `BuiltinFunctionInfo` field so the other ~80 non-geometry entries need no
 /// touch. This is NOT a restatement of the authoritative position table —
 /// that table is `pub(crate)` to reify-compiler/reify-eval and unreachable
-/// from here (see crates/reify-eval/src/arg_acceptance.rs:11-71) — it is
-/// pinned BEHAVIOURALLY by
+/// from here (see `arg_acceptance`'s module doc,
+/// crates/reify-eval/src/arg_acceptance.rs) — it is pinned BEHAVIOURALLY by
 /// `completion::tests::gated_length_builtins_advertise_their_dimension_requirement`,
 /// which asserts the bare form of every row here is actually rejected and
 /// the dimensioned form actually evaluates clean.
 ///
 /// `half_space`'s example deliberately leaves `nx`/`ny`/`nz` bare — only its
-/// `px`/`py`/`pz` point is LENGTH-gated (arg_acceptance.rs:109-119: the
-/// outward normal is a dimensionless unit vector, not a residual).
+/// `px`/`py`/`pz` point is LENGTH-gated (the outward normal is a
+/// dimensionless unit vector, not a residual — the same ORIGIN-vs-DIRECTION
+/// split `arg_acceptance`'s module doc draws for the same builtin).
 ///
 /// Positions elsewhere in `BUILTIN_FUNCTIONS` deliberately left
 /// dimensionless, scoped to what actually appears in this table (the wider
 /// gated families named in task 6450's own description — patterns,
 /// translate/rotate_around, revolve, line_segment, arc, helix, interp,
 /// bezier, nurbs poles, ... — have no entry here at all, so naming them
-/// would invent a residual with no surface). The authoritative
-/// "deliberately NOT gated" enumeration is
-/// crates/reify-eval/src/arg_acceptance.rs:91-129 — cited, not restated:
-/// - `half_space`'s `nx`/`ny`/`nz` (above) — the same ORIGIN-vs-DIRECTION
-///   split arg_acceptance.rs draws there for the same builtin.
-/// - `point3`/`vec3` (:836, :848) and their 2D siblings — left `Real` on
-///   purpose. Their quantity slot is argument-DEPENDENT, not fixed at
-///   Length: crates/reify-compiler/src/units.rs:652-661 routes both to
-///   `math_signatures::MATH_CONSTRUCTION_NAMES` for exactly that reason, and
-///   task 5745's decoded-value gate fires at the CONSUMER (reading a
-///   decoded origin back out), never at construction — `Length` here would
-///   reject correct `.ri` code.
-/// - Every ANGLE — owned by
-///   docs/prds/v0_6/angle-units-surface-convergence.md by seam-table
-///   decree; gating one here would be a scope violation.
-/// - `02-numeric`/`03-trig` `Real` arguments, instance counts and
-///   dimensionless scale factors — legitimately dimensionless.
+/// would invent a residual with no surface). The full "deliberately NOT
+/// gated" enumeration lives in `arg_acceptance`'s module doc — cited, not
+/// restated here (G7).
 ///
 /// RESIDUAL: this table is a snapshot of the families gated as of task
 /// 5745, taken before the units-length-gate-completion PRD's closure guard
@@ -287,16 +274,34 @@ const LENGTH_GATED_EXAMPLES: &[(&str, &str)] = &[
 /// fails to compile with "expected a literal"), so composing here at
 /// completion-render time is how the popup imports the one shared wording
 /// instead of hand-copying it (G7).
+///
+/// The clause reads "a bare number would mean SI metres and is rejected" —
+/// not "is read as ... and rejected" (review amendment): under the gate a
+/// bare number is never actually read as metres, it is rejected outright:
+/// the 1000×-metres misreading is the historical hazard Contract C closes,
+/// so asserting both in one breath was self-contradictory. `half_space`
+/// gets an extra qualifier because it is the one row in
+/// [`LENGTH_GATED_EXAMPLES`] whose signature mixes a LENGTH-gated slot group
+/// with a legitimately dimensionless one, so the general clause would
+/// otherwise read as covering its outward-normal args too.
 fn builtin_doc_with_length_gate_note(info: &BuiltinFunctionInfo) -> String {
     match LENGTH_GATED_EXAMPLES
         .iter()
         .find(|(name, _)| *name == info.name)
     {
-        Some((_, example)) => format!(
-            "{} Length arguments must be dimensioned — a bare number is read as SI metres \
-             and rejected; {LENGTH_MIGRATION_HINT}, e.g. `{example}`.",
-            info.doc
-        ),
+        Some((_, example)) => {
+            let qualifier = if info.name == "half_space" {
+                " Its outward normal (`nx`/`ny`/`nz`) is a dimensionless \
+                 direction and stays bare."
+            } else {
+                ""
+            };
+            format!(
+                "{} Length arguments must be dimensioned — a bare number would mean SI metres \
+                 and is rejected; {LENGTH_MIGRATION_HINT}, e.g. `{example}`.{qualifier}",
+                info.doc
+            )
+        }
         None => info.doc.to_string(),
     }
 }
@@ -527,7 +532,7 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "half_space",
-        signature: "half_space(px: Length, py: Length, pz: Length, nx: Float, ny: Float, nz: Float) -> Solid",
+        signature: "half_space(px: Length, py: Length, pz: Length, nx: Real, ny: Real, nz: Real) -> Solid",
         doc: "Creates an unbounded half-space solid. The boundary plane passes through (px, py, pz) with outward normal (nx, ny, nz) pointing toward the retained material side. Unbounded=true: use with boolean intersection to obtain bounded results.",
         sort_group: "01-geometry",
     },
@@ -1213,8 +1218,8 @@ mod tests {
 
     #[test]
     fn polygon_completion_advertises_compiling_flat_form() {
-        // Authoritative compiler arm: crates/reify-compiler/src/geometry.rs:1570
-        // (the `polygon` match arm in `compile_profile_op`) accepts ONLY
+        // Authoritative compiler arm: crates/reify-compiler/src/geometry.rs's
+        // `compile_geometry_call_inner`, "polygon" match arm — accepts ONLY
         // variadic flat coordinate pairs (x1, y1, x2, y2, ...) — at least 6
         // args (3 points), an even count — NOT a `List<Point2<Length>>`
         // structured argument. The served completion signature must match
@@ -1253,14 +1258,15 @@ mod tests {
     // The authoritative per-builtin position table lives outside this crate's
     // reach — reify-compiler::builtin_signatures and reify-eval::arg_acceptance
     // are both `pub(crate)` to their own crate (see the module doc of the
-    // latter, crates/reify-eval/src/arg_acceptance.rs:11-71, for the full
-    // table) — so instead of hand-copying it, each row below is pinned
-    // BEHAVIOURALLY against the real gate: the compiler is the oracle, not a
-    // restatement of it (G7).
+    // latter, crates/reify-eval/src/arg_acceptance.rs, for the full table) —
+    // so instead of hand-copying it, each row below is pinned BEHAVIOURALLY
+    // against the real gate: the compiler is the oracle, not a restatement of
+    // it (G7).
 
     /// Evaluate a single `.ri` expression through the same parse → compile →
-    /// check pipeline `AnalysisContext` runs for the LSP (analysis.rs:82-99),
-    /// and return every diagnostic message from BOTH layers Contract C spans.
+    /// check pipeline `AnalysisContext` runs for the LSP (`AnalysisContext::new`
+    /// delegating to `AnalysisContext::from_parsed`), and return every
+    /// diagnostic message from BOTH layers Contract C spans.
     /// `AnalysisContext` keeps `compiled` (COMPILE-time diagnostics — where
     /// box/cylinder/sphere/... are gated, per reify-compiler::builtin_signatures)
     /// and `check_result` (EVAL-time diagnostics — the only place polygon's
@@ -1292,8 +1298,8 @@ mod tests {
         /// The name is deliberately UNSLOTTED at compile time, so its gate
         /// fires only from inside `reify-eval`'s realization loop
         /// (`engine_build.rs`), under `build()`/`realize_for_check()` — which
-        /// `AnalysisContext::from_parsed` never calls (analysis.rs:94-115, the
-        /// "C2" lightweight path). The requirement is REAL — `reify check` on
+        /// `AnalysisContext::from_parsed` never calls (the "C2" lightweight
+        /// path). The requirement is REAL — `reify check` on
         /// the bare form does print the hint via `merge_post_build_verdicts` —
         /// but it is structurally invisible to reify-lsp, and reaching it here
         /// would mean linking `reify-kernel-occt` into reify-lsp's dev-deps
@@ -1325,8 +1331,10 @@ mod tests {
     /// asserts the two tables name the same builtins and that every
     /// `LENGTH_GATED_EXAMPLES` row is a real `BUILTIN_FUNCTIONS` entry).
     /// `half_space` deliberately leaves `nx`/`ny`/`nz` bare — only its
-    /// `px`/`py`/`pz` point is LENGTH-gated (arg_acceptance.rs:109-119: the
-    /// outward normal is a dimensionless unit vector, not a residual).
+    /// `px`/`py`/`pz` point is LENGTH-gated (the outward normal is a
+    /// dimensionless unit vector, not a residual — the same
+    /// ORIGIN-vs-DIRECTION split `arg_acceptance`'s module doc draws for the
+    /// same builtin).
     ///
     /// The three `BuildOnly` rows are exactly the three names this table
     /// shares with `LENGTH_GATED_EXAMPLES` that have NO arm in
@@ -1354,14 +1362,21 @@ mod tests {
     /// Drift guard (review amendment, task 6450): `LENGTH_GATED_EXAMPLES`
     /// (the doc-string example table) and `GATED_LENGTH_BUILTIN_ROWS` (this
     /// suite's behavioural-pin table) must name exactly the same builtins,
-    /// and every `LENGTH_GATED_EXAMPLES` entry must resolve to a real
-    /// `BUILTIN_FUNCTIONS` row. Without this: a row added to
-    /// `GATED_LENGTH_BUILTIN_ROWS` alone is caught the moment
-    /// `dimensioned_example` fails to find it, but a row added to
-    /// `LENGTH_GATED_EXAMPLES` alone would ship a doc claim with no
+    /// every `LENGTH_GATED_EXAMPLES` entry must resolve to a real
+    /// `BUILTIN_FUNCTIONS` row, and every `BUILTIN_FUNCTIONS` signature that
+    /// types a slot `Length` must have a `LENGTH_GATED_EXAMPLES` row (review
+    /// amendment round 2). That third check is the direction that actually
+    /// rots: a builtin that becomes LENGTH-gated but gains no example row
+    /// would silently omit the units clause from its popup, and neither of
+    /// the first two checks nor
+    /// `geometry_completion_signatures_type_gated_slots_as_length` (whose
+    /// loop is scoped to these same 15 rows) would ever inspect it. Without
+    /// the first two: a row added to `GATED_LENGTH_BUILTIN_ROWS` alone is
+    /// caught the moment `dimensioned_example` fails to find it, but a row
+    /// added to `LENGTH_GATED_EXAMPLES` alone would ship a doc claim with no
     /// behavioural pin at all, and a typo'd or stale `LENGTH_GATED_EXAMPLES`
     /// key is simply never looked up by `builtin_doc_with_length_gate_note`'s
-    /// `find` and never reds — both are exactly the failure mode the
+    /// `find` and never reds. All three are exactly the failure modes the
     /// TODO(#5752) residual anticipates as the gated set grows.
     #[test]
     fn length_gated_tables_stay_in_sync() {
@@ -1384,6 +1399,22 @@ mod tests {
                 "LENGTH_GATED_EXAMPLES has a dead row: {name:?} is not a \
                  registered BUILTIN_FUNCTIONS entry"
             );
+        }
+        // Converse (review amendment round 2): a builtin whose signature
+        // already types a slot `Length` but has no LENGTH_GATED_EXAMPLES row
+        // would silently serve a popup with no units clause. Verified: today
+        // exactly the 15 rows above have a `: Length` signature, so this is
+        // green on landing and reds the moment a 16th one appears unpaired.
+        for info in BUILTIN_FUNCTIONS.iter() {
+            if info.signature.contains(": Length") {
+                assert!(
+                    example_names.contains(info.name),
+                    "{}: BUILTIN_FUNCTIONS signature types a slot as Length \
+                     but has no LENGTH_GATED_EXAMPLES entry, so its popup \
+                     would omit the units clause",
+                    info.name
+                );
+            }
         }
     }
 
@@ -1486,8 +1517,7 @@ mod tests {
     /// rather than merely omitting a note about it. Scoped to exactly the 15
     /// `GATED_LENGTH_BUILTIN_ROWS` names (not every builtin in the table) so
     /// this cannot fire on a legitimately dimensionless neighbour elsewhere —
-    /// e.g. `02-numeric`'s `sqrt(x: Real)`, or `half_space`'s own
-    /// `nx/ny/nz: Float` direction components.
+    /// e.g. `02-numeric`'s `sqrt(x: Real)`.
     ///
     /// Fails today for exactly three rows — `box`, `cylinder`, `sphere` —
     /// which still advertise `Real` for slots task 5743 gated as LENGTH,
@@ -1497,15 +1527,24 @@ mod tests {
     ///
     /// Two checks per row (review amendment, task 6450 — folded from three
     /// bespoke box/cylinder/sphere-only assertions into this loop): the
-    /// negative `!detail.contains(": Real")` above, and a positive
+    /// negative `!detail.contains(": Real")`, and a positive
     /// `detail.contains(": Length")`. The negative alone passes for a
     /// signature with NO type annotations at all, which was exactly
     /// `polygon`'s pre-fix failure mode and is why it previously needed a
     /// separate bespoke pin in `polygon_completion_advertises_compiling_flat_form`;
     /// the positive check closes that gap for every row uniformly, so that
-    /// bespoke polygon assertion was removed. `half_space`'s legitimately
-    /// dimensionless `nx/ny/nz: Float` still passes the positive check,
-    /// since its `px: Length` satisfies it.
+    /// bespoke polygon assertion was removed.
+    ///
+    /// `half_space` is the one row that needs a different negative check
+    /// (review amendment round 2): its signature legitimately mixes the
+    /// LENGTH-gated point `px`/`py`/`pz` with the dimensionless outward
+    /// normal `nx`/`ny`/`nz`, which — now correctly typed `Real` rather than
+    /// the non-existent `Float` it advertised before — would trip a blanket
+    /// `!detail.contains(": Real")` even though nothing is wrong. So
+    /// `half_space` checks its three gated slot names by substring
+    /// (`px: Length` etc.) instead of banning `Real` from the whole
+    /// signature; every other row here has no non-gated slot at all, so the
+    /// blanket check is exact for them.
     #[test]
     fn geometry_completion_signatures_type_gated_slots_as_length() {
         let source = reify_test_support::bracket_source();
@@ -1524,6 +1563,22 @@ mod tests {
         for (name, _, _) in GATED_LENGTH_BUILTIN_ROWS {
             let name = *name;
             let detail = detail_for(name);
+            if name == "half_space" {
+                // Gated slots only (px/py/pz) — nx/ny/nz is a legitimately
+                // dimensionless direction and correctly says `: Real`, so a
+                // blanket `!detail.contains(": Real")` would misfire here.
+                for slot in ["px", "py", "pz"] {
+                    assert!(
+                        detail.contains(&format!("{slot}: Length")),
+                        "{name}: gated slot `{slot}` should be typed Length, got: {detail}"
+                    );
+                    assert!(
+                        !detail.contains(&format!("{slot}: Real")),
+                        "{name}: gated slot `{slot}` should not be typed Real, got: {detail}"
+                    );
+                }
+                continue;
+            }
             assert!(
                 !detail.contains(": Real"),
                 "{name}: signature should not type any gated slot as Real, got: {detail}"
