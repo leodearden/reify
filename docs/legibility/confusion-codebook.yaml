@@ -245,6 +245,12 @@ entries:
     origin_phase: architect
     manifested_phase: ops
     note: Escalation-watcher invoked for non-dark-factory target (/home/leo/src/reify); three 'does not exist' errors suggest script/resource path resolution failure
+  - date: '2026-09-01'
+    project: reify
+    session: 20cc70ad-1834-4a2f-ac79-32e3b1c1cc3e
+    origin_phase: prd
+    manifested_phase: verify
+    note: Escalation investigation (esc-5311-3) spawned into reify (non-dark-factory project); 4 not_found signals across turns 24/46/286/580 + 4x empty get_merge_queue retries indicate environment/path discovery issues typical of cross-project escalation-watcher setup
 - id: entry-cand-20260728-1
   title: Gitignored-file deliverable can never satisfy confirm_plan / TDD pipeline
   severity: medium
@@ -258,6 +264,12 @@ entries:
     origin_phase: decompose
     manifested_phase: architect
     evidence_quote: their sole deliverable is an edit to tasks.db, which is gitignored, so it can never produce a commit or satisfy confirm_plan non-empty-files requirement — it cannot flow through the architect+implementer TDD pipeline at all and needs direct operator/admin execution outside the orchestrator
+  - date: '2026-09-01'
+    project: reify
+    session: 89c929f5-d195-4009-85a8-22faf51af6eb
+    origin_phase: implement
+    manifested_phase: verify
+    note: git check-ignore --quiet <path> lacks -- separator; unescaped paths with - prefix trigger exit 129 (unknown option error), which falls through to catch-all Ok() arm at lib.rs:957, silently latching gitignore_unavailable=true for entire process lifetime, suppressing P5MetadataFilesGitignored findings
 - id: entry-cand-20260728-4
   title: 'Cross-PRD dependency fields conflated: enforced edges vs informational prose'
   severity: medium
@@ -442,6 +454,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Foreground polling loop for async task hit hard timeout override; requested 1500000ms but enforced at 2m ceiling
+  - date: '2026-09-01'
+    project: reify
+    session: 041926f2-724f-4726-9ce2-42058c9eec6e
+    origin_phase: unknown
+    manifested_phase: merge
+    note: 'Multiple Monitor timeouts polling for async completion markers: task/7182 merge outcome times out at turns 502, 528; merge queue drain times out at turns 623, 640. Agent re-arms after each timeout and eventually receives LANDED event (turn 556). Pattern consistent with hard-timeout polling loop that doesn''t block progress but requires multiple re-arms before event arrives.'
 - id: entry-cand-20260719-1
   title: Leak-status oracle unset silently downgrades leaked=0 into a false 'no leaks' signal
   severity: medium
@@ -690,6 +708,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent referenced turn 191 that doesn't exist in session; likely TaskOutput poll of a cleaned-up or non-existent background task in warm-lanes context
+  - date: '2026-09-01'
+    project: reify
+    session: 33717f43-dd0b-49bd-a7bc-0316f3375554
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Background shell command bj1rjr1c3 from previous session has no completion record. Notification indicates session may have exited or been stopped before task finished, leaving the background task output inaccessible.
 - id: entry-cand-20260731-1
   title: Blocked sleep+tail poll fallback into repeated-Read retry loop
   severity: medium
@@ -803,6 +827,12 @@ entries:
     origin_phase: merge
     manifested_phase: unknown
     note: Warm-lane worktree session with 3 'not found' errors; task-meta iteration state expected but missing
+  - date: '2026-09-01'
+    project: reify
+    session: f17f2464-4cb7-45d5-9b86-184ac39f7237
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane task-meta iteration state assumed present but absent; aligns with multiple not-found signals in warm-lanes context
 - id: entry-cand-20260720-3
   title: Sleep-chain polling of background task output blocked by guard
   severity: medium
@@ -1660,6 +1690,24 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: 'Turn 149: heredoc commit message with special characters (parentheses, em-dash) fails under bash eval with ''syntax error near unexpected token'' — exact reproduction of eval-wrapped heredoc sensitivity'
+  - date: '2026-09-01'
+    project: reify
+    session: fa469d0d-84e2-4195-9a00-468ab994fec3
+    origin_phase: implement
+    manifested_phase: implement
+    note: 'Turn 134: Heredoc in git commit message (-m flag) containing literal parentheses (code references like ''_guard_output_names(...)'') breaks under eval-wrapped bash execution. Heredoc structure malformed during eval, failing with ''syntax error near unexpected token ('''
+  - date: '2026-09-01'
+    project: reify
+    session: 6997afab-7f3f-4579-bd3b-df89f0e387db
+    origin_phase: implement
+    manifested_phase: implement
+    note: 'Turn 152: git commit with heredoc message containing parentheses (reify_update_source''s) breaks under eval-wrapped bash with ''syntax error near unexpected token ('''
+  - date: '2026-09-01'
+    project: reify
+    session: 81f55a4f-f7e2-4ed2-afbf-a1fc8e3fc2c7
+    origin_phase: implement
+    manifested_phase: implement
+    note: 'Turn 116: heredoc commit message with em-dash (—) and special characters breaks under eval-wrapped bash execution; syntax error near unexpected token in git commit -m'
 - id: entry-cand-20260725-4
   title: Concurrent background commit retries collide on git index.lock with no serialization
   severity: medium
@@ -1811,6 +1859,13 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: Orchestrated task in warm-lane worktree attempts cd to `crates/reify-audit` expecting target-project-relative structure; path does not exist in worktree context, causing exit 1 and cascading not-found errors on re-attempts
+  - date: '2026-09-01'
+    project: reify
+    session: bedbc3b3-878c-41b4-bee2-ae2d0b911ab8
+    origin_phase: unknown
+    manifested_phase: implement
+    invariant_violated: Path resolution assumes relative-to-cwd lookup succeeds; dark-factory tooling scripts require absolute or explicit DARK_FACTORY_ROOT-relative paths when invoked from non-dark-factory worktrees
+    note: Agent in warm-lanes worktree self-corrected harness at turn 99 after test_helpers.sh path lookup failed. Subsequent not-found error at turn 101 suggests path resolution still broken or targeting wrong location.
 - id: entry-cand-20260723-3
   title: Ad-hoc sleep+tail polling for background task output blocked by guard
   severity: medium
@@ -2437,6 +2492,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'User Corrections section contains detailed technical context about prior escalation state (esc-2980-8/9 history, task #7005 ownership, premise re-verification) that reads as injected briefing context, not direct user input. Session metadata shows n_user_turns=1, yet the section labeled ''User Corrections'' presents system-synthesized escalation narrative.'
+  - date: '2026-09-01'
+    project: reify
+    session: da6ca219-db10-45d4-9d62-a535c544269e
+    origin_phase: unknown
+    manifested_phase: review
+    note: 'User Corrections section labeled as user input but contains procedural task guidance (adjudication criteria, prior-round classification logic); turn reference ''(turn 3)'' conflicts with session metadata n_user_turns: 1, indicating cross-session context mislabeled as direct user correction'
 - id: entry-cand-20260721-2
   title: Cross-project memory context leaks assumed file paths into an unrelated worktree
   severity: medium
@@ -2736,6 +2797,18 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Turn 13: metadata.json missing from `.task/` directory in worktree, though plan.json exists. Suggests warm-lane task-meta initialization/path resolution placed it at wrong location (worktree root vs expected nested structure). Discovered during post-merge verification when agent probed metadata.'
+  - date: '2026-09-01'
+    project: reify
+    session: de620629-049d-4085-a03f-90d3f87509aa
+    origin_phase: architect
+    manifested_phase: implement
+    note: Warm-lane metadata discovery assumes .task-meta at root instead of under worktrees/; consistent with repeated path-not-found signals in _lane-20 worktree context
+  - date: '2026-09-01'
+    project: reify
+    session: fde00150-8597-46ec-bb94-7c32b6d04515
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Two not_found errors in warm-lanes worktree/_lane-35; .task-meta path likely assumed at warm-lanes root instead of under worktrees/
 - id: entry-cand-20260728-8
   title: Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees)
   severity: medium
@@ -2963,6 +3036,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Session probing .task/metadata.json and .task/plan.json in worktree, both return empty/unreadable (exit 1); pattern matches warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees), explaining why task-meta files are not where agent expects them
+  - date: '2026-09-01'
+    project: reify
+    session: 184d659e-2412-465f-9eb2-048d35c200e0
+    origin_phase: prd
+    manifested_phase: architect
+    note: Agent probed both .task/ (nested under worktree) and root plan.json (sibling); both paths missing, suggesting path-location confusion.
+  - date: '2026-09-01'
+    project: reify
+    session: fde00150-8597-46ec-bb94-7c32b6d04515
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees) consistent with two sequential not_found errors
 - id: entry-cand-20260714-3
   title: Watcher rearm invoked without DARK_FACTORY_ROOT despite explicit project-root injection
   severity: medium
@@ -3329,6 +3414,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Write({"content": "---\nname: project_warm_lane_resume_refault_leaked_checkout\n..."}) -> <tool_use_error>Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.</tool_use_error>'
+  - date: '2026-09-01'
+    project: reify
+    session: 5065b92c-82a9-454a-8d41-93438770d7f3
+    origin_phase: decompose
+    manifested_phase: verify
+    note: 'Turn 532: Write to project-scoped markdown memory file (/home/leo/.claude/projects/-home-leo-src-reify/memory/) failed with exit 1 AssertionError. Turn 589: Subsequent attempt to write observation via fused-memory MCP timed out. Sequence matches the conflation pattern of interactive auto-memory (markdown Write) with project fused-memory (MCP) writes.'
 - id: entry-cand-20260728-10
   title: Agent probes undocumented .task-meta/<lane>/iterations.jsonl path and gets exit code 2
   severity: medium
@@ -3789,6 +3880,36 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent probes /home/leo/src/warm-lanes/worktrees/_lane-24/.task/iterations.jsonl (exit 2); file missing entirely
+  - date: '2026-09-01'
+    project: reify
+    session: de620629-049d-4085-a03f-90d3f87509aa
+    origin_phase: architect
+    manifested_phase: implement
+    note: Agent probing .task-meta/<lane>/iterations.jsonl in warm-lanes worktree; 10 systematic not-found errors across turns 10,11,24,26,34,54,59,66,89,104 suggest path resolution or bootstrap incompleteness
+  - date: '2026-09-01'
+    project: reify
+    session: 184d659e-2412-465f-9eb2-048d35c200e0
+    origin_phase: prd
+    manifested_phase: architect
+    note: 'Turn 22 & 36: ls on .task/reviews/ and .task/ subdirs returned exit code 2 (I/O error on missing parent dir).'
+  - date: '2026-09-01'
+    project: reify
+    session: f17f2464-4cb7-45d5-9b86-184ac39f7237
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probes undocumented .task-meta path and encounters not-found; interactive agent in warm-lanes worktree
+  - date: '2026-09-01'
+    project: reify
+    session: fde00150-8597-46ec-bb94-7c32b6d04515
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probes undocumented .task-meta/<lane>/iterations.jsonl path; not_found errors align with attempt to read unlocated task-meta files
+  - date: '2026-09-01'
+    project: reify
+    session: 59dc8d57-d46a-47d4-a92d-dd0b5d26dddf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Same pattern as above (undocumented path probe); entry specifies exit code 2, actual session got exit 1
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -4062,6 +4183,36 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Per-lane task-meta iterations.jsonl absent at expected worktree path; all sibling files (metadata.json, plan.json, reviews/) also missing
+  - date: '2026-09-01'
+    project: reify
+    session: 04ff0513-0350-4309-9710-a1f6bebac429
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Orchestrated task agent in warm-lane worktree _lane-49 unable to locate per-lane task-meta files at expected paths: .task/metadata.json (turn 13), .task/plan.json (turns 15, 38), .task/iterations.jsonl (turn 17) all file-not-found; subsequent Bash command (turn 19) returned exit code 2'
+  - date: '2026-09-01'
+    project: reify
+    session: 184d659e-2412-465f-9eb2-048d35c200e0
+    origin_phase: prd
+    manifested_phase: architect
+    note: iterations.jsonl missing from .task/; agent attempted read at turn 17.
+  - date: '2026-09-01'
+    project: reify
+    session: f17f2464-4cb7-45d5-9b86-184ac39f7237
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Per-lane task-meta iterations.jsonl missing at expected path; session in warm-lanes worktree with 4 not-found events
+  - date: '2026-09-01'
+    project: reify
+    session: fde00150-8597-46ec-bb94-7c32b6d04515
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Per-lane task-meta iterations.jsonl missing at expected path; orchestrated-task hit not_found at turns 33 and 42 attempting file resolution
+  - date: '2026-09-01'
+    project: reify
+    session: 59dc8d57-d46a-47d4-a92d-dd0b5d26dddf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probed .task-meta/_lane-31/iterations.jsonl path; file not found, exit 1
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -4149,6 +4300,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Chained sleep+poll loops (x13, x9, x4, x55 retries) with identical commands and no progress increments; pattern consistent with anti-chaining guard interference or blocked polling chain.
+  - date: '2026-09-01'
+    project: reify
+    session: 46e186b5-e6d5-4d3f-b1eb-2814e06d20ba
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 252: agent attempted `sleep 90; echo done` to await background agent completion; anti-chaining guard fired with guidance to use Monitor or run_in_background instead'
 - id: entry-cand-20260719-7
   title: Warm-lane task bootstrap missing plan.json
   severity: medium
@@ -4255,6 +4412,12 @@ entries:
     origin_phase: architect
     manifested_phase: verify
     note: plan.json missing from warm-lane task metadata directory; agent diagnostic attempt failed trying to read task context
+  - date: '2026-09-01'
+    project: reify
+    session: 184d659e-2412-465f-9eb2-048d35c200e0
+    origin_phase: prd
+    manifested_phase: architect
+    note: Agent probed plan.json at both .task/ and root; both missing. Bootstrap incomplete.
 - id: entry-cand-20260719-8
   title: Sandbox blocks naive sleep+check polling chains
   severity: medium
@@ -4385,6 +4548,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Foreground cargo build spawned with timeout=1500000ms but killed by harness hard limit at 120s (exit 143 SIGTERM); real build error discarded
+  - date: '2026-09-01'
+    project: reify
+    session: 59dc8d57-d46a-47d4-a92d-dd0b5d26dddf
+    origin_phase: verify
+    manifested_phase: verify
+    note: cargo clippy timed out at 2 min (exit 143) twice despite timeout param increase from 900s→1800s; suggests ceiling guard blocking real error
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -14795,3 +14964,172 @@ candidates:
     origin_phase: implement
     manifested_phase: review
     evidence_quote: rotation_channel_adds_no_compute_contract_wire_field reads another crate's source file as text and asserts on raw substrings... comment-sensitive in both directions... does not actually enforce the stated guarantee — a field spelled rot_len, rotation_length, or pub(crate) rotation sails straight through. The real guarantee is already enforced behaviourally by the compute-contract crate's own byte-exact golden header test
+- id: cand-20260901-1
+  title: Workflow script syntax broken after patching model overrides
+  cause: Model-override injection into workflow script broke JavaScript function structure, leaving a return statement at module scope
+  area: workflow-scripting / prd-decompose
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: c3e4691f-f666-43cc-8568-ef4396899b42
+    origin_phase: decompose
+    manifested_phase: implement
+    evidence_quote: 'SyntaxError: Illegal return statement at prd-decompose-verify-cheap.mjs:362 after model pins patched into lines 41-42, 208, 251, 278, 312'
+- id: cand-20260901-2
+  title: fused-memory MCP operations timeout when called from non-dark-factory project
+  cause: fused-memory MCP server or dark-factory infrastructure not configured to handle task operations (add_dependency, get_task) with non-dark-factory project_root parameter
+  area: fused-memory / cross-project / mcp
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: c3e4691f-f666-43cc-8568-ef4396899b42
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: 'turn 521: add_dependency(id=7159, project_root=/home/leo/src/reify) → timeout; turn 976: get_task(id=7158, project_root=/home/leo/src/reify) → timeout'
+- id: cand-20260901-3
+  title: Dark-factory guard blocks /prd skill operations from non-dark-factory cwd
+  cause: df_guard enforces dark-factory project cwd for infrastructure skill operations; /prd invoked with cwd=/home/leo/src/reify triggers path-scope or context guard
+  area: skills / cross-project / guards
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: c3e4691f-f666-43cc-8568-ef4396899b42
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: 'turn 207: df_guard trip recorded while session cwd=/home/leo/src/reify and /prd decompose invoked'
+- id: cand-20260901-4
+  title: Warm-lane worktree agent assumes source tree structure accessible via relative paths from main project
+  cause: Agent operating from worktree cwd (/home/leo/src/warm-lanes/worktrees/_lane-1) attempts relative path navigation (cd gui/src-tauri/src) that only resolves from main project root
+  area: path-resolution
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 6997afab-7f3f-4579-bd3b-df89f0e387db
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'Turn 88: ''cd gui/src-tauri/src: No such file or directory'' from worktree; 6 total ''not found'' errors across turns 27,56,61,72,88,146'
+- id: cand-20260901-5
+  title: Architect assumes specific dependencies will fix RED test; both land successfully but test remains RED for unrelated reasons
+  cause: Architect misjudged root causes of test failures; wired dependencies that do not address the actual failing test dimensions
+  area: decomposition
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 04ff0513-0350-4309-9710-a1f6bebac429
+    origin_phase: decompose
+    manifested_phase: verify
+    evidence_quote: 'Task 5789 correction (turn 3): κ (PR #5784, d91a16d12c) and λ (PR #5788, 2d24e300e3) both merged; premise ''both landing makes test GREEN'' proven false at HEAD. 14 of 52 NAMED_DIMENSIONS still fail across three independent failure classes (A: Ampere unresolvable in compound position, 11 dims; B: Candela...; C: additional), none addressed by the wired dependencies'
+- id: cand-20260901-6
+  title: Memory routing ambiguity for cross-project escalations
+  cause: Unclear which memory system (project-scoped reify memory vs. dark-factory fused-memory) should store findings when an escalation spans multiple projects. Agent attempted write to reify project-scoped directory, then attempted write to dark-factory fused-memory, both failed/timed out.
+  area: escalation handling, cross-project coordination, memory system boundaries
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 5065b92c-82a9-454a-8d41-93438770d7f3
+    origin_phase: decompose
+    manifested_phase: verify
+    evidence_quote: Turn 532 Write failure (AssertionError) to /home/leo/.claude/projects/-home-leo-src-reify/memory/ + Turn 589 fused-memory timeout attempting to document findings for esc-7076-1/esc-7077-1 (dark-factory escalations investigating reify parameters). Session involves forensic agents spanning both projects.
+- id: cand-20260901-7
+  title: Warm-lane orchestrated task spirals on missing bootstrap without recovery, triggering hard orchestrator timeout
+  cause: When bootstrap files (.task/metadata.json, .task/plan.json, .task/iterations.jsonl) are absent, the agent enters a long diagnostic-probing loop (78 turns, 2.5M ms) without a fallback recovery path or early signal to escalate.
+  area: warm-lanes bootstrap & task planning
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 184d659e-2412-465f-9eb2-048d35c200e0
+    origin_phase: prd
+    manifested_phase: architect
+    evidence_quote: 'Planning failed: agent timed out after 2527958ms with 78 transcript turns (productive); subtype=''error_timeout_killed_with_progress''. Agent repeatedly probed missing .task/* paths (turns 13, 15, 17, 22, 36) without surfacing bootstrap failure to orchestrator.'
+- id: cand-20260901-8
+  title: Task worktree project structure incomplete or misaligned with agent assumptions
+  cause: 'Agent assumes relative path crates/reify-eval/tests/harness_kernel_realization exists from warm-lanes task worktree root, but path does not exist. Likely causes: (1) task worktree wasn''t fully provisioned/synced, (2) project layout in task differs from parent, (3) agent inherited stale cwd context from parent session.'
+  area: warm-lanes task initialization, path resolution, worktree provisioning
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 81f55a4f-f7e2-4ed2-afbf-a1fc8e3fc2c7
+    origin_phase: architect
+    manifested_phase: implement
+    evidence_quote: 'Turns 45–46: cd crates/reify-eval/tests/harness_kernel_realization: No such file or directory (exit 1) from cwd /home/leo/src/warm-lanes/worktrees/_lane-44; repeated twice in sequence suggesting path confusion rather than one-off typo'
+- id: cand-20260901-9
+  title: Review verdict field deserialization schema mismatch
+  cause: verdict field in review_state.json is serialized as a string rather than dict, causing AttributeError when parser invokes .get('issues',[]) on a string object
+  area: review/verdict-state-handling
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 89c929f5-d195-4009-85a8-22faf51af6eb
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'AttributeError: ''str'' object has no attribute ''get'' at d.get(''verdict'',{}).get(''issues'',[]); review_state.json top keys=[''reviewer'', ''verdict'', ''issues'', ''summary''] suggests schema drift where verdict is not nested under a container'
+- id: cand-20260901-10
+  title: MCP envelope markup leaked into add_memory content field
+  cause: Agent serialized part of its own tool-call envelope or XML-like structured markup (contains closing tag </content>) when writing memory about task state
+  area: Memory operations / tool parameter encoding
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 46e186b5-e6d5-4d3f-b1eb-2814e06d20ba
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Turn 979: add_memory rejected with ''it carries raw MCP envelope markup in ''content'''', misclose ''</content>'', recovered from repaired_call after automatic extraction; agent was documenting task 6877 pending-state diagnostic'
+- id: cand-20260901-11
+  title: Warm-lanes automated agent iterates .task-meta path 4x before succeeding or yielding
+  cause: Agent or watcher subprocess spawned in warm-lanes worktree lacks path context or permission to resolve task-meta sibling/nested ambiguity; retries probe path variants without escalating
+  area: warm-lanes orchestration, path resolution
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: f17f2464-4cb7-45d5-9b86-184ac39f7237
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'cwd: /home/leo/src/warm-lanes/worktrees/_lane-2, agent_class: interactive, 4× not_found signals across turns 24,35,41,50, no self_correct or tool_error'
+- id: cand-20260901-12
+  title: Agent passes literal MCP markup into memory content without allow_mcp_markup override
+  cause: Capability manifest audit output (grep-kind delivered_checks) copied directly into add_memory content field, containing literal </content> tags that created MCP boundary ambiguity
+  area: fused-memory MCP tool usage; memory writing; structured output handling
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: f1f0fc49-1012-4b78-8c11-50db752e64d9
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'content carries raw MCP envelope markup whose own boundary cannot be determined... matched_pattern: </content>'
+- id: cand-20260901-13
+  title: Agent serializes MCP envelope markup into tool-call field payloads
+  cause: Agent's tool-call serialization inadvertently includes XML wrapper tags (</invoke>, </rationale>) in field values, likely from direct string construction or copying text that includes examples/samples with markup.
+  area: tool-serialization / MCP-markup-handling
+  first_seen: '2026-09-01'
+  disposition: pending
+  sightings:
+  - date: '2026-09-01'
+    project: reify
+    session: 33717f43-dd0b-49bd-a7bc-0316f3375554
+    origin_phase: implement
+    manifested_phase: verify
+    evidence_quote: 'Three consecutive add_design_decision calls (turns 279, 292, 300) rejected with: ''Tool call rejected: it carries raw MCP envelope markup in ''rationale''... matched_pattern: </invoke>, </rationale>''. Tool reports ''caller serialized part of its own tool-call envelope into the payload.'' Errors offer repaired_call with markup stripped but no evidence agent resubmitted.'
