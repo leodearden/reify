@@ -970,12 +970,15 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // otherwise unmarked debt → untracked.
             //
             // The malformed-cite branch is deliberate. §8.3 defines that trigger
-            // LANE-INDEPENDENTLY, and three of this lane's live findings are
+            // LANE-INDEPENDENTLY, and three of this lane's live findings WERE
             // `// production wiring deferred to task 4050 (…)`
-            // (crates/reify-eval/src/engine_build.rs:2199/2278/2292) — the legacy
-            // `task NNNN` form. Collapsing them into `untracked` would report an
-            // author who cited imprecisely at High (hard gate) where §8.4 rates a
-            // malformed cite Medium (advisory).
+            // (crates/reify-eval/src/engine_build.rs:2199/2278/2292, as measured
+            // for #6087) — the legacy `task NNNN` form. Task #6934 later deleted
+            // those three attributes outright, the wiring having already landed,
+            // so the shape has no live instance today. The branch stays because
+            // collapsing such a cite into `untracked` would report an author who
+            // cited imprecisely at High (hard gate) where §8.4 rates a malformed
+            // cite Medium (advisory).
             //
             // The γ `#[ignore]` arm (2) above does NOT have this branch. That is
             // a divergence, not a precedent to copy: γ's reason policy is
@@ -2454,9 +2457,14 @@ mod tests {
     /// `malformed-cite`, not `untracked` — the arm mirrors arm (3)'s three-way
     /// split, and §8.3 defines the malformed-cite trigger lane-independently.
     ///
-    /// This is the live shape at `crates/reify-eval/src/engine_build.rs:2199`
+    /// This WAS the live shape at `crates/reify-eval/src/engine_build.rs:2199`
     /// (also `:2278`, `:2292` — 3 of the lane's 14 live findings, 1 of the 5
-    /// seeded baseline fingerprints), pinned VERBATIM. The kind drives severity:
+    /// seeded baseline fingerprints, as measured for #6087) until task #6934
+    /// deleted those three attributes, the wiring having already landed. The
+    /// literal below stays pinned VERBATIM regardless: it pins the GRAMMAR, not
+    /// the tree, and remains load-bearing now that no live instance exists —
+    /// exactly as the (A′) validate_* tests stayed meaningful across an
+    /// empty→non-empty baseline. The kind drives severity:
     /// `malformed-cite` is Medium/advisory per §8.4 whereas `untracked` is High
     /// and hard-fails the merge gate, so a silent flip here would change what a
     /// merge does, not just what it prints.
