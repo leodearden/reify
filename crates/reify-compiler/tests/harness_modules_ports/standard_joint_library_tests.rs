@@ -228,22 +228,23 @@ fn ball_joint_definition_is_self_check_clean() {
 // The (b) `spherical` / `ball` tests above assert the ABSENCE of a diagnostic.
 // That oracle is satisfiable two ways: the verdict was computed and matched, or
 // the verdict was never computed at all. The second way is a live failure mode —
-// `resolve_type_expr_with_aliases` returns `None` with NO diagnostic for an
-// unknown bare type name, `compile_joint_self_check` maps that to `Type::Error`,
-// and the verdict gate treats `Type::Error` as "already diagnosed elsewhere" and
-// sets `skip_verdict` without emitting anything (anti-cascade). A joint written
-// `with orientation: Orientation` therefore produced BYTE-IDENTICAL silence to
-// one written `with orientation: Blorp`.
+// an unresolvable DOF type name degrades to `Type::Error` and the §7.1 verdict
+// gate then sets `skip_verdict` and emits NOTHING (anti-cascade), so a joint
+// written `with orientation: Orientation` produced BYTE-IDENTICAL silence to one
+// written `with orientation: Blorp`. The full chain, and why the resolver arm
+// closing it is the fix, is stated once in the "Orientation type-name
+// resolution" header of `type_resolution.rs`'s `mod tests`.
 //
-// So "zero diagnostics of any code" is NOT a usable non-vacuity oracle here: it
-// is satisfied *by* the defect. These companions use a positive/mutation oracle
-// instead — declare an orientation-bearing DOF the body cannot satisfy and
-// require the mismatch to fire naming `declared N rotational free DOF` with
-// N ≥ 3. That phrase is produced only by `describe_declared` inside
-// `check_joint_dof`, which the skip path never reaches, and N ≥ 3 requires
-// `dof_kind_of` to have classified `Type::Orientation(3)` as (3 rot, 0 trans).
-// It is therefore unsatisfiable unless the surface name `Orientation` really
-// resolves and really flows into the classifier.
+// ORACLE CHOICE — the consequence for THIS file. "Zero diagnostics of any code"
+// is not a usable non-vacuity oracle here: it is satisfied *by* the defect.
+// These companions use a positive/mutation oracle instead — declare an
+// orientation-bearing DOF the body cannot satisfy and require the mismatch to
+// fire naming `declared N rotational free DOF` with N ≥ 3. That phrase is
+// produced only by `describe_declared` inside `check_joint_dof`, which the skip
+// path never reaches, and N ≥ 3 requires `dof_kind_of` to have classified
+// `Type::Orientation(3)` as (3 rot, 0 trans). It is therefore unsatisfiable
+// unless the surface name `Orientation` really resolves and really flows into
+// the classifier.
 
 /// Assert that `source` draws EXACTLY ONE `E_JOINT_DOF_MISMATCH` whose message
 /// names both `declared_phrase` (from `describe_declared`) and
