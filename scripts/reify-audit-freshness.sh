@@ -222,13 +222,34 @@ reify_audit_guard() {
         # Only the literal "1" arms it; unset/empty/"0"/"true" all leave the
         # default fail-open in force (the `[ "${VAR:-0}" = "1" ]` idiom already
         # used for REIFY_AUDIT_NO_COLD_BUILD above).
+        # MESSAGE DESIGN.  Every form below is read by a human (or an agent)
+        # triaging a blocked done-flip, through dark-factory's 2000-char
+        # stderr clip.  Modelled on the IndexRefusal Display in
+        # crates/reify-audit/src/jcodemunch_index.rs:592-620:
+        # "{code}: <what> — <observed values> — <remedy>", token first.
+        # Each states (1) that this is BINARY FRESHNESS infrastructure and NOT
+        # an audit finding — the three escalations this replaced all blamed
+        # metadata.files / done_provenance instead; (2) the exact one-line
+        # fix; (3) the two observed numbers.  The rc-125 forms additionally
+        # name the blast radius; the rc-0 advisory must NOT, because nothing
+        # is blocked there.
+        local _not_a_finding="This is a reify-audit BINARY FRESHNESS condition from scripts/reify-audit-freshness.sh — it is infrastructure, NOT an audit finding: it is not about metadata.files and not about the done_provenance ancestor check."
+        # Keep the substring "reinstall with: cargo install ..." verbatim:
+        # scripts/deploy-reify-audit-predone-hook.sh greps for it.
+        local _remedy="Fix: reinstall with: cargo install --path crates/reify-audit --root ~/.cargo --force"
+        local _blast="BLOCKING: this exit 125 blocks EVERY done-flip in this project until fixed."
+
         if [ -x "$bin" ] && [ "${REIFY_AUDIT_FRESHNESS_STRICT:-0}" != "1" ]; then
             # Fail OPEN: run the STALE detector rather than no detector.  It
             # still gates on its own findings; only the freshness guard steps
             # aside.  That is strictly the pre-existing risk profile of the
             # binary already installed, and a far weaker risk than a
             # project-wide inability to mark work done.
-            echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch)." >&2
+            echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch).
+$_not_a_finding
+FAILING OPEN: running the stale detector anyway so done-flips are not blocked project-wide.
+$_remedy
+Set REIFY_AUDIT_FRESHNESS_STRICT=1 to refuse instead of falling open." >&2
             return 0
         fi
 
@@ -237,13 +258,19 @@ reify_audit_guard() {
         # misread "the operator chose strict" as "no binary on disk".
         if [ -x "$bin" ]; then
             # Present and runnable — merely old — and strict is armed.
-            echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch); REIFY_AUDIT_FRESHNESS_STRICT=1 is set, refusing rather than falling open." >&2
+            echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch); REIFY_AUDIT_FRESHNESS_STRICT=1 is set, refusing rather than falling open.
+$_not_a_finding
+$_blast Unset REIFY_AUDIT_FRESHNESS_STRICT to fall open instead.
+$_remedy" >&2
             return 125
         fi
         # Nothing runnable on disk.  Falling open here would exec nothing and
         # block the flip anyway, with a worse, less diagnosable rc — so
         # refusing is the only honest answer.
-        echo "$REIFY_AUDIT_E_BIN_MISSING: no runnable reify-audit at '$bin'." >&2
+        echo "$REIFY_AUDIT_E_BIN_MISSING: no runnable reify-audit at '$bin' (crate commit epoch $epoch); there is nothing to fall open onto.
+$_not_a_finding
+$_blast
+$_remedy" >&2
         return 125
     fi
 
