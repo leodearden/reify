@@ -544,9 +544,15 @@ fn tessellate_dev_capstan() -> TessellateResult {
 ///     first, in every test at once, under a message about evaluation or geometry
 ///     that is false for that failure, and it shadows the diagnosis
 ///     [`assert_constraints_ok`] exists to give (WHICH relation, at what
-///     strictness). Verified by mutation: shortening `Fairlead.stroke` past the
-///     band took all three OCCT gates down in the fixture rather than failing the
-///     satisfaction claim;
+///     strictness). Verified by mutation with the routing IN place — shortening
+///     `Fairlead.stroke` to 50 mm, below the 60.35 mm band, fails the four gates
+///     that make a coverage or satisfaction claim, each naming the relation,
+///     while the two pure-geometry OCCT gates
+///     (`capstan_seat_admits_the_rope_radially`,
+///     `capstan_seat_volume_delta_matches_half_pi_r2_l`) stay GREEN. Keeping
+///     those two green is the whole point: without the routing the fixture
+///     panics first and takes them down with it, under a message about geometry
+///     that has nothing to do with the relation that broke;
 ///   * `Indeterminate` → a `Diagnostic::warning`
 ///     (`DiagnosticCode::ConstraintIndeterminate`), which no `Severity::Error`
 ///     filter in this module can see at all.
@@ -1489,12 +1495,10 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
         Some(CAPSTAN_DRIVE_ENTITY),
         Strictness::AllSatisfied,
         "the kernel-free check surface",
-        "`Violated` means the shuttle's stroke no longer covers the capstan's band \
-         migration — the fairlead runs out of travel before the wrap band does. \
-         `Indeterminate` means something quite different, and is why this scope is \
-         read at `AllSatisfied`: it is what a cross-sub field reference produces \
-         when it fails to EVALUATE, so the constraint is present but checking \
-         nothing.",
+        "Here `Violated` means the shuttle's stroke no longer covers the capstan's \
+         band migration — the fairlead runs out of travel before the wrap band does \
+         — and `Indeterminate` would mean the cross-sub field reference stopped \
+         resolving, which is why this scope is read at `AllSatisfied`.",
     );
 
     // ---- (2) …the checker evaluated every constraint the template declares ----
@@ -1561,7 +1565,7 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
 ///   * Non-emptiness is the half that is genuinely uncovered otherwise. An empty
 ///     `constraint_results` emits NO diagnostic, so the fixture cannot see it,
 ///     and every other kernel-free gate here quantifies over a subset: claim (2)
-///     of `capstan_drive_constrains_the_shuttle_to_cover_the_band` counts only
+///     of `capstan_drive_constrains_the_shuttle_to_cover_the_band` covers only
 ///     `CapstanDrive` results, and
 ///     `capstan_active_band_is_covered_by_the_fairlead_stroke` reads value cells
 ///     rather than constraints. `capstan_surfaces_only_the_finished_drum` does
