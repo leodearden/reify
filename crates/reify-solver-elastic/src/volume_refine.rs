@@ -447,8 +447,7 @@ pub(crate) fn refine_with_size_field_validated(
     }
 
     // Project per-element hints → per-volume-vertex sizes (conservative min).
-    let vol_vertex_sizes =
-        project_per_element_sizes_to_vertices(volume_mesh, shape, size_hints);
+    let vol_vertex_sizes = project_per_element_sizes_to_vertices(volume_mesh, shape, size_hints);
 
     // Map per-volume-vertex sizes → per-surface-vertex sizes.
     //
