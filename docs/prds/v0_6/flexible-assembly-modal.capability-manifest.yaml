@@ -1,0 +1,902 @@
+prd: docs/prds/v0_6/flexible-assembly-modal.md
+schema_version: 1
+tasks:
+- label: A1
+  task_id: 7142
+  title: 'flexible-modal A1: modal_analysis body-arg overload — real posed VolumeMesh
+    through realization_inputs + loud kernel-absent refusal'
+  capabilities:
+  - name: body-arg-overload-precedent-wired-on-main
+    binding: 'capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      the exact twin exists and is production-dispatched: solve_elastic_static(material
+      : ConstitutiveLaw, body : Solid, loads, supports, options) in crates/reify-compiler/stdlib/solver_elastic.ri,
+      @optimized("solver::elastic_static"), sharing one Rust trampoline with the dims
+      overloads and selecting the body layout by branching on the Value shape of arg
+      1 (Value::GeometryHandle). A1 copies this dispatch shape for modal.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: body\s*:\s*Solid
+      paths:
+      - crates/reify-compiler/stdlib/modal_analysis_fns.ri
+      expect: present
+  - name: realization-input-channel-is-n-ary-today
+    binding: capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      Engine::build_compute_realization_inputs (crates/reify-eval/src/engine_compute.rs)
+      scans ALL geometry args, dedups by realization_ref, and keeps inputs/handles
+      1:1 and arg-ordered; realization_indices_where (engine_build.rs) computes per-arg
+      demand. The channel is not missing — the four modal trampolines simply bind
+      _realization_inputs UNUSED (modal_ops.rs), which is the gap A1 closes.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main; asserting it as a delivered check
+        would be vacuous. The behavioural cover is B13 (a body at two placements gives
+        an identical spectrum with placement-transformed shapes), which cannot pass
+        unless the realized mesh is actually consumed.
+  - name: modal-target-volume-mesh-demand-registered
+    binding: 'anti-orphan (measured absent 2026-09-01) — Engine::register_volume_mesh_demand
+      (crates/reify-eval/src/engine_admin.rs) has exactly TWO production call sites,
+      both in crates/reify-eval/src/compute_targets/mod.rs: "solver::elastic_static"
+      and "solver::multi_case". No modal target is registered anywhere. A1 registers
+      it; without that registration no realization artifact ever reaches the modal
+      trampoline.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: register_volume_mesh_demand\("modal
+      paths:
+      - crates/reify-eval/src/compute_targets/mod.rs
+      expect: present
+  - name: p2-promotion-already-on-the-modal-path
+    binding: 'capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      promote_beam_mesh_to_p2 (crates/reify-eval/src/modal_ops.rs) has a PRODUCTION
+      call site under ElementOrder::P2, delegating to promote_tets_to_p2. P2 is mandatory
+      on the modal path: P1-tet bending lock is 9-11% on slender members per this
+      repo''s modal_benchmarks record, so a P1 body-arg path would miss every band
+      this PRD later asserts.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main. The behavioural cover is B12 (twin
+        equivalence against the dims overload), which a P1 body-arg path could not
+        pass.
+  - name: boundary-association-rides-inside-volumemesh
+    binding: 'capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      VolumeMesh.boundary : Option<BoundaryAssociation> (crates/reify-ir/src/geometry.rs)
+      rides through store_volume_mesh -> volume_mesh read-back -> RealizedContent::VolumeMesh
+      and surfaces via RealizationReadHandle::boundary(). There is no sibling boundary
+      channel to plumb — a design that assumed one would be a fiction, and this binding
+      retires that risk.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: structural substrate fact; asserting it as a delivered check would be
+        vacuous.
+  - name: pose-chain-decision-is-upstream-not-redecided-here
+    binding: 'capability->producer (upstream task) + DAG-direction — measured 2026-09-01:
+      realization artifacts are LOCAL-FRAME. compose_pose_chain / GeometryOp::ApplyTransform
+      run only inside walk_placed_realizations (crates/reify-eval/src/geometry_ops.rs)
+      and the placed handle is never inserted into Engine::realization_handles (whose
+      only writer is the Phase-A build insert in engine_build.rs). Baking vs threading
+      the pose chain is PRD 1 leaf beta''s tactical call; A1 REUSES it. DAG-direction
+      PASS: A1 depends_on PRD 1 beta (real edge wired at decompose).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the chosen pose mechanism does not exist until PRD 1 beta lands, so
+        any grep pattern authored now would be a guess — the esc-6739-1 false-red
+        shape. Behavioural cover: B13 pose invariance.'
+  - name: kernel-absent-refusal-fires-observably
+    binding: 'rejection-mechanism (G6 branch 4) + capability->producer (upstream task)
+      — measured 2026-08-31 in #6660: gmsh is a dev-dependency of reify-eval ONLY,
+      no author binary links it, and a kernel-absent body solve returns a HOLLOW Converged
+      today. That is precisely the silent-accept this signal asserts against. #6660
+      owns both halves (link + register in CLI/GUI; refuse loudly when kernel-absent)
+      and is upstream: A1 depends_on 6660 (real edge wired at decompose). B19 must
+      OBSERVE the Error diagnostic — an exit-0 "All constraints satisfied." with no
+      diagnostic is a FAILURE of this capability, never a pass.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a rejection capability must be OBSERVED firing, not grepped: a grep
+        for the diagnostic''s name would go green on the string literal that declares
+        it while the arm stays unreachable. B19 is the observing test, and its wording
+        is coordinated with #6660''s own acceptance.'
+  - name: modal-options-full-shape-flag-and-storage-format
+    binding: PRD C7 + Open Q 5 — the opt-in full-per-node-shape flag and its storage
+      format (realization-side artifact vs in-value arrays) had NO leaf of its own
+      in PRD §9; assigned to A1 at decompose (the single-body path is where the format
+      is first exercised). Per-member attribution inside merged groups is assigned
+      to B2. Default stays the per-body reduced record, so the flag adds no cost to
+      the common path.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a design-assignment record, not a substrate claim; the deliverable is
+        covered by A1's own signal.
+- label: A2
+  task_id: 7143
+  title: 'flexible-modal A2: selector-typed supports on the modal path — BCs resolve
+    to node sets through the #5313 seam'
+  capabilities:
+  - name: selector-to-node-set-seam-is-upstream-not-present
+    binding: 'capability->producer (upstream task) + DAG-direction — measured 2026-09-01:
+      the seam has both halves and NO middle. FixedSupport / PinnedSupport declare
+      `target : String = ""` (crates/reify-compiler/stdlib/fea_multi_case.ri, comments
+      calling it a placeholder pending a Selector migration). Consume half: target_node_set,
+      called from loads_supports_to_bc_node_sets (crates/reify-eval/src/compute_targets/elastic_static.rs),
+      expects a Value::List of Value::GeometryHandle. Produce half: build_face_anchors
+      / resolve_selector_faces (crates/reify-eval/src/compute_targets/bc_resolve.rs)
+      — whose ONLY callers are its own #[cfg(test)] module. Nothing in production
+      populates a target field from the .ri-declared String into the List<GeometryHandle>
+      shape; the only place that shape exists is hand-built test StructureInstanceData.
+      So the String -> Selector flip is genuinely absent, is owned by #5312 (Bmig2)
+      / #5313 (Bmig2-consume), and A2 CONSUMES it. DAG-direction PASS: A2 depends_on
+      5312 and 5313 (real edges wired at decompose).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the migrated field type and resolution path do not exist until #5312/#5313
+        land, so a grep authored now would guess their shape. Behavioural cover: A2''s
+        own signal (changing the selected face changes the constrained set and the
+        spectrum) plus #4371 BT4, the migration''s own two-way gate.'
+  - name: bc-fidelity-inherited-never-silently-absorbed
+    binding: 'G6 premise scoping — #6663 (two-FixedSupport pin-collapse: two fully
+      fixed end faces produce the pinned-pinned answer, BIT-IDENTICAL to two PinnedSupports,
+      at 0.43x the clamped-clamped analytic value) is in-progress and owned there;
+      #6729 owns retiring the analytic x4 workaround. A2''s signal deliberately asserts
+      NO absolute BC accuracy — only that the selector determines WHICH node set is
+      constrained. No numeric floor is therefore exposed (G6 branch 1 not triggered).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a scoping decision recorded so a later reader does not mistake A2 for
+        a BC fidelity fix.
+- label: A3
+  task_id: 7097
+  title: 'flexible-modal A3 (adopted #7097): converge ModalResult.part on the GeometryHandleRef
+    join key + resolve the undeclared .topology write'
+  capabilities:
+  - name: join-key-channel-exists-and-is-populated
+    binding: 'capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      CarriedTopology { part : GeometryHandleRef, node_coords, face_normals, boundary
+      } (crates/reify-eval/src/compute_targets/result_topology.rs, task #4654 done)
+      is the identity channel .part converges ON. It is real and populated on the
+      elastic path; the modal path simply never reaches it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main.
+  - name: modal-result-part-topology-are-sentinels-today
+    binding: 'field-population (empty-value sentinel; measured 2026-09-01) — ModalResult.part
+      is populated by placeholder_part() (crates/reify-eval/src/modal_ops.rs): a well-formed,
+      ZERO-FIELD Part StructureInstance carrying the sentinel StructureTypeId(u32::MAX),
+      which a reader cannot distinguish from real data. ModalResult.topology is written
+      by the engine WITHOUT being declared in crates/reify-compiler/stdlib/modal_analysis.ri
+      (legal only via the u32::MAX validation bypass) and build_modal_topology_value()
+      returns Value::Undef unconditionally. A four-agent census (2026-08-31) found
+      ZERO readers across the .ri corpus, Rust production, GUI and LSP. This is the
+      defect A3 fixes, bound here so it is not mistaken for delivered substrate.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GeometryHandleRef
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+      expect: present
+  - name: real-handle-only-reachable-after-a1
+    binding: 'capability->producer (upstream task) + DAG-direction — a real GeometryHandleRef
+      exists on the modal path only once the body-arg overload realizes a real posed
+      mesh. DAG-direction PASS: A3 depends_on A1. The dims overload has NO body handle,
+      so its honest form stays the vacuity PRD''s C2-prime degraded/Undef one — A3
+      must not fabricate an identity there.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ordering fact; enforced by the wired edge, not by a pattern.
+  - name: allowlist-entries-retire-only-after-both-paths-are-honest
+    binding: 'DAG-direction + cross-PRD ownership — the PVAC allowlist entries (ModalResult.part,
+      ForcingTimeHistory.part, DisplacementTimeHistory.part, the run_transient_response
+      re-echo row) and the .topology undeclared-write registry entry are SHARED between
+      the graph path (PRD 1 leaf zeta) and this single-body path. A3 is the diff that
+      deletes them, so it is ordered AFTER PRD 1 zeta (real edge wired at decompose).
+      The inverse edge is forbidden: docs/prds/v0_6/result-field-vacuity-closure.md
+      requires the OWNER to be LIVE, so no vacuity leaf may depend on this task.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-store ordering plus an allowlist-deletion judgment; the behavioural
+        cover is B20 and the continuous cover is the PVAC gate's own owner-liveness
+        mode.
+  - name: adoption-not-duplication
+    binding: 'anti-duplication — #7097 was filed by the vacuity PRD''s decompose explicitly
+      inviting adoption ("coordinate there, do not double-own the modal capability").
+      It is ADOPTED as leaf A3 rather than duplicated by a fresh task, so the PVAC
+      gate keeps reading exactly ONE live owner id. Filing a new A3 would have left
+      #7097 deferred forever as a phantom owner.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'task-store fact, recorded in #7097''s own metadata.adopted_from.'
+- label: A4
+  task_id: 7144
+  title: 'flexible-modal A4: rung-2 exemplar — real-geometry part modal (gantry-tube-shaped)'
+  capabilities:
+  - name: best-practices-corpus-is-auto-compile-gated
+    binding: capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      the examples-smoke harness (crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs)
+      recursively discovers every *.ri under examples/ and compiles each via compile_with_stdlib;
+      a skip requires a mandatory reason. So a committed exemplar really is CI-gated,
+      which is what makes it a legitimate G2 stand-in consumer.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main.
+  - name: index-corpus-bidirectional-guard-forces-same-diff
+    binding: 'capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      best_practices_index_matches_corpus_directory, in that same harness, enforces
+      BIDIRECTIONAL correspondence between examples/best_practices/*.ri and INDEX.md.
+      The INDEX.md line therefore cannot drift from the exemplar: it lands in the
+      same diff or the gate reds.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: modal
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: real-solid-modal-is-producer-upstream
+    binding: 'capability->producer (upstream tasks) + DAG-direction — the exemplar
+      can only solve a real solid once A1 (body-arg overload), A2 (selector BCs) and
+      A3 (populated identity) have landed. DAG-direction PASS: A4 depends_on A1, A2,
+      A3.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ordering fact; enforced by the wired edges.
+- label: M-A
+  task_id: 7146
+  title: '[MILESTONE] flexible-modal M-A: rung-2 dogfood notification (DO NOT IMPLEMENT)'
+  capabilities:
+  - name: dep-gated-milestone-shape
+    binding: 'routing declaration (the #6626 convention) — task_kind=deterministic,
+      metadata.execution_class=decision, metadata.always_escalates=true. Dispatch
+      action IS the born-at-L2 escalation; no agent is spawned and no worktree is
+      taken. Filed PENDING with real dependency edges (A1, A2, A3, A4) rather than
+      as a deferred bookmark, per the bookmark-pattern rule: a dep-gated trigger is
+      a milestone, and a deferred bookmark nobody polls would rot.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is an escalation, not a repository artifact; nothing
+        in the tree changes when it fires.
+- label: π
+  task_id: 7145
+  title: 'flexible-modal π: scale measurement (numbers only, no bound)'
+  capabilities:
+  - name: no-numeric-bound-asserted-by-construction
+    binding: G6 branch 1 — DELIBERATELY NOT TRIGGERED. PRD decision 5 (measure before
+      bounding) makes this leaf's signal a RECORDED NUMBERS TABLE with no pass/fail
+      assertion, precisely so that later bounds cite a measurement instead of a guess.
+      This is the esc-3453 prevention applied prospectively (a guessed 5% buckling
+      bound met a 9-10% bending-lock floor; the fixture comment claiming "Tuned" was
+      aspirational).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the absence of an assertion is the deliverable's defining property;
+        a mechanical check cannot express it without forbidding legitimate prose.
+  - name: measurements-directory-is-the-tracked-convention
+    binding: capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      docs/measurements/ exists and is tracked, holding docs/measurements/fea-decomposition-selection.md
+      as the shape to imitate.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: shift-invert|shift_invert
+      paths:
+      - docs/measurements
+      expect: present
+  - name: sparse-path-is-the-thing-measured
+    binding: 'capability->producer (substrate, wired-on-main) — solve_eigen_shift_invert
+      (crates/reify-solver-elastic/src/eigensolve.rs) is real and mesh-agnostic, so
+      the sparse path can be measured today at whatever scale meshing allows. Context
+      datum: dense QZ at 864 DOF ~ 25 s (modal_benchmarks); known hazards to RECORD
+      rather than hide are the 550 s single dims eval (2026-08-27 probe note) and
+      gmsh fill-fraction defects (#6200 class).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact; the deliverable is the recorded table.
+- label: B1
+  task_id: 7152
+  title: 'flexible-modal B1: region -> 6-DOF port-frame reduction + region typing
+    fix + active-patch derivation'
+  capabilities:
+  - name: face-selector-is-not-geometry-typed
+    binding: 'MEASURED 2026-09-01 against target/release/reify (probe fixtures in
+      /tmp/prd-gate-fixtures/, ephemeral per tests/prd-gate/README.md). `param region
+      : Geometry = face(plate, "top")` on a PLAIN structure param yields exactly:
+      "warning: param ''region'' has type ''Geometry'' but its default expression
+      has non-geometry type ''FaceSelector''", exit 0. Corroborated statically: topology_selector_result_type
+      (crates/reify-compiler/src/units.rs) maps "face" -> Type::Selector(SelectorKind::Face).
+      So RegionPort.region : Geometry (crates/reify-compiler/stdlib/ports.ri) CANNOT
+      hold a face selector type-correctly.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Selector
+      paths:
+      - crates/reify-compiler/stdlib/ports.ri
+      expect: present
+  - name: port-param-default-typecheck-is-silent-hole
+    binding: 'rejection-mechanism (G6 branch 4, NEGATIVE-ASSERTION SENTINEL FIRED)
+      — MEASURED 2026-09-01: the same `param region : Geometry = face(plate,"top")`
+      declaration placed INSIDE a `port` block yields "All constraints satisfied.",
+      exit 0, ZERO diagnostics; and `param region : Geometry = 5mm` inside a port
+      block is likewise silent while its plain twin warns. So RegionPort.region only
+      "works" today through this silence. IMPORTANT DISCREPANCY recorded for the implementer:
+      a static read says check_param_default_type (crates/reify-compiler/src/entity.rs)
+      IS invoked from a site labelled the port-member declared-vs-initializer check
+      — yet it demonstrably does not fire for port members. Drive this from the probes,
+      not from the call graph. The HOLE ITSELF is not owned here — the PRD-1 decompose
+      filed it as #7174 (with its sibling #7175, connect direction checking skipped
+      for dotted sub-port connections), and B1 is deliberately NOT dep-gated on #7174
+      because the region typing fix stands on its own; B1 fixes the region''s TYPE
+      so the path is type-correct rather than shipping through the silence.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the general conformance fix is out of scope for B1, so a check asserting
+        the hole is closed would bind the wrong deliverable. B1's own cover is the
+        region typing check above plus B14/B23.
+  - name: sixdof-spring-and-congruence-reduction-are-upstream
+    binding: 'capability->producer (upstream task) + DAG-direction — MEASURED ABSENT
+      on main 2026-09-01: add_joint_stiffness (crates/reify-solver-elastic/src/joint_stiffness.rs)
+      is scalar-diagonal-only (JointStiffness { dof, stiffness }; K[dof,dof] += k),
+      and apply_mpc_row_elimination (crates/reify-solver-elastic/src/mpc.rs) touches
+      only K and f — a workspace-wide search found NO congruence reduction over the
+      mass matrix (the only congruences present are element-local K rotations in shell_assembly.rs,
+      membrane_cst.rs and geometric_stiffness/membrane.rs). Both are PRD 1 leaf delta''s
+      deliverables. DAG-direction PASS: B1 depends_on PRD 1 delta and epsilon (real
+      edges wired at decompose).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the 6-DOF element does not exist until PRD 1 delta lands; a pattern
+        authored now would guess its symbol name. Behavioural cover: B14 rigid-limit
+        exactness.'
+  - name: rigid-limit-claim-is-relative-not-an-absolute-accuracy
+    binding: G6 branch 1 — B14 asserts agreement with PRD 1's OWN rigid answer within
+      tolerance, not an absolute accuracy against an analytic reference, so no method
+      error floor (P1/P2 bending lock, pointwise-Dirichlet k~0.67-0.70) is exposed.
+      The bound is a self-consistency claim between two paths of the same solver.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a premise-scoping record; B14 is the executable form.
+  - name: active-patch-derivation-avoids-the-cross-sub-read-hazard
+    binding: 'PRD decision 8 — the domain-side active patch is derived at analysis
+      time by filtering the declared region''s nodes to the mating port''s POSED footprint.
+      The rejected alternative (a port region value-depending on the mate''s position)
+      inverts template encapsulation and routes through cross-sub value reads / instantiation
+      overrides, i.e. directly into #6583/#6592 (both pending). Binding the rejected
+      alternative here prevents an implementer from rediscovering it as an apparent
+      simplification.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a design-exclusion record; B23 is the executable cover for the chosen
+        path.
+- label: B2
+  task_id: 7149
+  title: 'flexible-modal B2: bonded-group collapse -> union + piecewise material field
+    (answers #6887)'
+  capabilities:
+  - name: heterogeneous-field-substrate-is-upstream-and-test-only-today
+    binding: 'capability->producer (upstream task) + test-only measurement — MEASURED
+      2026-09-01: element_stiffness_p2_with_field (crates/reify-solver-elastic/src/assembly/tet.rs)
+      has its SOLE caller in crates/reify-solver-elastic/tests/assembly_anisotropic.rs
+      — it is TEST-ONLY on main, with no production/library call site. And assemble_modal_km
+      (crates/reify-eval/src/modal_ops.rs) takes a single scalar `density: f64` threaded
+      uniformly into consistent_element_mass_tet_p1/p2 — homogeneous only, no per-element
+      field read. Both are #6882''s deliverables (heterogeneous P2 modal assembly
+      + the first per-element-density mass path). Without that edge this binding would
+      be a `test-only` FAIL; DAG-direction PASS: B2 depends_on 6879, 6880, 6882 (real
+      edges wired at decompose).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the production wiring is #6882''s diff, not B2''s — binding a check
+        here would attribute a sibling''s delivery to this task. Behavioural cover:
+        B15.'
+  - name: piecewise-material-field-shape-has-an-in-corpus-precedent
+    binding: 'capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      as_printed_material(body : Solid, process : FDMProcess, options : AsPrintedOptions)
+      -> Field<Point3<Length>, AnisotropicMaterial> (crates/reify-compiler/stdlib/fdm_as_printed.ri),
+      backed by FieldSourceKind::AsPrintedZones (crates/reify-ir/src/value.rs) and
+      its trampoline (crates/reify-eval/src/compute_targets/as_printed_material.rs),
+      is consumed by the heterogeneous overload of solve_elastic_static (task #4757).
+      So the exact value shape B2 must produce already exists and is already consumed
+      somewhere in production — B2 imitates it rather than inventing a representation.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main.
+  - name: connection-graph-is-enumerable-but-joint-semantics-are-upstream
+    binding: 'capability->producer (upstream task) + DAG-direction — MEASURED 2026-09-01:
+      EvaluationGraph.connections : Vec<CompiledConnection> (crates/reify-eval/src/graph.rs)
+      is real and populated from template.connections, and has genuine structural
+      consumers (it is folded into the topology_fingerprint cache key; Engine::edit_param
+      retains/removes entries in lockstep during forall re-elaboration). What does
+      NOT exist is any consumer reading joint SEMANTICS off it — that is PRD 1 leaf
+      alpha. So enumerating maximal Fixed-connected subgraphs is producer-upstream,
+      not producer-absent. DAG-direction PASS: B2 depends_on PRD 1 alpha (real edge
+      wired at decompose).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the graph-IR read API does not exist until PRD 1 alpha lands.
+  - name: homogeneous-byte-identity-pin-binds-this-leaf
+    binding: cross-PRD constraint — docs/prds/v0_6/damped-modal-bonded-heterogeneous.md
+      B4 pins "frequencies + damping_ratio byte-identical" for any pre-PRD modal fixture
+      under NoDamping/RayleighDamping. B2 changes the modal assembly path, so that
+      pin is a hard regression constraint on this diff, not a courtesy.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the pin lives in the damped-modal chain's own fixtures; duplicating
+        it as a check here would be lock-step duplication.
+  - name: 6887-is-answered-not-orphaned
+    binding: 'cross-task disposition — #6887 ([MILESTONE] assembly-derived material
+      fields) was parked DO-NOT-IMPLEMENT pending a human PRD decision. Leo made that
+      decision on 2026-09-01: the producer lands HERE. #6887 was rescoped at this
+      decompose to point at B2, its dependency set corrected (#6626 removed per the
+      PRD §11 table; B2 added), and its remaining deliverable narrowed to the printer_v01
+      whole-frame bonded dogfood escalation. It was NOT cancelled — its content is
+      ported.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'task-store fact, recorded in #6887''s own metadata.rescoped_by.'
+  - name: per-member-energy-share-attribution
+    binding: PRD C4 + C7 — the merged body's identity record carries the member GeometryHandleRefs
+      so energy shares stay per-member via element -> member attribution. PRD §9 gave
+      this no leaf of its own; assigned to B2 at decompose (it is the leaf that creates
+      the merge, so it is the only leaf that can preserve the attribution).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a design-assignment record; covered by B2's own signal.
+- label: B3
+  task_id: 7153
+  title: 'flexible-modal B3: mixed assembly + sparse eigensolve integration'
+  capabilities:
+  - name: eigensolver-is-mesh-agnostic-and-composable
+    binding: capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      solve_eigen_dense and solve_eigen_shift_invert (crates/reify-solver-elastic/src/eigensolve.rs)
+      take arbitrary square symmetric sparse (K, M) pairs with NO mesh knowledge baked
+      in, and the matrix-free StiffnessOp / MetricOp traits (with SparseStiffnessOp
+      / SparseMetricOp zero-cost adapters) are a documented composition seam. So a
+      mixed rigid+flexible+joint (K, M) is solvable by existing substrate — B3 composes,
+      it does not extend the solver.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main; B3's own 3-body signal is the cover.
+  - name: sparse-path-mandatory-scale-datum
+    binding: G6 branch 1 (context, not a bound) — dense QZ at 864 DOF ~ 25 s (crates/reify-solver-elastic
+      modal_benchmarks). Whole-printer problems are far above that, which is why the
+      sparse path is mandatory at every rung. B3 asserts no cost bound of its own;
+      pi's measurements are where cost claims come from.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a motivation datum, not an assertion.
+  - name: knob-honoring-is-upstream
+    binding: 'capability->producer (upstream task) + DAG-direction — n_modes / tol
+      / max_iters honoring on the mechanism path is #7084 (trampoline-param-drop leaf
+      zeta), adopted by PRD 1 leaf epsilon. B3 depends_on PRD 1 epsilon and must not
+      double-land it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ordering fact; enforced by the wired edge.
+- label: B4
+  task_id: 7154
+  title: 'flexible-modal B4: rung-3 exemplar — mixed-fidelity machine graph'
+  capabilities:
+  - name: corpus-gate-and-index-guard
+    binding: 'capability->producer (substrate, wired-on-main) — same examples-smoke
+      + best_practices_index_matches_corpus_directory mechanics as A4; see that leaf''s
+      bindings. Cost note bound here: panels mesh as SOLIDS in this PRD (shells are
+      composite-laminated-shells.md''s scope), so the exemplar must be sized against
+      pi''s cost table to stay inside the examples-smoke budget. The pattern is deliberately
+      NOT the bare `modal` used by A4: three leaves add corpus files, and a shared
+      pattern would go GREEN for B4 and C2 the moment A4 landed — a silently vacuous
+      check. Accepted gap: if the INDEX line spells the idea without the words "mixed-fidelity"
+      the check false-reds and must be corrected via the three writes (.yaml, .md
+      twin, producer metadata.delivered_checks).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '[Mm]ixed.fidelity'
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: reader-constraints-are-upstream
+    binding: 'capability->producer (upstream task) + DAG-direction — the frequency
+      / effective-mass selection readers the exemplar''s constraints call are PRD
+      1 leaf eta''s, reached through leaf theta''s whole-machine exemplar. DAG-direction
+      PASS: B4 depends_on B3 and PRD 1 theta (real edges wired at decompose).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the reader surface does not exist until PRD 1 eta/theta land.
+- label: M-B
+  task_id: 7147
+  title: '[MILESTONE] flexible-modal M-B: rung-3 dogfood notification (DO NOT IMPLEMENT)'
+  capabilities:
+  - name: dep-gated-milestone-shape
+    binding: 'routing declaration (the #6626 convention) — task_kind=deterministic,
+      execution_class=decision, always_escalates=true; filed pending with real edges
+      on B1, B2, B3, B4. Dispatch action IS the born-at-L2 escalation.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is an escalation, not a repository artifact.
+- label: ρ
+  task_id: 7150
+  title: 'flexible-modal ρ: conditioning measurement (envelope note, no bound)'
+  capabilities:
+  - name: no-numeric-bound-asserted-by-construction
+    binding: G6 branch 1 — DELIBERATELY NOT TRIGGERED, same posture as pi. This leaf
+      records an ENVELOPE. C1's surrogate constructors then cite it as their documented
+      validity range and C2's cross-level band is derived from it, so a guessed number
+      here would become a frozen false premise in two downstream leaves — exactly
+      the esc-3453 shape.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the absence of an assertion is the deliverable's defining property.
+  - name: conditioning-is-observable-on-existing-substrate
+    binding: capability->producer (substrate, wired-on-main) — Lanczos iteration counts,
+      factorization outcomes and spurious modes are observable off solve_eigen_shift_invert
+      / EigenSolverOptions (crates/reify-solver-elastic/src/eigensolve.rs); the matrix-free
+      StiffnessOp / MetricOp seam is available if an extreme-ratio cell needs a custom
+      operator. Nothing new is required to take the measurement.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: spurious|Lanczos|stiffness ratio
+      paths:
+      - docs/measurements
+      expect: present
+- label: C1
+  task_id: 7155
+  title: 'flexible-modal C1: surrogate law family + constructors'
+  capabilities:
+  - name: anisotropic-law-shape-exists-to-slot-into
+    binding: 'capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      AnisotropicMaterial { law : ConstitutiveLaw, frame : MaterialFrame } (crates/reify-compiler/stdlib/constitutive.ri)
+      carries the anisotropy on the `law` conformer (OrthotropicMaterial 9-constant
+      / TransverseIsotropicMaterial 5-constant, each with its own `density : Density`)
+      and the local axes on `frame`. A joint-local slip/normal partition is expressible
+      in that shape; C1 adds a constructor family, not a new type system. FieldSourceKind::AsPrintedZones
+      (crates/reify-ir/src/value.rs) is the precedent for adding a source kind.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main.
+  - name: validity-range-cited-from-measurement-not-guessed
+    binding: G6 branch 1 + DAG-direction — C1's signal asserts B16/B17 green "within
+      rho's envelope". The envelope is produced by an UPSTREAM leaf (C1 depends_on
+      rho, real edge wired at decompose), so the bound is cited, not invented. Had
+      C1 named a conditioning number itself, this binding would be bound<=floor /
+      unbacked-guess and would block the batch.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the envelope's numbers do not exist until rho lands.
+  - name: surrogate-missing-substrate-refuses-loudly
+    binding: 'rejection-mechanism (G6 branch 4) — THE SENTINEL FIRED AT DECOMPOSE.
+      PRD C6 requires that a surrogate declared where its blocked substrate is missing
+      produces a loud Error naming the gate, never a silent isotropic fallback. MEASURED
+      2026-09-01 against target/release/reify: `AnisotropicMaterial()` with BOTH required
+      params omitted (neither has a default) => `All constraints satisfied.`, exit
+      0, ZERO diagnostics; and `AnisotropicMaterial(law: 5mm, frame: MaterialFrame())`
+      — a Length supplied where a ConstitutiveLaw is declared => the same, exit 0,
+      ZERO diagnostics. There is NO ctor-arg nominal rejection for this shape today,
+      not even a Warning: the task-4575 silent-accept shape. Left as authored this
+      binding was a `rejection-absent` FAIL — the rejection capability had no producer.
+      RESOLVED by G6 (c) (change the asserted configuration): C1 now OWNS its own
+      loudness, validating its inputs in the constructor''s own trampoline / graph-build
+      path and emitting its own CODED diagnostic there — explicitly not inheriting
+      rejection from the compiler and explicitly not waiting on the general repair
+      (#5306 family; #7174 for the port-block variant). Mirrors PRD 1''s posture of
+      validating joint edges at graph-build time with its own diagnostics. C1''s description
+      and user-observable signal were amended accordingly (metadata.d3_amendment on
+      task 7155).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a rejection capability must be OBSERVED firing, not grepped: a grep
+        for the diagnostic''s name goes green on the string literal that declares
+        it while the arm stays unreachable — which is precisely the state measured
+        above. The observing test asserts CODE IDENTITY, not a message substring;
+        the D3 adversary (C1-ADV-1) flagged a draft probe that bound this to a `stderr_must_name`
+        substring match, and that binding is rejected.'
+  - name: constructor-spelling-is-deliberately-unpinned
+    binding: 'anti-false-red — PRD C6 gives the constructor name as an EXAMPLE ("e.g.
+      bearing_film(k_per_area_normal, slip_axes, frame)"), so the spelling is genuinely
+      undecided at decompose. No grep check is bound to it: pinning a guessed identifier
+      is the esc-6739-1 false-red shape, which fires a critical DEP_CAPABILITY_NOT_DELIVERED
+      escalation and blocks a dependent task even though the capability WAS delivered.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'accepted gap, recorded deliberately: C1 has no mechanical delivered_check.
+        Behavioural cover is B16 (stiff-limit monotone convergence to the bonded answer)
+        and B17 (axial quasi-rigid mode restrained only by the drive spring), both
+        gate-resident via tau.'
+  - name: surrogate-honesty-is-a-shipped-obligation
+    binding: 'PRD decision 4 (G6 honesty) — surrogate geometry AND law are jointly
+      calibrated MODEL artifacts, not literal fidelity: the collar is a thickened
+      film, not the literal 10 um gap. Docs and diagnostics must say so; near-massless
+      by default, mass opt-in. Bound here so the honesty text is a deliverable rather
+      than an aspiration.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a prose-honesty obligation; sigma's docs-truth leaf carries its findable
+        form.
+- label: C2
+  task_id: 7156
+  title: 'flexible-modal C2: calibration idiom + cross-level consistency constraint
+    exemplar'
+  capabilities:
+  - name: corpus-gate-and-index-guard
+    binding: 'capability->producer (substrate, wired-on-main) — same examples-smoke
+      + best_practices_index_matches_corpus_directory mechanics as A4. The pattern
+      is distinct from A4''s and B4''s for the same anti-vacuity reason recorded on
+      B4. Accepted gap: if the INDEX line avoids the word "calibration" the check
+      false-reds and must be corrected via the three writes (.yaml, .md twin, producer
+      metadata.delivered_checks).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: calibrat
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: band-derived-from-rho-not-guessed
+    binding: G6 branch 1 + DAG-direction — B18's in-design consistency band comes
+      from rho's committed envelope note, reached transitively (C2 depends_on C1 depends_on
+      rho). A band invented here and frozen into a constraint would be the esc-3453
+      shape inside a .ri file, where it is even harder to notice than in a Rust test.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the band's numbers do not exist until rho lands.
+  - name: emergent-k-requires-the-surrogate-to-exist
+    binding: 'capability->producer (upstream task) + DAG-direction — "collar-model
+      emergent k" is only measurable once C1''s law family exists. DAG-direction PASS:
+      C2 depends_on C1.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ordering fact; enforced by the wired edge.
+- label: C3
+  task_id: 7157
+  title: 'flexible-modal C3: MSE joint-damping composition'
+  capabilities:
+  - name: mse-machinery-is-upstream-never-relanded
+    binding: 'capability->producer (upstream task) + DAG-direction — the MSE post-process
+      -> Mode.damping_ratio + SE-share diagnostics is #6883 (damped-modal leaf eta).
+      C3 COMPOSES the surrogate''s loss factor through it and must not re-land MSE.
+      DAG-direction PASS: C3 depends_on 6883 and C1 (real edges wired at decompose).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the MSE surface does not exist until #6883 lands.'
+  - name: damping-band-is-inherited-not-newly-asserted
+    binding: 'G6 branch 1 — B22 matches "within the #6883-established band". C3 sets
+      NO new damping-accuracy bound of its own, so no floor is exposed here; the floor
+      question belongs to #6883. Bolted micro-slip and amplitude-dependent joint damping
+      are explicitly out of scope (PRD decision 7), so no premise about them is asserted.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a premise-scoping record.
+- label: M-C
+  task_id: 7148
+  title: '[MILESTONE] flexible-modal M-C: rung-4 dogfood notification (DO NOT IMPLEMENT)'
+  capabilities:
+  - name: dep-gated-milestone-shape
+    binding: 'routing declaration (the #6626 convention) — task_kind=deterministic,
+      execution_class=decision, always_escalates=true; filed pending with real edges
+      on C1, C2, C3. Dispatch action IS the born-at-L2 escalation.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is an escalation, not a repository artifact.
+- label: σ
+  task_id: 7158
+  title: 'flexible-modal σ: docs-truth for all three rungs'
+  capabilities:
+  - name: zero-modal-chunk-coverage-today
+    binding: 'MEASURED 2026-09-01 — `git grep -ln modal crates/reify-mcp/src/tools/chunks/`
+      returns NOTHING across all 17 chunk files (collections, connect, constraints,
+      enums, fields, functions, geometry, guards, occurrences, parameters, purposes,
+      stdlib, structures, syntax, traits, types, units). So this is FIRST coverage,
+      not an update. Cost of getting it wrong is measured: ~40% of the printer_v01
+      dogfood session''s CLI spend went to probing what the language can do, and phantom
+      chunk signatures (#5347/#5364) cost live probe cycles.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: modal_analysis
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: cheatsheet-index-surface-exists
+    binding: capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      .claude/skills/reify-design/SKILL.md already carries a best-practices-corpus
+      index section pointing at examples/best_practices/ and INDEX.md ("grep that
+      index before probing the language"). sigma adds an index LINE there, not an
+      inline playbook — that skill's own rule.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: modal
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+  - name: documented-signatures-verified-against-declarations
+    binding: 'anti-phantom-signature — every documented signature must be verified
+      against the real declarations (crates/reify-compiler/stdlib/modal_analysis_fns.ri,
+      modal_mechanism_fns.ri, modal_analysis.ri, ports.ri and this PRD''s additions),
+      with the acceptance that each compiles AS WRITTEN in a smoke .ri. Today those
+      files declare exactly ONE overload each: modal_analysis(material : ElasticMaterial,
+      length, width, height, options) and mechanism_modal_analysis(mechanism, options)
+      — so a chunk written from memory would already be wrong.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: compile-as-written is an executable acceptance, not a pattern; a grep
+        cannot distinguish a correct signature from a plausible one.
+  - name: one-modal-section-not-two
+    binding: cross-PRD coordination (anti-lock-step-duplication) — PRD 1 leaf kappa
+      carries the same docs-truth obligation for the lumped graph path. sigma must
+      EXTEND kappa's landed chunk text for the real-geometry rungs, not author a second
+      competing modal section.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an editorial constraint; a pattern cannot tell one section from two.
+- label: τ
+  task_id: 7159
+  title: 'flexible-modal τ: two-way boundary-test integration gate (B12-B23)'
+  capabilities:
+  - name: registration-ownership-pushed-up-at-decompose
+    binding: SCOPE CORRECTION MADE AT DECOMPOSE (esc-4914-162 rule). PRD §9's tau
+      row read "Boundary-gate + drift-guard registrations same-diff" with prereq "phase
+      leaves", which would have made tau the OWNER of registrations for tests landed
+      by UPSTREAM leaves — exactly the ordering that turned main RED when task 4914
+      landed a gate-resident smoke binary whose registration leaf was ordered after
+      it by PRD prose only. The reify /prd overlay's decompose rule rejects that shape.
+      Registration ownership was therefore moved into EVERY test-adding leaf (A1,
+      A2, A3, B1, B2, B3, B4, C1, C2, C3 each carry a same-diff registration clause
+      in their own description), and tau's role reduced to VERIFICATION.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an ordering property of the batch, enforced by the leaf descriptions
+        and the dependency graph; no single pattern expresses it.
+  - name: drift-guard-registries-exist-and-are-self-checking
+    binding: capability->producer (substrate, wired-on-main; probed 2026-09-01) —
+      tests/infra/run-all-classification.manifest (230 rows, `<test_basename> <bucket>`),
+      with declared-vs-discovered drift caught by tests/infra/test_run_all_classification.sh;
+      tests/infra/test_no_new_wallclock_upper_bounds.sh, whose escape is the INLINE
+      `# wallclock:allow` comment on the assert line (there is NO separate allowlist
+      file); .config/nextest.toml [[profile.default.overrides]] blocks (filter / priority
+      / slow-timeout) plus the occt test-group cap; and _RUST_COUPLED_RI_FIXTURES
+      in scripts/verify.sh (15 members today), kept honest by test_verify_scope.sh's
+      PG-DRIFT, which re-derives the coupled set from tracked sources and reds on
+      an unregistered reference.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact already true on main; the deliverable is a clean run
+        of these checks over the batch's landed tests.
+  - name: b12-band-derived-from-pi-never-byte-identity
+    binding: 'G6 branch 1 + branch 2 — B12 compares the dims overload against the
+      body-arg overload on the same nominal geometry. The two use DIFFERENT MESHERS,
+      so byte-identity is impossible by construction and is explicitly NOT claimed;
+      the agreement band is DERIVED from pi''s measured dims-vs-gmsh spectral deltas.
+      DAG-direction PASS: tau depends_on pi. A guessed band here would be the esc-3453
+      shape at the gate.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: pi's deltas do not exist until pi lands.
+  - name: b19-rejection-observed-not-inferred
+    binding: 'rejection-mechanism (G6 branch 4) — B19 passes only if the kernel-absent
+      Error diagnostic is OBSERVED. An exit-0 run with "All constraints satisfied."
+      and no diagnostic is a FAILURE of the capability, never a pass (the 4575 silent-accept
+      sentinel). Coordinated with #6660''s own acceptance so the two do not assert
+      different wordings.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a rejection capability must be observed firing, not grepped.
+- label: φ
+  task_id: 7160
+  title: 'flexible-modal φ: PRD-close terminal stamp + AS-AUTHORED freeze'
+  capabilities:
+  - name: terminal-vocabulary-is-closed-at-three-values
+    binding: reify /prd overlay contract — a PRD status is terminal iff its first
+      token after the Status label, matched case-insensitively, is SHIPPED, SUPERSEDED
+      or WITHDRAWN. Nothing else is terminal. The overlay's list is the contract source;
+      the future reify-audit --pattern PPRDSTATUS detector (#6346, deferred) is its
+      consumer.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \*\*Status:\*\*.*(SHIPPED|SUPERSEDED|WITHDRAWN)
+      paths:
+      - docs/prds/v0_6/flexible-assembly-modal.md
+      expect: present
+  - name: header-exemplars-exist-to-copy
+    binding: 'capability->producer (substrate, wired-on-main) — the ratified three-part
+      freeze header shape is landed in docs/prds/v0_6/data-carrying-enums.md and docs/prds/kernel-seam-contracts.md
+      (as of edd9703fae). The non-conformant precedents #4438 (Title-Case "Status:
+      Superseded by …") and #3847 (left at "Status: deferred — superseded by …") must
+      NOT be copied, though their dependency/close SHAPE is the precedent for a final
+      leaf depending on every sibling.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an authoring instruction; the mechanical half is the Status grep above.
+  - name: cancelled-dependency-disposition
+    binding: scheduler-contract carve-out — a cancelled sibling leaf counts as SATISFIED
+      for this leaf's edges (both SHIPPED, which tolerates cancelled leaves alongside
+      landed ones, and WITHDRAWN, where every leaf is cancelled, require phi to stay
+      dispatchable). If the scheduler treats such an edge as unmet, the decompose
+      steward removes it by hand and applies the stamp in a docs-only commit rather
+      than leaving phi permanently blocked.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an operational disposition, not a repository state.
+  - name: milestones-excluded-from-the-close-dependency-set
+    binding: DAG scoping — phi depends on every BUILD leaf (A1, A2, A3, A4, pi, B1,
+      B2, B3, B4, rho, C1, C2, C3, sigma, tau) and NOT on M-A / M-B / M-C, which are
+      dogfood notifications rather than deliverables (the damped-modal kappa precedent).
+      Including them would block the terminal stamp on a human dogfood decision that
+      is not part of this PRD's scope.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a dependency-graph property, enforced by the wired edges.
+- label: υ-bookmark-cfd-surrogate
+  task_id: 7161
+  title: '[BOOKMARK] CFD/Reynolds-calibrated joint surrogates'
+  capabilities:
+  - name: bookmark-filed-at-decompose-not-deferred-to-a-leaf
+    binding: 'DISCHARGE RECORD. PRD §9 leaf upsilon ("Bookmark filings: CMS-under-this-surface;
+      CFD-calibrated surrogates") was discharged AT DECOMPOSE rather than filed as
+      a task, because its deliverable is a TASK-STATE WRITE and reify has no task-write
+      path: the only reify-side fused-memory client (crates/reify-audit/src/fused_memory_client.rs)
+      exposes get_task/get_tasks only, and the sandboxed write-set never grants .taskmaster/.
+      A leaf asking a reify agent to file tasks would have been structurally undeliverable.
+      The /prd session IS the vehicle with write access, so both bookmarks were filed
+      here: #3830 rescoped to CMS-under-this-surface, and this task filed fresh. Both
+      stay DEFERRED (excluded from the commit_planning flip) with external triggers
+      naming pi''s and rho''s committed artifacts.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a task-store fact, recorded in both bookmarks' metadata; nothing in
+        the tree changes.

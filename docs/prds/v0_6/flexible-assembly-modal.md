@@ -4,6 +4,8 @@
 
 **Code anchors** verified against main `a153350b07` (2026-09-01). Main moves fast — cite-by-symbol; re-locate lines at implementation time.
 
+**Decomposed:** 2026-09-01 into 19 filed leaves (§9 carries their task IDs) plus two bookmarks. Capability manifest: `flexible-assembly-modal.capability-manifest.md` + its `.yaml` sidecar (normative for `delivered_check` descriptors). Four things the gates changed at decompose are recorded in the manifest's opening section: τ's registration ownership was pushed up into every test-adding leaf (esc-4914-162), A3 adopts #7097 rather than duplicating it, υ was discharged at decompose because a task-state write is unavailable to a reify agent, and contract C7 — which §9 left unassigned — was split between A1 and B2.
+
 **Provenance:** PRD 2 of the pair authored in the whole-printer-modal design session with Leo
 (2026-08-31 → 2026-09-01, `design-reify-3830-1055491`). PRD 1 —
 `docs/prds/v0_6/assembly-modal-connection-graph.md` — owns the declaration surface (joint/port
@@ -60,8 +62,8 @@ the same two seams PRD 1 rides; no new seam.
   η.
 - #6887 (`[MILESTONE]` assembly-derived material fields) is parked DO-NOT-IMPLEMENT pending a
   human PRD decision. **This design session is that decision** (Leo, 2026-09-01): the
-  bonded-group producer lands under this PRD's rung-3 leaf; #6887 is rescoped at decompose to
-  point here.
+  bonded-group producer lands under this PRD's rung-3 leaf (**#7149**); #6887 was rescoped at
+  decompose to point there, with #6626 dropped from its dep set.
 - Known accuracy/cost hazards (G6 floor family): P1-tet bending lock (9–11% on slender members —
   P2 mandatory on the modal path, the #6882 posture); pointwise-Dirichlet BC realization
   (`k≈0.67–0.70`); two-FixedSupport pin-collapse #6663 (in-progress; inherited, not owned);
@@ -244,26 +246,26 @@ Phase A — rung 2 vertical slice. Phase B — rung 3. Phase C — rung 4. Bookm
 
 | Label | Task | Modules | Observable signal | Prereqs |
 |---|---|---|---|---|
-| A1 | Body-arg overload + posed VolumeMesh consumption + loud kernel-absent refusal | stdlib modal_analysis fns, reify-eval modal_ops | B13 + B19 green; a committed example solves a real solid end-to-end via `reify eval` | #6660, #4743-landed substrate |
-| A2 | Selector BCs on the modal path | reify-eval | supports via typed selectors drive the modal node sets (twin of #5313's elastic wiring) | A1, #5313 |
-| A3 | `.part`/`.topology` population (join key + CarriedTopology) | reify-eval | B20 green; vacuity allowlist entries flip | A1 |
-| A4 | Rung-2 exemplar (real-geometry part modal, gantry-tube-shaped) | examples/best_practices/ | B21 green in CI | A1–A3 |
-| M-A | `[MILESTONE]` dogfood notification, rung 2 (DO NOT IMPLEMENT — #6626 convention: task_kind deterministic, execution_class decision, born-at-L2 escalation to Leo: real-geometry part modal landed, update printer_v01) | task store | escalation fires exactly when deps land | A1–A4 |
-| π | Scale measurement | scratch + docs/measurements/ | numbers table committed | A1 |
-| B1 | Region→frame reduction + region typing fix + active-patch derivation (C3, decision 8) | reify-solver-elastic, reify-eval, stdlib ports | B14 + B23 green | A1, PRD 1 δ/ε |
-| B2 | Bonded-group collapse → union + piecewise field (C4; answers #6887) | reify-eval, assembly-derivation seam | B15 green | A1, #6879, #6880, #6882 |
-| B3 | Mixed assembly + sparse eigensolve integration (C5) | reify-solver-elastic, reify-eval | a 3-body mixed fixture solves; B14/B15 compose | B1, B2 |
-| B4 | Rung-3 exemplar (mixed-fidelity machine graph, printer-shaped) | examples/best_practices/ | a mixed rigid/flexible machine graph solves; reader constraints evaluate | B3, PRD 1 θ |
-| M-B | `[MILESTONE]` dogfood notification, rung 3 (DO NOT IMPLEMENT — same convention: mixed-fidelity assembly modal landed, update printer_v01) | task store | escalation fires exactly when deps land | B1–B4 |
-| ρ | Conditioning measurement | scratch + docs/measurements/ | envelope note committed | B3 |
-| C1 | Surrogate law family + constructors (C6) | stdlib, reify-solver-elastic material seam | B16 + B17 green within ρ's envelope | B3, ρ |
-| C2 | Calibration idiom + cross-level constraint exemplar | examples/best_practices/ | B18 green | C1 |
-| M-C | `[MILESTONE]` dogfood notification, rung 4 (DO NOT IMPLEMENT — same convention: reified-joint surrogates landed, update printer_v01 with the air-bearing collar) | task store | escalation fires exactly when deps land | C1–C3 |
-| C3 | MSE joint-damping composition | reify-eval | B22 green | C1, #6883 |
-| σ | Docs-truth (chunks + cheatsheet + discoverability, all rungs) | reify-mcp, skills | signatures compile; intent-level findability | A4, B4, C2 |
-| τ | Boundary-gate + drift-guard registrations same-diff | crates/*/tests, tests/infra | B12–B22 in the merge gate | phase leaves |
-| υ | Bookmark filings: CMS-under-this-surface; CFD-calibrated surrogates | task store | bookmarks filed with triggers citing π/ρ | π, ρ |
-| φ | PRD-close: terminal stamp + freeze + manifest header | this file + manifest | committed header per overlay shape | all build leaves (M-A/M-B/M-C excluded — milestones, not deliverables, per the damped-modal κ precedent) |
+| A1 | Body-arg overload + posed VolumeMesh consumption + loud kernel-absent refusal — **#7142** · also owns C7's `ModalOptions` full-shape opt-in flag + storage format (Open Q 5) | stdlib modal_analysis fns, reify-eval modal_ops | B13 + B19 green; a committed example solves a real solid end-to-end via `reify eval` | #6660, PRD 1 β, #4743-landed substrate
+| A2 | Selector BCs on the modal path — **#7143** | reify-eval | supports via typed selectors drive the modal node sets (twin of #5313's elastic wiring) | A1, #5313 |
+| A3 | `.part`/`.topology` population (join key + CarriedTopology) — **#7097** (**adopted** `result-field-vacuity-closure.md`'s existing live PVAC owner rather than filing a duplicate — that task explicitly invited adoption, and a fresh leaf would have left it deferred forever as a phantom owner) | reify-eval | B20 green; vacuity allowlist entries flip | A1, PRD 1 ζ
+| A4 | Rung-2 exemplar (real-geometry part modal, gantry-tube-shaped) — **#7144** | examples/best_practices/ | B21 green in CI | A1–A3 |
+| M-A | `[MILESTONE]` dogfood notification, rung 2 (DO NOT IMPLEMENT — #6626 convention: task_kind deterministic, execution_class decision, born-at-L2 escalation to Leo: real-geometry part modal landed, update printer_v01) — **#7146** | task store | escalation fires exactly when deps land | A1–A4 |
+| π | Scale measurement — **#7145** | scratch + docs/measurements/ | numbers table committed | A1 |
+| B1 | Region→frame reduction + region typing fix + active-patch derivation (C3, decision 8) — **#7152** | reify-solver-elastic, reify-eval, stdlib ports | B14 + B23 green | A1, PRD 1 δ/ε |
+| B2 | Bonded-group collapse → union + piecewise field (C4; answers #6887) — **#7149** · also owns C7's per-member energy-share attribution inside merged groups | reify-eval, assembly-derivation seam | B15 green | A1, #6879, #6880, #6882 |
+| B3 | Mixed assembly + sparse eigensolve integration (C5) — **#7153** | reify-solver-elastic, reify-eval | a 3-body mixed fixture solves; B14/B15 compose | B1, B2, PRD 1 ε
+| B4 | Rung-3 exemplar (mixed-fidelity machine graph, printer-shaped) — **#7154** | examples/best_practices/ | a mixed rigid/flexible machine graph solves; reader constraints evaluate | B3, PRD 1 θ |
+| M-B | `[MILESTONE]` dogfood notification, rung 3 (DO NOT IMPLEMENT — same convention: mixed-fidelity assembly modal landed, update printer_v01) — **#7147** | task store | escalation fires exactly when deps land | B1–B4 |
+| ρ | Conditioning measurement — **#7150** | scratch + docs/measurements/ | envelope note committed | B3 |
+| C1 | Surrogate law family + constructors (C6) — **#7155** | stdlib, reify-solver-elastic material seam | B16 + B17 green within ρ's envelope | B3, ρ |
+| C2 | Calibration idiom + cross-level constraint exemplar — **#7156** | examples/best_practices/ | B18 green | C1 |
+| M-C | `[MILESTONE]` dogfood notification, rung 4 (DO NOT IMPLEMENT — same convention: reified-joint surrogates landed, update printer_v01 with the air-bearing collar) — **#7148** | task store | escalation fires exactly when deps land | C1–C3 |
+| C3 | MSE joint-damping composition — **#7157** | reify-eval | B22 green | C1, #6883 |
+| σ | Docs-truth (chunks + cheatsheet + discoverability, all rungs) — **#7158** | reify-mcp, skills | signatures compile; intent-level findability | A4, B4, C2, PRD 1 κ
+| τ | Boundary-test integration gate (B12–B23 complete, two-way) + **verification** that each landed test's drift-guard registrations are present — **G7/esc-4914-162 scope correction made at decompose:** registration OWNERSHIP was pushed up into every test-adding leaf (A1, A2, A3, B1, B2, B3, B4, C1, C2, C3), because a registration task downstream of the tests it registers is exactly what turned main RED in esc-4914-162 — **#7159** | crates/*/tests, tests/infra | B12–B22 in the merge gate | A1, A2, A3, A4, π, B1, B2, B3, C1, C3, ρ
+| υ | **Discharged at decompose (2026-09-01), not filed as a leaf.** Its deliverable is a task-state WRITE, and reify has no task-write path (`crates/reify-audit/src/fused_memory_client.rs` is read-only; the sandboxed write-set never grants `.taskmaster/`), so a reify agent could not execute it. Both bookmarks were filed by the decompose session instead: **#3830** rescoped from "author the flexible-multibody-modal PRD" to *CMS as a reduction strategy under this surface* (trigger: π's measured scale wall, or a per-component caching pull), and **#7161** filed for CFD/Reynolds-calibrated surrogates (trigger: a design decision turning on film stiffness a datasheet does not cover, or C2's band unmeetable from datasheet/closed-form values). Both stay `deferred`, excluded from the batch flip. | task store | both bookmarks exist with external triggers naming π's and ρ's committed artifacts | — (discharged) |
+| φ | PRD-close: terminal stamp + freeze + manifest header — **#7160** | this file + manifest | committed header per overlay shape | all build leaves (M-A/M-B/M-C excluded — milestones, not deliverables, per the damped-modal κ precedent) |
 
 ## 10. Out of scope
 
@@ -286,7 +288,7 @@ Phase A — rung 2 vertical slice. Phase B — rung 3. Phase C — rung 4. Bookm
 | #6660 | consumes | kernel linking + refusal posture (B19 coordinates wording) | #6660 |
 | `fea-load-support-selector-migration.md` #5312/#5313/#4371 | consumes | selector→node-set on modal path (A2 twin-wires, never re-lands) | that PRD |
 | `damped-modal-bonded-heterogeneous.md` #6879/#6880/#6882/#6883 | consumes | Field classification, constructors, heterogeneous P2 modal, MSE | that PRD; its B4 byte-identity pin binds B-phase work |
-| #6887 (parked milestone) | answered-here | bonded-group producer lands as leaf B2; #6887 rescoped at decompose to point here (dep set correction incl. dropping #6626 from this path) | this PRD |
+| #6887 (parked milestone) | answered-here | bonded-group producer lands as leaf B2 (**#7149**); #6887 **rescoped 2026-09-01** — its "run a /prd session" deliverable is discharged (Leo made that decision in this design session), its remaining deliverable narrowed to the printer_v01 whole-frame bonded dogfood escalation, and its dep set corrected: **#6626 removed**, **#7149 added** | this PRD |
 | `result-field-vacuity-closure.md` | mutual | A3 is the `.part`/`.topology` live owner; PVAC reads its task id | that PRD owns the gate |
 | #6663 / #6729 | inherited | BC fidelity + workaround retirement | those tasks |
 | `composite-laminated-shells.md` (stub) | disjoint | solid-path vs shell-path, revisit at its activation | no shared mechanism |
