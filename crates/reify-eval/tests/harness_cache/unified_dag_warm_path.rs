@@ -1,4 +1,4 @@
-//! θ (task 4361) warm-path test binary.
+//! θ (task 4361) warm-path test module.
 //!
 //! Tests the four θ gaps:
 //!   1. `build_snapshot` multi-entity positional export fix (RecordingKernel-observable).
@@ -6,8 +6,9 @@
 //!   3. `eval_cached` warm `SolveResult::Solved` back-prop (`let y = auto_x + N`).
 //!   4. Concurrent path re-verify + serialization invariant.
 //!
-//! The shared ζ harness (`common/differential.rs`) is `#[path]`-included so
-//! this binary reuses all corpus helpers with zero edits to existing shared files.
+//! Shared `differential` helpers come from the `harness_cache` root — see its
+//! "Shared `differential` module" section for the wiring.
+//!
 //! `RecordingKernel` is imported from the shared harness (`differential::RecordingKernel`)
 //! where it was promoted during step-9 so that `unified_dag_boundary_cases.rs` could
 //! also use it.  The test-local definition has been removed (see amendment amend: #4361).

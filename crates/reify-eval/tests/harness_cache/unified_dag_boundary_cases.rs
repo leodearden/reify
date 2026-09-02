@@ -12,10 +12,10 @@
 //!     regression guard (warm stays scheduler-agnostic until θ #4361).
 //!
 //! The corpus SWEEP (equivalence-or-reasoned, 2× byte-identical, residue==∅)
-//! lives in the sibling binary `unified_dag_differential_corpus.rs`.
+//! lives in the sibling module `unified_dag_differential_corpus.rs`.
 //!
-//! The shared harness is `#[path]`-included (NOT via `tests/common/mod.rs`) so
-//! this safety-gate lands with zero edits to existing shared test files.
+//! Shared `differential` helpers come from the `harness_cache` root — see its
+//! "Shared `differential` module" section for the wiring.
 
 use crate::differential::{
     AUTO_GEOMETRY_CONSTRAINT_SRC, CROSS_LET_4275_SRC, CorpusCase, Divergence,
@@ -32,7 +32,7 @@ use reify_ir::{Satisfaction, Value};
 
 /// The TWO reasoned divergences the 4275 single-instance cross-`let` case
 /// legitimately exhibits under the seeded kernel (step-16). Mirrors the corpus
-/// binary's `REASONED_4275` (the same divergence proven by
+/// module's `REASONED_4275` (the same divergence proven by
 /// `allow_list_admits_only_reasoned_divergence`): (1) the `FitsBuildVolume`
 /// constraint flips Indeterminate (legacy) → DEFINITE (unified); (2) the
 /// legacy-only `ConstraintIndeterminate` warning vanishes once unified resolves
