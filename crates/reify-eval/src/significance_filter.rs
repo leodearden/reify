@@ -179,11 +179,17 @@ fn reals_within_tol(p: f64, n: f64, tol: f64) -> bool {
 ///
 /// # Wiring status
 ///
-/// Currently **not called by any production code** — wiring into the
-/// compute-node caching path is deferred to GHR-ζ, where geometry persistence
-/// and the active-kernel selection land alongside the call site.  Kept
+/// Currently **not called by any production code** — the only non-test
+/// reference is the doc-link from [`crate::cache`]; every call site is in
+/// this module's own `#[cfg(test)]` block.
+///
+/// The wiring into the compute-node caching path was originally deferred to
+/// the GHR-zeta phase (#3608), on the expectation that geometry persistence
+/// and the active-kernel selection would land alongside the call site.  That
+/// expectation did not hold: #3608 landed WITHOUT wiring this function, so it
+/// has been dead ever since.  #6372 owns the remaining integration.  Kept
 /// crate-private until then to prevent premature API surface drift.
-#[allow(dead_code)] // wiring deferred to GHR-ζ; used in tests only for now
+#[allow(dead_code)] // wiring deferred to #6372 (compute-node caching path); used in tests only for now
 pub(crate) fn geometry_handle_significance(
     old: &reify_ir::Value,
     new: &reify_ir::Value,
