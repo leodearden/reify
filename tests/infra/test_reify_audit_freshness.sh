@@ -16,6 +16,9 @@
 #  13-15: reify_audit_guard rebuild-budget-safe mode (task #4624)
 #  16:   reify_audit_guard warn-open mode: a present, executable, stale binary
 #        FAILS OPEN (exit 0) with a loud, greppable alarm on stderr (task #7139)
+#  17:   warn-open still REFUSES (125) when there is nothing runnable to fall
+#        open onto (absent, or present-but-not-executable), + a regression pin
+#        that `refuse` mode is unchanged (task #7139)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -386,6 +389,77 @@ assert "warn-open: stale binary emits a NON-EMPTY alarm on stderr (loud, not sil
 # crates/reify-audit/src/jcodemunch_index.rs:522-543.
 assert "warn-open: stale-binary alarm carries the stable token E_AUDIT_BIN_STALE" \
     bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_STALE"' -- "$WO_ERR_16"
+
+# ==============================================================================
+# Check 17: warn-open still REFUSES when there is nothing runnable to fall
+#           open ONTO (task #7139)
+#
+# Fail-open means "run the stale detector anyway". That is only meaningful
+# when a detector EXISTS. reify_audit_is_stale treats a MISSING binary as
+# stale (see "Missing binary is always stale", freshness.sh:123-126), so a
+# warn-open branch that returned 0 unconditionally would hand an absent
+# binary back to the wrapper, which would then exec nothing and block the
+# done-flip anyway — with a worse, less diagnosable rc (127 from the shell,
+# not a guard code).
+#
+# So warn-open must split on `[ -x "$bin" ]`. That is exactly the
+# presence-ambiguity contract the library ALREADY documents for rc 75
+# (:161-175) and rc 125 (:196-204): "Callers that refuse on 125 must split on
+# `[ -x "$bin" ]` first". This check makes the library honour its own
+# documented contract rather than pushing it onto every caller.
+# ==============================================================================
+echo ""
+echo "--- Check 17: warn-open refuses (125) when there is nothing runnable ---"
+
+# 17a: ABSENT path.
+set +e
+(source "$FRESHNESS_LIB" && reify_audit_guard "$WO_TMPDIR/does-not-exist" warn-open "$REPO_ROOT") 2>/dev/null
+WO_RC_17A=$?
+set -e
+
+assert "warn-open: ABSENT binary exits 125 (nothing to fall open onto)" \
+    bash -c 'test "$1" -eq 125' -- "$WO_RC_17A"
+
+# 17b: distinct token, so a consumer can tell "ran a stale detector" (16c)
+# from "ran nothing at all".
+set +e
+WO_ERR_17A=$(bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_TMPDIR/does-not-exist' warn-open '$REPO_ROOT'" 2>&1 >/dev/null)
+set -e
+
+assert "warn-open: ABSENT binary refusal carries the token E_AUDIT_BIN_MISSING" \
+    bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_MISSING"' -- "$WO_ERR_17A"
+
+# 17c: PRESENT but NOT executable — equally unrunnable, and reify_audit_is_stale's
+# own presence check is only `-f` (:124), so the guard must be the stricter one.
+# Deliberately NO chmod +x here.
+WO_NOEXEC_BIN="$WO_TMPDIR/reify-audit-noexec"
+touch "$WO_NOEXEC_BIN"
+touch -t 200001010000 "$WO_NOEXEC_BIN"
+
+set +e
+(source "$FRESHNESS_LIB" && reify_audit_guard "$WO_NOEXEC_BIN" warn-open "$REPO_ROOT") 2>/dev/null
+WO_RC_17C=$?
+WO_ERR_17C=$(bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_NOEXEC_BIN' warn-open '$REPO_ROOT'" 2>&1 >/dev/null)
+set -e
+
+assert "warn-open: PRESENT-but-not-executable binary exits 125" \
+    bash -c 'test "$1" -eq 125' -- "$WO_RC_17C"
+
+assert "warn-open: PRESENT-but-not-executable refusal carries E_AUDIT_BIN_MISSING" \
+    bash -c 'printf "%s" "$1" | grep -qF "E_AUDIT_BIN_MISSING"' -- "$WO_ERR_17C"
+
+# 17d REGRESSION PIN: `refuse` mode is UNCHANGED. The very same
+# present+executable+stale binary that warn-open lets through (16a) must still
+# exit 125 under `refuse`. This proves the new mode is purely ADDITIVE and that
+# Check 8's existing contract — which is library API, not just an internal
+# detail — is intact.
+set +e
+(source "$FRESHNESS_LIB" && reify_audit_guard "$WO_STALE_BIN" refuse "$REPO_ROOT") 2>/dev/null
+WO_RC_17D=$?
+set -e
+
+assert "regression pin: refuse mode STILL exits 125 for the same binary warn-open passes" \
+    bash -c 'test "$1" -eq 125' -- "$WO_RC_17D"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
