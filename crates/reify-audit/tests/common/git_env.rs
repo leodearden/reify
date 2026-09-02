@@ -13,17 +13,11 @@
 //!   environment to a command.
 //! - [`replay_self_under_hook_git_env`] — the outer harness that proves the
 //!   fix under a real *ambient* environment rather than a per-child one.
-//! - [`replay_self_under_hook_git_env_expecting_envelope`] — the same harness
-//!   for a caller that has already verified, in this environment, that the
-//!   audit produces an envelope. That verified fact is what the child's
-//!   stronger mark carries.
-//! - [`replay_child_expects_envelope`] — the ONLY predicate a test may use to
-//!   turn an otherwise-graceful skip into a hard failure. The weaker "am I
-//!   inside ANY replay child?" question has a private helper, so no sibling
-//!   binary can reach for it by mistake.
-//! - [`spawn_replay_child_lacking_audit_prereqs`] — the inverse fixture: one
-//!   replay child in an environment that genuinely cannot run the audit, so a
-//!   test can pin which mark may tighten a skip and which may not.
+//! - [`replay_self_under_hook_git_env_expecting_envelope`],
+//!   [`announce_replay_mark`], [`replay_child_expects_envelope`],
+//!   [`spawn_replay_child_lacking_audit_prereqs`] — the envelope-mark half:
+//!   spawn side, the child's breadcrumb back to it, the child-side predicate,
+//!   and the fixture that bounds when it may fire.
 //!
 //! Generic git-environment plumbing only. A helper that hard-codes one
 //! script's path, argv or skip protocol belongs in the binary that consumes it
@@ -31,10 +25,16 @@
 //! domain-specific helper here is a dozen copies of a `.parent()` walk plus a
 //! reachability hazard from binaries that never wanted it.
 //!
-//! Why the weak/strong split exists, and the regression that forced it, are
-//! stated ONCE — in `tests/g_allow.rs`'s
-//! `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`, the
-//! live guard holding it. Point there; do not re-derive it here.
+//! # The earned-mark rule, and where it is written
+//!
+//! What the envelope mark claims, why only it may tighten a graceful skip into
+//! a hard failure, and the regression that forced the split: all of it is
+//! written in ONE place, `tests/g_allow.rs`'s
+//! `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`, which
+//! is also the live guard holding it. Every mention of the rule in this file
+//! is a bare pointer there and re-derives none of it — the "one home" claim is
+//! only worth making if a reader who edits that home has in fact edited every
+//! statement of the rule.
 //!
 //! # Why a replay harness
 //!
@@ -75,10 +75,8 @@ const REPLAY_GUARD: &str = "REIFY_AUDIT_HOOK_ENV_REPLAY";
 /// NOTHING about this environment beyond the fact that it is replaying.
 const REPLAY_PLAIN_MARK: &str = "1";
 
-/// [`REPLAY_GUARD`]'s value for a child whose parent DID verify, in this same
-/// process and this same environment, that the orphan audit produces an
-/// envelope. The stronger claim, and the only one that entitles the child to
-/// treat a skip as a failure.
+/// [`REPLAY_GUARD`]'s value for a child carrying the envelope claim — see the
+/// earned-mark rule in this module's doc for what that claim is.
 ///
 /// Kept private alongside [`REPLAY_GUARD`], for the same single-source reason:
 /// [`ReplayMark::value`] and [`replay_child_expects_envelope`] are its only
@@ -97,8 +95,7 @@ pub enum ReplayMark {
     /// The parent verified NOTHING beyond the fact that it is replaying.
     Plain,
     /// The parent saw an audit envelope in this same environment moments
-    /// before spawning — the only claim that entitles the child to treat a
-    /// skip as a failure (see [`replay_child_expects_envelope`]).
+    /// before spawning. See [`replay_child_expects_envelope`].
     Envelope,
 }
 
@@ -153,22 +150,16 @@ pub fn assert_not_in_replay_child(helper: &str, consequence: &str) {
     );
 }
 
-/// True when this process is a replay child whose parent verified an audit
-/// envelope before spawning it — replay child-ness PLUS the fact that makes a
-/// skip inexplicable. The ONLY predicate a test may use to tighten an
-/// otherwise-graceful skip into a hard failure.
+/// True when this process is a replay child carrying [`ReplayMark::Envelope`]
+/// — the one predicate the earned-mark rule permits a test to tighten a
+/// graceful skip on. Rule, rationale and the regression behind it: see this
+/// module's doc.
 ///
-/// The guarantee comes from the spawn side:
+/// The spawn-side fact the rule rests on, which is local to this file:
 /// [`replay_self_under_hook_git_env_expecting_envelope`] is the only thing
-/// that stamps [`ReplayMark::Envelope`], and its contract is that the caller
-/// has already seen an envelope in this environment. So inside such a child a
-/// skip means the environment changed underfoot between two runs seconds
-/// apart — which, under an ambient hook git environment, is exactly the hazard
-/// the replay exists to catch.
-///
-/// Why mere child-ness may not be used here is stated once, in
-/// `tests/g_allow.rs`'s
-/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
+/// that stamps that mark, and it asserts the child it spawned reported
+/// [`ENVELOPE_BREADCRUMB`] back — so "this child was stamped by a caller that
+/// had seen an envelope" is checked, not merely documented.
 #[allow(dead_code)]
 pub fn replay_child_expects_envelope() -> bool {
     std::env::var(REPLAY_GUARD).as_deref() == Ok(REPLAY_ENVELOPE_MARK)
@@ -185,19 +176,17 @@ const ENVELOPE_BREADCRUMB: &str = "replay child: replay_child_expects_envelope()
 /// unconditionally from a test's first line.
 ///
 /// Call it from every test a
-/// [`replay_self_under_hook_git_env_expecting_envelope`] caller selects. That
-/// spawner asserts the breadcrumb came back, and that round trip is the only
-/// thing pinning the envelope path end-to-end: stamping [`ReplayMark::Plain`]
-/// there instead is a ONE-TOKEN change that otherwise leaves every test in this
-/// crate green while silently disabling the tightening
-/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` bounds.
-/// Deleting this call from the target test reddens that spawner for the same
-/// reason — fail-closed in both directions.
+/// [`replay_self_under_hook_git_env_expecting_envelope`] caller selects: that
+/// spawner asserts the breadcrumb came back, and the round trip is the ONLY
+/// thing pinning the envelope path end-to-end. Without it, stamping
+/// [`ReplayMark::Plain`] there instead is a one-token change that leaves every
+/// test in this crate green while disarming the whole mechanism (measured).
+/// Deleting this call reddens the same assertion — fail-closed both ways.
 ///
 /// Keyed on the PREDICATE rather than on the mark's name, deliberately: the
 /// breadcrumb then also dies if [`replay_child_expects_envelope`] stops
-/// recognising the value the spawner stamps, which is the other half of the
-/// wiring and is invisible to a check that merely re-prints `mark`.
+/// recognising the value the spawner stamps, which a check that merely
+/// re-prints `mark` cannot see.
 #[allow(dead_code)]
 pub fn announce_replay_mark() {
     if replay_child_expects_envelope() {
@@ -343,26 +332,24 @@ pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
     let _child_stderr = replay_with_mark(filters, expected_min, ReplayMark::Plain);
 }
 
-/// [`replay_self_under_hook_git_env`], but stamping the marker that entitles
-/// the replayed test to treat a skip as a hard failure
-/// ([`replay_child_expects_envelope`]).
+/// [`replay_self_under_hook_git_env`], but stamping [`ReplayMark::Envelope`].
 ///
-/// Call this ONLY after this process has verified, in this same environment,
-/// that the audit under replay actually produces an envelope. That verified
-/// fact is the whole content of the stronger mark — stamping it
-/// unconditionally would not tighten anything, it would just rename the
-/// weaker mark and restore the false RED this variant exists to prevent.
+/// PRECONDITION: call this only after this process has itself verified, in
+/// this same environment, that the audit under replay produces an envelope.
+/// That is the whole content of the mark; stamping it unconditionally renames
+/// the weaker mark rather than tightening anything. Why the mark must be
+/// earned: see the earned-mark rule in this module's doc.
 ///
 /// Everything else — the re-entrancy guard, the `--list` non-vacuity floor,
 /// the decoy, the poison, the status assertion and both post-run count checks
 /// — is shared verbatim with the plain variant, so the two spawn paths cannot
 /// drift apart.
 ///
-/// The breadcrumb assertion below is what makes THIS function's own claim
-/// checkable rather than merely asserted — see [`announce_replay_mark`], which
-/// the selected test must call. It lives here and not in [`replay_with_mark`]
-/// on purpose: a check keyed on that function's `mark` parameter would simply
-/// not run under the one-token mutation it exists to catch.
+/// The breadcrumb assertion below makes this function's stamp checkable rather
+/// than merely documented; see [`announce_replay_mark`], which the selected
+/// test must call. It lives here and not in [`replay_with_mark`] on purpose: a
+/// check keyed on that function's `mark` parameter would simply not run under
+/// the one-token mutation it exists to catch.
 #[allow(dead_code)]
 pub fn replay_self_under_hook_git_env_expecting_envelope(filters: &[&str], expected_min: usize) {
     let Some(child_stderr) = replay_with_mark(filters, expected_min, ReplayMark::Envelope) else {

@@ -21,9 +21,8 @@
 //! `crates/reify-kernel-gmsh/tests/rpath_smoke.rs`.
 //! The shared helper is in `reify_test_support::run_orphan_audit`.
 //!
-//! That skip has exactly ONE exception, and it is narrow by construction: a
-//! replay child whose parent verified an envelope in this same environment
-//! moments before spawning it (`common::git_env::replay_child_expects_envelope`).
+//! That skip has exactly one exception, `common::git_env`'s
+//! `replay_child_expects_envelope` — see the earned-mark rule, below.
 //!
 //! # The hook-git-env trio
 //!
@@ -40,9 +39,13 @@
 //!
 //! None can notice another going vacuous. Retire them together or not at all.
 //!
-//! The third's own doc is likewise the ONLY home for the separate rule that a
-//! replay child's hard failure needs an EARNED mark, not mere child-ness.
-//! Two rules, two homes, everything else a pointer.
+//! # The earned-mark rule
+//!
+//! A separate rule with a separate home: a replay child's hard failure needs
+//! an EARNED mark, not mere child-ness. That home is the third test's own doc.
+//! Every other mention — here, and throughout `common::git_env` — is a bare
+//! pointer to it and re-derives nothing, so editing that one doc really is
+//! editing every statement of the rule.
 
 use std::path::Path;
 use std::process::{Command, ExitStatus};
@@ -71,20 +74,17 @@ const TARGET_TEST: &str = "reify_audit_pub_fns_are_g_allow_marked";
 
 #[test]
 fn reify_audit_pub_fns_are_g_allow_marked() {
-    // A no-op outside an envelope-marked replay child. Inside one it is the
-    // breadcrumb `replay_self_under_hook_git_env_expecting_envelope` asserts on,
-    // which is the only thing pinning that the spawner really stamps the mark
-    // this test's tightening below keys on. Unconditional and first, so the
-    // breadcrumb is out before anything here can skip or panic.
+    // Unconditional and first, so the breadcrumb is out before anything below
+    // can skip or panic. See `common::git_env::announce_replay_mark`.
     common::git_env::announce_replay_mark();
 
     let audit = run_orphan_audit(SCOPE);
 
     // Defence-in-depth against `run_orphan_audit`'s public contract, which
-    // still permits `None` (see its doc for the causes). Scoped to a replay
-    // child whose parent EARNED the envelope mark, where a skip has no
-    // innocent reading; the graceful-skip path below is untouched everywhere
-    // else, including in a child stamped with the plain mark.
+    // still permits `None` (see its doc for the causes), scoped by the
+    // earned-mark rule to the one child where a skip has no innocent reading.
+    // The graceful-skip path below is untouched everywhere else, including in
+    // a plain-marked child.
     //
     // What this catches that the replay's child-exit-status assertion cannot:
     // a skip is a `return`, and libtest has no skipped state, so a skipping
@@ -160,13 +160,8 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// trio rather than a lone guard. The rule lives in this module's doc, under
 /// "The hook-git-env trio"; do not restate it here.
 ///
-/// # Where the graceful skip still rules
-///
-/// Everywhere except a child whose parent verified an envelope in this same
-/// environment — which is why this test probes first and spawns no child at
-/// all otherwise. Why the tightening may not key on mere child-ness instead is
-/// stated once, in
-/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
+/// This test probes first and spawns no child at all when the probe skips —
+/// see the earned-mark rule (module doc, and the test it names).
 ///
 /// (The original RED measurement, and the task-5605/5698 history of where the
 /// child dies, are in project memory — `search(project_id="reify", query="
@@ -194,18 +189,11 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// filter to actually select them.
 #[test]
 fn orphan_audit_survives_ambient_hook_git_env() {
-    // EARN the mark before spawning anything. The child is entitled to treat
-    // a skip as a failure only because THIS run just proved, in THIS
-    // environment, that the audit produces an envelope; without that proof the
-    // only honest thing a child could report is the same skip, so no child is
-    // spawned at all.
-    //
-    // The whole skip protocol is delegated to `run_orphan_audit` rather than
-    // re-probed here — the same decision the PART 2 helper makes, for the
-    // reason stated in its doc.
-    //
-    // Cost: one extra scoped script run in the parent, on top of the handful
-    // this binary already performs.
+    // EARN the mark before spawning anything — this call IS the earning, and
+    // the earned-mark rule is why it must precede the spawn. The whole skip
+    // protocol is delegated to `run_orphan_audit` rather than re-probed here,
+    // for the reason stated in `audit_script_stdout_poisoned_and_sanitized`'s
+    // doc. Cost: one extra scoped script run in the parent.
     if run_orphan_audit(SCOPE).is_none() {
         eprintln!(
             "run_orphan_audit({SCOPE:?}) produced no envelope in this environment, \
@@ -223,10 +211,11 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// established that this environment can produce an audit envelope — never on
 /// a mere "am I a replay child?".
 ///
-/// This doc is that rule's ONLY home. `common::git_env`'s two predicates,
-/// its module doc, and `orphan_audit_survives_ambient_hook_git_env` all point
-/// here instead of restating it — as this one points at "The hook-git-env
-/// trio" above rather than restating that.
+/// This doc is that rule's ONLY home: `common::git_env` (module doc, both
+/// predicates, both spawn entry points, the mark enum and its two constants),
+/// this module's own doc, and both other trio members carry a pointer to it
+/// and no re-derivation — as this doc points at "The hook-git-env trio" above
+/// rather than restating that. Editing here is editing the rule everywhere.
 ///
 /// # The regression this pins
 ///
@@ -426,65 +415,55 @@ struct AuditRun {
 /// not just the three vars this helper poisons. Returns `(poisoned,
 /// sanitized)` as [`AuditRun`]s.
 ///
-/// Both commands are built from one closure against one decoy, so the poison
-/// is the only difference between them apart from that sanitize call —
-/// structural rather than a comment two call sites could drift apart on.
-/// Calling the canonical [`reify_audit::git_env::sanitize`] directly, instead
-/// of hand-rolling a second removal loop over `REPO_REDIRECT_VARS`, is what
-/// keeps "sanitized" meaning what production means by it with no second copy
-/// of the strip list to drift out of sync — `common::git_env`'s own assertion
-/// that every var it poisons is one `sanitize` removes is what makes "the
-/// poisoned set is a subset of the sanitized set" a fact about the code
-/// rather than a claim in this comment.
+/// Both commands come from ONE closure against ONE decoy, so the environment
+/// is provably the only delta. `sanitize` is the canonical one production
+/// uses, not a hand-rolled removal loop over `REPO_REDIRECT_VARS`, so
+/// "sanitized" here means what production means by it; and
+/// `common::git_env`'s own assertion that every var it poisons is one
+/// `sanitize` removes makes "the poisoned set is a subset of the sanitized
+/// set" a fact about the code rather than a claim in this comment.
 ///
 /// # Graceful-skip protocol — delegated, not re-implemented
 ///
 /// Returns `None`, with an explanatory `stderr` note, exactly when
-/// `reify_test_support::run_orphan_audit` declines to hand back an envelope
-/// for `scope`. That one call IS the protocol — the `python3`/`git` presence
-/// probes, the script-on-disk check, the `repo_root`-is-a-git-work-tree probe
-/// and the `EXCLUDE_CRATES` membership test. Do not re-implement any of it
-/// here: its most fragile element is a git diagnostic string that probe keys
-/// on, so a second copy drifts the moment either git's wording or production's
-/// probe changes.
+/// `reify_test_support::run_orphan_audit` declines an envelope for `scope`.
+/// That one call IS the protocol — `python3`/`git` presence, script-on-disk,
+/// `repo_root`-is-a-git-work-tree, `EXCLUDE_CRATES` membership. Do not
+/// re-implement any of it: its most fragile element is a git diagnostic string
+/// the work-tree probe keys on, so a second copy drifts the moment either
+/// git's wording or that probe changes. Delegating also inherits the
+/// protocol's LOUD half — a `git rev-parse --show-toplevel` failing for a
+/// reason OTHER than "no repository here" (a corrupt `.git`, dubious ownership
+/// under this project's shared worktree topology) panics naming the probe's
+/// status and stderr, where the re-implementation swallowed both and left the
+/// caller blaming a broken `--scope`.
 ///
-/// That gate is a THIRD script run, and deliberately so: it duplicates the
-/// sanitized spawn's work (same script, same scope, same `current_dir`, same
-/// sanitize) and discards its envelope. Deriving the skip from the sanitized
-/// run instead would mean re-deciding "was this a skip?" from stdout and
-/// stderr here — the re-implementation the section above rules out, and it
-/// would lose the LOUD half below. The redundant spawn is what that costs.
+/// SKIPPING, rather than comparing, is the only honest answer, because every
+/// cause of that `None` empties BOTH halves: without `python3` the script
+/// exits 3 with no stdout either way, and an `EXCLUDE_CRATES` scope
+/// legitimately emits nothing (reachable by any future caller, since this
+/// helper is generic over `scope`). A caller comparing them would fail its
+/// "sanitized is non-empty" assertion while passing its "poisoned is empty"
+/// one — a spurious RED saying nothing about the hazard.
 ///
-/// Every cause of that `None` empties BOTH halves below — without `python3`
-/// the script exits 3 with no stdout either way; an `EXCLUDE_CRATES` scope
-/// legitimately emits nothing, reachable by any future caller since this
-/// helper is generic over `scope`. So a caller comparing the two halves would
-/// fail its "sanitized is non-empty" assertion while passing its "poisoned is
-/// empty" one: a spurious RED that says nothing about the hazard. Skipping is
-/// the only honest answer.
+/// The gate is a THIRD script run, duplicating the sanitized spawn's work and
+/// discarding its envelope. Deriving the skip from that run instead would mean
+/// re-deciding "was this a skip?" from stdout and stderr here — the
+/// re-implementation ruled out above, and it would lose the loud half. The
+/// redundant spawn is what that costs.
 ///
-/// Delegating also inherits the protocol's LOUD half. A `git rev-parse
-/// --show-toplevel` that fails for a reason OTHER than "no repository here" —
-/// a corrupt `.git`, dubious ownership under this project's shared
-/// warm-lane/worktree topology — is a condition where a repository IS expected
-/// to exist. Production panics on it, naming the probe's status and stderr;
-/// the re-implementation here swallowed both and fell through, so the caller
-/// blamed a broken `--scope` instead: the wrong diagnosis, with the right one
-/// already measured and discarded.
-///
-/// Must NOT be called from inside a poisoned replay child: the gate call
-/// would hit `run_orphan_audit`'s repo-root mismatch panic rather than
-/// skipping. Refused below via
-/// [`common::git_env::assert_not_in_replay_child`] rather than left to this
-/// comment plus the replay filter's substring choice, so widening that filter
-/// — or adding a test to this binary whose name happens to match it — fails on
+/// Must NOT be called from inside a replay child: the gate would hit
+/// `run_orphan_audit`'s repo-root mismatch panic rather than skipping. Refused
+/// below via [`common::git_env::assert_not_in_replay_child`] rather than left
+/// to this comment plus the replay filter's substring choice, so widening that
+/// filter — or adding a test here whose name happens to match it — fails on
 /// the precondition instead of three frames down inside `reify-test-support`.
 ///
-/// Spawn failures are hard failures, matching `run_orphan_audit`. This helper
-/// asserts nothing about either run itself; it reports stdout, status and
-/// stderr on [`AuditRun`] and leaves every judgement to the caller, which
-/// needs all three to tell "redirected into the empty decoy and ran to
-/// completion" (exit 0) from "aborted before scanning" (non-zero).
+/// Asserts nothing about either run: it reports stdout, status and stderr on
+/// [`AuditRun`] and leaves every judgement to the caller, which needs all
+/// three to tell "redirected into the empty decoy and ran to completion"
+/// (exit 0) from "aborted before scanning" (non-zero). Spawn failures are hard
+/// failures, matching `run_orphan_audit`.
 fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, AuditRun)> {
     common::git_env::assert_not_in_replay_child(
         "audit_script_stdout_poisoned_and_sanitized",
@@ -655,25 +634,18 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
 /// scan is redirected into the empty decoy tree, matches no source files, and
 /// emits nothing.
 ///
-/// The poisoned half asserts that exit status and that stderr marker, not just
-/// emptiness. Emptiness alone does not attribute the silence to the redirect:
-/// a decoy git REJECTS — a tempdir cleaned early, an init that left no usable
-/// object store — makes the same `git rev-parse` fail under the script's `set
-/// -euo pipefail`, so it aborts before scanning with empty stdout and a
-/// non-zero status. Without the status assertion that broken fixture reports
-/// as a green demonstration of the hazard. Keying on the script's own marker
-/// rather than git's `fatal:` wording keeps the string in this repo, so this
-/// adds no cross-tool coupling.
+/// Why the poisoned half asserts that exit status and that stderr marker
+/// rather than emptiness alone is at the assertions themselves, where a reader
+/// meeting a failure will be.
 ///
 /// BOTH halves are hard assertions, deliberately. Softening the poisoned half
 /// to an `eprintln!` would spare a script that hardened itself out of the
 /// hazard — but libtest swallows stderr on a passing test, so nothing
 /// observable would happen, and a harness regression that made the two halves
 /// identical would still report PASS. The hardening case is real but one-off:
-/// the
-/// sanctioned response is to retire this test deliberately, together with what
-/// it guards, not to leave it permanently self-disabled. The failure message
-/// says so.
+/// the sanctioned response is to retire this test deliberately, together with
+/// what it guards, not to leave it permanently self-disabled. The failure
+/// message says so.
 ///
 /// The sanitized-half assertions deliberately pin only "non-empty and parses
 /// as an envelope with a numeric `orphan_count`" — never a byte count or a
