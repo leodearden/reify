@@ -13111,6 +13111,30 @@ pub(crate) enum MixedRegionError {
         /// Per-element node count (4 for P1, 10 for P2).
         stride: usize,
     },
+    /// A tet index addresses a vertex that does not exist
+    /// (`>= tet.vertices.len() / 3`).
+    ///
+    /// The SEMANTIC sibling of the two STRUCTURAL checks above, completing the
+    /// structural-then-semantic pair that
+    /// `reify_solver_elastic::volume_refine::tet_shape` and
+    /// `reify_mesh_morph::elasticity::ElasticityFailure` both draw — without it
+    /// this gate would claim a parity it did not have.
+    ///
+    /// Unlike its siblings, this one guards a DEFERRED failure rather than an
+    /// immediate one: nothing in `build_mixed_region_mesh` dereferences the
+    /// connectivity it builds, so an out-of-range index is not a panic here —
+    /// it is copied verbatim into `UnifiedElement::connectivity` as
+    /// `n_shell + i`, yielding an apparently-valid `MixedRegionMesh` whose
+    /// element connectivity dangles past `nodes.len()`. The abort would then
+    /// land in whichever assembly path first indexes `nodes[conn[a]]`, far from
+    /// the malformed input that caused it.
+    InvalidTetIndex {
+        /// The offending index value, as found in `tet.tet_indices()`.
+        vertex_index: u32,
+        /// Number of tet vertices (`tet.vertices.len() / 3`) — the exclusive
+        /// upper bound every tet index must respect.
+        vertex_count: usize,
+    },
 }
 
 impl std::fmt::Display for MixedRegionError {
@@ -13141,6 +13165,14 @@ impl std::fmt::Display for MixedRegionError {
                 f,
                 "malformed tet connectivity: {len} indices is not a whole multiple \
                  of the {stride}-node per-element stride"
+            ),
+            MixedRegionError::InvalidTetIndex {
+                vertex_index,
+                vertex_count,
+            } => write!(
+                f,
+                "tet index {vertex_index} is out of range (the tet mesh has \
+                 {vertex_count} vertices)"
             ),
         }
     }
@@ -13176,10 +13208,22 @@ impl std::error::Error for MixedRegionError {}
 /// present (the pure merge with no interfaces tolerates non-finite nodes,
 /// since it performs no comparison on them). Returns
 /// [`MixedRegionError::UnsupportedConnectivity`] if `tet`'s connectivity is
-/// `Hex` or `Wedge` (this function is tet-only), or
+/// `Hex` or `Wedge` (this function is tet-only),
 /// [`MixedRegionError::MalformedTetIndices`] if its tet index buffer length is
-/// not a whole multiple of the per-element node count. Those last two form the
-/// up-front mesh-shape gate and run **first**, before any allocation.
+/// not a whole multiple of the per-element node count, or
+/// [`MixedRegionError::InvalidTetIndex`] if an index addresses a vertex that
+/// does not exist. Those last three form the up-front mesh-shape gate and run
+/// **first**, before any allocation; the two structural checks run before the
+/// semantic one, so a buffer that is both mis-sized and out-of-range reports
+/// `MalformedTetIndices`.
+///
+/// # Scope of the guarantee
+///
+/// The gate establishes that the emitted [`MixedRegionMesh`] is *structurally*
+/// addressable: every `UnifiedElement::connectivity` entry it produces on the
+/// tet side indexes a node that exists. It does NOT check vertex ORDERING,
+/// element quality, or degeneracy — a gated mesh is well-formed enough for a
+/// downstream consumer to index safely, not necessarily solvable.
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
@@ -13211,6 +13255,21 @@ pub(crate) fn build_mixed_region_mesh(
         return Err(MixedRegionError::MalformedTetIndices {
             len: tet_indices.len(),
             stride: nodes_per_tet,
+        });
+    }
+    // Semantic check, after the two structural ones: every index must address
+    // a tet vertex that exists. Unlike its siblings this guards a DEFERRED
+    // failure — nothing below dereferences the connectivity, so a dangling
+    // index is copied verbatim into `UnifiedElement::connectivity` as
+    // `n_shell + i` and the abort lands in whichever assembly path first
+    // indexes `nodes[conn[a]]`. Structural-before-semantic ordering mirrors
+    // `reify_solver_elastic::volume_refine::tet_shape` and
+    // `reify_mesh_morph::elasticity`.
+    let vertex_count = tet.vertices.len() / 3;
+    if let Some(&vertex_index) = tet_indices.iter().find(|&&i| i as usize >= vertex_count) {
+        return Err(MixedRegionError::InvalidTetIndex {
+            vertex_index,
+            vertex_count,
         });
     }
     // Exact (not truncating) now that divisibility is proven.

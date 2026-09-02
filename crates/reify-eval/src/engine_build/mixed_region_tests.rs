@@ -927,6 +927,81 @@
         );
     }
 
+    /// A correctly-SHAPED tet buffer carrying an out-of-range index VALUE must
+    /// be rejected at the same up-front gate.
+    ///
+    /// Both structural guards pass here — `Tet` connectivity, and 4 indices at
+    /// P1 stride 4 is exactly one element — so only the index *value* is wrong.
+    /// Unlike the solver-elastic sibling this is not a latent panic in
+    /// `build_mixed_region_mesh` itself: nothing here dereferences the
+    /// connectivity it builds, so an un-gated index 99 would be copied verbatim
+    /// into `UnifiedElement::connectivity` as `n_shell + 99` and returned as an
+    /// apparently-valid `MixedRegionMesh` whose element connectivity dangles
+    /// past `nodes.len()` — deferring the abort to whichever assembly path
+    /// first indexes `nodes[conn[a]]`. Mirrors
+    /// `refine_with_size_field_errors_on_out_of_range_tet_index` on the
+    /// `reify-solver-elastic` side.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_out_of_range_tet_index() {
+        let shell = make_shell_mesh();
+
+        let dangling = VolumeMesh {
+            vertices: vec![0.0_f32; 12], // 4 vertices ⇒ valid ids are 0..=3
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 99],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &dangling, &[])
+            .expect_err("index 99 addresses no vertex of a 4-vertex tet mesh");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4,
+            },
+            "an out-of-range index must be reported, not emitted verbatim into \
+             a MixedRegionMesh whose connectivity dangles past nodes.len()",
+        );
+
+        // Both defects at once (5 indices AND index 99): the structural check
+        // runs first, so the report names the shape, not the value.
+        let both = VolumeMesh {
+            vertices: vec![0.0_f32; 12],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 99, 3],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &both, &[])
+            .expect_err("a mis-sized AND out-of-range buffer must still error");
+        assert_eq!(
+            err,
+            MixedRegionError::MalformedTetIndices { len: 5, stride: 4 },
+            "structural-before-semantic: the shape defect wins over the value one",
+        );
+
+        // Positive control for the guarantee the gate buys: every connectivity
+        // entry of an ACCEPTED mesh addresses a node that exists, so a
+        // downstream `nodes[conn[a]]` cannot dangle.
+        let ok = make_p1_tet_mesh();
+        let mesh = build_mixed_region_mesh(&shell, &ok, &[])
+            .expect("a well-formed P1 tet mesh must still be accepted");
+        let n_nodes = mesh.nodes.len();
+        for elem in &mesh.elements {
+            for &node in &elem.connectivity {
+                assert!(
+                    node < n_nodes,
+                    "gated mesh emitted connectivity {node} >= nodes.len() {n_nodes}",
+                );
+            }
+        }
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
