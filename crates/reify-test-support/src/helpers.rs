@@ -746,6 +746,16 @@ pub fn run_modify_pipeline(
 /// carry sub-entity-scoped cells, check the returned cell's `id.entity` (or
 /// resolve by hand) rather than assuming the top-level cell was returned.
 ///
+/// This first-match-wins order is a deliberate compatibility trade-off, not
+/// an oversight: the ~280 call sites this helper was introduced to replace
+/// already resolve by member name alone, so an entity-aware or
+/// ambiguity-rejecting variant would not be a drop-in for them, and is
+/// pinned by `test_get_value_cell_in_resolves_first_match_when_member_name_is_ambiguous`
+/// below so a change to this order is a deliberate, visible decision rather
+/// than a silent regression. Add an entity-scoped sibling helper (e.g.
+/// `get_value_cell_of(module, template, entity, member)`) if a real caller
+/// needs one, rather than changing this helper's resolution order.
+///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
@@ -1857,7 +1867,11 @@ mod tests {
 
     /// Pins the ambiguity hazard documented on `get_value_cell_in`: resolution
     /// keys on `id.member` alone, so when two cells share a member name under
-    /// different `id.entity` values, the first declared silently wins.
+    /// different `id.entity` values, the first declared silently wins. This is
+    /// supported behaviour by design (see the rustdoc on `get_value_cell_in`),
+    /// not a bug to close — the alternatives (an entity-aware lookup, or a
+    /// panic on ambiguity) were considered and declined because they would
+    /// not be drop-in for the call sites this helper targets.
     #[test]
     fn test_get_value_cell_in_resolves_first_match_when_member_name_is_ambiguous() {
         use reify_core::{ModulePath, Type};
