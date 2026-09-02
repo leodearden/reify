@@ -32,9 +32,16 @@ use std::path::{Path, PathBuf};
 /// gate goes green over a kernel nothing exercised. A passing suite and a
 /// DELETED suite are indistinguishable from outside.
 ///
-/// `tests/infra/test_occt_deps_preflight.sh` pins that invariant by comparing
-/// this variant list against that script's marker-block names as SETS. The
-/// BEGIN/END marker comments below exist only to make this body
+/// `tests/infra/test_occt_deps_preflight.sh` pins that invariant in two parts,
+/// because a DECLARED arm and a GATING arm are not the same thing. The lexical
+/// half compares this variant list against that script's marker-block names as
+/// SETS. The behavioural half then drives the guard once per derived dep with
+/// that dep's lib dir (then its include dir) pointed at an EMPTY fixture and
+/// every other dep healthy, and asserts the guard REDS naming that dep's own
+/// declared sentinel — so a marker block that no presence check consumes fails
+/// there rather than passing the set comparison and shipping ungated.
+///
+/// The BEGIN/END marker comments below exist only to make this body
 /// machine-readable for that check — the enum stays the single source of
 /// truth, and nothing is duplicated anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

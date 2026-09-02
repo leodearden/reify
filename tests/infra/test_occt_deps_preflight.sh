@@ -1339,6 +1339,29 @@ assert "guard RECORDS the resolved OpenVDB version and both resolved dirs on the
 # The two non-empty asserts and the >= 3 assert come FIRST and are mandatory:
 # without them a dropped marker on either side degrades the comparison to
 # "" == "" and this section passes while guarding nothing.
+#
+# TWO HALVES, and the second is the load-bearing one. The set comparison above
+# is LEXICAL: it reads `# BEGIN <dep>-candidates` COMMENT lines and nothing
+# more. A fourth variant shipping candidate arrays inside a correctly named
+# marker block but NO consuming presence check — no dep_find_dir call, no
+# hint+exit — would satisfy it, satisfy section 10's parity asserts, and
+# satisfy the assert message, while the dep still degraded to a silent stub
+# kernel reporting zero tests. That is this task's own vacuity class, one level
+# up: a DECLARED arm and a GATING arm are not the same thing.
+#
+# So the loop below is BEHAVIOURAL. For each dep DERIVED from the guard's own
+# marker blocks it drives the guard with every other dep healthy and that dep's
+# lib dir (then its include dir) pointed at an EMPTY fixture, and asserts the
+# guard REDS naming that dep's declared sentinel and the offending dir. Both
+# sides are still derived — the dep names from the marker blocks, the sentinels
+# from `_bash_block_scalar` — so nothing is duplicated and a fourth dep is
+# covered the moment its block exists.
+#
+# The healthy-everything-else part is what keeps it non-vacuous: arms run in
+# declaration order and the first failure exits, so without it an UPSTREAM
+# arm's exit would satisfy the non-zero assert for a downstream dep that gates
+# nothing. The paired output assert names a DEP-SPECIFIC sentinel for the same
+# reason.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- 12: completeness — every NativeDep variant has a check-manifold-deps arm ---"
@@ -1375,5 +1398,61 @@ if [ -n "$_DEP_SET_DIFF" ]; then
 fi
 assert "every enum NativeDep variant has a '# BEGIN <dep>-candidates' arm in check-manifold-deps.sh" \
     test -z "$_DEP_SET_DIFF"
+
+# --- the behavioural half: each declared arm must actually GATE ------------
+
+# _env_replacing <VAR> <value> <env-item>... — the given VAR=VALUE override
+# list with <VAR>'s entry swapped for <value>, one item per line.
+#
+# Rebuilt rather than relying on `env` giving a later duplicate assignment
+# precedence: that IS how GNU env behaves, but it is a coreutils detail this
+# file should not silently depend on, and an explicit replace also makes the
+# failure-path `override:` dump show one value per var instead of two.
+# Fixture paths come from `mktemp -d` and contain no newlines, so a line-based
+# rendering is lossless here.
+_env_replacing() {
+    local var="$1" val="$2"
+    shift 2
+    local e
+    for e in "$@"; do
+        case "$e" in
+            "$var="*) continue ;;
+        esac
+        printf '%s\n' "$e"
+    done
+    printf '%s=%s\n' "$var" "$val"
+}
+
+_COMPLETENESS_EMPTY="$(_mk_empty_fixture completeness-empty)"
+
+# Herestring, NOT `printf | while read`: a pipeline would run the loop body in
+# a SUBSHELL and every assert's PASS/FAIL increment would be discarded with it,
+# leaving this section reporting nothing while appearing to run.
+while IFS= read -r _dep; do
+    [ -n "$_dep" ] || continue
+
+    # The uppercase form is the token the marker block, the override env vars
+    # and the sentinel/candidate names all already share, so it is derived, not
+    # listed.
+    _PREFIX="${_dep^^}"
+
+    for _half in LIB INCLUDE; do
+        _SENT="$(_bash_block_scalar "$_dep-candidates" "${_PREFIX}_${_half}_SENTINEL")"
+
+        # Mandatory, and first: an unparsed sentinel would make the output
+        # assert below match the empty needle against anything and pass while
+        # proving nothing.
+        assert "gate arm '$_dep': ${_PREFIX}_${_half}_SENTINEL parses non-empty from its marker block" \
+            test -n "$_SENT"
+
+        mapfile -t _GATE_ENVS < <(_env_replacing "${_PREFIX}_${_half}_DIR" "$_COMPLETENESS_EMPTY" "${_ALL_DEPS_OK[@]}")
+
+        assert "gate arm '$_dep' is BEHAVIOURAL: an empty ${_PREFIX}_${_half}_DIR reds the guard (every other dep healthy)" \
+            _guard_env_exits_nonzero "${_GATE_ENVS[@]}"
+
+        assert "gate arm '$_dep' names its own $_half sentinel ('$_SENT') and the offending dir — the red is attributable to $_dep" \
+            _guard_env_output_names "${_GATE_ENVS[@]}" -- "$_SENT" "$_COMPLETENESS_EMPTY"
+    done
+done <<< "$_BASH_GATED"
 
 test_summary
