@@ -1,12 +1,12 @@
 //! Integration tests for task η 3945 (trait-static fn dispatch).
 //!
-//! ## Step-1 / Step-2 (producer): registration in `traits_phase`
+//! ## Producer: registration in `traits_phase` (step 4)
 //!
 //! A trait's body-carrying static (no-`self`) assoc fn must be compiled and
 //! registered as a namespaced `CompiledFunction` named `"Trait::method"` in
 //! `CompiledModule.functions` at the end of `phase_traits`.
 //!
-//! ## Step-3 / Step-4 (consumer): `TraitStaticCall` dispatch arm
+//! ## Consumer: the `TraitStaticCall` dispatch arm
 //!
 //! `Trait::fn(args)` inside a structure body must lower to a
 //! `CompiledExprKind::UserFunctionCall { function_name: "Trait::fn", .. }`,
@@ -186,10 +186,18 @@ fn unknown_trait_static_call_emits_unknown_fn_diagnostic() {
         errors[0].message
     );
 
-    // The message must reference the unknown call site.
+    // The message must come from the `NoMatch`/`NoUserFunctions` branch's
+    // "trait not found in scope" refinement specifically (not the "requires a
+    // receiver" or "has no static function" refinements, and not a generic
+    // unresolved-name fallback), matching the doc comment above.
     assert!(
-        errors[0].message.contains("C") || errors[0].message.contains("make"),
-        "diagnostic should name the trait or method; got: {:?}",
+        errors[0].message.contains("unknown trait-static function"),
+        "expected the 'unknown trait-static function' diagnostic; got: {:?}",
+        errors[0].message
+    );
+    assert!(
+        errors[0].message.contains("C::make"),
+        "expected diagnostic to name 'C::make'; got: {:?}",
         errors[0].message
     );
 }
