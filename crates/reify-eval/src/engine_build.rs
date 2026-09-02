@@ -2222,7 +2222,6 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 /// - Convert { from }                 → `[BRep, Mesh]`
 /// - Primitive* / Curve*              → `[BRep]` (sources; classified to
 ///   document the 'not a Mesh-accepting consumer' decision; step-4 adds arms)
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
     use ReprKind::{BRep, Mesh, Voxel};
@@ -2303,7 +2302,6 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 /// Unclassified ops (`classify_op_input_reprs` returns `None`) return `false`,
 /// making them conservative: they do not accept Mesh, which forces their
 /// producers to demand BRep.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
 }
@@ -2317,7 +2315,6 @@ fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
 /// classified with multiple reprs that happen to include Voxel alongside
 /// Mesh/BRep — such an op would NOT be Voxel-only-input and must not force
 /// its producer to Voxel demand.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_is_voxel_only_input(op: &Operation) -> bool {
     op_accepts_repr(op, ReprKind::Voxel)
         && !op_accepts_repr(op, ReprKind::Mesh)
