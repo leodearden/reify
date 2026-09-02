@@ -108,8 +108,11 @@ Reify has no top-level const, same reason `g`/`c` are functions); `E_KINEMATIC_C
 noted reserved-but-dead (task 2671 v0.2 loop-closure recording); `center_of_mass`/
 `bounding_box` point-mass v0.1-approximation caveat; `Axis` noted as owned by the
 geometry-transforms cluster (currently `Vec3` at runtime); `joint_jacobian` (types as
-`JacobianColumn`, not `Twist` — see D8's superseding note) lives as `Map{angular,linear}`
-(the doc undersells it as "v0.2"); `.map`/`.windows`/`.norm`
+`JacobianColumn`, not `Twist` — see D8's superseding note) lives as a single
+`Map{angular,linear}` for 1-DOF joints and a `List` of such columns for
+cylindrical/planar/spherical, which the compiler still tags flat as `JacobianColumn`
+either way (multi-DOF shape fidelity owned by the builtin-signature registry, task 6005;
+the doc undersells it as "v0.2"); `.map`/`.windows`/`.norm`
 method-call forms in §13.6 marked non-Reify (free-function forms only).
 
 ## §3 — Pre-conditions for activating
@@ -228,21 +231,29 @@ Greek-letter batch `stdlib-mechanism-2026-06-03`. All filed `planning_mode=True`
   disjoint (units.rs test).
   *Signal:* `reify check` types `let j = prismatic(vec3(1,0,0), 0mm..1m)` as `Prismatic`
   and `let b = bind(j, 5mm)` as `JointBinding` (compiler cell-type test + LSP hover).
-  *Consumer:* γ + LSP hover. *Deps:* γ (the `JointBinding`/`Twist` decls must exist to
-  type into).
+  *Consumer:* γ + LSP hover. *Deps:* γ (the `JointBinding`/~~`Twist`~~ decl must exist
+  to type into — β no longer types anything as `Twist`, see the struck constructor-list
+  entry above). The `joint_jacobian`→`JacobianColumn` mapping instead depends on task
+  6102, which declared `JacobianColumn` after γ had already landed — see D8's
+  superseding note.
 
 - **γ (gamma) — L2 `trait Joint` hierarchy + `JointBinding`/`Twist` decls + compile-time `DrivingJoint`-bound enforcement** *(code; the enforcement payoff)*
   In `kinematic.ri`: add `trait Joint {}`, `trait DrivingJoint : Joint {}`, `: Joint`
   clauses on `Coupling`/`Fixed`, and marker `structure def JointBinding {}` +
-  `structure def Twist {}` (D8). Give `bind`/`sweep`/`dim` compile-time
+  `structure def Twist {}` (D8) — `JacobianColumn`, the type `joint_jacobian` actually
+  types into per D8's superseding note, is **not** one of γ's decls: task 6102 declared
+  it later, with real `angular`/`linear` fields rather than as a field-less marker like
+  these two. Give `bind`/`sweep`/`dim` compile-time
   `DrivingJoint`-conformance checks on their joint arg (via `satisfies_trait_bound`),
   emitting `E_MECHANISM_NONDRIVING_JOINT` (naming the offending type) when given a
   `Coupling`/`Fixed`. Tighten `snapshot`'s `bindings` param toward `List<JointBinding>`.
   *Signal (two-way boundary test):* `reify check` **rejects** `bind(couple(...), v)` with
   `E_MECHANISM_NONDRIVING_JOINT` naming `Coupling`, and **accepts** `bind(prismatic(...),
   v)`. *Consumer:* end user (`reify check` / GUI). *Deps:* δ, α (shares the diagnostic
-  code). *Note:* β depends on γ for the `JointBinding`/`Twist` decls; γ does **not**
-  depend on β — they co-land but the `.ri` decls precede the signature wiring.
+  code). *Note:* β depends on γ for the `JointBinding`/~~`Twist`~~ decl (γ does **not**
+  depend on β — they co-land but the `.ri` decls precede the signature wiring); β's
+  `joint_jacobian`→`JacobianColumn` mapping instead depends on task 6102's later decl,
+  not on γ — see D8's superseding note.
 
 - **L3 (deferred forward-stub) — generic `Coupling<P>` / `MotionValue<J>` dimensional typing** *(code; deferred)*
   Make `couple<P: DrivingJoint>` generic; declare `Coupling<P>` and the `MotionValue<J>`
@@ -259,7 +270,10 @@ Greek-letter batch `stdlib-mechanism-2026-06-03`. All filed `planning_mode=True`
   `JointBinding`/generic `Coupling<P>`/`Twist` runtime-`Map` with the typed/generic
   spelling linked to the L3 stub; `Axis`→G-C); `center_of_mass`/`bounding_box` point-mass
   v0.1 caveat; `joint_jacobian` lives now, returning `JacobianColumn` (not `Twist` — see
-  D8's superseding note); §13.6 (FK-interference works in the
+  D8's superseding note) — a single `Map{angular,linear}` for 1-DOF joints, a `List` of
+  such columns for cylindrical/planar/spherical, tagged flat as `JacobianColumn` either
+  way (multi-DOF shape fidelity owned by the builtin-signature registry, task 6005);
+  §13.6 (FK-interference works in the
   build path; swept `.map(interferes)` + `dock_pickup.ri` owned by KCC 3848; `.map`/
   `.windows`/`.norm` method-call forms are non-Reify → free-function forms). Flip the 10
   P19 gap-register rows.
