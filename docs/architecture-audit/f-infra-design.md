@@ -335,7 +335,9 @@ end of §11.1 is therefore still outstanding as of this task.
 - **The wrapper's freshness guard is bypassed on the live hook path.** Invoking
   the binary directly skips `scripts/reify-audit-predone-wrapper.sh`, and with it
   the REFUSE-mode freshness guard that would exit 125 rather than run a stale
-  detector; a stale install is served silently instead. Measured:
+  detector; a stale install is served silently instead. (SUPERSEDED as to policy
+  by §11.1.5 — the wrapper no longer refuses on staleness, it falls open with an
+  alarm. The bypass observation itself stands.) Measured:
   `/home/leo/.cargo/bin/reify-audit` has mtime `2026-06-09 23:32`, while the last
   commit touching `crates/reify-audit/` on `main` is `d8e36e3e4c` (2026-08-25) —
   ~77 days newer, i.e. stale by the guard's own freshness reference.
@@ -409,6 +411,112 @@ whose `metadata.files` genuinely does not correspond to what landed, which is th
 working as designed. And note the exposure is currently **deferred, not removed**: per
 §11.1.3 the live hook still runs the stale 2026-06-09 binary, so the armed gate has zero
 live effect until step 2 above is performed.
+
+#### 11.1.5 The freshness guard fails OPEN (2026-09-02, task 7139)
+
+§11.1.3 and §11.1.4 above describe the guard as REFUSE-mode: a stale
+`REIFY_AUDIT_BIN` exits 125 "rather than run a stale detector". That policy is
+reversed as of this task. A stale-but-runnable binary now emits a
+self-describing `E_AUDIT_BIN_STALE` advisory to stderr and the detector runs
+anyway; only an **unrunnable** binary (`E_AUDIT_BIN_MISSING`), or an operator
+who armed `REIFY_AUDIT_FRESHNESS_STRICT=1`, still exits 125.
+
+**Why: refuse mode was a project-wide outage, not a safeguard.** The wrapper is
+a synchronous pre-done hook. Measured read-only against dark-factory
+`fused-memory/src/fused_memory/middleware/pre_done_hook.py`: `returncode == 0`
+returns `None` and ALLOWS the flip (:222-223); any non-zero rc becomes
+`pre_done_hook_rejected` and BLOCKS it. So one stale binary blocked **every**
+done-flip in the project until a human ran `cargo install`.
+
+That is not a rare edge. `git log --since=90.days main -- crates/reify-audit`
+counts 361 commits — ~4/day — and the freshness reference is the last commit
+epoch of that path, so it advances several times a day. Each advance re-wedges
+the project. The recorded instance ran **~15.7h** over 2026-08-30/31 (crate
+epoch `617a053837` at 17:41 BST; reinstall at 09:25:51 BST the next morning),
+and no automated repair path exists. Measured 2026-09-02: the only
+`cargo install --path crates/reify-audit` invocation anywhere in `hooks/`,
+`scripts/` or `dark-factory-orchestrator.yaml` is in the one-shot, operator-run
+`scripts/deploy-reify-audit-predone-hook.sh`. Every other `cargo install` in
+the tree installs a DIFFERENT tool (`setup-dev.sh`: sccache, cargo-nextest,
+tree-sitter-cli) or is a hint string inside a diagnostic message
+(`reify-audit-freshness.sh`, `reify-audit-predone-wrapper.sh`,
+`smoke-predone-hook.sh`, `tree-sitter-generate.sh`). And `hooks/` contains only
+`main-gate-lib.sh`, `pre-commit`, `pre-merge-commit`, `project-checks` and
+`reference-transaction` — there is no post-merge hook to hang a reinstall on.
+
+**Why the tokens are self-describing.** The outage produced three escalations —
+esc-7042-2, esc-6315-2, esc-6120-5 — and all three misattributed it: they
+blamed stale `metadata.files` and the `done_provenance` ancestor check, neither
+of which was involved. The 125 was cryptic enough that competent triage went to
+the wrong subsystem three times. Both message forms therefore now lead with a
+stable machine token, state explicitly that this is *infrastructure* and NOT an
+audit finding about `metadata.files` or `done_provenance`, carry the exact
+one-line remedy, and report the two observed numbers (binary mtime, crate
+epoch) — all inside `pre_done_hook.py`'s `_STDERR_CLIP = 2000` (:51), which is
+what bounds what a triager actually sees.
+
+**Why not auto-reinstall instead.** The hook runs INSIDE fused-memory's
+per-project write lock with a 30s timeout (:25-31, :151), while
+`cargo install --path crates/reify-audit` pulls the whole reify compiler stack
+via `reify-test-support`. Inline reinstall would convert a refusal into a
+*timeout* refusal and serialize every task mutation on the project behind a 30s
+stall per flip. `scripts/release-sensitive-crates.txt` is likewise the wrong
+lever: it declares debug-vs-release TEST scope, never invokes `cargo install`,
+and is set-equality-gated by `tests/infra/test_release_scoped_scope.sh`.
+
+**The advisory needs a channel that survives rc 0 (added in review).** Making
+the guard exit 0 has a trap of its own, and it is the same one §11.1.4 records
+for `REIFY_AUDIT_PREDONE_WARN_ONLY`: `pre_done_hook.py` captures the
+subprocess's stderr with `stderr=PIPE` and surfaces it ONLY on a non-zero exit,
+so on the live hook path an rc-0 advisory is captured and **discarded**. Left at
+stderr alone, fail-open would have traded a loud outage for a *silent* one — at
+~4 commits/day the fleet would sit permanently on a stale P5 detector with no
+operator-visible signal, and the only thing that ever surfaced the token would
+be an attended `deploy-reify-audit-predone-hook.sh` run.
+
+So `reify-audit-predone-wrapper.sh` captures the guard's stderr, re-emits it
+verbatim (the rc-125 path is unchanged — that one *is* surfaced) and also
+records it on two channels the hook cannot swallow:
+
+1. the **systemd journal**, via `logger -t reify-audit-predone`. The wrapper's
+   parent is `fused-memory.service`, so `journalctl --user -t
+   reify-audit-predone` shows it with no extra wiring.
+2. a **one-line sentinel file** — `REIFY_AUDIT_ADVISORY_SENTINEL`, default
+   `${TMPDIR:-/tmp}/reify-audit-predone-advisory.$(id -u)`. Truncate-written,
+   never appended, because the condition persists across every done-flip for
+   hours-to-days and an append would turn one stale binary into unbounded
+   `/tmp` growth. Its **presence** answers "is the fleet running a stale
+   detector?", its **mtime** answers "since when?", and a fresh binary writes
+   nothing — so absence means healthy.
+
+Both are strictly best-effort and neither can change the exit code: an
+observability path that could block a done-flip would reintroduce the outage
+this task removed (pinned by Check 9g in
+`tests/infra/test_reify_audit_predone_wrapper.sh`, which points the sentinel at
+an unwritable path and asserts rc 0). Residual limits, accepted: the sentinel
+is host-local and per-uid, nothing sweeps it on a schedule today, and `logger`
+is best-effort — a host without it degrades to the sentinel alone. Wiring a
+scheduled read-only sweep over the sentinel (the `warm-lane-audit.sh` shape) is
+follow-up work, not part of this task.
+
+**A caller typo cannot reinstate the refusal (added in review).**
+`reify_audit_guard` had no mode validation, so any unrecognised mode string fell
+through to the terminal `return 125` refuse path — one slip at the wrapper's
+call site (`warm-open`) would have restored the outage with the OLD cryptic
+message. Unknown modes now emit `E_AUDIT_GUARD_BAD_MODE` and are treated as
+`warn-open`.
+
+**Consumers diverge deliberately.** Fail-open is right for the unattended
+done-flip hot path. It is wrong for an ATTENDED deploy that just claimed to
+have installed a fresh binary, so `deploy-reify-audit-predone-hook.sh` step 6
+now treats an `E_AUDIT_BIN_STALE` advisory as fatal *regardless of rc* — without
+that, a fail-open probe would have reported a green deploy over a stale fleet,
+and that script is the `before_done` action of deterministic task #6939.
+
+**Not closed by this task:** sibling task 6642 replaces the mtime PREDICATE with
+a content-derived one (the case where a stale binary looks FRESH). This task
+changes the POLICY applied once staleness is detected. They are orthogonal and
+compose.
 
 ### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
 
