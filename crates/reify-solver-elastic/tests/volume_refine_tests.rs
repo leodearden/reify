@@ -6,6 +6,7 @@
 //! `reify-solver-elastic` crate has no build.rs that propagates `has_gmsh`).
 
 use reify_kernel_gmsh::MeshingOptions;
+use reify_solver_elastic::refine_marked_elements;
 use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 
@@ -135,6 +136,48 @@ fn dummy_surface() -> Mesh {
     }
 }
 
+/// Hex8 `VolumeMesh` (8 vertices, P1-only) — non-tetrahedral connectivity
+/// used to exercise the tet-only connectivity guard (task 4996).
+fn hex_vm() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            1.0, 1.0, 0.0, // 2
+            0.0, 1.0, 0.0, // 3
+            0.0, 0.0, 1.0, // 4
+            1.0, 0.0, 1.0, // 5
+            1.0, 1.0, 1.0, // 6
+            0.0, 1.0, 1.0, // 7
+        ],
+        connectivity: VolumeConnectivity::Hex {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Wedge/PRI6 `VolumeMesh` (6 vertices, P1-only) — non-tetrahedral
+/// connectivity used to exercise the tet-only connectivity guard (task 4996).
+fn wedge_vm() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            0.0, 1.0, 0.0, // 2
+            0.0, 0.0, 1.0, // 3
+            1.0, 0.0, 1.0, // 4
+            0.0, 1.0, 1.0, // 5
+        ],
+        connectivity: VolumeConnectivity::Wedge {
+            indices: vec![0, 1, 2, 3, 4, 5],
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
 /// `size_hints` with wrong length must return `SizeHintsLengthMismatch`.
 #[test]
 fn size_hints_length_mismatch_errors() {
@@ -183,6 +226,254 @@ fn non_finite_size_errors() {
     assert!(
         matches!(result, Err(RefineError::NonFiniteSize { index: 1 })),
         "expected NonFiniteSize {{index: 1}}, got: {result:?}",
+    );
+}
+
+/// A Hex `VolumeMesh` passed to `refine_with_size_field` (tet-only) must be
+/// rejected via `RefineError::UnsupportedConnectivity` from the
+/// `tet_shape` guard, before any size-hint validation or gmsh call
+/// (task 4996).
+#[test]
+fn refine_with_size_field_errors_on_hex_connectivity() {
+    let surface = dummy_surface();
+    let vm = hex_vm();
+    let opts = MeshingOptions::default();
+
+    // size_hints length is irrelevant here: the connectivity guard fires
+    // before the length check.
+    let result = refine_with_size_field(&surface, &vm, &[], &opts);
+    assert!(
+        matches!(result, Err(RefineError::UnsupportedConnectivity)),
+        "expected UnsupportedConnectivity, got: {result:?}",
+    );
+}
+
+/// A Wedge `VolumeMesh` passed to `refine_marked_elements` (tet-only) must be
+/// rejected via `RefineError::UnsupportedConnectivity` from the shared
+/// `tet_shape` chokepoint, before any size-hint/marked-index validation
+/// or gmsh call (task 4996).
+#[test]
+fn refine_marked_elements_errors_on_wedge_connectivity() {
+    let surface = dummy_surface();
+    let vm = wedge_vm();
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[], &[], &opts);
+    assert!(
+        matches!(result, Err(RefineError::UnsupportedConnectivity)),
+        "expected UnsupportedConnectivity, got: {result:?}",
+    );
+}
+
+/// One-element P2 tet `VolumeMesh` (10 nodes, stride 10) — the only fixture in
+/// this crate's suites that exercises the non-P1 branch of
+/// `VolumeMesh::nodes_per_element()`.
+///
+/// Node positions are irrelevant to `tet_shape`, which reads only the
+/// index-buffer length and the order tag; they are laid out as the 4 corners
+/// followed by the 6 edge midpoints so the fixture reads as a real P2 tet.
+fn one_p2_tet_vm() -> VolumeMesh {
+    VolumeMesh {
+        #[rustfmt::skip]
+        vertices: vec![
+            // 4 corners
+            0.0_f32, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            // 6 edge midpoints
+            0.5, 0.0, 0.0,
+            0.5, 0.5, 0.0,
+            0.0, 0.5, 0.0,
+            0.0, 0.0, 0.5,
+            0.5, 0.0, 0.5,
+            0.0, 0.5, 0.5,
+        ],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            order: ElementOrderTag::P2,
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Stride regression pin: `tet_shape` must divide a P2 tet index buffer by
+/// 10, not 4.
+///
+/// Every other fixture in this crate's suites is P1 (stride 4), so without
+/// this test the P2 branch of `VolumeMesh::nodes_per_element()` — adopted when
+/// the crate-local `nodes_per_element(order)` helper was deleted — is
+/// unexercised here, and a stride regression would surface only as a silently
+/// wrong element count. Asserting `expected: 1` (not `expected: 2`) on the
+/// length-mismatch report pins the divisor: 10 indices / 10 nodes = 1 element.
+#[test]
+fn tet_shape_divides_p2_tet_indices_by_ten() {
+    let surface = dummy_surface();
+    let vm = one_p2_tet_vm(); // 10 indices, P2 → exactly 1 element
+    let size_hints = vec![1.0_f64; 3]; // deliberately wrong length
+    let opts = MeshingOptions::default();
+
+    let result = refine_with_size_field(&surface, &vm, &size_hints, &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::SizeHintsLengthMismatch { got: 3, expected: 1 })
+        ),
+        "expected SizeHintsLengthMismatch {{got: 3, expected: 1}} (10 indices / \
+         10 nodes per P2 tet = 1 element; a stride-4 divisor would report 2), \
+         got: {result:?}",
+    );
+}
+
+/// Tet index buffer whose length is not a whole multiple of the per-element
+/// node count — 5 indices at P1 stride 4 — must be rejected at the
+/// `tet_shape` chokepoint.
+///
+/// Before the divisibility guard, the truncating division reported 1 element,
+/// so `size_hints` of length 1 cleared the length check and
+/// `project_per_element_sizes_to_vertices` then panicked with an
+/// index-out-of-bounds on the trailing remainder chunk emitted by
+/// `chunks(4)`. This pins the structured error in place of that panic.
+#[test]
+fn refine_with_size_field_errors_on_non_multiple_tet_indices() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 15], // 5 vertices × 3 coords
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4], // 5 indices, P1 stride 4 → not a multiple
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    // Length 1 is exactly what the old truncating count would have accepted.
+    let result = refine_with_size_field(&surface, &vm, &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "expected MalformedTetIndices {{len: 5, stride: 4}} rather than a \
+         downstream index-out-of-bounds panic, got: {result:?}",
+    );
+}
+
+/// The same malformed buffer must be rejected through the `adaptive` entry
+/// point too — both public entry points share the `tet_shape` chokepoint.
+#[test]
+fn refine_marked_elements_errors_on_non_multiple_tet_indices() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 15],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "expected MalformedTetIndices {{len: 5, stride: 4}}, got: {result:?}",
+    );
+}
+
+/// A correctly-SHAPED tet buffer carrying an out-of-range index VALUE must be
+/// rejected at the same chokepoint.
+///
+/// The structural guards (connectivity family, length divisibility) pass here:
+/// 4 indices at P1 stride 4 is exactly one element. Only the index *value* is
+/// wrong — 99 with 4 vertices — which used to reach
+/// `project_per_element_sizes_to_vertices` and abort the process on its
+/// unguarded `vertex_sizes[99]`. This pins the structured error in place of
+/// that panic (mirrors `reify-mesh-morph`'s `InvalidTetIndex`).
+#[test]
+fn refine_with_size_field_errors_on_out_of_range_tet_index() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 12], // 4 vertices × 3 coords ⇒ valid ids are 0..=3
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    // One hint for one element: the size-hint length check would pass, so the
+    // only thing standing between this mesh and the panic is the index gate.
+    let result = refine_with_size_field(&surface, &vm, &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4
+            })
+        ),
+        "expected InvalidTetIndex {{vertex_index: 99, vertex_count: 4}} rather \
+         than an index-out-of-bounds panic in the projector, got: {result:?}",
+    );
+}
+
+/// The out-of-range index must be rejected through the `adaptive` entry point
+/// too, and the STRUCTURAL check must win when a buffer is both mis-sized and
+/// out-of-range.
+#[test]
+fn refine_marked_elements_errors_on_out_of_range_tet_index() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 12], // 4 vertices
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4
+            })
+        ),
+        "expected InvalidTetIndex {{vertex_index: 99, vertex_count: 4}}, got: {result:?}",
+    );
+
+    // Both defects at once (5 indices AND index 99): the structural check runs
+    // first, so the report names the shape, not the value.
+    let both = VolumeMesh {
+        vertices: vec![0.0_f32; 12],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99, 3],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let result = refine_marked_elements(&surface, &both, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "a mesh that is both mis-sized and out-of-range must report the \
+         structural defect first, got: {result:?}",
     );
 }
 
