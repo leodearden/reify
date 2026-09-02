@@ -477,11 +477,20 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// gated on `is_generic`: the genericity in question belongs to the CALLER
 /// whose body produced the `T`-typed value, not to the candidate being
 /// matched.
+///
+/// DISJUNCT ORDER IS A COST HEURISTIC, NOT SEMANTICS. Every disjunct is pure
+/// and side-effect-free, so `||` short-circuiting can only change how much
+/// work is done, never the answer. `param_ty == arg_ty` is placed ahead of
+/// [`type_carries_type_param`]`(arg_ty)` because the equality bails on the
+/// first differing discriminant, whereas the arg-side walk descends the whole
+/// argument type — and on the eval hot path this predicate runs for every
+/// arity-matching non-exact candidate in the merged prelude table. Reordering
+/// (or adding) disjuncts is therefore free; do not read meaning into it.
 pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
     type_carries_trait_object(param_ty)
         || (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
-        || type_carries_type_param(arg_ty)
         || param_ty == arg_ty
+        || type_carries_type_param(arg_ty)
 }
 
 /// Tier 2 of the ladder — the middle tie-break gate (HEAD).
@@ -526,6 +535,12 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
 /// [`slot_matches_wildcard_tier`], never standalone — it is NOT a subset of
 /// tier 3. See this module's `//!` doc and the executable counterexample
 /// `slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier`.
+///
+/// The disjuncts are listed in a DIFFERENT order from
+/// [`slot_matches_wildcard_tier`]'s, and that difference carries no meaning:
+/// this tier's arg-side disjunct is an O(1) `matches!` rather than a recursive
+/// walk, so there is nothing to hoist `param_ty == arg_ty` ahead of. See that
+/// function's cost-heuristic note.
 pub fn slot_matches_head_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
     type_carries_trait_object(param_ty)
         || (is_generic && (heads_unifiable(param_ty, arg_ty) || type_carries_dim_param(param_ty)))
