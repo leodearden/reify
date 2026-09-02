@@ -13011,11 +13011,12 @@ where
 // tet seam, T6, and the engine-bridge PRD (δ/ε) respectively.
 //
 // The whole seam is `#[allow(dead_code)]` because its consumer — the
-// engine-bridge mixed solve wiring — is a future task; this mirrors the
-// `dispatch_volume_mesh` G-allow pattern above.
+// engine-bridge mixed solve wiring — is a future task: #6371, "Wire
+// build_mixed_region_mesh (T12 layer-B seam) into a production consumer".
+// This mirrors the `dispatch_volume_mesh` G-allow pattern above.
 
 /// Per-element kind tag in a [`MixedRegionMesh`].
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnifiedElementKind {
     /// A mid-surface shell element (one per shell triangle, 6 DOF/node).
@@ -13025,7 +13026,7 @@ pub(crate) enum UnifiedElementKind {
 }
 
 /// One element of the unified mixed mesh, referencing unified node ids.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UnifiedElement {
     /// Whether this element is meshed as a shell or a tet.
@@ -13037,7 +13038,7 @@ pub(crate) struct UnifiedElement {
 
 /// Unified mixed shell/tet mesh: a single node list, per-element kind tags, and
 /// the shell↔tet interface MPC constraint rows.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone)]
 pub(crate) struct MixedRegionMesh {
     /// Unified node positions (world, f64). Shell vertices first, then tet
@@ -13221,7 +13222,7 @@ impl std::error::Error for MixedRegionError {}
 /// tet side indexes a node that exists. It does NOT check vertex ORDERING,
 /// element quality, or degeneracy — a gated mesh is well-formed enough for a
 /// downstream consumer to index safely, not necessarily solvable.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
     tet: &VolumeMesh,
@@ -13433,13 +13434,13 @@ pub(crate) fn build_mixed_region_mesh(
 }
 
 /// Dot product of two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Squared Euclidean distance between two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -13449,7 +13450,7 @@ fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// Index of the node in `nodes` nearest (Euclidean) to `target`; `None` if
 /// `nodes` is empty. Ties resolve to the lowest index (deterministic).
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &p) in nodes.iter().enumerate() {
@@ -13476,7 +13477,7 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 /// (not one per non-finite node) when any candidate's squared distance was
 /// non-finite, as telemetry for the mis-selection this fallback can still
 /// cause.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
     // Latches on any non-finite dist3_sq (NaN, or +INFINITY from a non-finite
     // or overflowing coordinate) for the WARN below, and normalizes NaN to
