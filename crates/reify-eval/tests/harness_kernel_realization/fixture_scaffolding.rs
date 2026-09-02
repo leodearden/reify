@@ -41,18 +41,9 @@
 //!
 //! The same reasoning covers the cell-assertion helpers below: a pin's
 //! *reading* of a built `BuildResult` cell is as copy-pasteable as its
-//! building, and a message-format tweak in one copy silently desynchronises
-//! the rest. They live here so that any pin adopting them reports a failing
-//! cell identically. (Enumerating them here would be the same register this
-//! header refuses to keep for the build helpers — each fn's own doc comment
-//! says what it pins.)
-//!
-//! Adoption follows a CRITERION, deliberately stated instead of a per-module
-//! list. The paragraph replaced here (task #6491) kept a register — "the sole
-//! consumer is …; nine sibling modules still hand-roll …" — and duly fell out
-//! of lockstep the moment the next adopting task landed, which is precisely the
-//! failure this header avoids everywhere else. A fresh list would only re-arm
-//! it. The rule instead:
+//! building, so they live here and any pin adopting one reports a failing cell
+//! identically. Adoption follows a CRITERION, deliberately stated instead of a
+//! per-module list:
 //!
 //! **Adopt a helper where it pins EXACTLY what the call site already pinned.
 //! Never widen a tolerance, and never relax an exactness, to make a call site
@@ -60,15 +51,9 @@
 //! would serve exactly one call site, since it closes no duplication and buys
 //! only indirection.
 //!
-//! What that criterion excludes is a property of the VALUE, not a backlog of
+//! What the criterion admits is a property of the VALUE, not a backlog of
 //! unconverted modules — so a pin reading a cell directly is not thereby
-//! behind. `assert_bool_cell` and `assert_length_cell` fit `Value::Bool` and
-//! LENGTH-dimension `Value::Scalar` cells and nothing else, so a scalar in
-//! another dimension (ANGLE), a rank-2 `Value::Tensor`, a variant-only
-//! non-`Undefined` check, and a multi-component `Point` walk each stay at their
-//! call sites by construction. `ValueCellId::new` appearing in a module is not
-//! evidence either way: some uses are `edit_param` ARGUMENTS naming a cell to
-//! mutate, never a cell read, and no cell-assertion helper applies to those.
+//! behind. Each helper's own doc comment states the shape it pins.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
@@ -279,12 +264,6 @@ pub(crate) fn assert_length_cell(
 /// a single `Leaf` of the expected `kind`, then runs `check_query` against the
 /// leaf's `LeafQuery` (task 4118 γ).
 ///
-/// The third cell-assertion helper class alongside `assert_bool_cell` and
-/// `assert_length_cell`, and the one that closes a duplication rather than
-/// merely offering to: its two consumers — `kernel_queries_directional_selectors`
-/// and `kernel_queries_filtered_edges` — each carried a BYTE-IDENTICAL local
-/// copy of this body before task #6491 hoisted it here.
-///
 /// Takes the already-read `Option<&Value>` rather than a `(&BuildResult,
 /// struct_name, cell_name)` triple like its two siblings, because what varies
 /// per call site here is the leaf predicate, not the read: the caller's
@@ -293,17 +272,9 @@ pub(crate) fn assert_length_cell(
 /// `Leaf`) and nothing else. That keeps a tolerance out of this file, where it
 /// could only be a shared default that silently retunes a pin.
 ///
-/// Further copies of this helper live in OTHER harnesses
-/// (`harness_topology_selector`, `harness_geometry`) and are deliberately out of
-/// reach: this module belongs to the `harness_kernel_realization` test binary
-/// only, so serving them would mean promoting the helper into the shared
-/// `reify-test-support` crate. Those copies have already drifted into differing
-/// panic messages and, in `topology_selector_runtime.rs`, a differing signature,
-/// so unifying them is a design question rather than a mechanical hoist.
-///
-/// `#[track_caller]` is load-bearing now that the fn lives in a different file
+/// `#[track_caller]` is load-bearing because the fn lives in a different file
 /// from its callers: without it a failure would report `fixture_scaffolding.rs`
-/// and lose WHICH pin broke — strictly worse than the local fn it replaces.
+/// and lose WHICH pin broke.
 #[track_caller]
 pub(crate) fn assert_selector_leaf(
     cell_value: Option<&Value>,
