@@ -653,6 +653,325 @@ fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
 }
 
 // ---------------------------------------------------------------------------
+// The UNVERIFIABLE-form arms — a plane-angle unit this guard cannot read
+// ---------------------------------------------------------------------------
+
+/// Helper: pull the entity index a message reports after `marker`.
+///
+/// Every arm that blames a specific entity has to say WHICH one, and the index
+/// has to be a real model entity number — `Interface_InterfaceModel::Number`
+/// returns 0 for an entity the model does not carry, and "plane-angle unit #0"
+/// sends a reader looking for something that is not in the file.
+fn entity_index_after(msg: &str, marker: &str) -> u32 {
+    let at = msg
+        .find(marker)
+        .unwrap_or_else(|| panic!("refusal must name the entity as {marker:?} + index; got: {msg}"));
+    let rest = &msg[at + marker.len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    assert!(
+        !digits.is_empty(),
+        "{marker:?} must be followed by the entity index; got: {msg}"
+    );
+    let index: u32 = digits.parse().expect("digits parse");
+    assert!(
+        index > 0,
+        "the reported entity index must be a real model entity number — \
+         Interface_InterfaceModel::Number returns 0 for an entity the model \
+         does not carry, and an index of 0 is not something a reader can look \
+         up; got: {msg}"
+    );
+    index
+}
+
+/// A REFERENCED plane-angle unit in a form the guard cannot inspect is
+/// REFUSED — and reported as unverifiable, not as verified-wrong.
+///
+/// Part 21 permits a bare `NAMED_UNIT`/`PLANE_ANGLE_UNIT` pair, which is
+/// neither of the two `…And…` composites OCCT actually emits. That form is the
+/// reason `classify_step_angle_unit` performs a THIRD downcast to
+/// `StepBasic_PlaneAngleUnit` after the two composites: without it the unit
+/// classifies as NotAngular, its context then reaches zero recognised angular
+/// units, and the guard refuses with V2's "reaches NO plane-angle unit" — which
+/// is FALSE. A declaration was made; the guard just could not read it. Sending
+/// a reader to look for a missing declaration that is sitting right there is a
+/// worse outcome than the refusal itself.
+///
+/// The fault REPLACES the unit in place rather than dropping it, so the
+/// context still reaches exactly as many units as before. That is what keeps
+/// this a test of the unverifiable-form branch and not an accidental second
+/// test of V2.
+#[test]
+fn guard_refuses_an_unverifiable_plane_angle_declaration() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, with the same Reify attribution as every other arm.
+    let msg = refusal_message(&kernel, union_id, "unrecognised_angular");
+
+    // (b) V3 — the unit is still REFERENCED by a context, so this is the
+    // association arm. V2 must stay silent: something IS declared here.
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
+
+    // (c) The diagnostic says it could not VERIFY the declaration. Pinned as a
+    // positive assertion on the wording that distinguishes this branch from
+    // the verified-wrong one: "not the unprefixed SI radian" would be a claim
+    // the guard never established, and would point at a defect that may not
+    // exist.
+    assert!(
+        msg.contains("cannot verify"),
+        "an unreadable declaration must be reported as UNVERIFIABLE — the \
+         guard did not establish that it is wrong, only that it could not \
+         read it; got: {msg}"
+    );
+
+    // (d) The actual OCCT class name is echoed, from `DynamicType()->Name()`.
+    // That string is the whole point of the arm: it tells a reader what
+    // spelling turned up, which is what they need to decide whether the
+    // classifier should learn it or the writer should stop emitting it.
+    assert!(
+        msg.contains("StepBasic_PlaneAngleUnit"),
+        "the refusal must name the unrecognised entity's OCCT class, so a \
+         reader can see WHICH spelling the classifier could not read; got: {msg}"
+    );
+
+    // (e) Both the context and the unit are located by entity index.
+    assert_names_a_context_index(&msg);
+    entity_index_after(&msg, "reaches plane-angle unit #");
+
+    // (f) The counts show the walk classified the substitute as ANGULAR (it is
+    // counted) but not as a radian. If the third downcast were removed, the
+    // bare unit would classify as NotAngular, drop out of `plane_angle_units`
+    // entirely, and these two would be equal again.
+    let RefusalCounts {
+        plane_angle_units,
+        radian_ok,
+        ..
+    } = parse_counts(&msg);
+    assert!(
+        plane_angle_units > radian_ok,
+        "the substituted unit must be COUNTED as a plane-angle unit and must \
+         not count as radian_ok — equal counts mean the classifier dropped it \
+         as non-angular, which is the exact misclassification the third \
+         downcast exists to prevent; got radian_ok={radian_ok} \
+         plane_angle_units={plane_angle_units} in: {msg}"
+    );
+}
+
+/// An ORPHANED plane-angle unit in an unverifiable form is REFUSED — V4's own
+/// formatting branch for the same defect.
+///
+/// V4 formats its finding separately from V3 (it names an entity, not a
+/// context), so the unverifiable case has a second message branch that V3's
+/// test cannot reach. This fault adds the bare unit and touches nothing else,
+/// so every context stays perfectly radian and V4 is the ONLY arm that can
+/// fire — which is what makes this a clean pin rather than a by-product of
+/// some other corruption.
+#[test]
+fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, same attribution.
+    let msg = refusal_message(&kernel, union_id, "orphan_unrecognised");
+
+    // (b) V4 alone. Nothing existing was touched, so a hit on any other arm
+    // means the fault did more than it claims to.
+    assert_arms(&msg, &["V4"], &["V1", "V2", "V3"]);
+
+    // (c) V4's own wording for the unverifiable case, and the class name.
+    assert!(
+        msg.contains("cannot be verified"),
+        "V4 must report an unreadable orphan as UNVERIFIABLE rather than as a \
+         unit it checked and rejected; got: {msg}"
+    );
+    assert!(
+        msg.contains("StepBasic_PlaneAngleUnit"),
+        "the refusal must name the orphan's OCCT class; got: {msg}"
+    );
+    entity_index_after(&msg, "unreferenced plane-angle unit #");
+
+    // (d) The counts localise the finding to the orphan and nowhere else. The
+    // three association counts are blind to an orphan by construction, so they
+    // must be untouched — and `orphan_angular_units` must be exactly the one
+    // this fault added, because the accept-path test pins a clean export at 0.
+    let counts = parse_counts(&msg);
+    assert_eq!(
+        counts.orphan_angular_units, 1,
+        "this fault adds exactly ONE unreferenced angular unit to a model that \
+         `guard_accepts_a_real_multi_context_export` pins at zero orphans; a \
+         different number means the fault or the fixture changed shape; got \
+         orphan_angular_units={} in: {msg}",
+        counts.orphan_angular_units
+    );
+    assert_eq!(
+        counts.radian_ok, counts.plane_angle_units,
+        "every CONTEXT is untouched by this fault and must still reach only \
+         radians; got radian_ok={} plane_angle_units={} in: {msg}",
+        counts.radian_ok, counts.plane_angle_units
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Context RESOLUTION — every complex spelling must be unwrapped
+// ---------------------------------------------------------------------------
+
+/// A wrong unit reached through the OTHER complex context spelling is still
+/// attributed to its CONTEXT.
+///
+/// OCCT 7.8 defines two complex representation-context classes that carry a
+/// `StepRepr_GlobalUnitAssignedContext` by composition: the three-part
+/// `…GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx` reify's solid
+/// export emits, and the two-part
+/// `…GeometricRepresentationContextAndGlobalUnitAssignedContext` that other
+/// writer paths (AP203, wireframe, a future XCAF/assembly writer) can emit.
+/// `guard_accepts_a_real_multi_context_export` cross-checks the resolved count
+/// against the file text, but only for the ONE fixture it exports — it cannot
+/// speak for a spelling that fixture never produces.
+///
+/// THE FAILURE MODE IS SILENT AND MISLEADING, which is why this is pinned by
+/// behaviour rather than by the count alone. Drop the two-part downcast and
+/// this context resolves to nothing: V3 never runs for it, and its steradian —
+/// now reachable from no context the walk can see — is reported by V4 as an
+/// ORPHAN. The refusal still happens, so a count-only test would pass; the
+/// diagnostic just blames the wrong thing, sending a reader to look for a
+/// stray unit entity when the real defect is a context declaring the wrong
+/// unit. Asserting V3 fires and V4 does not is what separates those.
+#[test]
+fn guard_resolves_the_two_part_complex_context_spelling() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // Baseline from the SAME kernel and shape, so the only difference between
+    // the two runs is the injected context.
+    let clean = kernel
+        .export_step_with_injected_fault_for_test(union_id, "AP214", "none")
+        .expect("the uncorrupted export must be accepted");
+
+    let msg = refusal_message(&kernel, union_id, "two_part_context");
+
+    // (a) The finding is attributed to the CONTEXT that declares the unit —
+    // arm V3 — and NOT to V4, which is where an unresolved context's unit
+    // lands once nothing is seen to reference it.
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
+    assert_names_a_context_index(&msg);
+    assert!(
+        msg.contains(".STERADIAN.") || msg.contains("sunSteradian"),
+        "the refusal must name the unit the added context declares; got: {msg}"
+    );
+
+    // (b) The walk RESOLVED the new context: exactly one more than the clean
+    // export saw. A guard that skips this spelling reports the same count as
+    // the clean run while still refusing (via V4), which is why the count and
+    // the arm are both pinned.
+    let counts = parse_counts(&msg);
+    assert_eq!(
+        counts.contexts,
+        clean.contexts + 1,
+        "the two-part complex context must be resolved and counted like any \
+         other — an unchanged count means `step_unit_assigned_context` skipped \
+         the spelling entirely; clean run saw {}, refusal reports {} in: {msg}",
+        clean.contexts,
+        counts.contexts
+    );
+
+    // (c) Nothing became an orphan. This is the direct discriminator: if the
+    // context were skipped, its steradian would be referenced by no *visible*
+    // context and would be counted here instead.
+    assert_eq!(
+        counts.orphan_angular_units, 0,
+        "the added unit IS referenced — by the added context. Counting it as \
+         an orphan means the context it hangs off was not resolved; got \
+         orphan_angular_units={} in: {msg}",
+        counts.orphan_angular_units
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The V1 arm — a model that declares no unit-assigned context at all
+// ---------------------------------------------------------------------------
+
+/// A model the walk resolves NO unit-assigned context from is REFUSED.
+///
+/// V1 IS THE ANTI-VACUITY ARM, and it is the one arm whose absence is
+/// invisible: a guard that resolves zero contexts satisfies every per-context
+/// arm trivially and reports a clean bill of health on a file it never looked
+/// at. That is the exact failure a naive direct
+/// `DownCast<StepRepr_GlobalUnitAssignedContext>` produces on every real
+/// export (the emitted entity is a COMPLEX composite), so this arm is what
+/// converts "saw nothing" into a loud refusal.
+///
+/// The fault nulls the `GlobalUnitAssignedContext` each complex context
+/// composes, which is the only way to express "no context" — an
+/// `Interface_InterfaceModel` has no entity-removal API. The unit ENTITIES
+/// stay in the model, so this also pins that a file still full of
+/// `SI_UNIT($,.RADIAN.)` tokens is refused when nothing reaches them.
+#[test]
+fn guard_refuses_a_model_with_no_unit_assigned_context() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, same attribution.
+    let msg = refusal_message(&kernel, union_id, "no_context");
+
+    // (b) V1 alone. V2 cannot fire (it quantifies over contexts, and there are
+    // none); V3 likewise; V4 sees the now-unreferenced units but they are all
+    // still correct unprefixed radians, which it skips by design.
+    assert_arms(&msg, &["V1"], &["V2", "V3", "V4"]);
+
+    // (c) The NON-NULL-model branch, distinguished from the null-model one by
+    // the entity count it reports. Both are V1, and the two say different
+    // things about where to look: "the model is null" is a wrapper bug, while
+    // "walked N entities and found no context" is a defect in the file.
+    let at = msg
+        .find("walked ")
+        .unwrap_or_else(|| panic!("V1 must report how many entities it walked; got: {msg}"));
+    let digits: String = msg[at + "walked ".len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let walked: u32 = digits
+        .parse()
+        .unwrap_or_else(|_| panic!("\"walked \" must be followed by a count; got: {msg}"));
+    assert!(
+        walked > 0,
+        "the walk must report a POPULATED model — a count of zero would mean \
+         this test hit the null-model branch instead, which says nothing about \
+         a real export; got: {msg}"
+    );
+
+    // (d) The counts agree with the finding: nothing was resolved, so nothing
+    // could be checked.
+    let counts = parse_counts(&msg);
+    assert_eq!(
+        counts.contexts, 0,
+        "V1 fires precisely when no unit-assigned context resolved; got \
+         contexts={} in: {msg}",
+        counts.contexts
+    );
+    assert_eq!(
+        counts.plane_angle_units, 0,
+        "with no context there are no (context, unit) associations to count; \
+         got plane_angle_units={} in: {msg}",
+        counts.plane_angle_units
+    );
+    assert_eq!(
+        counts.radian_ok, 0,
+        "with no associations none of them can be radian; got radian_ok={} \
+         in: {msg}",
+        counts.radian_ok
+    );
+
+    // (e) THE UNITS ARE STILL IN THE FILE. Only the references were removed,
+    // so the emitted bytes would still be full of `SI_UNIT($,.RADIAN.)`
+    // tokens. A guard built on a file-wide grep passes this model; only
+    // quantifying over CONTEXTS refuses it.
+    assert!(
+        counts.orphan_angular_units > 0,
+        "the plane-angle unit entities must still be present and merely \
+         unreferenced — if they vanished too, this test would no longer show \
+         that a file full of .RADIAN. tokens is refused when nothing reaches \
+         them; got orphan_angular_units={} in: {msg}",
+        counts.orphan_angular_units
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The fixture hook's own contract
 // ---------------------------------------------------------------------------
 

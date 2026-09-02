@@ -7,6 +7,7 @@
 
 // stdlib
 #include <algorithm>
+#include <functional>
 #include <numeric>
 #include <set>
 #include <string>
@@ -158,9 +159,21 @@
 // `classify_step_angle_unit` needs a third downcast to recognise it as ANGULAR
 // (and refuse it as unverifiable) rather than silently classifying it as
 // non-angular and then reporting the containing context as declaring nothing.
+// The SAME shape of hazard applies on the CONTEXT side: OCCT 7.8 defines TWO
+// complex representation-context spellings that carry a
+// `StepRepr_GlobalUnitAssignedContext` by composition — the three-part
+// `…GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx` reify's own solid
+// export emits, and the two-part
+// `…GeometricRepresentationContextAndGlobalUnitAssignedContext` (no
+// uncertainty component) other writer paths can emit. Both are included, and
+// `step_unit_assigned_context` unwraps both, because a context spelling it
+// does not know about is skipped SILENTLY: the count under-reports, the
+// per-context arms never run for it, and the guard passes vacuously for
+// exactly the entity it was written to check.
 #include <Interface_InterfaceModel.hxx>
 #include <StepRepr_GlobalUnitAssignedContext.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
+#include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
 #include <StepBasic_NamedUnit.hxx>
 #include <StepBasic_SiUnit.hxx>
 #include <StepBasic_SiUnitName.hxx>
@@ -6800,6 +6813,21 @@ struct StepPlaneAngleAuditCounts {
 /// test `guard_accepts_a_real_multi_context_export` cross-checks this count
 /// against the `GLOBAL_UNIT_ASSIGNED_CONTEXT` occurrences in the very bytes
 /// the same export produced, which is what reddens that naive form.
+///
+/// EVERY COMPOSITE SPELLING OCCT DEFINES MUST BE UNWRAPPED HERE, not just the
+/// one today's fixture happens to emit. OCCT 7.8 has two (verified in
+/// /usr/include/opencascade, both exported from libTKDESTEP): the three-part
+/// `…GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx` a solid export
+/// produces, and the two-part
+/// `…GeometricRepresentationContextAndGlobalUnitAssignedContext` (identical
+/// shape, no uncertainty component) that other writer paths — AP203, a
+/// wireframe or XCAF/assembly writer — can produce. A spelling this function
+/// does not know about returns null from every downcast and is skipped
+/// SILENTLY, which is the same silent-vacuity failure the direct-only form
+/// above suffers: `contexts` under-counts, V2/V3 never run for that context,
+/// and the guard passes for the entity it exists to check. The
+/// `assert_eq!(audit.contexts, text_contexts)` cross-check catches it only for
+/// the one fixture that test exports, so the completeness has to live here.
 Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
     const Handle(Standard_Transient)& entity) {
     Handle(StepRepr_GlobalUnitAssignedContext) direct =
@@ -6812,6 +6840,13 @@ Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
             entity);
     if (!composed.IsNull()) {
         return composed->GlobalUnitAssignedContext();
+    }
+    Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)
+        composed_no_uncertainty =
+            Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)::
+                DownCast(entity);
+    if (!composed_no_uncertainty.IsNull()) {
+        return composed_no_uncertainty->GlobalUnitAssignedContext();
     }
     return Handle(StepRepr_GlobalUnitAssignedContext)();
 }
@@ -7027,7 +7062,10 @@ std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model
 ///   V4  an angular unit entity that NO context references is not the
 ///       unprefixed SI radian. Disjoint from V3 by construction (V3 covers
 ///       the referenced ones), so between them every angular unit entity in
-///       the model is checked exactly once.
+///       the model is checked exactly once. DELIBERATELY STRONGER than
+///       INV-AD-4 as worded — reify's contract is "the file contains no
+///       non-radian plane-angle unit at all", not merely "every context
+///       declares the radian". See the V4 block below for what that costs.
 ///
 /// Appends one line per violation to `violations` (when non-null) and returns
 /// the counts either way — the counts are also useful on the accepting path,
@@ -7153,6 +7191,33 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
     // payload of a context that never reaches it, but it is still a
     // declaration in the emitted file, and a reader that resolves units
     // differently than this walk does would see it.
+    //
+    // THIS ARM IS DELIBERATELY STRONGER THAN INV-AD-4 AS WORDED, and the
+    // widening is a choice, not an artefact of how `referenced` is built.
+    // INV-AD-4 says "every representation context declares the unprefixed SI
+    // radian"; what reify enforces here is "the emitted file contains no
+    // non-radian plane-angle unit AT ALL". `referenced` is populated only from
+    // `StepRepr_GlobalUnitAssignedContext::Units()`, so an angular unit
+    // reachable from some OTHER entity — the `SI_UNIT($,.RADIAN.)` a degree
+    // `CONVERSION_BASED_UNIT` would point at through its
+    // `PLANE_ANGLE_MEASURE_WITH_UNIT` conversion factor, or an angular unit
+    // carried by a dimension/annotation representation — counts as an orphan
+    // and is refused if it is not the unprefixed radian. That is intended:
+    // reify emits exactly ONE plane-angle regime, radians, and a second
+    // spelling anywhere in the same file is a defect regardless of what
+    // references it. Walking the whole model's shared-reference graph instead
+    // would narrow the arm to literal unreachability and let a degree
+    // conversion chain through — which is precisely the shape this refuses.
+    //
+    // WHAT THIS COSTS, stated so a future reader does not have to rediscover
+    // it: a future OCCT or reify path that legitimately emits such a chain
+    // (dimensional annotations, an assembly writer that carries a degree unit
+    // for display) will be refused on an otherwise-correct file, and there is
+    // no break-glass by design. It cannot fire today — reify emits solids
+    // only, and `guard_accepts_a_real_multi_context_export` PINS
+    // `orphan_angular_units == 0` on a real export, so the day some path
+    // starts emitting one, that test reds and this paragraph is the decision
+    // record to revisit.
     //
     // The count is maintained unconditionally (including on the accepting
     // path, where `violations` is null): it is what keeps a V4-only refusal
@@ -7301,6 +7366,37 @@ enum class StepGuardFault {
     /// declaration is in the emitted bytes while being reachable from no
     /// context at all.
     OrphanNonRadian,
+    /// Replace, IN PLACE, the first angular unit the first unit-assigned
+    /// context reaches with a bare `StepBasic_PlaneAngleUnit` — the plain
+    /// NAMED_UNIT/PLANE_ANGLE_UNIT pair Part 21 permits and neither `…And…`
+    /// composite covers. The only fault that produces
+    /// `StepAngleUnitKind::UnrecognisedAngular` on a REFERENCED unit, so the
+    /// only one that reaches V3's "which it cannot verify" branch and
+    /// `classify_step_angle_unit`'s third downcast.
+    UnrecognisedAngular,
+    /// Add a bare `StepBasic_PlaneAngleUnit` to the model that NO context
+    /// references. The V4 twin of `UnrecognisedAngular`: same unverifiable
+    /// unit, reached through the orphan arm instead of the association arm,
+    /// which is a separate message-formatting branch.
+    OrphanUnrecognised,
+    /// Null out the `GlobalUnitAssignedContext` every complex representation
+    /// context composes, so the model resolves to ZERO unit-assigned
+    /// contexts. The only fault that reaches V1's non-null-model branch —
+    /// the arm that exists precisely to turn a walk that sees nothing into a
+    /// loud refusal rather than a vacuous pass.
+    NoContext,
+    /// Add a `StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext`
+    /// — the TWO-part complex context spelling, the one reify's own solid
+    /// export does not emit — reaching a steradian.
+    ///
+    /// The only fault that reaches `step_unit_assigned_context`'s third
+    /// downcast, and it is worth its own fault because the failure mode is
+    /// SILENT: drop that downcast and this context resolves to nothing, so V3
+    /// never runs for it, `contexts` under-counts, and the steradian is
+    /// reported by V4 as an ORPHAN instead. The test pins the difference
+    /// (V3 fires, V4 does not, `contexts` grows by one), which is what makes
+    /// the omission loud rather than invisible.
+    TwoPartContext,
     /// Set `step.angleunit.mode` to the Deg regime for the duration of ONE
     /// export. Unlike the model mutations above this is applied BEFORE
     /// Transfer (the static is consumed during Transfer) and is restored by
@@ -7330,13 +7426,26 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
     if (name == "orphan_non_radian") {
         return StepGuardFault::OrphanNonRadian;
     }
+    if (name == "unrecognised_angular") {
+        return StepGuardFault::UnrecognisedAngular;
+    }
+    if (name == "orphan_unrecognised") {
+        return StepGuardFault::OrphanUnrecognised;
+    }
+    if (name == "no_context") {
+        return StepGuardFault::NoContext;
+    }
+    if (name == "two_part_context") {
+        return StepGuardFault::TwoPartContext;
+    }
     if (name == "angle_mode_deg") {
         return StepGuardFault::AngleModeDeg;
     }
     throw ContractViolation(
         "unknown injected fault \"" + name +
         "\"; accepted faults: none, non_radian, prefixed, missing, "
-        "orphan_non_radian, angle_mode_deg");
+        "orphan_non_radian, unrecognised_angular, orphan_unrecognised, "
+        "no_context, two_part_context, angle_mode_deg");
 }
 
 /// RAII override of the `step.angleunit.mode` Interface_Static, used by the
@@ -7394,6 +7503,74 @@ private:
     Standard_Integer saved_ = 0;
 };
 
+/// Rebuild `ctx`'s `Units()` array, keeping only the units `keep_pred`
+/// accepts, and report through `*dropped` how many were removed.
+///
+/// SHARED BY EVERY FAULT THAT DROPS A UNIT REFERENCE. The filter/refuse-if-
+/// empty/reallocate/`SetUnits` sequence is identical for all of them and only
+/// the predicate differs, so the two copies this replaced had already drifted
+/// (one hard-refused a null `Units()` array, the other skipped it silently).
+/// Whether a null array is a fixture defect or a context that simply cannot
+/// hold the target is genuinely caller-specific, so that ONE decision stays
+/// with the caller: this returns `false` without touching anything, and the
+/// caller says what it means.
+///
+/// Returns `true` when the array was filtered (`*dropped` then says how many
+/// units went; a `*dropped` of 0 means the predicate kept everything and
+/// nothing was written). Throws `ContractViolation` naming `fault_name` when
+/// the filter would leave the context reaching NOTHING: a
+/// `StepBasic_HArray1OfNamedUnit` with lower > upper is not constructible, so
+/// "this context reaches nothing at all" is inexpressible here, and silently
+/// leaving the context untouched would turn the negative test that drove the
+/// fault into a vacuous pass.
+bool rebuild_units_keeping(
+    const Handle(StepRepr_GlobalUnitAssignedContext)& ctx,
+    const std::function<bool(const Handle(StepBasic_NamedUnit)&)>& keep_pred,
+    const char* fault_name,
+    size_t* dropped) {
+    Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+    if (units.IsNull()) {
+        return false;
+    }
+    std::vector<Handle(StepBasic_NamedUnit)> keep;
+    size_t removed = 0;
+    for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+        Handle(StepBasic_NamedUnit) unit = units->Value(k);
+        if (unit.IsNull()) {
+            continue;
+        }
+        if (keep_pred(unit)) {
+            keep.push_back(unit);
+        } else {
+            removed += 1;
+        }
+    }
+    if (dropped != nullptr) {
+        *dropped = removed;
+    }
+    if (removed == 0) {
+        // Nothing to do — and deliberately no write, so a predicate that
+        // matches nothing leaves the model bit-for-bit as it was.
+        return true;
+    }
+    if (keep.empty()) {
+        std::ostringstream oss;
+        oss << "cannot inject the \"" << fault_name
+            << "\" fault: a unit-assigned context reaches only units this "
+               "fault removes, so no non-empty Units() array survives the "
+               "strip (an HArray1 with lower > upper is not constructible) — "
+               "the fixture no longer exercises this arm and needs revisiting";
+        throw ContractViolation(oss.str());
+    }
+    Handle(StepBasic_HArray1OfNamedUnit) rebuilt = new StepBasic_HArray1OfNamedUnit(
+        1, static_cast<Standard_Integer>(keep.size()));
+    for (size_t j = 0; j < keep.size(); ++j) {
+        rebuilt->SetValue(static_cast<Standard_Integer>(j) + 1, keep[j]);
+    }
+    ctx->SetUnits(rebuilt);
+    return true;
+}
+
 /// Corrupt exactly ONE thing in `model`, per `fault`.
 ///
 /// EXACTLY ONE, deliberately. A partial flip — one context wrong, the rest
@@ -7426,30 +7603,26 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             if (ctx.IsNull()) {
                 continue;
             }
-            Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
-            if (units.IsNull()) {
-                throw ContractViolation(
-                    "cannot inject the \"missing\" fault: the first unit-assigned "
-                    "context already has a null Units() array");
-            }
             // Keep the non-angular entries; drop the angular ones. The dropped
             // unit ENTITIES stay in the model — that is the whole point: the
             // file still contains a valid SI_UNIT($,.RADIAN.), it is simply no
             // longer reachable from this context, which is exactly the defect
             // a model-wide entity tally cannot see.
-            std::vector<Handle(StepBasic_NamedUnit)> keep;
             size_t angular = 0;
-            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
-                Handle(StepBasic_NamedUnit) unit = units->Value(k);
-                if (unit.IsNull()) {
-                    continue;
-                }
-                if (classify_step_angle_unit(unit, nullptr) ==
-                    StepAngleUnitKind::NotAngular) {
-                    keep.push_back(unit);
-                } else {
-                    angular += 1;
-                }
+            const bool filtered = rebuild_units_keeping(
+                ctx,
+                [](const Handle(StepBasic_NamedUnit)& unit) {
+                    return classify_step_angle_unit(unit, nullptr) ==
+                           StepAngleUnitKind::NotAngular;
+                },
+                "missing", &angular);
+            if (!filtered) {
+                // A null Units() on the FIRST context is a fixture defect, not
+                // a context that merely has nothing to strip: there is no
+                // angular reference to remove, so the fault would do nothing.
+                throw ContractViolation(
+                    "cannot inject the \"missing\" fault: the first unit-assigned "
+                    "context already has a null Units() array");
             }
             if (angular == 0) {
                 throw ContractViolation(
@@ -7457,24 +7630,6 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
                     "context already reaches no angular unit, so this negative "
                     "test would pass without the fault doing anything");
             }
-            if (keep.empty()) {
-                // An HArray1 with lower > upper is not constructible, so there
-                // is no way to express "this context reaches nothing at all"
-                // here. Refuse loudly rather than silently leaving the context
-                // untouched and letting the test pass vacuously.
-                throw ContractViolation(
-                    "cannot inject the \"missing\" fault: every unit the first "
-                    "context reaches is angular, so no non-empty Units() array "
-                    "survives the strip — the fixture no longer exercises this "
-                    "arm and needs revisiting");
-            }
-            Handle(StepBasic_HArray1OfNamedUnit) rebuilt =
-                new StepBasic_HArray1OfNamedUnit(
-                    1, static_cast<Standard_Integer>(keep.size()));
-            for (size_t j = 0; j < keep.size(); ++j) {
-                rebuilt->SetValue(static_cast<Standard_Integer>(j) + 1, keep[j]);
-            }
-            ctx->SetUnits(rebuilt);
             return;
         }
         throw ContractViolation(
@@ -7509,44 +7664,22 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             if (ctx.IsNull()) {
                 continue;
             }
-            Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
-            if (units.IsNull()) {
+            size_t dropped_here = 0;
+            const Standard_Transient* target = victim.get();
+            // A null Units() array here is NOT a fixture defect (unlike the
+            // "missing" fault above): this loop visits EVERY context, and one
+            // that references nothing simply cannot be holding the victim.
+            if (!rebuild_units_keeping(
+                    ctx,
+                    [target](const Handle(StepBasic_NamedUnit)& unit) {
+                        return unit.get() != target;
+                    },
+                    "orphan_non_radian", &dropped_here)) {
                 continue;
             }
-            std::vector<Handle(StepBasic_NamedUnit)> keep;
-            bool found_here = false;
-            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
-                Handle(StepBasic_NamedUnit) unit = units->Value(k);
-                if (unit.IsNull()) {
-                    continue;
-                }
-                if (unit.get() == victim.get()) {
-                    found_here = true;
-                    continue;
-                }
-                keep.push_back(unit);
-            }
-            if (!found_here) {
+            if (dropped_here == 0) {
                 continue;
             }
-            if (keep.empty()) {
-                // Same constructibility limit as the "missing" fault: an
-                // HArray1 with lower > upper does not exist, so "reaches
-                // nothing at all" is inexpressible. Refuse loudly rather than
-                // leave the context untouched and let the test pass vacuously.
-                throw ContractViolation(
-                    "cannot inject the \"orphan_non_radian\" fault: a context "
-                    "reaches the target unit and nothing else, so no non-empty "
-                    "Units() array survives the strip — the fixture no longer "
-                    "exercises this arm and needs revisiting");
-            }
-            Handle(StepBasic_HArray1OfNamedUnit) rebuilt =
-                new StepBasic_HArray1OfNamedUnit(
-                    1, static_cast<Standard_Integer>(keep.size()));
-            for (size_t j = 0; j < keep.size(); ++j) {
-                rebuilt->SetValue(static_cast<Standard_Integer>(j) + 1, keep[j]);
-            }
-            ctx->SetUnits(rebuilt);
             removed += 1;
         }
         if (removed == 0) {
@@ -7559,6 +7692,162 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         // STERADIAN for the same reason "non_radian" uses it: a real SI unit
         // name that is unambiguously not a plane angle.
         victim->SetName(StepBasic_sunSteradian);
+        return;
+    }
+
+    if (fault == StepGuardFault::UnrecognisedAngular) {
+        // Replace IN PLACE rather than rebuilding the array: the point of this
+        // fault is that the context still reaches exactly as many units as
+        // before, one of which is now a form the classifier cannot read. If it
+        // dropped the reference instead, V2 (MISSING) would fire and the
+        // unverifiable-unit branch this exists to exercise would never run.
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+                step_unit_assigned_context(model->Value(i));
+            if (ctx.IsNull()) {
+                continue;
+            }
+            Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+            if (units.IsNull()) {
+                continue;
+            }
+            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+                Handle(StepBasic_NamedUnit) unit = units->Value(k);
+                if (unit.IsNull() || classify_step_angle_unit(unit, nullptr) ==
+                                         StepAngleUnitKind::NotAngular) {
+                    continue;
+                }
+                Handle(StepBasic_PlaneAngleUnit) bare = new StepBasic_PlaneAngleUnit();
+                // Carry the dimensional exponents over so the substitute is a
+                // well-formed NAMED_UNIT: the defect under test is the unit's
+                // FORM (a spelling the classifier cannot inspect), not a
+                // half-built entity.
+                bare->SetDimensions(unit->Dimensions());
+                // Registered as a model entity so the diagnostic can name it
+                // by index; `model->Number()` returns 0 for an entity the
+                // model does not carry, and "plane-angle unit #0" is not
+                // something a reader can act on.
+                model->AddEntity(bare);
+                units->SetValue(k, bare);
+                return;
+            }
+        }
+        throw ContractViolation(
+            "cannot inject the \"unrecognised_angular\" fault: no unit-assigned "
+            "context reaches an angular unit to replace, so this negative test "
+            "would pass vacuously");
+    }
+
+    if (fault == StepGuardFault::OrphanUnrecognised) {
+        // Nothing existing is touched: the fault is the ADDITION of an angular
+        // unit entity that no context references. Every context stays
+        // perfectly radian, so V1/V2/V3 must all stay silent and only V4 can
+        // see this — which is what makes it a clean pin on V4's own
+        // "cannot be verified" formatting branch.
+        Handle(StepBasic_PlaneAngleUnit) orphan = new StepBasic_PlaneAngleUnit();
+        model->AddEntity(orphan);
+        if (model->Number(orphan) == 0) {
+            throw ContractViolation(
+                "cannot inject the \"orphan_unrecognised\" fault: the added "
+                "plane-angle unit did not become a model entity, so the walk "
+                "would never see it and this negative test would pass "
+                "vacuously");
+        }
+        return;
+    }
+
+    if (fault == StepGuardFault::TwoPartContext) {
+        // A wrong angular unit, so the added context is a VIOLATION the guard
+        // has to attribute — an added context that reached a correct radian
+        // would be accepted, and the export would then reach `writer.Write`
+        // with a hand-built entity in the model, which is not what this fault
+        // is for.
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit) wrong =
+            new StepBasic_SiUnitAndPlaneAngleUnit();
+        // `hasAprefix = False` makes the prefix argument inert; STERADIAN for
+        // the same reason "non_radian" uses it.
+        wrong->Init(Standard_False, StepBasic_spMilli, StepBasic_sunSteradian);
+        wrong->SetPlaneAngleUnit(new StepBasic_PlaneAngleUnit());
+
+        Handle(StepBasic_HArray1OfNamedUnit) units =
+            new StepBasic_HArray1OfNamedUnit(1, 1);
+        units->SetValue(1, wrong);
+        Handle(StepRepr_GlobalUnitAssignedContext) unit_ctx =
+            new StepRepr_GlobalUnitAssignedContext();
+        unit_ctx->SetUnits(units);
+
+        Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)
+            two_part =
+                new StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext();
+        two_part->SetGlobalUnitAssignedContext(unit_ctx);
+
+        model->AddEntity(wrong);
+        model->AddEntity(two_part);
+
+        // Fixture-integrity check via OCCT's OWN accessor, deliberately NOT
+        // via `step_unit_assigned_context`. That function is what this fault
+        // exists to exercise; validating the injection with it would make the
+        // test circular — a missing downcast would red here, at injection
+        // time, instead of showing up as the behaviour difference (V3 vs an
+        // orphaned V4) the test is written to observe.
+        if (two_part->GlobalUnitAssignedContext().IsNull() ||
+            model->Number(two_part) == 0 || model->Number(wrong) == 0) {
+            throw ContractViolation(
+                "cannot inject the \"two_part_context\" fault: the hand-built "
+                "two-part composite context did not become a well-formed model "
+                "entity, so this negative test would pass vacuously");
+        }
+        return;
+    }
+
+    if (fault == StepGuardFault::NoContext) {
+        // Neutralise the composite spelling by nulling the
+        // `GlobalUnitAssignedContext` it composes. There is no way to REMOVE
+        // an entity from an `Interface_InterfaceModel`, so this is how "the
+        // model declares no unit-assigned context" is expressed.
+        size_t cleared = 0;
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            const Handle(Standard_Transient)& entity = model->Value(i);
+            Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx)
+                three_part =
+                    Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx)::
+                        DownCast(entity);
+            if (!three_part.IsNull()) {
+                three_part->SetGlobalUnitAssignedContext(
+                    Handle(StepRepr_GlobalUnitAssignedContext)());
+                cleared += 1;
+                continue;
+            }
+            Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)
+                two_part =
+                    Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)::
+                        DownCast(entity);
+            if (!two_part.IsNull()) {
+                two_part->SetGlobalUnitAssignedContext(
+                    Handle(StepRepr_GlobalUnitAssignedContext)());
+                cleared += 1;
+            }
+        }
+        if (cleared == 0) {
+            throw ContractViolation(
+                "cannot inject the \"no_context\" fault: the transferred model "
+                "carries no complex representation context to neutralise, so "
+                "this negative test would pass vacuously");
+        }
+        // The fault must leave the walk seeing NOTHING, or V1 does not fire
+        // and the test silently exercises some other arm. A context reachable
+        // as a DIRECT `StepRepr_GlobalUnitAssignedContext` entity cannot be
+        // nulled this way (there is no composite to clear), so say so rather
+        // than proceed on a broken assumption.
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            if (!step_unit_assigned_context(model->Value(i)).IsNull()) {
+                throw ContractViolation(
+                    "cannot inject the \"no_context\" fault: the model still "
+                    "resolves a unit-assigned context after every complex "
+                    "context was cleared, so V1 would not fire and this "
+                    "negative test would exercise a different arm");
+            }
+        }
         return;
     }
 
@@ -7581,6 +7870,10 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             case StepGuardFault::None:
             case StepGuardFault::Missing:
             case StepGuardFault::OrphanNonRadian:
+            case StepGuardFault::UnrecognisedAngular:
+            case StepGuardFault::OrphanUnrecognised:
+            case StepGuardFault::NoContext:
+            case StepGuardFault::TwoPartContext:
             case StepGuardFault::AngleModeDeg:
                 // Handled above or earlier; unreachable here.
                 break;
@@ -7600,6 +7893,14 @@ struct StepExportLockedResult {
     bool ap242_fell_back = false;
     StepPlaneAngleAuditCounts audit;
 };
+
+// Scope the arm-tag macro to the guard block by hand. A `#define` is NOT
+// namespace-scoped — without this it would leak into the remaining ~1000 lines
+// of this translation unit and into anything included after it, where an
+// unrelated identifier of the same name would be silently rewritten. The
+// enclosing anonymous namespace scopes the functions above; it does nothing
+// for the macro.
+#undef REIFY_INV_AD_4_ARM
 
 }  // anonymous namespace (STEP plane-angle guard)
 

@@ -1636,6 +1636,34 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///                       halves are required — dropping the reference alone
 ///                       leaves a radian V4 accepts, renaming alone leaves it
 ///                       referenced so V3 catches it instead.
+///   - `"unrecognised_angular"` — replace, IN PLACE, the first angular unit
+///                       the first context reaches with a bare
+///                       `StepBasic_PlaneAngleUnit` (the plain
+///                       NAMED_UNIT/PLANE_ANGLE_UNIT pair Part 21 permits,
+///                       which neither `…And…` composite covers). The context
+///                       still reaches as many units as before — replaced, not
+///                       dropped — so V2 stays silent and V3 reports a
+///                       declaration it CANNOT VERIFY, which is a distinct
+///                       finding from a declaration it verified as wrong.
+///   - `"orphan_unrecognised"` — add a bare `StepBasic_PlaneAngleUnit` that no
+///                       context references. The V4 twin of the above: same
+///                       unverifiable unit, reached through the orphan arm,
+///                       which formats its own message.
+///   - `"no_context"`   — null the `GlobalUnitAssignedContext` every complex
+///                       representation context composes, so the model
+///                       resolves to ZERO unit-assigned contexts. The only way
+///                       to reach V1's non-null-model branch — the arm that
+///                       exists to turn "the walk saw nothing" into a loud
+///                       refusal instead of a vacuous pass.
+///   - `"two_part_context"` — add a
+///                       `StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext`
+///                       (the TWO-part complex context spelling reify's own
+///                       solid export does not emit, but AP203/wireframe/XCAF
+///                       paths can) reaching a steradian. The only fault that
+///                       reaches `step_unit_assigned_context`'s third
+///                       downcast; without it that context resolves to
+///                       NOTHING, V3 never runs for it, and its steradian is
+///                       misreported by V4 as an orphan.
 ///   - `"angle_mode_deg"` — set the process-global `step.angleunit.mode`
 ///                       static to the Deg regime for this export only,
 ///                       restored by RAII (including on the throwing path).
