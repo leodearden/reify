@@ -42,6 +42,18 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// explicit `* 1000.0` (see `read_slice_settings`, and the STL write reached
 /// from `export_body_stl`).
 ///
+/// That grep argument is load-bearing ACROSS crates — `reify-fdm/src/r0.rs`
+/// has no path to a `reify-eval` constant — but it is the WEAK half for the
+/// same-crate pair: `as_printed_material_r0.rs` is a sibling module of this
+/// one, and the two could share a single `pub(crate) const` in
+/// `compute_targets/mod.rs` (beside the `length` / `point3_length` /
+/// `velocity` / `temperature` builders both modules already call) while every
+/// use site still spells `MM_TO_M` and greps identically. That hoist is
+/// deliberately not done here: it edits `as_printed_material_r0.rs`, outside
+/// #6301's file scope, and is filed as its own follow-up. Recorded at the
+/// constant so the next surveyor reads a claim scoped to what it actually
+/// justifies instead of re-deriving the distinction.
+///
 /// Every other G-code→`Value` marshalling was surveyed under task #6301 and
 /// found already-converting; the one remaining unconverted seam is
 /// `reify-stdlib`'s `trajectory::gcode_import::waypoint_to_value`, out of scope
