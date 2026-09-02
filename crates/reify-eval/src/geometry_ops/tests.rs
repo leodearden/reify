@@ -1723,6 +1723,11 @@
     /// replacement for the old bespoke "non-numeric — defaulting to 0.0"
     /// Warning (measured pre-change: Bool gave `Ok(iso_level: 0.0)` + one
     /// non-Error Warning; it must now be a typed Error naming the actual type).
+    /// The real source shape that reaches that `Bool` row is
+    /// `isosurface(g, adaptive: true)` — a positional-lowering quirk documented
+    /// once at the `Isosurface` arm in `geometry_ops.rs` (owner: task #6313) and
+    /// pinned end-to-end by `pattern_spacing_units_e2e.rs`'s
+    /// `skipped_optional_iso_slot_binds_adaptive_positionally`.
     ///
     /// The positive control that keeps this from passing vacuously is the
     /// already-shipped
@@ -1788,6 +1793,20 @@
                  `required_length_arg`, not forked locally"
             );
 
+            // TOTAL count first, then the filtered one. The filter alone is the
+            // weaker half: an ADDITIONAL non-matching diagnostic on this path —
+            // e.g. a re-introduced "'iso' argument evaluated to a non-numeric
+            // value — defaulting to 0.0" Warning, precisely what λ removed here
+            // — would slip past a filtered-only assertion. The Undef sibling
+            // asserts `diagnostics.is_empty()`, so this arm gets the matching
+            // exact-count lock rather than staying asymmetric.
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "{label}: the typed rejection must be the ONLY diagnostic on this \
+                 path — no surviving warn-and-default Warning alongside it; \
+                 got: {diagnostics:?}"
+            );
             let rejections: Vec<&Diagnostic> = diagnostics
                 .iter()
                 .filter(|d| d.message.contains("argument expects Length"))

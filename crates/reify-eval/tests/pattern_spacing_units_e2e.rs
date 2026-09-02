@@ -391,7 +391,15 @@ fn unresolved_spacing_diagnostic_names_the_dsl_builtin_not_the_variant_nickname(
 /// (`compile_geometry_op`'s `Isosurface` arm only calls `resolve_geom_ref`),
 /// and using a primitive keeps the fixture free of the OpenVDB dependency this
 /// file exists to avoid.
-fn iso_source(arg: &str) -> String {
+///
+/// NAMED for that operand, not `iso_source`, because
+/// `crates/reify-eval/tests/isosurface_iso_option_e2e.rs` already owns an
+/// `iso_source` building a DIFFERENT fixture (a `#[cfg(has_openvdb)]`
+/// narrow-band voxel path with a `param size` knob). The two are deliberately
+/// NOT interchangeable — that file needs a real surfaceable grid to compare
+/// triangle counts, this one needs the opposite — so they must not share a
+/// name that invites a future edit to one to be assumed to apply to both.
+fn box_operand_iso_source(arg: &str) -> String {
     format!(
         "structure def IsoUnits {{ let solid = box(10mm, 10mm, 10mm)  \
          let shell = isosurface(solid{arg}) }}"
@@ -458,7 +466,7 @@ fn build_isosurface(source: &str) -> (Vec<String>, Vec<(f64, bool)>) {
 /// `pattern_spacing_units_e2e.rs`'s single-Error label probe measures.
 #[test]
 fn bare_iso_drops_surface_op_with_typed_rejection_and_drop_wrapper() {
-    let (errors, surfaces) = build_isosurface(&iso_source(", 5"));
+    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(", 5"));
 
     assert_eq!(
         errors,
@@ -487,7 +495,7 @@ fn bare_iso_drops_surface_op_with_typed_rejection_and_drop_wrapper() {
 /// because `isosurface` stopped lowering entirely.
 #[test]
 fn dimensioned_iso_builds_surface_op_in_si_metres() {
-    let (errors, surfaces) = build_isosurface(&iso_source(", 5mm"));
+    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(", 5mm"));
 
     assert!(
         errors.is_empty(),
@@ -514,7 +522,7 @@ fn dimensioned_iso_builds_surface_op_in_si_metres() {
 /// fails the moment someone "tidies" the two halves into one.
 #[test]
 fn absent_iso_keeps_the_ungated_default_and_stays_quiet() {
-    let (errors, surfaces) = build_isosurface(&iso_source(""));
+    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(""));
 
     assert!(
         errors.is_empty(),
@@ -536,26 +544,21 @@ fn absent_iso_keeps_the_ungated_default_and_stays_quiet() {
 /// `compile_geometry_op_isosurface_non_length_iso_is_rejected_not_read_as_metres`,
 /// pinned here so the failure mode is discoverable rather than folklore.
 ///
-/// `isosurface`'s optional args are lowered POSITIONALLY:
-/// `reify_compiler::geometry`'s `compile_geometry_call_inner` drops the AST's
-/// `arg_names`, and the `"isosurface"` arm binds slot 1 to `iso` and slot 2 to
-/// `adaptive`. So a source that SKIPS the first optional arg binds
-/// `Bool(true)` to `iso` and is rejected with a message naming an argument the
-/// author never wrote — and, since λ, the op is DROPPED rather than built at
-/// iso 0.0 as the pre-λ Warning left it.
+/// `isosurface(g, adaptive: true)` binds `Bool(true)` to the `iso` SLOT — a
+/// positional-lowering quirk whose mechanism, pre-existing provenance and
+/// #6313 ownership are written out ONCE, at the `Isosurface` arm of
+/// `crates/reify-eval/src/geometry_ops.rs`. Not restated here: three copies
+/// would all need editing when #6313 lands.
 ///
-/// This test asserts the CURRENT behaviour, not the desired one. The lowering
-/// quirk is pre-existing (λ did not introduce it) and its fix — honouring
-/// `arg_names` — lives in `crates/reify-compiler/src/geometry.rs`, a file λ
-/// holds no lock on. That fix is filed and live as task #6313, which is the
-/// ADDRESSEE of the rewrite instruction below. When #6313 lands,
+/// This test asserts the CURRENT behaviour, not the desired one, and #6313 is
+/// the ADDRESSEE of the rewrite instruction below. When #6313 lands,
 /// `adaptive: true` will bind to `adaptive` and this test SHOULD be rewritten
-/// to assert a clean build; the assertions
-/// deliberately name the positional binding so that rewrite is obviously the
-/// right response to the failure rather than a regression to paper over.
+/// to assert a clean build; the assertions deliberately name the positional
+/// binding so that rewrite is obviously the right response to the failure
+/// rather than a regression to paper over.
 #[test]
 fn skipped_optional_iso_slot_binds_adaptive_positionally() {
-    let (errors, surfaces) = build_isosurface(&iso_source(", adaptive: true"));
+    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(", adaptive: true"));
 
     assert_eq!(
         errors,
