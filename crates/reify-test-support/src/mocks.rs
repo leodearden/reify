@@ -1871,16 +1871,15 @@ impl GeometryKernel for MockGeometryKernel {
             return Err(err.clone());
         }
 
-        // Check per-query-type map next
-        if let Some(value) = self.typed_queries.get(&key) {
-            return Ok(value.clone());
-        }
-
         // Coarse-grained `fail_after_n_dispatches` gate (task #6471): fails
         // every query whose primary handle was allocated past the
         // configured dispatch count, regardless of query type. Checked
-        // before the OwnerBody special-case and the generic fallback so it
-        // uniformly covers both.
+        // before the `typed_queries` lookup as well as the OwnerBody
+        // special-case and the generic fallback, so it uniformly covers all
+        // three — in particular a success seeded past the ceiling by
+        // `with_volume_result` and friends (which all write to
+        // `typed_queries`) cannot shadow it, which would otherwise leave the
+        // gate inert against the ordinary seeding path.
         if let Some(ceiling) = self.fail_queries_after_dispatch {
             let handle = primary_handle(query);
             if handle.0 > ceiling {
@@ -1890,6 +1889,11 @@ impl GeometryKernel for MockGeometryKernel {
                      handle was allocated by a later dispatch"
                 )));
             }
+        }
+
+        // Check per-query-type map next
+        if let Some(value) = self.typed_queries.get(&key) {
+            return Ok(value.clone());
         }
 
         // OwnerBody is special: an unstaged child handle has no recorded
