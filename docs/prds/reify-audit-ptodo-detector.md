@@ -512,8 +512,15 @@ on 2026-09-02 via `get_statuses` — so a cite to one could only ever have resol
 `orphaned` finding against a terminal id, never to a live-task finding. (ii) The range is
 CLOSED: allocation runs monotonically from 1 upward and the live head is past 6100, so no
 future task can be issued an id inside the bound; the accepted loss cannot grow. (iii) No
-such cite exists today — every 1–2-digit `#N` in the covered registers in tracked `.rs` is
-genuinely PRD-relative. The alternative — making the bound resolution-aware for family 3, so
+such cite exists today, enumerated rather than asserted: `task(s) #N` with a 1–2-digit id
+occurs **280** times in tracked `.rs` (detector crate excluded, re-swept 2026-09-02), and
+**242** of those name the document inline (`PRD task #18`, `docs/prds/v0_3/
+hex-wedge-meshing.md task #9`). The remaining **38** were hand-inspected one by one: every
+one is a v0.3 PRD's own task numbering carried in prose (`the task #7 baseline`, `task #10
+(engine wiring, lib.rs::morph())`, `the task #13 calibration fixtures`) — zero are citations
+of a DB task. The narrower marker-lane question is emptier still: across all seven swept
+extensions, ZERO marker-lane lines (TODO/FIXME/HACK, `#[ignore]`, stub macros, δ-A) carry a
+1–2-digit `#N` in ANY of the three registers. The alternative — making the bound resolution-aware for family 3, so
 a sub-100 id that resolves to a real DB row is read as a cite — was considered and rejected:
 it drags a task-DB lookup into a pure recogniser whose whole contract is that liveness
 belongs to the separate β lane (and, under §6.7's no-DB degradation, would make the *grammar*
