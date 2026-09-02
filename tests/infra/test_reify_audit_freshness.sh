@@ -21,6 +21,9 @@
 #        that `refuse` mode is unchanged (task #7139)
 #  18:   REIFY_AUDIT_FRESHNESS_STRICT=1 restores fail-closed behaviour under
 #        warn-open — the operator's opt-in escape hatch (task #7139)
+#  19:   the warn-open advisory AND refusal messages are SELF-DESCRIBING —
+#        they name their own cause, their own fix, and what they are NOT
+#        (task #7139)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -536,6 +539,99 @@ set -e
 
 assert "warn-open + REIFY_AUDIT_FRESHNESS_STRICT=1: FRESH binary still exits 0 (fast path intact)" \
     bash -c 'test "$1" -eq 0' -- "$WO_RC_18D"
+
+# ==============================================================================
+# Check 19: the stale/missing messages are SELF-DESCRIBING (task #7139)
+#
+# This is a RUNTIME-BEHAVIOUR contract on a diagnostic the hook path actually
+# surfaces, not a docstring pin. dark-factory's
+# fused_memory/middleware/pre_done_hook.py clips the hook's captured stderr to
+# _STDERR_CLIP = 2000 chars (:51) and surfaces it to the MCP caller (:225-229).
+# So this text IS what a triaging agent reads.
+#
+# It has to be much better than it was. The three escalations this task was
+# filed over — esc-7042-2, esc-6315-2, esc-6120-5 — all blamed "stale
+# metadata.files" and the done_provenance ancestor check. Both are false
+# leads: the condition is a stale BINARY, an infrastructure fact with nothing
+# to do with task records. The message must make that misreading impossible.
+# ==============================================================================
+echo ""
+echo "--- Check 19: warn-open messages are self-describing ---"
+
+# Capture both forms. ADVISORY = present+executable+stale, rc 0.
+# REFUSAL = the same binary with strict armed, rc 125 (the 125 form the hook
+# actually surfaces to the caller).
+set +e
+WO_MSG_ADVISORY=$(bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_STALE_BIN' warn-open '$REPO_ROOT'" 2>&1 >/dev/null)
+WO_MSG_REFUSAL=$(env REIFY_AUDIT_FRESHNESS_STRICT=1 bash -c \
+    "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_STALE_BIN' warn-open '$REPO_ROOT'" 2>&1 >/dev/null)
+WO_MSG_MISSING=$(bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$WO_TMPDIR/does-not-exist' warn-open '$REPO_ROOT'" 2>&1 >/dev/null)
+set -e
+
+# 19a: the LEGACY substring. Load-bearing, not cosmetic —
+# scripts/deploy-reify-audit-predone-hook.sh:402 greps for exactly this, so
+# preserving it keeps that probe working across this change.
+for _form in ADVISORY REFUSAL MISSING; do
+    eval "_msg=\$WO_MSG_$_form"
+    assert "19a [$_form]: message contains the legacy substring 'reinstall with: cargo install'" \
+        bash -c 'printf "%s" "$1" | grep -qF "reinstall with: cargo install"' -- "$_msg"
+done
+
+# 19b: the FULL remedy, so the reader can paste one line and be done.
+for _form in ADVISORY REFUSAL MISSING; do
+    eval "_msg=\$WO_MSG_$_form"
+    assert "19b [$_form]: message contains the full remedy command" \
+        bash -c 'printf "%s" "$1" | grep -qF "cargo install --path crates/reify-audit --root ~/.cargo --force"' -- "$_msg"
+done
+
+# 19c: the NEGATIVE disambiguator — the message must name what it is NOT.
+# Pin the presence of the two false leads plus the word "infrastructure"; do
+# not pin whole sentences (prose is allowed to improve).
+for _form in ADVISORY REFUSAL MISSING; do
+    eval "_msg=\$WO_MSG_$_form"
+    assert "19c [$_form]: message disclaims metadata.files (the esc-7042-2 false lead)" \
+        bash -c 'printf "%s" "$1" | grep -qF "metadata.files"' -- "$_msg"
+    assert "19c [$_form]: message disclaims done_provenance (the esc-6120-5 false lead)" \
+        bash -c 'printf "%s" "$1" | grep -qF "done_provenance"' -- "$_msg"
+    assert "19c [$_form]: message says 'infrastructure' (names its own category)" \
+        bash -c 'printf "%s" "$1" | grep -qF "infrastructure"' -- "$_msg"
+done
+
+# 19d: the two OBSERVED numbers, already computed at freshness.sh:156-158, so a
+# triager can confirm the diagnosis without rerunning anything. Only the two
+# forms that HAVE a readable mtime are checked — the MISSING form has no binary
+# and therefore no mtime to report.
+WO_EPOCH=$(bash -c "source '$FRESHNESS_LIB' && reify_audit_crate_commit_epoch '$REPO_ROOT'")
+WO_BTIME=$(bash -c "source '$FRESHNESS_LIB' && portable_mtime '$WO_STALE_BIN'")
+
+for _form in ADVISORY REFUSAL; do
+    eval "_msg=\$WO_MSG_$_form"
+    assert "19d [$_form]: message reports the observed binary mtime ($WO_BTIME)" \
+        bash -c 'printf "%s" "$1" | grep -qF "$2"' -- "$_msg" "$WO_BTIME"
+    assert "19d [$_form]: message reports the observed crate epoch ($WO_EPOCH)" \
+        bash -c 'printf "%s" "$1" | grep -qF "$2"' -- "$_msg" "$WO_EPOCH"
+done
+
+# 19e: BLAST RADIUS, on the rc-125 forms only. A refusal blocks every done-flip
+# in the project until fixed, and saying so is what turns a cryptic 125 into an
+# actionable one. The ADVISORY must NOT claim it — nothing is blocked there,
+# and a false blast-radius claim would send a triager chasing an outage that
+# is not happening.
+for _form in REFUSAL MISSING; do
+    eval "_msg=\$WO_MSG_$_form"
+    assert "19e [$_form]: rc-125 message names the blast radius (blocks done-flips project-wide)" \
+        bash -c 'printf "%s" "$1" | grep -qiE "block[a-z]* (every|all) done-flip"' -- "$_msg"
+done
+
+assert "19e [ADVISORY]: rc-0 message does NOT claim anything is blocked" \
+    bash -c '! printf "%s" "$1" | grep -qiE "block[a-z]* (every|all) done-flip"' -- "$WO_MSG_ADVISORY"
+
+# 19f: nothing important may be lost to dark-factory's _STDERR_CLIP = 2000.
+for _form in ADVISORY REFUSAL MISSING; do
+    eval "_msg=\$WO_MSG_$_form"
+    assert "19f [$_form]: whole message is under 2000 chars (survives _STDERR_CLIP intact)" \
+        bash -c 'test "${#1}" -lt 2000' -- "$_msg"
+done
 
 # -- Summary ------------------------------------------------------------------
 test_summary
