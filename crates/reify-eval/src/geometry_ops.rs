@@ -2504,6 +2504,15 @@ pub(crate) fn compile_geometry_op(
                 0.0
             };
 
+            // `adaptive` deliberately KEEPS its pre-λ warn-and-default-to-false
+            // behaviour, so the divergence from `iso` two lines up is intentional
+            // rather than an oversight: Contract C gates DIMENSIONED positions,
+            // and `adaptive` is a dimensionless `Bool` with no unit to get wrong
+            // — there is no silent-1000x failure to close here. Tightening it
+            // into a typed rejection is a separate (unfiled) call about Bool
+            // argument strictness across the whole builtin surface, NOT part of
+            // the units-length gate; do not read the surviving warn-and-default
+            // as the intended pattern for `iso`.
             let adaptive = match args.iter().find(|(n, _)| n == "adaptive").map(|(_, e)| e) {
                 None => false,
                 Some(expr) => {

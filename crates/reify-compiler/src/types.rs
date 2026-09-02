@@ -1761,9 +1761,10 @@ impl PatternKind {
 ///
 /// `Linear` / `Linear2D` were corrected to `linear_pattern` /
 /// `linear_pattern_2d` by task 5755 (PRD
-/// `docs/prds/v0_6/units-length-gate-completion.md`, D7). Of the four other
-/// variants only `Mirror` genuinely satisfies the rule today: its DSL builtin
-/// really is spelled `mirror`.
+/// `docs/prds/v0_6/units-length-gate-completion.md`, D7). Of the three
+/// remaining variants — `Circular`, `Mirror`, `Arbitrary` — only `Mirror`
+/// genuinely satisfies the rule today: its DSL builtin really is spelled
+/// `mirror`.
 ///
 /// KNOWN REMAINING GAP — read this block as a rule plus its exceptions, NOT as
 /// "all five already comply". `Circular` and `Arbitrary` still render the
