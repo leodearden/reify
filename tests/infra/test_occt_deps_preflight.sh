@@ -240,6 +240,52 @@ _mk_empty_fixture() {
     printf '%s' "$d"
 }
 
+# --- SHARED HEALTHY DOWNSTREAM FIXTURES ------------------------------------
+#
+# Built ONCE, up here, and fed to EVERY green path in this file — including the
+# OCCT ones in sections 4 and 6, which are textually far above the sections
+# that test gmsh and openvdb.
+#
+# WHY, and it is not cosmetic: check-manifold-deps.sh is one script whose arms
+# run in declaration order, and the OCCT arm no longer exits the script when it
+# passes. So an OCCT positive control that supplies only OCCT_LIB_DIR /
+# OCCT_INCLUDE_DIR runs the Gmsh and OpenVDB arms with NO overrides at all,
+# resolving against live /opt/reify-deps. On a host where the conda env is
+# absent or half-provisioned, an OCCT assert then goes RED naming OCCT and the
+# OCCT fixture dirs — misattributed to the one dep it is not about. That is the
+# same misattribution class this file's own design notes say must not happen,
+# and section 8's Gmsh positive control already avoids it in the other
+# direction; these fixtures apply the same reasoning backwards.
+#
+# The OCCT-positional wrappers below splice these in automatically, so the
+# property holds BY CONSTRUCTION for every existing and future OCCT assert
+# rather than one call site at a time.
+#
+# KNOWN CAVEAT, unchanged: the manifold-prebuilt and tbb-pin arms have no
+# override seam at all, so they still read live host state. Gmsh and OpenVDB
+# DO have one, which is exactly why leaning on live state for them is not
+# excused by that caveat.
+
+# Gmsh's live shape at /opt/reify-deps/lib is ONE hop
+# (libgmsh.so -> libgmsh.so.4.15.2), so the fixture uses that layout.
+_GMSH_LIB_OK="$(_mk_conda_lib_fixture gmsh-lib-ok 4.15.2 libgmsh.so)"
+_GMSH_INC_OK="$(_mk_include_fixture gmsh-include-ok gmshc.h)"
+
+# OpenVDB's live shape at /opt/reify-deps/lib is TWO hops
+# (libopenvdb.so -> libopenvdb.so.13.0 -> libopenvdb.so.13.0.0), so the
+# FIRST-level target yields `13.0` — not the `13.0.0` `readlink -f` would give.
+# Its include sentinel is a NESTED path, `openvdb/openvdb.h`, not a bare
+# filename; _mk_include_fixture creates the parent dir for it.
+_OPENVDB_LIB_OK="$(_mk_lib_fixture openvdb-lib-ok 13.0 libopenvdb.so 0)"
+_OPENVDB_INC_OK="$(_mk_include_fixture openvdb-include-ok openvdb/openvdb.h)"
+
+_GMSH_OK=(GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK")
+_OPENVDB_OK=(OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK")
+
+# Every arm DOWNSTREAM of OCCT, healthy. Spliced into the OCCT-positional
+# wrappers below.
+_DOWNSTREAM_OK=("${_GMSH_OK[@]}" "${_OPENVDB_OK[@]}")
+
 # --- dep-generic guard invocation ------------------------------------------
 #
 # check-manifold-deps.sh is ONE script with SEQUENTIAL arms — manifold
@@ -327,15 +373,24 @@ _guard_env_output_names() {
 # --- OCCT-positional wrappers ----------------------------------------------
 # Thin adapters over the env-list forms above, kept so the OCCT sections read
 # as they did before the file grew two more deps.
+#
+# EACH ONE SPLICES IN "${_DOWNSTREAM_OK[@]}" — the healthy Gmsh and OpenVDB
+# fixtures built at the top of this file. That is what keeps an OCCT assert
+# about OCCT: without it a positive control runs the two downstream arms with
+# no overrides, resolving against live /opt/reify-deps, and a half-provisioned
+# conda env reds an OCCT assert naming OCCT. Doing it HERE rather than at each
+# call site makes the property hold for every future OCCT assert too, and it
+# strengthens the negatives as well — a red now provably comes from the OCCT
+# arm rather than from a downstream arm the case was not testing.
 
 # _guard_exits_zero <lib_dir> <include_dir>
 _guard_exits_zero() {
-    _guard_env_exits_zero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2"
+    _guard_env_exits_zero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" "${_DOWNSTREAM_OK[@]}"
 }
 
 # _guard_exits_nonzero <lib_dir> <include_dir>
 _guard_exits_nonzero() {
-    _guard_env_exits_nonzero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2"
+    _guard_env_exits_nonzero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" "${_DOWNSTREAM_OK[@]}"
 }
 
 # _out_contains <haystack> <needle> — literal (grep -F semantics) substring
@@ -380,7 +435,8 @@ _lines_contain_exact() {
 _guard_output_names() {
     local libdir="$1" incdir="$2"
     shift 2
-    _guard_env_output_names OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" -- "$@"
+    _guard_env_output_names OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" \
+        "${_DOWNSTREAM_OK[@]}" -- "$@"
 }
 
 # _majmin_lines — MAJOR.MINOR projection of each non-empty line on stdin,
@@ -617,6 +673,23 @@ _setup_dev_occt_version() {
 # non-empty assert lives with the SONAME section below.
 _ACCEPTED_SONAMES="$(_bash_guard_array OCCT_ACCEPTED_SONAMES)"
 _ACCEPTED_FIRST="$(printf '%s\n' "$_ACCEPTED_SONAMES" | head -1)"
+
+# Healthy UPSTREAM OCCT, built at the DERIVED accepted version rather than a
+# hardcoded 7.8, so a legitimate future pin bump stays a one-line diff in one
+# file. Fed to every section that tests a DOWNSTREAM dep, for the mirror-image
+# reason _DOWNSTREAM_OK exists: the OCCT arm runs FIRST, so without healthy
+# OCCT overrides a `_guard_env_exits_nonzero` assert on gmsh or openvdb would
+# pass on the OCCT arm's exit and test nothing at all.
+#
+# Defined here rather than beside _DOWNSTREAM_OK only because it needs
+# $_ACCEPTED_FIRST, which is derived just above.
+_UPSTREAM_OCCT_LIB="$(_mk_lib_fixture upstream-occt-lib "$_ACCEPTED_FIRST")"
+_UPSTREAM_OCCT_INC="$(_mk_include_fixture upstream-occt-include)"
+_OCCT_OK=(OCCT_LIB_DIR="$_UPSTREAM_OCCT_LIB" OCCT_INCLUDE_DIR="$_UPSTREAM_OCCT_INC")
+
+# EVERY arm with an override seam, healthy. The all-green baseline that
+# section 12's behavioural completeness loop perturbs one dep at a time.
+_ALL_DEPS_OK=("${_OCCT_OK[@]}" "${_DOWNSTREAM_OK[@]}")
 
 # ---------------------------------------------------------------------------
 # 0. SELF-CHECK — the needle-containment primitive itself.
@@ -1094,27 +1167,12 @@ assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') projects (major.minor) i
 echo ""
 echo "--- 8: gmsh presence — missing libs / headers => red gate naming gmsh ---"
 
-# Healthy upstream (OCCT), built at the DERIVED accepted version rather than a
-# hardcoded 7.8, so a legitimate future pin bump stays a one-line diff in one
-# file.
-_UPSTREAM_OCCT_LIB="$(_mk_lib_fixture upstream-occt-lib "$_ACCEPTED_FIRST")"
-_UPSTREAM_OCCT_INC="$(_mk_include_fixture upstream-occt-include)"
-_OCCT_OK=(OCCT_LIB_DIR="$_UPSTREAM_OCCT_LIB" OCCT_INCLUDE_DIR="$_UPSTREAM_OCCT_INC")
-
-# Gmsh's live shape at /opt/reify-deps/lib is ONE hop
-# (libgmsh.so -> libgmsh.so.4.15.2), so the fixture uses that layout.
-_GMSH_LIB_OK="$(_mk_conda_lib_fixture gmsh-lib-ok 4.15.2 libgmsh.so)"
-_GMSH_INC_OK="$(_mk_include_fixture gmsh-include-ok gmshc.h)"
+# The HEALTHY fixtures for all three deps ($_OCCT_OK, $_GMSH_LIB_OK /
+# $_GMSH_INC_OK, $_OPENVDB_OK) are built once at the top of this file, because
+# the OCCT sections above need the downstream ones too. Only the MISSING
+# fixtures — which are specific to these cases — are built here.
 _GMSH_LIB_MISSING="$(_mk_empty_fixture gmsh-lib-missing)"
 _GMSH_INC_MISSING="$(_mk_empty_fixture gmsh-include-missing)"
-
-# OpenVDB's live shape at /opt/reify-deps/lib is TWO hops
-# (libopenvdb.so -> libopenvdb.so.13.0 -> libopenvdb.so.13.0.0), so the
-# FIRST-level target yields `13.0` — not the `13.0.0` `readlink -f` would give.
-# Its include sentinel is a NESTED path, `openvdb/openvdb.h`, not a bare
-# filename; _mk_include_fixture creates the parent dir for it.
-_OPENVDB_LIB_OK="$(_mk_lib_fixture openvdb-lib-ok 13.0 libopenvdb.so 0)"
-_OPENVDB_INC_OK="$(_mk_include_fixture openvdb-include-ok openvdb/openvdb.h)"
 _OPENVDB_LIB_MISSING="$(_mk_empty_fixture openvdb-lib-missing)"
 _OPENVDB_INC_MISSING="$(_mk_empty_fixture openvdb-include-missing)"
 
@@ -1138,9 +1196,9 @@ assert "guard output NAMES gmshc.h and the offending Gmsh include dir" \
 
 # The Gmsh positive control runs the guard to COMPLETION, so it also transits
 # the OpenVDB arm that section 9 adds downstream. It therefore supplies healthy
-# OpenVDB fixtures too — leaning on live /opt/reify-deps state here would make
-# a green Gmsh result depend on a dep this section is not testing.
-_OPENVDB_OK=(OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK")
+# OpenVDB fixtures too ($_OPENVDB_OK, hoisted to the top of this file) —
+# leaning on live /opt/reify-deps state here would make a green Gmsh result
+# depend on a dep this section is not testing.
 
 assert "guard exits 0 when BOTH Gmsh override dirs carry their sentinels (positive control)" \
     _guard_env_exits_zero "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
@@ -1168,7 +1226,7 @@ assert "guard exits 0 when BOTH Gmsh override dirs carry their sentinels (positi
 echo ""
 echo "--- 9: openvdb presence — missing libs / headers => red gate naming openvdb ---"
 
-_GMSH_OK=(GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK")
+# $_GMSH_OK (healthy Gmsh overrides) is hoisted to the top of this file.
 
 assert "guard exits NON-zero when the OpenVDB lib dir lacks libopenvdb.so (headers present)" \
     _guard_env_exits_nonzero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
