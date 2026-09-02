@@ -1674,6 +1674,23 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///   sibling and collection instances alike, which a set scoped to one
 ///   `elaborate_child_instance` call could not. The scan runs on the decline
 ///   path only, and dedupe keeps the scanned vec short.
+///
+///   THE KEY MUST BE DELIMITED (round-3 review). The key is a literal prefix of
+///   the message, and `target` is delimited by `{:?}`'s closing quote and the
+///   template name by the following `.` — but `{member}` sits at the end, so
+///   without a terminator it is open-ended. Two members of ONE child template
+///   sharing ONE target, where the shorter name is a proper prefix of the
+///   longer (`r`/`r2`, `k`/`k2`, `defl`/`deflection`), then collide: the longer
+///   member's already-emitted message matches the shorter member's key and the
+///   shorter cell's decline is SILENTLY DROPPED — defeating the LOUD contract
+///   for exactly the cells this report exists to surface. MEASURED on
+///   `let r2 = dblpc(x); let r = dblpc(r2)`: two degraded instance cells, ONE
+///   warning, naming only `InnerPC.r2`. The trailing `:` fixes it — `:` is not
+///   a valid identifier character, so `{member}:` is unambiguously terminated,
+///   and the key stays a literal prefix so the no-side-table property holds.
+///   Guarded by
+///   `instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix`
+///   in `crates/reify-eval/tests/compute_dispatch_registry.rs`.
 // 8 args: the reported fact IS this wide — the decline names a scoped instance
 // cell, the template cell behind it, the target, the structural cause and the
 // human reason, and needs the snapshot to gate and the diagnostics vec to
@@ -1697,16 +1714,17 @@ fn report_optimized_instance_decline(
         return;
     }
     // The dedupe key is a literal PREFIX of the message, so the scan needs no
-    // side table and cannot drift from the text it keys.
+    // side table and cannot drift from the text it keys. The trailing `:` is
+    // load-bearing — see the PER-TEMPLATE-CELL DEDUPE bullet above.
     let key = format!(
-        "@optimized target {:?} on {}.{}",
+        "@optimized target {:?} on {}.{}:",
         target, child_template.name, member
     );
     if diagnostics.iter().any(|d| d.message.starts_with(&key)) {
         return;
     }
     diagnostics.push(Diagnostic::warning(format!(
-        "{key}: instance scope {scoped_entity}.{member} cannot reuse the \
+        "{key} instance scope {scoped_entity}.{member} cannot reuse the \
          template's dispatched value ({reason}) — falling back to body-inlining. \
          Reported once per template cell: every other instance of {} whose \
          inputs differ declines the same way (per-instance dispatch under \
