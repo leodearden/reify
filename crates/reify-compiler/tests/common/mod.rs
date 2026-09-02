@@ -213,6 +213,60 @@ pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, Dimension
     expect_scalar(expr)
 }
 
+/// Compile a structure with a single untyped-`let` binding and return the
+/// value cell's (si_value, dimension) from its default expression.
+///
+/// Source compiled: `structure def S { let x = <quantity> }`
+///
+/// An untyped-`let` counterpart to [`stdlib_param_si_value`], for probes whose
+/// quantity has no obvious named type — e.g. a `rad^-1` component, or an
+/// Energy-shaped expression the caller wants to bind untyped. Guessing a type
+/// for `stdlib_param_si_value` in that situation would either fail to compile
+/// or silently measure a different quantity, so this compiles the bare `let`
+/// form directly instead.
+///
+/// Uses `reify_test_support::compile_source_with_stdlib_allow_parse_errors`
+/// rather than the plain `compile_source_with_stdlib` helper: the plain one
+/// parses via `parse_with_stdlib_or_panic`, which asserts
+/// `parsed.errors.is_empty()` and would panic inside the helper with a
+/// message naming no `quantity` — hiding which probe was bad. Routing parse
+/// errors into `module.diagnostics` instead keeps the `errs.is_empty()`
+/// assertion below as the one place a bad probe is reported.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn stdlib_let_si_value(quantity: &str) -> (f64, DimensionVector) {
+    let source = format!("structure def S {{ let x = {quantity} }}");
+    let module = reify_test_support::compile_source_with_stdlib_allow_parse_errors(&source);
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "source `{source}` produced errors: {errs:?}"
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .unwrap_or_else(|| {
+            panic!(
+                "`{quantity}`: no `x` value cell — the binding was DROPPED during \
+                 lowering despite compiling without errors (INV-SF-7)"
+            )
+        });
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .expect("x cell has no default_expr");
+    expect_scalar(expr)
+}
+
 /// Extract an `(op, left, right)` triple from a `BinOp` expression.
 ///
 /// Panics with a descriptive message if `expr` is not a
