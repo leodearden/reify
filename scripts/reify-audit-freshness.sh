@@ -214,7 +214,15 @@ reify_audit_guard() {
         # `-x`, not `-f`: a present-but-non-executable binary is equally
         # unrunnable, and is_stale's own presence check is only `-f`, so the
         # guard must be the stricter of the two.
-        if [ -x "$bin" ]; then
+        # REIFY_AUDIT_FRESHNESS_STRICT=1 is the operator's opt-in escape
+        # hatch: refuse rather than fall open.  It is an ENV knob, not a
+        # fourth mode, because the wrapper's call site is fixed in the script
+        # while the systemd unit is where an operator can actually set
+        # something — the delivery path REIFY_AUDIT_PREDONE_WARN_ONLY uses.
+        # Only the literal "1" arms it; unset/empty/"0"/"true" all leave the
+        # default fail-open in force (the `[ "${VAR:-0}" = "1" ]` idiom already
+        # used for REIFY_AUDIT_NO_COLD_BUILD above).
+        if [ -x "$bin" ] && [ "${REIFY_AUDIT_FRESHNESS_STRICT:-0}" != "1" ]; then
             # Fail OPEN: run the STALE detector rather than no detector.  It
             # still gates on its own findings; only the freshness guard steps
             # aside.  That is strictly the pre-existing risk profile of the
@@ -222,6 +230,15 @@ reify_audit_guard() {
             # project-wide inability to mark work done.
             echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch)." >&2
             return 0
+        fi
+
+        # Two refusals reach here and BOTH exit 125, so only the token
+        # separates them.  Keep them distinguishable: a consumer must never
+        # misread "the operator chose strict" as "no binary on disk".
+        if [ -x "$bin" ]; then
+            # Present and runnable — merely old — and strict is armed.
+            echo "$REIFY_AUDIT_E_BIN_STALE: '$bin' predates crates/reify-audit (mtime $btime < crate commit epoch $epoch); REIFY_AUDIT_FRESHNESS_STRICT=1 is set, refusing rather than falling open." >&2
+            return 125
         fi
         # Nothing runnable on disk.  Falling open here would exec nothing and
         # block the flip anyway, with a worse, less diagnosable rc — so
