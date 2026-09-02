@@ -388,9 +388,9 @@ const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.bod
 /// reports one `EvalUnresolved` error naming `volume` per cell in
 /// [`VOLUME_UNRESOLVED_CELLS`] by construction. Those are the OCCT fixture's
 /// business. `DiagnosticCode::ConstraintViolated` is routed out too — a
-/// violated constraint is a design failure, not an evaluation one, and the
-/// satisfaction gates own it (see the comment at the partition). Every other
-/// Error is a real evaluation regression and fails here.
+/// violated constraint is a DESIGN failure, not an evaluation one, and the
+/// satisfaction gates own it (mechanism: [`Strictness`]). Every other Error is a
+/// real evaluation regression and fails here.
 ///
 /// Enumerating them rather than dropping all diagnostics is what keeps the
 /// OCCT-less path — the one this fixture exists to serve — covered at all. The
@@ -419,20 +419,10 @@ fn check_dev_capstan() -> CheckResult {
                     && d.message.contains(VOLUME_BUILTIN_MENTION)
             });
         // The OTHER Error a healthy design file can raise here is a constraint
-        // VIOLATION: `SimpleConstraintChecker` co-emits a
-        // `DiagnosticCode::ConstraintViolated` `Diagnostic::error` alongside every
-        // `Satisfaction::Violated` result (`crates/reify-constraints/src/lib.rs`).
-        // Those belong to the satisfaction gates —
-        // `capstan_design_file_checks_clean_without_a_kernel` file-wide, and the
-        // entity-scoped [`assert_constraints_ok`] calls in the other two tests —
-        // which read `constraint_results` directly and can say WHICH relation
-        // broke and what that means mechanically. Leaving them in `unexpected`
-        // makes this shared fixture panic FIRST, in every test at once, under a
-        // message ("a cell of the design stopped evaluating") that is simply false
-        // for that failure, shadowing the diagnosis every kernel-free gate this
-        // module carries was written to give. So they are routed out here and
-        // deliberately not asserted about: this fixture's claim is evaluation
-        // Error-freedom, nothing more.
+        // VIOLATION, co-emitted alongside the typed result. It is routed out and
+        // deliberately not asserted about — the satisfaction gates own it and can
+        // say WHICH relation broke; see [`Strictness`] for why. This fixture's
+        // claim is evaluation Error-freedom, nothing more.
         let unexpected: Vec<_> = rest
             .into_iter()
             .filter(|d| d.code != Some(DiagnosticCode::ConstraintViolated))
@@ -440,12 +430,10 @@ fn check_dev_capstan() -> CheckResult {
         assert!(
             unexpected.is_empty(),
             "unexpected evaluation errors on the kernel-free surface of \
-             {DEV_CAPSTAN}: only the `volume()` geometry-consumer cells may fail \
-             to resolve here (constraint violations are routed to the satisfaction \
-             gates and are not this fixture's business). Anything else means a cell \
-             of the design stopped evaluating — the design-level gates below read \
-             just a few cells each, so this is the only place such a regression is \
-             caught when OCCT is absent: {unexpected:#?}"
+             {DEV_CAPSTAN}: only the `volume()` geometry-consumer cells may fail to \
+             resolve here (constraint violations go to the satisfaction gates). \
+             Anything else means a cell of the design stopped evaluating, and this \
+             is the only place that is caught when OCCT is absent: {unexpected:#?}"
         );
         // WHICH cells raised them, not merely how many. The emission names only
         // the builtin in its message and carries the offending cell's `span` as
@@ -502,7 +490,7 @@ fn check_dev_capstan() -> CheckResult {
 /// "Error-diagnostic-free" here means free of PIPELINE errors:
 /// `DiagnosticCode::ConstraintViolated` is routed out and left to the
 /// satisfaction gates, the same partition [`check_dev_capstan`] makes on the
-/// kernel-free surface — see the comment at the filter.
+/// kernel-free surface — mechanism: [`Strictness`].
 fn tessellate_dev_capstan() -> TessellateResult {
     let compiled = dev_capstan_compiled();
 
@@ -516,20 +504,13 @@ fn tessellate_dev_capstan() -> TessellateResult {
 
     let result = engine.tessellate_realizations(compiled);
     // Constraint VIOLATIONS are routed out, exactly as [`check_dev_capstan`]
-    // routes them out of its own Error filter and for the same reason:
-    // `SimpleConstraintChecker` co-emits a `DiagnosticCode::ConstraintViolated`
-    // `Diagnostic::error` alongside every `Satisfaction::Violated` result
-    // (`crates/reify-constraints/src/lib.rs`), and this surface evaluates and
-    // constraint-checks before it tessellates. Left in, a broken DESIGN relation
-    // panics here first — in all three OCCT gates at once, including the two that
-    // read only geometry and have nothing to do with the relation that broke —
-    // under "unexpected geometry errors", a message that is false for that
-    // failure and that shadows the diagnosis `assert_constraints_ok` exists to
-    // give (it names WHICH relation broke and at what strictness). Verified by
-    // mutation: shortening `Fairlead.stroke` past the band takes all three down
-    // here rather than failing `capstan_surfaces_only_the_finished_drum`'s
-    // satisfaction claim. So the satisfaction gates own them and this fixture's
-    // claim stays what its message says: the KERNEL path raised no Error.
+    // routes them out of its own Error filter and for the reason [`Strictness`]
+    // records. It bites harder here: this surface evaluates and constraint-checks
+    // BEFORE it tessellates, so one broken DESIGN relation left in this filter
+    // panics here first and takes all three OCCT gates down at once — including
+    // the two that read only geometry and have nothing to do with the relation
+    // that broke. The satisfaction gates own them; this fixture's claim stays what
+    // its message says: the KERNEL path raised no Error.
     let geom_errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -546,6 +527,33 @@ fn tessellate_dev_capstan() -> TessellateResult {
 }
 
 /// How strictly [`assert_constraints_ok`] reads a set of constraint results.
+///
+/// **This is the module's one statement of how a constraint failure reaches the
+/// diagnostics**, and every other site links here rather than re-deriving it —
+/// nothing executable checks a restatement, so copies of it go stale the moment
+/// `reify-constraints` changes a severity or an emission site. This enum is the
+/// natural home because it is the axis that exists *because* of the mechanism.
+///
+/// Alongside the typed `Satisfaction` result, `SimpleConstraintChecker`
+/// (`crates/reify-constraints/src/lib.rs`) co-emits:
+///
+///   * `Violated` → a `Diagnostic::error` (`DiagnosticCode::ConstraintViolated`).
+///     Both fixtures — [`check_dev_capstan`] and [`tessellate_dev_capstan`] —
+///     route that code OUT of their Error filters. A violated constraint is a
+///     DESIGN failure, not a pipeline one; left in, it panics the shared fixture
+///     first, in every test at once, under a message about evaluation or geometry
+///     that is false for that failure, and it shadows the diagnosis
+///     [`assert_constraints_ok`] exists to give (WHICH relation, at what
+///     strictness). Verified by mutation: shortening `Fairlead.stroke` past the
+///     band took all three OCCT gates down in the fixture rather than failing the
+///     satisfaction claim;
+///   * `Indeterminate` → a `Diagnostic::warning`
+///     (`DiagnosticCode::ConstraintIndeterminate`), which no `Severity::Error`
+///     filter in this module can see at all.
+///
+/// So NEITHER failure is a fixture's business: the satisfaction gates own both,
+/// and they read `constraint_results` directly rather than the diagnostics — which
+/// is what keeps their claims true however the checker chooses to report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Strictness {
     /// Every result must be `Satisfied` — `Indeterminate` fails too.
@@ -554,11 +562,9 @@ enum Strictness {
     /// reports: an undef leaf, or a cross-`sub` field reference that did not
     /// resolve. It is therefore the failure mode a `Violated`-only filter is
     /// blindest to — the constraint is still declared, still reported, and
-    /// checking nothing — and `SimpleConstraintChecker` reports it as a
-    /// `Diagnostic::warning` (`DiagnosticCode::ConstraintIndeterminate`,
-    /// `crates/reify-constraints/src/lib.rs`), so [`check_dev_capstan`]'s
-    /// `Severity::Error` filter cannot see it either. This is the only claim in
-    /// the module that catches it.
+    /// checking nothing — and per the enum doc above it reaches the diagnostics
+    /// only as a WARNING, so no Error filter here sees it either. This strictness
+    /// is the only claim in the module that catches it.
     AllSatisfied,
     /// Only `Violated` fails — the weaker statement `reify check` itself makes.
     NoneViolated,
@@ -620,12 +626,9 @@ fn assert_constraints_ok<'a>(
     assert!(
         bad.is_empty(),
         "{DEV_CAPSTAN} must satisfy {what} at its defaults on {surface} — {} of {} \
-         did not, at {strictness:?} strictness. `Violated` means the design broke \
-         the relation; `Indeterminate` means an input cell failed to EVALUATE, so \
-         the constraint is present but checking nothing (caught only at \
-         `AllSatisfied`). Read off `constraint_results` directly, so this holds \
-         however the checker chooses to report a failure as a diagnostic. {note} \
-         Results: {bad:#?}",
+         did not, at {strictness:?} strictness. `Violated` means the design broke the \
+         relation; `Indeterminate` means an input cell failed to EVALUATE, so the \
+         constraint is present but checking nothing. {note} Results: {bad:#?}",
         bad.len(),
         scoped.len()
     );
@@ -1098,6 +1101,18 @@ const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
 ///      already did once on this branch), whereas the citation stays true;
 ///   3. `band < groove_len` strictly, i.e. the two figures have not collapsed
 ///      into one (they cannot while `dead_total > 0`);
+///
+/// **(1) and (2) are DEFINITION-DRIFT guards, not independent verification.**
+/// Each restates a `let` of the design file one line away (`band = lead ·
+/// active_turns`; `groove_len = lead · (active_turns + dead_total)`), so on the
+/// happy path they exercise nothing but the evaluator's multiply and can only
+/// fail if someone rewrites those `let`s — which is the edit worth catching, but
+/// is not the same thing as checking the design. Do not over-trust them. The
+/// substantive claims are (0) — template/instance spellings agree, an evaluator
+/// property that genuinely could change — and (4), the derived coverage window.
+/// (3) is the strictly-independent one of the trio: it survives a `dead_total ==
+/// 0` edit that (2) would still pass.
+///
 ///   4. the coverage relation itself: `band <= stroke <= band + lead`, read off
 ///      the INSTANCE cells — the same form the DSL constraint resolves against,
 ///      so the Rust gate and the design gate check the same numbers (claim (0)
@@ -1142,70 +1157,57 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     // and in fact the two are bit-identical today.
     assert!(
         (band_inst - band).abs() <= BAND_IDENTITY_REL_TOL * band.abs(),
-        "`{CAPSTAN_ENTITY}.band` and `{capstan_inst}.band` must be the same \
-         evaluated cell: the template reads {:.9} mm, the instance {:.9} mm. A \
-         divergence means a `sub` constructor override has taken effect (task \
-         4147 fixed?) — claims (1)-(3) below read the template form while the \
-         file's `shuttle.stroke >= capstan.band` constraint resolves against the \
-         instance, so the two gates would no longer be checking the same drum.",
+        "`{CAPSTAN_ENTITY}.band` and `{capstan_inst}.band` must be the same evaluated \
+         cell: template {:.9} mm, instance {:.9} mm. A divergence means a `sub` \
+         constructor override took effect (task 4147 fixed?), forking the template \
+         form the claims below read from the instance form the file's constraint \
+         resolves against — see this test's doc comment.",
         band * 1e3,
         band_inst * 1e3
     );
     assert!(
         (stroke_inst - stroke).abs() <= BAND_IDENTITY_REL_TOL * stroke.abs(),
         "`{FAIRLEAD_ENTITY}.stroke` and `{shuttle_inst}.stroke` must be the same \
-         evaluated cell: the template reads {:.9} mm, the instance {:.9} mm. A \
-         divergence means a `sub` constructor override has taken effect (task \
-         4147 fixed?), and the coverage window below — which reads the instance \
-         form — would be gating a different stroke from the one the rest of this \
-         module and `docs/projects/printer_v01.md` describe.",
+         evaluated cell: template {:.9} mm, instance {:.9} mm. A divergence means a \
+         `sub` constructor override took effect (task 4147 fixed?), and the coverage \
+         window below — which reads the instance form — would be gating a different \
+         stroke from the one this module describes.",
         stroke * 1e3,
         stroke_inst * 1e3
     );
 
     // ---- (1) `band` is the ACTIVE migration, not the total grooved extent ----
+    // DEFINITION-DRIFT GUARD, not an independent check — see the doc comment: this
+    // restates the file's own `let band = lead * active_turns` one line away.
     let band_expected = lead * active_turns;
     assert!(
         (band - band_expected).abs() <= BAND_IDENTITY_REL_TOL * band_expected.abs(),
-        "`{CAPSTAN_ENTITY}.band` must be the ACTIVE wrap-band migration, one `lead` \
-         per active turn: lead · active_turns = {:.6} mm × {active_turns:.6} = \
-         {:.6} mm, but the cell reads {:.6} mm. If this failed at ~{:.4} mm the \
-         cell has been redefined as the TOTAL grooved extent (`groove_len`, which \
-         also counts the {dead_total} dead anchor wraps) — those are different \
-         lengths and only the active one is what the shuttle tracks.",
-        lead * 1e3,
+        "`{CAPSTAN_ENTITY}.band` must be `lead · active_turns` = {:.6} mm, but reads \
+         {:.6} mm; at ~{:.4} mm it has been redefined as the TOTAL grooved extent \
+         (`groove_len`, which also counts the {dead_total} dead anchor wraps).",
         band_expected * 1e3,
         band * 1e3,
         groove_len * 1e3
     );
 
     // ---- (2) The grooved length decomposes into band + dead wraps ----
-    // An algebraic identity given `groove_len = lead · (active_turns +
-    // dead_total)` and `band = lead · active_turns`, so only fp slack is needed;
-    // it is asserted anyway because it is the statement the project doc makes in
-    // prose, and it is what makes (1) and (3) mean what they say.
-    // The residual is scaled by `groove_len`, deliberately NOT by `dead_extent`:
-    // `dead_total` is the one term in this identity that can legitimately go to
-    // zero (a drum wound with no anchor wraps), and a tolerance scaled by the
-    // very term that can vanish would silently collapse to exact float equality
-    // at exactly that edit. `groove_len` cannot vanish while the drum is grooved
-    // at all — the same choice the other assertions here make (`band`,
-    // `band_expected`) — and at the file's defaults the two scales differ by
+    // DEFINITION-DRIFT GUARD like (1) — an algebraic identity given the file's own
+    // `groove_len = lead · (active_turns + dead_total)`, asserted because it is the
+    // statement the project doc makes in prose, not because it verifies anything (1)
+    // does not. The residual is scaled by `groove_len`, deliberately NOT by
+    // `dead_extent`: `dead_total` is the one term here that can legitimately go to
+    // zero (a drum wound with no anchor wraps), and a tolerance scaled by the very
+    // term that can vanish would silently collapse to exact float equality at exactly
+    // that edit. `groove_len` cannot vanish while the drum is grooved at all — the
+    // same choice (1) makes — and at the file's defaults the two scales differ by
     // ~3×, i.e. this is the same fp slack in practice.
     let dead_extent = lead * dead_total;
     assert!(
         (groove_len - band - dead_extent).abs() <= BAND_IDENTITY_REL_TOL * groove_len.abs(),
-        "the drum's grooved length must decompose into the active band plus the \
-         dead (anchor) wraps: groove_len − band = {:.6} mm − {:.6} mm = {:.6} mm, \
-         but lead · dead_total = {:.6} mm × {dead_total} = {:.6} mm. This is the \
-         active-band / dead-wrap decomposition described in \
-         docs/projects/printer_v01.md § \"Drive: Vectran tendons + capstans\", \
-         stated over the cells — cited by section rather than quoted so this \
-         message stays true however that paragraph is reworded.",
-        groove_len * 1e3,
-        band * 1e3,
+        "the drum's grooved length must decompose into the active band plus the dead \
+         (anchor) wraps: groove_len − band = {:.6} mm, but lead · dead_total = \
+         {:.6} mm.",
         (groove_len - band) * 1e3,
-        lead * 1e3,
         dead_extent * 1e3
     );
 
@@ -1236,19 +1238,16 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     // legitimate term in the upper bound.
     assert!(
         stroke_inst >= band_inst && stroke_inst <= band_inst + lead,
-        "the fairlead shuttle's stroke must cover the capstan's band migration \
-         and overshoot it by less than one whole turn: {shuttle_inst}.stroke = \
-         {:.6} mm against a band of {:.6} mm (lower bound) and band + lead = \
-         {:.6} mm (upper bound). The stroke is the band rounded UP to a whole \
-         turn, ceil(active_turns) · lead = ceil({active_turns:.6}) × {:.6} mm = \
-         {:.6} mm; a stroke below the band means the shuttle runs out of travel \
-         before the wrap band does (fleet angle opens, the fairlead side-loads \
-         instead of guiding), and one above the upper bound is no longer that \
-         rounding rule — it is an unexplained number.",
+        "the fairlead shuttle's stroke must cover the capstan's band migration and \
+         overshoot it by less than one whole turn: {shuttle_inst}.stroke = {:.6} mm \
+         against a band of {:.6} mm (lower bound) and band + lead = {:.6} mm (upper \
+         bound). Below the band the shuttle runs out of travel before the wrap band \
+         does — the fleet angle opens and the fairlead side-loads instead of guiding. \
+         Above it the stroke is no longer the band rounded up to a whole turn, \
+         ceil({active_turns:.6}) · lead = {:.6} mm — it is an unexplained number.",
         stroke_inst * 1e3,
         band_inst * 1e3,
         (band_inst + lead) * 1e3,
-        lead * 1e3,
         active_turns.ceil() * lead * 1e3
     );
 }
@@ -1463,15 +1462,11 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
         "`{CAPSTAN_DRIVE_ENTITY}` must carry the shuttle-covers-the-band constraint \
          — one relating `{}.{}` to `{}.{}` (the file spells it `shuttle.stroke >= \
          capstan.band`; either order is fine, both datums are not). No declared \
-         constraint reads both. That relation reads a `{CAPSTAN_ENTITY}` cell \
-         against a `{FAIRLEAD_ENTITY}` cell, so the assembly owning both `sub`s is \
-         the ONLY scope it can live in: deriving `{FAIRLEAD_ENTITY}.stroke` from \
-         the capstan would need a parameter override through `sub shuttle = \
-         {FAIRLEAD_ENTITY}(…)`, and that is the override drop (task 4147) \
-         {DEV_CAPSTAN}'s own header records as not working — only `at` poses come \
-         through. If the relation was deliberately re-expressed, this gate and its \
-         message have to move with it. Datums each `{CAPSTAN_DRIVE_ENTITY}` \
-         constraint reads: {:?}",
+         constraint reads both. That relation reads a `{CAPSTAN_ENTITY}` cell against \
+         a `{FAIRLEAD_ENTITY}` cell, so the assembly owning both `sub`s is the ONLY \
+         scope it can live in (why: this test's doc comment). If it was deliberately \
+         re-expressed, this gate and its message have to move with it. Datums each \
+         `{CAPSTAN_DRIVE_ENTITY}` constraint reads: {:?}",
         stroke_read.0,
         stroke_read.1,
         band_read.0,
@@ -1549,20 +1544,20 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
 /// Half of this is a DECOUPLING and half is NEW coverage, and the two are worth
 /// keeping apart:
 ///
-///   * `Violated`-emptiness is, today, already implied by [`check_dev_capstan`]'s
-///     Error-freedom assertion, so this half adds no reach on its own.
-///     `SimpleConstraintChecker` co-emits a `DiagnosticCode::ConstraintViolated`
-///     `Diagnostic::error` alongside every `Satisfaction::Violated` result
-///     (`crates/reify-constraints/src/lib.rs`), so a violated `Fairlead` /
-///     `IdlerPulley` / `ShuttlePlate` constraint trips the fixture before
-///     execution ever reaches here — confirmed by dropping
-///     `IdlerPulley.sheave_od` below its `brg_od` bound, which panics in
-///     `check_dev_capstan`, not in this test. What this adds is that the
-///     file-wide constraint claim no longer RIDES on that co-emission: it reads
-///     `constraint_results` directly, so a checker that downgraded the
-///     diagnostic to a warning, or dropped it in favour of the typed result,
-///     could not silently take the gate down with it. This module neither owns
-///     that severity choice nor pins it anywhere else.
+///   * `Violated`-emptiness. This half used to be implied by
+///     [`check_dev_capstan`]'s Error-freedom assertion, through the
+///     `Diagnostic::error` the checker co-emits alongside every `Violated`
+///     result — but that code is now routed OUT of both fixtures' Error filters,
+///     precisely so the satisfaction gates own the failure and can name the
+///     relation (see [`Strictness`]). On the kernel-free surface this test is
+///     therefore the file-wide owner, not a duplicate of one: a violated
+///     `Fairlead` / `IdlerPulley` / `ShuttlePlate` constraint is caught HERE and
+///     nowhere else. Measured, not assumed — dropping `IdlerPulley.sheave_od`
+///     below its `brg_od` bound fails this test and the OCCT-gated
+///     `capstan_surfaces_only_the_finished_drum`, and does NOT panic
+///     `check_dev_capstan`. It also reads `constraint_results` directly rather
+///     than any diagnostic, so the claim does not rest on the checker's severity
+///     choice at all — which this module neither owns nor pins anywhere.
 ///   * Non-emptiness is the half that is genuinely uncovered otherwise. An empty
 ///     `constraint_results` emits NO diagnostic, so the fixture cannot see it,
 ///     and every other kernel-free gate here quantifies over a subset: claim (2)
@@ -1588,17 +1583,15 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
 ///     because every `Capstan` constraint reads scalar cells only (`land_r`,
 ///     `pitch_r`, `groove_r`, `bore_r`, `lead`, `flange_r`, `d_ratio`) and none
 ///     of them touches a `volume()` cell — so `Indeterminate` there is always a
-///     regression, never a missing kernel. That is the strictness axis's whole
-///     point (see [`Strictness::AllSatisfied`]) and it was previously made for
+///     regression, never a missing kernel. That claim was previously made for
 ///     `Capstan` ONLY inside the OCCT-gated
 ///     `capstan_surfaces_only_the_finished_drum`, which returns early with no
-///     kernel: an `Indeterminate` `Capstan` constraint — present, reported, and
-///     checking nothing — was caught by nothing at all on a machine without
-///     OCCT, since the checker reports it as a WARNING that
-///     [`check_dev_capstan`]'s `Severity::Error` filter cannot see and the
-///     file-wide `NoneViolated` claim above by definition does not. The
-///     `CapstanDrive` scope gets the same strict treatment, for the same reason,
-///     in `capstan_drive_constrains_the_shuttle_to_cover_the_band`.
+///     kernel; since `Indeterminate` reaches the diagnostics only as a warning
+///     (see [`Strictness::AllSatisfied`]), a `Capstan` constraint that was
+///     present, reported and checking nothing was caught by nothing at all on a
+///     machine without OCCT. The `CapstanDrive` scope gets the same strict
+///     treatment, for the same reason, in
+///     `capstan_drive_constrains_the_shuttle_to_cover_the_band`.
 ///
 /// The non-emptiness guard is not ceremony: a `Violated` filter over an empty
 /// `constraint_results` is vacuously green, the same trap
@@ -1613,10 +1606,9 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
         Strictness::NoneViolated,
         "the kernel-free check surface",
         "Read off `constraint_results` directly, so this holds however the checker \
-         chooses to report a violation as a diagnostic. Reaching HERE rather than \
-         `check_dev_capstan` means the violation raised no Error diagnostic, which \
-         is itself worth reading as a change in `SimpleConstraintChecker`'s \
-         reporting.",
+         chooses to report a violation as a diagnostic. Both fixtures route \
+         `ConstraintViolated` out of their Error filters, so on the kernel-free \
+         surface this gate is where a file-wide violation lands.",
     );
 
     // ---- …and `Capstan` strictly, on this surface too ----
@@ -1626,16 +1618,12 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
     // `lead`, `flange_r`, `d_ratio`), none reaches a `volume()` cell — so the
     // strict claim is decidable here and safe to make.
     //
-    // Without it, `Indeterminate` on a `Capstan` constraint is caught by NOTHING
-    // where OCCT is absent, which is precisely the blind spot [`Strictness`]
-    // documents: `SimpleConstraintChecker` reports it as a WARNING, so
-    // [`check_dev_capstan`]'s `Severity::Error` filter cannot see it; the
-    // file-wide claim just above is `NoneViolated`, which by definition cannot;
-    // and the module's other strict `Capstan` claim lives in
-    // `capstan_surfaces_only_the_finished_drum`, which returns early with no
-    // kernel. A constraint that is present, reported, and checking nothing would
-    // read green on every kernel-free machine — the exact shape of regression
-    // this test exists to close on the file-wide half.
+    // Without it, `Indeterminate` on a `Capstan` constraint reads green on every
+    // kernel-free machine — the blind spot [`Strictness`] documents. Neither of
+    // the two places it could otherwise be caught does: the file-wide claim just
+    // above is `NoneViolated`, and the module's other strict `Capstan` claim lives
+    // in `capstan_surfaces_only_the_finished_drum`, which returns early with no
+    // kernel.
     assert_constraints_ok(
         &result.constraint_results,
         Some(CAPSTAN_ENTITY),
@@ -1643,10 +1631,6 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
         "the kernel-free check surface",
         "`Capstan`'s constraints read scalar cells only, so all of them are \
          decidable without a kernel: an `Indeterminate` here means an input cell \
-         stopped evaluating (an undef leaf, or a reference that no longer \
-         resolves) and the relation is no longer checking anything, NOT that a \
-         kernel was needed. The OCCT-gated copy of this strict claim lives in \
-         `capstan_surfaces_only_the_finished_drum`; this one is what keeps it \
-         covered where OCCT is absent.",
+         stopped evaluating, NOT that a kernel was needed.",
     );
 }
