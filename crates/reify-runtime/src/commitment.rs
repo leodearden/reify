@@ -101,8 +101,7 @@ impl NodePolicyOverrides {
     /// Has no production consumer today: the concurrent scheduler was
     /// deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065); every
     /// remaining caller is a test.
-    // G-allow: no production consumer; scheduler deleted, see doc above —
-    // retain-or-remove decision tracked in #7073
+    // G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see doc above
     pub fn resolve(&self, node_id: &NodeId) -> NodeCommitmentOverride {
         if let Some(o) = self.instance_overrides.get(node_id) {
             return *o;
