@@ -5601,6 +5601,132 @@ mod tests {
         );
     }
 
+    /// Task #6878 (PRD leaf β) step-5: `extract_loss_factor` reads the
+    /// per-material hysteretic loss factor η off a material value.
+    ///
+    /// ## Why this helper is deliberately NON-defensive
+    ///
+    /// Its neighbour [`extract_isotropic_material`] reads a MISSING field as
+    /// `0.0`, and that is correct there: the type-checker guarantees
+    /// `youngs_modulus` / `poisson_ratio` are present on any real
+    /// `ElasticMaterial`, so the floor is unreachable defensive scaffolding.
+    ///
+    /// Here the opposite is true and it is MEASURED, not assumed.
+    /// `modal_analysis(material : ElasticMaterial, …)`
+    /// (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`) does NOT require
+    /// `Damped`, so a material with no `loss_factor` reaches the solver and the
+    /// compiler cannot catch it — a probe `structure def PlainSteel :
+    /// ElasticMaterial { … }` type-checks and evaluates clean today. The absence
+    /// of the field is therefore a real, reachable, AUTHOR-CAUSED condition, and
+    /// it IS the signal: it means "this material does not conform to `Damped`".
+    /// Folding it to `0.0` would reconstruct precisely the silent ζ = 0 that PRD
+    /// §C6 forbids, and would do it in the one place designed to prevent it.
+    ///
+    /// Hence `Option<f64>`, and hence the η = 0 case below: an explicitly
+    /// undamped CONFORMER (`loss_factor = 0.0` → `Some(0.0)`) must stay
+    /// distinguishable from a NON-conformer (`None`). A bare `f64` cannot carry
+    /// that distinction, and collapsing them is the single most likely way to
+    /// get this wrong.
+    ///
+    /// The numeric-spelling arms mirror [`read_scalar_si`]'s tolerated shapes:
+    /// `loss_factor : Real` is dimensionless, but a `Value::Scalar` spelling
+    /// must not be mis-read as absent. The rejection arms are what
+    /// `read_scalar_si` alone cannot give — its `_ => 0.0` floor is exactly the
+    /// behaviour that must NOT fire here.
+    ///
+    /// RED before step-6: `extract_loss_factor` does not exist.
+    #[test]
+    fn extract_loss_factor_reads_conformers_and_rejects_non_conformers() {
+        /// A material-shaped instance carrying exactly the given `loss_factor`
+        /// value. `Steel_AISI_1045`'s real η is 0.0006 (materials_fea.ri).
+        fn material_with(loss_factor: Value) -> Value {
+            struct_instance(
+                "Steel_AISI_1045",
+                vec![("loss_factor".to_string(), loss_factor)],
+            )
+        }
+
+        // ── ACCEPTED: the numeric spellings a stdlib `Real` field can take ──
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Real(0.0006))),
+            Some(0.0006),
+            "a `Real` loss_factor — the shape Steel_AISI_1045 actually \
+             evaluates to — must read back exactly"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Int(0))),
+            Some(0.0),
+            "an `Int` loss_factor must read as a conforming material, not as \
+             absent"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Scalar {
+                si_value: 0.02,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })),
+            Some(0.02),
+            "a dimensionless `Scalar` spelling must read as a conforming \
+             material — `loss_factor : Real` is dimensionless, but a Scalar \
+             spelling must not be mistaken for absence (mirrors \
+             read_scalar_si's tolerated shapes)"
+        );
+
+        // η = 0 IS A CONFORMER. This is the boundary most likely to be wrongly
+        // folded into the rejection: an explicitly undamped `Damped` material is
+        // a completely different author intent from a material that never
+        // declared a loss factor at all, even though both give ζ_material = 0.
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Real(0.0))),
+            Some(0.0),
+            "η = 0.0 is an explicitly UNDAMPED CONFORMER and must NOT collapse \
+             to None — a `Damped` material that declares zero loss is valid \
+             input, not a rejection"
+        );
+
+        // ── REJECTED: every shape that is not a usable loss factor ──────────
+        assert_eq!(
+            extract_loss_factor(&struct_instance(
+                "PlainSteel",
+                vec![
+                    ("youngs_modulus".to_string(), Value::Real(2.05e11)),
+                    ("poisson_ratio".to_string(), Value::Real(0.29)),
+                ],
+            )),
+            None,
+            "a StructureInstance with NO loss_factor field is the B8 case: an \
+             ElasticMaterial that does not conform to `Damped`. This is THE \
+             signal — it must be None, never Some(0.0)"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::String("0.02".to_string()))),
+            None,
+            "a present but non-numeric loss_factor must be None — \
+             read_scalar_si's `_ => 0.0` floor is precisely what must not fire \
+             here"
+        );
+        assert_eq!(
+            extract_loss_factor(&Value::Undef),
+            None,
+            "a non-StructureInstance material value must be None"
+        );
+
+        // A hand-built value can carry a negative or non-finite η past the
+        // `constraint loss_factor >= 0` on `trait Damped` (that constraint is a
+        // CHECK-time gate on the author surface, not a runtime one). The
+        // trampoline must not propagate such a value into ζ = η/2, so it is
+        // rejected here rather than producing a negative or NaN damping ratio.
+        for bad in [-1e-6, -0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                extract_loss_factor(&material_with(Value::Real(bad))),
+                None,
+                "a negative or non-finite η ({bad}) must be rejected — \
+                 `trait Damped`'s `constraint loss_factor >= 0` is the \
+                 check-time gate, but the trampoline must not propagate a \
+                 negative or NaN ζ if a hand-built value slips past it"
+            );
+        }
+    }
+
     /// Task #6878 (PRD leaf β) step-3: `classify_damping` gains its
     /// `MaterialDamping` arm, and the arm carries the RECURSIVELY-classified
     /// `extra` companion rather than a pre-flattened `(α, β)` pair.
