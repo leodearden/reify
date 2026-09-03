@@ -3,10 +3,17 @@
 //! Include in a test binary with `mod common;` at the top of the file.
 //! Helpers are `pub` so they are visible after `use common::{...}`.
 //!
-//! Most helpers have migrated to `reify_test_support`. This module retains only:
+//! Most helpers have migrated to `reify_test_support`. This module retains:
 //! - `compile_with_stdlib_helper` — delegates to `reify_test_support::compile_source_with_stdlib`
-//! - `assert_single_non_empty_label` — specific to unit collision diagnostic tests
 //! - `compile_errors` / `compile_errors_with_stdlib` — compile a project and return Error-severity diagnostics
+//! - `assert_prelude_collision_labels` — specific to unit collision diagnostic tests
+//! - `expect_scalar` / `expect_binop` — unwrap a `CompiledExpr` into its `Scalar` or `BinOp` shape
+//! - `stdlib_param_si_value` / `stdlib_let_si_value` — compile a one-cell `structure def S`
+//!   (typed `param` or untyped `let`) and return the cell's (si_value, dimension)
+//! - `units_module` / `assert_simple_unit` — read a named unit's dimension/factor/offset from
+//!   the cached `std/units` module
+//! - `assert_eq_rel` / `UNIT_EPSILON` — relative-tolerance float comparison and its default epsilon
+//! - `assert_trait_constraint_binop` — assert a trait's constraint default has an expected `BinOp` shape
 
 use std::path::Path;
 
@@ -188,29 +195,7 @@ pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, Dimension
         param_type, literal
     );
     let module = compile_with_stdlib_helper(&source);
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "source `{}` produced errors: {:?}",
-        source,
-        errs
-    );
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("S template not found");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "x")
-        .expect("x cell not found");
-    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
-    expect_scalar(expr)
+    single_cell_si_value(&source, module, "x")
 }
 
 /// Compile a structure with a single untyped-`let` binding and return the
@@ -236,6 +221,30 @@ pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, Dimension
 pub fn stdlib_let_si_value(quantity: &str) -> (f64, DimensionVector) {
     let source = format!("structure def S {{ let x = {quantity} }}");
     let module = reify_test_support::compile_source_with_stdlib_allow_parse_errors(&source);
+    single_cell_si_value(&source, module, "x")
+}
+
+/// Shared core of [`stdlib_param_si_value`] and [`stdlib_let_si_value`]: given
+/// `module` (already compiled from `source`, expected to define a
+/// single-member `structure def S`), assert a clean compile and return
+/// `member`'s `(si_value, dimension)` from its default expression.
+///
+/// The two callers differ only in the source template they format and the
+/// compile helper they invoke; this is everything after that — the shared
+/// error filter, template/cell lookup, and [`expect_scalar`] tail.
+///
+/// The panic messages below report the observable fact (no such cell, or a
+/// cell with no `default_expr`) without attributing a cause: this helper is
+/// shared by probes with different invariants in mind, so it cannot know
+/// which one a future caller's failure actually violates. A caller that
+/// wants a specific attribution (e.g. `unit_middot_mul_tests.rs`'s INV-SF-7
+/// "silently dropped during lowering" framing) carries that in its own
+/// call-site context instead.
+fn single_cell_si_value(
+    source: &str,
+    module: CompiledModule,
+    member: &str,
+) -> (f64, DimensionVector) {
     let errs: Vec<_> = module
         .diagnostics
         .iter()
@@ -253,17 +262,14 @@ pub fn stdlib_let_si_value(quantity: &str) -> (f64, DimensionVector) {
     let cell = template
         .value_cells
         .iter()
-        .find(|c| c.id.member == "x")
+        .find(|c| c.id.member == member)
         .unwrap_or_else(|| {
-            panic!(
-                "`{quantity}`: no `x` value cell — the binding was DROPPED during \
-                 lowering despite compiling without errors (INV-SF-7)"
-            )
+            panic!("no `{member}` value cell for source `{source}` despite a clean compile")
         });
     let expr = cell
         .default_expr
         .as_ref()
-        .expect("x cell has no default_expr");
+        .unwrap_or_else(|| panic!("`{member}` cell has no default_expr"));
     expect_scalar(expr)
 }
 
