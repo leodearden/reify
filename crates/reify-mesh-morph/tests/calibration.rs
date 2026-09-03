@@ -285,6 +285,132 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
     );
 }
 
+// ── Step-7b: fixture conformity ────────────────────────────────────────────────
+
+/// Asserts that `mesh`'s boundary — the triangular tet faces that occur
+/// exactly once across the whole mesh — is a closed, orientable manifold
+/// whose Euler characteristic equals `expected_chi`.
+///
+/// This is deliberately NOT a face-multiplicity check ("no face is shared by
+/// more than two tets"). That check is GREEN on a non-conforming mesh: e.g.
+/// measured on main for `bracket` at n=4, the face-occurrence histogram is
+/// `{1: 636, 2: 2322}` — nothing occurs 3+ times. A block-interface
+/// non-conformity defect produces EXTRA once-occurring faces, not
+/// over-shared ones: an interface quad is bisected along one diagonal by
+/// the block on one side and along the OTHER diagonal by the block on the
+/// other side, so the two triangulations carry different sorted vertex
+/// keys, never cancel, and both halves leak into the "boundary" this
+/// function extracts. Boundary edge-degree (every boundary edge must be
+/// shared by exactly two boundary faces) and Euler characteristic
+/// (`V - E + F`, which must match the fixture's genus) are what catch that;
+/// face-multiplicity alone does not.
+fn assert_boundary_is_conforming_manifold(
+    mesh: &reify_ir::VolumeMesh,
+    fixture_name: &str,
+    case_desc: &str,
+    expected_chi: i64,
+) {
+    use std::collections::{HashMap, HashSet};
+
+    let tets = mesh.tet_indices().unwrap();
+
+    // Face table keyed on the SORTED vertex triple, counting occurrences
+    // across every tet's four faces (omit-one-vertex: {0,1,2} {0,1,3}
+    // {0,2,3} {1,2,3}).
+    let mut face_count: HashMap<[u32; 3], usize> = HashMap::new();
+    for tet in tets.chunks_exact(4) {
+        let (t0, t1, t2, t3) = (tet[0], tet[1], tet[2], tet[3]);
+        for mut face in [[t0, t1, t2], [t0, t1, t3], [t0, t2, t3], [t1, t2, t3]] {
+            face.sort_unstable();
+            *face_count.entry(face).or_insert(0) += 1;
+        }
+    }
+
+    let boundary_faces: Vec<[u32; 3]> = face_count
+        .into_iter()
+        .filter(|&(_, count)| count == 1)
+        .map(|(face, _)| face)
+        .collect();
+
+    // (a) Closed manifold: every boundary edge (undirected, keyed (min,
+    // max)) must have degree exactly 2.
+    let mut edge_degree: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut boundary_vertices: HashSet<u32> = HashSet::new();
+    for face in &boundary_faces {
+        boundary_vertices.extend(face.iter().copied());
+        for &(i, j) in &[(0usize, 1usize), (0, 2), (1, 2)] {
+            let (a, b) = (face[i], face[j]);
+            let key = if a < b { (a, b) } else { (b, a) };
+            *edge_degree.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut degree_histogram: HashMap<usize, usize> = HashMap::new();
+    for &deg in edge_degree.values() {
+        *degree_histogram.entry(deg).or_insert(0) += 1;
+    }
+    assert!(
+        edge_degree.values().all(|&deg| deg == 2),
+        "{fixture_name} {case_desc}: boundary is not a closed manifold — edge-degree \
+         histogram {degree_histogram:?} (every boundary edge must be degree 2); a non-2 \
+         degree means an interface quad's two triangulations failed to cancel (bisected \
+         along different diagonals from each side)"
+    );
+
+    // (b) Euler characteristic: V - E + F must match the fixture's genus.
+    let v = boundary_vertices.len() as i64;
+    let e = edge_degree.len() as i64;
+    let f = boundary_faces.len() as i64;
+    let chi = v - e + f;
+    assert_eq!(
+        chi, expected_chi,
+        "{fixture_name} {case_desc}: boundary Euler characteristic V-E+F = {v}-{e}+{f} = \
+         {chi}, expected {expected_chi}"
+    );
+}
+
+#[test]
+fn calibration_fixtures_are_conforming_simplicial_complexes() {
+    // bracket(1.0, 0.2, 0.1, n) across resolutions. Genus 0 (solid block —
+    // the fillet is a concave edge, not a through-hole), so expected
+    // chi = 2 at every n. n=8 (9,936 tets) is deliberately excluded to keep
+    // this test sub-second in a debug build; step-3's count-only check
+    // covers that scale.
+    for &n in &[1usize, 2, 3, 4, 5] {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, n);
+        assert_boundary_is_conforming_manifold(&mesh, "bracket", &format!("n={n}"), 2);
+    }
+
+    // bracket fillet_radius sweep at n=4 — the radii
+    // `bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defaults`
+    // sweeps. fillet_radius moves vertices, not connectivity, so
+    // conformity is radius-invariant; expected chi = 2 at every radius.
+    for &r in &[0.05_f64, 0.15, 0.19] {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, r, 4);
+        assert_boundary_is_conforming_manifold(
+            &mesh,
+            "bracket",
+            &format!("fillet_radius={r}"),
+            2,
+        );
+    }
+
+    // plate_with_hole — the control. Already conforming both before and
+    // after the bracket repair, so this must stay green throughout. Its
+    // boundary is a TORUS (the plate has a through-hole), not a sphere, so
+    // expected chi = 0, not 2 — asserting 2 here would be a doomed RED no
+    // implementation could green. Proves the check discriminates (it is
+    // not vacuously satisfied) and that the defect is scoped to `bracket`.
+    for &(n_radial, n_through) in &[(4usize, 2usize), (2, 1)] {
+        let (mesh, _surface) = fixtures::plate_with_hole(1.0, 0.3, 0.1, n_radial, n_through);
+        assert_boundary_is_conforming_manifold(
+            &mesh,
+            "plate_with_hole",
+            &format!("n_radial={n_radial},n_through={n_through}"),
+            0,
+        );
+    }
+}
+
 // ── Step-9: sweep runner returns morph + from-scratch metrics ─────────────────
 
 #[test]
