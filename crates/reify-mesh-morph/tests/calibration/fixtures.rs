@@ -372,12 +372,27 @@ pub fn bracket(
 
     // Polar zone hex cells. Bottom-face CCW from +z: in the fillet quadrant,
     // angle θ runs π → 3π/2 (clockwise in xy) and r runs inward → outward.
-    // Local hex corners (i, j) with i ∈ {a, a+1}, j ∈ {k_r, k_r+1}:
-    //   c0 = (a,   k_r),     c1 = (a,   k_r+1),
-    //   c2 = (a+1, k_r+1),   c3 = (a+1, k_r)
-    // This gives a right-handed bottom face when viewed from +z because the
-    // radial direction (k_r) ascends "outward from the fillet centre" which,
-    // combined with the clockwise θ traversal, produces CCW winding.
+    // Local hex corners (i, j) with i ∈ {a, a+1}, j ∈ {k_r, k_r+1}, traversed
+    // a HALF TURN from the naive (a,k_r)→(a,k_r+1)→(a+1,k_r+1)→(a+1,k_r)
+    // ordering:
+    //   c0 = (a+1, k_r+1),   c1 = (a+1, k_r),
+    //   c2 = (a,   k_r),     c3 = (a,   k_r+1)
+    // A half turn is a full cycle of the bottom face, so winding — and the
+    // right-handedness `HEX_TO_6TETS` depends on — is preserved exactly.
+    //
+    // The half turn is what makes the INTERFACES conform. `HEX_TO_6TETS`
+    // bisects every quad face along a diagonal through local corner 0 or
+    // local corner 6, so which diagonal a SHARED face receives is fixed by
+    // the block's local axis directions. The polar block meets both arms
+    // along the columns `polar_label` addresses as `n_r - k_r` — i.e. the
+    // polar block's radial axis runs OPPOSITE the arms' — so the untwisted
+    // (a, k_r) ordering bisected every interface quad the other way from
+    // the arm sharing it. Reversing both in-plane axes realigns the radial
+    // axis while keeping orientation: exactly this half turn. Measured
+    // before this fix, at n=4: chi=40 (not 2), 89 boundary edges at degree
+    // 4 (not 0), 636 boundary faces (not 492); after: chi=2, 0 degree-4
+    // edges, 492 boundary faces — see
+    // `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.
     let polar_label = |kz: usize, a: usize, k_r: usize| -> (&'static str, usize, usize) {
         if a == n_a {
             ("A1L", kz, n_r - k_r)
@@ -390,14 +405,14 @@ pub fn bracket(
     for kz in 0..n_z {
         for a in 0..n_a {
             for k_r in 0..n_r {
-                let c0 = look(polar_label(kz, a, k_r));
-                let c1 = look(polar_label(kz, a, k_r + 1));
-                let c2 = look(polar_label(kz, a + 1, k_r + 1));
-                let c3 = look(polar_label(kz, a + 1, k_r));
-                let c4 = look(polar_label(kz + 1, a, k_r));
-                let c5 = look(polar_label(kz + 1, a, k_r + 1));
-                let c6 = look(polar_label(kz + 1, a + 1, k_r + 1));
-                let c7 = look(polar_label(kz + 1, a + 1, k_r));
+                let c0 = look(polar_label(kz, a + 1, k_r + 1));
+                let c1 = look(polar_label(kz, a + 1, k_r));
+                let c2 = look(polar_label(kz, a, k_r));
+                let c3 = look(polar_label(kz, a, k_r + 1));
+                let c4 = look(polar_label(kz + 1, a + 1, k_r + 1));
+                let c5 = look(polar_label(kz + 1, a + 1, k_r));
+                let c6 = look(polar_label(kz + 1, a, k_r));
+                let c7 = look(polar_label(kz + 1, a, k_r + 1));
                 let c = [c0, c1, c2, c3, c4, c5, c6, c7];
                 for tet in &HEX_TO_6TETS {
                     tet_indices.extend_from_slice(&[c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]]]);
@@ -461,19 +476,33 @@ pub fn bracket(
         for j in 0..n_arm {
             for i in 0..=n_r {
                 if i == n_r && j == 0 {
-                    // Wedge: corners (n_r, 0), (n_r+1, 1), (n_r, 1). The
-                    // (n_r, 1)/(n_r+1, 1) order is reversed from arm 1's
-                    // wedge because here i indexes x and j indexes y —
-                    // the CCW-from-+z winding rotates differently.
+                    // Wedge: corners (n_r, 0), (n_r, 1), (n_r+1, 1). The
+                    // corner ORDER is forced by face conformity, not by
+                    // winding (the "CCW-from-+z winding rotates
+                    // differently" justification this replaces was wrong).
+                    // A 3-tet prism split makes its first corner low on
+                    // BOTH quad faces, its last high on BOTH, and its
+                    // middle one mixed — so the order alone determines both
+                    // interior diagonals. Arm 2's two interior quads are
+                    // `{(n_r,0),(n_r,1)}` (shared with hex `i=n_r-1, j=0`,
+                    // bisected `(n_r,0)_bottom — (n_r,1)_top`) and
+                    // `{(n_r,1),(n_r+1,1)}` (shared with hex `i=n_r, j=1`,
+                    // bisected `(n_r,1)_bottom — (n_r+1,1)_top`); only THIS
+                    // order reproduces both — every cyclic rotation misses
+                    // one. That order traverses CW from +z, hence the
+                    // first-two-vertex swap on every tet below: a swap
+                    // changes the vertex ORDER, never the vertex SET, so
+                    // the four faces (and the conformity this establishes)
+                    // are untouched while the volume stays positive.
                     let p0_b = look(arm2_label(kz, n_r, 0));
-                    let p1_b = look(arm2_label(kz, n_r + 1, 1));
-                    let p2_b = look(arm2_label(kz, n_r, 1));
+                    let p1_b = look(arm2_label(kz, n_r, 1));
+                    let p2_b = look(arm2_label(kz, n_r + 1, 1));
                     let p0_t = look(arm2_label(kz + 1, n_r, 0));
-                    let p1_t = look(arm2_label(kz + 1, n_r + 1, 1));
-                    let p2_t = look(arm2_label(kz + 1, n_r, 1));
-                    tet_indices.extend_from_slice(&[p0_b, p1_b, p2_b, p2_t]);
-                    tet_indices.extend_from_slice(&[p0_b, p1_b, p2_t, p1_t]);
-                    tet_indices.extend_from_slice(&[p0_b, p1_t, p2_t, p0_t]);
+                    let p1_t = look(arm2_label(kz + 1, n_r, 1));
+                    let p2_t = look(arm2_label(kz + 1, n_r + 1, 1));
+                    tet_indices.extend_from_slice(&[p1_b, p0_b, p2_b, p2_t]);
+                    tet_indices.extend_from_slice(&[p1_b, p0_b, p2_t, p1_t]);
+                    tet_indices.extend_from_slice(&[p1_t, p0_b, p2_t, p0_t]);
                     continue;
                 }
                 let c0 = look(arm2_label(kz, i, j));
