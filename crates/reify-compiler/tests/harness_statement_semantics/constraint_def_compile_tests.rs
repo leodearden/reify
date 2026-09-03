@@ -1656,3 +1656,135 @@ constraint def K {
          alias walker must reach the enum body through every link, not just one"
     );
 }
+
+// ── Task 6416 / step-8: RESIDUAL reach of the unknown-type suppression ───────
+//
+// Task 6416's issue text predicted that installing the `EnumNameScope` would
+// make `compile_constraint_def`'s `resolve_enum_type(...).is_none()` conjunct
+// redundant. It does NOT, and until this step that claim lived only in prose
+// (the comments in `defs_phase.rs` and `type_resolution.rs`) with nothing
+// failing if either half of the suppression were deleted.
+//
+// Derived from source, not from a tuned observation: the ambient enum-name
+// fallback in `resolve_type_expr_with_aliases_kinded` is gated on
+// `type_args.is_empty()`, while `resolve_enum_type` is arg-BLIND
+// (`enum_defs.iter().any(|e| e.name == name)`). So for a PARAMETERISED
+// spelling of a KNOWN enum the ambient fallback never fires, `resolved_ty`
+// stays `None`, and the `resolve_enum_type` conjunct — together with task
+// 6259's `unresolved_alias_body_name` alias hop — is the only thing standing
+// between that spelling and a spurious "unknown type" error.
+//
+// Both tests scope their assertion to the `"unknown type '"` message
+// specifically (the filter idiom already used above in this file) rather than
+// asserting zero errors wholesale. That keeps the lock aimed at the
+// suppression clause and deliberately leaves room for a future task to add the
+// CORRECT arity diagnostic here: `entity.rs` already emits "enum does not
+// accept type arguments" for the struct-param spelling, while the
+// constraint-def site emits nothing. That inconsistency is real and
+// pre-existing, and is OUT OF SCOPE for task 6416.
+
+/// A parameterised spelling of a locally-declared enum (`param g : Zq<Int>`)
+/// must not produce an "unknown type" diagnostic.
+///
+/// This is the residue the `EnumNameScope` install does NOT cover: the ambient
+/// fallback is gated on `type_args.is_empty()`, so `resolve_enum_type`'s
+/// arg-blind lookup is the only suppression left for this spelling. Deleting
+/// that conjunct makes this test fail with `unknown type 'Zq'`.
+#[test]
+fn parameterised_enum_constraint_def_param_emits_no_unknown_type_diagnostic() {
+    let source = r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq<Int>
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let unknown_type_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.starts_with("unknown type '"))
+        .collect();
+    assert!(
+        unknown_type_diags.is_empty(),
+        "expected no \"unknown type '...'\" diagnostic for the parameterised spelling \
+         of the known enum `Zq`; the arg-blind `resolve_enum_type` conjunct in \
+         `compile_constraint_def` is what suppresses it, got: {:?}",
+        unknown_type_diags
+    );
+
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "K")
+        .expect("K constraint def must be present in module.constraint_defs");
+    let param: &CompiledConstraintParam = &def.params[0];
+    // Mechanism witness, derived from the `type_args.is_empty()` gate on the
+    // ambient enum fallback rather than observed and then rationalised: with a
+    // non-empty `type_args` list the fallback is unreachable, so resolution
+    // returns `None` even though the enum name itself is in the ambient set.
+    // Contrast the bare spelling, which this file pins as `Some(Enum("Zq"))`.
+    assert!(
+        param.ty.is_none(),
+        "expected the PARAMETERISED spelling to leave `ty` as None (the ambient \
+         enum fallback is gated on `type_args.is_empty()`); got {:?}. If this ever \
+         becomes Some(..), the suppression conjunct's reach has changed and the \
+         comments in defs_phase.rs / type_resolution.rs must be re-measured.",
+        param.ty
+    );
+}
+
+/// The same, through a non-parametric alias to that enum (`type AL = Zq` /
+/// `param g : AL<Int>`) — the case task 6259's `unresolved_alias_body_name` hop
+/// specifically covers.
+///
+/// `resolve_enum_type` alone cannot suppress this one: the spelled name is
+/// `AL`, which is not in `enum_defs`. Removing ONLY the alias hop makes this
+/// test fail with `unknown type 'AL'` while the bare-`AL` spelling stays clean
+/// via the ambient fallback.
+#[test]
+fn parameterised_alias_to_enum_constraint_def_param_emits_no_unknown_type_diagnostic() {
+    let source = r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL<Int>
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let unknown_type_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.starts_with("unknown type '"))
+        .collect();
+    assert!(
+        unknown_type_diags.is_empty(),
+        "expected no \"unknown type '...'\" diagnostic for the parameterised ALIAS \
+         spelling `AL<Int>`; task 6259's `unresolved_alias_body_name` hop is what \
+         maps `AL` to its enum body `Zq` so the arg-blind `resolve_enum_type` \
+         lookup can suppress it, got: {:?}",
+        unknown_type_diags
+    );
+
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "K")
+        .expect("K constraint def must be present in module.constraint_defs");
+    let param: &CompiledConstraintParam = &def.params[0];
+    // Same mechanism as the direct case above: the alias hop feeds the
+    // SUPPRESSION path only, never the resolution path, so `ty` stays `None`
+    // here while the bare `AL` spelling resolves to `Some(Enum("Zq"))`.
+    assert!(
+        param.ty.is_none(),
+        "expected the parameterised alias spelling to leave `ty` as None (the ambient \
+         enum fallback is gated on `type_args.is_empty()`, and the alias hop feeds \
+         only the suppression predicate); got {:?}",
+        param.ty
+    );
+}
