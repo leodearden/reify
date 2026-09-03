@@ -205,6 +205,17 @@ enum PrdCiteFamily {
     TaskCite,
 }
 
+/// §8.2 upper bound on a PRD-relative `#N`: a document-local index is small.
+/// Governs all three families via the single early return in
+/// [`prd_relative_cite_family`], so a family added later inherits it.
+///
+/// Named rather than inlined so the recogniser and the premise check that
+/// justifies its accepted loss (`prd_relative_bound_covers_only_terminal_task_ids`)
+/// cannot drift apart.  The 99/100 STEP itself is pinned with literals in
+/// `prd_relative_cite_positives`/`_negatives`, deliberately independent of this
+/// const, so widening the bound reds those tests instead of moving silently.
+const PRD_RELATIVE_MAX_ID: u32 = 99;
+
 /// §8.2 PRD-relative index: `Some(family)` when the `#` at `cite_start` (with
 /// parsed value `id`) names an index INSIDE a PRD document — a task/invariant/
 /// row/open-question number local to some `docs/prds/**` file — rather than a
@@ -243,17 +254,21 @@ enum PrdCiteFamily {
 ///   pushes `PRD` out of range; a symmetric window kills the genuine
 ///   `task #333 per PRD §Slice B`).  Pinned by `prd_relative_cite_negatives`,
 ///   including the 99/100 boundary itself.
-/// - **The bound DOES overlap the real id space, and that loss is accepted.**
-///   Ids 1–100 all exist in the task DB.  They are also all `done` — measured
-///   2026-09-02 over the full range — and the range is CLOSED: allocation runs
-///   monotonically from 1 upward and the live head is past 6100, so no future
-///   task can land inside the bound.  A `task #42` cite in the covered register
-///   can therefore only ever have been an `orphaned` finding against a terminal
-///   id, never a live-task one, and the corpus carries no such cite today (all
-///   1–2-digit `#N` in these registers in tracked `.rs` are genuinely
-///   PRD-relative).  Making the bound resolution-aware would drag a DB lookup
-///   into a pure recogniser that the β liveness lane already owns; the bounded
-///   loss is the cheaper trade.  Recorded in PRD §8.2.
+/// - **The bound DOES overlap the real id space; that loss is accepted, and the
+///   premise making it acceptable is CHECKED rather than dated.**  Every
+///   master-tag id inside the bound is terminal, so a `task #42` cite in the
+///   covered register can only ever have been an `orphaned` finding against a
+///   dead id, never a live-task one — and the range is CLOSED, because
+///   allocation runs monotonically upward from 1 and the live head is far past
+///   the bound, so no future task can land inside it.  The first half is a
+///   claim about DB STATE, not a property of this code, so it is re-established
+///   on demand by `prd_relative_bound_covers_only_terminal_task_ids` (on-demand,
+///   `#[ignore]`d, needs the real task DB) instead of being trusted from a
+///   dated comment: reopen an id inside the bound and
+///   that test fails loudly, where this recogniser would silently ERASE a live
+///   cite.  Making the bound itself resolution-aware would drag a DB lookup
+///   into a pure recogniser that the β liveness lane already owns; the bounded,
+///   checked loss is the cheaper trade.  Corpus counts: PRD §8.2 / §16 Row 2.
 /// - **An UNBOUNDED family is fail-DANGEROUS in the one direction §6.6's
 ///   ratchet cannot see.**  A real task id in family-2 register
 ///   (`invariant #5238`, `done`) is either DOWNGRADED from a High `orphaned`
@@ -285,7 +300,7 @@ fn prd_relative_cite_family(bytes: &[u8], cite_start: usize, id: u32) -> Option<
     // The shared digit bound, applied ONCE for all three families — see the
     // "UNIFORM" and "fail-DANGEROUS" paragraphs above.  Placed here rather than
     // inside a family arm so a family added later cannot forget it.
-    if id > 99 {
+    if id > PRD_RELATIVE_MAX_ID {
         return None;
     }
 
@@ -3549,6 +3564,98 @@ mod tests {
         assert_eq!(
             tasks_db_path(std::path::Path::new("/repo")),
             std::path::PathBuf::from("/repo/.taskmaster/tasks/tasks.db"),
+        );
+    }
+
+    /// §8.2 PREMISE CHECK for [`PRD_RELATIVE_MAX_ID`] — on-demand, `#[ignore]`d,
+    /// requires the real task DB.
+    ///
+    /// The bound suppresses EVERY `#N` with `N <= PRD_RELATIVE_MAX_ID` in a
+    /// PRD-relative register, without demanding a `PRD` token or any other
+    /// document context. Its safety is therefore not a property of the grammar:
+    /// it rests on a claim about DB state — every master-tag id inside the bound
+    /// is terminal, so nothing live can be lost — plus the closure argument that
+    /// ids are allocated monotonically upward and the head is far past the
+    /// bound. The grammar tests pin the 99/100 STEP; only this test re-
+    /// establishes the premise that makes the step's cost acceptable.
+    ///
+    /// It matters because the failure is SILENT and in the direction §6.6
+    /// cannot see. Reopen (or newly allocate under some tag) an id inside the
+    /// bound, and a genuine `task #42` cite stops anchoring: on a marker line it
+    /// is DEMOTED to the Medium advisory, and on a δ-B line — which is cite-
+    /// ANCHORED — the candidate is ERASED outright. The `live ⊆ baseline`
+    /// ratchet catches a GAINED finding and never a LOST one, so no other check
+    /// in this crate would report it.
+    ///
+    /// Mirrors the β liveness lane's own query exactly (`tag = 'master'`, and
+    /// [`is_terminal_status`] rather than a re-spelled `{done, cancelled}`), so
+    /// "terminal" here cannot drift from what the lane means by it. An id that
+    /// exists ONLY under a non-master tag is invisible to the lane too (it
+    /// resolves to `unknown-id`, Medium), so it is deliberately out of scope.
+    ///
+    /// Graceful-skip when the DB is unavailable — a task worktree's
+    /// `.taskmaster/` is untracked, so the default path is usually absent:
+    ///
+    /// ```text
+    /// REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \
+    ///   cargo test -p reify-audit --lib -- --ignored prd_relative_bound
+    /// ```
+    ///
+    /// On failure the fix is NOT to widen this test: either re-terminate the id,
+    /// or narrow [`PRD_RELATIVE_MAX_ID`] / make the register demand a `PRD`
+    /// token, and re-measure per PRD §16 Row 2.
+    #[ignore = "on-demand premise check; run via --ignored. Needs the real \
+        tasks.db (REIFY_PTODO_TASKS_DB, or a checkout with .taskmaster/). \
+        Graceful-skip when it is unavailable."]
+    #[test]
+    fn prd_relative_bound_covers_only_terminal_task_ids() {
+        // `CARGO_MANIFEST_DIR` is <repo>/crates/reify-audit; the DB path itself
+        // honours REIFY_PTODO_TASKS_DB via the production resolver.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let db = tasks_db_path(&root);
+        if !db.exists() {
+            eprintln!("ptodo: skipping §8.2 premise check — no task DB at {db:?}");
+            return;
+        }
+        let conn = match open_tasks_db(&db) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("ptodo: skipping §8.2 premise check — cannot open {db:?}: {e}");
+                return;
+            }
+        };
+        let mut stmt = conn
+            .prepare("SELECT id, status FROM tasks WHERE tag = 'master' AND id <= ?1")
+            .expect("prepare premise query");
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([i64::from(PRD_RELATIVE_MAX_ID)], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .expect("run premise query")
+            .collect::<rusqlite::Result<_>>()
+            .expect("read premise rows");
+
+        // A DB that answers but carries no covered id would make this test
+        // vacuously green and the premise unverified — fail instead of passing.
+        assert!(
+            !rows.is_empty(),
+            "§8.2 premise check is vacuous: no master-tag task id <= {PRD_RELATIVE_MAX_ID} \
+             in {db:?}. Either the DB is not the real one, or the id space no longer \
+             looks like the one the bound was derived from — re-measure before trusting it."
+        );
+
+        let live: Vec<String> = rows
+            .iter()
+            .filter(|(_, status)| !is_terminal_status(status))
+            .map(|(id, status)| format!("#{id} status={status}"))
+            .collect();
+        assert!(
+            live.is_empty(),
+            "§8.2 PRD-relative bound (id <= {PRD_RELATIVE_MAX_ID}) now covers \
+             NON-TERMINAL task id(s): {live:?}. A `task #N` cite to one of these \
+             is silently erased by `prd_relative_cite_family` — demoted on a \
+             marker line, dropped entirely on a δ-B line — and §6.6's subset \
+             ratchet cannot see the loss. See that fn's rustdoc and PRD §16 Row 2."
         );
     }
 
