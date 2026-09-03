@@ -424,6 +424,8 @@ fn waypoint_to_value(wp: &Waypoint) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::DimensionVector;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
     /// A three-move Marlin run with no non-motion commands lowers to exactly
     /// ONE motion profile whose ordered waypoints are the absolute move
@@ -706,5 +708,110 @@ mod tests {
         assert_eq!(wps.len(), 2, "both pre-M104 moves flush together");
         assert_eq!(wps[0].x, 10.0, "G1 X10");
         assert_eq!(wps[1].x, 20.0, "G1 X20");
+    }
+    // ── Unit-regime contract: the DSL-visible payload is SI and dimensioned ──
+
+    /// Build a `MarlinDialect` dialect value as the eval path receives it: a
+    /// `Value::StructureInstance` whose `type_name` is `"MarlinDialect"` (only
+    /// that name is read by the dispatcher — no StructureRegistry is involved).
+    /// Same construction as the eval-boundary test in `trajectory/mod.rs`.
+    fn marlin_dialect_value() -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "MarlinDialect".to_string(),
+            version: 0,
+            fields: PersistentMap::default(),
+        }))
+    }
+
+    /// Drive `eval_gcode_import` and dig out the single waypoint record of the
+    /// single lowered profile: `List -> profile Map -> "waypoints" List ->
+    /// waypoint Map`. Panics with a pointed message at every level.
+    fn sole_waypoint_map(src: &str) -> BTreeMap<Value, Value> {
+        let result = eval_gcode_import(&[Value::String(src.to_string()), marlin_dialect_value()]);
+        let Value::List(profiles) = result else {
+            panic!("expected a Value::List of profiles, got {result:?}")
+        };
+        assert_eq!(profiles.len(), 1, "expected exactly one profile: {profiles:?}");
+        let Value::Map(profile) = &profiles[0] else {
+            panic!("expected a Value::Map profile record, got {:?}", profiles[0])
+        };
+        let Some(Value::List(waypoints)) = profile.get(&Value::String("waypoints".to_string()))
+        else {
+            panic!("profile record should carry a \"waypoints\" list, got {profile:?}")
+        };
+        assert_eq!(waypoints.len(), 1, "expected exactly one waypoint: {waypoints:?}");
+        let Value::Map(wp) = &waypoints[0] else {
+            panic!("expected a Value::Map waypoint record, got {:?}", waypoints[0])
+        };
+        wp.clone()
+    }
+
+    /// The `feedrate` a waypoint carries into the DSL is an SI `Velocity`
+    /// (m/s), converted from the g-code's native mm-per-minute.
+    ///
+    /// # F1800 is the discriminating fixture — do not "simplify" it
+    ///
+    /// This test pins the DIVISOR form, not merely the magnitude. Measured:
+    ///
+    /// - `1800.0 / 60_000.0`         == 0.03                 (`0x1.eb851eb851eb8p-6`)
+    /// - `1800.0 * (1.0 / 60_000.0)` == 0.030000000000000002 (`0x1.eb851eb851eb9p-6`)
+    ///
+    /// One ULP apart, so the exact `assert_eq!` below FAILS if the conversion
+    /// is ever refactored into a multiply-by-reciprocal. F1200, F600 and F3000
+    /// give BIT-IDENTICAL results under both forms and would make this test
+    /// vacuous — F1800 (= 30 mm/s, a realistic print speed) is the point.
+    /// Never weaken the comparison to a tolerance either: a tolerance is
+    /// precisely what cannot discriminate a one-ULP difference.
+    #[test]
+    fn waypoint_feedrate_is_si_velocity() {
+        let wp = sole_waypoint_map("G1 X10 Y0 F1800");
+
+        let got = wp
+            .get(&Value::String("feedrate".to_string()))
+            .unwrap_or_else(|| panic!("waypoint should carry a \"feedrate\" key: {wp:?}"));
+        match got {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    *si_value, 0.03,
+                    "F1800 mm/min is exactly 0.03 m/s under the divisor form \
+                     (1800.0 / 60_000.0); got {si_value} — a multiply by the \
+                     rounded reciprocal yields 0.030000000000000002 instead"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::VELOCITY,
+                    "feedrate should carry the VELOCITY dimension, got {dimension:?}"
+                );
+            }
+            other => panic!(
+                "waypoint.feedrate should be a dimensioned Value::Scalar, got {other:?} — \
+                 an undimensioned Real leaves the unit regime unstated"
+            ),
+        }
+
+        // The positions ride along in the same record and stay SI Lengths.
+        assert_eq!(
+            wp.get(&Value::String("x".to_string())),
+            Some(&Value::length(0.01)),
+            "X10 mm is 0.01 m: {wp:?}"
+        );
+    }
+
+    /// With no `F` word in effect the `feedrate` key is ABSENT from the
+    /// waypoint record — never a `0.0` velocity sentinel. Pins that the
+    /// SI conversion preserves `waypoint_to_value`'s `if let Some(f)` shape
+    /// rather than defaulting the missing feed to a real (and wrong) speed.
+    #[test]
+    fn waypoint_without_feed_has_no_feedrate_key() {
+        let wp = sole_waypoint_map("G1 X10 Y0");
+        assert!(
+            !wp.contains_key(&Value::String("feedrate".to_string())),
+            "no feed is in effect, so the record must carry NO \"feedrate\" key \
+             at all (not a 0.0 sentinel); got {wp:?}"
+        );
     }
 }
