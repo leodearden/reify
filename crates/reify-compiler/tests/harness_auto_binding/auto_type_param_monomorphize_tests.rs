@@ -1017,3 +1017,114 @@ fn cross_product_cap_partial_resolution_synthesizes_no_monomorph() {
         compiled.diagnostics
     );
 }
+
+/// Mixed explicit + auto type-args (shape C, #6854): `Widget<SealA, auto: Gasket>()`
+/// gives T a fully-explicit type-arg at the call site — `entity.rs` resolves it
+/// directly to `Type::StructureRef("SealA")` in the sub's `type_args` WITHOUT ever
+/// recording an `AutoClause` for T (only `Auto` type-args become clauses). So
+/// `params.len() == 1` (U only) and `sigma.len() == 1` — step-2's
+/// `sigma.len() == params.len()` check PASSES even though T, a declared type
+/// parameter of `Widget`, was never substituted into the monomorph clone's own
+/// `slot_t` cell. Zero diagnostics are emitted (T needed no resolution; U has a
+/// single feasible candidate) — this is a SILENT corruption, unlike shapes A/B
+/// which at least carry the resolver's own error.
+///
+/// RED today: `Widget$GasketA` is still synthesized with `type_params=[]` and
+/// `slot_t : TypeParam("T")` leaked. GREEN once the guard measures coverage
+/// against `target.type_params` (both T and U) rather than against the
+/// auto-clause list (U only).
+#[test]
+fn mixed_explicit_and_auto_type_args_synthesize_no_partial_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) No partial monomorph is synthesized.
+    assert!(
+        !compiled.templates.iter().any(|t| t.name == "Widget$GasketA"),
+        "mixed explicit+auto (T explicit, U auto-resolved) must NOT synthesize \
+         'Widget$GasketA' while T's slot is left unsubstituted; got templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (2) General invariant: no '$'-named, type-params-empty template retains
+    // a top-level TypeParam value cell.
+    let leaks: Vec<String> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name.contains('$') && t.type_params.is_empty())
+        .flat_map(|t| {
+            t.value_cells
+                .iter()
+                .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+                .map(move |c| {
+                    format!(
+                        "template '{}' cell '{}': {:?}",
+                        t.name, c.id.member, c.cell_type
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "invariant violation: a '$'-named template with empty type_params \
+         retains a TypeParam value cell: {:?}",
+        leaks
+    );
+
+    // (3) WidgetAssembly's sub 'w' still references the generic 'Widget'
+    // template, and the auto slot IS resolved back into type_args — proving
+    // the skip is scoped to synthesis and does not discard resolution work.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget",
+        "sub 'w' must still reference the generic 'Widget' template on partial \
+         resolution, got: {:?}",
+        sub_w.structure_name
+    );
+    assert_eq!(
+        sub_w.type_args,
+        vec![
+            Type::StructureRef("SealA".to_string()),
+            Type::StructureRef("GasketA".to_string()),
+        ],
+        "sub 'w' type_args must be [StructureRef(SealA), StructureRef(GasketA)] \
+         — the explicit T arg unchanged, the auto U arg resolved — even though \
+         synthesis was skipped, got: {:?}",
+        sub_w.type_args
+    );
+
+    // (4) Zero Error diagnostics — this shape is silent-but-valid pre-fix and
+    // must stay silent post-fix (no new diagnostic code is introduced).
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        0,
+        "expected zero error diagnostics for this silent-but-valid mixed shape, got: {:?}",
+        errors
+    );
+}
