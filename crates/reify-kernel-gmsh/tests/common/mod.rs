@@ -22,6 +22,26 @@
 //! touches files outside #6200's scope. This module removes the duplication
 //! that #6200 itself introduced.
 //!
+//! **The raw-FFI census prelude is shared here too** (`entity_census`, added by
+//! #6830). `classify_feature_angle.rs` and `node_attachment_producer.rs` each
+//! carried their own copy of the same ~26-line
+//! classify + `create_geometry` + `get_entity_tags` sequence, and had to be
+//! updated in lockstep whenever that FFI prelude changed — the same drift cost
+//! as the fixture duplication above. Only the PRELUDE is shared: each file
+//! keeps its own assertions, because those are genuinely different contracts
+//! (a #6200 root-cause guard with version-robust lower bounds vs a task-3763
+//! property-witness with an exact host-specific pin).
+//!
+//! That section is `#[cfg(has_gmsh)]`-gated as a whole, and **the gate is
+//! load-bearing**: `fill_metrics_tests.rs` includes this module
+//! UNCONDITIONALLY (deliberately — `fill_metrics` is pure `reify_ir` arithmetic
+//! and must stay verified on stub hosts), while `ffi`, `init`,
+//! `CLASSIFY_FEATURE_ANGLE` and `CLASSIFY_CURVE_ANGLE` are all
+//! `#[cfg(has_gmsh)]` at the crate root. Both original copies lived in files
+//! that were themselves `has_gmsh`-gated so neither needed a gate; the shared
+//! home does. An ungated hoist compiles fine on a libgmsh host and silently
+//! breaks every stub-host build.
+//!
 //! Every consumer is `#[allow(dead_code)]`-tolerant by construction: each test
 //! binary compiles its own copy of this module and uses only part of it, so
 //! the unused remainder must not be an error under `-D warnings`.
@@ -256,4 +276,78 @@ pub fn tessellated_cylinder_mesh(r: f32, h: f32, n: usize) -> Mesh {
 /// independent closed form rather than against itself.
 pub fn tessellated_cylinder_volume(r: f64, h: f64, n: usize) -> f64 {
     0.5 * (n as f64) * r * r * (2.0 * std::f64::consts::PI / n as f64).sin() * h
+}
+
+// ---------------------------------------------------------------------------
+// Raw-FFI entity census (has_gmsh only)
+// ---------------------------------------------------------------------------
+
+// GATED DELIBERATELY, and the gate is load-bearing — see the module docs above.
+// `ffi`, `init`, `CLASSIFY_FEATURE_ANGLE` and `CLASSIFY_CURVE_ANGLE` are all
+// `#[cfg(has_gmsh)]` at the crate root (`src/lib.rs`), while
+// `fill_metrics_tests.rs` includes this module UNCONDITIONALLY. Un-gating
+// either this `use` or the `fn` below compiles fine on a libgmsh host and
+// silently breaks every stub-host build.
+#[cfg(has_gmsh)]
+use reify_kernel_gmsh::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE, ffi, init};
+
+/// Entity census after classify + createGeometry, as `(dim0, dim1, dim2)`.
+///
+/// Replays only the classify half of `GmshKernel::mesh_to_volume`
+/// (`kernel_real.rs`) / the `run_meshing_with_entity_queries` prefix
+/// (`mesh_boundary.rs`), stopping before surface-loop / volume /
+/// `mesh_generate(3)`. That keeps it fast and isolates just the topology
+/// reconstruction step.
+///
+/// This is a RAW-FFI helper, so it MUST hold `init::GMSH_LOCK` itself — unlike
+/// `volume_fill_fraction.rs`, which goes through the public API and would
+/// self-deadlock if it took the lock. The guard is scoped to one invocation and
+/// drops at return, so back-to-back calls do not deadlock.
+///
+/// It uses the PRODUCTION angle constants rather than re-typed literals. A test
+/// carrying its own copy of the angle would re-create exactly the gap that
+/// caused #6200: someone could change the production constant and the guard
+/// would keep passing against a stale literal. Centralising the call here means
+/// ONE import site instead of two that could drift apart.
+///
+/// `model_name` is PURELY DIAGNOSTIC — it labels gmsh's own log output when a
+/// census test fails, and cannot affect the result because `ffi::clear()` runs
+/// first and wipes all models. It is a parameter rather than a fixed constant
+/// so each call site keeps its own diagnostic identity. That safety is a TESTED
+/// property, not a comment: `classify_feature_angle.rs`'s
+/// `entity_census_is_isolated_across_invocations` passes two different names
+/// for identical geometry and asserts one triple (measured `(8,14,8)` both
+/// times).
+#[cfg(has_gmsh)]
+pub fn entity_census(surface: &Mesh, model_name: &str) -> (usize, usize, usize) {
+    let n_verts = surface.vertices.len() / 3;
+    let n_tris = surface.indices.len() / 3;
+
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+
+    ffi::clear().expect("clear");
+    ffi::option_set_number("General.Terminal", 0.0).expect("terminal off");
+    ffi::model_add(model_name).expect("model_add");
+    let surf_tag = ffi::add_discrete_entity(2, &[]).expect("add_discrete_entity");
+
+    let node_tags: Vec<u64> = (1..=n_verts as u64).collect();
+    let coords_f64: Vec<f64> = surface.vertices.iter().map(|&v| v as f64).collect();
+    ffi::add_nodes_2d(surf_tag, &node_tags, &coords_f64).expect("add_nodes_2d");
+
+    let tri_tags: Vec<u64> = (1..=n_tris as u64).collect();
+    let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
+    ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags).expect("add_elements_2d");
+
+    // The PRODUCTION constants, imported rather than re-typed — see above.
+    ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)
+        .expect("classify_surfaces");
+    ffi::create_geometry(&[]).expect("create_geometry");
+
+    let n0 = ffi::get_entity_tags(0).expect("get_entity_tags(0)").len();
+    let n1 = ffi::get_entity_tags(1).expect("get_entity_tags(1)").len();
+    let n2 = ffi::get_entity_tags(2).expect("get_entity_tags(2)").len();
+
+    let _ = ffi::clear();
+    (n0, n1, n2)
 }
