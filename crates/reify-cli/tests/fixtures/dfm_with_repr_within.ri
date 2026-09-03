@@ -62,8 +62,9 @@
 // RETUNING #precision — MEASURE, DO NOT INTERPOLATE.  #precision is threaded
 // bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and
 // OCCT meshes each edge into an INTEGER segment count, so the achieved deviation
-// is a STAIRCASE in #precision — not smooth, not a simple sawtooth (mechanism,
-// tread/tooth ratios and periods: PRD §2 above).  NEAR THE BOUND the staircase's
+// is a STAIRCASE in #precision — treads punctuated by narrow periodic teeth, not
+// a smooth curve (full mechanism, tread/tooth ratios and periods: PRD §2 above).
+// NEAR THE BOUND the staircase's
 // branches dominate: 0.49mm (1.013e-3) and 0.51mm (1.056e-3) both VIOLATE the
 // 1.000e-3 m bound — both are TREAD points — while 0.50mm between them passes at
 // a 2.63x margin because it lands on a TOOTH, not because of a smooth swing
