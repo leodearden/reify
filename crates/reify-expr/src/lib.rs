@@ -22,7 +22,8 @@ mod sanitize;
 // flat so `reify-constraints` — and later η (#6675), μ (#6680) and λ (#6679) —
 // reach it without knowing the module layout.
 pub use branch_signature::{
-    BranchChoice, BranchEntry, BranchRecord, KinkKind, KinkSite, ReductionKind,
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER, KinkKind, KinkSite,
+    ReductionKind,
 };
 pub use dual::{Dual, DualValue, Tangent};
 pub use dual_eval::{

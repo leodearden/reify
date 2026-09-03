@@ -50,7 +50,7 @@ use reify_ir::{
 
 use crate::EvalContext;
 use crate::branch_signature::{
-    BranchChoice, BranchEntry, BranchRecord, KinkKind, KinkSite, ReductionKind,
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, KinkKind, KinkSite, ReductionKind,
 };
 use crate::dual::{DualValue, Tangent};
 use crate::kleene::{self, KBool};

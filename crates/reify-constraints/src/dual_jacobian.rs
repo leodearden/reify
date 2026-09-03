@@ -52,8 +52,8 @@
 //! reconstruction of it that could drift.
 
 use reify_expr::{
-    BranchRecord, DualEnv, KinkSite, NonDifferentiable, Seeds, Tangent, eval_dual_with_env,
-    jacobian_row_with_env,
+    BranchRecord, DEPENDENT_MARKER, DualEnv, KinkSite, NonDifferentiable, Seeds, Tangent,
+    eval_dual_with_env, jacobian_row_with_env,
 };
 use reify_core::ValueCellId;
 use reify_ir::{AutoParam, CompiledExpr, CompiledFunction, ValueMap};
@@ -197,14 +197,23 @@ pub fn residual_jacobian(
     let seeds = Seeds::new(&columns);
 
     // The derivative sibling of the value fold `build_trial_values` just ran.
-    let env = fold_dependent_duals(&values, auto_params, dependent_cells, functions, dispatch, &seeds);
+    // It hands back the dependent cells' own branch records as well as their
+    // tangents: a kink inside a derived cell is a kink on every row that reads
+    // it, and a record that stopped at the residual's own root would report
+    // "smooth" for a point sitting on a clamp bound one hop away.
+    let (env, dependent_prelude) =
+        fold_dependent_duals(&values, auto_params, dependent_cells, functions, dispatch, &seeds);
 
     let mut rows = Vec::with_capacity(residual_exprs.len());
     let mut residuals = Vec::with_capacity(residual_exprs.len());
     let mut branch_records = Vec::with_capacity(residual_exprs.len());
 
     for (i, expr) in residual_exprs.iter().enumerate() {
-        let mut record = BranchRecord::new();
+        // Seeded with the prelude, never appended to it afterwards:
+        // `jacobian_row_with_env` only ever pushes, so the residual's own sites
+        // land after the prelude's and `signature_key` / `differs_from` need no
+        // change to see a dependent-cell flip.
+        let mut record = dependent_prelude.clone();
         match jacobian_row_with_env(expr, &ctx, &seeds, &env, &mut record) {
             Ok((value, row)) => {
                 residuals.push(value);
@@ -224,6 +233,31 @@ pub fn residual_jacobian(
 /// `values`; this recomputes the same cells' TANGENTS into a [`DualEnv`]
 /// overlay, so a residual that reads a derived cell resolves to that cell's
 /// real derivative instead of `Tangent::Zero`.
+///
+/// It also returns the cells' own [`BranchRecord`]s, concatenated in stored
+/// order, each re-sited under `[DEPENDENT_MARKER, k]` for its `enumerate`
+/// index `k`.  That prefix is what keeps a derived cell's kink separately
+/// addressable from the residual's own and from its sibling cells' — the
+/// reserved segment can never be a structural child index, so a dependent-cell
+/// site can never alias a real node.
+///
+/// # Why EVERY cell's record, not just the bound ones
+///
+/// A cell's record is collected whether or not its tangent is bound.
+/// [`DualEnv::bind`] deliberately drops a `Tangent::Zero`, but a zero-tangent
+/// cell can still flip a branch and JUMP its value — `if q > 5 then 100 else
+/// 200` is flat on both sides and discontinuous between them, which is
+/// precisely the point η must not secant across.  Collecting only bound cells
+/// would miss exactly the case the record exists to catch.
+///
+/// # Deliberate over-reporting
+///
+/// Every row carries every dependent cell's branches, including cells that row
+/// does not read.  That is the safe direction, and it is cheap: a dependent
+/// cell is in the slice because the CLUSTER's residuals depend on it.
+/// Under-reporting is the defect being fixed here — it tells η a kinked row is
+/// smooth.  Over-reporting only makes η contract a trust region it could have
+/// kept, and makes λ see an alternation slightly sooner.
 ///
 /// The value fold's doc comment warns "do NOT copy this body into a caller",
 /// and this is not a copy: the values are consumed as `build_trial_values` left
@@ -258,13 +292,25 @@ fn fold_dependent_duals(
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
     seeds: &Seeds,
-) -> DualEnv {
+) -> (DualEnv, BranchRecord) {
     let mut env = DualEnv::new();
+    let mut prelude = BranchRecord::new();
     if dependent_cells.is_empty() {
-        return env;
+        // No cells, no prefix block, not even an empty one — a non-clustered
+        // solve keeps precisely the sites it had before this fold existed.
+        return (env, prelude);
     }
+    debug_assert!(
+        dependent_cells.len() < DEPENDENT_MARKER as usize,
+        "fold_dependent_duals: {} dependent cells — an index at or above DEPENDENT_MARKER \
+         would alias a reserved path segment and make two different kinks compare equal",
+        dependent_cells.len()
+    );
     let ctx = ctx_with(values, functions, dispatch);
-    for (id, expr) in dependent_cells {
+    // `enumerate` over the WHOLE slice, so a cell skipped by the collision
+    // backstop below does not renumber its successors: a site stays put across
+    // a change that has nothing to do with it.
+    for (k, (id, expr)) in dependent_cells.iter().enumerate() {
         if auto_params.iter().any(|p| &p.id == id) {
             debug_assert!(
                 false,
@@ -276,11 +322,16 @@ fn fold_dependent_duals(
         // only the tangent is taken here; the primal this produces is
         // necessarily the same one, because both come from the same evaluator
         // over the same map.
-        let mut discard = BranchRecord::new();
-        let dual = eval_dual_with_env(expr, &ctx, seeds, &env, &mut discard);
+        //
+        // The cell is evaluated against the RUNNING overlay, so chaining
+        // composes for free: a later cell's prefix block already contains the
+        // branches taken by whatever it read.
+        let mut record = BranchRecord::new();
+        let dual = eval_dual_with_env(expr, &ctx, seeds, &env, &mut record);
+        prelude.extend_from(&record.prefixed(&[DEPENDENT_MARKER, k as u16]));
         if !matches!(dual.tangent, Tangent::Zero) {
             env.bind(id.clone(), dual.tangent);
         }
     }
-    env
+    (env, prelude)
 }
