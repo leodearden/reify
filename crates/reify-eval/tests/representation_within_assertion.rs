@@ -1512,10 +1512,15 @@ structure SphereCheck {
 ///
 /// Per PRD §2's staircase model, seven of these eight points sit on the
 /// ~2.075x tread branch (measured 2.067x-2.081x the requested deflection);
-/// exactly one, 0.50mm → 3.807e-4, sits at 0.7614x, closely matching the PRD's
-/// ~0.758x tooth branch. That model explains all eight points with no
-/// exceptions — the measurement and the OCCT internal-constant citations
-/// behind it live in PRD §2 and are not re-derived here.
+/// exactly one, 0.50mm → 3.807e-4, sits at 0.7614x, closely matching the
+/// PRD's ~0.758x tooth branch.  Tread/tooth alone accounts for all eight
+/// points measured here.  One open tension: 0.10mm (d/R = 1e-4 on this 1 m
+/// sphere) falls inside PRD §2's stated d/R < 2.5e-4 regime for its third,
+/// ~1.49x branch, yet measures 2.078x — squarely on the tread, not ~1.49x.
+/// That is a conflict between this table and the PRD's regime boundary, not a
+/// counterexample to tread/tooth; re-measure before relying on that boundary.
+/// The measurement and the OCCT internal-constant citations behind these
+/// branches live in PRD §2 and are not re-derived here.
 ///
 /// 0.50mm is therefore not an isolated off-trend outlier but the PRD's
 /// documented, recurrent, periodic downward tooth. It is still rejected as a
