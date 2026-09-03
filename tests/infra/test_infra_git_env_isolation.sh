@@ -29,14 +29,23 @@
 #      `git -C`, arm C would pass while testing nothing.  Same shape as
 #      tests/infra/test_host_global_unit_pinning.sh's A6a.
 #   B  The shared runner helper exists and exposes its documented API.
-#   C  BEHAVIOURAL — a member test run through `reify_git_env_scrub` under a
-#      hook-shaped hostile env is fully green AND leaves the poisoned index
-#      byte-identical (the damage detector: the point is that no fixture write
-#      escapes).
+#   C  BEHAVIOURAL — a hermetic single-purpose probe performs
+#      `git -C <fixture> add -A` under the hook-shaped poison, run through
+#      `reify_git_env_scrub`: the write must land in the FIXTURE's own index
+#      and leave the poisoned index byte-identical (the damage detector: the
+#      point is that no fixture write escapes).  Hermetic rather than a
+#      borrowed real member on purpose — a member's pass count is a function
+#      of ambient REIFY_AUDIT_* state (measured, both green:
+#      test_reify_audit_ptodo.sh reports 22 clean but 18 under the
+#      REIFY_AUDIT_NO_COLD_BUILD=1 that row 1 of
+#      tests/infra/run-all-ambient-vars.manifest injects into every pool
+#      member), so borrowing one would red this file on a healthy scrub.
 #
-# Classified `intra-run-serial` in tests/infra/run-all-classification.manifest,
-# matching test_reify_audit_ptodo.sh's own row — this file re-invokes that
-# member, so it inherits its bucket.
+# Classified `intra-run-serial` in tests/infra/run-all-classification.manifest
+# because it re-enters the infra harness twice over: arm F3 spawns a nested
+# `bash tests/infra/run_all.sh` on a fixture INFRA_DIR, and arm G re-invokes
+# tests/infra/test_host_global_unit_pinning.sh.  Either alone is enough to keep
+# this file out of the parallel bucket.
 
 set -euo pipefail
 
@@ -199,18 +208,27 @@ while IFS= read -r _d_var; do
 done <<< "$_D_RUST_VARS"
 
 # ---------------------------------------------------------------------------
-# Arm C — BEHAVIOURAL: a member test run through the scrub under a hook-shaped
-# hostile env is green, and the poisoned index is untouched.
+# Arm C — BEHAVIOURAL: the helper neutralizes a hook-shaped poison, and the
+# poisoned index is untouched.
 #
-# The expected result is DERIVED from a clean-env baseline captured live in this
-# same run, not pinned to a literal subtest count that would rot the moment
-# test_reify_audit_ptodo.sh gains an arm.  C0 is the anti-vacuity floor on that
-# baseline: a RATCHET_SKIP / missing-binary degradation reports a different,
-# smaller count (see that file's rc-75 / rc-125 partition), and a skipped
-# baseline compared against a skipped scrubbed run would agree vacuously.
+# A hermetic probe (generated below, same shape as F3) stands in for an
+# UNSANITIZED member test: it does the one thing every hermetic infra fixture
+# does — `git -C <fixture> add -A`, never `cd` — under a poisoned
+# GIT_INDEX_FILE, wrapped in `reify_git_env_scrub`.  Arm A already proved that
+# exact vector DOES bite with the scrub off, so A and C are a controlled
+# contrast varying one thing: the helper.
+#
+# Deliberately NOT a borrowed real member.  A member's pass count is a function
+# of ambient REIFY_AUDIT_* state — measured in this lane, BOTH green:
+# tests/infra/test_reify_audit_ptodo.sh reports 22 passed clean, and 18 under
+# `REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_PTODO_GEN_BIN=/nonexistent/gen`.
+# REIFY_AUDIT_NO_COLD_BUILD=1 is row 1 of
+# tests/infra/run-all-ambient-vars.manifest, injected into every run_all.sh pool
+# member, so any assertion over a borrowed member's count reds the merge gate in
+# the ordinary warm-lane configuration while the scrub is perfectly healthy.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- C: a member test survives a hook-shaped hostile env through the scrub ---"
+echo "--- C: the scrub neutralizes a hook-shaped poison on a hermetic probe ---"
 
 S_POISON=""
 F_WORK=""
