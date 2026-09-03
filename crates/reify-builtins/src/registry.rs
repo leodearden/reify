@@ -468,7 +468,7 @@ mod tests {
 #[cfg(test)]
 mod lint {
     use super::*;
-    use crate::row::Basis;
+    use crate::row::{Arity, Basis};
     use strum::{EnumCount, IntoEnumIterator};
 
     /// PascalCase → snake_case, the transform the macro cannot perform itself.
@@ -616,6 +616,166 @@ mod lint {
         for id in BuiltinId::iter() {
             assert_eq!(row(id).id, id, "row({id:?}) must be {id:?}'s own row");
         }
+    }
+
+    /// Every pair of rows sharing a name whose arities BOTH accept some argc,
+    /// reported as one line per pair naming both variants and the colliding
+    /// argc.
+    ///
+    /// `lookup(name, argc)` returns the FIRST `NAME_INDEX` entry whose name
+    /// matches and whose `Arity::matches(argc)` holds. That is well-defined
+    /// only while a name group's arities are mutually exclusive. Nothing in
+    /// `registry!` enforces it — the macro will happily accept `Variadic`
+    /// alongside `Exact(1)`, or two overlapping `Range`s, under one name — and
+    /// the consequence is silent: the call routes to whichever row was
+    /// DECLARED FIRST, with no compile error and no other failing test.
+    ///
+    /// Probes `0..=max declared bound + 1`, so a `Variadic` row (which accepts
+    /// every argc) collides with anything sharing its name, and the `+1`
+    /// catches a `Variadic`/`Variadic` pair even in a table whose declared
+    /// bounds are all zero.
+    ///
+    /// Takes a `(name, arity, label)` table rather than `&[BuiltinRow]` so the
+    /// check itself can be exercised on synthetic groups — α seeds no
+    /// overloads, so run over `rows()` alone it would be vacuous.
+    fn ambiguous_arity_overloads(table: &[(&str, Arity, String)]) -> Vec<String> {
+        let probe_max = table
+            .iter()
+            .map(|(_, arity, _)| match arity {
+                Arity::Exact(n) => *n,
+                Arity::Range(_, hi) => *hi,
+                Arity::Variadic => 0,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+
+        let mut out = Vec::new();
+        for (i, (name_a, arity_a, label_a)) in table.iter().enumerate() {
+            for (name_b, arity_b, label_b) in table.iter().skip(i + 1) {
+                if name_a != name_b {
+                    continue;
+                }
+                if let Some(argc) =
+                    (0..=probe_max).find(|c| arity_a.matches(*c) && arity_b.matches(*c))
+                {
+                    out.push(format!(
+                        "{name_a:?}: {label_a} ({arity_a:?}) and {label_b} ({arity_b:?}) \
+                         both accept argc={argc}"
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// **No name group may hold two rows that could answer the same call.**
+    ///
+    /// Vacuous over α's rows by construction (`SEED_NAMES` are all single-row,
+    /// pinned by `every_seed_name_group_holds_exactly_one_row`) — it is here
+    /// for the first τ that registers a genuine overload, which is exactly when
+    /// `lookup`'s declaration-order tie-break stops being unreachable.
+    #[test]
+    fn no_name_group_declares_overlapping_arities() {
+        let table: Vec<(&str, Arity, String)> = rows()
+            .iter()
+            .map(|r| (r.name, r.arity, format!("BuiltinId::{:?}", r.id)))
+            .collect();
+
+        let ambiguous = ambiguous_arity_overloads(&table);
+        assert!(
+            ambiguous.is_empty(),
+            "{} ambiguous arity overload(s): `lookup(name, argc)` would answer \
+             from DECLARATION ORDER, silently routing the call to whichever row \
+             `registry!` happened to list first.\n{}\n\nSplit the arities so \
+             they are mutually exclusive, or give the rows distinct names.",
+            ambiguous.len(),
+            ambiguous.join("\n")
+        );
+    }
+
+    /// The ambiguity check above cannot fail on today's rows, so its teeth are
+    /// pinned on synthetic groups instead — otherwise a check that stopped
+    /// detecting anything would still pass.
+    #[test]
+    fn the_arity_ambiguity_check_catches_the_shapes_it_is_for() {
+        let t = |name: &'static str, arity: Arity, label: &str| (name, arity, label.to_string());
+
+        // Disjoint overloads — the shape `lookup` is FOR (`floor`@1/@2).
+        assert!(
+            ambiguous_arity_overloads(&[
+                t("floor", Arity::Exact(1), "FloorOne"),
+                t("floor", Arity::Exact(2), "FloorTwo"),
+            ])
+            .is_empty(),
+            "an arity-disjoint overload pair is exactly what the registry supports"
+        );
+        // Same arity, DIFFERENT names: not an overload at all.
+        assert!(
+            ambiguous_arity_overloads(&[
+                t("floor", Arity::Exact(1), "Floor"),
+                t("ceil", Arity::Exact(1), "Ceil"),
+            ])
+            .is_empty(),
+            "arity overlap only matters WITHIN a name group"
+        );
+        // Adjacent, non-overlapping ranges.
+        assert!(
+            ambiguous_arity_overloads(&[
+                t("remap", Arity::Range(1, 2), "RemapNarrow"),
+                t("remap", Arity::Range(3, 4), "RemapWide"),
+            ])
+            .is_empty(),
+            "abutting ranges do not overlap"
+        );
+
+        // Variadic swallows every argc in its group.
+        let variadic = ambiguous_arity_overloads(&[
+            t("concat", Arity::Variadic, "ConcatAny"),
+            t("concat", Arity::Exact(1), "ConcatOne"),
+        ]);
+        assert_eq!(variadic.len(), 1, "got {variadic:?}");
+        assert!(
+            variadic[0].contains("ConcatAny")
+                && variadic[0].contains("ConcatOne")
+                && variadic[0].contains("argc=1"),
+            "the failure must name BOTH variants and the FIRST colliding argc \
+             (1, not 0 — Exact(1) declines a zero-arg call): {variadic:?}"
+        );
+
+        // Two variadics — the case the `+1` probe bound exists for.
+        assert_eq!(
+            ambiguous_arity_overloads(&[
+                t("concat", Arity::Variadic, "ConcatA"),
+                t("concat", Arity::Variadic, "ConcatB"),
+            ])
+            .len(),
+            1,
+            "two Variadic rows under one name always collide"
+        );
+
+        // Overlapping ranges.
+        let overlap = ambiguous_arity_overloads(&[
+            t("offset", Arity::Range(1, 3), "OffsetLow"),
+            t("offset", Arity::Range(3, 5), "OffsetHigh"),
+        ]);
+        assert_eq!(overlap.len(), 1, "got {overlap:?}");
+        assert!(
+            overlap[0].contains("argc=3"),
+            "the first colliding argc must be reported: {overlap:?}"
+        );
+
+        // A Range that contains an Exact.
+        assert_eq!(
+            ambiguous_arity_overloads(&[
+                t("offset", Arity::Range(2, 3), "OffsetRange"),
+                t("offset", Arity::Exact(2), "OffsetExact"),
+            ])
+            .len(),
+            1,
+            "an Exact inside a Range is an overlap"
+        );
     }
 
     /// The snake_case transform itself, pinned on the shapes the seed rows use

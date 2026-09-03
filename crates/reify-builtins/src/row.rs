@@ -120,6 +120,37 @@ impl ResultSpec {
             ResultSpec::ArgAware(f) => f(args),
         }
     }
+
+    /// This row's declared type when it is [`ResultSpec::Const`], `None` for an
+    /// [`ResultSpec::ArgAware`] row.
+    ///
+    /// # Why this exists instead of a `PartialEq` impl
+    ///
+    /// `ResultSpec` deliberately implements **no** `PartialEq`, and adding one
+    /// later would be a mistake. Rust compares `fn` pointers by address, which
+    /// is not a meaningful identity — the compiler may merge two
+    /// identically-bodied resolvers into one address or duplicate one across
+    /// codegen units — so `==` on `ArgAware` would answer a question about
+    /// codegen, not about signatures. An impl that papered over that by
+    /// answering `false` for `ArgAware` would be **non-reflexive**:
+    /// `spec == spec` would be `false` for three of the seven seed rows, so
+    /// every later `contains` / `dedup` / `assert_eq!` / derived comparison
+    /// reaching a `ResultSpec` would misbehave silently and surface as a
+    /// baffling test failure rather than a compile error.
+    ///
+    /// So the comparable part is exposed explicitly instead: a caller that
+    /// wants to compare `Const` payloads asks for them and gets an `Option`
+    /// that is honest about the `ArgAware` case. Callers wanting behavioural
+    /// equivalence compare [`resolve`](ResultSpec::resolve) outputs over
+    /// chosen argument types — which is what the seed tests do, and what
+    /// actually pins a signature. Row identity is [`BuiltinRow::id`], never
+    /// structural equality.
+    pub fn const_type(&self) -> Option<&Type> {
+        match self {
+            ResultSpec::Const(ty) => Some(ty),
+            ResultSpec::ArgAware(_) => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for ResultSpec {
@@ -133,25 +164,9 @@ impl std::fmt::Debug for ResultSpec {
     }
 }
 
-/// Structural equality over the `Const` arm only.
-///
-/// `ArgAware` is deliberately **never equal to anything, including itself**.
-/// Rust compares `fn` pointers by address, which is not a meaningful identity:
-/// the compiler may merge two identically-bodied functions into one address or
-/// duplicate one across codegen units, so `==` on `ArgAware` would answer a
-/// question about codegen, not about signatures.
-///
-/// Row identity is [`BuiltinRow::id`], never structural equality. This impl
-/// exists so tests can assert on `Const` rows directly; it is not a row-identity
-/// mechanism.
-impl PartialEq for ResultSpec {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ResultSpec::Const(a), ResultSpec::Const(b)) => a == b,
-            _ => false,
-        }
-    }
-}
+// NOTE: no `PartialEq for ResultSpec`, deliberately — see
+// [`ResultSpec::const_type`] for why an `ArgAware`-aware impl would have to be
+// non-reflexive, and what to compare instead.
 
 /// Why a row's signature is what it is — the ratified I-REG-7 closed
 /// vocabulary (PRD §7.1, ratified 2026-08-07).
@@ -331,6 +346,32 @@ mod tests {
             spec.resolve(&[]),
             None,
             "an ArgAware resolver returning None must surface as None"
+        );
+    }
+
+    /// `const_type` is the comparison accessor that stands in for the
+    /// `PartialEq` impl this type deliberately does not have: it hands back the
+    /// `Const` payload and is honest — rather than silently false — about
+    /// `ArgAware`, whose fn-pointer address is a codegen artefact and not an
+    /// identity.
+    #[test]
+    fn result_spec_const_type_exposes_const_payloads_and_declines_for_arg_aware() {
+        fn first_arg_or_none(args: &[Type]) -> Option<Type> {
+            args.first().cloned()
+        }
+
+        let konst = ResultSpec::Const(Type::Option(Box::new(Type::length())));
+        assert_eq!(
+            konst.const_type(),
+            Some(&Type::Option(Box::new(Type::length()))),
+            "a Const row must expose its declared type for direct comparison"
+        );
+
+        assert_eq!(
+            ResultSpec::ArgAware(first_arg_or_none).const_type(),
+            None,
+            "an ArgAware row has no const payload — callers must compare \
+             `resolve` outputs over chosen arg types instead of reaching for `==`"
         );
     }
 
