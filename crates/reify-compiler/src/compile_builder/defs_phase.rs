@@ -23,8 +23,8 @@ use crate::annotations::{
 };
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::type_resolution::{
-    TypeAliasRegistry, convert_type_params, resolve_enum_type, resolve_type_expr_with_aliases,
-    unresolved_alias_body_name,
+    EnumNameScope, TypeAliasRegistry, convert_type_params, resolve_enum_type,
+    resolve_type_expr_with_aliases, unresolved_alias_body_name,
 };
 use crate::types::{CompiledConstraintDef, CompiledConstraintParam};
 
@@ -52,12 +52,26 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// resolved type is NOT discarded: it is stored on `CompiledConstraintParam.ty`
 /// and consumed by `expand_constraint_inst`'s arg type check at instantiation
 /// time (task 4546), which skips any param whose `ty` is `None`.
+///
+/// # Precondition: a live [`EnumNameScope`]
+///
+/// `_enum_scope` carries no data — it is a witness that the caller has an
+/// [`EnumNameScope`] installed over the ambient `RESOLUTION_ENUM_NAMES` set
+/// (task 6416), which is what lets an enum-typed param resolve at all. The
+/// guard is built ONCE per module by [`phase_constraint_defs`] rather than once
+/// per def, because constructing it clones every name in `ctx.resolution_enums`
+/// (prelude ++ local — 38 enums from stdlib alone) into a fresh `HashSet`; the
+/// set is identical for every def in the module. Taking the witness by
+/// reference makes the requirement a compile-time obligation on the caller
+/// instead of a comment, so a future second call site cannot silently
+/// reintroduce the `ty: None` defect the scope exists to fix.
 fn compile_constraint_def(
     c: &reify_ast::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[reify_ir::EnumDef],
     trait_names: &HashSet<String>,
     structure_names: &HashSet<String>,
+    _enum_scope: &EnumNameScope,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledConstraintDef {
     // Extract @optimized target from raw syntax annotations BEFORE lowering so the
@@ -86,18 +100,6 @@ fn compile_constraint_def(
     //    checking now needs it).
     // `None` (never `Type::Error`) is stored when the param is unannotated or
     // resolution fails; type resolution failure is already diagnosed below.
-
-    // Install the module's enum names as the ambient fallback set for param
-    // type resolution (task 6416), mirroring entity.rs's struct-param scope and
-    // functions.rs's fn-param/return scopes. Without this, `param g : Zq`
-    // resolves to None and `CompiledConstraintParam.ty` stays None, which makes
-    // task 4546's instantiation-site arg type check in `expand_constraint_inst`
-    // (it skips params whose `ty` is None) silently inert for every enum-typed
-    // param. Dropped at end of this function; nothing after the params loop
-    // below resolves types, so its reach is exactly that loop.
-    let _enum_scope = crate::type_resolution::EnumNameScope::new(
-        enum_defs.iter().map(|e| e.name.clone()).collect(),
-    );
 
     let params: Vec<CompiledConstraintParam> = c
         .params
@@ -233,8 +235,32 @@ pub(crate) fn phase_constraint_defs(
     // phase_traits (traits_phase.rs:71-79).
     let mut structure_names: Option<HashSet<String>> = None;
 
+    // Ambient enum-name set for constraint-def param type resolution (task
+    // 6416), mirroring entity.rs's struct-param scope and functions.rs's
+    // fn-param/return scopes. Built here, once for the whole loop, rather than
+    // inside `compile_constraint_def`: the set is the same for every def in the
+    // module, and constructing it clones every name in `ctx.resolution_enums`
+    // (prelude ++ local — 38 enums from stdlib alone). Lazily, on the same
+    // first-`Declaration::Constraint` trigger as `structure_names` above, so a
+    // module with zero constraint defs still allocates nothing.
+    //
+    // Widening its reach from one def to the whole loop is behaviour-preserving:
+    // the only thing that reads `RESOLUTION_ENUM_NAMES` is type resolution, and
+    // the only type resolution in this phase is the params loop inside
+    // `compile_constraint_def`. `emit_constraint_def_shadow_warnings` below,
+    // which the guard now also spans, compares def NAMES only.
+    let mut enum_scope: Option<EnumNameScope> = None;
+
     for decl in &parsed.declarations {
         if let reify_ast::Declaration::Constraint(c) = decl {
+            let scope = enum_scope.get_or_insert_with(|| {
+                EnumNameScope::new(
+                    ctx.resolution_enums
+                        .iter()
+                        .map(|e| e.name.clone())
+                        .collect(),
+                )
+            });
             let names = structure_names.get_or_insert_with(|| {
                 ctx.seen_entity_names
                     .iter()
@@ -253,6 +279,7 @@ pub(crate) fn phase_constraint_defs(
                 &ctx.resolution_enums,
                 trait_names,
                 names,
+                scope,
                 &mut ctx.diagnostics,
             );
             ctx.constraint_defs.push(compiled);
