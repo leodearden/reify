@@ -158,11 +158,20 @@ gate fixture maps 1:1 to the shipped surface. β then only *consumes* `Visual`.
 
 ### 4.3 Library-wide appearance (task γ)
 
-Each FEA library material gains `: ElasticMaterial + Visual` + an **editorial** `appearance` member
+Each FEA library material gains ~~`: ElasticMaterial + Visual`~~ + an **editorial** `appearance` member
 (explicit `(r,g,b)`, `named=""` — so γ does **not** depend on the RAL seed breadth): steel grey-satin,
 aluminium light-grey, titanium grey-satin, ABS matte off-white. The `Material` struct's default
 appearance (neutral grey) is set in β. Values are **editorial, not physically derived** — the physical
 optics path (`materials_optical.ri`) is explicitly separate (decision 5).
+
+**SUPERSEDED 2026-09-03 by task #6877** (struck clause only): the four presets now declare
+`: DampedMaterial + Visual` (`materials_fea.ri:272` Steel, `:329` Al, `:386` Ti, `:446` ABS). #6877
+added a `Damped` mixin trait carrying `loss_factor : Real`, and the named intersection
+`trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`) **refines** the bound γ declared rather
+than replacing it — conformance is transitive, so every preset still satisfies `ElasticMaterial`. γ's
+`Visual` member and the editorial appearance values above are **unaffected** and this paragraph's
+rationale is not withdrawn; only the spelling of the declared bound moved. **Do not cite this line as
+authority for the presets' declared bound** — read `materials_fea.ri` for that.
 
 ### 4.4 3MF per-body color egress (task δ — headless leaf + H integration gate)
 
@@ -185,7 +194,9 @@ Wired on both the imperative `-o foo.3mf` path and the declarative `ThreeMFOutpu
 3. **`Visual` trait resolves the Material-vs-library fragmentation.** Both the `Material` struct and the
    library `: ElasticMaterial` structures implement `Visual`, so "what is this made of" yields an
    `Appearance` uniformly. (Trait, not bare field — parallels how `ElasticMaterial` is a trait the
-   library already implements. Confirmed by §3.)
+   library already implements. Confirmed by §3.) (Since #6877 the presets spell that bound
+   `DampedMaterial`, which refines `ElasticMaterial` — so they remain `ElasticMaterial` conformers
+   and this decision reads unchanged.)
 4. **`Color` = rgb + optional named standard** (the both-fields encoding, §3-validated). Named standards
    (RAL at minimum) + hex resolved by `resolve_color`; the seed-table breadth is tactical (§OQ) — start
    with hex + a small RAL Classic seed, the rest is out of scope.
@@ -307,10 +318,16 @@ the "one material" is an inline `Material(appearance: …)` in δ's fixture (nee
   (C-as-integration-gate) plus reify-eval unit coverage of `resolve_color` (B3/B4) and back-compat
   (B2). *Prereqs:* α. `grammar_confirmed=true`.
 - **γ — library-wide appearance.** *Modules:* `crates/reify-compiler/stdlib/materials_fea.ri` (the 4
-  materials gain `: ElasticMaterial + Visual` + editorial `appearance`) + a CI example. *Leaf.* *Signal:*
+  materials gain ~~`: ElasticMaterial + Visual`~~ + editorial `appearance`) + a CI example. *Leaf.* *Signal:*
   a committed `examples/material_appearance_library.ri` (runs in CI via `examples_smoke`) instantiating
   each library material; each `.appearance` reads a non-`Undef` `Appearance` with its characteristic
   color (B6). *Prereqs:* α, β. `grammar_confirmed=true`.
+  **SUPERSEDED 2026-09-03 by task #6877** (struck clause only): the presets now declare
+  `: DampedMaterial + Visual` (`materials_fea.ri:272/329/386/446`), where
+  `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`) refines the bound γ was scoped to
+  deliver. γ's leaf metadata, signal and prereqs above stand as the record of what γ did; the
+  `Visual` half and the editorial `appearance` member survive the refinement unchanged. **Do not
+  cite this row as authority for the presets' declared bound.**
 - **δ — 3MF per-body color egress (headless LEAF + H integration gate).** *Modules:*
   `reify-ir/src/geometry.rs` (mesh color channel + `write_3mf` color resource),
   `reify-eval/src/engine_build.rs` (populate color via `resolve_appearance`) — BRE acquires the footprint.
