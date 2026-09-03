@@ -23,6 +23,27 @@
 - **Blocks:** Tasks gated on this PRD activation (none currently queued).
 - **Note:** Type would be a new structure-def with 10 cells; co-blocks with GR-001 (struct-constructor eval) and the open question of whether `ElasticMaterial` trait covers orthotropic or a new `OrthotropicElasticMaterial` trait is needed (the trait's surface in `materials_fea.ri:88` was designed for isotropic).
 
+> **CORRECTION 2026-09-03 (#6877) — the materials_fea.ri anchors and field list above have drifted;
+> M-001 and M-002 both stand as written.** This is a dated audit snapshot (**Date:** 2026-05-12), so
+> the Evidence bullets are preserved as the record of what was measured then. What changed since:
+>
+> - The four presets now declare `: DampedMaterial + Visual` and carry **five** elastic/damping
+>   properties — `youngs_modulus`, `poisson_ratio`, `density`, `yield_stress`, `loss_factor` — plus a
+>   `loss_factor_provenance : MaterialPropertyProvenance` member (`materials_fea.ri:303`, `:360`,
+>   `:417`, `:477`). #6877 introduced the `Damped` mixin trait (`:194-202`) and the named intersection
+>   `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`).
+> - **M-001's conclusion is unaffected and stays FICTION.** `loss_factor` (η) is a *scalar* hysteretic
+>   damping ratio, not a directional modulus and not a ply allowable — so the presets remain
+>   isotropic-only exactly as this audit said. No `Orthotropic`/`Laminate`/`Ply` symbol exists today.
+> - **M-002's claim below is STILL TRUE of the trait.** `ElasticMaterial` requires
+>   `youngs_modulus, poisson_ratio, density, yield_stress` only: #6877 put `loss_factor` on the
+>   separate `Damped` mixin, **not** on `ElasticMaterial`, which is unchanged. Only M-002's `:88`
+>   anchor drifted, and the open design fork it raises — whether `ElasticMaterial` covers orthotropic
+>   or a new `OrthotropicElasticMaterial` trait is needed — is untouched.
+> - **Anchor drift:** `ElasticMaterial` trait `materials_fea.ri:88` → **`:130-147`**; the preset span
+>   `materials_fea.ri:132-249` → **`:272-492`** (Steel `:272`, Al `:329`, Ti `:386`, ABS `:446`).
+>   Grep the named symbol rather than trusting these numbers.
+
 ### M-002: Orthotropic constitutive law trait surface (per-direction moduli, ply allowables)
 
 - **State:** FICTION
