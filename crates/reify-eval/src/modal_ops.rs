@@ -969,6 +969,51 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
     }
 }
 
+/// Build the degenerate short-circuit outcome for a `MaterialDamping` solve over
+/// a material that does not conform to `trait Damped` (task #6878, PRD leaf β
+/// §C6): an `E_ModalDampingMaterialNotDamped` `Error` diagnostic plus an
+/// empty-modes `ModalResult`.
+///
+/// Fourth member of this file's eval-time-precondition-failure family, copying
+/// [`no_mass_matrix_outcome`]'s shape exactly (message-prefix code, degenerate
+/// result value, `new_warm_state: None`, `cost_per_byte: None`, empty
+/// `structured_detail`, short-circuit return placed before the expensive work).
+///
+/// THE EMPTY RESULT IS THE POINT, not a side effect. B8's normative wording is
+/// "eval error naming the material; NOT `damping_ratio = 0`". Returning valid
+/// frequencies alongside the Error would still put a literal `damping_ratio = 0`
+/// on the author's result surface — the exact artifact the signal forbids — and a
+/// downstream consumer reading `ModalResult` without inspecting the diagnostics
+/// channel would be right back in the silent-zero shape. The cost is losing the
+/// frequencies for a solve the author explicitly mis-configured; that is the
+/// intended pressure toward the one-line fix the message names.
+fn material_not_damped_outcome(material_type_name: &str) -> ComputeOutcome {
+    let diagnostic = Diagnostic::error(format!(
+        "E_ModalDampingMaterialNotDamped: the material `{material_type_name}` \
+         carries no usable hysteretic loss factor (`loss_factor` missing, \
+         non-numeric, negative or non-finite), but \
+         `ModalOptions.damping = MaterialDamping(...)` selects the \
+         modal-strain-energy value source ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e), \
+         which REQUIRES a per-material η. Fix it one of three ways: (1) conform \
+         the material to `DampedMaterial` — `structure def \
+         {material_type_name} : DampedMaterial + Visual {{ … param loss_factor \
+         : Real = <η> }}` in the style of \
+         crates/reify-compiler/stdlib/materials_fea.ri; (2) use one of the \
+         conforming stdlib presets, which already declare a `loss_factor`; or \
+         (3) switch the descriptor to `RayleighDamping(alpha, beta)` or \
+         `NoDamping()`, neither of which needs one. An EMPTY modal result is \
+         returned rather than modes carrying `damping_ratio = 0`, because a \
+         silent zero would be indistinguishable from a genuinely undamped model."
+    ));
+    ComputeOutcome::Completed {
+        result: degenerate_modal_result(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![diagnostic],
+        structured_detail: vec![],
+    }
+}
+
 /// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
 /// `type_name` is `"Part"`.  All four production echo sites emit this value
 /// for the `part` field until the Part registry is wired (task 4578).
@@ -1145,6 +1190,38 @@ pub(crate) fn run_modal_analysis(
             };
         }
     };
+
+    // ── (1b) MaterialDamping conformance guard (short-circuit) ───────────────
+    // Task #6878, PRD leaf β §C6. `modal_analysis(material : ElasticMaterial, …)`
+    // does NOT require `Damped`, so a material with no `loss_factor` reaches this
+    // trampoline and the compiler cannot catch it. Declaring `MaterialDamping`
+    // over such a material is an author error with no honest answer: the
+    // modal-strain-energy ratio it selects is undefined without η, and reporting
+    // ζ = 0 would be indistinguishable from a genuinely undamped model.
+    //
+    // ORDERING. Placed AFTER the density guard (1) so a material missing BOTH a
+    // density and a loss factor still reports `E_ModalNoMassMatrix` first — that
+    // is the more fundamental failure (without M there is no eigenproblem at all,
+    // damped or not), matching how the transient path orders its guards by
+    // root-cause depth. Placed BEFORE the mesh build, cache lookup and assembly
+    // because this is a genuine SHORT-CIRCUIT: no eigensolve is run for a solve
+    // whose declared damping intent cannot be honoured. Mirrors
+    // `no_mass_matrix_outcome`'s placement.
+    if matches!(classify_damping(&value_inputs[4]), DampingKind::Material { .. })
+        && extract_loss_factor(&value_inputs[0]).is_none()
+    {
+        // Read the runtime type_name off the material for the message. A
+        // non-structure value cannot carry one, so a stable placeholder stands
+        // in rather than the message silently losing its subject.
+        let type_name = match &value_inputs[0] {
+            Value::StructureInstance(data) => data.type_name.as_str(),
+            _ => "<non-structure material value>",
+        };
+        return ModalTrampolineRun {
+            outcome: material_not_damped_outcome(type_name),
+            reused_assembly: false,
+        };
+    }
 
     // ── (2) material elastic constants (E, ν) ────────────────────────────────
     let material = extract_isotropic_material(&value_inputs[0]);
