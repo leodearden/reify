@@ -312,8 +312,8 @@ const MESH_RADIAL_TOL_FRAC: f64 = 0.10;
 /// The full parse → compile → spawn-OCCT → sweep → boolean → tessellate pipeline
 /// costs ~5 s and every test in this module only ever *reads* the result, so it is
 /// memoized rather than run per test (same `OnceLock` caching idiom as
-/// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`). Callers must
-/// have already checked `reify_kernel_occt::OCCT_AVAILABLE`.
+/// `crates/reify-eval/tests/harness_auto_resolution/auto_type_param_determinism_tests.rs`).
+/// Callers must have already checked `reify_kernel_occt::OCCT_AVAILABLE`.
 fn dev_capstan() -> &'static TessellateResult {
     static R: OnceLock<TessellateResult> = OnceLock::new();
     R.get_or_init(tessellate_dev_capstan)
@@ -339,8 +339,8 @@ fn dev_capstan() -> &'static TessellateResult {
 /// [`capstan_constraints_hold_without_a_kernel`] gates.
 ///
 /// `Engine::new(checker, None)` evaluates with no planner at all (the pattern in
-/// `crates/reify-eval/tests/auto_binding_sites_remaining_resolution.rs`). The
-/// geometry and `volume()` cells cannot resolve that way, so eval diagnostics
+/// `crates/reify-eval/tests/harness_auto_resolution/auto_binding_sites_remaining_resolution.rs`).
+/// The geometry and `volume()` cells cannot resolve that way, so eval diagnostics
 /// are deliberately NOT asserted clean here and this result is good for SCALAR
 /// cells and scalar constraints only — the OCCT path is what gates the rest.
 /// Parse and compile ARE asserted clean, in [`compile_dev_capstan`].
