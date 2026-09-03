@@ -1143,6 +1143,23 @@ it returns 5, not 0. (2) The counts drift with the corpus — they were 2039 / 3
 assert. The only genuine sub-four-digit ids are the legacy #333, #479 and #630, all ≥ 100,
 which is what the `N ≤ 99` bound turns on.
 
+**δ-B lane-boundary measurements (re-run 2026-09-03, task #6103).** Two of δ-B's guards —
+the `// G-allow:` delegation (iv) and the full-line-comment restriction (v) — each forgo some
+recall, and the code turns on the size of what is forgone. Those counts are recorded HERE and
+nowhere else; the three code sites that depend on them (`scan_file` arm (7) items (iv) and
+(v), and `scan_file_delta_b_negative_trailing_comment`) point back at this block rather than
+re-spelling it, so one re-measurement updates one place. Both predicates exclude
+`crates/reify-audit/*` for the self-match reason above:
+
+| Predicate | Hits | Reading |
+|---|---|---|
+| `git grep -nE '^[[:space:]]*//[[:space:]]*G-allow:' -- '*.rs' ':!crates/reify-audit/*'`, filtered to lines with a `#N` AND a `DEFERRAL_PROSE` needle | 2 | both are `crates/reify-ir/src/value.rs` (`:3124`, `:3214`) citing `task #5235 (pending)` — an owner cite under none of rules (a)/(b)/(c), so both are **owner-BEARING**. Owner-LESS hits: **0**, so guard (iv) costs no recall; the two hits it does catch are exactly the double-report (δ-B + `g-allow-orphaned`) it exists to prevent. |
+| the same grep for a `//` NOT at line start, filtered to lines with a 4-digit `#N` AND a needle | 1 | `crates/reify-eval/src/engine_build.rs:13625`, whose "code" is the `#[allow(dead_code)]` attribute that lane δ-A (arm (5)) already owns — so guard (v) costs no recall either. |
+
+As with the digit-bound table, these are evidence for a *shape* (both guards are recall-free
+today), not figures to assert: a re-run on a later corpus may move them, and the reading to
+re-derive is "does anything land in the forgone region that no other lane owns?".
+
 ### The claim this evidence supports — and the one it does not
 
 **Do not read this as "anchoring ⇒ low FP."** That general claim is exactly what the

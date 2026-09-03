@@ -1363,20 +1363,18 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // `re-homed from cancelled #N`, `PRD #N`) and resurrect the
             // population that grammar exists to suppress — in the fail-dangerous
             // direction, since an FP here is a High `orphaned` hard-gate
-            // finding. Measured (2026-08-31): ZERO live lines are
-            // `// G-allow:` ∧ cite ∧ deferral prose ∧ owner-less, so the
-            // narrower guard would buy no recall today. Pinned by
-            // `scan_file_delta_b_negative_g_allow_owner_less`.
+            // finding. The narrower guard would also buy no recall — live count
+            // for that shape, and the predicate that measures it: PRD §16 Row 2.
+            // Pinned by `scan_file_delta_b_negative_g_allow_owner_less`.
             //
             // (v) FULL-LINE comments only (`trim_start().starts_with("//")`): a
             // trailing comment after code (`let x = f(); // deferred to #1234`)
             // is out of scope. Decided, not overlooked — it is what makes the
-            // whole-line predicates in (iii) sound, and measured (2026-08-31)
-            // exactly one tracked `.rs` line is code-then-trailing-comment with
-            // deferral prose and a four-digit cite, whose "code" is the
-            // `#[allow(dead_code)]` attribute arm (5) already owns. δ-A reads a
-            // trailing comment because its anchor is an attribute, which cannot
-            // appear mid-expression. Pinned by
+            // whole-line predicates in (iii) sound, and the live exposure it
+            // forgoes is a single line whose "code" is the `#[allow(dead_code)]`
+            // attribute arm (5) already owns (count and predicate: PRD §16
+            // Row 2). δ-A reads a trailing comment because its anchor is an
+            // attribute, which cannot appear mid-expression. Pinned by
             // `scan_file_delta_b_negative_trailing_comment`.
             //
             // FP control is entirely inherited, not new: `has_deferral_prose`'s
@@ -3445,13 +3443,13 @@ mod tests {
     /// not a candidate, because both of the lane's predicates match the WHOLE
     /// line and are only sound while the whole line is comment text.
     ///
-    /// Decided, not overlooked — and measured (tracked `.rs`, 2026-08-31):
-    /// exactly ONE line repo-wide is code-then-trailing-comment carrying both
-    /// deferral prose and a four-digit cite, and its "code" is the
-    /// `#[allow(dead_code)]` attribute that arm (5) already owns
-    /// (`scan_file_delta_b_allow_dead_code_lane_wins`). The restriction
-    /// therefore costs no recall today. δ-A reads a trailing comment because
-    /// its anchor is an attribute, which cannot appear mid-expression.
+    /// Decided, not overlooked: the only live line of that shape is one whose
+    /// "code" is the `#[allow(dead_code)]` attribute arm (5) already owns
+    /// (`scan_file_delta_b_allow_dead_code_lane_wins`), so the restriction
+    /// costs no recall. Count and measuring predicate: PRD §16 Row 2 — stated
+    /// once there rather than re-spelled at each of the three sites that turn
+    /// on it. δ-A reads a trailing comment because its anchor is an attribute,
+    /// which cannot appear mid-expression.
     #[test]
     fn scan_file_delta_b_negative_trailing_comment() {
         let trailing = "let x = f(); // wiring is deferred to task #2947";
