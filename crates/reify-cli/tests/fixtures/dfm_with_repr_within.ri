@@ -29,9 +29,17 @@
 // Under stub (no OCCT): exit 0, no W_DFM_OVERHANG, no VIOLATED (C1 degradation).
 //
 // ── #precision and the RepresentationWithin margin ───────────────────────────
-// SINGLE SOURCE OF TRUTH for the numbers below.  Every other site — the Sphere
-// docstring further down, and both consumers under tests/harness_cli/ — points
-// here instead of restating them, so a retune has exactly one place to edit.
+// SINGLE SOURCE OF TRUTH for this fixture's own point value, its drift canary,
+// and the re-derivation recipe below.  The MECHANISM behind the numbers — the
+// staircase model, the tread/tooth ratios and periods, and the OCCT internal
+// constants that produce them — is owned by PRD
+// docs/prds/v0_6/precision-nominal-representation-guarantee.md §2.  The full
+// 8-point measured sweep across candidate #precision values is owned by
+// `OCCT_SOURCE_FINE` in
+// crates/reify-eval/tests/representation_within_assertion.rs.  Both are cited,
+// not restated, below.  Every other site — the Sphere docstring further down,
+// and both consumers under tests/harness_cli/ — points here for the fixture's
+// own numbers, so a retune has exactly one place to edit.
 //
 // Measured under OCCT at #precision(0.3mm): the sampled facet-chord deviation on
 // the 1m-radius sphere is 6.202e-4 m against the 1mm (1.000e-3 m) assertion bound
@@ -54,15 +62,20 @@
 // RETUNING #precision — MEASURE, DO NOT INTERPOLATE.  #precision is threaded
 // bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and
 // OCCT meshes each edge into an INTEGER segment count, so the achieved deviation
-// is a SAWTOOTH in #precision.  NEAR THE BOUND the sawtooth dominates: 0.49mm
-// (1.013e-3) and 0.51mm (1.056e-3) both VIOLATE the 1.000e-3 m bound while 0.50mm
-// between them passes at a 2.63x margin — a ~2.7x swing in achieved deviation
-// across a ±2% change in #precision.  FARTHER BELOW THE BOUND the measured points
-// happen to track ~2.08x #precision (0.25mm → 5.198e-4, 0.30mm → 6.202e-4,
-// 0.35mm → 7.271e-4), but that local ratio is an observation, not a guarantee —
-// and extrapolating it is exactly what makes the isolated 0.50mm tooth look safe.
-// 0.3mm was chosen because BOTH its neighbours also clear the bound, not because
-// it is a smooth optimum.
+// is a STAIRCASE in #precision — not smooth, not a simple sawtooth (mechanism,
+// tread/tooth ratios and periods: PRD §2 above).  NEAR THE BOUND the staircase's
+// branches dominate: 0.49mm (1.013e-3) and 0.51mm (1.056e-3) both VIOLATE the
+// 1.000e-3 m bound — both are TREAD points — while 0.50mm between them passes at
+// a 2.63x margin because it lands on a TOOTH, not because of a smooth swing
+// between neighbours.  A retune that happens to land on a tooth passes for the
+// wrong reason and will not survive drift.  FARTHER BELOW THE BOUND the measured
+// points track the staircase's tread branch (full 8-point sweep:
+// `OCCT_SOURCE_FINE` in crates/reify-eval/tests/representation_within_assertion.rs
+// above), but a tread is one branch of a periodic staircase, not a guaranteed
+// local ratio — extrapolating it is exactly what makes an unmeasured tooth look
+// safe.  0.3mm was chosen because BOTH its neighbours also clear the bound, not
+// because it is a smooth optimum — the staircase's periodicity, not smoothness,
+// is exactly why that check matters.
 //
 // To re-derive any candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
