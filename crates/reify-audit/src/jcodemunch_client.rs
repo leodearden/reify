@@ -908,6 +908,67 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
 }
 
 // -----------------------------------------------------------------------
+// stale-declaration-line classification
+// -----------------------------------------------------------------------
+
+/// One out-of-range declaration line: `(file, wire_line, file_line_count)`.
+type StaleDeclLine = (String, usize, usize);
+
+/// Why a symbol's wire-reported declaration line could not be located.
+///
+/// [`decl_line_out_of_range`] folds two conditions into one predicate — a
+/// line past EOF and the `0` "no line reported" sentinel — which is right
+/// for `extract_suppression`'s guard (both are unlocatable, both get the
+/// neutral triple) and wrong for the operator, because the two have
+/// OPPOSITE remedies. This enum is what keeps the distinction a value
+/// rather than a substring of the rendered message, so
+/// `stale_decl_line_diagnostic`'s prose can be reworded freely and a
+/// genuine mis-bucketing still fails a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaleCause {
+    /// The wire reported a line beyond the declaring file's current last
+    /// line: the jcodemunch index describes a file that has since shrunk.
+    /// Re-indexing fixes it.
+    PastEof,
+    /// The wire reported the `0` sentinel — it emitted no `line` column, or
+    /// a value [`row_u64`] could not read as one, and the adapter's
+    /// `.unwrap_or(0)` landed here. That is a grammar-version drift
+    /// (`find_references` dropped its `line` column in jcodemunch-mcp
+    /// 1.108.54); re-indexing a perfectly current repo would not change one
+    /// row.
+    NoLineReported,
+}
+
+/// Classify one wire-reported declaration line. `0` is the sentinel
+/// [`changed_symbols_from_wire`] and [`references_from_rows`] produce for
+/// an unreadable or absent `line`; anything else that reached
+/// [`decl_line_out_of_range`] was a real number past its file's end.
+fn stale_cause(wire_line: usize) -> StaleCause {
+    if wire_line == 0 {
+        StaleCause::NoLineReported
+    } else {
+        StaleCause::PastEof
+    }
+}
+
+/// Split out-of-range entries into `(past_eof, no_line)` by [`stale_cause`],
+/// preserving input order within each bucket.
+///
+/// Separated from the rendering in [`stale_decl_line_diagnostic`] so the
+/// classification can be asserted as VALUES rather than through prose
+/// substrings of the rendered message: pinning "which cause got which
+/// remedy" to wording means a behaviour-neutral reword reds the suite,
+/// while a real mis-bucketing that keeps both phrases present goes
+/// undetected. See `partition_stale_decl_lines_buckets_by_cause`.
+fn partition_stale_decl_lines(
+    entries: &[StaleDeclLine],
+) -> (Vec<&StaleDeclLine>, Vec<&StaleDeclLine>) {
+    entries
+        .iter()
+        .partition(|(_, wire_line, _)| stale_cause(*wire_line) == StaleCause::PastEof)
+}
+
+// -----------------------------------------------------------------------
 // stale_decl_line_diagnostic helper
 
 /// Summarise symbols whose wire-reported declaration line fell outside
@@ -921,12 +982,13 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
 /// jcodemunch index reported a declaration line that no longer exists in
 /// the file on disk. Returns `None` on the happy-path empty slice.
 ///
-/// Partitions those entries on the `wire_line == 0` sentinel and gives
-/// each cause its OWN remedy, because they are structurally different
-/// failures wearing one predicate: a line past EOF means the index is
-/// stale (re-index), while a `0` means the wire never emitted a `line`
-/// column at all (a grammar drift — re-indexing changes nothing). See
-/// `stale_decl_line_diagnostic_splits_its_remedy_by_cause`.
+/// Partitions those entries by [`StaleCause`] and gives each cause its OWN
+/// remedy, because they are structurally different failures wearing one
+/// predicate. See `stale_decl_line_diagnostic_splits_its_remedy_by_cause`,
+/// and `partition_stale_decl_lines_buckets_by_cause` for the bucketing
+/// itself — which is asserted STRUCTURALLY, so this function's prose can be
+/// reworded without reddening the suite and a genuine mis-bucketing cannot
+/// hide behind wording that happens to keep both phrases present.
 ///
 /// Deliberately summarises to ONE line naming only each bucket's affected
 /// count and first entry, regardless of how many symbols are affected: a
@@ -934,24 +996,11 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
 /// exists to remove. `RealJCodemunchOps::get_changed_symbols` calls this
 /// once per invocation (the P1 sweep calls `get_changed_symbols` once per
 /// done task), so a stale index is loud without flooding stderr.
-fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option<String> {
+fn stale_decl_line_diagnostic(out_of_range: &[StaleDeclLine]) -> Option<String> {
     if out_of_range.is_empty() {
         return None;
     }
-    // Partitioned on the `0` sentinel because the two conditions
-    // `decl_line_out_of_range` folds together have DIFFERENT causes, and so
-    // different remedies. Past-EOF means the index describes a file that
-    // has since shrunk — re-indexing fixes it. Line `0` means the wire
-    // never reported a line at all, which is a grammar-version drift
-    // (`find_references` dropped its `line` column in jcodemunch-mcp
-    // 1.108.54, and `changed_symbols_from_wire` now routes that same shape
-    // here through its `unwrap_or(0)`); re-indexing a perfectly current
-    // repo would not change one row. One remedy for both would tell the
-    // operator to re-index — at maximum volume, every symbol at once — on
-    // the day `get_changed_symbols` follows `find_references`.
-    let (no_line, past_eof): (Vec<_>, Vec<_>) = out_of_range
-        .iter()
-        .partition(|(_, wire_line, _)| *wire_line == 0);
+    let (past_eof, no_line) = partition_stale_decl_lines(out_of_range);
 
     // Each clause names only its OWN bucket's first entry and count:
     // entries can span files of different lengths, so a line count
@@ -975,8 +1024,9 @@ fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option
         // naming it here would only invite the wrong remedy.
         clauses.push(format!(
             "{} symbol(s) reported no declaration line (first: {file}, reported \
-             line {wire_line}) — the jcodemunch wire omitted the `line` column; \
-             that is a grammar drift, not a stale index",
+             line {wire_line}) — the jcodemunch wire omitted the `line` column, \
+             or sent a value that is not a line number; that is a grammar drift, \
+             not a stale index",
             no_line.len()
         ));
     }
@@ -1013,7 +1063,7 @@ fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option
 fn collect_stale_decl_lines(
     symbols: &[ChangedSymbol],
     line_count_for: impl Fn(&str) -> Option<usize>,
-) -> Vec<(String, usize, usize)> {
+) -> Vec<StaleDeclLine> {
     symbols
         .iter()
         .filter_map(|sym| {
@@ -2983,25 +3033,90 @@ mod tests {
         );
     }
 
-    /// `wire_line == 0` (the "no line reported" sentinel — see
-    /// `decl_line_out_of_range`) is one of the two conditions that lands a
-    /// symbol in `out_of_range`, alongside past-EOF. The message must not
-    /// claim `0 > file_line_count`: that comparison is false, so a
-    /// `>`-shaped message reads as self-contradictory ("line 0 > 200
-    /// lines").
+    /// The bucketing itself, asserted as VALUES.
     ///
-    /// Asserts FACTS, not phrasing: `mentions_count` for the wire line
-    /// (as its sibling above already does for the affected count) rather
-    /// than `contains("line 0")`, which reds on a behaviour-neutral reword
-    /// like "reported line: 0"; and a targeted ban on an `0 > `-shaped
-    /// ordering claim rather than a whole-message ban on the `>` character,
-    /// which would also red on an unrelated future `>` (an arrow in a path,
-    /// a quoted rule string).
+    /// `decl_line_out_of_range` folds two conditions into one predicate, so
+    /// the CLASSIFICATION — not just the rendering — is real behaviour and
+    /// needs its own pin. Pinning it only through the rendered message's
+    /// prose (as this test's sibling below once did on its own) is brittle
+    /// in both directions: a behaviour-neutral reword reds the suite, and a
+    /// genuine mis-bucketing that happens to keep both remedy phrases
+    /// present goes undetected.
     #[test]
-    fn stale_decl_line_diagnostic_wire_line_zero_is_not_self_contradictory() {
-        let zero_line = vec![("crates/some/src/lib.rs".to_string(), 0usize, 200usize)];
-        let msg = stale_decl_line_diagnostic(&zero_line)
-            .expect("a wire_line == 0 entry must still produce a diagnostic");
+    fn partition_stale_decl_lines_buckets_by_cause() {
+        assert_eq!(stale_cause(0), StaleCause::NoLineReported);
+        assert_eq!(
+            stale_cause(1),
+            StaleCause::PastEof,
+            "any line the wire actually reported is past-EOF by the time it \
+             reaches here — `decl_line_out_of_range` already excluded the \
+             in-range ones"
+        );
+        assert_eq!(stale_cause(18321), StaleCause::PastEof);
+
+        let (past_eof, no_line) = partition_stale_decl_lines(&[]);
+        assert!(past_eof.is_empty() && no_line.is_empty());
+
+        let mixed: Vec<StaleDeclLine> = vec![
+            ("crates/some/src/lib.rs".to_string(), 0, 200),
+            ("crates/other/src/lib.rs".to_string(), 500, 100),
+            ("crates/third/src/mod.rs".to_string(), 0, 42),
+            ("crates/fourth/src/mod.rs".to_string(), 9, 8),
+        ];
+        let (past_eof, no_line) = partition_stale_decl_lines(&mixed);
+        assert_eq!(
+            past_eof
+                .iter()
+                .map(|(f, _, _)| f.as_str())
+                .collect::<Vec<_>>(),
+            vec!["crates/other/src/lib.rs", "crates/fourth/src/mod.rs"],
+            "past-EOF bucket must hold exactly the entries with a reported line, \
+             in input order"
+        );
+        assert_eq!(
+            no_line
+                .iter()
+                .map(|(f, _, _)| f.as_str())
+                .collect::<Vec<_>>(),
+            vec!["crates/some/src/lib.rs", "crates/third/src/mod.rs"],
+            "no-line bucket must hold exactly the `0`-sentinel entries, in input order"
+        );
+        assert_eq!(
+            past_eof.len() + no_line.len(),
+            mixed.len(),
+            "the partition must be total — an entry that fell out of both buckets \
+             would be an out-of-range symbol reported to nobody"
+        );
+    }
+
+    /// The two [`StaleCause`]s must carry different REMEDIES: a line past
+    /// EOF means the index is stale (re-index), a line of `0` means the wire
+    /// reported no usable one (a grammar drift — re-indexing changes
+    /// nothing). Without this, `changed_symbols_from_wire`'s `unwrap_or(0)`
+    /// routes a future jcodemunch that drops `line` from
+    /// `get_changed_symbols` — as it already did for `find_references` —
+    /// into telling the operator to re-index a perfectly current repo, once
+    /// per symbol's worth of volume.
+    ///
+    /// Membership and counts are pinned structurally by
+    /// `partition_stale_decl_lines_buckets_by_cause`; what is left here is
+    /// the WIRING — that each bucket's clause carries its own bucket's
+    /// remedy — with ONE loose prose anchor per bucket. In a single-bucket
+    /// message that one positive assertion already catches a swap (the
+    /// other bucket's anchor would be the one present), so no negated
+    /// substring check is needed; the previous `!msg.contains("0 > ")` in
+    /// particular passed for essentially every possible rewrite of the
+    /// function.
+    #[test]
+    fn stale_decl_line_diagnostic_splits_its_remedy_by_cause() {
+        // `wire_line == 0` — the no-line sentinel — on its own.
+        let no_line: Vec<StaleDeclLine> = vec![("crates/some/src/lib.rs".to_string(), 0, 200)];
+        let msg = stale_decl_line_diagnostic(&no_line).expect("a 0 entry must diagnose");
+        assert!(
+            msg.contains("`line` column"),
+            "the 0 sentinel's clause must carry the grammar-drift remedy, not the \
+             stale-index one; got: {msg}"
+        );
         assert!(
             msg.contains("reify-audit: jcodemunch"),
             "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
@@ -3014,74 +3129,40 @@ mod tests {
             mentions_count(&msg, 0),
             "diagnostic must still report the wire line it read (0); got: {msg}"
         );
-        assert!(
-            !msg.contains("0 > ") && !msg.contains("0>"),
-            "diagnostic must make no ordering claim about the 0 sentinel: \
-             `0 > file_line_count` is false, so an `0 > `-shaped phrasing is \
-             self-contradictory; got: {msg}"
-        );
-    }
 
-    /// The two conditions `decl_line_out_of_range` folds together have
-    /// different causes, so they must carry different REMEDIES: a line past
-    /// EOF means the index is stale (re-index), a line of `0` means the wire
-    /// omitted the column entirely (a grammar drift — re-indexing changes
-    /// nothing).
-    ///
-    /// Without this, `changed_symbols_from_wire`'s `unwrap_or(0)` routes a
-    /// future jcodemunch that drops `line` from `get_changed_symbols` — as
-    /// it already did for `find_references` — into telling the operator to
-    /// re-index a perfectly current repo, once per symbol's worth of volume.
-    #[test]
-    fn stale_decl_line_diagnostic_splits_its_remedy_by_cause() {
-        let no_line = vec![("crates/some/src/lib.rs".to_string(), 0usize, 200usize)];
-        let msg = stale_decl_line_diagnostic(&no_line).expect("a 0 entry must diagnose");
-        assert!(
-            !msg.contains("re-index"),
-            "a wire that never reported a line says nothing about the index's \
-             freshness — re-indexing is the wrong remedy; got: {msg}"
-        );
-        assert!(
-            msg.contains("`line` column"),
-            "the 0 sentinel's diagnostic must name its actual cause (the wire \
-             omitted the column); got: {msg}"
-        );
-
-        let past_eof = vec![("crates/other/src/lib.rs".to_string(), 500usize, 100usize)];
+        // Past EOF on its own.
+        let past_eof: Vec<StaleDeclLine> = vec![("crates/other/src/lib.rs".to_string(), 500, 100)];
         let msg_eof =
             stale_decl_line_diagnostic(&past_eof).expect("a past-EOF entry must diagnose");
         assert!(
-            msg_eof.contains("re-index the repo"),
+            msg_eof.contains("re-index"),
             "a line past EOF is exactly the stale-index case; got: {msg_eof}"
-        );
-        assert!(
-            !msg_eof.contains("`line` column"),
-            "a past-EOF line was reported — the column is present; got: {msg_eof}"
         );
 
         // Mixed: both causes present at once must both be reported, each
         // with its own count and first entry, still on ONE line.
-        let mixed = vec![
-            ("crates/some/src/lib.rs".to_string(), 0usize, 200usize),
-            ("crates/other/src/lib.rs".to_string(), 500usize, 100usize),
-            ("crates/third/src/mod.rs".to_string(), 0usize, 42usize),
+        let mixed: Vec<StaleDeclLine> = vec![
+            ("crates/some/src/lib.rs".to_string(), 0, 200),
+            ("crates/other/src/lib.rs".to_string(), 500, 100),
+            ("crates/third/src/mod.rs".to_string(), 0, 42),
         ];
         let msg_mixed = stale_decl_line_diagnostic(&mixed).expect("mixed entries must diagnose");
         assert!(
-            msg_mixed.contains("re-index the repo") && msg_mixed.contains("`line` column"),
+            msg_mixed.contains("re-index") && msg_mixed.contains("`line` column"),
             "both causes must be reported when both are present; got: {msg_mixed}"
         );
+        let (eof_bucket, no_line_bucket) = partition_stale_decl_lines(&mixed);
         assert!(
-            mentions_count(&msg_mixed, 2),
-            "the no-line bucket holds 2 of the 3 entries; got: {msg_mixed}"
+            mentions_count(&msg_mixed, no_line_bucket.len()),
+            "the no-line bucket's own size must appear; got: {msg_mixed}"
         );
         assert!(
-            msg_mixed.contains("crates/some/src/lib.rs")
-                && msg_mixed.contains("crates/other/src/lib.rs"),
+            msg_mixed.contains(no_line_bucket[0].0.as_str())
+                && msg_mixed.contains(eof_bucket[0].0.as_str()),
             "each bucket must name its OWN first entry; got: {msg_mixed}"
         );
         assert!(
-            !msg_mixed.contains("crates/third/src/mod.rs"),
+            !msg_mixed.contains(no_line_bucket[1].0.as_str()),
             "only each bucket's first entry is named; got: {msg_mixed}"
         );
         assert_eq!(
