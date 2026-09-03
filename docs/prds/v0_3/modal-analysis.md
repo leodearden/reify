@@ -54,24 +54,30 @@ let modes = modal_analysis(gantry, ModalOptions(
 
 // modes : ModalResult — List<Mode> ordered by frequency
 let f1 = modes.modes[0].frequency;
-report("first mode = " ++ show(f1));   // expected ~120 Hz
+report("first mode = " ++ show(f1));   // expected ~53 Hz (pin-pin; ~120 Hz if the mounts were clamped)
 ```
 
 Boundary-condition realization is **per named face and kind-aware** (task
 6663): what a support constrains on its target face is decided by the
 support's `type_name`, and — for `PinnedSupport` — by which face it targets
-and how many other named faces the model carries. `FixedSupport`, and every
-support kind other than `PinnedSupport`, always clamps all three
-translational DOFs on every mesh node of its named face. `PinnedSupport`
-pins only the transverse (Z) DOF, and only on a beam-axis end face
-(`x_min`/`x_max`) of a model whose supports name at least one other
-DISTINCT recognized face; a lone `PinnedSupport`, or one on a non-end face
-(`y_min`/`z_max`/...), clamps all three DOFs instead — the same
-`PinnedOnTetEquivalentToFixed` realization a pinned face gets everywhere
-else in the system. That discriminator counts DISTINCT RECOGNIZED faces
-(the six names `x_min`..`z_max`), not raw support count: two supports
-naming the same face collapse to one, and a support whose target names no
-recognized face votes on nothing.
+and how many other named faces the model carries. This path only reads
+`StructureInstance`-valued entries from `boundary_conditions`; the
+Map-valued builtins `RollerSupport`/`DisplacementSupport` are not
+`StructureInstance`s and are not read by this path at all — they
+constrain nothing here and do not count toward the face tally below.
+Every StructureInstance support kind other than `PinnedSupport`
+(`FixedSupport` included) always clamps all three translational DOFs on
+every mesh node of its named face. `PinnedSupport` pins only the
+transverse (Z) DOF, and only on a beam-axis end face (`x_min`/`x_max`) of
+a model whose supports name at least one other DISTINCT recognized face;
+a lone `PinnedSupport`, or one on a non-end face (`y_min`/`z_max`/...),
+clamps all three DOFs instead — the same `PinnedOnTetEquivalentToFixed`
+realization a pinned face gets on any tet body elsewhere in the system
+(on shells, pinned leaves the rotational DOFs free instead). That
+discriminator counts DISTINCT RECOGNIZED faces (the six names
+`x_min`..`z_max`), not raw support count: two supports naming the same
+face collapse to one, and a support whose target names no recognized
+face votes on nothing.
 
 Dropping that scoping — pinning the transverse DOF on every named face
 unconditionally — is not a simplification: it would turn
@@ -84,15 +90,21 @@ support, every pinned beam-end face also carries an
 as and why.
 
 The gantry above rests on its two end mounts rather than being welded to
-them, so both are `PinnedSupport` — and because *both* beam-axis end faces
-are named and every support naming one is `PinnedSupport`, this is the
-simply-supported (pin-pin) special case: the two end faces are realized
-with the minimal neutral-axis anchors needed to remove rigid-body motion,
-on top of the per-face transverse pin, with no change to that existing
-pin-pin realization. Spelling the same two mounts as `FixedSupport` instead
-would describe a genuinely different, stiffer clamped-clamped gantry (a
-≈2.27× higher fundamental for a uniform beam) — not this resting-mount
-configuration.
+them, so both are `PinnedSupport`. (The `at:` face selector shown above
+is the aspirational v0.4 Part-based spelling — v0.3 has no `Part`
+topology or `printer_gantry_part()` builtin, so `support_targets` cannot
+resolve it; the landed fixture, `examples/modal/printer_gantry_modes.ri`,
+spells the same mounts `PinnedSupport(target: "x_min")` /
+`PinnedSupport(target: "x_max")`, which is what actually names the two
+recognized faces and triggers what follows.) Because *both* beam-axis end
+faces are named and every support naming one is `PinnedSupport`, this is
+the simply-supported (pin-pin) special case: the two end faces are
+realized with the minimal neutral-axis anchors needed to remove
+rigid-body motion, on top of the per-face transverse pin, with no change
+to that existing pin-pin realization. Spelling the same two mounts as
+`FixedSupport` instead would describe a genuinely different, stiffer
+clamped-clamped gantry (a ≈2.27× higher fundamental for a uniform beam)
+— not this resting-mount configuration.
 
 ```reify
 // examples/modal/transient_step_response.ri
