@@ -1583,6 +1583,58 @@ constraint def K {
     );
 }
 
+/// An enum NESTED IN A PARAMETERISED BUILTIN (`param g : Option<Zq>`) must
+/// resolve to `Option(Enum("Zq"))` with no diagnostic.
+///
+/// This is the third behavioural effect of the `EnumNameScope` install, and it
+/// is the one the guard was ORIGINALLY introduced for — `RESOLUTION_ENUM_NAMES`
+/// is a thread-local rather than an explicit argument precisely so enum names
+/// stay visible at the INNER type-arg resolution behind
+/// `resolve_parameterized_builtin_type` (see the thread-local's own doc comment,
+/// which cites `Option<QoIDescriptor>`).
+///
+/// MEASURED on this tree with the install reverted: `ty` was `None` AND the
+/// compile emitted a spurious error, `unknown type 'Option' in param 'g' of
+/// constraint def 'K'` — the outer builtin name is what the unknown-type guard
+/// reports when its inner arg fails to resolve. So this spelling was
+/// user-visibly broken before task 6416, not merely under-typed, and unlike the
+/// bare/alias spellings it is not covered by any parity test elsewhere.
+///
+/// The zero-error assertion is therefore load-bearing here, not decorative: it
+/// is the half that pins the spurious diagnostic away.
+#[test]
+fn option_wrapped_enum_constraint_def_param_resolves_to_option_of_enum() {
+    let source = r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for an Option-wrapped enum constraint def \
+         param; before task 6416 this spelling emitted `unknown type 'Option' in \
+         param 'g' of constraint def 'K'`, got: {:?}",
+        errors
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert_eq!(
+        param.ty,
+        Some(Type::Option(Box::new(Type::Enum("Zq".to_string())))),
+        "expected param 'g' to carry Option(Enum(Zq)) — the ambient enum-name set \
+         must be live at the INNER type-arg resolution of a parameterised builtin, \
+         which is the case `EnumNameScope` exists for. A `None` here means the \
+         scope install regressed; an error diagnostic means it regressed AND the \
+         spurious `unknown type 'Option'` came back"
+    );
+}
+
 // ── Task 6416 / step-5: absolute-value locks on the ENUM-BODIED ALIAS path ───
 //
 // Task 6259 left a parity harness at

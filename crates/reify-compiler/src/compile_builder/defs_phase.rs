@@ -126,14 +126,24 @@ fn compile_constraint_def(
             // `EnumNameScope` above (see the params-loop preamble), so the ambient
             // set the deferred alias arm in
             // `resolve_type_expr_with_aliases_kinded` consults is NON-empty here.
-            // Both the bare enum spelling and a non-parametric enum-bodied alias
-            // now RESOLVE through that fallback instead of merely being suppressed
-            // — MEASURED on this tree: `param g : Zq` and `param g : AL`
-            // (`type AL = Zq`), and the chain `A2 -> A1 -> Zq`, all store
-            // `ty == Some(Enum("Zq"))` with zero diagnostics. Those values are what
-            // task 4546's arg type check in `expand_constraint_inst` consumes; it
-            // skips params whose `ty` is `None`, so populating them is precisely
-            // what made that check stop being inert for enum-typed params.
+            // Three spellings now RESOLVE through that fallback instead of merely
+            // being suppressed — MEASURED on this tree:
+            //   * the bare enum, `param g : Zq`                → Some(Enum("Zq"));
+            //   * a non-parametric enum-bodied alias, `param g : AL`
+            //     (`type AL = Zq`), and the chain `A2 -> A1 -> Zq`
+            //                                                  → Some(Enum("Zq"));
+            //   * an enum NESTED IN A PARAMETERISED BUILTIN, `param g :
+            //     Option<Zq>`                    → Some(Option(Enum("Zq"))).
+            // All three with zero diagnostics. The nested case is the one
+            // `EnumNameScope` was originally built for (see the
+            // `RESOLUTION_ENUM_NAMES` doc comment on `Option<QoIDescriptor>`) and
+            // was the only spelling that was user-visibly BROKEN here before, not
+            // merely under-typed: with the scope uninstalled it emitted a spurious
+            // `unknown type 'Option' in param 'g' of constraint def 'K'` (measured
+            // by reverting the install in-tree). The resolved values are what task
+            // 4546's arg type check in `expand_constraint_inst` consumes; it skips
+            // params whose `ty` is `None`, so populating them is precisely what
+            // made that check stop being inert for enum-typed params.
             //
             // What survives here is the PARAMETERISED form, which the ambient
             // fallback cannot reach: it is gated on `type_args.is_empty()`, while
