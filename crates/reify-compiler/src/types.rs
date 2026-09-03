@@ -1752,37 +1752,15 @@ impl PatternKind {
 /// CONTRACT: these labels are USER-FACING, not variant nicknames.
 ///
 /// `reify_eval::geometry_ops` interpolates this `Display` as the `kind_label`
-/// of its Contract C diagnostics — e.g. `argument 'spacing' for
-/// {kind_label} is unresolved (Undef)` and `{kind_label}: 'spacing' argument
-/// expects Length, got Int`. So each label MUST be the builtin name the `.ri`
-/// author actually TYPED, which is the only token they can grep for. Rendering
-/// the internal variant nickname instead (`linear` for `linear_pattern`) names
-/// a symbol that appears nowhere in the source.
+/// of its Contract C diagnostics (`{kind_label}: 'spacing' argument expects
+/// Length, got Int`), so each label MUST be the builtin name the `.ri` author
+/// actually TYPED — the only token they can grep for. Rendering the internal
+/// nickname instead (`linear` for `linear_pattern`) names a symbol that appears
+/// nowhere in their source.
 ///
-/// `Linear` / `Linear2D` were corrected to `linear_pattern` /
-/// `linear_pattern_2d` by task 5755 (PRD
-/// `docs/prds/v0_6/units-length-gate-completion.md`, D7). Of the three
-/// remaining variants — `Circular`, `Mirror`, `Arbitrary` — only `Mirror`
-/// genuinely satisfies the rule today: its DSL builtin really is spelled
-/// `mirror`.
-///
-/// KNOWN REMAINING GAP — read this block as a rule plus its exceptions, NOT as
-/// "all five already comply". `Circular` and `Arbitrary` still render the
-/// variant nickname while the builtins an author types are `circular_pattern`
-/// and `arbitrary_pattern` (`reify_compiler::geometry`'s dispatch arms). Both
-/// nicknames are user-reachable on the very Contract C surface this rule
-/// governs: `pattern_circular`'s no-`axis` branch passes `kind` into
-/// `required_length_origin3`, so an unresolved axis origin reads `argument 'ox'
-/// for circular is unresolved (Undef)`; `pattern_arbitrary` passes `kind` into
-/// `required_length_args`, so a bare offset reads `arbitrary: t0_dx argument
-/// expects Length, got Real`. `circular_pattern`'s hardcoded
-/// `format!("circular_pattern: {}", e)` prefix covers only the `decode_axis`
-/// wrapper, so it does NOT shadow either site. Correcting those two is out of
-/// D7's scope (D7 names `Linear` / `Linear2D` only) and its C6 migration
-/// reaches assertion files task 5755 holds no lock on, so it is a standalone
-/// follow-up — filed and live as task #6874, which owns flipping both arms,
-/// migrating the call sites the rename newly rejects, and deleting this KNOWN
-/// REMAINING GAP paragraph — rather than something to fold in here.
+/// Non-compliant today, and user-reachable on this same surface: `Circular`,
+/// `Arbitrary` — see #6874, which owns the flip, its call-site migration, and
+/// deleting this sentence.
 ///
 /// Pinned by `pattern_kind_display` below — change a label there and here
 /// together, and migrate the call sites the change newly rejects (C6).
