@@ -1985,6 +1985,24 @@ async fn handle_set_fea_case(
 // two-seam uniformity is still load-bearing, and why there is no second
 // emit path.
 
+// WHY THE CLUSTER LIVES IN THIS FILE rather than a `debug_server/write_tools`
+// submodule, despite its size. Three of its members are deliberately
+// CO-LOCATED WITH NON-CLUSTER TWINS, and each co-location is what makes a
+// "these cannot drift" claim true by construction rather than by discipline:
+//
+//   * `open_file_path_param` sits beside `handle_open_file` because
+//     `reify_open_file` and `open_file` are ONE funnel under two names —
+//     neither can grow its own path resolution or its own refusal string.
+//   * `write_tool_frontend_payload` is THE ONE serializer for the
+//     `apply_gui_state` push shape, and `fea_case_frontend_payload` is
+//     expressed in terms of it rather than beside it.
+//   * `frontend_ok` is read against BOTH, and its doc enumerates the
+//     debug-native callers that deliberately do not use it.
+//
+// A split would put each pair across a module boundary and leave those
+// arguments resting on a `use` statement. That is the trade to weigh if this
+// file is ever divided; it is not a reason the file may grow without limit.
+
 /// Extract a REQUIRED string field from a write tool's params, refusing with
 /// the reify-mcp message verbatim (`"<field> is required"`).
 ///
