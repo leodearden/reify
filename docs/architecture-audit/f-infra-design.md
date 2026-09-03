@@ -544,7 +544,7 @@ top-level `updatedAt` field, and both tolerate the `.NNN` fractional-second
 suffix: `scripts/reify-audit-snapshot-filter.jq:73` strips it via
 `sub("\\.[0-9]+Z$"; "Z")`, `crates/reify-audit/src/fused_memory_client.rs:405`
 via `time_str.split('.').next()`. Both yield `null`/`None` for non-done
-tasks and for an absent or unparseable `updatedAt`. The Rust parser
+tasks and for an absent or `null` `updatedAt`. The Rust parser
 additionally accepts `±HH:MM` offsets (`split_tz`, `:404`) that jq's
 `fromdateiso8601` rejects — a harmless superset, unreachable today since
 fused-memory's writer only ever emits `...Z`.
@@ -557,6 +557,34 @@ derives `done_at` solely from the top-level `updatedAt`. Its `metadata`
 binding (`:327`) is read only for `files`, `done_provenance`, `prd`,
 `consumer_ref`, and `audit_foundation` (`:329-352`); `metadata.done_at` is
 never consulted.
+
+**Not equivalent on the failure tier.** On an unparseable `updatedAt`
+the two paths diverge hard, in opposite directions. Measured against a
+`get_tasks` payload whose `status=="done"` row carries
+`"updatedAt":"garbage"`: `jq -r -f scripts/reify-audit-snapshot-filter.jq`
+prints `jq: error (at <stdin>:1): date "garbage" does not match format
+"%Y-%m-%dT%H:%M:%SZ"` and exits 5 with no output at all — the whole
+snapshot is lost, every task, not just the offending row. jq's
+`fromdateiso8601` raises rather than returning null, and the filter
+guards only the empty-string case (`if . == "" then null else
+(sub(...) | fromdateiso8601) end`,
+`scripts/reify-audit-snapshot-filter.jq:71-75`), so a
+non-empty-but-unparseable value reaches the raiser uncaught. The Rust
+path degrades per row instead: `parse_iso8601_to_epoch`
+(`crates/reify-audit/src/fused_memory_client.rs:398`) starts
+`s.split_once('T')?`, so `"garbage"` returns `None`; `done_at` is
+`None` for that row alone (`:364-370`) and every other task still
+loads. The blast radius lands on the wrapper: the jq failure trips
+`set -euo pipefail` in the `curl | jq` pipeline
+(`scripts/reify-audit-predone-wrapper.sh:298-299`), so `--tasks-file`
+materialization fails and the wrapper takes the `exit 125` arm
+(`:308`; its documented "Infrastructure error ... jq failure" code,
+`:130`) — through the synchronous pre-done hook, that is a
+project-wide blocked done-flip caused by one malformed row. So the
+wrapper path is fail-closed and blast-radius-wide while the
+live-loader path is fail-open and per-row: which loader is wired
+(§11.1.3) changes not just the derived value but the failure mode
+itself.
 
 **Consequence: a latent forward-compatibility hazard, not a live bug.**
 §11.2's claim that once fused-memory exposes an explicit `metadata.done_at`
