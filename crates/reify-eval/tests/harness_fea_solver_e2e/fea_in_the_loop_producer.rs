@@ -127,11 +127,10 @@
 use crate::fea_design_loop_support::{
     INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
 };
-use reify_constraints::DimensionalSolver;
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
 use reify_ir::{OpaqueState, Value};
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib, mm};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, mm};
 
 /// Inline bracket-minimize-mass fixture. Small geometry (50mm x 30mm footprint) and a
 /// modest tip load (50 N) keep the per-candidate FEA solve cheap (coarse default mesh)
@@ -188,14 +187,9 @@ fn solve_elastic_static_dispatches_real_result_inside_minimize_where_loop() {
         errors
     );
 
-    // Real FEA trampolines via the SINGLE bundler `register_production_compute_fns`
-    // (INV-FEA-1) — see `fea_design_loop_support::fea_loop_engine`'s doc for the
-    // full rationale: hazard (3) in `scripts/check-compute-trampoline-registration.sh`'s
-    // header (a fourth site assembling the bundle from its halves would never receive
-    // a leg added to the bundler later; that guard's SCOPE_PATHSPECS exclude `tests/`,
-    // so nothing would catch the drift here), `MorphRegistration::Unavailable` matching
-    // `build_test_engine` (test_runner.rs), and the real `DimensionalSolver` directly
-    // (see this module's doc, above, for why not `SolverRegistry::production()`).
+    // Real solver + real FEA trampolines via the single bundler (INV-FEA-1) —
+    // see `fea_design_loop_support::fea_loop_engine`'s doc; `SolverRegistry::production()`
+    // is deliberately not used, see this module's doc above.
     let mut engine = fea_loop_engine();
 
     let result = engine.eval(&compiled);
@@ -379,23 +373,17 @@ fn edit_path_half_span_fn(
     }
 }
 
-/// Shared engine constructor for the edit-path regression tests: the same
-/// `Engine::new` + `with_solver` + `register_production_compute_fns`
-/// discipline as `solve_elastic_static_dispatches_real_result_inside_minimize_where_loop`
-/// above (INV-FEA-1 single-bundler discipline — see that test's comment for
-/// why `register_production_compute_fns` is called even though this fixture
-/// needs none of its legs), plus registration of the synthetic
-/// `test::edit_path_half_span` target. `scripts/check-compute-trampoline-registration.sh`
-/// excludes `tests/` dirs by path, so this test-local registration does not
-/// trip that guard, and the target name collides with no existing `test::`
-/// target under `compute_targets/`.
+/// Shared engine constructor for the edit-path regression tests: delegates to
+/// [`fea_loop_engine`] for the base `Engine::new` + `with_solver` +
+/// `register_production_compute_fns` discipline (INV-FEA-1 single-bundler
+/// discipline — see that function's doc for why `register_production_compute_fns`
+/// is called even though this fixture needs none of its legs), then layers on
+/// registration of the synthetic `test::edit_path_half_span` target.
+/// `scripts/check-compute-trampoline-registration.sh` excludes `tests/` dirs by
+/// path, so this test-local registration does not trip that guard, and the
+/// target name collides with no existing `test::` target under `compute_targets/`.
 fn build_edit_path_engine() -> Engine {
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(DimensionalSolver));
-    engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
-        reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744); this fixture \
-                 uses only the synthetic test:: dispatch target, no morph/FEA legs at all",
-    });
+    let mut engine = fea_loop_engine();
     engine.register_compute_fn(
         "test::edit_path_half_span",
         edit_path_half_span_fn as ComputeFn,
