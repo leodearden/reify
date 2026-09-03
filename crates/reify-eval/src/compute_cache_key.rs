@@ -339,6 +339,106 @@ mod tests {
         );
     }
 
+    /// Passing ONE value cell to TWO parameters of a single `@optimized` call is
+    /// a legal authoring shape, not a producer bug: a square cross-section
+    /// (`solve_elastic_static(material, span, h, h, ...)`), a symmetric span, or
+    /// any two dimensions the author deliberately ties together all lower to a
+    /// `value_inputs` vec carrying the same `ValueCellId` twice.  Task #6661: the
+    /// `debug_assert!` this pins against aborted the whole `reify eval` process
+    /// on exactly that shape, and forced the `prj/printer_v01/printer.ri`
+    /// dogfood design to carry a `let h_eq2 = h_eq * 1.0` workaround.
+    ///
+    /// `compute_cache_key` must therefore be TOTAL on duplicates: no panic, and
+    /// deterministic across repeated calls on the same node.
+    #[test]
+    fn compute_cache_key_tolerates_duplicate_value_inputs() {
+        let a = ValueCellId::new("Bracket", "h");
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, a.clone(), ContentHash::of_str("hash_h"));
+
+        let mut node = make_empty_node();
+        node.value_inputs = vec![a.clone(), a.clone()];
+
+        let key1 = compute_cache_key(&node, &graph);
+        let key2 = compute_cache_key(&node, &graph);
+        assert_eq!(
+            key1, key2,
+            "compute_cache_key must be deterministic on a duplicated value_input — \
+             one cell passed to two params of one @optimized call is a legal shape (#6661)"
+        );
+    }
+
+    /// Duplicates are canonically COLLAPSED: `[a, a]` and `[a]` produce the same
+    /// key, because `ComputeNodeData::value_inputs` is semantically a dependency
+    /// SET — every one of its consumers is set-like (this function's
+    /// order-invariant sort, `deps.rs`'s `HashSet`-backed reverse index, and
+    /// `demand.rs`'s `contains`-gated BFS).
+    ///
+    /// The arity/position signal is NOT lost, and a future reader must not
+    /// "restore" multiplicity here to recover it: `Engine::persistent_cache_key`
+    /// (engine_eval.rs:9575-9583) folds `combine_all` over the ORDERED full
+    /// `arg_values` list, and THAT — not the bare `compute_cache_key` — is what
+    /// both production `@optimized` dispatch sites store in `node.cache_key`.
+    /// `ContentHash::combine` is order-dependent, so `f(a, a)` and `f(a)` still
+    /// receive distinct at-rest keys.
+    #[test]
+    fn compute_cache_key_collapses_duplicate_value_inputs() {
+        let a = ValueCellId::new("Bracket", "h");
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, a.clone(), ContentHash::of_str("hash_h"));
+
+        let mut node_dup = make_empty_node();
+        node_dup.value_inputs = vec![a.clone(), a.clone()];
+
+        let mut node_single = make_empty_node();
+        node_single.value_inputs = vec![a.clone()];
+
+        assert_eq!(
+            compute_cache_key(&node_dup, &graph),
+            compute_cache_key(&node_single, &graph),
+            "value_inputs is a dependency set: [a, a] must canonicalize to [a]"
+        );
+    }
+
+    /// Extends `compute_cache_key_is_invariant_under_value_input_reordering` to
+    /// the duplicated case: with a duplicate present, the key must still be
+    /// invariant under WHERE in the vec the duplicate lands.  Sort-then-dedup
+    /// gives this for free; a positional or multiplicity-preserving scheme would
+    /// not.
+    #[test]
+    fn compute_cache_key_is_invariant_under_reordering_with_duplicates() {
+        let a = ValueCellId::new("Bracket", "a");
+        let b = ValueCellId::new("Bracket", "b");
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, a.clone(), ContentHash::of_str("hash_a"));
+        insert_value_cell(&mut graph, b.clone(), ContentHash::of_str("hash_b"));
+
+        let mut node_aab = make_empty_node();
+        node_aab.value_inputs = vec![a.clone(), a.clone(), b.clone()];
+
+        let mut node_aba = make_empty_node();
+        node_aba.value_inputs = vec![a.clone(), b.clone(), a.clone()];
+
+        let mut node_baa = make_empty_node();
+        node_baa.value_inputs = vec![b.clone(), a.clone(), a.clone()];
+
+        let key_aab = compute_cache_key(&node_aab, &graph);
+        let key_aba = compute_cache_key(&node_aba, &graph);
+        let key_baa = compute_cache_key(&node_baa, &graph);
+
+        assert_eq!(
+            key_aab, key_aba,
+            "cache key must be invariant under value_input ordering when a duplicate is present"
+        );
+        assert_eq!(
+            key_aab, key_baa,
+            "cache key must be invariant under value_input ordering when a duplicate is present"
+        );
+    }
+
     #[test]
     fn compute_cache_key_changes_when_options_hash_changes() {
         let mut node_a = make_empty_node();
