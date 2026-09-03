@@ -5504,6 +5504,134 @@ mod tests {
         );
     }
 
+    /// Task #6878 (PRD leaf β) step-3: `classify_damping` gains its
+    /// `MaterialDamping` arm, and the arm carries the RECURSIVELY-classified
+    /// `extra` companion rather than a pre-flattened `(α, β)` pair.
+    ///
+    /// `MaterialDamping` selects the modal-strain-energy value source for
+    /// `Mode.damping_ratio`; its `extra : DampingDescriptor` slot is the
+    /// ADDITIVE companion (ζ = ζ_MSE + ζ_extra). Because that slot is
+    /// TRAIT-typed it accepts any refinement — including one this trampoline
+    /// does not implement, and including a nested `MaterialDamping`. Flattening
+    /// it at classification time would reproduce exactly the lossy-view defect
+    /// `extract_damping` was split apart to fix in #6875: the producer could no
+    /// longer tell "the author declared no extra damping" from "the author
+    /// declared an extra descriptor we silently dropped". So the nested
+    /// descriptor is CARRIED, and every sub-case below asserts the carried
+    /// classification, never just the outer variant.
+    ///
+    /// The final arm re-asserts that `extract_damping` is NOT the composition
+    /// point: it must keep flattening a `MaterialDamping` options value to
+    /// `(0, 0)`. That is its documented contract (the deliberate `_` catch-all),
+    /// and pinning it here separates "the lossy view is still lossy on purpose"
+    /// from "the new variant accidentally leaked into it".
+    ///
+    /// RED before step-4: `DampingKind::Material` does not exist, so this does
+    /// not compile.
+    #[test]
+    fn classify_damping_material_arm_carries_recursive_extra() {
+        /// `MaterialDamping { … }` options value, from the `extra` field list.
+        fn material_options(extra: Vec<(String, Value)>) -> Value {
+            modal_options(vec![(
+                "damping".to_string(),
+                struct_instance("MaterialDamping", extra),
+            )])
+        }
+
+        // (i) `extra` ABSENT. The stdlib declares
+        // `param extra : DampingDescriptor = NoDamping()`, so a value that came
+        // through the author surface ALWAYS carries a `NoDamping`. This arm is
+        // therefore about a hand-built / malformed value, and the chosen mapping
+        // is asserted explicitly rather than left to inference: a missing field
+        // classifies as `Absent`, exactly as the outer wrapper maps a missing
+        // `damping` field. `Absent` and `NoDamping` are both silent and both
+        // contribute ζ_extra = 0, so nothing observable rides on which one this
+        // is — but the trampoline must not ASSUME a well-formed value, and an
+        // arm that silently invented `NoDamping` here would be claiming to have
+        // seen a default that was never written.
+        match classify_damping(&material_options(vec![])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Absent,
+                "a MaterialDamping with NO `extra` field must classify its \
+                 companion as Absent — the trampoline must not assume the \
+                 stdlib default was materialized"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (ii) `extra: NoDamping()` — the stdlib default, i.e. what every real
+        // author-surface `MaterialDamping()` actually carries.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            struct_instance("NoDamping", vec![]),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::NoDamping,
+                "the stdlib `NoDamping()` default must classify as NoDamping \
+                 inside the Material arm"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (iii) `extra: RayleighDamping(α, β)` — the composition case B7 pins
+        // at the author surface. The coefficients must survive classification
+        // intact, because the producer calls `rayleigh_damping_ratio` on them
+        // verbatim.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            rayleigh_damping(0.5, 1e-6),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Rayleigh {
+                    alpha: 0.5,
+                    beta: 1e-6
+                },
+                "a RayleighDamping in `extra` position must classify through \
+                 the SAME discriminator as one in top-level position, carrying \
+                 its (α, β) — the recursion is what guarantees that"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (iv) `extra: <a refinement this trampoline does not implement>`. The
+        // nested descriptor is carried, never flattened away: its runtime
+        // type_name is what step-12's `W_ModalDampingUnsupportedExtra` names.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            struct_instance("HystereticDamping", vec![]),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Unsupported("HystereticDamping".to_string()),
+                "an unimplemented descriptor in `extra` position must be \
+                 CARRIED as Unsupported(type_name), not flattened to \
+                 NoDamping — otherwise the producer cannot tell a declared-and- \
+                 dropped companion from an absent one (INV-SF-3)"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // `extract_damping` is the deliberately LOSSY view and must NOT have
+        // become the composition point: a MaterialDamping options value still
+        // flattens to the undamped pair through its documented `_` catch-all.
+        // The MSE term reaches `Mode.damping_ratio` via the producer's damping
+        // plan, never through this helper.
+        assert_eq!(
+            extract_damping(&material_options(vec![(
+                "extra".to_string(),
+                rayleigh_damping(0.5, 1e-6),
+            )])),
+            (0.0, 0.0),
+            "extract_damping must still flatten MaterialDamping — including its \
+             `extra` — to (0, 0); it is the lossy view by contract, and the \
+             composition point is the producer's damping plan"
+        );
+    }
+
+
     /// Task 6663: `build_dirichlet_bcs` realizes each named face independently
     /// and KIND-AWARELY. Four cases over `build_beam_mesh` node coordinates:
     ///
@@ -8729,9 +8857,7 @@ mod tests {
     /// `extract_damping` discriminates on the runtime `type_name` and returns
     /// `(0.0, 0.0)` for *anything* that is not `RayleighDamping` — correct for
     /// `NoDamping` (genuinely undamped) but silently wrong for a descriptor the
-    /// trampoline simply does not implement. The damped-modal-bonded-
-    /// heterogeneous capability manifest (`docs/prds/v0_6/`, §β) names the next
-    /// one: `MaterialDamping`. Routing the mechanism path through
+    /// trampoline simply does not implement. Routing the mechanism path through
     /// `extract_damping` alone would reproduce the INV-SF-3 silent-failure
     /// shape one descriptor later, so the seam is split: `classify_damping`
     /// carries an explicit `Unsupported(type_name)` classification that the
@@ -8739,6 +8865,22 @@ mod tests {
     ///
     /// Case B is what makes the warning a signal rather than noise: the
     /// supported descriptors must stay completely silent.
+    ///
+    /// FIXTURE RETARGETED, task #6878. This test originally used the literal
+    /// `"MaterialDamping"` as its stand-in for an unimplemented descriptor,
+    /// because the damped-modal-bonded-heterogeneous capability manifest
+    /// (`docs/prds/v0_6/`, §β) named it as the next one to land. #6878 LANDED
+    /// it: `classify_damping` now has a `MaterialDamping` arm, so that literal
+    /// would classify as `Material` and this test would go red on Case A and
+    /// Case C — not because the fallthrough broke, but because the fixture
+    /// stopped being a fallthrough. The type_name is therefore now
+    /// `"HystereticDamping"`, which stays genuinely unimplemented. Every
+    /// assertion and the test's purpose are unchanged: it pins the
+    /// `Unsupported` fallthrough and the `W_MechanismModalUnsupportedDamping`
+    /// warning, and both survive #6878 intact (the mechanism path's
+    /// `Material` arm deliberately keeps emitting that same warning — see
+    /// [`run_mechanism_modal`]). A future task that implements
+    /// `HystereticDamping` must retarget this fixture again, not delete it.
     #[test]
     fn mechanism_modal_warns_on_unsupported_damping_descriptor() {
         /// Drive the trampoline, asserting a Completed outcome, and return the
@@ -8771,7 +8913,7 @@ mod tests {
         // ── Case A: a descriptor this trampoline does not implement ──────────
         {
             let unsupported = struct_instance(
-                "MaterialDamping",
+                "HystereticDamping",
                 vec![("loss_factor".to_string(), Value::Real(0.02))],
             );
             let options = modal_options(vec![("damping".to_string(), unsupported.clone())]);
@@ -8800,7 +8942,7 @@ mod tests {
             // offending descriptor's runtime type name appears in the message
             // (mirroring the body-index naming in W_MechanismModalRotationalDOF).
             assert!(
-                coded[0].message.contains("MaterialDamping"),
+                coded[0].message.contains("HystereticDamping"),
                 "Case A: the warning must name the offending descriptor type so \
                  the author can locate the dropped intent; got: {}",
                 coded[0].message,
@@ -8905,12 +9047,12 @@ mod tests {
             match classify_damping(&modal_options(vec![(
                 "damping".to_string(),
                 struct_instance(
-                    "MaterialDamping",
+                    "HystereticDamping",
                     vec![("loss_factor".to_string(), Value::Real(0.02))],
                 ),
             )])) {
                 DampingKind::Unsupported(type_name) => assert_eq!(
-                    type_name, "MaterialDamping",
+                    type_name, "HystereticDamping",
                     "Case C: Unsupported must carry the offending runtime \
                      type_name so the producer can name it in a diagnostic"
                 ),
