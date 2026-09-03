@@ -169,7 +169,7 @@ Twenty-two tasks. Several depend on v0.2 work (multi-kernel mesh path, per-purpo
 
 1. `ElasticMaterial` trait + starter material library (`Steel_AISI_1045`, `Aluminium_6061_T6`, `Titanium_Ti6Al4V`, `ABS_Plastic`) with per-property provenance metadata. Fields: `youngs_modulus : Pressure`, `poisson_ratio : Number` (constrained `[0, 0.5)`), `density : Density`, `yield_stress : Pressure` (optional).
    > **NOTE 2026-09-03 (#6877).** The four fields listed above are what **v0.3 delivered**, and the
-   > `ElasticMaterial` **trait** named here still carries exactly them today (`materials_fea.ri:130-147`)
+   > `ElasticMaterial` **trait** named here still carries exactly them today (`materials_fea.ri:130-146`)
    > — so this deliverable reads unchanged. Separately, in v0.6 the four **library presets** gained
    > `loss_factor : Real` + `loss_factor_provenance` and now declare `: DampedMaterial + Visual`
    > (`materials_fea.ri:272` Steel, `:329` Al, `:386` Ti, `:446` ABS), where

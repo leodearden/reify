@@ -50,7 +50,7 @@
 > - **M-002's first evidence sentence is STILL TRUE of the trait.** `ElasticMaterial` requires
 >   `youngs_modulus, poisson_ratio, density, yield_stress` only: #6877 put `loss_factor` on the
 >   separate `Damped` mixin, **not** on `ElasticMaterial`, which is unchanged by #6877.
-> - **Anchor drift:** `ElasticMaterial` trait `materials_fea.ri:88` → **`:130-147`**; the preset span
+> - **Anchor drift:** `ElasticMaterial` trait `materials_fea.ri:88` → **`:130-146`**; the preset span
 >   `materials_fea.ri:132-249` → **`:272-492`** (Steel `:272`, Al `:329`, Ti `:386`, ABS `:446`).
 >   Grep the named symbol rather than trusting these numbers.
 
@@ -96,7 +96,7 @@
 
 > **Partly superseded — see the `CORRECTION 2026-09-03` overlays under M-001 above.** The *first*
 > evidence sentence below still holds (`ElasticMaterial` requires those four params and is unchanged
-> by #6877), but its anchors have drifted: `materials_fea.ri:88` → **`:130-147`**, and
+> by #6877), but its anchors have drifted: `materials_fea.ri:88` → **`:130-146`**, and
 > `pub struct IsotropicElastic` is at `reify-solver-elastic/src/constitutive.rs:102` with its
 > inherent `impl` at `:109` and `d_matrix()` at `:151`, not `:9-93`. The *second* sentence — "no
 > `MaterialConstitutiveLaw` trait abstracts over isotropic vs orthotropic" — no longer holds: a
