@@ -384,10 +384,9 @@ source "$SCRIPT_DIR/heavy-test-filter-lib.sh"
 # Git repository-environment scrub for infra-test EXECUTION (task #7106).
 # Provides REIFY_GIT_ENV_SCRUB_VARS / reify_git_env_scrub /
 # reify_git_env_scrub_prefix; the last is interpolated into the selective-infra
-# plan leaf below. git exports GIT_INDEX_FILE into every hook, it OUTRANKS
-# `git -C`, and tests/infra fixtures build hermetic repos with `git -C "$FIX"`
-# without ever cd-ing — so an unscrubbed member writes the fixture's file list
-# into the REAL index (measured: 480763 -> 4827 bytes). See the lib's header.
+# plan leaf below. The defect, its measurement and the variable list live in ONE
+# place — scripts/lib_git_env_scrub.sh's header — and are deliberately NOT
+# restated here; only this site's own reasoning is.
 #
 # Sourced HERE, at load time, and applied only at the test-execution leaf: the
 # scope-derivation phase legitimately reads the hook environment

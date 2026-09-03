@@ -224,11 +224,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 # Git repository-environment scrub (task #7106).
 #
-# git exports GIT_INDEX_FILE into every hook's process tree, it OUTRANKS an
-# explicit `git -C`, and hermetic fixtures under tests/infra build throwaway
-# repos with `git -C "$FIX"` without ever cd-ing — so an unscrubbed member
-# writes the fixture's file list into the REAL index (measured: 480763 -> 4827
-# bytes). See the lib's header for the full measurement.
+# The defect, its measurement and the variable list live in ONE place —
+# scripts/lib_git_env_scrub.sh's header — and are deliberately NOT restated
+# here; only this site's own reasoning is.
 #
 # Sourced HERE, at the top, rather than beside the pool wiring it was first
 # written for: run_all.sh makes SEVEN repo-targeting `git -C` calls of its OWN
@@ -1231,11 +1229,6 @@ _H2_CLASSIFICATION_LIB="$SCRIPT_DIR/run-all-classification-lib.sh"
 _H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
 _H2_CPU_ADMIT_LIB="$_H2_REPO_ROOT/scripts/cpu-admit.sh"
 _H2_LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
-
-# NOTE: the git repository-environment scrub (scripts/lib_git_env_scrub.sh) is
-# sourced far EARLIER, immediately after SCRIPT_DIR — see that block for why it
-# must precede this script's own repo-targeting git calls, not just the member
-# spawns below.
 
 # FLAKY ledger path (task #5142): overridable for test isolation; defaults
 # under the repo's git-ignored data/verify-logs/ tree (.git/info/exclude),

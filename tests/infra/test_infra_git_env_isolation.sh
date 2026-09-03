@@ -612,12 +612,24 @@ assert "F3b: NO scrubbed variable reached the member (got: ${_F3_REPORT_TEXT//$'
 # `.git/index` therefore names the same repo — not a property to rest on (under
 # `git commit --only` GIT_INDEX_FILE names a TEMPORARY index; see
 # crates/reify-test-support/src/git_env.rs's own analysis).
-_F_GIT_CALLS="$(printf '%s\n' "$_F_LOGICAL" | grep -F 'git -C "' || true)"
+#
+# The capture is ANY `git` word, not the `git -C "` shape the seven sites happen
+# to use today.  A narrower pattern would be blind in the DANGEROUS direction: a
+# later `git rev-parse HEAD` that relies on CWD, or a `git -C $dir` without
+# quotes, is exactly as exposed to a leaked GIT_INDEX_FILE, yet would be invisible
+# to BOTH the F4 floor and the F5 equality — added unscrubbed with every arm
+# green.  Same doctrine as F1/F2 above: over-matching is the SAFE error here.
+# The accepted cost is a false positive — a `git ` inside a string literal on an
+# executable line (`echo "run git status"`) scores as an unmatched site and reds
+# F5.  When that day comes, reshape the offending line or scrub the call; do NOT
+# re-narrow this pattern, which would trade one loud red for a silent hole.
+_F_GIT_CALLS="$(printf '%s\n' "$_F_LOGICAL" \
+    | grep -E '(^|[^-_[:alnum:]])git[[:space:]]' || true)"
 _F_GIT_TOTAL="$(printf '%s\n' "$_F_GIT_CALLS" | grep -c . || true)"
 _F_GIT_SCRUBBED="$(printf '%s\n' "$_F_GIT_CALLS" \
-    | grep -cF 'reify_git_env_scrub git -C "' || true)"
+    | grep -cE 'reify_git_env_scrub git[[:space:]]' || true)"
 
-assert "F4: run_all.sh's own \`git -C\` sites found >= $_F_GIT_FLOOR (pattern still sees them; got $_F_GIT_TOTAL)" \
+assert "F4: run_all.sh's own git call sites found >= $_F_GIT_FLOOR (pattern still sees them; got $_F_GIT_TOTAL)" \
     bash -c '[ "${1:-0}" -ge "$2" ]' _ "$_F_GIT_TOTAL" "$_F_GIT_FLOOR"
 assert "F5: EVERY one of them is wrapped in reify_git_env_scrub ($_F_GIT_SCRUBBED of $_F_GIT_TOTAL)" \
     bash -c '[ "${1:-0}" -eq "${2:-0}" ]' _ "$_F_GIT_SCRUBBED" "$_F_GIT_TOTAL"
