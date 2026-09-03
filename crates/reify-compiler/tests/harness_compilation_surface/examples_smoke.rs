@@ -450,15 +450,26 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 /// construction and only the directories they resolve to are expected to match
 /// — which holds only while reify-test-support sits at the same depth as this
 /// crate. A future crate relocation or workspace re-layout that changed that
-/// depth would make `examples_dir()` name a wrong or non-existent directory,
-/// and every corpus guard in this file would silently degrade to walking
-/// nothing rather than failing. This is the only test that pins that premise
-/// for reify-compiler; the premise is per-consumer-crate (each crate's
+/// depth would make `examples_dir()` name a directory other than this crate's
+/// own `examples/`, and every corpus guard in this file would be walking the
+/// wrong tree. This is the only test that pins that premise for
+/// reify-compiler; the premise is per-consumer-crate (each crate's
 /// `CARGO_MANIFEST_DIR` is its own), so reify-eval carries its own counterpart.
 ///
-/// The file-count comparison is what makes "silently degrade to walking
-/// nothing" unrepresentable: a shared helper pointing at a same-named but
-/// different directory could not match it.
+/// # Why one assertion is the whole test
+///
+/// Deliberately just the canonicalized-path equality. The count comparison this
+/// pin used to also carry could not fail: once the two canonicalized paths are
+/// asserted equal, both walks are over the same physical directory. And a wrong
+/// depth does not produce a silent walk-of-nothing — `discover_ri_files` calls
+/// `read_dir` on the root and PANICS if it cannot be read, a contract
+/// reify-test-support pins directly
+/// (`discover_ri_files_panics_on_an_unreadable_directory`), while
+/// `examples_dir_resolves_to_the_workspace_examples_directory` pins the root's
+/// shape there. A non-zero-count assertion is likewise a weaker restatement of
+/// this file's own discovery floor. What is left here is the one thing neither
+/// of those can see: that the shared root and THIS crate's manifest-relative
+/// path agree.
 #[test]
 fn shared_examples_dir_agrees_with_this_crates_manifest_relative_path() {
     // Spelled out here rather than read from a shared constant on purpose: the
@@ -483,23 +494,9 @@ fn shared_examples_dir_agrees_with_this_crates_manifest_relative_path() {
         "the shared corpus root and this crate's own manifest-relative path must resolve to \
          the same directory — the two lexical spellings differ by construction, so only the \
          canonicalized forms are compared. If reify-test-support ever moves to a different \
-         depth under the repo root, examples_dir() silently starts naming the wrong \
-         directory and every corpus guard in this file goes vacuous."
-    );
-
-    let local_count = discover_ri_files(Path::new(THIS_CRATES_EXAMPLES_DIR)).len();
-    let shared_count = discover_ri_files(shared_raw).len();
-    assert_eq!(
-        local_count, shared_count,
-        "the two walks must discover the same number of `.ri` files ({local_count} local vs \
-         {shared_count} shared); an equal-but-empty pair would also mean the corpus root is \
-         wrong, which the assertion above rules out"
-    );
-    assert!(
-        shared_count > 0,
-        "the shared walk discovered no `.ri` files under {} — a corpus walk that degraded to \
-         walking nothing would make every guard in this file vacuously pass",
-        shared_raw.display()
+         depth under the repo root, examples_dir() starts naming a different directory and \
+         every corpus guard in this file is walking the wrong tree — loudly if that path does \
+         not exist (discover_ri_files panics on an unreadable root), silently if it does."
     );
 }
 
