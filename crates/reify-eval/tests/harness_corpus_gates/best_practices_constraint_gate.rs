@@ -304,9 +304,10 @@ fn audit_reports_stale_expected_indeterminate() {
 // ── corpus_files: flat corpus discovery (steps 5/6) ──────────────────────────
 
 /// Absolute path to `examples/best_practices/`, resolved at compile time from
-/// this crate's manifest directory (two levels up) — matches
-/// `examples_smoke.rs:13`'s `EXAMPLES_DIR` and both sibling gates'
-/// `corpus_files`.
+/// this crate's manifest directory (two levels up) — the same corpus root as
+/// `reify_test_support::examples_corpus::examples_dir()` (the shared root
+/// `examples_smoke.rs` now walks), narrowed to the `best_practices/`
+/// subdirectory, and matching both sibling gates' `corpus_files`.
 const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
 
 /// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
