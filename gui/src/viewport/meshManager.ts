@@ -15,6 +15,7 @@ import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { MeshData, MeshAppearance, DisplayStyleData, VisibilityState } from '../types';
 import { createGhostMaterial } from './ghostMaterial';
 import type { BarycentricUV, ProbeSample } from '../stores/probeStore';
+import { UNDERLAY_RENDER_ORDER } from './renderOrder';
 
 // Patch BufferGeometry prototype for BVH acceleration
 (BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
@@ -706,7 +707,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
     const overlay = new Mesh(overlayGeom, undeformedMaterial);
     overlay.name = `undeformed:${entityPath}`;
-    overlay.renderOrder = -1; // draw behind the deformed mesh (renderOrder=0 default)
+    overlay.renderOrder = UNDERLAY_RENDER_ORDER; // draw behind the deformed mesh (renderOrder=0 default)
 
     undeformedMeshMap.set(entityPath, overlay);
     undeformedGroup.add(overlay);
