@@ -11,7 +11,7 @@
  * MockBufferGeometry / MockBufferAttribute from threeMocks.ts.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ── Three.js mock ────────────────────────────────────────────────────────────
 
@@ -191,5 +191,100 @@ describe('createBucklingAnimator', () => {
     for (const m of mockMaterials) {
       expect(m.dispose).toHaveBeenCalled();
     }
+  });
+});
+
+// ── update() length-mismatch contract (task #6813) ───────────────────────────
+
+/**
+ * `dispGeom`'s position attribute is a fixed-size `Float32Array` allocated once
+ * from `base` in the factory — WebGL buffers cannot be resized, which is the
+ * whole point of task #6757.  So `update()` cannot grow to fit an over-long
+ * `positions`, and must bound its copy loop by the DESTINATION length.
+ *
+ * Today the loop runs to `positions.length` (bucklingAnimator.ts:111-118).  The
+ * over-long case is safe only by accident: TypedArray out-of-bounds writes are
+ * silent no-ops, a property of the array type rather than of the code.  Both
+ * mismatch directions currently pass silently — the over-long case drops the
+ * excess, the short case leaves a stale tail — with no diagnostic either way.
+ *
+ * The mocked `three` is deliberately retained here (unlike the real-three
+ * meshManager files): `MockBufferAttribute.array` is a genuine `Float32Array`,
+ * which is all this defect depends on.
+ */
+describe('createBucklingAnimator update() length mismatch (#6813)', () => {
+  /** 2 nodes × 3 floats — a 6-slot fixed-size destination buffer. */
+  const BASE_2 = [0, 0, 0, 1, 0, 0];
+
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  /** The displaced point cloud is the first geometry the factory creates. */
+  function positionArray(): Float32Array {
+    const geom = mockGeometries.find((g) => g.attributes['position']);
+    expect(geom).toBeDefined();
+    return geom.attributes['position'].array as Float32Array;
+  }
+
+  /** The single warn call's message, asserted to be exactly one call. */
+  function soleWarning(): string {
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    return String(warnSpy.mock.calls[0]!.join(' '));
+  }
+
+  it('CASE A: warns naming both lengths when positions is longer than the buffer', () => {
+    const animator = createBucklingAnimator(BASE_2);
+    const arr = positionArray();
+    expect(arr.length).toBe(6);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    const msg = soleWarning();
+    expect(msg).toMatch(/\b9\b/);
+    expect(msg).toMatch(/\b6\b/);
+    // The destination was neither resized nor left short: it holds exactly the
+    // first 6 source values, which is also today's observable behaviour.
+    expect(arr.length).toBe(6);
+    expect(Array.from(arr)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    animator.dispose();
+  });
+
+  it('CASE B: warns naming both lengths when positions is shorter than the buffer', () => {
+    const animator = createBucklingAnimator(BASE_2);
+    const arr = positionArray();
+
+    animator.update([7, 8, 9]);
+
+    const msg = soleWarning();
+    expect(msg).toMatch(/\b3\b/);
+    expect(msg).toMatch(/\b6\b/);
+    // The prefix is written; the tail is stale. Unchanged behaviour — the point
+    // of the warning is that this is now observable rather than silent.
+    expect(arr.length).toBe(6);
+    expect(Array.from(arr).slice(0, 3)).toEqual([7, 8, 9]);
+
+    animator.dispose();
+  });
+
+  it('CASE C: does not warn when positions exactly matches the buffer', () => {
+    // Non-vacuity / no-false-positive guard: without this, an implementation
+    // that warned unconditionally would pass CASE A and CASE B.
+    const animator = createBucklingAnimator(BASE_2);
+    const arr = positionArray();
+
+    animator.update([1, 2, 3, 4, 5, 6]);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(Array.from(arr)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    animator.dispose();
   });
 });
