@@ -2526,9 +2526,9 @@ pub(crate) fn compile_geometry_op(
                     // lowered by POSITION, so `isosurface(g, adaptive: true)`
                     // binds `Bool(true)` to the `iso` SLOT and is rejected under
                     // a name the author never wrote. The rejection text itself is
-                    // left untouched — `required_length_arg`/`optional_length_arg`
-                    // solely own it (D9) — and a supplementary Info names the real
-                    // spelling, so the message is actionable before #6313 lands.
+                    // left untouched — `length_arg_to_result` solely owns it (D9)
+                    // — and a supplementary Info names the real spelling, so the
+                    // message is actionable before #6313 lands.
                     // Re-evaluating to classify costs nothing on the happy path:
                     // this branch is already dropping the op.
                     if matches!(
@@ -2542,8 +2542,8 @@ pub(crate) fn compile_geometry_op(
                     ) {
                         diagnostics.push(Diagnostic::info(
                             "isosurface: geometry builtins currently bind arguments by \
-                             POSITION, not by label, so a `adaptive:` written without an \
-                             isovalue lands in the `iso` slot — write the isovalue \
+                             POSITION, not by label, so an `adaptive:` written without \
+                             an isovalue lands in the `iso` slot — write the isovalue \
                              explicitly, e.g. `isosurface(g, 0mm, true)` (#6313)"
                                 .to_string(),
                         ));
