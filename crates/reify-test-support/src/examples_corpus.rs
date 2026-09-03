@@ -16,8 +16,11 @@
 //! themselves — reify-compiler's `tests/tolerancing_tests.rs` and
 //! `tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs`.
 //! Neither ever calls `strip_prefix`, so they are the latent form of the hazard
-//! [`examples_dir`] describes rather than a live instance of it; migrating them
-//! is separate follow-up work, deliberately not swept into the hoist.
+//! [`examples_dir`] describes rather than a live instance of it. Migrating them
+//! — along with the two surviving private `collect_ri_files` copies under
+//! `reify-eval`'s test tree — is tracked as task #7216, deliberately not swept
+//! into the hoist: doing so would have widened its file lock across two more
+//! crates.
 //!
 //! It is the corpus-discovery sibling of [`crate::helpers::missing_paths_under`],
 //! which single-sources the skip lists' dead-key check; the two together are
