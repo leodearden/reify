@@ -941,9 +941,22 @@ fn eval_dual_builtin(
     let Some(partials) = builtin_partials(name, &xs) else {
         return DualValue::opaque(value);
     };
-    // A non-finite local derivative — `sqrt(0)`, `log(0)`, `asin(±1)` — is a
-    // refusal, never a NaN or Inf smuggled into a Jacobian.
-    if partials.iter().any(|p| !p.is_finite()) {
+    // A non-finite local derivative — `sqrt(0)`, `asin(±1)` — is a refusal,
+    // never a NaN or Inf smuggled into a Jacobian.
+    //
+    // MASKED BY CONTRIBUTION.  Only a partial belonging to an argument that
+    // actually carries a tangent can reach the answer: `combine` skips every
+    // zero-tangent argument, so an unmasked guard would refuse over a number
+    // that is provably multiplied by nothing.  `pow(w, 2)` is the case that
+    // forces this — the exponent partial `w^2·ln w` is NaN for every `w <= 0`
+    // while `dR/dw = 2w` is perfectly finite, so at `w = 0` (the commonest
+    // initial guess there is) an unmasked guard takes out the whole Jacobian.
+    //
+    // The guard and `combine` share ONE predicate rather than two that happen
+    // to agree today, so the guard can never refuse over a partial `combine`
+    // discards.  At arity 1 this is a provable no-op: the all-zero-tangent case
+    // already returned above, so the sole argument always contributes.
+    if partials.iter().zip(&duals).any(|(p, d)| contributes(d) && !p.is_finite()) {
         seeds.note_refusal(NonDifferentiable::UnsupportedKind {
             kind: "a builtin evaluated where its derivative does not exist",
             site: KinkSite::new(path.to_vec()),
@@ -953,11 +966,20 @@ fn eval_dual_builtin(
     combine(value, &duals, &partials, seeds.width())
 }
 
+/// Does this argument's tangent reach the result at all?
+///
+/// The single predicate behind BOTH the finiteness guard above and `combine`'s
+/// skip below.  Sharing it is the point: a partial the chain rule never reads
+/// must not be able to veto a derivative that exists.
+fn contributes(d: &DualValue) -> bool {
+    !d.tangent.is_zero()
+}
+
 /// Chain rule over a multi-argument builtin: `Σ_i (∂f/∂arg_i)·arg_i'`.
 fn combine(value: Value, duals: &[DualValue], partials: &[f64], width: usize) -> DualValue {
     let mut row = vec![0.0; width];
     for (i, d) in duals.iter().enumerate() {
-        if d.tangent.is_zero() {
+        if !contributes(d) {
             continue;
         }
         let Some(t) = d.tangent.materialize(width) else {
@@ -1283,8 +1305,12 @@ fn is_differentiable_builtin(name: &str, arity: usize) -> bool {
 /// The local partial derivatives `∂f/∂arg_i` of a smooth builtin at `xs`.
 ///
 /// `None` when the name/arity has no entry.  A derivative that does not exist
-/// at this point is returned as `NaN`, which the caller's finiteness guard
-/// turns into `Tangent::None`.
+/// at this point is returned as `NaN` or `±inf` — which the caller's finiteness
+/// guard turns into `Tangent::None` *only for an argument that actually carries
+/// a tangent*.  A non-finite partial on a constant argument is discarded by
+/// `combine` and therefore never refuses anything, so an entry here is free to
+/// state the general form of a partial that is undefined exactly where the
+/// chain rule does not read it.
 fn builtin_partials(name: &str, xs: &[f64]) -> Option<Vec<f64>> {
     Some(match (name, xs.len()) {
         ("sqrt", 1) => vec![0.5 / xs[0].sqrt()],
@@ -1315,7 +1341,19 @@ fn builtin_partials(name: &str, xs: &[f64]) -> Option<Vec<f64>> {
         }
         ("pow", 2) => {
             let (x, y) = (xs[0], xs[1]);
-            vec![y * x.powf(y - 1.0), x.powf(y) * x.ln()]
+            // The BASE partial at a zero exponent is EXACTLY zero — `x^0` is
+            // the constant `1` — whereas the general form evaluates
+            // `0 · 0^(−1)` = `0 · inf` = NaN at `x == 0`.  This is the same
+            // identity `pow_tangent` states for the BinOp spelling of a power
+            // (see its `b == 0.0` arm); stated once more here so both
+            // spellings of `x^k` compute the same function rather than
+            // disagreeing on which one the author happened to type.
+            let dx = if y == 0.0 { 0.0 } else { y * x.powf(y - 1.0) };
+            // The EXPONENT partial is left as written: `ln x` genuinely does
+            // not exist for `x <= 0`, and the caller's guard is masked by
+            // argument contribution, so this NaN now refuses only when the
+            // exponent actually moves — which is exactly when it must.
+            vec![dx, x.powf(y) * x.ln()]
         }
         // lerp(a, b, t) = a + t(b − a)
         ("lerp", 3) => {
