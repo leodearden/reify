@@ -406,15 +406,43 @@ fn box_operand_iso_source(arg: &str) -> String {
     )
 }
 
-/// Build `source` against a mock kernel; return its Error diagnostics and every
-/// `GeometryOp::Surface` that actually reached the kernel.
+/// What one `isosurface` build produced: its Error diagnostics, its
+/// below-Error ones ABOUT THE BUILTIN UNDER TEST, and every
+/// `GeometryOp::Surface` that reached the kernel.
+///
+/// The two diagnostic vectors are split rather than pooled because they answer
+/// different questions and must not be able to substitute for one another: the
+/// Errors are the CONTRACT (what the author is told is wrong, and what makes
+/// `reify eval` exit nonzero), while an advisory is a HINT that must never
+/// inflate that count.
+struct IsoBuild {
+    /// EVERY `Severity::Error` message, unfiltered — the exact-vector
+    /// assertions below depend on that, since an unexpected extra Error is
+    /// exactly the cascade they exist to catch.
+    errors: Vec<String>,
+    /// Below-Error messages naming `isosurface`.
+    ///
+    /// FILTERED, unlike `errors`, and the filter is load-bearing: every build in
+    /// this file emits two unrelated `Severity::Warning`s from the mock harness
+    /// ("no openvdb kernel registered", "topology-attribute seeding failed"),
+    /// because a `Surface` op demands a Voxel repr no mock provides. Those are
+    /// this file's fixture talking, not the units gate; pinning them would make
+    /// these tests fail on an unrelated harness change they hold no lock on.
+    /// Naming the builtin is the discriminator because every diagnostic the
+    /// `isosurface` arm itself emits is prefixed with it, and none of the
+    /// harness ones are.
+    iso_advisories: Vec<String>,
+    surfaces: Vec<(f64, bool)>,
+}
+
+/// Build `source` against a mock kernel and collect the three.
 ///
 /// STRICT `parse_and_compile` (which hard-asserts zero compile Error
 /// diagnostics) is what keeps the rejection cases below from passing
 /// vacuously: `isosurface` has no `builtin_arg_slots` row, so every source
 /// here — bare `iso` included — must compile clean, and a dropped op can then
 /// only mean the EVAL gate dropped it, never that lowering broke.
-fn build_isosurface(source: &str) -> (Vec<String>, Vec<(f64, bool)>) {
+fn build_isosurface(source: &str) -> IsoBuild {
     let compiled = parse_and_compile(source);
 
     let kernel = MockGeometryKernel::new();
@@ -431,6 +459,12 @@ fn build_isosurface(source: &str) -> (Vec<String>, Vec<(f64, bool)>) {
         .filter(|d| d.severity == Severity::Error)
         .map(|d| d.message.clone())
         .collect();
+    let iso_advisories: Vec<String> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity != Severity::Error && d.message.contains("isosurface"))
+        .map(|d| d.message.clone())
+        .collect();
 
     let ops = ops_ref.lock().unwrap();
     let surfaces: Vec<(f64, bool)> = ops
@@ -445,7 +479,39 @@ fn build_isosurface(source: &str) -> (Vec<String>, Vec<(f64, bool)>) {
         })
         .collect();
 
-    (errors, surfaces)
+    IsoBuild {
+        errors,
+        iso_advisories,
+        surfaces,
+    }
+}
+
+/// The EXACT two-Error vector a rejected `isosurface` `iso` of runtime type
+/// `got` must produce, in order.
+///
+/// Both halves of the pair are the contract and neither alone is: the typed
+/// Contract C rejection says WHAT is wrong and how to fix it, and the
+/// build-loop wrapper says the op was consequently DROPPED. Pinning the vector
+/// also subsumes the weaker "no cascade" count check — a third Error fails it.
+///
+/// Single-sourced across the rejection tests below, which previously pasted
+/// both literals and so would each have needed editing on any reword of
+/// `ArgRejection::message`. It cannot additionally share with
+/// `geometry_ops/tests.rs`'s `expected_length_rejection`: that helper lives
+/// inside the crate's private test module and the wording's true owner,
+/// `arg_acceptance`, is `pub(crate)` — so an integration test can only restate
+/// it. Reducing three copies to two is the reachable win; the remaining pair is
+/// the unit/integration boundary, not carelessness.
+fn expected_iso_rejection(got: &str) -> Vec<String> {
+    vec![
+        format!(
+            "isosurface: iso argument expects Length, got {got}; pass a dimensioned \
+             length such as `5mm`"
+        ),
+        "failed to compile geometry operation: missing or non-Length argument \
+         'iso' for isosurface"
+            .to_string(),
+    ]
 }
 
 /// A BARE `iso` written in real `.ri` source must DROP the op, never be built
@@ -455,37 +521,38 @@ fn build_isosurface(source: &str) -> (Vec<String>, Vec<(f64, bool)>) {
 /// pattern spacing: measured on the pre-λ tree, `isosurface(solid, 5)` returned
 /// `Ok(Surface { iso_level: 5.0, .. })` with ZERO diagnostics.
 ///
-/// EXACT-VECTOR assertion, because the pair is the contract and neither half
-/// alone is: an INVALID (as opposed to Undef) argument surfaces TWO Errors, and
-/// the author needs both — the typed Contract C rejection says WHAT is wrong
-/// and how to fix it, the build-loop wrapper says the op was consequently
-/// DROPPED. Pinning the vector also subsumes the weaker "no cascade" count
-/// check: a third Error would fail it. Contrast the Undef arm, which is
+/// EXACT-VECTOR assertion via `expected_iso_rejection` — see that helper for
+/// why both Errors are the contract. Contrast the Undef arm, which is
 /// deliberately QUIET at the value layer (D10 / INV-SF-1) and so surfaces the
-/// wrapper ALONE — that asymmetry is exactly what
-/// `pattern_spacing_units_e2e.rs`'s single-Error label probe measures.
+/// wrapper ALONE — that asymmetry is exactly what this file's single-Error
+/// label probe measures.
+///
+/// A bare number is a spelling the author really typed, so — unlike the `Bool`
+/// sibling below — there is nothing to disambiguate: the `advisories` assertion
+/// keeps the #6313 positional-binding hint from leaking onto this row, where it
+/// would be pure noise.
 #[test]
 fn bare_iso_drops_surface_op_with_typed_rejection_and_drop_wrapper() {
-    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(", 5"));
+    let built = build_isosurface(&box_operand_iso_source(", 5"));
 
     assert_eq!(
-        errors,
-        vec![
-            "isosurface: iso argument expects Length, got Int; pass a dimensioned \
-             length such as `5mm`"
-                .to_string(),
-            "failed to compile geometry operation: missing or non-Length argument \
-             'iso' for isosurface"
-                .to_string(),
-        ],
+        built.errors,
+        expected_iso_rejection("Int"),
         "a bare `iso` must surface the typed Contract C rejection AND the \
          op-dropped wrapper, and nothing else"
     );
     assert!(
-        surfaces.is_empty(),
+        built.iso_advisories.is_empty(),
+        "a bare number needs no positional-binding hint — the author wrote the \
+         value they meant; got: {:?}",
+        built.iso_advisories
+    );
+    assert!(
+        built.surfaces.is_empty(),
         "a bare-`iso` isosurface must be DROPPED — `isosurface` has no \
          compile-layer slot, so nothing else stops 5 reaching the kernel as 5 SI \
-         metres; emitted Surface ops: {surfaces:?}"
+         metres; emitted Surface ops: {:?}",
+        built.surfaces
     );
 }
 
@@ -495,21 +562,23 @@ fn bare_iso_drops_surface_op_with_typed_rejection_and_drop_wrapper() {
 /// because `isosurface` stopped lowering entirely.
 #[test]
 fn dimensioned_iso_builds_surface_op_in_si_metres() {
-    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(", 5mm"));
+    let built = build_isosurface(&box_operand_iso_source(", 5mm"));
 
     assert!(
-        errors.is_empty(),
-        "a dimensioned `5mm` iso must build with zero Error diagnostics; got: {errors:?}"
+        built.errors.is_empty(),
+        "a dimensioned `5mm` iso must build with zero Error diagnostics; got: {:?}",
+        built.errors
     );
     assert_eq!(
-        surfaces.len(),
+        built.surfaces.len(),
         1,
-        "a dimensioned iso must emit exactly one Surface op; got: {surfaces:?}"
+        "a dimensioned iso must emit exactly one Surface op; got: {:?}",
+        built.surfaces
     );
     assert!(
-        (surfaces[0].0 - 0.005).abs() < 1e-12,
+        (built.surfaces[0].0 - 0.005).abs() < 1e-12,
         "`5mm` must reach the kernel as 0.005 SI metres; got: {}",
-        surfaces[0].0
+        built.surfaces[0].0
     );
 }
 
@@ -522,19 +591,28 @@ fn dimensioned_iso_builds_surface_op_in_si_metres() {
 /// fails the moment someone "tidies" the two halves into one.
 #[test]
 fn absent_iso_keeps_the_ungated_default_and_stays_quiet() {
-    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(""));
+    let built = build_isosurface(&box_operand_iso_source(""));
 
     assert!(
-        errors.is_empty(),
-        "absence is the normal expected shape and must emit no Error; got: {errors:?}"
+        built.errors.is_empty(),
+        "absence is the normal expected shape and must emit no Error; got: {:?}",
+        built.errors
+    );
+    assert!(
+        built.iso_advisories.is_empty(),
+        "\"quiet\" means quiet BELOW Error too — a missing-arg Warning naming \
+         `isosurface` here is precisely the regression `optional_length_arg`'s \
+         `Ok(None)` arm exists to prevent; got: {:?}",
+        built.iso_advisories
     );
     assert_eq!(
-        surfaces.len(),
+        built.surfaces.len(),
         1,
-        "a bare `isosurface(g)` must still build exactly one Surface op; got: {surfaces:?}"
+        "a bare `isosurface(g)` must still build exactly one Surface op; got: {:?}",
+        built.surfaces
     );
     assert_eq!(
-        surfaces[0],
+        built.surfaces[0],
         (0.0, false),
         "an ABSENT iso/adaptive keeps the documented (0.0, false) defaults (D12)"
     );
@@ -545,38 +623,53 @@ fn absent_iso_keeps_the_ungated_default_and_stays_quiet() {
 /// pinned here so the failure mode is discoverable rather than folklore.
 ///
 /// `isosurface(g, adaptive: true)` binds `Bool(true)` to the `iso` SLOT — a
-/// positional-lowering quirk whose mechanism, pre-existing provenance and
-/// #6313 ownership are written out ONCE, at the `Isosurface` arm of
-/// `crates/reify-eval/src/geometry_ops.rs`. Not restated here: three copies
-/// would all need editing when #6313 lands.
+/// pre-existing positional-lowering quirk owned by live task #6313.
+///
+/// Because the Errors then name an argument the author never wrote, and their
+/// wording is single-owned upstream and so may not be forked here, a
+/// SUPPLEMENTARY advisory carries the actionable part. Its two properties are
+/// asserted separately and both matter: it must be PRESENT (or the rejection is
+/// unactionable for a real spelling) and it must be BELOW Error severity (or one
+/// bad input reports as two failures). `contains`, not equality, on the hint —
+/// it is prose, and pinning it verbatim here would just relocate the reword
+/// burden this file's `expected_iso_rejection` helper exists to remove.
 ///
 /// This test asserts the CURRENT behaviour, not the desired one, and #6313 is
 /// the ADDRESSEE of the rewrite instruction below. When #6313 lands,
 /// `adaptive: true` will bind to `adaptive` and this test SHOULD be rewritten
-/// to assert a clean build; the assertions deliberately name the positional
-/// binding so that rewrite is obviously the right response to the failure
-/// rather than a regression to paper over.
+/// to assert a clean build — and the hint, having become unreachable, deleted
+/// with it. The assertions deliberately name the positional binding so that
+/// rewrite is obviously the right response to the failure rather than a
+/// regression to paper over.
 #[test]
 fn skipped_optional_iso_slot_binds_adaptive_positionally() {
-    let (errors, surfaces) = build_isosurface(&box_operand_iso_source(", adaptive: true"));
+    let built = build_isosurface(&box_operand_iso_source(", adaptive: true"));
 
     assert_eq!(
-        errors,
-        vec![
-            "isosurface: iso argument expects Length, got Bool; pass a dimensioned \
-             length such as `5mm`"
-                .to_string(),
-            "failed to compile geometry operation: missing or non-Length argument \
-             'iso' for isosurface"
-                .to_string(),
-        ],
+        built.errors,
+        expected_iso_rejection("Bool"),
         "`isosurface(g, adaptive: true)` currently binds Bool(true) to the `iso` \
-         SLOT, so both diagnostics name `iso` — not the `adaptive` the author \
-         actually typed"
+         SLOT, so both Errors name `iso` — not the `adaptive` the author actually \
+         typed"
     );
+    assert_eq!(
+        built.iso_advisories.len(),
+        1,
+        "exactly one supplementary advisory — the misbind hint; got: {:?}",
+        built.iso_advisories
+    );
+    for needle in ["POSITION", "isosurface(g, 0mm, true)", "#6313"] {
+        assert!(
+            built.iso_advisories[0].contains(needle),
+            "the hint must name the cause, a working spelling, and the owning \
+             task; missing {needle:?} in: {:?}",
+            built.iso_advisories[0]
+        );
+    }
     assert!(
-        surfaces.is_empty(),
+        built.surfaces.is_empty(),
         "the misbound call drops the op entirely (pre-λ it warned and still built \
-         at iso 0.0); emitted Surface ops: {surfaces:?}"
+         at iso 0.0); emitted Surface ops: {:?}",
+        built.surfaces
     );
 }
