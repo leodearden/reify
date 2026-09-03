@@ -19,11 +19,13 @@ thread_local! {
     /// set, installed (via [`EnumNameScope`]) at exactly four sites, each of which
     /// has the module's `enum_defs` in scope:
     ///
-    ///   * `entity.rs:1867`      — struct-param resolution (task 2998);
-    ///   * `functions.rs:89`     — fn param resolution;
-    ///   * `functions.rs:226`    — fn return-type resolution;
-    ///   * `compile_builder/defs_phase.rs:98` — constraint-def param resolution
-    ///     (task 6416).
+    ///   * `entity.rs`    — struct-param resolution (task 2998);
+    ///   * `functions.rs` — fn param resolution;
+    ///   * `functions.rs` — fn return-type resolution;
+    ///   * `compile_builder/defs_phase.rs::phase_constraint_defs` —
+    ///     constraint-def param resolution, installed once for the whole
+    ///     declaration loop and passed as a witness into
+    ///     `compile_constraint_def` (task 6416).
     ///
     /// It is empty everywhere else, so type positions outside those four are
     /// unaffected — the same param-position scoping precedent as qualified-assoc
