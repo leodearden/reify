@@ -144,8 +144,14 @@ if [ -f "$SCRUB_LIB" ]; then
 fi
 
 assert "B2: sourcing lib_git_env_scrub.sh succeeds" test "$_SCRUB_LIB_OK" -eq 1
-assert "B3: REIFY_GIT_ENV_SCRUB_VARS is exported and non-empty" \
+# Set in the SOURCING shell, not exported: the lib deliberately keeps it
+# shell-local so it is not injected as a ninth ambient variable into every
+# run_all.sh pool member (see the lib's note beside the assignment).  Asserted
+# by value-passing, never by env inheritance, so this stays true either way.
+assert "B3: REIFY_GIT_ENV_SCRUB_VARS is set in the sourcing shell and non-empty" \
     bash -c '[ -n "${1:-}" ]' _ "${REIFY_GIT_ENV_SCRUB_VARS:-}"
+assert "B3a: ... and NOT exported (no ninth ambient var reaches the pool members)" \
+    bash -c '[ -z "${REIFY_GIT_ENV_SCRUB_VARS:-}" ]' 
 # Asserted against THIS shell, not a `bash -c` subprocess: a sourced function is
 # invisible to a child, so a `bash -c 'declare -F ...'` probe would report
 # "missing" even once the lib lands.
@@ -310,6 +316,117 @@ assert "C5: ... and unchanged in size ($_C_IDX_SIZE_BEFORE -> ${_C_IDX_SIZE_AFTE
     bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ "$_C_IDX_SIZE_AFTER" "$_C_IDX_SIZE_BEFORE"
 
 # ---------------------------------------------------------------------------
+# Arm C-PRESERVE (C6-C10) — the REVERSE direction: the scrub must not remove
+# TOO MUCH.
+#
+# Every other arm here, and arm D's drift guard explicitly ("the only direction
+# of error this permits is OVER-scrubbing"), proves only that the scrub removes
+# ENOUGH. Nothing proved it removes no more than that — so widening
+# REIFY_GIT_ENV_SCRUB_VARS into the config/trace/identity vars, or replacing the
+# enumeration with a wholesale `GIT_*` clear, would leave arms A-G, D3 and F2
+# all green while ~103 infra members silently lost their committer identity or
+# config isolation. That failure would surface as unrelated flakes in whichever
+# member relies on the inherited value, which is the worst possible place to
+# discover it.
+#
+# The preserved set is DERIVED from the same Rust source arm D reads —
+# specifically the "why an enumerated set" paragraph of REPO_REDIRECT_VARS's
+# doc, which is the workspace's ONE statement of which GIT_* vars are
+# deliberately left alone and why (GIT_CONFIG_* = harness isolation, GIT_TRACE*
+# = debuggability, GIT_AUTHOR_*/GIT_COMMITTER_* = commit determinism). A
+# `GIT_FOO_*` glob in that prose is expanded to the concrete `GIT_FOO_NAME`.
+# Deriving rather than hardcoding is the point: a hand-written list here could
+# drift into enforcing a rationale the Rust source no longer makes.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- C-PRESERVE: the scrub leaves the non-redirect git vars alone ---"
+
+_CP_VARS=""
+if [ -f "$GIT_ENV_RS" ]; then
+    _CP_VARS="$(sed -n '/Why an enumerated set/,/left untouched\./p' "$GIT_ENV_RS" \
+        | grep -o '`GIT_[A-Z_]*\*\?`' | tr -d '`' \
+        | sed -e 's/\*$//' \
+        | grep -vx 'GIT_\?' \
+        | sed -e 's/_$/_NAME/' \
+        | sort -u || true)"
+fi
+# Pipeline order matters: the trailing `*` is stripped FIRST, then the bare
+# `GIT_` left by the paragraph's `GIT_*` strawman (the wholesale clear it argues
+# AGAINST — not a variable, and not exportable) is dropped, and only then is a
+# genuine `GIT_FOO_` glob stem expanded to `GIT_FOO_NAME`. Expanding before the
+# drop would silently mint a bogus `GIT_NAME` and assert against a variable no
+# rationale ever named.
+
+assert "C6: preserved-var set derived from git_env.rs is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_CP_VARS"
+assert "C7: ... and contains GIT_CONFIG_GLOBAL (the parse read the right paragraph)" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "GIT_CONFIG_GLOBAL"' _ "$_CP_VARS"
+
+# Static half: the two sets must not overlap. This is the direct, greppable
+# statement of "no redirect var is claimed as preserved, and no preserved var
+# has been pulled into the scrub list" — it reds the instant someone widens
+# REIFY_GIT_ENV_SCRUB_VARS into the identity/config/trace class.
+_CP_OVERLAP=""
+while IFS= read -r _cp_var; do
+    [ -n "$_cp_var" ] || continue
+    if _in_scrub_list "$_cp_var"; then
+        _CP_OVERLAP="${_CP_OVERLAP:+$_CP_OVERLAP }$_cp_var"
+    fi
+done <<< "$_CP_VARS"
+assert "C8: no preserved var appears in REIFY_GIT_ENV_SCRUB_VARS (overlap: ${_CP_OVERLAP:-<none>})" \
+    test -z "$_CP_OVERLAP"
+
+# Behavioural half: the same hermetic-probe shape as arm C, run through the real
+# helper with BOTH the hook poison and a sentinel value per preserved var in
+# scope. The probe runs no git at all, so a bogus GIT_CONFIG_GLOBAL /
+# GIT_TRACE sentinel is inert.
+CP_FIX="$(mktemp -d)"
+_TMPDIRS+=("$CP_FIX")
+CP_REPORT="$CP_FIX/preserve-report.txt"
+_CP_VARS_ONELINE="$(printf '%s\n' "$_CP_VARS" | tr '\n' ' ')"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'exec > %q 2>&1\n' "$CP_REPORT"
+    printf 'for _v in %s; do\n' "$_CP_VARS_ONELINE"
+    printf '    printf "PRESERVED %%s=%%s\\n" "$_v" "${!_v-<UNSET>}"\n'
+    printf 'done\n'
+    printf 'for _v in %s; do\n' "$REIFY_GIT_ENV_SCRUB_VARS"
+    printf '    [ -n "${!_v:-}" ] && printf "LEAK %%s\\n" "$_v"\n'
+    printf 'done\n'
+    printf 'printf "PROBE_RAN\\n"\n'
+    printf 'exit 0\n'
+} > "$CP_FIX/preserve_probe.sh"
+chmod +x "$CP_FIX/preserve_probe.sh"
+
+if _has_fn reify_git_env_scrub; then
+    (
+        export GIT_INDEX_FILE="$_C_IDX"
+        for _cp_var in $_CP_VARS_ONELINE; do
+            export "$_cp_var=cp-sentinel"
+        done
+        reify_git_env_scrub bash "$CP_FIX/preserve_probe.sh"
+    ) || true
+fi
+
+_CP_REPORT_TEXT=""
+[ -f "$CP_REPORT" ] && _CP_REPORT_TEXT="$(cat "$CP_REPORT")"
+
+assert "C9: the preserve probe ran through the scrub (guard is not vacuous)" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "PROBE_RAN"' _ "$_CP_REPORT_TEXT"
+# Asserted per-var so a failure names the variable that was over-scrubbed.
+while IFS= read -r _cp_var; do
+    [ -n "$_cp_var" ] || continue
+    assert "C10: $_cp_var survived the scrub with its value intact" \
+        bash -c 'printf "%s\n" "$1" | grep -qx "PRESERVED $2=cp-sentinel"' \
+            _ "$_CP_REPORT_TEXT" "$_cp_var"
+done <<< "$_CP_VARS"
+# The contrast that keeps C10 honest: the SAME invocation must still have
+# stripped the redirect vars. Without this, a helper that had degenerated into a
+# no-op would satisfy every C10 assertion above.
+assert "C11: ... while the redirect vars were still stripped in that same run (got: ${_CP_REPORT_TEXT//$'\n'/ | })" \
+    bash -c '! printf "%s\n" "$1" | grep -q "^LEAK "' _ "$_CP_REPORT_TEXT"
+
+# ---------------------------------------------------------------------------
 # Arm E — RUNNER CONTRACT (verify.sh): the selective-infra plan leaf carries the
 # scrub.
 #
@@ -381,31 +498,48 @@ assert "E3: ... positioned between the timeout and the bash it wraps" \
     bash -c 'printf "%s\n" "$1" | grep -qE "timeout.*env -u GIT_DIR.*bash"' _ "$_E_LEAF"
 
 # ---------------------------------------------------------------------------
-# Arm F — RUNNER CONTRACT (run_all.sh): EVERY member spawn carries the scrub.
+# Arm F — RUNNER CONTRACT (run_all.sh): EVERY member spawn, and every one of
+# run_all.sh's OWN repo-targeting git calls, carries the scrub.
 #
-# A COUNTING assertion, deliberately not a list of today's six line numbers
-# (1384/1449/1856/1893/1924/2005), which rot on the next edit above them: a NEW
-# unscrubbed spawn site added later must fail this guard.
+# COUNTING assertions, deliberately not a list of today's line numbers, which
+# rot on the next edit above them: a NEW unscrubbed site added later must fail
+# these guards.
 #
-# Line continuations are folded first, so a spawn whose `reify_git_env_scrub`
-# sits on the preceding physical line (the `env -u REIFY_RUN_ALL_MEMBER_SUBSET`
-# site does exactly that) is counted as the one logical statement it is.
+# TWO normalizations are applied to run_all.sh's source before counting, in
+# this order, and each is load-bearing:
+#
+#   1. FOLD LINE CONTINUATIONS — so a spawn whose `reify_git_env_scrub` sits on
+#      the preceding physical line (the `env -u REIFY_RUN_ALL_MEMBER_SUBSET`
+#      site does exactly that) is counted as the one logical statement it is.
+#   2. DROP COMMENT LINES — a bare `grep` for the invocation shape cannot tell
+#      an executable statement from prose, and run_all.sh is heavily commented,
+#      including a block that discusses the member spawns directly. The first
+#      comment line to quote an invocation verbatim would otherwise score as an
+#      unscrubbed site and red F2/F5 on a change that touched nothing
+#      executable. Anchoring instead on a leading `reify_git_env_scrub`/`bash`
+#      was rejected: it would also stop matching a legitimately-reshaped spawn
+#      (e.g. one inside a command substitution), turning a real coverage hole
+#      into a silent pass — F1/F4's floors only catch a DROP in visible sites,
+#      not a site the pattern was narrowed past.
+#
+# Both floors are floors, not equalities: run_all.sh gaining a seventh spawn
+# site must not red these arms, but losing the ability to SEE the sites (a
+# reshaped invocation the pattern no longer matches) must.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- F: every run_all.sh member spawn carries the scrub ---"
+echo "--- F: every run_all.sh member spawn and own git call carries the scrub ---"
 
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
 _F_SPAWN_FLOOR=6
+_F_GIT_FLOOR=7
 
-_F_LOGICAL="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$RUN_ALL")"
+_F_LOGICAL="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$RUN_ALL" \
+    | grep -v '^[[:blank:]]*#' || true)"
 _F_SPAWNS="$(printf '%s\n' "$_F_LOGICAL" \
     | grep -E 'bash "\$INFRA_DIR/|bash "\$test_file"' || true)"
 _F_TOTAL="$(printf '%s\n' "$_F_SPAWNS" | grep -c . || true)"
 _F_SCRUBBED="$(printf '%s\n' "$_F_SPAWNS" | grep -c 'reify_git_env_scrub' || true)"
 
-# Floor, not equality: run_all.sh gaining a seventh spawn site must not red this
-# arm, but losing the ability to SEE the spawn sites (a reshaped invocation the
-# pattern no longer matches) must.
 assert "F1: run_all.sh member-spawn sites found >= $_F_SPAWN_FLOOR (pattern still sees them; got $_F_TOTAL)" \
     bash -c '[ "${1:-0}" -ge "$2" ]' _ "$_F_TOTAL" "$_F_SPAWN_FLOOR"
 assert "F2: EVERY member spawn is wrapped in reify_git_env_scrub ($_F_SCRUBBED of $_F_TOTAL)" \
@@ -451,6 +585,27 @@ assert "F3a: the fixture member actually ran under run_all.sh (guard is not vacu
     bash -c 'printf "%s\n" "$1" | grep -qx "PROBE_RAN"' _ "$_F3_REPORT_TEXT"
 assert "F3b: NO scrubbed variable reached the member (got: ${_F3_REPORT_TEXT//$'\n'/ | })" \
     bash -c '! printf "%s\n" "$1" | grep -q "^LEAK "' _ "$_F3_REPORT_TEXT"
+
+# F4/F5 — run_all.sh's OWN repo-targeting git calls, not just the members it
+# spawns.  These run IN the run_all.sh process, so no member-spawn scrub reaches
+# them, and the content-skip engine that makes five of them is gated on
+# `_RA_INBOUND_ROLE = merge` — i.e. it executes ONLY under the hook environment
+# that actually exports GIT_INDEX_FILE.  `git status` there both READS and
+# (stat-cache refresh) can WRITE the index that variable names, so an unscrubbed
+# one would compute its RUN/SKIP decisions from, and touch, a foreign index.
+# Benign today only because CWD happens to be REPO_ROOT and the relative
+# `.git/index` therefore names the same repo — not a property to rest on (under
+# `git commit --only` GIT_INDEX_FILE names a TEMPORARY index; see
+# crates/reify-test-support/src/git_env.rs's own analysis).
+_F_GIT_CALLS="$(printf '%s\n' "$_F_LOGICAL" | grep -F 'git -C "' || true)"
+_F_GIT_TOTAL="$(printf '%s\n' "$_F_GIT_CALLS" | grep -c . || true)"
+_F_GIT_SCRUBBED="$(printf '%s\n' "$_F_GIT_CALLS" \
+    | grep -cF 'reify_git_env_scrub git -C "' || true)"
+
+assert "F4: run_all.sh's own \`git -C\` sites found >= $_F_GIT_FLOOR (pattern still sees them; got $_F_GIT_TOTAL)" \
+    bash -c '[ "${1:-0}" -ge "$2" ]' _ "$_F_GIT_TOTAL" "$_F_GIT_FLOOR"
+assert "F5: EVERY one of them is wrapped in reify_git_env_scrub ($_F_GIT_SCRUBBED of $_F_GIT_TOTAL)" \
+    bash -c '[ "${1:-0}" -eq "${2:-0}" ]' _ "$_F_GIT_SCRUBBED" "$_F_GIT_TOTAL"
 
 # ---------------------------------------------------------------------------
 # Arm G — HOSTILE-ENV INVARIANT REGRESSION GUARD.

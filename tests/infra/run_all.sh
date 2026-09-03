@@ -221,6 +221,41 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ---------------------------------------------------------------------------
+# Git repository-environment scrub (task #7106).
+#
+# git exports GIT_INDEX_FILE into every hook's process tree, it OUTRANKS an
+# explicit `git -C`, and hermetic fixtures under tests/infra build throwaway
+# repos with `git -C "$FIX"` without ever cd-ing — so an unscrubbed member
+# writes the fixture's file list into the REAL index (measured: 480763 -> 4827
+# bytes). See the lib's header for the full measurement.
+#
+# Sourced HERE, at the top, rather than beside the pool wiring it was first
+# written for: run_all.sh makes SEVEN repo-targeting `git -C` calls of its OWN
+# (the flaky ledger's branch read, and the content-skip engine's toplevel /
+# diff / status / HEAD reads), and every one of them is the same `git -C is
+# outranked` class. The skip engine in particular is gated on
+# _RA_INBOUND_ROLE=merge — i.e. it runs ONLY under the hook environment that
+# actually exports GIT_INDEX_FILE — and `git status` both reads and (stat-cache
+# refresh) can WRITE the index that variable names. Sourcing before every git
+# call site, rather than merely before the member spawns, is what makes the
+# helper reachable from all of them by construction.
+#
+# UNCONDITIONAL and hard-required (never fail-open): the legacy all-serial
+# fallback path spawns members too, and a silently-absent scrub is the exact
+# defect this closes. run_all.sh is always invoked as $SCRIPT_DIR/run_all.sh
+# from the real tests/infra (only INFRA_DIR is ever redirected at a fixture),
+# so this path always resolves — deliberately derived from SCRIPT_DIR rather
+# than $_H2_REPO_ROOT, which is not resolved until much further down.
+# ---------------------------------------------------------------------------
+_RA_GIT_ENV_SCRUB_LIB="$SCRIPT_DIR/../../scripts/lib_git_env_scrub.sh"
+if [ ! -f "$_RA_GIT_ENV_SCRUB_LIB" ]; then
+    echo "run_all.sh: ERROR — scripts/lib_git_env_scrub.sh not found at $_RA_GIT_ENV_SCRUB_LIB" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$_RA_GIT_ENV_SCRUB_LIB"
+
 # Per-run identifier for the FLAKY ledger (task #5142): stamps every ledger
 # line so the chronic-offender scan (_ra_flaky_chronic_check) can window
 # over "the last M DISTINCT runs" exactly, even though a single run can
@@ -663,7 +698,7 @@ _ra_flaky_ledger_append() {
     command -v flock >/dev/null 2>&1 || return 0
 
     local _branch _task _line
-    _branch="$(git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    _branch="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ -n "$_branch" ] || _branch="unknown"
     case "$_branch" in
         task/*) _task="${_branch#task/}" ;;
@@ -1027,8 +1062,8 @@ _ra_skip_engine() {
     [ -n "${REIFY_RUN_ALL_SKIP_STATE:-}" ] || return 0
     _RA_SKIP_ACTIVE=1
 
-    _RA_SKIP_TOPLEVEL="$(git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-    _RA_SKIP_INFRA_REL="$(git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
+    _RA_SKIP_TOPLEVEL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    _RA_SKIP_INFRA_REL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
     _ra_skip_read_closures
     _ra_skip_read_state
 
@@ -1075,9 +1110,9 @@ _ra_skip_engine() {
         # or a git error such as a bad sha) ⇒ RUN (delta). Capture a
         # representative touched path (first changed file) for the log line.
         _rc=0
-        git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
+        reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
         if [ "$_rc" -ne 0 ]; then
-            _names="$(git -C "$_RA_SKIP_TOPLEVEL" diff --name-only "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null)" || _names=""
+            _names="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" diff --name-only "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null)" || _names=""
             _touch="${_names%%$'\n'*}"
             [ -n "$_touch" ] || _touch="(unknown)"
             echo "RUN (delta): $_name touched=$_touch"
@@ -1086,7 +1121,7 @@ _ra_skip_engine() {
         # Worktree delta over the closure (staged/unstaged/untracked) ⇒ RUN
         # (delta). The porcelain first line is `XY <path>`; strip the 3-char
         # status prefix to name the touched path.
-        _wt="$(git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
+        _wt="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
         if [ -n "$_wt" ]; then
             _touch="${_wt%%$'\n'*}"
             _touch="${_touch:3}"
@@ -1153,7 +1188,7 @@ _ra_skip_state_write() {
     [ -n "$_state" ] || return 0
 
     local _head _now _new_global
-    _head="$(git -C "$_RA_SKIP_TOPLEVEL" rev-parse HEAD 2>/dev/null || true)"
+    _head="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" rev-parse HEAD 2>/dev/null || true)"
     [ -n "$_head" ] || return 0
     _now="${EPOCHSECONDS:-$(date +%s)}"
     _new_global=$(( _RA_SKIP_GLOBAL_MERGES + 1 ))
@@ -1197,27 +1232,10 @@ _H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
 _H2_CPU_ADMIT_LIB="$_H2_REPO_ROOT/scripts/cpu-admit.sh"
 _H2_LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
 
-# Git repository-environment scrub for member spawns (task #7106).
-#
-# Sourced UNCONDITIONALLY — outside the _H2_POOL_ACTIVE block below — because
-# the legacy all-serial fallback path spawns members too, and an unscrubbed
-# member there would corrupt the invoking lane's index just as readily as a
-# pooled one. Hard-required rather than fail-open for the same reason: a
-# silently-absent scrub is the exact defect this closes. run_all.sh is always
-# invoked as $SCRIPT_DIR/run_all.sh from the real tests/infra (only INFRA_DIR is
-# ever redirected at a fixture), so this path always resolves.
-#
-# git exports GIT_INDEX_FILE into every hook, it OUTRANKS `git -C`, and hermetic
-# fixtures under tests/infra build throwaway repos with `git -C "$FIX"` without
-# ever cd-ing — so an unscrubbed member writes the fixture's file list into the
-# REAL index (measured: 480763 -> 4827 bytes). See the lib's header.
-_RA_GIT_ENV_SCRUB_LIB="$_H2_REPO_ROOT/scripts/lib_git_env_scrub.sh"
-if [ ! -f "$_RA_GIT_ENV_SCRUB_LIB" ]; then
-    echo "run_all.sh: ERROR — scripts/lib_git_env_scrub.sh not found at $_RA_GIT_ENV_SCRUB_LIB" >&2
-    exit 1
-fi
-# shellcheck source=scripts/lib_git_env_scrub.sh
-source "$_RA_GIT_ENV_SCRUB_LIB"
+# NOTE: the git repository-environment scrub (scripts/lib_git_env_scrub.sh) is
+# sourced far EARLIER, immediately after SCRIPT_DIR — see that block for why it
+# must precede this script's own repo-targeting git calls, not just the member
+# spawns below.
 
 # FLAKY ledger path (task #5142): overridable for test isolation; defaults
 # under the repo's git-ignored data/verify-logs/ tree (.git/info/exclude),
