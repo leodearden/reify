@@ -1884,3 +1884,199 @@ fn malformed_two_argument_reduction_shapes_still_agree_with_eval_expr_on_undef()
         assert_eq!(dual_v, plain, "{label}: the dual path must fall through in the same place");
     }
 }
+
+// ===========================================================================
+// Step-25: the finiteness guard must be MASKED by argument contribution, and
+// the two spellings of a power must agree
+// ===========================================================================
+//
+// `eval_dual_builtin` refuses the whole row whenever ANY entry of
+// `builtin_partials` is non-finite.  For `pow` the exponent partial is
+// `x^y·ln x`, which does not exist for `x <= 0` — so `pow(w, 2)` at a NEGATIVE
+// or ZERO base refuses, even though `dR/dw = 2w` is perfectly finite and
+// `combine` already skips the constant exponent's zero tangent so the offending
+// partial is multiplied by nothing at all.
+//
+// w = 0.0 is the commonest initial guess a solver ever starts from and w < 0 is
+// reachable at any Newton step, so this is not an exotic corner: it takes out
+// the whole Jacobian of any residual containing a squared unknown written as
+// `pow(w, 2)`.
+//
+// The fix has two independent halves, and both are pinned here:
+//
+//   (1) mask the guard by which arguments actually CARRY a tangent, so the
+//       guard can never refuse over a partial `combine` provably discards;
+//   (2) mirror `pow_tangent`'s constant-exponent identity — `d/dx (x^0) = 0`
+//       exactly — into `builtin_partials`, which masking alone cannot reach
+//       because that partial belongs to the argument that DOES move.
+//
+// The masking is deliberately NOT a blanket amnesty: a non-finite partial on a
+// MOVING argument must still refuse, and the last block asserts exactly that.
+
+/// The `pow(x, k)` FunctionCall spelling and the `x ^ k` BinOp spelling of the
+/// same power, as an `(ad_tangent, primal)` pair each, seeded on `x` alone.
+fn both_pow_spellings(x0: f64, k: i64) -> ((f64, f64), (f64, f64)) {
+    let (values, seed_cells) = probe(&[("x", x0)]);
+    let exponent = literal(Value::Int(k));
+    let call = calln("pow", vec![pref("x"), exponent.clone()]);
+    let binop_form = binop(BinOp::Pow, pref("x"), exponent);
+
+    let unwrap_one = |label: &str, e: &CompiledExpr| -> (f64, f64) {
+        let (primal, row) = jrow(e, &values, &seed_cells)
+            .unwrap_or_else(|err| panic!("{label} at x={x0}, k={k}: refused with {err:?}"));
+        assert_eq!(row.len(), 1, "{label}: one seed, one column");
+        (primal, row[0])
+    };
+    (unwrap_one("pow(x, k)", &call), unwrap_one("x ^ k", &binop_form))
+}
+
+// ---------------------------------------------------------------------------
+// (1) A constant exponent must not be refused over a base it never reads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pow_with_a_constant_exponent_differentiates_at_a_negative_base() {
+    // `powf` returns 9.0 for an integral exponent at a negative base (IEEE
+    // 754-2008 §9.2.1), so the PRIMAL is an ordinary 9.0 — nothing about this
+    // point is undefined.  Only the unread `x^y·ln x` column is NaN.
+    let ((primal, ad), _) = both_pow_spellings(-3.0, 2);
+    assert_eq!(primal, 9.0, "pow(-3, 2) is an ordinary finite primal");
+    assert_close(ad, -6.0, "d(x²)/dx at x = −3");
+}
+
+#[test]
+fn pow_with_a_constant_exponent_differentiates_at_a_zero_base() {
+    // x = 0 is the commonest initial guess there is; `0^2·ln 0` = `0·−inf` = NaN.
+    let ((primal, ad), _) = both_pow_spellings(0.0, 2);
+    assert_eq!(primal, 0.0, "pow(0, 2) is an ordinary finite primal");
+    assert_eq!(ad, 0.0, "d(x²)/dx at x = 0 is exactly zero");
+}
+
+#[test]
+fn pow_with_an_odd_constant_exponent_at_a_negative_base_agrees_with_central_differences() {
+    // ∂(x³)/∂x = 3x² = 12 at x = −2, comfortably clear of the 0.1 floor.
+    let (values, seed_cells) = probe(&[("x", -2.0)]);
+    let expr = calln("pow", vec![pref("x"), literal(Value::Int(3))]);
+    assert_ad_matches_cd("pow(x, 3) at x = -2", &expr, &values, &seed_cells);
+}
+
+// ---------------------------------------------------------------------------
+// (2) The two spellings of one power are the SAME function
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_call_and_binop_spellings_of_a_constant_power_produce_bit_identical_tangents() {
+    // `pow_tangent` (the BinOp path) already carries the constant-exponent
+    // identity; the FunctionCall path never got it.  Nothing about a residual's
+    // gradient may depend on which of two synonyms the author typed, so this is
+    // asserted on the BITS, not within a tolerance.
+    for k in [2_i64, 3] {
+        for x0 in [-3.0_f64, 0.0, 2.0] {
+            let ((call_primal, call_ad), (binop_primal, binop_ad)) = both_pow_spellings(x0, k);
+            assert_eq!(
+                call_primal.to_bits(),
+                binop_primal.to_bits(),
+                "pow(x, {k}) vs x ^ {k} at x = {x0}: primals must agree bit-for-bit"
+            );
+            assert_eq!(
+                call_ad.to_bits(),
+                binop_ad.to_bits(),
+                "pow(x, {k}) vs x ^ {k} at x = {x0}: tangents must agree bit-for-bit \
+                 (got {call_ad:?} vs {binop_ad:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_zero_exponent_collapses_to_an_exactly_zero_tangent_in_both_spellings() {
+    // `d/dx (x^0) = d/dx (1) = 0` exactly, for EVERY x including 0 — whereas
+    // the general base partial `y·x^(y−1)` evaluates `0 · 0^(−1)` = `0 · inf`
+    // = NaN.  Masking cannot rescue this one: the NaN sits on the argument that
+    // genuinely moves, so `builtin_partials` has to state the identity itself.
+    for x0 in [-3.0_f64, 0.0, 2.0] {
+        let ((call_primal, call_ad), (binop_primal, binop_ad)) = both_pow_spellings(x0, 0);
+        assert_eq!(call_primal, 1.0, "x⁰ = 1 at x = {x0}");
+        assert_eq!(binop_primal, 1.0, "x⁰ = 1 at x = {x0}");
+        assert_eq!(call_ad, 0.0, "d(x⁰)/dx is exactly zero at x = {x0}");
+        assert_eq!(
+            call_ad.to_bits(),
+            binop_ad.to_bits(),
+            "pow(x, 0) vs x ^ 0 at x = {x0}: bit-identical zero tangents"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (3) The mask is not a blanket amnesty
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_non_finite_partial_on_a_moving_argument_still_refuses() {
+    // At arity 1 the mask is a PROVABLE no-op: the all-zero-tangent case has
+    // already returned `DualValue::constant` before the guard runs, so the sole
+    // argument always contributes.  These three keep refusing byte for byte.
+    let unary_refusals: [(&str, f64); 2] = [("sqrt", 0.0), ("asin", 1.0)];
+    for (name, x0) in unary_refusals {
+        let (values, seed_cells) = probe(&[("x", x0)]);
+        let expr = call1(name, pref("x"));
+        match jrow(&expr, &values, &seed_cells) {
+            Err(NonDifferentiable::UnsupportedKind { kind, .. }) => assert_eq!(
+                kind, "a builtin evaluated where its derivative does not exist",
+                "{name}({x0}) must keep naming the derivative, not the primal"
+            ),
+            other => panic!("{name}({x0}): expected UnsupportedKind, got {other:?}"),
+        }
+    }
+
+    // A MULTI-argument case where the mask is genuinely live and must not fire:
+    // both base and exponent are seeded, so `x^y·ln x` belongs to an argument
+    // that really does move, and `ln(−3)` really does not exist.
+    let (values, seed_cells) = probe(&[("x", -3.0), ("y", 2.0)]);
+    let expr = calln("pow", vec![pref("x"), pref("y")]);
+    let ctx = EvalContext::simple(&values);
+    assert_eq!(
+        eval_expr(&expr, &ctx),
+        Value::Real(9.0),
+        "the primal is finite — that is exactly what makes a silent zero row dangerous here"
+    );
+    match jrow(&expr, &values, &seed_cells) {
+        Err(NonDifferentiable::UnsupportedKind { .. }) => {}
+        other => {
+            panic!("pow(x, y) with both seeded at x = −3: expected UnsupportedKind, got {other:?}")
+        }
+    }
+}
+
+#[test]
+fn a_builtin_whose_primal_is_undef_refuses_at_the_primal_cliff_regardless_of_the_mask() {
+    // The other half of "not an amnesty", and a deliberate correction to the
+    // naive reading that every non-finite-derivative point surfaces as
+    // `UnsupportedKind`: `log(0)` = −inf and a degenerate `remap` range both
+    // SANITIZE to `Value::Undef` (`reify-expr/src/sanitize.rs:24`), so the
+    // Undef cliff fires strictly BEFORE the partials are ever computed.  The
+    // masked guard is therefore unreachable for these, which is the point —
+    // whichever refusal arrives first, a refusal is what must arrive.
+    let (values, seed_cells) = probe(&[("x", 0.0)]);
+    let log0 = call1("log", pref("x"));
+    match jrow(&log0, &values, &seed_cells) {
+        Err(NonDifferentiable::UndefPrimal { .. }) => {}
+        other => panic!("log(0): expected UndefPrimal, got {other:?}"),
+    }
+
+    // remap with flo == fhi: every partial, ∂/∂x included, is ±inf or NaN.
+    let (values, seed_cells) = probe(&[("x", 2.0)]);
+    let degenerate = calln("remap", vec![
+        pref("x"),
+        literal(Value::Real(1.0)),
+        literal(Value::Real(1.0)),
+        literal(Value::Real(0.0)),
+        literal(Value::Real(10.0)),
+    ]);
+    match jrow(&degenerate, &values, &seed_cells) {
+        Err(NonDifferentiable::UndefPrimal { .. }) => {}
+        other => {
+            panic!("remap with a degenerate source range: expected UndefPrimal, got {other:?}")
+        }
+    }
+}
