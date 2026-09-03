@@ -1147,6 +1147,35 @@ assert "H8b: ExecStart is NOT the invoking (warm-lane worktree) copy" \
 assert "H8c: Documentation= also points at the stable path, not the invoking copy" \
     bash -c 'grep -qF -- "Documentation=file://$2" "$1"' _ "$H_UNIT" "$H_STABLE"
 
+# ── H8d-H8f: STATIC pins on the migration onto scripts/lib_main_checkout.sh ────
+# These three are greps rather than behavioural runs, and that is forced rather
+# than lazy: every behavioural case in this block pins REIFY_MAIN_CHECKOUT
+# explicitly (run_redirect hardcodes it, H8 and H11b override it), so layer 1 of
+# reify_main_checkout short-circuits the git derivation and NO run in THIS suite
+# can observe which resolver produced the answer.  The behavioural
+# discrimination — the derivation running with REIFY_MAIN_CHECKOUT UNSET, from a
+# real linked worktree — lives in tests/infra/test_host_global_unit_pinning.sh
+# Part C.  What these pin is that the script's private hardcoded resolver is
+# gone and the shared lib is what replaced it (task 6864).
+#
+# The uncommented-line filter is load-bearing, not pedantry: the migration adds
+# rationale comments that name the lib, so a naive `grep -q lib_main_checkout.sh`
+# would stay green with the hardcoded resolver still in place — the exact failure
+# mode Block I's banner documents for setup-dev.sh.
+assert "H8d: an UNCOMMENTED line sources scripts/lib_main_checkout.sh" \
+    bash -c "grep -Ev '^[[:space:]]*#' \"$SCRIPT\" | grep -qE '(^|[[:space:]])(\.|source)[[:space:]].*lib_main_checkout\.sh'"
+
+# What makes the migration irreversible: restoring
+# `${REIFY_MAIN_CHECKOUT:-/home/leo/src/reify}` reds this.  Scoped to uncommented
+# lines so the header prose may still name the host path in passing.
+assert "H8e: NO uncommented line hardcodes the /home/leo/src/reify main checkout" \
+    bash -c "! grep -Ev '^[[:space:]]*#' \"$SCRIPT\" | grep -q '/home/leo/src/reify'"
+
+# NON-VACUITY for H8d: a lib deleted or renamed out from under that source line
+# would leave H8d certifying a path that resolves to nothing.
+assert "H8f: the sourced lib exists and is readable" \
+    bash -c 'test -f "$1" && test -r "$1"' _ "$REPO_ROOT/scripts/lib_main_checkout.sh"
+
 assert "H9: systemctl --user daemon-reload was called" \
     bash -c 'grep -q "systemctl --user daemon-reload" "$1"' _ "$CALLS_FILE"
 assert "H10: systemctl --user enable naming the unit was called" \
