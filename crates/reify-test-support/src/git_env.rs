@@ -144,8 +144,8 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// retiring a reach is then one edit.
 ///
 /// Whether the arrangement warrants a dep-free `reify-git-env` leaf crate the
-/// sweep does cover, or a narrower `EXCLUDE_CRATES`, is tracked as follow-up
-/// ticket `tkt_0RSN6D9381MSERHKK41GP3GE72` (filed from task 5657's review);
+/// sweep does cover, or a narrower `EXCLUDE_CRATES`, is owned by task **#6356**
+/// (filed as ticket `tkt_0RSN6D9381MSERHKK41GP3GE72` from task 5657's review);
 /// decide it there rather than re-deriving an answer at each new item.
 pub fn sanitize(cmd: &mut Command) -> &mut Command {
     for var in REPO_REDIRECT_VARS {
