@@ -1,7 +1,7 @@
 # Stdlib `param X : Real` Placeholder Audit
 
-**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3); composite-dim task-E (#3115) resolved 2026-05-15 → all 11 blocked-composite sites tightened to named-dimension aliases; mechanical task-A (#3111) resolved 2026-06-05 → all 12 materials_mechanical.ri tightenable-now sites tightened; geometry task-F (#3116) resolved 2026-06-07 → all 24 blocked-geometry-type tolerancing.ri sites tightened (feature→Geometry, datum_refs→DatumRef); #6877 added the `Damped` mixin and flipped the four FEA presets to `DampedMaterial + Visual` → 5 new genuine-dimensionless `loss_factor` sites recorded 2026-09-03 (materials_fea.ri table re-anchored, 5→10 sites; all already annotated, no code change owed)
-**Date:** 2026-05-07 (audit), 2026-05-15 (task-E close-out), 2026-09-03 (#6877 `loss_factor` refresh + materials_fea.ri re-anchor)
+**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3); composite-dim task-E (#3115) resolved 2026-05-15 → all 11 blocked-composite sites tightened to named-dimension aliases; mechanical task-A (#3111) resolved 2026-06-05 → all 12 materials_mechanical.ri tightenable-now sites tightened; geometry task-F (#3116) resolved 2026-06-07 → all 24 blocked-geometry-type tolerancing.ri sites tightened (feature→Geometry, datum_refs→DatumRef); #6877 added the `Damped` mixin and flipped the four FEA presets to `DampedMaterial + Visual` → 5 new genuine-dimensionless `loss_factor` sites recorded 2026-09-03 (materials_fea.ri table re-anchored, 5→10 sites; all already annotated, no code change owed); materials_mechanical.ri table re-anchored the same day so its `Damping.loss_factor` row (`:213`) agrees with that note
+**Date:** 2026-05-07 (audit), 2026-05-15 (task-E close-out), 2026-09-03 (#6877 `loss_factor` refresh + materials_fea.ri and materials_mechanical.ri re-anchor)
 **Source:** Task 3090 (origin tasks: 2354 stdlib design, 2696 Density type, 2759 tensor literals)
 **Audit doc parallel:** `docs/notes/stdlib-trait-breadth-audit-v01.md` (trait-breadth audit, task 2347; refreshed 2026-05-14 via task 3529, formerly named `stdlib-trait-audit.md`)
 
@@ -63,6 +63,14 @@ Parametric types available today (`type_resolution.rs:1340-1421`):
 
 ## Audit Tables
 
+> **Line-anchor freshness.** The `Line` column is a *capture*, not a contract — stdlib modules
+> move under it. Two tables carry anchors re-verified **2026-09-03**: `materials_mechanical.ri`
+> and `materials_fea.ri`. The rest are the original **2026-05-07** capture and have drifted —
+> spot-checked, `materials_thermal.ri`'s `thermal_conductivity` / `specific_heat` /
+> `melting_point` rows (listed `:36` / `:37` / `:39`) now sit at `:39` / `:40` / `:42`; the
+> remaining modules were not re-measured. **Grep the named param** rather than trusting a
+> number, and re-anchor a table when you touch it.
+
 ### `materials_chemical.ri` — no audit needed
 
 Zero `param X : Real` occurrences. All params are enum-typed
@@ -81,27 +89,33 @@ Line numbers reflect the post-β surface after task #4240 renamed `uts` →
 `charpy_impact` + `izod_impact` (both Energy = undef). Task #3111 tightened all
 10 pre-β tightenable-now sites plus the 2 new post-β sites.
 
+**Anchors re-verified 2026-09-03** against the landed `materials_mechanical.ri` and rewritten in
+place (this register is maintained in place, not a dated snapshot). Every row had drifted: the
+pre-`Damping` rows by +6…+10, and the two `Damping` rows from `:174`/`:175` to **`:212`/`:213`** —
+the latter being the anchor the `materials_fea.ri` disambiguation note below points at. Row count,
+classifications and follow-up cells are unchanged; only the `Line` column moved.
+
 | Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
 |------|-------|-------|-------------|-------------------|----------------|-----------|
-| 62 | `MaterialSpec` trait | `density` | `Density` ✓ | `Density` | tightened-by-#3111 | task-A ✓ |
-| 75 | `Material` struct | `density` | `Density` ✓ | `Density` | tightened-by-#3111 | task-A ✓ |
-| 76 | `Material` struct | `youngs_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 88 | `Elastic` trait | `youngs_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 89 | `Elastic` trait | `poissons_ratio` | `Real` | `Real` | genuine-dimensionless | — |
-| 90 | `Elastic` trait | `shear_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 102 | `Strong` trait | `yield_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 103 | `Strong` trait | `ultimate_tensile_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 104 | `Strong` trait | `compressive_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 115 | `Hard` trait | `hardness_value` | `Real` | `Real` | genuine-dimensionless | — |
-| 133 | `FatigueRated` trait | `fatigue_limit` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 134 | `FatigueRated` trait | `fatigue_strength_at` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
-| 143 | `FractureTough` trait | `fracture_toughness` | `FractureToughness` ✓ | `Pressure·√Length` (K_Ic) | tightened-by-#3115 | task-E ✓ |
-| 153 | `Ductile` trait | `elongation_at_break` | `Real` | `Real` | genuine-dimensionless | — |
-| 154 | `Ductile` trait | `reduction_of_area` | `Real` | `Real` | genuine-dimensionless | — |
-| 165 | `ImpactResistant` trait | `charpy_impact` | `Energy` ✓ | `Energy` | tightened-by-#3111 | task-A ✓ |
-| 166 | `ImpactResistant` trait | `izod_impact` | `Energy` ✓ | `Energy` | tightened-by-#3111 | task-A ✓ |
-| 174 | `Damping` trait | `damping_ratio` | `Real` | `Real` | genuine-dimensionless | — |
-| 175 | `Damping` trait | `loss_factor` | `Real` | `Real` | genuine-dimensionless | — |
+| 68 | `MaterialSpec` trait | `density` | `Density` ✓ | `Density` | tightened-by-#3111 | task-A ✓ |
+| 84 | `Material` struct | `density` | `Density` ✓ | `Density` | tightened-by-#3111 | task-A ✓ |
+| 85 | `Material` struct | `youngs_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 98 | `Elastic` trait | `youngs_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 99 | `Elastic` trait | `poissons_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 100 | `Elastic` trait | `shear_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 112 | `Strong` trait | `yield_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 113 | `Strong` trait | `ultimate_tensile_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 114 | `Strong` trait | `compressive_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 125 | `Hard` trait | `hardness_value` | `Real` | `Real` | genuine-dimensionless | — |
+| 143 | `FatigueRated` trait | `fatigue_limit` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 144 | `FatigueRated` trait | `fatigue_strength_at` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 153 | `FractureTough` trait | `fracture_toughness` | `FractureToughness` ✓ | `Pressure·√Length` (K_Ic) | tightened-by-#3115 | task-E ✓ |
+| 163 | `Ductile` trait | `elongation_at_break` | `Real` | `Real` | genuine-dimensionless | — |
+| 164 | `Ductile` trait | `reduction_of_area` | `Real` | `Real` | genuine-dimensionless | — |
+| 175 | `ImpactResistant` trait | `charpy_impact` | `Energy` ✓ | `Energy` | tightened-by-#3111 | task-A ✓ |
+| 176 | `ImpactResistant` trait | `izod_impact` | `Energy` ✓ | `Energy` | tightened-by-#3111 | task-A ✓ |
+| 212 | `Damping` trait | `damping_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 213 | `Damping` trait | `loss_factor` | `Real` | `Real` | genuine-dimensionless | — |
 
 **Notes:**
 - `poissons_ratio` is a dimensionless elastic ratio; `Real` is correct.
