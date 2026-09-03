@@ -153,3 +153,50 @@ fn classify_separates_a_slender_box_into_planar_brep_faces() {
          fails identically at a 90° feature angle (#6200)."
     );
 }
+
+/// The shared census helper must be self-isolating: two back-to-back
+/// invocations on identical geometry, under DIFFERENT gmsh model names, must
+/// return the identical triple.
+///
+/// This is the precondition that makes ONE definition safe to share across two
+/// test binaries and three call sites. It pins two properties at once:
+///
+/// - **No accumulated gmsh state.** The helper's `ffi::clear()`-first /
+///   `ffi::clear()`-last discipline means invocation *n+1* sees a clean model
+///   database, so a census never depends on what ran before it.
+/// - **`model_name` is purely diagnostic.** `ffi::clear()` runs *before*
+///   `ffi::model_add`, wiping all models, so the name cannot reach the result —
+///   it only labels gmsh's own log output when a census test fails. Passing two
+///   different names and asserting one triple makes that a tested property
+///   rather than a comment.
+///
+/// It also proves the back-to-back call is deadlock-free: each invocation
+/// scopes its own `init::GMSH_LOCK` guard, which drops at return.
+///
+/// Provenance — MEASURED on this branch, not guessed. A scratch probe running
+/// exactly this double invocation returned `welded_a=(8,14,8)
+/// welded_b=(8,14,8)`. The `>= 8/12/6` floor is the same bound
+/// `classify_separates_a_box_into_planar_brep_faces` and
+/// `classify_separates_a_slender_box_into_planar_brep_faces` already assert
+/// (written there as `n2 >= 6 && n1 >= 12 && n0 >= 8`; the tuple order here is
+/// `(n0, n1, n2)` = vertices/curves/surfaces, hence 8/12/6).
+#[test]
+fn entity_census_is_isolated_across_invocations() {
+    let a = common::entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_census_a");
+    let b = common::entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_census_b");
+
+    assert_eq!(
+        a, b,
+        "two censuses of identical geometry disagreed ({a:?} vs {b:?}). Either the helper \
+         leaks gmsh state across invocations (its leading ffi::clear() is not doing its job) \
+         or the diagnostic-only `model_name` argument is reaching the result — both break the \
+         precondition for sharing one census definition across test binaries."
+    );
+    assert!(
+        a.0 >= 8 && a.1 >= 12 && a.2 >= 6,
+        "census dim0/dim1/dim2 = {}/{}/{}, expected at least 8/12/6 for a welded unit cube. \
+         An isolated helper that returns a DEGENERATE census twice would satisfy the equality \
+         above, so this floor pins that both invocations actually classified the box (#6200).",
+        a.0, a.1, a.2
+    );
+}
