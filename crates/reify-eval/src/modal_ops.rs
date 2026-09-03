@@ -1250,7 +1250,7 @@ pub(crate) fn run_modal_analysis(
     // Nothing downstream of this line changes for a pre-#6878 descriptor: the
     // eigensolve, the assembly cache key (which deliberately EXCLUDES damping)
     // and the `ModalResult.damping` echo are all untouched.
-    let plan = plan_modal_damping(options, &value_inputs[0]);
+    let (plan, damping_diagnostics) = plan_modal_damping(options, &value_inputs[0]);
     let element_order = extract_element_order(options);
     // Map the order to the cache-key discriminant from the SAME source that picks
     // the ModalMesh below, so the key and the assembled (K, M) can never disagree
@@ -1440,10 +1440,16 @@ pub(crate) fn run_modal_analysis(
         None
     };
     let new_warm_state = Some(state);
-    // BC-realization notes FIRST, then the solve's own diagnostics: an author
-    // reading a `W_ModalRigidBodyMode` warning wants the realization that
-    // produced it above the warning, not below.
+    // BC-realization notes FIRST, then the damping plan's, then the solve's own:
+    // an author reading a `W_ModalRigidBodyMode` warning wants the realization
+    // that produced it above the warning, not below. The damping notes sit
+    // between them because they describe the same INPUT-interpretation stage as
+    // the BC realization (what the trampoline made of the options you wrote),
+    // whereas `core.diagnostics` reports what the SOLVE then found. Ordering is
+    // deterministic by construction — all three are plain appends, none depends
+    // on iteration order.
     let mut diagnostics = bc_diagnostics;
+    diagnostics.extend(damping_diagnostics);
     diagnostics.extend(core.diagnostics);
     let outcome = ComputeOutcome::Completed {
         result,
@@ -3230,47 +3236,102 @@ struct ModalDampingPlan {
 /// genuinely varies by mode — is a later leaf of the same PRD and is deliberately
 /// not implemented here.
 ///
+/// ## Returns diagnostics alongside the plan
+///
+/// The `Material { extra }` arm can discover a companion descriptor it cannot
+/// honour, and dropping that silently would reintroduce INV-SF-3 one level down
+/// from where #6875 closed it. Those warnings are returned here rather than
+/// pushed to a shared buffer so this fn stays a pure function of its two inputs
+/// — which is what lets it be hoisted above the cache lookup without ordering
+/// hazards. [`run_modal_analysis`] merges them at a single, deterministic point.
+///
 /// ## `Unsupported` is deliberately left as it was
 ///
 /// The FEA path flattens an unimplemented descriptor to the undamped triple, as
 /// it did before #6878. Making that degrade LOUD on this path (as
 /// `run_mechanism_modal` already does) is a real gap, but it is a different
 /// descriptor family and out of this leaf's scope — noted, not widened.
-fn plan_modal_damping(options: &Value, material: &Value) -> ModalDampingPlan {
+fn plan_modal_damping(options: &Value, material: &Value) -> (ModalDampingPlan, Vec<Diagnostic>) {
     const UNDAMPED: ModalDampingPlan = ModalDampingPlan {
         zeta_material: 0.0,
         alpha: 0.0,
         beta: 0.0,
     };
+    let no_diagnostics = Vec::new();
     match classify_damping(options) {
-        DampingKind::Absent | DampingKind::NoDamping => UNDAMPED,
-        DampingKind::Rayleigh { alpha, beta } => ModalDampingPlan {
-            zeta_material: 0.0,
-            alpha,
-            beta,
-        },
+        DampingKind::Absent | DampingKind::NoDamping => (UNDAMPED, no_diagnostics),
+        DampingKind::Rayleigh { alpha, beta } => (
+            ModalDampingPlan {
+                zeta_material: 0.0,
+                alpha,
+                beta,
+            },
+            no_diagnostics,
+        ),
         // See the note above: unchanged pre-#6878 behaviour, deliberately.
-        DampingKind::Unsupported(_) => UNDAMPED,
+        DampingKind::Unsupported(_) => (UNDAMPED, no_diagnostics),
         DampingKind::Material { extra } => {
             // The `None` case is short-circuited by `run_modal_analysis`'s
             // `E_ModalDampingMaterialNotDamped` guard long before this point, so
             // it is unreachable here; `unwrap_or(0.0)` is the inert floor for
             // that unreachability rather than a silent substitution.
             let eta = extract_loss_factor(material).unwrap_or(0.0);
+            let mut diagnostics = Vec::new();
             let (alpha, beta) = match *extra {
                 DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
                 DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
                 // A descriptor we cannot honour in `extra` position. The MSE
-                // half IS applied — this is a partial degrade, not a failure —
-                // so the companion contributes 0. step-12 adds the coded
-                // warning that keeps that honest.
-                DampingKind::Unsupported(_) | DampingKind::Material { .. } => (0.0, 0.0),
+                // half IS applied — a PARTIAL degrade, not a failure — so this
+                // is a Warning rather than the Error
+                // `E_ModalDampingMaterialNotDamped` uses. Without it the
+                // trait-typed `extra` slot would silently drop a declared
+                // additive intent: the INV-SF-3 shape #6875 was filed to
+                // eliminate one level up, reintroduced one level down.
+                //
+                // A NESTED `MaterialDamping` warns identically rather than
+                // recursing into a second η/2 term: additive composition of a
+                // descriptor with itself is not a defined semantics (PRD §C5),
+                // and silently doubling ζ would be a worse answer than
+                // declining with a warning.
+                //
+                // Message shape deliberately follows
+                // `W_MechanismModalUnsupportedDamping` — same "the declared
+                // intent is NOT applied" honesty framing — so the two damping
+                // degrades read as one family.
+                ref unhonored => {
+                    let type_name = match unhonored {
+                        DampingKind::Unsupported(name) => name.clone(),
+                        DampingKind::Material { .. } => "MaterialDamping".to_string(),
+                        // Unreachable: the two arms above cover every other
+                        // variant. Named rather than `unreachable!()` so a future
+                        // variant degrades loudly instead of panicking a solve.
+                        other => format!("{other:?}"),
+                    };
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "W_ModalDampingUnsupportedExtra: MaterialDamping.extra is a \
+                         `{type_name}` descriptor, which this trampoline does not \
+                         implement as an additive companion. The modal-strain-energy \
+                         half IS applied (ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e), which \
+                         for this single-material model is η/2), but the `extra` half \
+                         contributes 0 — the declared additive total is NOT what you \
+                         get. Only `RayleighDamping(alpha, beta)` (ζ = (α + β·ω²)/(2·ω)) \
+                         and `NoDamping()` are honored in `extra` position; \
+                         `NoDamping()` is the default and means \"no additive \
+                         companion\". Note that nesting `MaterialDamping` inside \
+                         `extra` is not a defined composition — a descriptor cannot \
+                         compose additively with itself."
+                    )));
+                    (0.0, 0.0)
+                }
             };
-            ModalDampingPlan {
-                zeta_material: eta / 2.0,
-                alpha,
-                beta,
-            }
+            (
+                ModalDampingPlan {
+                    zeta_material: eta / 2.0,
+                    alpha,
+                    beta,
+                },
+                diagnostics,
+            )
         }
     }
 }
