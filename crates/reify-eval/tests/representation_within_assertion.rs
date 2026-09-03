@@ -1644,9 +1644,15 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
         eprintln!(
             "BT7 note: fine sphere deviation ({achieved:.3e} m) is well below the \
              6.202e-4 m measured for #precision(0.3mm) on a 1 m sphere. NOT a failure \
-             — the verdict is still Satisfied — but this OCCT build meshes finer than \
-             when the value was tuned, so re-measure OCCT_SOURCE_FINE's sweep before \
-             relying on its numbers."
+             — the verdict is still Satisfied — but under the staircase model (PRD \
+             docs/prds/v0_6/precision-nominal-representation-guarantee.md §2) a low \
+             reading has two possible causes: this OCCT build meshes finer than when \
+             the value was tuned, OR 0.3mm has drifted onto the ~0.758x tooth branch \
+             (about 2.27e-4 m, inside this range) while the mesh is unchanged — a case \
+             the .ri fixture's 0.7mm drift canary cannot catch, since it only watches \
+             upward drift. Re-measure OCCT_SOURCE_FINE's sweep before relying on its \
+             numbers; if the low reading is a tooth, RETUNE #precision back onto the \
+             tread branch rather than merely re-measuring."
         );
     }
     assert!(

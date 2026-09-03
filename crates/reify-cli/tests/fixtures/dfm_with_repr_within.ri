@@ -117,7 +117,8 @@ structure def OverhangRule : DFMRule {
 /// The measured facet-chord deviation, its margin against the 1mm bound, and the
 /// procedure for retuning #precision are in the header note "#precision and the
 /// RepresentationWithin margin" — read it before changing the pragma, because the
-/// response is a sawtooth and is not interpolatable.
+/// response is a staircase of treads and downward teeth, so it is not
+/// interpolatable.
 structure Sphere {
     let r = sphere(1000mm)
 }
