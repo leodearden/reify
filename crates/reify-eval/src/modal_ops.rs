@@ -6799,6 +6799,191 @@ mod tests {
         );
     }
 
+    /// Task #6878 (PRD leaf β) step-11: close the INV-SF-3 hole the recursive
+    /// `extra` slot opens.
+    ///
+    /// `param extra : DampingDescriptor` is TRAIT-typed, so it accepts any
+    /// refinement — including one the trampoline does not implement, and
+    /// including a nested `MaterialDamping`. `plan_modal_damping` maps both to
+    /// `(alpha, beta) = (0, 0)`, which without a diagnostic would silently drop a
+    /// DECLARED additive intent: exactly the shape #6875 was filed to eliminate
+    /// one level up, reintroduced one level down.
+    ///
+    /// A WARNING and not an Error, deliberately. The MSE half IS honoured
+    /// (ζ = η/2 is applied and the solve completes), so this is a PARTIAL
+    /// degrade, not a failure — the same family as
+    /// `W_MechanismModalUnsupportedDamping`, which also reports "your declared
+    /// intent is not applied" over a solve that otherwise succeeded. Contrast
+    /// `E_ModalDampingMaterialNotDamped`, an Error precisely because there the
+    /// declared intent cannot be honoured AT ALL.
+    ///
+    /// The nested-`MaterialDamping` case warns IDENTICALLY rather than recursing
+    /// into a second η/2 term: additive composition of a descriptor with itself is
+    /// not a defined semantics in PRD §C5, and silently doubling ζ would be a
+    /// worse answer than declining with a warning.
+    ///
+    /// The SILENCE half is what makes the warning a signal rather than noise:
+    /// `extra: NoDamping()` (the stdlib default, i.e. what every real
+    /// author-surface `MaterialDamping()` carries) and `extra: RayleighDamping`
+    /// must be completely silent, and the code must not fire at all for
+    /// `NoDamping` / `RayleighDamping` / absent TOP-level descriptors.
+    ///
+    /// RED before step-12: the code does not exist, and step-8 drops the nested
+    /// descriptor silently.
+    #[test]
+    fn trampoline_warns_when_material_dampings_extra_is_unsupported() {
+        const CODE: &str = "W_ModalDampingUnsupportedExtra";
+
+        /// Solve the shared damped fixture under `damping`, returning the modes
+        /// and diagnostics.
+        fn solve(damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                damped_material(0.0006),
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        /// `MaterialDamping { extra }`.
+        fn material_with_extra(extra: Value) -> Value {
+            struct_instance("MaterialDamping", vec![("extra".to_string(), extra)])
+        }
+
+        // ── THE WARNING. Two nested descriptors that cannot be honoured. ─────
+        for (label, extra, expected_name) in [
+            (
+                "an unimplemented refinement",
+                struct_instance("HystereticDamping", vec![]),
+                "HystereticDamping",
+            ),
+            (
+                "a nested MaterialDamping",
+                struct_instance("MaterialDamping", vec![]),
+                "MaterialDamping",
+            ),
+        ] {
+            let (modes, diagnostics) = solve(Some(material_with_extra(extra)));
+
+            // (i) The MSE half IS honoured — a partial degrade, not a failure.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "{label}: an unsupported `extra` must NOT abort the solve — the \
+                 MSE half is applied and only the companion is dropped; got \
+                 {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+            let expected_zeta = 0.0006 / 2.0;
+            for (i, mode) in modes.iter().enumerate() {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("{label}: mode {i} must be a Mode StructureInstance")
+                };
+                let Some(Value::Real(zeta)) = m.fields.get("damping_ratio") else {
+                    panic!("{label}: mode {i} damping_ratio must be a Real")
+                };
+                assert!(
+                    (zeta - expected_zeta).abs() / expected_zeta < 1e-9,
+                    "{label}: mode {i} ζ must be the MSE half alone, η/2 = \
+                     {expected_zeta} (the `extra` companion contributes 0); got \
+                     {zeta}"
+                );
+            }
+
+            // (ii) EXACTLY ONE coded Warning, NAMING the nested descriptor.
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "{label}: expected exactly one {CODE} Warning — zero means the \
+                 declared additive intent was dropped SILENTLY, which is the \
+                 INV-SF-3 shape this task exists to close; got {diagnostics:?}"
+            );
+            assert!(
+                coded[0].message.contains(expected_name),
+                "{label}: the warning must NAME the nested descriptor's runtime \
+                 type so the author can locate the dropped companion; got: {}",
+                coded[0].message
+            );
+        }
+
+        // ── THE SILENCE HALF. ───────────────────────────────────────────────
+        for (label, damping) in [
+            (
+                "extra: NoDamping (the stdlib default)",
+                Some(material_with_extra(struct_instance("NoDamping", vec![]))),
+            ),
+            (
+                "extra: RayleighDamping",
+                Some(material_with_extra(rayleigh_damping(0.0, 1e-4))),
+            ),
+            (
+                "bare MaterialDamping (no extra field)",
+                Some(struct_instance("MaterialDamping", vec![])),
+            ),
+            (
+                "top-level NoDamping",
+                Some(struct_instance("NoDamping", vec![])),
+            ),
+            ("top-level RayleighDamping", Some(rayleigh_damping(0.0, 1e-4))),
+            ("absent damping field", None),
+        ] {
+            let (modes, diagnostics) = solve(damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: must emit NO {CODE} diagnostic — the warning is a \
+                 signal only if the honourable cases are silent; got \
+                 {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
     /// Task #6878 (PRD leaf β) step-9(c): the in-crate twin of B8's loud coded
     /// rejection, plus the boundary the author-surface e2e cannot reach.
     ///
