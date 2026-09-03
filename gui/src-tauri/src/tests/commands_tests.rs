@@ -13,6 +13,9 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::commands::AppState;
 use crate::engine::EngineSession;
+// The ONE η bounded fixture, shared with the engine-level tests rather than twinned
+// here — see its doc comment for why a second copy is a hazard.
+use crate::tests::engine_tests::bounded_bracket_source;
 
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -527,15 +530,52 @@ fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
     );
 }
 
-/// The bounded fixture for the η export-refusal test above: [`bracket_source`] plus a
-/// non-circular checker structure declaring the bound. Kept local to this file (the
-/// twin in `engine_tests.rs` is private to that module), so the ONLY delta from the
-/// already-green `end_to_end_export_via_impl` case is the declared bound.
-fn bounded_bracket_source() -> String {
-    format!(
-        "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
-        bracket_source()
-    )
+/// η / C-SURFACE (2) at the MCP debug surface — the second of the two GUI export
+/// callers that delegate to the `EngineSession::export` chokepoint (task 6190).
+///
+/// Companion to `export_impl_refuses_…` above, and load-bearing for a reason that
+/// test cannot cover: `TauriToolContext::export` returns `Result<bool, ToolError>`,
+/// so the natural-looking refactor of folding the refusal into `Ok(false)` would
+/// report a REFUSED export to the MCP debug client as a completed one, with the
+/// diagnostic dropped entirely. This pins the mapping — `Err(ToolError::EngineError)`
+/// carrying the message verbatim, never `Ok(_)`.
+///
+/// It lives here beside the `export_impl` delegation proof rather than in
+/// `mcp_context_tests.rs` (its topical home) because that file is outside task 6190's
+/// lock footprint; keeping both delegation proofs together also lets a reader diff the
+/// two surfaces' contracts side by side.
+#[test]
+fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::mcp_context::TauriToolContext;
+    use reify_mcp::{ReifyToolContext, ToolError};
+
+    let mut session = make_session();
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp_bounded.step");
+
+    let err = ctx
+        .export("step", path.to_str().unwrap())
+        .expect_err("the MCP export tool must surface the η refusal, not report success");
+    match err {
+        ToolError::EngineError(msg) => assert!(
+            msg.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal must reach the MCP client as an EngineError carrying the stable \
+             E_* token verbatim; got: {msg}"
+        ),
+        other => panic!(
+            "a refused export must map to ToolError::EngineError (the engine's own \
+             refusal), not {other:?}"
+        ),
+    }
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
 }
 
 #[test]

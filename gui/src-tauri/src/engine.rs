@@ -3327,35 +3327,23 @@ impl EngineSession {
         let (compiled_opt, engine) = self.core.split_compiled_and_engine_mut();
         let compiled = compiled_opt.ok_or_else(|| "No module loaded".to_string())?;
 
-        // η export refusal (PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md,
-        // C-SURFACE (2)). The GUI is this gate's THIRD call site, after
-        // `Engine::build_outputs_with_result` (Mode B) and `cmd_build`'s `-o` arm
-        // (Mode A, crates/reify-cli/src/main.rs) — and both GUI export callers,
-        // `commands::export_impl` and `mcp_context::TauriToolContext::export`,
-        // delegate here, so this is the single chokepoint for both. Three properties
-        // of the shape below are load-bearing and must not be "simplified" away:
+        // η export refusal. Cross-surface call-site inventory and rationale:
+        // PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md, C-SURFACE (2).
         //
-        // * WHY IT PRECEDES `engine.build`. `std::fs::write` runs inside the
-        //   `Some(data)` arm below, and `Engine::build` → `build_with_geometry_output`
-        //   never emits this diagnostic at all (the refusal lives only in the sibling
-        //   `build_outputs_with_result`), so a gate riding the existing
-        //   `diag.severity == Severity::Error` loop would catch NOTHING. Sited here it
-        //   gates the WRITE. It also skips realization and OCCT tessellation on a build
-        //   about to write nothing (PRD §6 gate-cost rule), matching the CLI Mode-A
-        //   siting term for term.
-        // * WHY IT IS UNCONDITIONAL ON `Some(_)` AND DOES NOT RE-TEST `diag.severity`.
-        //   Returning `Err` IS the refusal on this surface, so deriving it from
-        //   severity would let a future severity change silently reopen the bypass this
-        //   gate exists to close. (The CLI's `debug_assert_eq!` on severity is
-        //   deliberately not ported: it guards `cmd_build`'s exit-code derivation, which
-        //   has no analogue in a `Result<(), String>` surface.)
-        // * WHY THE MESSAGE IS RETURNED VERBATIM, not wrapped in the loop's
-        //   `"Build error: {}"` prefix. It already leads with the stable
-        //   `E_REPR_BOUND_UNENFORCED_ON_EXPORT` token and words itself as a refusal; no
-        //   build ran, so labelling it a build error would be false, and the prefix
-        //   would push the token off the front of the string both callers surface
-        //   unmodified (`export_impl` → the frontend; `mcp_context::export` →
-        //   `ToolError::EngineError`).
+        // The non-obvious LOCAL fact — the one a reader of this function cannot
+        // recover from what is on screen — is why this must precede `engine.build`
+        // rather than ride the `diag.severity == Severity::Error` loop just below it:
+        // `Engine::build` never emits this diagnostic, so a gate down there would catch
+        // NOTHING, and `std::fs::write` runs inside the `Some(data)` arm, so only a gate
+        // sited HERE gates the write at all.
+        //
+        // Gating on `Some(_)` alone — never re-testing `diag.severity` — is deliberate:
+        // returning `Err` IS the refusal on this surface, so deriving it from severity
+        // would let a severity change silently reopen the bypass this gate closes. The
+        // remaining contract (message returned verbatim so it still leads with the
+        // stable `E_REPR_BOUND_UNENFORCED_ON_EXPORT` token; nothing written at the
+        // target) is pinned by the η tests in `tests/{engine,commands}_tests.rs`, not
+        // restated here.
         if let Some(diag) = unenforced_representation_bound_diagnostic(compiled) {
             return Err(diag.message);
         }

@@ -1548,11 +1548,11 @@ fn export_end_to_end() {
 // --- eta export refusal: the GUI surface (task 6190) ---
 //
 // PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
-// `EngineSession::export` is this gate's THIRD call site, after
-// `Engine::build_outputs_with_result` (Mode B) and `cmd_build`'s `-o` arm (Mode A).
-// Both GUI export callers — `commands::export_impl` (the Tauri command) and
-// `TauriToolContext::export` (the MCP debug surface) — delegate here, so this one
-// chokepoint covers both.
+// `EngineSession::export` is the single chokepoint both GUI export callers reach.
+// That claim is PINNED, not asserted here: `commands_tests.rs` drives the refusal
+// through `commands::export_impl` (the Tauri command) and through
+// `TauriToolContext::export` (the MCP debug surface), so a future refactor that gave
+// either its own build path goes red rather than silently reopening the bypass.
 
 /// [`bracket_source`] plus a non-circular checker structure declaring the bound.
 ///
@@ -1565,7 +1565,16 @@ fn export_end_to_end() {
 /// The `1mm` value carries no measured meaning and must not be retuned against an
 /// achieved deviation: η's refusal is a STATIC module-shape decision taken before
 /// any deviation is measured, so it fires identically for any bound.
-fn bounded_bracket_source() -> String {
+///
+/// `pub(super)` so `commands_tests.rs` shares this ONE definition rather than
+/// carrying a verbatim twin: two copies means a future `RepresentationWithin` /
+/// `param subject` syntax change can be applied to one and not the other, silently
+/// breaking the "the declared bound is the ONLY delta" invariant this doc asserts.
+/// The canonical home would be `crate::tests::test_helpers` (or
+/// `reify_test_support::fixtures`, next to `bracket_source`); both are outside task
+/// 6190's lock footprint, so the fixture is hosted with the bulk of the η cluster and
+/// can be relocated by whoever next touches those files.
+pub(super) fn bounded_bracket_source() -> String {
     format!(
         "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
         bracket_source()
