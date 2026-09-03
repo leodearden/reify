@@ -689,7 +689,7 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 /// are preserved) still hold.
 ///
 /// **TOTS FAMILY arm** (`TOTSShaper` / `RevoluteTOTSShaper`, one per joint
-/// kind — membership is decided by [`super::tots::is_tots_shaper_type_name`],
+/// kind — membership is decided by `tots::is_tots_shaper_type_name`,
 /// the single source of truth): dispatched FIRST (the impulse path cannot
 /// resolve a TOTS-family shaper). Marshal the profile's waypoints into a per-joint
 /// point-to-point spec ([`JointWaypoints`] — `start` / `interior…` / `end`), the
@@ -707,7 +707,7 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 ///
 /// Returns [`Value::Undef`] for: a non-`StructureInstance` profile or shaper; an
 /// unrecognised shaper with no resolvable train (not in {ZV, ZVD, EI, Cascaded}
-/// and not a TOTS-family shaper, per [`super::tots::is_tots_shaper_type_name`]);
+/// and not a TOTS-family shaper, per `tots::is_tots_shaper_type_name`);
 /// an impulse-arm profile that does not marshal to a spline, or a TOTS-arm
 /// profile with `< 2` / inconsistent waypoints; or a TOTS-family shaper whose
 /// problem is `ConstraintInfeasible`.
