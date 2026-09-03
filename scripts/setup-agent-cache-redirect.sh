@@ -69,9 +69,13 @@
 # Environment:
 #   REIFY_AGENT_CACHE_ROOT  Parent of the redirect destinations (default: /tmp)
 #   REIFY_TMPFILES_DIR      tmpfiles.d dir to write (default: /etc/tmpfiles.d)
-#   REIFY_MAIN_CHECKOUT     Stable checkout the installed unit's ExecStart is
-#                           pinned to (default: /home/leo/src/reify) — see
-#                           install_boot_unit()
+#   REIFY_MAIN_CHECKOUT     OVERRIDE for the stable checkout the installed
+#                           unit's ExecStart is pinned to.  When unset, that
+#                           path is DERIVED from git by
+#                           scripts/lib_main_checkout.sh; if the derivation
+#                           fails, or names a tree holding no executable copy of
+#                           this script, the unit falls back to the invoking
+#                           copy and says so — see install_boot_unit()
 #   CARGO_HOME              Seed source root  (default: $HOME/.cargo)
 #   npm_config_cache        Seed source root  (default: $HOME/.npm)
 #   XDG_CONFIG_HOME         User config dir   (default: $HOME/.config)
@@ -535,7 +539,7 @@ EOF
 # cost, now nondeterministic and on the critical path rather than off it.
 # Half a minute of deterministic boot latency is the cheaper side of that trade.
 install_boot_unit() {
-    local unit_dir unit_path self stable unit_exec
+    local unit_dir unit_path self stable unit_exec script_dir main_checkout
 
     # Bus probe, same shape as setup-dev.sh's install_build_services() caller:
     # a CI box or container has no --user bus and must skip cleanly.
@@ -548,10 +552,39 @@ install_boot_unit() {
     # resolve a relative one against.
     self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+    # WHERE THE STABLE MAIN CHECKOUT COMES FROM (task 6864): the shared resolver
+    # in scripts/lib_main_checkout.sh, which setup-dev.sh's
+    # install_build_services() already uses for the same purpose.  It honours
+    # $REIFY_MAIN_CHECKOUT verbatim when set and otherwise DERIVES the answer
+    # from git, so a contributor clone or a relocated tree resolves to its own
+    # real main checkout instead of a hardcoded host path that does not exist
+    # there.  Sourced from $(dirname "$self") rather than a second
+    # ${BASH_SOURCE[0]} dance: $self is already absolute and symlink-resolved
+    # just above, so its dirname is the correct per-invocation anchor.
+    #
+    # Sourced HERE and not at top level on purpose: --seed-only returns before
+    # this function is ever reached, so the unprivileged boot path stays
+    # bit-for-bit unchanged (test_agent_cache_redirect.sh H16-H21).
+    #
+    # `|| true` and `2>/dev/null || true` are MANDATORY, not defensive noise:
+    # this script runs under `set -euo pipefail` and reify_main_checkout returns
+    # non-zero when it cannot resolve, so an unguarded call would abort a
+    # fail-open provisioning step — and with it setup-dev.sh's whole run.
+    # `declare -F` additionally covers a lib present but not defining it.
+    script_dir="$(dirname "$self")"
+    main_checkout=""
+    if [ -r "$script_dir/lib_main_checkout.sh" ]; then
+        # shellcheck source=scripts/lib_main_checkout.sh
+        . "$script_dir/lib_main_checkout.sh" || true
+    fi
+    if declare -F reify_main_checkout >/dev/null 2>&1; then
+        main_checkout="$(reify_main_checkout "$script_dir" 2>/dev/null || true)"
+    fi
+
     # Prefer the stable main checkout over the invoking one; fall back to $self
     # (and say so) when this is not that checkout, so a contributor clone still
     # gets a working unit rather than one pointed at a path they do not have.
-    stable="${REIFY_MAIN_CHECKOUT:-/home/leo/src/reify}/scripts/setup-agent-cache-redirect.sh"
+    stable="$main_checkout/scripts/setup-agent-cache-redirect.sh"
     if [ -x "$stable" ]; then
         unit_exec="$stable"
     else
