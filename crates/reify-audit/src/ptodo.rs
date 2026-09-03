@@ -499,6 +499,14 @@ fn is_greek(c: char) -> bool {
 /// prose happens to name a PRD row; see [`PrdCiteFamily`] for why the
 /// alternative is fail-dangerous.
 ///
+/// **The `#N` pass is SELF-SUFFICIENT, not precondition-dependent.** It fires
+/// only when the line ALSO carries no canonical cite, so calling this fn on a
+/// line that is properly tracked (`// TODO: see #4553; supersedes PRD task #10`)
+/// can never demote it to the Medium advisory. Arm (3) happens to pre-check
+/// [`has_canonical_cite`], but nothing encodes that, and a caller added later —
+/// or a reorder of arm (5)'s if/else-if chain — must not be able to break the
+/// verdict from the outside.
+///
 /// The `#N` register is scanned in a SEPARATE pass, via the shared
 /// [`cite_occurrences`] iterator, rather than being fused into the `char` loop
 /// below: the Greek arm needs `char` indices (Greek letters are multi-byte)
@@ -515,16 +523,30 @@ fn is_greek(c: char) -> bool {
 fn has_malformed_cite(line: &str) -> bool {
     // Pass 1 (§8.2 `task(s) #N` register): the shared [`cite_occurrences`]
     // scan, with the verdict INVERTED relative to `has_canonical_cite` — the
-    // line is malformed when ANY occurrence lands in `task(s)` left-context.
-    // "Any", not "all", because arm (3) consults this only AFTER
-    // `has_canonical_cite` has already returned false, so reaching here means
-    // no occurrence on the line was a genuine cite.
+    // line is malformed when ANY occurrence lands in `task(s)` left-context
+    // AND no occurrence on the line is a genuine cite.
+    //
+    // The second conjunct is what makes this pass SELF-SUFFICIENT. "Any" alone
+    // is sound only under a caller-side precondition — arm (3) consults this fn
+    // only after `has_canonical_cite` already returned false — and a
+    // precondition stated in prose is one an added caller, or a reorder of arm
+    // (5)'s if/else-if chain, breaks silently. On a line carrying both idioms
+    // (`// TODO: see #4553; supersedes PRD task #10`) the unguarded form would
+    // DEMOTE a properly-tracked marker to the Medium advisory `malformed-cite`,
+    // which is the LOST/downgraded direction §6.6's `live ⊆ baseline` ratchet is
+    // blind to. A `debug_assert!` was rejected as the alternative: this fn is
+    // legitimately called on canonically-cited lines by `malformed_cite_*`,
+    // which assert it returns false, so the precondition is not universal.
+    // Short-circuit order keeps the extra scan off the hot path — it runs only
+    // on a line that carries a `task(s) #N` occurrence at all. Pinned by
+    // `malformed_cite_prd_relative_is_self_sufficient`.
     //
     // `Reference` occurrences are deliberately NOT accepted here — see this
     // fn's rustdoc and [`PrdCiteFamily`].
     let bytes = line.as_bytes();
     if cite_occurrences(line)
         .any(|(at, id)| prd_relative_cite_family(bytes, at, id) == Some(PrdCiteFamily::TaskCite))
+        && !has_canonical_cite(line)
     {
         return true;
     }
@@ -2859,6 +2881,36 @@ mod tests {
         assert!(!has_malformed_cite(
             "/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient"
         ));
+    }
+
+    /// Pass 1 must stand on its own, not on a caller-side precondition.
+    ///
+    /// A line can carry BOTH a genuine cite and a `task(s) #N` occurrence.
+    /// Arm (3) reaches `has_malformed_cite` only after [`has_canonical_cite`]
+    /// returned false, so today no such line ever gets here — but that is a
+    /// property of ONE call site, not of this fn, and the cost of losing it is
+    /// a SEVERITY: a properly-tracked marker demoted from `Cited` (whose cite
+    /// reaches the β liveness lane, High when orphaned) to the Medium advisory
+    /// `malformed-cite`. §6.6's ratchet asserts `live ⊆ baseline`, which sees a
+    /// GAINED finding and never a DEMOTED one, so nothing downstream would
+    /// report it. Pinned here at the recogniser AND end-to-end below.
+    #[test]
+    fn malformed_cite_prd_relative_is_self_sufficient() {
+        // Both idioms on one line: the `#4553` is genuine, the `#10` is family
+        // 3. The genuine cite wins — the line is not malformed.
+        let mixed = "// TODO: see #4553; supersedes PRD task #10";
+        assert!(has_canonical_cite(mixed));
+        assert!(!has_malformed_cite(mixed));
+        // …and end to end, the marker stays `Cited` on its genuine id alone —
+        // reaching the β liveness lane, not the structural taxonomy.
+        assert_eq!(
+            scan_file(mixed, true),
+            vec![(1, LineClass::Cited(vec![4553]), mixed.to_string())]
+        );
+        assert!(classify_file(mixed, true).is_empty());
+        // The control: strip the genuine cite and the same line IS malformed,
+        // so the guard suppresses nothing it should not.
+        assert!(has_malformed_cite("// TODO: supersedes PRD task #10"));
     }
 
     /// `scan_file` precedence for the same shape, end to end: a marker line
