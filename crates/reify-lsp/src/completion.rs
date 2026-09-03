@@ -1412,11 +1412,10 @@ mod tests {
         }
     }
 
-    /// RED (task 6450 step-1): each gated geometry builtin's SERVED completion
-    /// documentation must carry the units requirement AND its dimensioned
-    /// example — pinned BEHAVIOURALLY so the doc can never claim a gate that
-    /// does not exist and every advertised example is one that actually
-    /// evaluates clean.
+    /// Each gated geometry builtin's SERVED completion documentation must
+    /// carry the units requirement AND its dimensioned example — pinned
+    /// BEHAVIOURALLY so the doc can never claim a gate that does not exist
+    /// and every advertised example is one that actually evaluates clean.
     ///
     /// Assertion (c) reads the completion item's rendered `documentation`
     /// (via `compute_completions`), not the raw `BuiltinFunctionInfo.doc`
@@ -1424,29 +1423,34 @@ mod tests {
     /// literals — confirmed against `LENGTH_MIGRATION_HINT`), so `doc` stays
     /// its short `&'static str` and `BUILTIN_FUNCTIONS` stays a plain const
     /// slice; the units clause is composed from the shared const only when
-    /// `push_builtins` renders the final `CompletionItem` (step-2). This
-    /// mirrors the existing `polygon_completion_advertises_compiling_flat_form`
-    /// and `builtin_completions_have_documentation` precedent of asserting on
+    /// `push_builtins` renders the final `CompletionItem`. This mirrors the
+    /// existing `polygon_completion_advertises_compiling_flat_form` and
+    /// `builtin_completions_have_documentation` precedent of asserting on
     /// served completion output rather than the source struct.
     ///
-    /// Per row: (a) the BARE form is rejected with `LENGTH_MIGRATION_HINT` —
-    /// matching the hint TEXT, not the builtin name, since a lowered alias
-    /// diagnoses under its lowered `box`/`cylinder` name; (b) the DIMENSIONED
-    /// form evaluates with NO diagnostics at all (not merely none containing
-    /// the hint — review amendment, task 6450: verified by probe that all 15
-    /// dimensioned examples produce zero diagnostics through
-    /// `AnalysisContext` today, so the stronger assertion catches e.g. a
-    /// wrong-arity or misspelled example that a hint-substring check alone
-    /// would miss); (c) the builtin's served `documentation` contains both
-    /// the hint and the dimensioned example.
+    /// Per row: (a) for `CompileCheck` rows, the BARE form is rejected with
+    /// `LENGTH_MIGRATION_HINT` — matching the hint TEXT, not the builtin
+    /// name, since a lowered alias diagnoses under its lowered
+    /// `box`/`cylinder` name; for `BuildOnly` rows, the bare form instead
+    /// must produce NO diagnostic containing the hint, which pins the
+    /// premise that justifies skipping the positive check (see `GateReach`)
+    /// instead of silently opting out. (b) the DIMENSIONED form evaluates
+    /// with NO diagnostics at all — not merely none containing the hint, so
+    /// a wrong-arity or misspelled example reds here instead of shipping
+    /// into the popup unnoticed. (c) the builtin's served `documentation`
+    /// contains both the hint and the dimensioned example; for `half_space`
+    /// specifically it must also carry the qualifier noting its outward
+    /// normal stays dimensionless, and no other row's documentation may
+    /// carry that qualifier.
     ///
-    /// (a) is asserted only for `CompileCheck` rows — the twelve whose gate
-    /// `AnalysisContext::check()` can actually observe; a `BuildOnly` row's
-    /// bare form is never rejected by this harness, so pinning (a) there
-    /// would pin a false premise (see `GateReach` and esc-6450-2). (b) and
-    /// (c) apply to all 15 rows: (b) needs no COMPILE-time gate to be
-    /// observable — it only requires that the advertised example evaluates
-    /// clean — and (c) is what step-2 makes green for every row.
+    /// (a)'s positive form (bare rejected with the hint) applies only to
+    /// `CompileCheck` rows — the twelve whose gate `AnalysisContext::check()`
+    /// can actually observe; a `BuildOnly` row's bare form is never rejected
+    /// by this harness, so pinning the positive form there would pin a false
+    /// premise (see `GateReach` and esc-6450-2). (b) and (c) apply to all 15
+    /// rows: (b) needs no COMPILE-time gate to be observable — it only
+    /// requires that the advertised example evaluates clean — and (c) is
+    /// what `builtin_doc_with_length_gate_note` makes true for every row.
     #[test]
     fn gated_length_builtins_advertise_their_dimension_requirement() {
         use reify_core::units::LENGTH_MIGRATION_HINT;
@@ -1458,26 +1462,31 @@ mod tests {
         for (name, bare, reach) in GATED_LENGTH_BUILTIN_ROWS {
             let (name, bare) = (*name, *bare);
             let dimensioned = dimensioned_example(name);
-            // (a) is asserted only for rows whose bare-form gate is reachable
-            // from this harness. A `BuildOnly` row's requirement is just as
-            // real, but no diagnostic for it can ever appear here — see
-            // `GateReach` and esc-6450-2. Asserting it would pin a false
-            // premise.
+            let bare_diags = eval_expr_diagnostics(bare);
             if *reach == CompileCheck {
-                let bare_diags = eval_expr_diagnostics(bare);
                 assert!(
                     bare_diags.iter().any(|m| m.contains(LENGTH_MIGRATION_HINT)),
                     "{name}: bare form `{bare}` should be rejected with the \
                      LENGTH_MIGRATION_HINT, got diagnostics: {bare_diags:?}"
                 );
+            } else {
+                // Pins the premise that justifies skipping the positive
+                // check above: a `BuildOnly` row's bare form must genuinely
+                // be undiagnosed by this harness today. If a future compiler
+                // change gives the builtin a `builtin_arg_slots` arm, this
+                // reds and says so — promote it to `CompileCheck` rather
+                // than leaving a stale, silently-wrong opt-out.
+                assert!(
+                    !bare_diags.iter().any(|m| m.contains(LENGTH_MIGRATION_HINT)),
+                    "{name}: marked BuildOnly but its bare form IS diagnosed \
+                     here — promote it to CompileCheck. diagnostics: {bare_diags:?}"
+                );
             }
 
-            // (b) applies to all 15 rows, `BuildOnly` included: it needs no
-            // COMPILE-time gate to observe, only that the advertised example
-            // is one that actually evaluates clean. Strengthened (review
-            // amendment) from "no diagnostic mentions the hint" to "no
-            // diagnostics at all", so a wrong-arity or misspelled example
-            // reds here instead of shipping into the popup unnoticed.
+            // (b) needs no COMPILE-time gate to observe — only that the
+            // advertised example evaluates with NO diagnostics at all, so a
+            // wrong-arity or misspelled example reds here instead of
+            // shipping into the popup unnoticed.
             let dimensioned_diags = eval_expr_diagnostics(dimensioned);
             assert!(
                 dimensioned_diags.is_empty(),
@@ -1485,10 +1494,7 @@ mod tests {
                  clean (no diagnostics), got: {dimensioned_diags:?}"
             );
 
-            let item = items
-                .iter()
-                .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == name)
-                .unwrap_or_else(|| panic!("{name}: missing FUNCTION completion"));
+            let item = find_builtin_item(&items, name);
             let doc_text = match &item.documentation {
                 Some(Documentation::MarkupContent(mc)) => mc.value.as_str(),
                 other => panic!("{name}: expected MarkupContent documentation, got: {other:?}"),
@@ -1501,42 +1507,88 @@ mod tests {
                 doc_text.contains(dimensioned),
                 "{name}: served documentation should show the dimensioned example `{dimensioned}`, got: {doc_text}"
             );
+
+            // half_space is the one row whose signature mixes a LENGTH-gated
+            // slot group with a legitimately dimensionless one, so
+            // `builtin_doc_with_length_gate_note` attaches it an extra
+            // qualifier that no other row's documentation should carry.
+            // Pinning both directions means deleting the qualifier branch,
+            // or mis-attaching it to the wrong builtin, reds here.
+            if name == "half_space" {
+                assert!(
+                    doc_text.contains("stays bare"),
+                    "{name}: served documentation should qualify that its \
+                     outward normal is dimensionless and stays bare, got: {doc_text}"
+                );
+            } else {
+                assert!(
+                    !doc_text.contains("stays bare"),
+                    "{name}: served documentation should not carry \
+                     half_space's dimensionless-normal qualifier, got: {doc_text}"
+                );
+            }
         }
     }
 
-    /// RED (task 6450 step-3): a gated geometry builtin's served completion
-    /// **signature** (the `detail` field) must type its LENGTH-gated slots as
-    /// `Length`, not `Real` — advertising `Real` is worse than the silence
-    /// step-1/step-2 close, because it affirmatively contradicts the gate
-    /// rather than merely omitting a note about it. Scoped to exactly the 15
-    /// `GATED_LENGTH_BUILTIN_ROWS` names (not every builtin in the table) so
-    /// this cannot fire on a legitimately dimensionless neighbour elsewhere —
-    /// e.g. `02-numeric`'s `sqrt(x: Real)`.
+    /// `builtin_doc_with_length_gate_note`'s `None` arm — a builtin absent
+    /// from `LENGTH_GATED_EXAMPLES` — must serve its documentation
+    /// byte-identical to the raw `BuiltinFunctionInfo.doc`, with no units
+    /// clause at all. Nothing else in this suite iterates the ~80 non-gated
+    /// rows, so an over-broad match (e.g. a future `starts_with` in place of
+    /// the exact-name `find`) could silently ship a false dimension claim on
+    /// a dimensionless builtin like `sqrt` with no test reddening — the same
+    /// failure class `half_space`'s `Float`-vs-gate contradiction was, just
+    /// inverted.
+    #[test]
+    fn non_gated_builtin_documentation_is_served_unchanged() {
+        use reify_core::units::LENGTH_MIGRATION_HINT;
+        use tower_lsp::lsp_types::Documentation;
+
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        let item = find_builtin_item(&items, "sqrt");
+        let doc_text = match &item.documentation {
+            Some(Documentation::MarkupContent(mc)) => mc.value.as_str(),
+            other => panic!("sqrt: expected MarkupContent documentation, got: {other:?}"),
+        };
+        let raw_doc = BUILTIN_FUNCTIONS
+            .iter()
+            .find(|info| info.name == "sqrt")
+            .expect("sqrt must be a registered builtin")
+            .doc;
+        assert_eq!(
+            doc_text, raw_doc,
+            "sqrt is not LENGTH-gated; its served documentation must equal \
+             its raw doc verbatim"
+        );
+        assert!(
+            !doc_text.contains(LENGTH_MIGRATION_HINT),
+            "sqrt is not LENGTH-gated; its served documentation must not \
+             carry the units clause, got: {doc_text}"
+        );
+    }
+
+    /// A gated geometry builtin's served completion **signature** (the
+    /// `detail` field) must type its LENGTH-gated slots as `Length`, not
+    /// `Real` — advertising `Real` is worse than omitting a units note
+    /// entirely, because it affirmatively contradicts the gate. Scoped to
+    /// exactly the 15 `GATED_LENGTH_BUILTIN_ROWS` names (not every builtin in
+    /// the table) so this cannot fire on a legitimately dimensionless
+    /// neighbour elsewhere — e.g. `02-numeric`'s `sqrt(x: Real)`.
     ///
-    /// Fails today for exactly three rows — `box`, `cylinder`, `sphere` —
-    /// which still advertise `Real` for slots task 5743 gated as LENGTH,
-    /// while every other solid primitive in this same table already says
-    /// `Length` (compare `box_centered`/`cylinder_centered` immediately
-    /// below them, which have the identical shape and already say `Length`).
+    /// Two checks per row: the negative `!detail.contains(": Real")`, and a
+    /// positive `detail.contains(": Length")`. The negative alone passes for
+    /// a signature with NO type annotations at all — `polygon`'s shape
+    /// before its coordinates were retyped — so the positive check is what
+    /// actually closes that gap, uniformly for every row.
     ///
-    /// Two checks per row (review amendment, task 6450 — folded from three
-    /// bespoke box/cylinder/sphere-only assertions into this loop): the
-    /// negative `!detail.contains(": Real")`, and a positive
-    /// `detail.contains(": Length")`. The negative alone passes for a
-    /// signature with NO type annotations at all, which was exactly
-    /// `polygon`'s pre-fix failure mode and is why it previously needed a
-    /// separate bespoke pin in `polygon_completion_advertises_compiling_flat_form`;
-    /// the positive check closes that gap for every row uniformly, so that
-    /// bespoke polygon assertion was removed.
-    ///
-    /// `half_space` is the one row that needs a different negative check
-    /// (review amendment round 2): its signature legitimately mixes the
-    /// LENGTH-gated point `px`/`py`/`pz` with the dimensionless outward
-    /// normal `nx`/`ny`/`nz`, which — now correctly typed `Real` rather than
-    /// the non-existent `Float` it advertised before — would trip a blanket
-    /// `!detail.contains(": Real")` even though nothing is wrong. So
-    /// `half_space` checks its three gated slot names by substring
-    /// (`px: Length` etc.) instead of banning `Real` from the whole
+    /// `half_space` needs a different negative check: its signature
+    /// legitimately mixes the LENGTH-gated point `px`/`py`/`pz` with the
+    /// dimensionless outward normal `nx`/`ny`/`nz` (correctly typed `Real`),
+    /// which would trip a blanket `!detail.contains(": Real")` even though
+    /// nothing is wrong. So `half_space` checks its three gated slot names by
+    /// substring (`px: Length` etc.) instead of banning `Real` from the whole
     /// signature; every other row here has no non-gated slot at all, so the
     /// blanket check is exact for them.
     #[test]
@@ -1544,19 +1596,9 @@ mod tests {
         let source = reify_test_support::bracket_source();
         let items = compute_completions(source, &test_uri(), Position::new(1, 0));
 
-        let detail_for = |name: &str| -> String {
-            let item = items
-                .iter()
-                .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == name)
-                .unwrap_or_else(|| panic!("{name}: missing FUNCTION completion"));
-            item.detail
-                .clone()
-                .unwrap_or_else(|| panic!("{name}: completion has no detail (signature)"))
-        };
-
         for (name, _, _) in GATED_LENGTH_BUILTIN_ROWS {
             let name = *name;
-            let detail = detail_for(name);
+            let detail = served_signature(&items, name);
             if name == "half_space" {
                 // Gated slots only (px/py/pz) — nx/ny/nz is a legitimately
                 // dimensionless direction and correctly says `: Real`, so a
@@ -2620,6 +2662,32 @@ type Speed = Length
     // spacing and arrow rendering are cosmetic, and pinning them would mean a
     // purely presentational reword reds these tests while saying nothing about
     // behaviour.
+
+    /// Find a builtin's completion item by name, as `compute_completions`
+    /// would serve it to an editor. The shared lookup behind
+    /// `served_signature` below, and used directly wherever a test needs
+    /// another field of the served `CompletionItem` (e.g. `documentation`),
+    /// so no test needs to close over `items` in a bespoke find of its own.
+    fn find_builtin_item<'a>(items: &'a [CompletionItem], name: &str) -> &'a CompletionItem {
+        items
+            .iter()
+            .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == name)
+            .unwrap_or_else(|| panic!("{name}: missing FUNCTION completion"))
+    }
+
+    /// A builtin's SERVED completion signature (the rendered `detail`
+    /// field) — what an editor actually shows for it. `builtin_signature`
+    /// below reads the source `BUILTIN_FUNCTIONS` table directly instead:
+    /// prefer `served_signature` when the claim under test is about served
+    /// output, and reach for `builtin_signature` only when the claim is
+    /// about the table itself, as `bbox_declared_signatures_are_length_narrowed`
+    /// deliberately is.
+    fn served_signature(items: &[CompletionItem], name: &str) -> String {
+        find_builtin_item(items, name)
+            .detail
+            .clone()
+            .unwrap_or_else(|| panic!("{name}: completion has no detail (signature)"))
+    }
 
     fn builtin_signature(name: &str) -> &'static str {
         BUILTIN_FUNCTIONS
