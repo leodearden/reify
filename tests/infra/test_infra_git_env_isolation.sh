@@ -160,7 +160,7 @@ assert "B4: reify_git_env_scrub is defined in the sourcing shell" _has_fn reify_
 assert "B5: reify_git_env_scrub_prefix is defined in the sourcing shell" _has_fn reify_git_env_scrub_prefix
 
 # ---------------------------------------------------------------------------
-# Arm D — DRIFT GUARD: REIFY_GIT_ENV_SCRUB_VARS is a SUPERSET of the
+# Arm D — DRIFT GUARD: REIFY_GIT_ENV_SCRUB_VARS is EXACTLY the
 # workspace's canonical Rust answer, crates/reify-test-support/src/git_env.rs's
 # REPO_REDIRECT_VARS.
 #
@@ -168,13 +168,19 @@ assert "B5: reify_git_env_scrub_prefix is defined in the sourcing shell" _has_fn
 # the house PT-DRIFT / PG-DRIFT pattern (tests/infra/test_verify_scope.sh
 # re-derives is_swept_ext and the prd-gate coupled set the same way).
 #
-# ONE-WAY BY DESIGN, exactly like PT-DRIFT: this fires when the RUST set gains a
-# variable the bash list lacks.  The reverse — bash carrying an extra var the
-# Rust set later drops — is left free, so the only direction of error this
-# permits is OVER-scrubbing, never a silent coverage hole.
+# BOTH DIRECTIONS, tightened from the original one-way containment by the
+# esc-7106-6 review: D3 fires when the RUST set gains a variable the bash list
+# lacks, and D4 fires when the bash list carries one the Rust set does not.
+# The reverse direction was first left free on the reasoning that OVER-scrubbing
+# is harmless.  It is not: widening REIFY_GIT_ENV_SCRUB_VARS into the
+# config/trace/identity class (GIT_CONFIG_*, GIT_TRACE*, GIT_AUTHOR_*,
+# GIT_COMMITTER_*) strips vars ~103 infra members inherit, and would surface as
+# unrelated flakes in whichever member relied on the inherited value — the worst
+# possible place to discover it.  Equality is what makes that RED, here, from
+# CODE, with no dependency on any prose.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- D: bash scrub list is a superset of Rust's REPO_REDIRECT_VARS (derive-from-source) ---"
+echo "--- D: bash scrub list EQUALS Rust's REPO_REDIRECT_VARS (derive-from-source) ---"
 
 GIT_ENV_RS="$REPO_ROOT/crates/reify-test-support/src/git_env.rs"
 
@@ -212,6 +218,21 @@ while IFS= read -r _d_var; do
     assert "D3: $_d_var (REPO_REDIRECT_VARS) is present in REIFY_GIT_ENV_SCRUB_VARS" \
         _in_scrub_list "$_d_var"
 done <<< "$_D_RUST_VARS"
+
+# D4 — the reverse containment that makes D3 a set EQUALITY.  Together they are
+# the code-derived over-scrub guard: no variable may sit in the bash list unless
+# the Rust constant names it.
+_in_rust_set() {
+    local _needle="$1" _v
+    while IFS= read -r _v; do
+        [ "$_v" = "$_needle" ] && return 0
+    done <<< "$_D_RUST_VARS"
+    return 1
+}
+for _b_var in ${REIFY_GIT_ENV_SCRUB_VARS:-}; do
+    assert "D4: $_b_var (REIFY_GIT_ENV_SCRUB_VARS) is present in Rust's REPO_REDIRECT_VARS" \
+        _in_rust_set "$_b_var"
+done
 
 # ---------------------------------------------------------------------------
 # Arm C — BEHAVIOURAL: the helper neutralizes a hook-shaped poison, and the
@@ -316,51 +337,45 @@ assert "C5: ... and unchanged in size ($_C_IDX_SIZE_BEFORE -> ${_C_IDX_SIZE_AFTE
     bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ "$_C_IDX_SIZE_AFTER" "$_C_IDX_SIZE_BEFORE"
 
 # ---------------------------------------------------------------------------
-# Arm C-PRESERVE (C6-C11) — the REVERSE direction: the scrub must not remove
+# Arm C-PRESERVE (C6-C9) — the REVERSE direction: the scrub must not remove
 # TOO MUCH.
 #
-# Every other arm here, and arm D's drift guard explicitly ("the only direction
-# of error this permits is OVER-scrubbing"), proves only that the scrub removes
-# ENOUGH. Nothing proved it removes no more than that — so widening
-# REIFY_GIT_ENV_SCRUB_VARS into the config/trace/identity vars, or replacing the
-# enumeration with a wholesale `GIT_*` clear, would leave arms A-G, D3 and F2
-# all green while ~103 infra members silently lost their committer identity or
-# config isolation. That failure would surface as unrelated flakes in whichever
-# member relies on the inherited value, which is the worst possible place to
-# discover it.
+# The STATIC over-scrub guard lives in arm D, as a set EQUALITY (D3 + D4)
+# against the Rust constant: code-derived, so it reds on any widening of
+# REIFY_GIT_ENV_SCRUB_VARS into the config/trace/identity class with no
+# dependency on prose anywhere. This arm carries the BEHAVIOURAL half — the
+# real helper, run with a sentinel per preserved var in scope, must leave every
+# one of them intact in the SAME invocation that strips the redirect vars.
 #
-# The preserved set is DERIVED from the same Rust source arm D reads —
-# specifically the "why an enumerated set" paragraph of REPO_REDIRECT_VARS's
-# doc, which is the workspace's ONE statement of which GIT_* vars are
-# deliberately left alone and why (GIT_CONFIG_* = harness isolation, GIT_TRACE*
-# = debuggability, GIT_AUTHOR_*/GIT_COMMITTER_* = commit determinism). A
-# `GIT_FOO_*` glob in that prose is expanded to the concrete `GIT_FOO_NAME`.
-# Deriving rather than hardcoding is the point: a hand-written list here could
-# drift into enforcing a rationale the Rust source no longer makes.
+# THE SENTINEL LIST IS STATED HERE, DELIBERATELY. It was previously derived by
+# regex-parsing the "why an enumerated set" paragraph of REPO_REDIRECT_VARS's
+# rustdoc. That coupled this gate to the literal WORDING of a doc comment in
+# another crate — rewording the heading while keeping every identifier made the
+# sed range match nothing, emptying the set and reddening the infra merge gate
+# for a pure documentation edit. The same pipeline also collapsed the doc's
+# `GIT_AUTHOR_*` / `GIT_COMMITTER_*` globs to just the two `_NAME` vars, so the
+# arm read as covering commit determinism while covering a third of it
+# (esc-7106-6 review). A short in-file list has neither failure mode: the
+# identity triples are EXHAUSTIVE here, and the list cannot silently shrink.
+#
+# This is not a second copy of anything code states — nothing in code
+# enumerates the preserved vars; the Rust doc states only the RATIONALE for
+# leaving them alone. C6 is what keeps the list honest: none of these may
+# appear in the scrub list, which (given arm D's equality) also reds if one is
+# ever pulled into REPO_REDIRECT_VARS itself.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- C-PRESERVE: the scrub leaves the non-redirect git vars alone ---"
 
-_CP_VARS=""
-if [ -f "$GIT_ENV_RS" ]; then
-    _CP_VARS="$(sed -n '/Why an enumerated set/,/left untouched\./p' "$GIT_ENV_RS" \
-        | grep -o '`GIT_[A-Z_]*\*\?`' | tr -d '`' \
-        | sed -e 's/\*$//' \
-        | grep -vx 'GIT_\?' \
-        | sed -e 's/_$/_NAME/' \
-        | sort -u || true)"
-fi
-# Pipeline order matters: the trailing `*` is stripped FIRST, then the bare
-# `GIT_` left by the paragraph's `GIT_*` strawman (the wholesale clear it argues
-# AGAINST — not a variable, and not exportable) is dropped, and only then is a
-# genuine `GIT_FOO_` glob stem expanded to `GIT_FOO_NAME`. Expanding before the
-# drop would silently mint a bogus `GIT_NAME` and assert against a variable no
-# rationale ever named.
-
-assert "C6: preserved-var set derived from git_env.rs is NON-EMPTY (guard is not vacuous)" \
-    test -n "$_CP_VARS"
-assert "C7: ... and contains GIT_CONFIG_GLOBAL (the parse read the right paragraph)" \
-    bash -c 'printf "%s\n" "$1" | grep -qx "GIT_CONFIG_GLOBAL"' _ "$_CP_VARS"
+# The three classes git_env.rs's rationale names, spelled out in full:
+#   GIT_AUTHOR_* / GIT_COMMITTER_* — commit determinism (all six, not just NAME)
+#   GIT_CONFIG_*                   — harness isolation
+#   GIT_TRACE                      — debuggability
+_CP_VARS="$(printf '%s\n' \
+    GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+    GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE \
+    GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
+    GIT_TRACE)"
 
 # Static half: the two sets must not overlap. This is the direct, greppable
 # statement of "no redirect var is claimed as preserved, and no preserved var
@@ -373,7 +388,7 @@ while IFS= read -r _cp_var; do
         _CP_OVERLAP="${_CP_OVERLAP:+$_CP_OVERLAP }$_cp_var"
     fi
 done <<< "$_CP_VARS"
-assert "C8: no preserved var appears in REIFY_GIT_ENV_SCRUB_VARS (overlap: ${_CP_OVERLAP:-<none>})" \
+assert "C6: no preserved var appears in REIFY_GIT_ENV_SCRUB_VARS (overlap: ${_CP_OVERLAP:-<none>})" \
     test -z "$_CP_OVERLAP"
 
 # Behavioural half: the same hermetic-probe shape as arm C, run through the real
@@ -411,19 +426,19 @@ fi
 _CP_REPORT_TEXT=""
 [ -f "$CP_REPORT" ] && _CP_REPORT_TEXT="$(cat "$CP_REPORT")"
 
-assert "C9: the preserve probe ran through the scrub (guard is not vacuous)" \
+assert "C7: the preserve probe ran through the scrub (guard is not vacuous)" \
     bash -c 'printf "%s\n" "$1" | grep -qx "PROBE_RAN"' _ "$_CP_REPORT_TEXT"
 # Asserted per-var so a failure names the variable that was over-scrubbed.
 while IFS= read -r _cp_var; do
     [ -n "$_cp_var" ] || continue
-    assert "C10: $_cp_var survived the scrub with its value intact" \
+    assert "C8: $_cp_var survived the scrub with its value intact" \
         bash -c 'printf "%s\n" "$1" | grep -qx "PRESERVED $2=cp-sentinel"' \
             _ "$_CP_REPORT_TEXT" "$_cp_var"
 done <<< "$_CP_VARS"
 # The contrast that keeps C10 honest: the SAME invocation must still have
 # stripped the redirect vars. Without this, a helper that had degenerated into a
 # no-op would satisfy every C10 assertion above.
-assert "C11: ... while the redirect vars were still stripped in that same run (got: ${_CP_REPORT_TEXT//$'\n'/ | })" \
+assert "C9: ... while the redirect vars were still stripped in that same run (got: ${_CP_REPORT_TEXT//$'\n'/ | })" \
     bash -c '! printf "%s\n" "$1" | grep -q "^LEAK "' _ "$_CP_REPORT_TEXT"
 
 # ---------------------------------------------------------------------------
