@@ -7,7 +7,8 @@
 **Gap count:** 14
 
 > **Overlay notice (2026-09-03):** this is a **dated 2026-05-12 snapshot** that now carries dated
-> `CORRECTION` overlays below (see M-001). Its named-symbol claims are **partly superseded**:
+> `CORRECTION` overlays below (both under M-001; M-002 and M-003 carry in-section pointers to
+> them). Its named-symbol claims are **partly superseded**:
 > `OrthotropicMaterial` and `TransverseIsotropicMaterial` shipped on **2026-05-26** in
 > `crates/reify-compiler/stdlib/constitutive.ri` (task 3779 γ, commit `6d77ce0c0a`) — two weeks
 > *after* this audit ran — so the Top-concerns bullet "Every named runtime entity in the PRD is
@@ -93,6 +94,16 @@
 
 ### M-002: Orthotropic constitutive law trait surface (per-direction moduli, ply allowables)
 
+> **Partly superseded — see the `CORRECTION 2026-09-03` overlays under M-001 above.** The *first*
+> evidence sentence below still holds (`ElasticMaterial` requires those four params and is unchanged
+> by #6877), but its anchors have drifted: `materials_fea.ri:88` → **`:130-147`**, and
+> `pub struct IsotropicElastic` is at `reify-solver-elastic/src/constitutive.rs:102` with its
+> inherent `impl` at `:109` and `d_matrix()` at `:151`, not `:9-93`. The *second* sentence — "no
+> `MaterialConstitutiveLaw` trait abstracts over isotropic vs orthotropic" — no longer holds: a
+> `ConstitutiveLaw` abstraction shipped 2026-05-26 (spelled `ConstitutiveLaw`, *not*
+> `MaterialConstitutiveLaw`), and the open design fork this row names was resolved there. The
+> **State** line below was not re-measured.
+
 - **State:** FICTION
 - **Failure mode:** F1
 - **Evidence:** `ElasticMaterial` trait (`materials_fea.ri:88`) requires `youngs_modulus, poisson_ratio, density, yield_stress` only — fundamentally isotropic. `IsotropicElastic` Rust struct in `crates/reify-solver-elastic/src/constitutive.rs:9-93` builds the 6×6 D matrix from scalar `E, ν`; no `MaterialConstitutiveLaw` trait abstracts over isotropic vs orthotropic.
@@ -100,6 +111,13 @@
 - **Note:** This is the conceptual fork that determines whether orthotropic is a sibling structure to `Steel_AISI_1045` (separate trait) or a parameterised member of a polymorphic constitutive-law surface. Open design.
 
 ### M-003: Per-ply orthotropic D-matrix construction (6×6 in material frame, rotated to laminate frame)
+
+> **At least partly stale, and deliberately *not* re-adjudicated — see the `CORRECTION 2026-09-03`
+> overlays under M-001 above.** The evidence's "only D-matrix builder" claim no longer holds:
+> `OrthotropicMaterial::d_matrix_local` (`reify-solver-elastic/src/constitutive.rs:356`, trait impl
+> `:402`) and `TransverseIsotropicMaterial::d_matrix_local` (`:496`, impl `:514`) shipped 2026-05-26.
+> The cited anchor has also drifted — `IsotropicElastic::d_matrix()` is at `constitutive.rs:151`, not
+> `:88`. Re-verify this row before relying on it; the **State** line below was not re-measured.
 
 - **State:** FICTION
 - **Failure mode:** F1
