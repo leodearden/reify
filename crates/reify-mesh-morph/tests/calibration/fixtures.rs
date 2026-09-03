@@ -20,9 +20,19 @@ use std::f64::consts::TAU;
 /// canonical CW-from-bottom corner ordering used in CFD/FEA codes
 /// (z=0 face: 0→1→2→3; z=top face: 4→5→6→7).
 ///
-/// The split is face-conforming: every quad face is bisected by the same
-/// diagonal seen from either side, so adjacent hex cells share a matching
-/// triangulation and the mesh has no T-junctions.
+/// The split is face-conforming BETWEEN CELLS THAT NUMBER THEIR CORNERS ON
+/// THE SAME LOCAL AXES: every quad face is bisected by a diagonal through
+/// local corner 0 or local corner 6, so two neighbours related by a pure
+/// translation of the index map agree on that diagonal and the mesh has no
+/// T-junctions there. It says NOTHING about two cells whose local axes
+/// disagree: a shared face seen as "corner 0's" diagonal from one side and
+/// "corner 6's" from the other is bisected the OPPOSITE way, and the two
+/// triangulations then fail to cancel — each is seen once instead of
+/// twice, leaving a doubled interior sheet rather than a shared interface.
+/// A multi-block generator must therefore align its blocks' local axes
+/// across every interface; [`bracket`] does, and its polar-zone corner
+/// ordering (and arm-2 wedge corner order) are chosen for exactly that
+/// reason.
 pub(crate) const HEX_TO_6TETS: [[usize; 4]; 6] = [
     [0, 1, 2, 6],
     [0, 2, 3, 6],
@@ -220,6 +230,38 @@ pub fn plate_with_hole(
 ///
 /// Only the inner fillet-arc vertices move when `fillet_radius` is varied,
 /// so connectivity is preserved across the calibration sweep.
+///
+/// ## Conformity
+///
+/// The three blocks' local axes are aligned so the whole mesh is a
+/// conforming simplicial complex: every interior triangular face is shared
+/// by exactly two tets, and the boundary is a closed, orientable, genus-0
+/// manifold. At `n=4` that boundary is 248 vertices / 738 edges / 492
+/// triangles (`V - E + F = 2`), with every boundary edge at degree exactly
+/// 2 (measured). This is load-bearing, not cosmetic: it is what makes the
+/// P1 FEA displacement field continuous across the block interfaces (a
+/// non-conforming interface leaves the two sides' linear interpolants
+/// disagreeing in the interior of each shared quad), and it is what would
+/// let a boundary extractor hand a volume mesher a watertight input. Two
+/// places encode it, both carrying their derivation inline: the polar
+/// zone's half-turn corner ordering and arm 2's wedge-prism corner order.
+/// The executable contract is
+/// `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.
+///
+/// ## Element count (P1)
+///
+/// For `n >= 2`: `tets(n) = 18n³ + 12n² - 6n`. Derivation — the polar zone
+/// contributes `6 * n_z * n_a * n_r` (6 tets per hex); each of the two arm
+/// zones contributes `6 * (n_z * n_arm * (n_r+1) - n_z)` for its hexes plus
+/// `3 * n_z` for its one wedge-bridge cell per z-layer (the `(i=0, j=n_r)`
+/// cell, meshed as a triangular prism because corner `(0, n_r+1)` sits in
+/// the exclusion zone). At `n=1` the formula does not apply — `n_a`,
+/// `n_arm`, `n_z` are `max(n, 2)` while `n_r` is `n`, giving 108 tets
+/// rather than the formula's 24. Calibration points for the two scale
+/// bands this is audited against: **9,936 tets at n=8** and **108,756 at
+/// n=18** (n=17 gives 91,800). Consumer: task #6658's sibling task #6638,
+/// which uses these scale points to characterise morph behaviour as mesh
+/// size grows.
 pub fn bracket(
     arm_length: f64,
     thickness: f64,
