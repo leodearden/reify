@@ -2063,11 +2063,11 @@ impl Engine {
                         // atomically writes values/snapshot/cache/journal
                         // (INV-EVAL-1).
                         //
-                        // Paired with edit_source's wave2 dependent-re-eval
-                        // commit below (~:3818, task #6423) — this pair had
-                        // been silently diverged (edit_source's wave2 wrote
-                        // no journal leg at all until #6423 migrated it);
-                        // change them together.
+                        // Paired with edit_source's `Second propagation wave`
+                        // commit (task #6423) — this pair had been silently
+                        // diverged (edit_source's wave2 wrote no journal leg
+                        // at all until #6423 migrated it); change them
+                        // together.
                         commit_cell_result(
                             CommitLegs {
                                 values: &mut values,
@@ -4337,11 +4337,11 @@ impl Engine {
 
                         // Commit via the cell-commit primitive (task #6423):
                         // atomically writes values/snapshot/cache/journal
-                        // (INV-EVAL-1). Paired with edit_param's own wave2
-                        // commit above (~:1716, task δ #5056) — both sites
-                        // now route through commit_cell_result with the
-                        // identical UnconditionalDetermined/EditReeval/Record
-                        // selection; change them together.
+                        // (INV-EVAL-1). Paired with edit_param's own
+                        // `Resolution reseed` wave2 commit (task δ #5056) —
+                        // both sites now route through commit_cell_result
+                        // with the identical UnconditionalDetermined/
+                        // EditReeval/Record selection; change them together.
                         commit_cell_result(
                             CommitLegs {
                                 values: &mut values,
