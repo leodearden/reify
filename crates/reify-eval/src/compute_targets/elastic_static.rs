@@ -4499,23 +4499,24 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
     })
 }
 
-/// Convert an `AnisotropicMaterial { law: OrthotropicMaterial|TransverseIsotropicMaterial,
-/// frame: MaterialFrame }` Value to a Rust `AnisotropicMaterial`, honouring the
-/// frame's x/y/z axes as the local → global rotation (columns = local basis in global).
+/// Convert an `AnisotropicMaterial { law: ConstitutiveLaw, frame: MaterialFrame }`
+/// Value to a Rust `AnisotropicMaterial`, honouring the frame's x/y/z axes as
+/// the local → global rotation (columns = local basis in global).
 ///
 /// PRD compute-fea-hardening D5: Result-ified leaf extractor. Returns
 /// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
-/// with one deliberate, permanent exception: an unsupported law `type_name`
-/// (neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`) still
-/// panics. The fixed C3 taxonomy (`FeaValueShapeError`'s 5 variants, reused
-/// here — not redefined) has no shape for "type_name is neither known law";
-/// it describes `Value`-variant mismatches and missing fields, not unknown
-/// symbolic dispatch tags. That branch is also unreachable-by-construction
-/// (the DSL only ever emits `Orthotropic`/`TransverseIsotropic` laws into
-/// `AnisotropicMaterial.law`), mirroring `classify_material`'s own
-/// type_name dispatch, which likewise sits outside the shape-error
-/// taxonomy. This is not deferred to a later D-task — see the design
-/// decision on this task's plan.
+/// with no remaining panic: `law`'s `type_name` dispatches three ways —
+/// `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or (task #7210) an
+/// isotropic-structural fallback that reads `youngs_modulus`/`poisson_ratio`
+/// via `extract_material`. The prior "unsupported law type" panic (task
+/// #5084) rested on the premise that the DSL only ever emits the two named
+/// laws here; that premise was false — `constitutive.ri:152` declares
+/// `param law : ConstitutiveLaw`, and every isotropic preset in
+/// `materials_fea.ri` is a `DampedMaterial : ElasticMaterial + Damped`,
+/// hence a legal `law` — so the panic was live, not merely prospective. A
+/// law that fits none of the three shapes now surfaces `extract_material`'s
+/// own `MissingField`/`ExpectedScalar`/`ExpectedReal`, all within the
+/// existing fixed C3 taxonomy.
 ///
 /// Its 3 call sites (`classify_material_as_printed_zones`'s mat_wall/
 /// mat_skin/mat_infill) thread the `Result` via `?` (task D6).
@@ -4583,7 +4584,8 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         ]
     };
 
-    // Parse the law: OrthotropicMaterial or TransverseIsotropicMaterial.
+    // Parse the law: OrthotropicMaterial, TransverseIsotropicMaterial, or
+    // (fallback) an isotropic ConstitutiveLaw.
     let law_data = match law_val {
         Value::StructureInstance(d) => d,
         other => {
@@ -4619,14 +4621,25 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
-        // Intentionally still a panic (not deferred): unreachable-by-construction
-        // (the DSL only emits Orthotropic/TransverseIsotropic laws) and outside
-        // FeaValueShapeError's fixed C3 taxonomy — see the function doc comment.
-        other => panic!(
-            "solve_elastic_static_trampoline: unsupported law type for \
-             AsPrintedZones AnisotropicMaterial: {:?}",
-            other
-        ),
+        // Isotropic fallback (structural, NOT name-based) — mirrors
+        // classify_material's `_` arm (:3552-3562): every isotropic preset
+        // carries its OWN type_name (Steel_AISI_1045, Aluminium_6061_T6, ...)
+        // and authors may declare `structure def MySteel : DampedMaterial`,
+        // so presence of the youngs_modulus/poisson_ratio pair — not a name
+        // list — is the only sound discriminator. `law_val` is already known
+        // to be a `Value::StructureInstance` here (the `law_data` match above
+        // returns `Err` on any other variant before control reaches this arm),
+        // so `extract_material`'s own `ExpectedStructureInstance` check is
+        // defensive/unreachable from this call site.
+        //
+        // Follow-on (#6879): when the resolved AnisotropicMaterial gains
+        // {rho, eta}, this arm must also read law.density / law.loss_factor —
+        // an isotropic DampedMaterial preset is exactly where a non-zero eta
+        // matters for #6883 (eta, MSE).
+        _ => {
+            let law = extract_material(law_val)?;
+            Ok(AnisotropicMaterial::from_law(&law, frame))
+        }
     }
 }
 
@@ -11507,7 +11520,10 @@ mod tests {
         let fields: PersistentMap<String, Value> = [
             (
                 "youngs_modulus".to_string(),
-                Value::Scalar { si_value: 2.0e11, dimension: DimensionVector::PRESSURE },
+                Value::Scalar {
+                    si_value: 2.0e11,
+                    dimension: DimensionVector::PRESSURE,
+                },
             ),
             ("poisson_ratio".to_string(), Value::Real(0.29)),
         ]
@@ -11565,7 +11581,10 @@ mod tests {
         assert_eq!(
             anisotropic_material_from_value(&anisotropic_material(aniso_fields)),
             Ok(AnisotropicMaterial::from_law(
-                &IsotropicElastic { youngs_modulus: 2.0e11, poisson_ratio: 0.29 },
+                &IsotropicElastic {
+                    youngs_modulus: 2.0e11,
+                    poisson_ratio: 0.29
+                },
                 expected_frame,
             ))
         );
@@ -11669,7 +11688,10 @@ mod tests {
     fn anisotropic_material_from_value_rejects_isotropic_law_missing_poisson_ratio() {
         let law_fields: PersistentMap<String, Value> = [(
             "youngs_modulus".to_string(),
-            Value::Scalar { si_value: 2.0e11, dimension: DimensionVector::PRESSURE },
+            Value::Scalar {
+                si_value: 2.0e11,
+                dimension: DimensionVector::PRESSURE,
+            },
         )]
         .into_iter()
         .collect();
@@ -11723,7 +11745,10 @@ mod tests {
     /// [x[row], y[row], z[row]]) rather than trusted from prose.
     #[test]
     fn classify_material_as_printed_zones_accepts_isotropic_zone_laws() {
-        let len = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
+        let len = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
         let point3 = |v: [f64; 3]| Value::Point(vec![len(v[0]), len(v[1]), len(v[2])]);
         let zone_fields = || -> PersistentMap<String, Value> {
             [
@@ -11757,7 +11782,10 @@ mod tests {
 
         let expected_frame = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
         let expected_cell = AnisotropicMaterial::from_law(
-            &IsotropicElastic { youngs_modulus: 2.0e11, poisson_ratio: 0.29 },
+            &IsotropicElastic {
+                youngs_modulus: 2.0e11,
+                poisson_ratio: 0.29,
+            },
             expected_frame,
         );
 
