@@ -7415,6 +7415,71 @@ mod tests {
         );
     }
 
+    /// Task 7174: a port-body param default (`CompiledPort.members`) must reach
+    /// the SAME `check_param_default_conformance` walk as a top-level
+    /// `value_cells` param default.
+    ///
+    /// `template.value_cells` and `template.ports[].members` are disjoint lists
+    /// (deliberately — see `param_default_cells`'s doc comment). Before the fix,
+    /// `check_param_default_conformance` walked only `value_cells`, so pushing a
+    /// `Geometry` param cell onto `template.ports` instead of `template.value_cells`
+    /// made it invisible to the walk: RED (zero diagnostics) until
+    /// `param_default_cells` chains `template.ports[].members` in.
+    #[test]
+    fn port_member_param_default_reaches_conformance_walk() {
+        let region_cell = ValueCellDecl {
+            id: ValueCellId::new("Test", "mount.region"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::Geometry,
+            default_expr: Some(CompiledExpr::literal(
+                reify_ir::Value::Real(5.0),
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            )),
+            solver_hints: vec![],
+            span: SourceSpan::new(10, 20),
+        };
+        let mut template = minimal_template("Test", vec![]);
+        template.ports.push(CompiledPort {
+            name: "mount".to_string(),
+            direction: reify_core::PortDirection::Bidi,
+            type_name: "P".to_string(),
+            members: vec![region_cell],
+            constraints: vec![],
+            frame_expr: None,
+            is_priv: false,
+        });
+
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "port-member param default must reach the conformance walk and emit exactly \
+             one diagnostic, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert!(
+            diagnostics[0].message.contains("mount.region"),
+            "message must name the composite port-member param 'mount.region', got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
     // ── task-4622: walk_param_against_arg_type Vector leaf arm ───────────────
 
     /// (a) Bare scalar arg against `Vector3<Length>` param →

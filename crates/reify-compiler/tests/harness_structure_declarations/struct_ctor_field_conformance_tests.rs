@@ -888,6 +888,154 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 probes: port-block param defaults must reach
+// `check_param_default_conformance`.
+//
+// `CompiledPort.members` (port-body `param`s) is a list DISJOINT from
+// `TopologyTemplate.value_cells` (crates/reify-ast/src/decl.rs:853-901 documents
+// why they must stay disjoint). `check_param_default_conformance` walked only
+// `value_cells`, so a `Geometry`/`String`/`StructureRef` param default written
+// inside a `port { … }` block compiled with ZERO diagnostics — measured on this
+// branch. `SRC_CTX_PORT_MEMBER_DEFAULT` above already proves the sibling
+// call-site ctor entry (`Widget(label: 42)` as an EXPRESSION) reaches port
+// bodies; these probes cover the missing param-DEFAULT entry.
+//
+// Every probe below OBSERVES the diagnostic firing (code + severity + a message
+// naming the composite `<port>.<param>`) — the task's negative-assertion
+// requirement flags a "stays silent" probe as vacuous before the fix (the walk
+// sees no port cells at all, so absence proves nothing). The zero-diagnostic
+// no-false-positive fence is added separately, after the fix lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SRC_PORT_MEMBER_GEOMETRY_DEFAULT: &str = r#"module test.port_geometry
+trait P {}
+structure def Root {
+    port mount : P {
+        param region : Geometry = 5mm
+    }
+}
+"#;
+
+/// `Type::Geometry` arm: a port-member `Geometry` param defaulted to a
+/// dimensioned scalar (`5mm`) must warn — the task's MEASURED repro fixture.
+///
+/// RED today: `check_param_default_conformance` only walks `value_cells`, so
+/// this port-body default is invisible to it and the module compiles with
+/// zero ctor-conformance diagnostics.
+#[test]
+fn port_member_geometry_param_default_warns() {
+    let module = compile_source_with_stdlib(SRC_PORT_MEMBER_GEOMETRY_DEFAULT);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "port-block Geometry param default with a non-geometry expression must emit \
+         exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "Geometry param-default mismatch must carry TypeNotConformingToStructureRef, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("mount.region"),
+        "message must name the composite port-member param 'mount.region', got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("Geometry") && diags[0].message.contains("non-geometry"),
+        "message must state the Geometry/non-geometry mismatch, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].labels.is_empty(),
+        "diagnostic must carry a label span, got: {:?}",
+        diags[0]
+    );
+    assert!(
+        !diags[0].labels[0].span.is_empty(),
+        "label span must be non-empty (anchored at the port-body param declaration), got: {:?}",
+        diags[0].labels[0].span
+    );
+}
+
+const SRC_PORT_MEMBER_STRING_DEFAULT_GIVEN_INT: &str = r#"module test.port_string
+trait P {}
+structure def Root {
+    port mount : P {
+        param label : String = 42
+    }
+}
+"#;
+
+/// General concrete-leaf arm: a port-member `String` param defaulted to an
+/// `Int` literal must warn `ArgTypeMismatch`, identically to the top-level
+/// sibling `param_default_string_given_int_warns_arg_type_mismatch`.
+///
+/// RED today: same walk gap as the Geometry probe above.
+#[test]
+fn port_member_string_param_default_given_int_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_PORT_MEMBER_STRING_DEFAULT_GIVEN_INT,
+        "mount.label",
+        "port member String ← Int",
+    );
+}
+
+const SRC_PORT_MEMBER_STRUCTUREREF_DEFAULT_GIVEN_STRING: &str = r#"module test.port_structref
+structure def Widget { param label : String }
+trait P {}
+structure def Root {
+    port mount : P {
+        param part : Widget = "nope"
+    }
+}
+"#;
+
+/// `Type::StructureRef` arm: a port-member `Widget` (StructureRef) param
+/// defaulted to a `String` literal must warn — a clearly-incompatible
+/// primitive default, not the intentionally-lenient StructureRef↔StructureRef
+/// case ([`structureref_param_default_with_different_structureref_silently_accepted`]
+/// in `conformance/mod.rs`, which this probe deliberately does not disturb).
+///
+/// RED today: same walk gap as the Geometry probe above.
+#[test]
+fn port_member_structureref_param_default_given_string_warns() {
+    let module = compile_source_with_stdlib(SRC_PORT_MEMBER_STRUCTUREREF_DEFAULT_GIVEN_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "port-block StructureRef param default with an incompatible primitive default \
+         must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("mount.part"),
+        "message must name the composite port-member param 'mount.part', got: {:?}",
+        diags[0].message
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Step-11 probes: per-family false-positive fences + α-value-floor guards.
 //
 // The general concrete-leaf arm shipped with a NEGATIVE skip list (`!matches!(
