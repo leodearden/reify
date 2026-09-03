@@ -256,8 +256,15 @@ pub(crate) fn phase_auto_type_param_resolution(
                 subst_pairs.push((param_name.clone(), template_name.clone()));
             }
 
-            // Synthesize a monomorph if at least one type-param was resolved.
-            if !sigma.is_empty() {
+            // Synthesize a monomorph only when EVERY auto-clause param was
+            // resolved. On PARTIAL coverage, synthesis must be skipped: the
+            // block below clears `mono.type_params` — advertising the clone
+            // as fully concrete — while any cell whose type-param was NOT in
+            // `sigma` keeps its raw `Type::TypeParam(name)`. That is the one
+            // shape no downstream `type_params.is_empty()` filter can ever
+            // detect, since the clone itself claims to have zero free
+            // type-params (#6854).
+            if sigma.len() == params.len() {
                 // Sort by position to guarantee deterministic mangle order
                 // regardless of outcome.substitution iteration order.
                 candidates_by_position.sort_by_key(|(pos, _)| *pos);
