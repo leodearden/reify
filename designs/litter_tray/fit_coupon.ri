@@ -1,0 +1,174 @@
+module fit_coupon
+
+// Fit-test print coupon #2: the +x+y CORNER of both litter-tray decks, so the
+// printed pair tests fit_clearance at the corner radii (where PETG shrinkage
+// bites) rather than on straight walls.
+//
+//   BottomCorner — bottom-deck shell (bottom_deck_v2_selectors.ri defaults)
+//                  cropped to x 180..240, y 70..130, z 50..80. The crop is
+//                  z 50..80 (not 0..30) so the coupon CONTAINS the ledge
+//                  (z=65) and the 15 mm recess above it. Print it as cut:
+//                  the z=50 section face is flat and goes on the bed, walls
+//                  vertical, ledge = top of the thicker lower wall (zero
+//                  overhang). The footprint is a thin 7.4 mm L, so use a brim.
+//                  No flip needed (flipping would put the 2.4 mm rim down).
+//   TopCorner    — top-deck shell (top_deck.ri defaults, fit_clearance swept)
+//                  cropped to x/y 60 mm in from its +x+y corner, z 0..25 =
+//                  15 mm engagement zone + 10 mm proud. Prints floor-down.
+//   FitCheck     — both corners at the mated position (top-deck z=0 on the
+//                  ledge at bottom-deck z=65; +x+y corners coincide in plan,
+//                  both decks share the origin) with a volume-of-intersection
+//                  penetration constraint.
+//
+// Crop boxes deliberately over-reach the body on +x/+y/top (and below z=0 for
+// the top deck) so no crop face is coplanar with a body face — coplanar faces
+// are the classic boolean fuzz hazard. The effective coupon envelope is still
+// exactly 60 x 60 x 30 / 60 x 60 x 25.
+
+structure def BottomCorner : Rigid {
+    // ── Bottom deck defaults (bottom_deck_v2_selectors.ri) ──────────────
+    param outer_length    : Length = 480mm
+    param outer_width     : Length = 260mm
+    param wall_height     : Length = 80mm
+    param corner_radius   : Length = 25mm
+    param upper_wall      : Length = 2.4mm
+    param ledge_width     : Length = 5mm
+    param recess_depth    : Length = 15mm
+    param floor_thickness : Length = 4mm
+    param rim_fillet      : Length = 1mm
+    param ledge_fillet    : Length = 1mm
+    param floor_fillet    : Length = 5mm
+    param base_fillet     : Length = 2mm
+
+    // ── Coupon crop ─────────────────────────────────────────────────────
+    param crop    : Length = 60mm       // plan size in from the +x+y corner
+    param crop_z0 : Length = 50mm       // crop bottom (below the ledge)
+    param overreach : Length = 10mm     // crop box past the body, never coplanar
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // ── Derived ─────────────────────────────────────────────────────────
+    let lower_wall    = upper_wall + ledge_width          // 7.4
+    let ledge_z       = wall_height - recess_depth        // 65
+    let recess_length = outer_length - 2 * upper_wall     // 475.2
+    let recess_width  = outer_width  - 2 * upper_wall     // 255.2
+    let inner_length  = outer_length - 2 * lower_wall     // 465.2
+    let inner_width   = outer_width  - 2 * lower_wall     // 245.2
+    let recess_h      = recess_depth + 20mm               // cavity pokes above the rim
+
+    constraint crop_z0 < ledge_z                          // coupon holds the ledge
+    constraint crop_z0 > floor_thickness + floor_fillet   // and no floor fillet
+    constraint crop < outer_width / 2 - corner_radius + corner_radius   // inside the corner zone
+    constraint 2 * rim_fillet < upper_wall
+    constraint 2 * ledge_fillet < ledge_width
+
+    // ── Shell (full bottom deck, then crop) ─────────────────────────────
+    // Blank idiom (box + edges_parallel_to corner fillet), not rounded_box:
+    // rounded_box is a non-unified fuse whose coplanar seam edges break any
+    // later edges_at_height fillet (lead's finding F-D). Same solid (volumes
+    // agree to 1e-16), fillets cleanly.
+    let up = vec3(0.0, 0.0, 1.0)
+    aux let outer_blank  = translate(box(outer_length, outer_width, wall_height), 0mm, 0mm, wall_height / 2)
+    aux let outer        = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_radius)
+    aux let recess_blank = translate(box(recess_length, recess_width, recess_h), 0mm, 0mm, ledge_z + recess_h / 2)
+    aux let recess_cut   = fillet(recess_blank, edges_parallel_to(recess_blank, up, 1deg), corner_radius - upper_wall)
+    aux let main_blank   = translate(box(inner_length, inner_width, wall_height), 0mm, 0mm, floor_thickness + wall_height / 2)
+    aux let main_cut     = fillet(main_blank, edges_parallel_to(main_blank, up, 1deg), corner_radius - lower_wall)
+    aux let hollowed   = difference(difference(outer, recess_cut), main_cut)
+
+    aux let rim_soft   = fillet(hollowed,   edges_at_height(hollowed,   wall_height,     0.5mm), rim_fillet)
+    aux let ledge_soft = fillet(rim_soft,   edges_at_height(rim_soft,   ledge_z,         0.5mm), ledge_fillet)
+    aux let floor_soft = fillet(ledge_soft, edges_at_height(ledge_soft, floor_thickness, 0.5mm), floor_fillet)
+    aux let shell      = fillet(floor_soft, edges_at_height(floor_soft, 0mm,             0.5mm), base_fillet)
+
+    // Crop box: x [L/2-crop, L/2+overreach], y [W/2-crop, W/2+overreach], z [z0, H+overreach]
+    aux let crop_box = translate(
+        box(crop + overreach, crop + overreach, wall_height - crop_z0 + overreach),
+        outer_length / 2 - crop / 2 + overreach / 2,
+        outer_width  / 2 - crop / 2 + overreach / 2,
+        (crop_z0 + wall_height + overreach) / 2)
+    param geometry : Solid = intersection(shell, crop_box)
+
+    sub display  = DisplayOutput(subject: geometry)
+    sub step_out = STEPOutput(subject: geometry, path: "bottom_corner.step")
+}
+
+structure def TopCorner : Rigid {
+    // ── Top deck defaults (top_deck.ri) ─────────────────────────────────
+    param recess_length : Length = 475.2mm
+    param recess_width  : Length = 255.2mm
+    param recess_corner : Length = 22.6mm
+    param fit_clearance : Length = 0.4mm    // SWEPT: per side, PETG-on-PETG
+    param wall_t        : Length = 2.4mm
+    param floor_t       : Length = 5mm
+    param deck_height   : Length = 60mm
+    param rim_fillet    : Length = 1mm
+    param floor_fillet  : Length = 4mm
+    param base_fillet   : Length = 1.5mm
+
+    // ── Coupon crop ─────────────────────────────────────────────────────
+    param crop      : Length = 60mm
+    param crop_z1   : Length = 25mm         // 15 engaged + 10 proud
+    param overreach : Length = 10mm
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // ── Derived ─────────────────────────────────────────────────────────
+    let outer_length = recess_length - 2 * fit_clearance   // 474.4
+    let outer_width  = recess_width  - 2 * fit_clearance   // 254.4
+    let corner_r     = recess_corner - fit_clearance       // 22.2
+    let inner_length = outer_length - 2 * wall_t
+    let inner_width  = outer_width  - 2 * wall_t
+    let cav_r        = corner_r - wall_t
+
+    constraint fit_clearance >= 0.2mm
+    constraint fit_clearance <= 0.6mm
+    constraint crop_z1 > 15mm                              // shows the proud zone
+    constraint crop_z1 < deck_height
+    constraint 2 * rim_fillet < wall_t
+    constraint base_fillet < floor_t
+
+    // ── Shell (full top deck, then crop) ────────────────────────────────
+    // Blank idiom (box + edges_parallel_to corner fillet), not rounded_box:
+    // rounded_box is a non-unified fuse whose coplanar seam edges break any
+    // later edges_at_height fillet (lead's finding F-D).
+    let up = vec3(0.0, 0.0, 1.0)
+    aux let outer_blank  = translate(box(outer_length, outer_width, deck_height), 0mm, 0mm, deck_height / 2)
+    aux let outer        = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_r)
+    aux let cavity_blank = translate(box(inner_length, inner_width, deck_height), 0mm, 0mm, floor_t + deck_height / 2)
+    aux let cavity       = fillet(cavity_blank, edges_parallel_to(cavity_blank, up, 1deg), cav_r)
+    aux let hollowed     = difference(outer, cavity)
+
+    aux let rim_soft   = fillet(hollowed,   edges_at_height(hollowed,   deck_height, 0.5mm), rim_fillet)
+    aux let floor_soft = fillet(rim_soft,   edges_at_height(rim_soft,   floor_t,     0.5mm), floor_fillet)
+    aux let shell      = fillet(floor_soft, edges_at_height(floor_soft, 0mm,         0.5mm), base_fillet)
+
+    // Crop box: x [L/2-crop, L/2+overreach], y likewise, z [-overreach, crop_z1]
+    aux let crop_box = translate(
+        box(crop + overreach, crop + overreach, crop_z1 + overreach),
+        outer_length / 2 - crop / 2 + overreach / 2,
+        outer_width  / 2 - crop / 2 + overreach / 2,
+        (crop_z1 - overreach) / 2)
+    param geometry : Solid = intersection(shell, crop_box)
+
+    sub display  = DisplayOutput(subject: geometry)
+    sub step_out = STEPOutput(subject: geometry, path: "top_corner.step")
+}
+
+// Mated position: top-deck z=0 sits on the bottom-deck ledge (z = 65).
+structure def FitCheck {
+    param ledge_z : Length = 65mm
+
+    sub bottom = BottomCorner()
+    sub top    = TopCorner() at transform3(orient_identity(), vec3(0mm, 0mm, ledge_z))
+
+    // Cross-sub bodies reach the kernel UNPOSED (#6583): lift `top` by hand.
+    aux let bottom_body = self.bottom.geometry
+    aux let top_body    = translate(self.top.geometry, 0mm, 0mm, ledge_z)
+    aux let overlap     = intersection(bottom_body, top_body)
+
+    let bottom_volume = volume(bottom_body)
+    let top_volume    = volume(top_body)
+    let penetration   = volume(overlap)
+    constraint penetration <= 0mm^3                       // no interference at the corner
+}
