@@ -4952,26 +4952,45 @@ type EscapeSite = {
  * the shared parts ONCE, so a new call site is a row rather than another ~50
  * lines of near-identical test and comment.
  *
- * Both halves are needed. Measured mutation matrix against `escapeAttrValue`:
+ * Both halves are needed, but they answer DIFFERENT questions, and only one of
+ * the two is per-SITE. Measured mutation matrix against `escapeAttrValue`:
  *
  *   escape dropped (raw `${value}` interpolated)  → MISS fails, HIT fails
  *   `v.replace(/["\\]/g, '')` — strip, not escape → MISS PASSES, HIT fails
  *
- * The MISS half alone is satisfied by a helper that merely DELETED the
- * metacharacters: it pins only that the lookup reaches its own diagnostic
- * instead of throwing a DOMException inside the selector parser (which the
- * dispatcher would surface as an opaque `{error: '<CSS parser message>'}` — a
- * typo'd or hostile value reading as a bridge malfunction). Only the HIT half
- * pins what the escape MEANS: a value that really carries those bytes still
- * resolves to its own element and drives it.
+ * The first mutation is the per-SITE one — it is what "this interpolation
+ * stopped routing through `escapeAttrValue`" looks like, and it is editable at
+ * one call site without touching any other. The MISS half alone reds it, so the
+ * MISS half IS the site-level pin: the lookup reaches this site's own
+ * diagnostic instead of throwing a DOMException inside the selector parser
+ * (which the dispatcher would surface as an opaque
+ * `{error: '<CSS parser message>'}` — a typo'd or hostile value reading as a
+ * bridge malfunction).
+ *
+ * The second mutation is per-HELPER: `escapeAttrValue` is ONE shared function,
+ * so a strip-not-escape rewrite breaks every site at once and any single row
+ * catches it. Only the HIT half reds it — it is what pins what the escape
+ * MEANS: a value that really carries those bytes still resolves to its own
+ * element and drives it. One HIT row per ARM would therefore suffice for the
+ * SEMANTICS, and the reason every row keeps its own anyway is that `mountHit`/
+ * `expectHit` are not redundant across rows: each also pins that site's own
+ * success SHAPE and drive effect (`{ok: true}` vs `{ok: true, open: …}` vs
+ * `{ok: true, path: …, expanded: true}` vs a store write), which no other row
+ * asserts.
  *
  * INVENTORY CAVEAT — these rows are the `escapeAttrValue` call sites reachable
  * with a caller-supplied value, with ONE deliberate omission:
- * `resolveByTestId`'s VIEWPORTID arm, whose negative half is case (f) of the
- * `debug bridge resolveByTestId viewport scoping` block (it also asserts the
- * no-cross-pane-bleed property, which no other row has). This table is NOT a
- * proof that every selector interpolation in bridge.ts is escaped — grep
- * `escapeAttrValue` when adding one.
+ * `resolveByTestId`'s VIEWPORTID arm, covered instead by case (f) of the
+ * `debug bridge resolveByTestId viewport scoping` block (which also asserts the
+ * no-cross-pane-bleed property, that no row here has). Case (f) is MISS-only,
+ * and — that block installing no CSS stub — runs under the fallback arm alone.
+ * Both omissions follow from the split above rather than contradicting it: MISS
+ * is the half that carries the site-level pin, and the semantics an added HIT
+ * half would re-prove belong to the shared helper, which the `resolveByTestId
+ * testId` row below already pins on BOTH arms. What (f) genuinely lacks is a
+ * success-SHAPE assertion of its own — the one thing promoting it to a row here
+ * would add. This table is NOT a proof that every selector interpolation in
+ * bridge.ts is escaped — grep `escapeAttrValue` when adding one.
  *
  * ONE ROW PER CALL SITE, NOT PER TOOL. Seven #5891 tools reach the testId row's
  * escape through the ONE shared `escapeAttrValue`, so covering that escape once
@@ -5200,13 +5219,18 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * rewrote, and its review measured again for the ninth.
    *
    * The unit is therefore the guard COPY, not the tool name: nine copies, TEN
-   * rows across ten tool names. `driveTreeNode` carries TWO rows off its single
-   * copy because it interpolates two different testid prefixes (`chevron-` and
-   * `constraint-row-`), and `collapse_tree_node` carries NONE because it shares
-   * `expand_tree_node`'s copy. Maintenance rule: a new tool needs its own row
-   * unless it demonstrably shares an existing copy — in which case name the
-   * sharer here, so the count stays arithmetically checkable against THE
-   * BOUNDARY RULE's enumeration in bridge.ts.
+   * rows, dispatching NINE of the ten tool names THE BOUNDARY RULE enumerates.
+   * All three counts differ, and none of the three is a typo. Rows (10) exceed
+   * copies (9) because `driveTreeNode` carries TWO rows off its single copy —
+   * it interpolates two different testid prefixes (`chevron-` and
+   * `constraint-row-`). Dispatched names (9) fall short of enumerated names
+   * (10) because `collapse_tree_node` is dispatched by NO row: it shares
+   * `expand_tree_node`'s copy, so it is covered transitively, through the very
+   * function the two tree rows already drive. Maintenance rule: a new tool
+   * needs its own row unless it demonstrably shares an existing copy — in which
+   * case name the sharer here, so the arithmetic stays checkable against THE
+   * BOUNDARY RULE's enumeration in bridge.ts: 10 names → 9 copies → 10 rows,
+   * 9 of the names dispatched.
    *
    * Each row mounts a DECOY carrying the coerced value as its literal testid,
    * so a reverted guard does not merely misword an error — it finds and DRIVES a
