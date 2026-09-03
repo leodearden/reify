@@ -40,6 +40,7 @@
 
 use std::collections::BTreeMap;
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use reify_gcode::{GcodeCommand, ParseError};
@@ -49,6 +50,14 @@ use reify_gcode::{GcodeCommand, ParseError};
 /// `reify-eval/src/compute_targets/as_printed_material_r0.rs:58`), so
 /// grepping `MM_TO_M` enumerates all of them.
 const MM_TO_M: f64 = 1.0e-3;
+
+/// G-code feedrate mm-per-minute → SI m/s, as the DIVISOR (1e3 mm per metre
+/// × 60 s per minute), not a reciprocal factor. Dividing is exact for the
+/// round feedrates a slicer emits; multiplying by the rounded reciprocal is
+/// not — `1800.0 / 60_000.0` is exactly `0.03`, while
+/// `1800.0 * (1.0 / 60_000.0)` is `0.030000000000000002`. Pinned by
+/// `tests::waypoint_feedrate_is_si_velocity`.
+const MM_PER_MIN_PER_M_PER_S: f64 = 60_000.0;
 
 /// Which dialect parser [`lower_gcode`] should drive.
 #[derive(Debug, Clone, PartialEq)]
@@ -405,10 +414,16 @@ fn profile_to_value(profile: &MotionProfile) -> Value {
 ///   below it) stays in NATIVE G-CODE UNITS: millimetres for `x`/`y`/`z`/`e`
 ///   and millimetres-per-minute for `feedrate`, lifted verbatim from the
 ///   source so parse fidelity is lossless.
-/// - The DSL-VISIBLE PROJECTION built here is SI and dimensioned. `x`, `y`,
-///   `z` and `e` become `Length` scalars in SI metres (via [`MM_TO_M`]).
+/// - The DSL-VISIBLE PROJECTION built here is SI and dimensioned, field for
+///   field:
+///   - `x`, `y`, `z`, `e` → `Length` scalars in SI metres (via [`MM_TO_M`]);
+///   - `feedrate` → a `Velocity` scalar in m/s (via
+///     [`MM_PER_MIN_PER_M_PER_S`]), and the key is present ONLY when a feed is
+///     in effect for the move — an unknown feed is an absent key, never a `0.0`
+///     sentinel.
 ///
-/// The `feedrate` key is present only when a feed is in effect for the move.
+/// The conversion is TOTAL over the dimensional fields: every field names its
+/// own unit, so there is no carve-out left for a reader to have to remember.
 fn waypoint_to_value(wp: &Waypoint) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("x".to_string()), Value::length(wp.x * MM_TO_M));
@@ -416,7 +431,13 @@ fn waypoint_to_value(wp: &Waypoint) -> Value {
     m.insert(Value::String("z".to_string()), Value::length(wp.z * MM_TO_M));
     m.insert(Value::String("e".to_string()), Value::length(wp.e * MM_TO_M));
     if let Some(f) = wp.feedrate {
-        m.insert(Value::String("feedrate".to_string()), Value::Real(f));
+        m.insert(
+            Value::String("feedrate".to_string()),
+            Value::Scalar {
+                si_value: f / MM_PER_MIN_PER_M_PER_S,
+                dimension: DimensionVector::VELOCITY,
+            },
+        );
     }
     Value::Map(m)
 }
@@ -424,7 +445,6 @@ fn waypoint_to_value(wp: &Waypoint) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::DimensionVector;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
     /// A three-move Marlin run with no non-motion commands lowers to exactly
