@@ -1869,6 +1869,44 @@ fn run_mechanism_modal(
             )));
             (0.0, 0.0)
         }
+        // Task #6878, the arm this match's deliberate exhaustiveness demanded.
+        // `MaterialDamping` keeps the mechanism path's observable behaviour
+        // BYTE-IDENTICAL to before #6878: the same coded warning, and ζ = 0 for
+        // every mode.
+        //
+        // Not merely unimplemented here — UNDEFINED here. The lumped
+        // generalized-coordinate model has no finite elements, so there is no
+        // modal strain energy SE_e to weight η against; the MSE ratio the
+        // descriptor selects has no meaning on this path at all. The FEA
+        // `modal_analysis` path is where it does, so that is where the message
+        // sends the author.
+        //
+        // The `extra` half is deliberately NOT honored either, even though
+        // `rayleigh_damping_ratio` would happily evaluate it: reporting only
+        // part of a declared ADDITIVE total, while looking like a successful
+        // solve, is a strictly worse silent-failure shape than reporting 0 under
+        // a loud warning. Either the whole declared intent is applied or none of
+        // it is, and here it cannot be.
+        DampingKind::Material { .. } => {
+            diagnostics.push(Diagnostic::warning(
+                "W_MechanismModalUnsupportedDamping: ModalOptions.damping is a \
+                 `MaterialDamping` descriptor, which the lumped \
+                 generalized-coordinate mechanism-modal model does not implement. \
+                 Only `RayleighDamping` (ζ_i = (α + β·ω_i²)/(2·ω_i)) and \
+                 `NoDamping` are honored here; every Mode.damping_ratio is \
+                 reported as 0 for this solve. ModalResult.damping still echoes \
+                 the `MaterialDamping` descriptor you supplied — the declared \
+                 damping intent, INCLUDING its `extra` companion, is NOT applied. \
+                 `MaterialDamping` selects the modal-strain-energy value source \
+                 ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e): a lumped mechanism has no \
+                 finite elements and therefore no modal strain energy to weight, \
+                 so that ratio is undefined here rather than merely unimplemented. \
+                 Use the FEA `modal_analysis` path for material damping, or \
+                 `RayleighDamping` on this one."
+                    .to_string(),
+            ));
+            (0.0, 0.0)
+        }
         DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
     };
 
@@ -2851,14 +2889,8 @@ fn extract_reference_direction(val: &Value) -> [f64; 3] {
     }
 }
 
-/// How the `damping` field of a `ModalOptions` value classifies against the
-/// `DampingDescriptor` refinements this trampoline implements.
-///
-/// This is the single extension point: a new descriptor (e.g. the
-/// damped-modal-bonded-heterogeneous PRD's `MaterialDamping`) adds ONE arm
-/// here and both the FEA ([`run_modal_analysis`]) and mechanism
-/// ([`run_mechanism_modal`]) producers inherit it — neither may re-implement
-/// the type-name match.
+/// How a `DampingDescriptor` value classifies against the refinements this
+/// trampoline implements.
 #[derive(Debug, Clone, PartialEq)]
 enum DampingKind {
     /// No `damping` field, or a non-`StructureInstance` options value.
@@ -2870,6 +2902,27 @@ enum DampingKind {
     NoDamping,
     /// `RayleighDamping { alpha, beta }` — ζ_i = (α + β·ω_i²)/(2·ω_i).
     Rayleigh { alpha: f64, beta: f64 },
+    /// `MaterialDamping { extra }` — selects the MODAL-STRAIN-ENERGY value
+    /// source for `Mode.damping_ratio` (task #6878, PRD leaf β of
+    /// docs/prds/v0_6/damped-modal-bonded-heterogeneous.md §C5):
+    /// ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + ζ_extra(ω_i).
+    ///
+    /// `extra` is the classified ADDITIVE companion descriptor, carried rather
+    /// than pre-flattened to an `(α, β)` pair: the stdlib types that slot as the
+    /// trait `DampingDescriptor`, so it accepts refinements this trampoline does
+    /// not implement, and flattening would lose the difference between "the
+    /// author declared no companion" and "the author declared one we dropped"
+    /// (INV-SF-3, the same lossy-view defect [`extract_damping`] was split apart
+    /// to fix in #6875).
+    ///
+    /// ζ_material is deliberately NOT carried here. This classifier only ever
+    /// sees a `ModalOptions` value, and the loss factor η lives on the
+    /// MATERIAL (`trait Damped { param loss_factor : Real }`,
+    /// `crates/reify-compiler/stdlib/materials_fea.ri`, task #6877) — it is read
+    /// separately by the producer via [`extract_loss_factor`]. Putting η in this
+    /// variant would require the classifier to take an input it has no business
+    /// knowing about.
+    Material { extra: Box<DampingKind> },
     /// A `DampingDescriptor` refinement this trampoline does not implement,
     /// carrying its runtime `type_name` so the producer can name it in a
     /// diagnostic instead of silently substituting zero (INV-SF-3).
@@ -2878,25 +2931,50 @@ enum DampingKind {
 
 /// Classify the `damping` field of a `ModalOptions` StructureInstance.
 ///
-/// The discriminator is the runtime `type_name`, matching the SIR-α nominal
-/// type-tag the structure-defs document. A missing `damping` field, a
-/// `Value::Undef` payload, a non-structure payload, and a non-structure `val`
-/// all classify as [`DampingKind::Absent`].
+/// A missing `damping` field, a `Value::Undef` payload, a non-structure payload,
+/// and a non-structure `val` all classify as [`DampingKind::Absent`]. This
+/// wrapper owns only that field lookup; the type-name discrimination itself is
+/// [`classify_descriptor`].
 fn classify_damping(val: &Value) -> DampingKind {
     let Value::StructureInstance(data) = val else {
         return DampingKind::Absent;
     };
-    let Some(Value::StructureInstance(damping)) = data.fields.get("damping") else {
+    let Some(damping) = data.fields.get("damping") else {
         return DampingKind::Absent;
     };
-    match damping.type_name.as_str() {
+    classify_descriptor(damping)
+}
+
+/// Classify a `DampingDescriptor` VALUE (not the options wrapping it).
+///
+/// The discriminator is the runtime `type_name`, matching the SIR-α nominal
+/// type-tag the structure-defs document. A non-`StructureInstance` value —
+/// including `Value::Undef` — classifies as [`DampingKind::Absent`], which is
+/// what makes a malformed or defaulted-away descriptor silent rather than an
+/// invented `NoDamping`.
+///
+/// This is the single extension point: a new descriptor adds ONE arm here and
+/// both the FEA ([`run_modal_analysis`]) and mechanism ([`run_mechanism_modal`])
+/// producers inherit it — neither may re-implement the type-name match. The
+/// damped-modal-bonded-heterogeneous PRD's `MaterialDamping` has LANDED as
+/// exactly that one arm (task #6878).
+///
+/// The fn is RECURSIVE by design: `MaterialDamping.extra` is itself a
+/// `DampingDescriptor`, so it is classified by this same code. That is what
+/// guarantees a descriptor added here is automatically understood in `extra`
+/// position too, rather than needing a second, drifting match.
+fn classify_descriptor(val: &Value) -> DampingKind {
+    let Value::StructureInstance(descriptor) = val else {
+        return DampingKind::Absent;
+    };
+    match descriptor.type_name.as_str() {
         "RayleighDamping" => {
-            let alpha = damping
+            let alpha = descriptor
                 .fields
                 .get("alpha")
                 .map(read_scalar_si)
                 .unwrap_or(0.0);
-            let beta = damping
+            let beta = descriptor
                 .fields
                 .get("beta")
                 .map(read_scalar_si)
@@ -2904,6 +2982,17 @@ fn classify_damping(val: &Value) -> DampingKind {
             DampingKind::Rayleigh { alpha, beta }
         }
         "NoDamping" => DampingKind::NoDamping,
+        // Task #6878. A missing / `Value::Undef` `extra` recurses to `Absent`
+        // through the guard above: the stdlib default
+        // (`param extra : DampingDescriptor = NoDamping()`) means a value that
+        // came through the author surface always supplies `NoDamping`, but the
+        // trampoline must not ASSUME a well-formed value and invent a default
+        // it never saw.
+        "MaterialDamping" => DampingKind::Material {
+            extra: Box::new(classify_descriptor(
+                descriptor.fields.get("extra").unwrap_or(&Value::Undef),
+            )),
+        },
         other => DampingKind::Unsupported(other.to_string()),
     }
 }
@@ -2914,13 +3003,21 @@ fn classify_damping(val: &Value) -> DampingKind {
 /// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode).
 ///
 /// [`classify_damping`] is the discriminating seam; this fn is the lossy
-/// convenience view over it. It deliberately flattens
-/// [`DampingKind::Unsupported`] to `(0, 0)`, which means a caller using it
-/// **cannot distinguish a genuinely undamped model from a descriptor this
-/// trampoline does not implement**. A caller that must not silently drop an
-/// unrecognised descriptor calls [`classify_damping`] directly and reports the
-/// `Unsupported` arm — see [`run_mechanism_modal`]'s
+/// convenience view over it. It deliberately flattens BOTH
+/// [`DampingKind::Unsupported`] AND [`DampingKind::Material`] to `(0, 0)`, which
+/// means a caller using it **cannot distinguish a genuinely undamped model from
+/// a descriptor this trampoline does not implement, nor from one whose damping
+/// is not expressible as an `(α, β)` pair at all**. A caller that must not
+/// silently drop an unrecognised descriptor calls [`classify_damping`] directly
+/// and reports the `Unsupported` arm — see [`run_mechanism_modal`]'s
 /// `W_MechanismModalUnsupportedDamping` warning (task #6875).
+///
+/// THIS IS NOT THE COMPOSITION POINT (task #6878). `MaterialDamping`'s
+/// modal-strain-energy term is ζ = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e), which is not an
+/// `(α, β)` pair and cannot be expressed as one — and its `extra` companion is a
+/// whole descriptor, not a coefficient. Both are handled by the FEA producer's
+/// damping plan (`plan_modal_damping`), which consumes [`classify_damping`]
+/// directly. A future reader must not "fix" the flattening here.
 fn extract_damping(val: &Value) -> (f64, f64) {
     match classify_damping(val) {
         DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
