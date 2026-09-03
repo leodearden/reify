@@ -584,12 +584,27 @@ install_boot_unit() {
     # Prefer the stable main checkout over the invoking one; fall back to $self
     # (and say so) when this is not that checkout, so a contributor clone still
     # gets a working unit rather than one pointed at a path they do not have.
-    stable="$main_checkout/scripts/setup-agent-cache-redirect.sh"
-    if [ -x "$stable" ]; then
+    #
+    # The empty guard is not belt-and-braces: an unresolved $main_checkout
+    # interpolated unconditionally yields the ROOT-RELATIVE
+    # `/scripts/setup-agent-cache-redirect.sh`, a file that exists nowhere.  The
+    # -x guard means the UNIT is still correct either way — it falls back to
+    # $self — but the warn would name that nonsensical path instead of saying
+    # the resolution failed.  `${main_checkout:-<unresolved>}` is setup-dev.sh's
+    # exact idiom for the same condition; the two host-global installers must
+    # not give an operator two vocabularies for one thing.
+    #
+    # NOT gated on `$main_checkout != <invoking checkout>`: when the invoking
+    # checkout IS the main one but carries no executable copy, the unit is still
+    # about to be pinned at a tree that cannot run it, and a `!=` gate would
+    # swallow exactly that case.  See setup-dev.sh's install_build_services().
+    stable=""
+    [ -n "$main_checkout" ] && stable="$main_checkout/scripts/setup-agent-cache-redirect.sh"
+    if [ -n "$stable" ] && [ -x "$stable" ]; then
         unit_exec="$stable"
     else
         unit_exec="$self"
-        _warn "no executable at the stable main-checkout path ($stable) — pinning the boot unit at the invoking copy instead: $self"
+        _warn "no executable at the stable main-checkout path (${main_checkout:-<unresolved>}) — pinning the boot unit at the invoking copy instead: $self"
     fi
 
     unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
