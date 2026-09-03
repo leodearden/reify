@@ -400,9 +400,38 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
-/// Check that each `Param`-kind value cell with a default expression in
-/// `template` has a default whose type is compatible with the declared
-/// `cell_type`, for nominal leaf types (task-4584):
+/// The authoritative list of value cells subject to param-default conformance.
+///
+/// `TopologyTemplate.value_cells` is NOT the whole surface: port-body params are
+/// compiled separately (`entity.rs` port arm) under the composite member name
+/// `ValueCellId(entity, "<port>.<param>")` and stored on `CompiledPort.members`,
+/// a DISJOINT list that is deliberately never merged into `value_cells`
+/// (`reify_ast::decl`'s `collect_param_default_candidates` doc-comment records
+/// why: `set_parameter`, the GUI property panel, and
+/// `find_param_default_expr`/`find_param_default_span` cell_id resolution all
+/// key off `value_cells` and must not see port-internal names).
+///
+/// Walking only `value_cells` therefore left every port-member param default
+/// unchecked at EVERY arm below — a `Geometry`, `String` or `StructureRef`
+/// default inside a `port { }` block compiled with zero diagnostics (task 7174).
+/// Chaining here rather than adding a second call site keeps ONE loop body, so
+/// the two lists cannot drift apart again.
+///
+/// KNOWN GAP (task 7174 follow-up): `CompiledGuardedGroup.members` /
+/// `.else_members` is the same hole one container over and is NOT chained here
+/// yet — closing it is a one-line addition to this chain, still no second call
+/// site.
+fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
+    template
+        .value_cells
+        .iter()
+        .chain(template.ports.iter().flat_map(|p| p.members.iter()))
+}
+
+/// Check that each `Param`-kind cell enumerated by [`param_default_cells`]
+/// (template value cells ∪ port-body members) with a default expression has a
+/// default whose type is compatible with the declared `cell_type`, for nominal
+/// leaf types (task-4584):
 ///
 /// - **`Type::StructureRef`** params: applies an inline skip-list (see the arm
 ///   comment below for rationale — concretely, a `StructureRef` default for a
@@ -423,7 +452,7 @@ pub(crate) fn check_param_default_conformance(
     registries: ConformanceRegistries<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for vc in &template.value_cells {
+    for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
             continue;
         }
