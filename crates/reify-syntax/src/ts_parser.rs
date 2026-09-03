@@ -3439,7 +3439,7 @@ impl<'a> Lowering<'a> {
             index_binder: None,
             index_domain: None,
             relate_relations,
-            derivation: Some(derivation),
+            derivation: Some(Box::new(derivation)),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })

@@ -499,7 +499,17 @@ pub struct SubDecl {
     ///
     /// Parsed and stored here (A-alpha); first consumed by A-beta (#6616),
     /// which owns every compile-scope rejection for the derived arm.
-    pub derivation: Option<SubDerivation>,
+    ///
+    /// # Why this is boxed
+    ///
+    /// `SubDerivation` is 232 bytes, and `SubDecl` is the largest
+    /// `MemberDecl` variant, so storing it inline grew `MemberDecl` from 536
+    /// to 768 bytes — past `clippy::large_enum_variant`'s 200-byte gap over
+    /// the second-largest variant (`ForallConstraint`, 384). Boxing costs one
+    /// pointer on the common (`None`) path, which every non-derived sub takes,
+    /// instead of 232 bytes on every `MemberDecl` in the AST. Consumers reach
+    /// the fields through auto-deref unchanged.
+    pub derivation: Option<Box<SubDerivation>>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
