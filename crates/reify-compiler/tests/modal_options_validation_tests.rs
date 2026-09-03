@@ -1,7 +1,8 @@
 #![allow(clippy::doc_overindented_list_items)]
 //! Tests for `crates/reify-compiler/stdlib/modal_analysis.ri` —
 //! `std.modal.analysis` module: `DampingDescriptor`, `NoDamping`,
-//! `RayleighDamping`, `Mode`, `ModalResult`, and `ModalOptions` structure
+//! `RayleighDamping`, `MaterialDamping`, `Mode`, `ModalResult`, and
+//! `ModalOptions` structure
 //! definitions for the v0.3 modal-analysis kernel surface (task α), plus
 //! the task η ForcingFunction family: `ForcingFunction` marker trait,
 //! `StepForce`, `ImpulseForce`, `HarmonicForce`, `SampledForce`, and
@@ -17,7 +18,10 @@
 //! (mirroring `buckling_stdlib_compile.rs`), that the five α structures
 //! (`NoDamping`, `RayleighDamping`, `Mode`, `ModalResult`, `ModalOptions`)
 //! and one α trait (`DampingDescriptor`) are correctly represented in the
-//! compiled module, that the positivity constraints on
+//! compiled module, that the β structure `MaterialDamping` (task #6878,
+//! docs/prds/v0_6/damped-modal-bonded-heterogeneous.md) declares its
+//! trait-typed `extra` slot and its `NoDamping()` instance default —
+//! the stdlib's first — that the positivity constraints on
 //! `ModalOptions.{n_modes, tol, max_iters}` are declared at the
 //! structure-def level, and that the η ForcingFunction family (one marker
 //! trait + five structure_defs with constraints and defaults) matches the
@@ -78,10 +82,15 @@ fn load_stdlib_module() -> &'static CompiledModule {
 
 /// Look up a structure template by name within the `std/modal/analysis` module.
 ///
-/// `Mode`, `ModalResult`, `ModalOptions`, `NoDamping`, and `RayleighDamping`
-/// are top-level structures, so we go through `module.templates` and filter on
-/// `EntityKind::Structure` to keep the assertion stable against future
-/// non-structure additions to the module.
+/// `Mode`, `ModalResult`, `ModalOptions`, `NoDamping`, `RayleighDamping` and
+/// `MaterialDamping` (task #6878) are top-level structures, so we go through
+/// `module.templates` and filter on `EntityKind::Structure` to keep the
+/// assertion stable against future non-structure additions to the module.
+///
+/// This lookup doubles as the `std.modal.analysis` EXPORT-SURFACE pin for every
+/// name it is called with: `load_stdlib_module()` is the production embedded +
+/// sequential-prelude path, so a structure that failed to reach the module's
+/// export surface panics here rather than being silently unobservable.
 #[allow(dead_code)]
 fn find_structure(name: &str) -> &'static TopologyTemplate {
     let module = load_stdlib_module();
@@ -3026,5 +3035,133 @@ structure StepForceValueRefAtSmoke {
         Some(DiagnosticCode::ArgTypeMismatch),
         "expected ArgTypeMismatch, got {:?}",
         d.code,
+    );
+}
+
+// ─── task 6878 (β): MaterialDamping descriptor shape ──────────────────────────
+
+/// `MaterialDamping` is the third `DampingDescriptor` refinement (task #6878,
+/// PRD leaf β of docs/prds/v0_6/damped-modal-bonded-heterogeneous.md). It
+/// selects the MODAL-STRAIN-ENERGY value source for `Mode.damping_ratio`:
+///
+///   ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + ζ_extra(ω_i)
+///
+/// with η_e the per-material hysteretic loss factor from
+/// `trait Damped { param loss_factor : Real }` (materials_fea.ri, task #6877).
+/// The descriptor therefore carries NO `loss_factor` of its own — η is a
+/// property of the MATERIAL, not of the damping strategy.
+///
+/// ## What this pins, and why each clause is here
+///
+///   (a) it refines EXACTLY `["DampingDescriptor"]` — same single-refinement
+///       shape as its `NoDamping` / `RayleighDamping` siblings, so the
+///       `classify_damping` dispatch in `crates/reify-eval/src/modal_ops.rs`
+///       sees one more member of one family rather than a new one;
+///   (b) EXACTLY ONE param, `extra`, whose declared type is the TRAIT
+///       `Type::TraitObject("DampingDescriptor")` and not a concrete
+///       refinement. That openness is the point: `extra` is the additive
+///       companion descriptor, and typing it as the trait is what lets
+///       `RayleighDamping` compose with the MSE term without `MaterialDamping`
+///       knowing anything about Rayleigh. It is also what forces the eval-side
+///       `W_ModalDampingUnsupportedExtra` degrade — a trait-typed slot accepts
+///       refinements the trampoline does not implement;
+///   (c) `extra` carries an INSTANCE default `NoDamping()` — a ctor call, not a
+///       literal and not absent. This is the FIRST trait-typed instance default
+///       in the stdlib, so it is pinned explicitly rather than left implied:
+///       `modal_analysis.ri`'s own `ModalOptions` defaults note previously
+///       called the trait-typed-default path "uncharted compiler territory",
+///       and this declaration is the chart. Additive composition is
+///       consequently EXPLICIT-by-default-of-nothing: an author who writes a
+///       bare `MaterialDamping()` gets the pure MSE term and no hidden second
+///       contribution;
+///   (d) no constraints — there is no scalar to constrain (η lives on the
+///       material, where `trait Damped`'s `constraint loss_factor >= 0`
+///       already gates it). Same "nothing to constrain" discipline as
+///       [`no_damping_marker_structure`] clause (b).
+///
+/// The `find_structure` lookup itself is the EXPORT-SURFACE pin: it resolves
+/// through the production `load_stdlib_module()` path's `module.templates`, so
+/// a `MaterialDamping` that failed to reach the `std.modal.analysis` export
+/// surface fails here before any clause is evaluated.
+///
+/// RED before step-2: `find_structure("MaterialDamping")` panics — the
+/// structure def does not exist in any `.ri` file.
+#[test]
+fn material_damping_structure_shape() {
+    let template = find_structure("MaterialDamping");
+
+    // (a) refines EXACTLY DampingDescriptor — one bound, no others.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["DampingDescriptor".to_string()],
+        "MaterialDamping should refine exactly [DampingDescriptor], matching \
+         its NoDamping / RayleighDamping siblings; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    // (b) exactly one param, `extra : DampingDescriptor` (the TRAIT).
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["extra"],
+        "MaterialDamping should declare exactly one param, `extra` — η comes \
+         from the material's `trait Damped`, not from this descriptor; got: {:?}",
+        names
+    );
+    assert_eq!(
+        params[0].cell_type,
+        Type::TraitObject("DampingDescriptor".to_string()),
+        "MaterialDamping.extra must be declared as the TRAIT \
+         `DampingDescriptor` (same type as `ModalOptions.damping`), not as a \
+         concrete refinement — the open slot is what lets an arbitrary \
+         descriptor compose additively; got {:?}",
+        params[0].cell_type
+    );
+
+    // (c) `extra` carries an INSTANCE default: the ctor call `NoDamping()`.
+    // Asserted structurally (a `StructureInstanceCtor` naming `NoDamping`)
+    // rather than by rendering, and with zero supplied args since `NoDamping`
+    // is a zero-field marker.
+    let extra_default = require_default(template, "extra");
+    match &extra_default.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
+            assert_eq!(
+                type_name, "NoDamping",
+                "MaterialDamping.extra's default should construct `NoDamping`, \
+                 got a ctor for `{}`",
+                type_name
+            );
+            assert!(
+                ordered_args.is_empty(),
+                "the `NoDamping()` default should supply no ctor args \
+                 (NoDamping is a zero-field marker structure); got: {:?}",
+                ordered_args.iter().map(|(n, _)| n).collect::<Vec<_>>()
+            );
+        }
+        other => panic!(
+            "MaterialDamping.extra's default must be the INSTANCE default \
+             `NoDamping()` — a StructureInstanceCtor, not a literal and not \
+             absent (this is the stdlib's first trait-typed instance default, \
+             pinned explicitly); got: {:?}",
+            other
+        ),
+    }
+
+    // (d) no constraints.
+    assert!(
+        template.constraints.is_empty(),
+        "MaterialDamping should declare no constraints — η's non-negativity is \
+         gated by `trait Damped`'s `constraint loss_factor >= 0` on the \
+         MATERIAL; got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
     );
 }
