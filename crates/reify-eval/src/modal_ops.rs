@@ -5180,6 +5180,24 @@ mod tests {
         }))
     }
 
+    /// [`material_with_density`] plus a `loss_factor`, i.e. a material that
+    /// conforms to `trait Damped` (materials_fea.ri, task #6877) — the input
+    /// `MaterialDamping` requires. `Steel_AISI_1045`'s real η is 0.0006.
+    ///
+    /// Kept separate from [`material_with_density`] rather than adding an
+    /// `Option` param to it: every existing caller of that helper is asserting
+    /// behaviour for a material that does NOT conform to `Damped`, which is a
+    /// meaningful state (it is the B8 rejection case), so widening it would
+    /// blur exactly the distinction task #6878 turns on.
+    fn damped_material(eta: f64) -> Value {
+        let Value::StructureInstance(mut data) = material_with_density(Some(STEEL_DENSITY)) else {
+            unreachable!("material_with_density returns a StructureInstance")
+        };
+        data.type_name = "Steel_AISI_1045".to_string();
+        data.fields.insert("loss_factor".to_string(), Value::Real(eta));
+        Value::StructureInstance(data)
+    }
+
     /// Assert the density-guard short-circuit: the returned outcome is a
     /// `Completed` carrying (a) an `Error` diagnostic whose message starts
     /// `"E_ModalNoMassMatrix"` and (b) a degenerate `ModalResult` whose `modes`
@@ -6581,6 +6599,205 @@ mod tests {
             "true finite nearest node must win over both +infinity and \
              -infinity node coordinates"
         );
+    }
+
+    /// Task #6878 (PRD leaf β) step-7: the in-crate twin of the three author-
+    /// surface arms in
+    /// `crates/reify-eval/tests/harness_modal/modal_material_damping_e2e.rs`,
+    /// driving [`run_modal_analysis`] directly on hand-built `Value` inputs.
+    ///
+    /// Pinning the seam at BOTH altitudes is what makes a failure localise: if
+    /// this passes and the e2e fails, the defect is in the author surface
+    /// (stdlib declaration, ctor lowering, cell wiring); if both fail, it is in
+    /// the producer. The e2e cannot be replaced by this test — it is the only
+    /// thing that proves an author writing `damping: MaterialDamping()` reaches
+    /// this code at all — and this test cannot be replaced by the e2e, because
+    /// it runs in a fraction of the e2e's wall clock and so is the fast signal.
+    ///
+    /// The four arms share ONE geometry and ONE material, so the only thing that
+    /// varies between them is the descriptor:
+    ///   - `NoDamping`       → ζ == 0.0 exactly            (B4 regression)
+    ///   - `RayleighDamping` → ζ == β·ω/2                  (B4 regression)
+    ///   - `MaterialDamping` → ζ == η/2, mode-independent  (B5, RED before step-8)
+    ///   - `MaterialDamping{extra: Rayleigh}`
+    ///                       → ζ == η/2 + β·ω/2            (B7, RED before step-8)
+    ///
+    /// η comes from the fixture constant the material is BUILT from rather than
+    /// a transcribed literal, and ω is recomputed from the SAME f64 the producer
+    /// wrote into `Mode.frequency`, so 1e-9 relative is an fp-associativity
+    /// guard rather than a fitted tolerance — same discipline as the e2e.
+    ///
+    /// RED before step-8: measured on this branch, both MaterialDamping arms
+    /// yield ζ = 0 for every mode with zero diagnostics.
+    #[test]
+    fn trampoline_composes_material_damping_additively_with_extra() {
+        const ETA: f64 = 0.0006;
+        const BETA: f64 = 1e-4;
+
+        /// Solve the shared fixture under `damping`, returning `(f, ζ)` per mode.
+        fn solve(damping: Value) -> Vec<(f64, f64)> {
+            let value_inputs = vec![
+                damped_material(ETA),
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(vec![
+                    ("n_modes".to_string(), Value::Int(3)),
+                    (
+                        "boundary_conditions".to_string(),
+                        Value::List(vec![fixed_support("x_min")]),
+                    ),
+                    ("damping".to_string(), damping),
+                    (
+                        "reference_direction".to_string(),
+                        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                    ),
+                ]),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "a well-formed damped solve must produce no Error diagnostics; \
+                 got {diagnostics:?}",
+            );
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            assert!(!modes.is_empty(), "a happy-path solve must return ≥ 1 mode");
+            modes
+                .iter()
+                .enumerate()
+                .map(|(i, mode)| {
+                    let Value::StructureInstance(m) = mode else {
+                        panic!("mode {i} must be a Mode StructureInstance")
+                    };
+                    let f = match m.fields.get("frequency") {
+                        Some(Value::Scalar {
+                            si_value,
+                            dimension,
+                        }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                        other => {
+                            panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}")
+                        }
+                    };
+                    let zeta = match m.fields.get("damping_ratio") {
+                        Some(Value::Real(z)) => *z,
+                        other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+                    };
+                    // Physical-band guard: a 0 Hz rigid mode would make every ζ
+                    // identity below vacuously satisfiable at ζ = 0.
+                    assert!(
+                        f.is_finite() && f > 1.0,
+                        "mode {i} frequency {f} Hz must be finite and > 1 Hz"
+                    );
+                    (f, zeta)
+                })
+                .collect()
+        }
+
+        let rayleigh = || rayleigh_damping(0.0, BETA);
+        let none = solve(struct_instance("NoDamping", vec![]));
+        let rayl = solve(rayleigh());
+        let mat = solve(struct_instance("MaterialDamping", vec![]));
+        let both = solve(struct_instance(
+            "MaterialDamping",
+            vec![("extra".to_string(), rayleigh())],
+        ));
+
+        assert_eq!(
+            none.len(),
+            mat.len(),
+            "every arm must return the same mode count — they differ only in \
+             the damping descriptor, which is applied after the eigensolve"
+        );
+
+        let zeta_material = ETA / 2.0;
+        for (i, (&(f_none, z_none), &(f_mat, z_mat))) in none.iter().zip(mat.iter()).enumerate() {
+            let (f_rayl, z_rayl) = rayl[i];
+            let (f_both, z_both) = both[i];
+
+            // ── B4 (regression, green from the start) ───────────────────────
+            assert_eq!(
+                z_none, 0.0,
+                "mode {i}: NoDamping must give ζ exactly 0.0, got {z_none}"
+            );
+            let omega = 2.0 * std::f64::consts::PI * f_rayl;
+            let zeta_extra = rayleigh_damping_ratio(0.0, BETA, omega);
+            assert!(
+                zeta_extra > 0.0,
+                "mode {i}: the fixture β must give a nonzero Rayleigh ζ"
+            );
+            assert!(
+                (z_rayl - zeta_extra).abs() / zeta_extra < 1e-9,
+                "mode {i}: RayleighDamping ζ {z_rayl} must equal the closed form \
+                 {zeta_extra} — #6878 must not perturb the pre-existing path"
+            );
+            // Damping is applied after the eigensolve, so it must not move a
+            // single frequency bit on ANY arm.
+            for (label, f) in [("rayl", f_rayl), ("mat", f_mat), ("both", f_both)] {
+                assert_eq!(
+                    f, f_none,
+                    "mode {i}: the `{label}` arm's frequency must be BIT-FOR-BIT \
+                     equal to the undamped one — damping never touches the \
+                     eigensolve, and the assembly cache key deliberately \
+                     excludes it"
+                );
+            }
+
+            // ── B5: ζ = η/2 exactly, and mode-INDEPENDENT ───────────────────
+            assert!(
+                z_mat > 0.0,
+                "mode {i}: MaterialDamping must give a POSITIVE ζ (expected \
+                 η/2 = {zeta_material}), got {z_mat}. Exactly 0 means the \
+                 producer silently dropped the descriptor (INV-SF-3)"
+            );
+            assert!(
+                (z_mat - zeta_material).abs() / zeta_material < 1e-9,
+                "mode {i}: MaterialDamping ζ {z_mat} must equal η/2 = \
+                 {zeta_material}. With ONE material the modal-strain-energy \
+                 ratio is ≡ 1 for any mode shape (PRD §C5), so this is an \
+                 algebraic identity, not a converged value"
+            );
+            assert_eq!(
+                z_mat, mat[0].1,
+                "mode {i}: ζ_material must be MODE-INDEPENDENT — the degenerate \
+                 energy ratio is 1 for every φ, so all modes must agree \
+                 bit-for-bit"
+            );
+
+            // ── B7: additive composition, two independent statements ────────
+            let expected = zeta_material + zeta_extra;
+            assert!(
+                (z_both - expected).abs() / expected < 1e-9,
+                "mode {i}: MaterialDamping(extra: Rayleigh) ζ {z_both} must \
+                 equal η/2 + ζ_extra = {zeta_material} + {zeta_extra} = \
+                 {expected}"
+            );
+            let delta = z_both - z_mat;
+            assert!(
+                (delta - z_rayl).abs() / z_rayl < 1e-9,
+                "mode {i}: composition must be ADDITIVE — ζ_both − ζ_mat = \
+                 {delta} must equal the standalone ζ_rayl = {z_rayl}. This claim \
+                 is independent of either closed form"
+            );
+        }
     }
 
     /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
