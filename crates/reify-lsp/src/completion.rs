@@ -275,15 +275,15 @@ const LENGTH_GATED_EXAMPLES: &[(&str, &str)] = &[
 /// completion-render time is how the popup imports the one shared wording
 /// instead of hand-copying it (G7).
 ///
-/// The clause reads "a bare number would mean SI metres and is rejected" —
-/// not "is read as ... and rejected" (review amendment): under the gate a
-/// bare number is never actually read as metres, it is rejected outright:
-/// the 1000×-metres misreading is the historical hazard Contract C closes,
-/// so asserting both in one breath was self-contradictory. `half_space`
-/// gets an extra qualifier because it is the one row in
-/// [`LENGTH_GATED_EXAMPLES`] whose signature mixes a LENGTH-gated slot group
-/// with a legitimately dimensionless one, so the general clause would
-/// otherwise read as covering its outward-normal args too.
+/// The clause reads "a bare number would mean SI metres and is rejected",
+/// not "is read as ... and rejected": under the gate a bare number is never
+/// actually read as metres, it is rejected outright — the 1000×-metres
+/// misreading is the historical hazard Contract C closes, so asserting both
+/// in one breath would be self-contradictory. `half_space` gets an extra
+/// qualifier because it is the one row in [`LENGTH_GATED_EXAMPLES`] whose
+/// signature mixes a LENGTH-gated slot group with a legitimately
+/// dimensionless one, so the general clause would otherwise read as
+/// covering its outward-normal args too.
 fn builtin_doc_with_length_gate_note(info: &BuiltinFunctionInfo) -> String {
     match LENGTH_GATED_EXAMPLES
         .iter()
@@ -1243,14 +1243,9 @@ mod tests {
             detail.contains("x1") && detail.contains("y1"),
             "polygon signature must advertise the compiling variadic flat coordinate-pair form (x1, y1, ...), got: {detail}"
         );
-        // task 6450 (review amendment): the positive Length pin used to live
-        // here as a polygon-only bespoke assertion, because polygon's
-        // signature carried no types at all and so slipped past
-        // geometry_completion_signatures_type_gated_slots_as_length's
-        // negative-only `!detail.contains(": Real")` guard. That guard now
-        // also asserts a positive `detail.contains(": Length")` per row in
-        // `GATED_LENGTH_BUILTIN_ROWS` (which includes "polygon"), so this
-        // bespoke pin would only duplicate the general one — removed.
+        // polygon's Length-typing is pinned by
+        // `geometry_completion_signatures_type_gated_slots_as_length`, not
+        // duplicated here.
     }
 
     // --- task 6450: gated-length builtins advertise their dimension requirement ---
@@ -1310,10 +1305,10 @@ mod tests {
 
     /// Look up a gated builtin's canonical dimensioned example from
     /// [`LENGTH_GATED_EXAMPLES`] — the same table `builtin_doc_with_length_gate_note`
-    /// renders the served documentation from — instead of hand-copying it
-    /// into a second table (review amendment, task 6450). That is what makes
-    /// `length_gated_tables_stay_in_sync` below meaningful: a dimensioned
-    /// example can only ever come from one place.
+    /// renders the served documentation from — rather than hand-copying it
+    /// into a second table. That is what makes `length_gated_tables_stay_in_sync`
+    /// below meaningful: a dimensioned example can only ever come from one
+    /// place.
     fn dimensioned_example(name: &str) -> &'static str {
         LENGTH_GATED_EXAMPLES
             .iter()
@@ -1324,10 +1319,10 @@ mod tests {
 
     /// One row per empirically-gated `01-geometry` builtin (task 6450):
     /// `(builtin_name, bare_call, gate_reach)`. The dimensioned call is
-    /// deliberately NOT a fourth column here (review amendment) — it is
-    /// looked up from `LENGTH_GATED_EXAMPLES` via `dimensioned_example` so
-    /// the doc-string example and this test's behavioural pin can never
-    /// drift apart (see `length_gated_tables_stay_in_sync`, which also
+    /// deliberately NOT a fourth column here — it is looked up from
+    /// `LENGTH_GATED_EXAMPLES` via `dimensioned_example` so the doc-string
+    /// example and this test's behavioural pin can never drift apart (see
+    /// `length_gated_tables_stay_in_sync`, which also
     /// asserts the two tables name the same builtins and that every
     /// `LENGTH_GATED_EXAMPLES` row is a real `BUILTIN_FUNCTIONS` entry).
     /// `half_space` deliberately leaves `nx`/`ny`/`nz` bare — only its
@@ -1359,14 +1354,13 @@ mod tests {
         ("ellipse", "ellipse(10, 5)", CompileCheck),
     ];
 
-    /// Drift guard (review amendment, task 6450): `LENGTH_GATED_EXAMPLES`
-    /// (the doc-string example table) and `GATED_LENGTH_BUILTIN_ROWS` (this
-    /// suite's behavioural-pin table) must name exactly the same builtins,
-    /// every `LENGTH_GATED_EXAMPLES` entry must resolve to a real
-    /// `BUILTIN_FUNCTIONS` row, and every `BUILTIN_FUNCTIONS` signature that
-    /// types a slot `Length` must have a `LENGTH_GATED_EXAMPLES` row (review
-    /// amendment round 2). That third check is the direction that actually
-    /// rots: a builtin that becomes LENGTH-gated but gains no example row
+    /// Drift guard: `LENGTH_GATED_EXAMPLES` (the doc-string example table)
+    /// and `GATED_LENGTH_BUILTIN_ROWS` (this suite's behavioural-pin table)
+    /// must name exactly the same builtins; every `LENGTH_GATED_EXAMPLES`
+    /// entry must resolve to a real `BUILTIN_FUNCTIONS` row; and every
+    /// `BUILTIN_FUNCTIONS` signature that types a slot `Length` must have a
+    /// `LENGTH_GATED_EXAMPLES` row. That third check is the direction that
+    /// actually rots: a builtin that becomes LENGTH-gated but gains no example row
     /// would silently omit the units clause from its popup, and neither of
     /// the first two checks nor
     /// `geometry_completion_signatures_type_gated_slots_as_length` (whose
@@ -1400,11 +1394,11 @@ mod tests {
                  registered BUILTIN_FUNCTIONS entry"
             );
         }
-        // Converse (review amendment round 2): a builtin whose signature
-        // already types a slot `Length` but has no LENGTH_GATED_EXAMPLES row
-        // would silently serve a popup with no units clause. Verified: today
-        // exactly the 15 rows above have a `: Length` signature, so this is
-        // green on landing and reds the moment a 16th one appears unpaired.
+        // Converse: a builtin whose signature already types a slot `Length`
+        // but has no LENGTH_GATED_EXAMPLES row would silently serve a popup
+        // with no units clause. Verified: today exactly the 15 rows above
+        // have a `: Length` signature, so this is green on landing and reds
+        // the moment a 16th one appears unpaired.
         for info in BUILTIN_FUNCTIONS.iter() {
             if info.signature.contains(": Length") {
                 assert!(
