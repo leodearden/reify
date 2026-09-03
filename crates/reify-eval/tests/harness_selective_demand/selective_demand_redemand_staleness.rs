@@ -694,20 +694,48 @@ fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
     let tess2 = engine
         .tessellate_snapshot(&compiled)
         .expect("tessellate_snapshot must return Some after edit_param");
-    assert_live_handle_list(
+    let refs_after = assert_live_handle_list(
         &tess2,
         &holes_id,
         3,
         "after edit_param + rebuild: the list must still hold three live handles",
     );
+
+    // Cross-element distinctness, which the per-element hash loop below CANNOT
+    // see: a regroup bug that broadcasts `holes#0`'s handle into all three slots
+    // changes every element's hash together and so passes that loop.
+    // `generate_eval.rs::assert_geometry_handle_list` already pins this for the
+    // single-shot eval path; this restores the same guarantee on the rebuild
+    // path.
+    let distinct: std::collections::HashSet<_> = refs_after.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "after edit_param + rebuild the elements must still be SEPARATE \
+         realizations, not clones of one: {refs_after:?}",
+    );
+
     let hashes_after = geometry_list_upstream_hashes(&tess2, &holes_id, 3, "after edit_param");
 
-    assert_ne!(
-        hashes_before, hashes_after,
-        "after edit_param(r, 7mm) every element's upstream_values_hash must \
-         change — an unchanged hash means the list was served stale rather than \
-         re-realized from the current param"
-    );
+    // PER ELEMENT, not per Vec: `assert_ne!` on the two `Vec`s holds as soon as
+    // ONE element differs, so a partial regroup that re-realizes `holes#0` from
+    // the edited `r` while serving `holes#1`/`holes#2` stale would pass GREEN.
+    // `zip` cannot silently skip an element here — both vectors come from
+    // `geometry_list_upstream_hashes(..., 3, ...)`, which asserts `items.len()
+    // == 3` before returning, so both are exactly 3 long.
+    //
+    // Each element is compared only against ITSELF across the edit. All three
+    // elements are `cylinder(r, h)` over the same upstream values, so their
+    // hashes are IDENTICAL to one another by construction — that coincidence is
+    // not a bug, and cross-element distinctness belongs on `realization_ref`
+    // (above), never on these hashes.
+    for (k, (before, after)) in hashes_before.iter().zip(&hashes_after).enumerate() {
+        assert_ne!(
+            before, after,
+            "element {k}'s upstream_values_hash did not change after \
+             edit_param(r, 7mm) — served stale rather than re-realized"
+        );
+    }
 }
 
 /// Assert `result.values[cell]` is a `len`-element list in which NO element is
