@@ -703,6 +703,41 @@ timeouts:
   implementer: 7800
   debugger: 7800
   architect: 7200
+  # 2026-09-03 incident (task 6644 / esc-6644-3, Leo approved): the PRE-turn-1
+  # startup grace, NOT a silence bound. The three values above feed the
+  # WORKING-regime watchdog and only latch once an assistant turn is seen
+  # (cli_invoke.py:3813/:3852); until then this separate, much shorter bound
+  # governs (cli_invoke.py:3829: `not seen_turn and live_turns == 0 and
+  # elapsed >= startup_grace_secs`), so architect: 7200 is inert against it.
+  #
+  # WHY RAISED 120 -> 450. An upstream claude-opus-5 degradation (HTTP 500 from
+  # ~13:24 UTC escalating to 529 Overloaded) starved agents of a first
+  # transcript turn; the 120s grace then SIGTERMed them MID-RETRY. Measured
+  # blast radius: 86 kills / 25 tasks / 2 projects / 3 roles in one 2.5h window,
+  # 100% opus (sonnet 0/17, null-model 0/39) — against a base rate of 0-6/day,
+  # with a structurally identical precedent burst on 2026-08-24 (60 events).
+  # The kill is worse than the delay it prevents: it lands BEFORE the CLI can
+  # surface `API Error: 529`, so no api_error_status is ever recorded, which
+  # simultaneously defeats the scheduler's transient-requeue lane
+  # (scheduler.py:465, matches only `agent API error: HTTP \d{3}`) and DF task
+  # 3316's 5xx-requeue fix. A task 6644 sibling steward that outlived the grace
+  # did surface the 529 — after 209s. 450 clears that observed retry span with
+  # margin, and is chosen for robustness under CPU starvation: a first turn can
+  # also be legitimately slow when the box is oversubscribed, and killing a
+  # healthy-but-starved agent costs a whole plan (--print emits stdout only at
+  # process end, so a SIGTERM yields nothing; DF task 2360).
+  #
+  # COST OF BEING WRONG is bounded and small: a genuine from-source-build / uv /
+  # MCP-startup wedge — the case this grace exists to catch — now burns 450s
+  # instead of 120s before the kill. That is cheap against the alternative
+  # observed here, which is a terminal BLOCKED task plus an L2 escalation plus a
+  # human unblock session, because the planning path has no retry for this shape
+  # (_ARCHITECT_TRANSIENT_RETRY_KINDS, workflow.py:299-303, excludes TIMED_OUT).
+  #
+  # Green-tier: timeouts.startup_grace_secs is in RELOADABLE_FIELDS via
+  # _submodel_leaf_paths('timeouts', TimeoutsConfig) — verified directly, not
+  # assumed. Applies via the escalation MCP's reload_config, no restart.
+  startup_grace_secs: 450
 
 unblock_auto:
   timeout_seconds: 1800
