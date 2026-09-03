@@ -15,6 +15,10 @@
 //!    `Value::Map` profile records (mirroring the `mechanism` builtin's
 //!    `Value::Map` structured-result precedent, since the `eval_builtin` path
 //!    has no `StructureRegistry` to mint a `Value::StructureInstance`).
+//!    [`waypoint_to_value`] is the UNIT-REGIME BOUNDARY of that arm: layer 1
+//!    stays in native g-code units (millimetres, mm/min) for lossless parse
+//!    fidelity, and the DSL-visible projection built here is SI and
+//!    dimensioned. See that function's docs for the field-by-field contract.
 //!
 //! Diagnostics: `E_GcodeParseError` reuses `reify_gcode::ParseError` verbatim;
 //! the two `W_` warnings (`DialectUnsupported`, `ShaperConflict`) are a local
@@ -39,6 +43,12 @@ use std::collections::BTreeMap;
 use reify_ir::Value;
 
 use reify_gcode::{GcodeCommand, ParseError};
+
+/// Millimetres → SI metres. Same name and value as the other mm→SI
+/// boundaries in the FDM stack (`reify-fdm/src/r0.rs:236`,
+/// `reify-eval/src/compute_targets/as_printed_material_r0.rs:58`), so
+/// grepping `MM_TO_M` enumerates all of them.
+const MM_TO_M: f64 = 1.0e-3;
 
 /// Which dialect parser [`lower_gcode`] should drive.
 #[derive(Debug, Clone, PartialEq)]
@@ -384,16 +394,27 @@ fn profile_to_value(profile: &MotionProfile) -> Value {
 }
 
 /// Encode one [`Waypoint`] as a `Value::Map` of its absolute coordinates:
-/// `{ x, y, z, e }` as `Value::Real` (the `Waypoint` fields are raw,
-/// unit-agnostic f64 lifted straight from the g-code, so they are preserved
-/// verbatim — no unit interpretation is imposed here). The `feedrate` key is
-/// present only when a feed is in effect for the move.
+/// `{ x, y, z, e }` plus an optional `feedrate`.
+///
+/// # This function is the unit-regime boundary
+///
+/// Two regimes meet here, and the split is deliberate — the same one
+/// `reify_fdm::Toolpath` uses:
+///
+/// - The [`Waypoint`] STRUCT (and everything in the pure `lower_gcode` layer
+///   below it) stays in NATIVE G-CODE UNITS: millimetres for `x`/`y`/`z`/`e`
+///   and millimetres-per-minute for `feedrate`, lifted verbatim from the
+///   source so parse fidelity is lossless.
+/// - The DSL-VISIBLE PROJECTION built here is SI and dimensioned. `x`, `y`,
+///   `z` and `e` become `Length` scalars in SI metres (via [`MM_TO_M`]).
+///
+/// The `feedrate` key is present only when a feed is in effect for the move.
 fn waypoint_to_value(wp: &Waypoint) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("x".to_string()), Value::Real(wp.x));
-    m.insert(Value::String("y".to_string()), Value::Real(wp.y));
-    m.insert(Value::String("z".to_string()), Value::Real(wp.z));
-    m.insert(Value::String("e".to_string()), Value::Real(wp.e));
+    m.insert(Value::String("x".to_string()), Value::length(wp.x * MM_TO_M));
+    m.insert(Value::String("y".to_string()), Value::length(wp.y * MM_TO_M));
+    m.insert(Value::String("z".to_string()), Value::length(wp.z * MM_TO_M));
+    m.insert(Value::String("e".to_string()), Value::length(wp.e * MM_TO_M));
     if let Some(f) = wp.feedrate {
         m.insert(Value::String("feedrate".to_string()), Value::Real(f));
     }
