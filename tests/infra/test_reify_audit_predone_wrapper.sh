@@ -348,6 +348,62 @@ assert "5f-h: the wrapper's missing_done_at snippet reports exactly d1,d3,d4" \
     bash -c 'missing=$(jq -r '"'"'[ .[] | select(.status == "done" and .done_at == null) | .task_id ] | sort | join(",")'"'"' "$1"); [ "$missing" = "d1,d3,d4" ]' \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
 
+# ------------------------------------------------------------------------------
+# Check 5g: the sidecar is wired to select THIS suite
+# ------------------------------------------------------------------------------
+# Measured at task 7236, and it contradicts the intuition that a script under
+# scripts/ is automatically covered:
+#   verify-pipeline-guard.sh requires-full-gate scripts/reify-audit-snapshot-filter.jq -> 1
+#   verify-pipeline-guard.sh is-registered      scripts/reify-audit-snapshot-filter.jq -> 1
+# i.e. the sidecar is fast-path eligible AND registered by NO route, while
+# scripts/verify-pipeline-infra-tests.txt maps the wrapper and the freshness
+# lib but had no row for the .jq. So a future .jq-only diff neither routes to
+# the full gate nor selects this suite: Check 5f above would never run on the
+# very file it guards. This check pins the wiring that closes that hole.
+#
+# Deliberately NOT asserted: that requires-full-gate exits 0. Surgical
+# registration keeps the sidecar OFF the full-gate route on purpose -- the map
+# file's own header says such a row must not also be added to
+# scripts/verify-pipeline-paths.txt, which would force `--scope all` on every
+# future edit to a one-line jq filter.
+echo ""
+echo "--- Check 5g: sidecar is wired into the verify-pipeline artifact map ---"
+
+VP_INFRA_MAP="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+SIDECAR_REL="scripts/reify-audit-snapshot-filter.jq"
+_SELF_TEST_PATH="$SCRIPT_DIR/test_reify_audit_predone_wrapper.sh"
+
+# _map_selects_self <artifact-path> — mirror select_infra_tests()'s parse
+# exactly (same comment/blank filter, same two-field `read`, same ACTIVE-ROW
+# RULE that BOTH fields must be non-empty per the map header :38-39), then
+# expand each matching row's glob under $REPO_ROOT and succeed if it resolves
+# to THIS test file. `-f` (not `-e`) mirrors verify.sh's own selective-infra
+# emitter loop, so a glob that resolves to a non-regular path is excluded here
+# exactly as it would be at runtime. Same idiom as
+# tests/infra/test_govtest_slice_reaper.sh Block K.
+_map_selects_self() {
+    local _want="$1" _artifact _glob _line _expanded
+    [ -f "$VP_INFRA_MAP" ] || return 1
+    while IFS= read -r _line; do
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob" ]     || continue
+        [ "$_artifact" = "$_want" ] || continue
+        for _expanded in "$REPO_ROOT"/$_glob; do
+            [ -f "$_expanded" ] || continue
+            [ "$_expanded" = "$_SELF_TEST_PATH" ] && return 0
+        done
+    done < <(grep -v '^[[:space:]]*#' "$VP_INFRA_MAP" | grep -v '^[[:space:]]*$')
+    return 1
+}
+
+assert "5g-a: verify-pipeline-infra-tests.txt maps the snapshot filter sidecar -> this test" \
+    _map_selects_self "$SIDECAR_REL"
+
+assert "5g-b: verify-pipeline-guard.sh reports the snapshot filter sidecar as registered" \
+    bash -c 'bash "$1/scripts/verify-pipeline-guard.sh" is-registered "$2" >/dev/null 2>&1' \
+    -- "$REPO_ROOT" "$SIDECAR_REL"
+
 # ==============================================================================
 # Check 6: exit-code propagation under `set -e`
 # ==============================================================================
