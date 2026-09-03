@@ -62,22 +62,39 @@
 //!      (`dispatch_merged_cluster_solve_cached`) — `commit_cell_result`
 //!      for both the main write-back and its wave-2. No pinned-connector
 //!      write-back (same exclusion as `eval`'s merged-cluster branch).
-//!    - [`Engine::edit_param`] — `commit_cell_result` for both the main
-//!      write-back and its wave-2 driver-order reseed. No un-journaled
-//!      *resolution* write-back — the reseed's inactive-guarded-member
-//!      leg instead calls [`deactivate_if_not_auto`], which
-//!      writes `values`/snapshot only (no cache, no journal), by
-//!      design; see the canonical Auto-cell lifecycle rule above.
+//!    - [`Engine::edit_param`] — `commit_cell_result` for the main
+//!      write-back and its wave-2 downstream reseed (both
+//!      `CacheLeg::Record`). A third phase, the post-wave2
+//!      driver-ordered guard-member reseed, follows: its active-member
+//!      leg also routes through `commit_cell_result`, but with
+//!      `CacheLeg::Skip("post-wave2 guard-member reseed")` — journals,
+//!      does not cache. No un-journaled *resolution* write-back — the
+//!      same reseed's inactive-guarded-member leg instead calls
+//!      [`deactivate_if_not_auto`], which writes `values`/snapshot only
+//!      (no cache, no journal), by design; see the canonical Auto-cell
+//!      lifecycle rule above.
 //!    - [`Engine::edit_source`] — main write-back journals via
 //!      `commit_cell_result`; its wave-2 ("Second propagation wave")
 //!      does NOT — a bare `values`/snapshot insert plus
-//!      `cache.record_evaluation`, no journal event.
+//!      `cache.record_evaluation`, no journal event. A third phase, the
+//!      post-wave2 driver-ordered guard-member reseed's active-member
+//!      leg, has NEITHER: a bare `values`/snapshot insert with no cache
+//!      write and no journal call at all.
 //! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
 //!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
 //! 7. `objective_provenance` — `eval`'s two arms only
 //! 8. `resolved_ids` / `all_resolved_ids` — uniform: every arm populates
-//!    a local resolved-ids set from the solver's resolved values.
-//!    `eval`'s two arms feed it into `SnapshotProvenance::Resolution {
+//!    a local resolved-ids set seeded from the solver's resolved
+//!    values. In [`Engine::eval`]'s and [`Engine::eval_cached`]'s
+//!    per-template arms it is a strict superset of that:
+//!    `write_solved_pinned_connector_autos` (engine_eval.rs:1803) also
+//!    inserts each pinned connector-instance auto (their merged-cluster
+//!    branches take no pinned-connector write-back, per leg 5 above, so
+//!    this superset is per-template-arm only). For `eval_cached` this
+//!    is load-bearing: its wave-2 dirty-cone seed reads directly from
+//!    this same `resolved_ids` set, so a pinned auto omitted from it
+//!    would also skip re-eval of its downstream cone.
+//!    `eval`'s two arms feed the set into `SnapshotProvenance::Resolution {
 //!    resolved }`; the other four arms (`eval_cached`'s two arms,
 //!    [`Engine::edit_param`], [`Engine::edit_source`]) use it instead to
 //!    seed the wave-2 downstream dirty cone. Omitting a newly resolved
