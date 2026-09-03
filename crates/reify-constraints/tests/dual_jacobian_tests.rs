@@ -651,3 +651,211 @@ fn a_residual_with_no_kink_yields_an_empty_record() {
         "a smooth problem has the same signature everywhere"
     );
 }
+
+// ===========================================================================
+// Step-27: a kink inside a DEPENDENT CELL must reach every row's BranchRecord
+// ===========================================================================
+//
+// `fold_dependent_duals` evaluates each derived cell into a `BranchRecord` it
+// throws away, so a kink that lives inside a derived cell is invisible to λ.
+// That breaks the headline contract BOTH modules state — "'no entries' must
+// mean 'no kink', never 'we did not look'" (`branch_signature.rs`) and "every
+// row carries the non-smooth branches its traversal actually took" (this
+// module's own header).
+//
+// It is not a cosmetic gap.  A clustered solve is exactly the case where the
+// residuals read derived cells rather than the autos directly, so a `clamp` or
+// an `if` in the middle of a cluster's algebra is precisely the kink most
+// likely to exist — and today it produces an EMPTY record, which reads to η as
+// "this row is a smooth-function sample, secant across it freely" and to λ as
+// "no alternation to count".
+//
+// The fix re-sites each cell's entries under a reserved `DEPENDENT_MARKER`
+// prefix and seeds every row's record with the resulting prelude, so the
+// records reach λ through the API it already calls.
+
+use reify_expr::DEPENDENT_MARKER;
+use reify_test_support::builders::expr::conditional_expr;
+
+/// `line_cost = clamp(q, 1, 4)`, `r = line_cost − 2`, over a single auto `q`.
+///
+/// Deliberately the same clamp as `clamped_model`, moved one hop away from the
+/// residual: the ONLY difference from the step-19 fixture is that the kink now
+/// lives in a derived cell, so any divergence between the two is the defect.
+fn clamped_dependent_jac(x: f64) -> reify_constraints::Jacobian {
+    let params = vec![auto("q", dl())];
+    let dependent = vec![(
+        cell("line_cost"),
+        call("clamp", vec![dref("q"), num(1.0), num(4.0)], dl()),
+    )];
+    let residual = binop(BinOp::Sub, dref("line_cost"), num(2.0));
+    residual_jacobian(&params, &[residual], &ValueMap::new(), &[x], &dependent, &[], None)
+        .expect("a clamped derived cell is differentiable on either side of its bounds")
+}
+
+// ---------------------------------------------------------------------------
+// (1) The record must exist at all
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_kink_inside_a_dependent_cell_reaches_the_rows_branch_record() {
+    for (x, expected) in [(2.5, BranchChoice::Interior), (7.0, BranchChoice::AboveHi)] {
+        let j = clamped_dependent_jac(x);
+        assert_eq!(j.branch_records.len(), j.rows.len(), "one record per row, always");
+        let entries = j.branch_records[0].entries();
+        assert!(
+            !entries.is_empty(),
+            "x={x}: an empty record claims this row is smooth — the clamp is one hop away, \
+             not absent"
+        );
+        let clamp = entries.iter().find(|e| e.kind == KinkKind::Clamp).unwrap_or_else(|| {
+            panic!("x={x}: the derived cell's clamp must appear, got {entries:?}")
+        });
+        assert_eq!(clamp.choice, expected, "x={x}: the recorded region");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (2) A flip in a dependent cell must move the signature
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_dependent_cell_branch_flip_is_reported_and_moves_the_signature_key() {
+    let inside = clamped_dependent_jac(2.5);
+    let outside = clamped_dependent_jac(7.0);
+    let (row, site) = inside.differs_from(&outside).expect(
+        "crossing a bound INSIDE a derived cell is a branch change — without this η would \
+         happily secant across the kink",
+    );
+    assert_eq!(row, 0, "the report names WHICH residual flipped");
+    assert!(
+        inside.branch_records[0].entries().iter().any(|e| e.site == site),
+        "the named site must be one this record actually holds"
+    );
+    assert_ne!(
+        inside.signature_key(),
+        outside.signature_key(),
+        "λ counts alternations between keys; identical keys are an alternation it cannot see"
+    );
+}
+
+#[test]
+fn two_points_on_the_same_side_of_a_dependent_cells_bound_add_no_chatter() {
+    // The negative control that keeps the fix from being "report a flip always".
+    let a = clamped_dependent_jac(2.5);
+    let b = clamped_dependent_jac(3.0);
+    assert_eq!(a.differs_from(&b), None, "same side of the bound ⇒ one smooth function");
+    assert_eq!(a.signature_key(), b.signature_key(), "and therefore one signature");
+}
+
+// ---------------------------------------------------------------------------
+// (3) A flip with a ZERO tangent on both sides
+// ---------------------------------------------------------------------------
+
+/// `tier = if q > 5 then 100 else 200`, `r = tier − 150`, over a single auto.
+///
+/// Flat on both sides, so the row is an honest zero either way — and yet the
+/// VALUE jumps by 100 across `q = 5`, which is exactly the discontinuity η must
+/// not secant across.
+fn flat_flip_jac(x: f64) -> reify_constraints::Jacobian {
+    let params = vec![auto("q", dl())];
+    let dependent = vec![(
+        cell("tier"),
+        conditional_expr(binop(BinOp::Gt, dref("q"), num(5.0)), num(100.0), num(200.0)),
+    )];
+    let residual = binop(BinOp::Sub, dref("tier"), num(150.0));
+    residual_jacobian(&params, &[residual], &ValueMap::new(), &[x], &dependent, &[], None)
+        .expect("a piecewise-constant derived cell has an honest zero row")
+}
+
+#[test]
+fn a_dependent_cell_that_flips_without_moving_still_reaches_the_record() {
+    // This is the case a "bind only when the tangent is non-zero" design misses
+    // by construction: `DualEnv::bind` deliberately DROPS a `Tangent::Zero`, so
+    // collecting records only for bound cells would silently lose this one.
+    let below = flat_flip_jac(4.0);
+    let above = flat_flip_jac(7.0);
+
+    assert_eq!(below.rows[0][0], 0.0, "flat below the threshold");
+    assert_eq!(above.rows[0][0], 0.0, "flat above it too");
+    assert_ne!(
+        below.residuals[0], above.residuals[0],
+        "the VALUE jumps across the threshold — that is what makes two zero rows a trap"
+    );
+
+    assert!(
+        below.differs_from(&above).is_some(),
+        "two zero rows either side of a jump discontinuity must NOT look like one smooth \
+         function; the record is the only thing that can say so"
+    );
+    assert_ne!(below.signature_key(), above.signature_key());
+}
+
+// ---------------------------------------------------------------------------
+// (4) Site hygiene
+// ---------------------------------------------------------------------------
+
+#[test]
+fn each_dependent_cells_kinks_sit_at_distinct_sites_in_stored_order() {
+    // Two derived clamps and one of the residual's own.  All three must be
+    // separately addressable, or λ cannot say WHICH kink flipped — and a site
+    // that collided with a real child index would name the wrong node.
+    let params = vec![auto("q", dl())];
+    let dependent = vec![
+        (cell("a_cost"), call("clamp", vec![dref("q"), num(1.0), num(4.0)], dl())),
+        (cell("b_cost"), call("clamp", vec![dref("q"), num(0.0), num(9.0)], dl())),
+    ];
+    let residual = binop(
+        BinOp::Sub,
+        binop(BinOp::Add, dref("a_cost"), dref("b_cost")),
+        call("clamp", vec![dref("q"), num(2.0), num(6.0)], dl()),
+    );
+    let j = residual_jacobian(&params, &[residual], &ValueMap::new(), &[2.5], &dependent, &[], None)
+        .expect("differentiable at an interior point of every bound");
+
+    let clamps: Vec<_> =
+        j.branch_records[0].entries().iter().filter(|e| e.kind == KinkKind::Clamp).collect();
+    assert_eq!(clamps.len(), 3, "two derived clamps plus the residual's own, got {clamps:?}");
+
+    assert_eq!(
+        clamps[0].site.path(),
+        [DEPENDENT_MARKER, 0],
+        "dependent cell 0's clamp, at its own root under the reserved prefix"
+    );
+    assert_eq!(clamps[1].site.path(), [DEPENDENT_MARKER, 1], "dependent cell 1's clamp");
+    assert_eq!(
+        clamps[2].site.path(),
+        [1_u16],
+        "the residual's OWN clamp keeps its root-relative site — child 1 of the outer Sub"
+    );
+
+    let sites: std::collections::HashSet<_> = clamps.iter().map(|e| e.site.clone()).collect();
+    assert_eq!(sites.len(), 3, "three kinks, three distinct sites");
+}
+
+// ---------------------------------------------------------------------------
+// (5) No dependent cells ⇒ nothing added
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_dependent_cells_leaves_the_records_exactly_as_the_non_clustered_path_produced_them() {
+    // The record half of step-17's bit-identical invariant: an empty prelude
+    // must add no marker segment and no empty prefix block, so every
+    // non-clustered solve keeps precisely the sites it had before.
+    let j = clamp_jac(2.5);
+    let clamp = j.branch_records[0]
+        .entries()
+        .iter()
+        .find(|e| e.kind == KinkKind::Clamp)
+        .expect("the step-19 fixture's own clamp");
+    assert_eq!(
+        clamp.site.path(),
+        [0_u16],
+        "root-relative, with no dependent-cell prefix in front of it"
+    );
+    assert_eq!(
+        j.branch_records[0].len(),
+        clamp_jac(2.5).branch_records[0].len(),
+        "and the record is reproducible at the same point"
+    );
+}

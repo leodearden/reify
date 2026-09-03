@@ -1036,3 +1036,65 @@ fn an_unresolvable_bounded_reduction_records_unresolved_rather_than_vanishing() 
         );
     }
 }
+
+// ===========================================================================
+// Step-27: the reserved path-segment namespace
+// ===========================================================================
+//
+// A `KinkSite` path mixes STRUCTURAL child indices with two reserved segments:
+// `CALLEE_MARKER` (a descent out of a call site into the callee's body) and
+// `DEPENDENT_MARKER` (a descent into a solver dependent cell's own expression).
+// Both are defined together in `branch_signature` precisely so they cannot
+// drift into collision — and this test is what makes "cannot" enforced rather
+// than merely intended.
+//
+// A collision would not fail loudly.  It would name the wrong node in a
+// `W_SOLVER_NONSMOOTH_STALL` diagnostic, and — worse — make two genuinely
+// different kinks compare EQUAL, so λ would see one signature where there are
+// two and never count the alternation.
+
+#[test]
+fn the_reserved_path_segments_are_distinct_and_sit_above_every_structural_child_index() {
+    use reify_expr::branch_signature::{CALLEE_MARKER, DEPENDENT_MARKER};
+
+    assert_ne!(
+        CALLEE_MARKER, DEPENDENT_MARKER,
+        "a callee-body site and a dependent-cell site must never be the same segment"
+    );
+    // The two reserved values occupy the TOP of the `u16` range, contiguously,
+    // so every value below them is available as a structural child index and
+    // the reserved region cannot be walked into by counting upwards.
+    assert_eq!(CALLEE_MARKER, u16::MAX, "the callee marker is the top of the range");
+    assert_eq!(DEPENDENT_MARKER, u16::MAX - 1, "and the dependent marker sits directly below it");
+    assert_eq!(
+        CALLEE_MARKER.min(DEPENDENT_MARKER),
+        u16::MAX - 1,
+        "exactly two values are reserved — a third would silently shrink the index space"
+    );
+
+    // The behavioural half: a real kink at a real child index must land well
+    // clear of the reserved region.  `clamp` sits as child 1 of the outer `Sub`,
+    // itself child 0 of the negation — an ordinary structural path.
+    let expr = neg(binop(
+        BinOp::Sub,
+        vref("x"),
+        call("clamp", vec![vref("x"), literal(Value::Real(1.0)), literal(Value::Real(4.0))]),
+    ));
+    let (_, _, rec) = run(&expr, &[("x", Value::Real(2.5))], &["x"]);
+    let clamp = rec
+        .entries()
+        .iter()
+        .find(|e| e.kind == KinkKind::Clamp)
+        .expect("the clamp must be recorded");
+    assert!(
+        !clamp.site.path().is_empty(),
+        "the fixture must actually nest the kink, or this asserts nothing"
+    );
+    for (depth, segment) in clamp.site.path().iter().enumerate() {
+        assert!(
+            *segment < DEPENDENT_MARKER,
+            "structural segment {depth} of {:?} must sit below the reserved region",
+            clamp.site.path()
+        );
+    }
+}
