@@ -740,10 +740,17 @@ pub fn run_modify_pipeline(
 /// lowest-level helper in the family: [`get_let_expr_in`] resolves a named template from a
 /// module and then delegates to this function.
 ///
-/// Matches on `id.member` alone; `id.entity` is not considered. A template
-/// holding two value cells with the same member name under different
-/// entities resolves to whichever one appears first in `value_cells` —
-/// see `test_get_let_expr_in_template_matches_member_ignoring_entity`.
+/// **Ambiguity hazard:** matches on `id.member` alone; `id.entity` is not
+/// considered. A template holding two value cells with the same member name
+/// under different entities (e.g. two composed sub-entities that both
+/// declare a `width`) resolves to whichever one appears first in
+/// `value_cells` — *silently*, with no panic or other signal that the match
+/// was ambiguous. A caller querying such a template by member name alone can
+/// assert against the wrong cell and never know it. This is deliberate
+/// first-match-wins behavior, pinned by
+/// `test_get_let_expr_in_template_matches_member_ignoring_entity`; if a
+/// specific entity's cell matters, disambiguate before calling, e.g. by
+/// searching `template.value_cells` directly for the desired `id.entity`.
 ///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
@@ -767,18 +774,15 @@ pub fn get_let_expr_in_template<'a>(
 
 /// Retrieve the compiled `default_expr` of any value cell by name from a named template.
 ///
-/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
-/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
-/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
-///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
 /// not be the desired template. `get_let_expr` delegates to this function, which resolves
 /// the named template and then delegates to [`get_let_expr_in_template`].
 ///
+/// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
+///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
-/// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+/// - Panics from [`get_let_expr_in_template`] if the cell or its default expr is absent.
 #[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -795,13 +799,11 @@ pub fn get_let_expr_in<'a>(
 
 /// Retrieve the compiled `default_expr` of any value cell by name from the first template.
 ///
-/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
-/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
-/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
-///
 /// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
 /// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
 /// templates and you need to target a specific one.
+///
+/// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
 ///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
