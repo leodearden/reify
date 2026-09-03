@@ -25,30 +25,35 @@ import { UNDERLAY_RENDER_ORDER } from './renderOrder';
  * BVH build options. `indirect: true` is LOAD-BEARING, not a tuning knob —
  * removing it silently reintroduces #6813.
  *
- * three-mesh-bvh's README.md:405 states, verbatim: "The geometry's index
- * attribute array is modified in order to build the bounds tree unless
- * `indirect` is set to `true`." The default is `indirect: false`
- * (README.md:393), i.e. the builder permutes the index array in place.
+ * three-mesh-bvh's README, under `MeshBVH` > `.constructor`, states verbatim:
+ * "The geometry's index attribute array is modified in order to build the
+ * bounds tree unless `indirect` is set to `true`." The options list directly
+ * above that note gives the default as `indirect: false`, i.e. the builder
+ * permutes the index array in place.
  *
  * Our index attribute *aliases* store-owned `MeshData.indices` rather than
- * copying it — see the contract at gui/src/types.ts:60-70, the alias sites at
- * `geometry.setIndex(new BufferAttribute(data.indices, 1))` and
- * `indexAttr.array = data.indices` below, and the store's retention of that
- * same object at engineStore.ts:183. So under the default the BVH writes back
- * into the store, permuting face order while every per-face side array keyed
- * to it — `element_index`, `element_kind`, `region_tags` — stays in the
- * original order. Measured consequences: `feaDiagnosticOverlay`'s precise
- * outline emits the wrong faces for the requested element ids, and a raycast
- * `intersection.faceIndex` no longer denotes the store's face (57 rather than
- * 7 on the reproduction fixture), corrupting persisted `probe.face_id`
- * re-sampling.
+ * copying it — see the `indices` doc comment on the `MeshData` interface in
+ * `gui/src/types.ts`, the alias sites at
+ * `geometry.setIndex(new BufferAttribute(data.indices, 1))` in
+ * `createMeshFromData` and `indexAttr.array = data.indices` in
+ * `updateMeshGeometry` below, and the store's retention of that same object in
+ * `applyMeshUpdate` (`setState('meshes', mesh.entity_path, mesh)` in
+ * `stores/engineStore.ts`). So under the default the BVH writes back into the
+ * store, permuting face order while every per-face side array keyed to it —
+ * `element_index`, `element_kind`, `region_tags` — stays in the original order.
+ * Measured consequences: `feaDiagnosticOverlay`'s precise outline
+ * (`problemElementOutlinePositions`) emits the wrong faces for the requested
+ * element ids, and a raycast `intersection.faceIndex` no longer denotes the
+ * store's face (57 rather than 7 on the reproduction fixture), corrupting
+ * persisted `probe.face_id` re-sampling.
  *
  * Indirect mode keeps the caller's buffer untouched by routing the BVH through
  * its own permutation buffer, and resolves triangle indices back to geometry
  * order on both the plain-THREE and `acceleratedRaycast` paths. The cost is one
  * extra indirection per BVH triangle lookup; reify's raycasts are per-pointer
- * with `firstHitOnly = true` (selection.ts:73, ProbeSystem.tsx:59), so
- * traversal stays O(log n) and this is not a hot bulk path.
+ * and set `firstHitOnly = true` on the raycaster (see `selection.ts` and
+ * `ProbeSystem.tsx`), so traversal stays O(log n) and this is not a hot bulk
+ * path.
  *
  * Pinned by gui/src/__tests__/viewport/meshManager.indexAliasing.test.ts.
  */

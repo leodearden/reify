@@ -202,7 +202,7 @@ describe('createBucklingAnimator', () => {
  * whole point of task #6757.  So `update()` cannot grow to fit an over-long
  * `positions`, and must bound its copy loop by the DESTINATION length.
  *
- * Today the loop runs to `positions.length` (bucklingAnimator.ts:111-118).  The
+ * Today the copy loop in `update()` runs to `positions.length`.  The
  * over-long case is safe only by accident: TypedArray out-of-bounds writes are
  * silent no-ops, a property of the array type rather than of the code.  Both
  * mismatch directions currently pass silently — the over-long case drops the
@@ -286,5 +286,80 @@ describe('createBucklingAnimator update() length mismatch (#6813)', () => {
     expect(Array.from(arr)).toEqual([1, 2, 3, 4, 5, 6]);
 
     animator.dispose();
+  });
+
+  // ── Latching (#6813 amendment) ────────────────────────────────────────────
+  //
+  // `update()` is driven from a requestAnimationFrame loop (BucklingPanel), and
+  // a mismatch is not necessarily transient: the animator is built once in
+  // onMount from `store.state.base` and its Float32Array is fixed thereafter,
+  // while `bucklingStore.ingestFrame` can replace `state.base` with a
+  // different-length array after a re-solve/re-tessellation.  An unlatched
+  // warn would then emit ~60×/s indefinitely, flooding devtools, taxing the
+  // render loop with per-frame string concatenation, and burying the one
+  // diagnostic it exists to surface.  (The `validateMeshData` precedent this
+  // message shape follows is called once per sync, not once per frame, so the
+  // convention does not transfer unchanged.)
+  //
+  // The latch is keyed on the offending length, not a bare boolean, so a
+  // *different* mismatch is still reported — and it resets on a matching call
+  // so a recurrence after recovery is reported too.
+
+  it('CASE D: warns only once across repeated updates at the same mismatching length', () => {
+    const animator = createBucklingAnimator(BASE_2);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    animator.update([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+
+    // One warning, not one per frame.
+    const msg = soleWarning();
+    expect(msg).toMatch(/\b9\b/);
+    expect(msg).toMatch(/\b6\b/);
+    // Clamping still applies on every call, latched or not.
+    expect(Array.from(positionArray())).toEqual([9, 8, 7, 6, 5, 4]);
+
+    animator.dispose();
+  });
+
+  it('CASE E: warns again when the mismatching length changes', () => {
+    const animator = createBucklingAnimator(BASE_2);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // 9 vs 6 → warn
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // latched → silent
+    animator.update([1, 2, 3]); // 3 vs 6 → new shape, warn
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(String(warnSpy.mock.calls[0]!.join(' '))).toMatch(/\b9\b/);
+    expect(String(warnSpy.mock.calls[1]!.join(' '))).toMatch(/\b3\b/);
+
+    animator.dispose();
+  });
+
+  it('CASE F: an intervening matching update re-arms the latch', () => {
+    const animator = createBucklingAnimator(BASE_2);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // mismatch → warn
+    animator.update([1, 2, 3, 4, 5, 6]); // matches → silent, re-arms
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // mismatch again → warn
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    animator.dispose();
+  });
+
+  it('CASE G: each animator latches independently', () => {
+    // The latch must be per-animator closure state, not module state — two
+    // viewports (or a re-mounted panel) must each get their own diagnostic.
+    const first = createBucklingAnimator(BASE_2);
+    first.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    const second = createBucklingAnimator(BASE_2);
+    second.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    first.dispose();
+    second.dispose();
   });
 });

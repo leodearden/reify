@@ -4,10 +4,11 @@
  * These tests use REAL three.js and REAL three-mesh-bvh — deliberately NO
  * `vi.mock('three')` and NO `vi.mock('three-mesh-bvh')`, unlike the sibling
  * `meshManager.test.ts`.  That is essential, not incidental: the house mock
- * stubs `computeBoundsTree` to a bare `vi.fn()` (meshManager.test.ts:163-166),
- * so the BVH never runs and the defect below is *structurally invisible* in
- * the mocked suite — every existing meshManager test is blind to it.  Opting
- * out of the viewport suite's mocking convention follows the precedent set by
+ * stubs `computeBoundsTree` to a bare `vi.fn()` in its
+ * `vi.mock('three-mesh-bvh')` factory, so the BVH never runs and the defect
+ * below is *structurally invisible* in the mocked suite — every existing
+ * meshManager test is blind to it.  Opting out of the viewport suite's
+ * mocking convention follows the precedent set by
  * `meshManager.attributeResize.test.ts`, `fitCamera.test.ts` and
  * `debugCanvasInteraction.test.ts`, each of which carries the same kind of
  * header note.
@@ -15,26 +16,30 @@
  * WHAT IS BEING PINNED
  * --------------------
  * `MeshData.indices` is *aliased*, not copied, into the geometry's index
- * attribute (gui/src/types.ts:60-70 documents this as a deliberate contract;
- * the alias happens at meshManager.ts:382 on the create path and :484 on the
- * same-byte-size update path).  The store retains that very object
- * (engineStore.ts:183 `setState('meshes', mesh.entity_path, mesh)`).
+ * attribute — the `indices` doc comment on the `MeshData` interface in
+ * `gui/src/types.ts` documents that as a deliberate contract.  The alias is
+ * installed by `geometry.setIndex(new BufferAttribute(data.indices, 1))` in
+ * `createMeshFromData` and re-installed by the `indexAttr.array = data.indices`
+ * branch of `updateMeshGeometry`.  The store retains that very object, via
+ * `setState('meshes', mesh.entity_path, mesh)` in engineStore's
+ * `applyMeshUpdate`.
  *
- * three-mesh-bvh's README.md:405 states, verbatim:
+ * three-mesh-bvh's README, under `MeshBVH` > `.constructor`, states verbatim:
  *
  *     NOTE: The geometry's index attribute array is modified in order to
  *     build the bounds tree unless `indirect` is set to `true`.
  *
- * and README.md:393 shows the default is `indirect: false`.  So a plain
- * `computeBoundsTree()` permutes the *store's* `Uint32Array` in place, while
- * every per-face side array positionally keyed to it — `element_index`,
- * `element_kind`, `region_tags` — stays in the original order.  The live
- * victim is `feaDiagnosticOverlay.problemElementOutlinePositions`, which reads
- * `mesh.indices` and `mesh.element_index[f]` off the same store object
- * (feaDiagnosticOverlay.ts:207-238, reached from Viewport.tsx:371) and
- * therefore outlines the wrong faces for the wrong element ids.  A second
- * victim is raycast `faceIndex`, persisted as `probe.face_id` and re-sampled
- * across syncs (ProbeSystem.tsx:172/:187).
+ * and the options list directly above that note gives the default as
+ * `indirect: false`.  So a plain `computeBoundsTree()` permutes the *store's*
+ * `Uint32Array` in place, while every per-face side array positionally keyed
+ * to it — `element_index`, `element_kind`, `region_tags` — stays in the
+ * original order.  The live victim is
+ * `feaDiagnosticOverlay.problemElementOutlinePositions`, which reads
+ * `mesh.indices` and `mesh.element_index[f]` off the same store object (it is
+ * reached from `Viewport.tsx`'s FEA diagnostics sync) and therefore outlines
+ * the wrong faces for the wrong element ids.  A second victim is raycast
+ * `faceIndex`, captured as `probe.face_id` and re-sampled across syncs by
+ * `ProbeSystem`'s `resampleAll()`.
  *
  * WHY THE FIXTURE IS 64 INTERLEAVED TRIANGLES
  * -------------------------------------------
@@ -112,7 +117,8 @@ function centroidOf(t: number, n: number): { x: number; y: number } {
 /**
  * The 18 position values `problemElementOutlinePositions` emits for original
  * face `t` — three edges × two endpoints × three coords, in the emission order
- * pinned by feaDiagnosticOverlay.overlay.test.ts:287-312.
+ * pinned by the `outlines ONLY the matching face (18 positions)` case in
+ * `feaDiagnosticOverlay.overlay.test.ts`.
  */
 function expectedFaceEdges(t: number, n: number): number[] {
   const x = xOf(t, n);
@@ -159,7 +165,8 @@ describe('meshManager index-buffer aliasing (#6813)', () => {
   beforeEach(() => {
     scene = new Scene();
     // Production installs acceleratedRaycast globally as a module side effect
-    // (selection.ts:28). Save the prototype method so a case that swaps it can
+    // (`Mesh.prototype.raycast = acceleratedRaycast` in selection.ts, at module
+    // scope). Save the prototype method so a case that swaps it can
     // put THREE's own implementation back. NEVER `delete` it — that removes
     // three's implementation permanently and poisons every later case.
     savedRaycast = Mesh.prototype.raycast;
@@ -184,8 +191,9 @@ describe('meshManager index-buffer aliasing (#6813)', () => {
     const mm = createMeshManager(scene);
     mm.sync({ A: tri(N) });
 
-    // Same face count => same byteLength => meshManager.ts:484 re-aliases the
-    // NEW array into the EXISTING BufferAttribute rather than calling setIndex.
+    // Same face count => same byteLength => `updateMeshGeometry` takes the
+    // `indexAttr.array = data.indices` branch, re-aliasing the NEW array into
+    // the EXISTING BufferAttribute rather than calling setIndex.
     const second = tri(N);
     const snapshot = Array.from(second.indices);
 
@@ -199,8 +207,9 @@ describe('meshManager index-buffer aliasing (#6813)', () => {
     const mm = createMeshManager(scene);
     mm.sync({ A: tri(N) });
 
-    // Different face count => different byteLength => meshManager.ts:488
-    // installs a fresh BufferAttribute via setIndex().
+    // Different face count => different byteLength => `updateMeshGeometry`
+    // takes the other branch and installs a fresh BufferAttribute via
+    // `geometry.setIndex(new BufferAttribute(data.indices, 1))`.
     const second = tri(N + 32);
     const snapshot = Array.from(second.indices);
 
@@ -243,8 +252,9 @@ describe('meshManager index-buffer aliasing (#6813)', () => {
   });
 
   it('(d3) acceleratedRaycast reports the original face index', () => {
-    // The production configuration: selection.ts:28 installs this globally and
-    // selection.ts:73 / ProbeSystem.tsx:59 set firstHitOnly = true.
+    // The production configuration: selection.ts installs this globally onto
+    // `Mesh.prototype.raycast`, and both selection.ts and ProbeSystem.tsx set
+    // `firstHitOnly = true` on their raycaster.
     Mesh.prototype.raycast = acceleratedRaycast;
 
     const mm = createMeshManager(scene);
@@ -265,7 +275,8 @@ describe('meshManager index-buffer aliasing (#6813)', () => {
   it('(e) the FEA diagnostic overlay still outlines the right face after sync()', () => {
     // The live production victim: problemElementOutlinePositions reads
     // mesh.indices and mesh.element_index off the SAME store-owned object that
-    // was handed to sync() (feaDiagnosticOverlay.ts:207-238 <- Viewport.tsx:371).
+    // was handed to sync() — `problemElementOutlinePositions` in
+    // feaDiagnosticOverlay.ts, reached from Viewport.tsx's FEA diagnostics sync.
     const mm = createMeshManager(scene);
     const data = tri(N);
     const k = 23;

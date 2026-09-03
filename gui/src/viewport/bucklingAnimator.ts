@@ -80,6 +80,11 @@ export interface BucklingAnimator {
    * from that buffer is therefore clamped to the buffer length and warned about
    * rather than throwing (an animation tick must not break the render loop): an
    * over-long array has its tail dropped, a short one leaves a stale tail.
+   *
+   * That warning is LATCHED per offending length, because this is called from a
+   * requestAnimationFrame loop and a mismatch can persist for every subsequent
+   * frame. Expect one warning per distinct mismatching length, not one per
+   * frame; a matching call re-arms the latch.
    */
   update(positions: number[]): void;
   /** Show or hide the undeformed (reference) overlay. */
@@ -117,6 +122,13 @@ export function createBucklingAnimator(base: number[]): BucklingAnimator {
 
   // ── Methods ──────────────────────────────────────────────────────────────
 
+  /**
+   * Length of the last mismatch already reported by `update()`, or `null` when
+   * the latch is armed. Per-animator closure state, never module state, so two
+   * animators each get their own diagnostic.
+   */
+  let lastWarnedLength: number | null = null;
+
   function update(positions: number[]): void {
     const posAttr = dispGeom.getAttribute('position') as Float32BufferAttribute;
     const arr = posAttr.array as Float32Array;
@@ -131,12 +143,32 @@ export function createBucklingAnimator(base: number[]): BucklingAnimator {
     // follows validateMeshData's convention for caller-supplied array-length
     // inconsistencies (meshManager.ts) — name the offending length and what it
     // was compared against, then degrade gracefully (#6813).
+    //
+    // The warning is LATCHED, and that is load-bearing rather than tidiness:
+    // update() is driven from a requestAnimationFrame loop (BucklingPanel), and
+    // a mismatch is not necessarily transient — the animator is constructed once
+    // in onMount from `store.state.base` and its Float32Array is fixed
+    // thereafter, while `bucklingStore.ingestFrame` can replace `state.base`
+    // with a different-length array after a re-solve/re-tessellation. Warning
+    // unconditionally would then emit ~60×/s indefinitely, flooding devtools,
+    // taxing the render loop with per-frame string concatenation, and burying
+    // the one diagnostic this exists to surface. (validateMeshData, whose
+    // message shape this follows, runs once per sync — the convention does not
+    // transfer to frame cadence unchanged.) Latching on the offending LENGTH
+    // rather than a bare boolean keeps a *different* mismatch reportable; the
+    // reset below re-arms so a recurrence after recovery is reported too.
     if (positions.length !== arr.length) {
-      console.warn(
-        `bucklingAnimator.update(): positions.length (${positions.length}) != ` +
-          `position buffer length (${arr.length}); ` +
-          `writing ${Math.min(positions.length, arr.length)} values, buffer not resized`,
-      );
+      if (positions.length !== lastWarnedLength) {
+        lastWarnedLength = positions.length;
+        console.warn(
+          `bucklingAnimator.update(): positions.length (${positions.length}) != ` +
+            `position buffer length (${arr.length}); ` +
+            `writing ${Math.min(positions.length, arr.length)} values, buffer not resized ` +
+            `(further warnings at this length suppressed)`,
+        );
+      }
+    } else {
+      lastWarnedLength = null;
     }
     const n = Math.min(positions.length, arr.length);
     for (let i = 0; i < n; i++) {
