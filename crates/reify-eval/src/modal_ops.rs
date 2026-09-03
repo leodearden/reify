@@ -7262,7 +7262,7 @@ mod tests {
     ///   - `RayleighDamping` → ζ == β·ω/2                  (B4 regression)
     ///   - `MaterialDamping` → ζ == η/2, mode-independent  (B5, RED before step-8)
     ///   - `MaterialDamping{extra: Rayleigh}`
-    ///                       → ζ == η/2 + β·ω/2            (B7, RED before step-8)
+    ///     → ζ == η/2 + β·ω/2                              (B7, RED before step-8)
     ///
     /// η comes from the fixture constant the material is BUILT from rather than
     /// a transcribed literal, and ω is recomputed from the SAME f64 the producer
