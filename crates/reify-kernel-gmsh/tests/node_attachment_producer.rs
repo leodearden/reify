@@ -486,6 +486,47 @@ fn classify_surfaces_over_decomposes_unit_cube() {
     );
 }
 
+/// The shared census helper genuinely consumes its `surface` argument.
+///
+/// This is the precise regression a botched hoist produces: a call site left
+/// bound to the wrong fixture, or a helper that caches gmsh state across calls
+/// and returns the first census forever. Either would leave BOTH censuses
+/// identical while every existing assertion still passed — the exact pin above
+/// would keep matching (12, 20, 10) and `classify_feature_angle.rs`'s lower
+/// bounds would keep clearing 8/12/6. Now that `entity_census` is shared across
+/// two test binaries, nothing else would catch it.
+///
+/// Both triples are MEASURED: the 2x2-subdivided cube (26 verts / 48 tris)
+/// censuses (12, 20, 10) — exactly what `classify_surfaces_over_decomposes_unit_cube`
+/// above pins — and the welded unit cube (8 verts / 12 tris) censuses (8, 14, 8),
+/// measured by scratch probe on this branch.
+///
+/// `assert_ne!` rather than a strict `subdivided > welded` ordering: the strict
+/// form also holds today (12>8, 20>14, 10>8), but it re-states a claim about
+/// gmsh's decomposition behaviour that the test above already pins and that a
+/// gmsh upgrade could shift. "The helper reads its `surface` argument" is the
+/// property actually under test and survives such an upgrade.
+///
+/// The contrast fixture must be the subdivided cube, NOT the slender
+/// `prismatic_box_mesh(1.0, 0.1, 0.1)` already used in
+/// `classify_feature_angle.rs`: that was measured at (8, 14, 8), IDENTICAL to
+/// the welded unit cube, so `assert_ne!` against it is unsatisfiable.
+#[cfg(has_gmsh)]
+#[test]
+fn entity_census_tracks_its_surface_argument() {
+    let subdivided = common::entity_census(&subdivided_unit_cube_surface(), "reify_6830_subdiv");
+    let welded = common::entity_census(&common::prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_welded");
+
+    assert_ne!(
+        subdivided, welded,
+        "the 2x2-subdivided unit cube (26 verts / 48 tris) and the welded unit cube \
+         (8 verts / 12 tris) censused identically as {subdivided:?}. The shared \
+         common::entity_census is not reading its `surface` argument — either a call \
+         site is bound to the wrong fixture, or the helper is returning cached gmsh \
+         state instead of re-classifying (#6830)."
+    );
+}
+
 // ---------------------------------------------------------------------------
 // suggested_match_tolerance (pure — no gmsh, no cfg gate)
 // ---------------------------------------------------------------------------
