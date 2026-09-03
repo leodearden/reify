@@ -526,7 +526,7 @@ compose.
 
 The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string (stripping the `.NNN` millisecond suffix that jq 1.7's `fromdateiso8601` rejects) and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
 
-Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback). If fused-memory ever exposes an explicit done-flip timestamp on the task record, the filter picks it up automatically and the `updatedAt` fallback becomes unreachable. This makes the filter forward-compatible without requiring a code change.
+Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback). If fused-memory ever exposes an explicit done-flip timestamp on the task record, the filter picks it up automatically and the `updatedAt` fallback becomes unreachable. This makes the filter forward-compatible without requiring a code change on the wrapper path — the crate's live loader does not implement this precedence (see §11.2.1).
 
 **Approximation skew.** `updatedAt` is "when the task record was last written," which equals the done-flip time only when nothing further has been written to that task (status, metadata, etc.) after the flip. In practice this is true for most done tasks; the typical skew is hours-to-days, well inside P1's 14-day grace window.
 
@@ -534,7 +534,7 @@ Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback
 
 **Single point of truth.** The filter is referenced from both the wrapper and the audit-skill references (`references/cli-invocation.md` §2, `references/modes.md` §§1-4). This prevents copy-paste drift: fixing the filter in one place fixes all consumers. The regression-guard assertion (5e) in `tests/infra/test_reify_audit_predone_wrapper.sh` ensures the wrapper continues referencing the sidecar rather than an inlined copy.
 
-**Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, the filter's `.metadata.done_at //` precedence picks it up automatically and the `updatedAt` fallback can be deleted. Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
+**Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, the filter's `.metadata.done_at //` precedence picks it up automatically and the `updatedAt` fallback can be deleted on the wrapper path (see §11.2.1 for why the live loader needs a separate change). Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
 
 #### 11.2.1 Do the two load paths derive `done_at` equivalently? (2026-09-03, task 6985)
 
@@ -546,8 +546,10 @@ suffix: `scripts/reify-audit-snapshot-filter.jq:73` strips it via
 via `time_str.split('.').next()`. Both yield `null`/`None` for non-done
 tasks and for an absent or `null` `updatedAt`. The Rust parser
 additionally accepts `±HH:MM` offsets (`split_tz`, `:404`) that jq's
-`fromdateiso8601` rejects — a harmless superset, unreachable today since
-fused-memory's writer only ever emits `...Z`.
+`fromdateiso8601` rejects. Unreachable today since fused-memory's writer
+only ever emits `...Z`; if it ever became reachable it would land in the
+failure tier below (jq aborts the whole snapshot) rather than degrading
+gracefully.
 
 **Not equivalent on the precedence tier.** The jq filter prefers
 `.metadata.done_at` before falling back to `updatedAt`
@@ -579,8 +581,10 @@ loads. The blast radius lands on the wrapper: the jq failure trips
 (`scripts/reify-audit-predone-wrapper.sh:298-299`), so `--tasks-file`
 materialization fails and the wrapper takes the `exit 125` arm
 (`:308`; its documented "Infrastructure error ... jq failure" code,
-`:130`) — through the synchronous pre-done hook, that is a
-project-wide blocked done-flip caused by one malformed row. So the
+`:130`) — through the synchronous pre-done hook once the §11.1 rewire
+lands (today §11.1.3 measures the raw binary invoked directly on the
+hook path, bypassing the wrapper entirely), that is a project-wide
+blocked done-flip caused by one malformed row. So the
 wrapper path is fail-closed and blast-radius-wide while the
 live-loader path is fail-open and per-row: which loader is wired
 (§11.1.3) changes not just the derived value but the failure mode
