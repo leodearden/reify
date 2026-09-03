@@ -17,7 +17,18 @@
 //!   3. on success, rewrites the matching `SubComponentDecl.type_args[position]`
 //!      placeholder (`Type::TypeParam("__auto_<bound>")`) to a concrete
 //!      `Type::StructureRef(resolved_template_name)` so the downstream
-//!      bound-check sees the resolved candidate,
+//!      bound-check sees the resolved candidate — this per-position rewrite
+//!      applies unconditionally, independent of step 3a below,
+//!   3a. separately, monomorph synthesis (cloning `target`, clearing its
+//!      `type_params`, and substituting `Type::TypeParam` → `Type::StructureRef`
+//!      into the clone's cells/exprs) additionally requires FULL coverage —
+//!      every entry of `target.type_params` must be bound in `sigma`, not just
+//!      the params that appeared as `auto:` clauses at this use-site. An
+//!      explicitly-supplied type-arg never produces an `auto:` clause, so a
+//!      mixed use-site like `Widget<SealA, auto: Gasket>()` can leave a
+//!      declared type parameter unbound without ever entering the per-param
+//!      resolver at all. On partial coverage, synthesis is skipped outright
+//!      and the use-site is left pointing at the generic template (#6854),
 //!   4. accumulates `(param_name, template_name)` substitution pairs across all
 //!      requests, deduping first-wins, into `ctx.auto_type_substitution`.
 //!
@@ -256,15 +267,33 @@ pub(crate) fn phase_auto_type_param_resolution(
                 subst_pairs.push((param_name.clone(), template_name.clone()));
             }
 
-            // Synthesize a monomorph only when EVERY auto-clause param was
-            // resolved. On PARTIAL coverage, synthesis must be skipped: the
-            // block below clears `mono.type_params` — advertising the clone
-            // as fully concrete — while any cell whose type-param was NOT in
+            // Synthesize a monomorph only when EVERY type parameter DECLARED
+            // BY THE TARGET is covered by `sigma` — not merely every
+            // `auto:`-clause param. Coverage must be measured against
+            // `target.type_params` rather than against `params` (this
+            // use-site's auto-clause list): an explicitly-supplied type-arg
+            // (e.g. the `SealA` in `Widget<SealA, auto: Gasket>()`) never
+            // produces an `AutoClause` at all, so `params.len()` can be
+            // strictly less than `target.type_params.len()` even though the
+            // omitted param is a real, declared type parameter of `target`
+            // (#6854). `sigma`'s keys are always a subset of
+            // `target.type_params` names (`name_to_position` above is itself
+            // built from `target.type_params`), so this check is exactly
+            // "every declared type parameter is bound".
+            //
+            // On PARTIAL coverage, synthesis must be skipped: the block
+            // below clears `mono.type_params` — advertising the clone as
+            // fully concrete — while any cell whose type-param was NOT in
             // `sigma` keeps its raw `Type::TypeParam(name)`. That is the one
             // shape no downstream `type_params.is_empty()` filter can ever
             // detect, since the clone itself claims to have zero free
-            // type-params (#6854).
-            if sigma.len() == params.len() {
+            // type-params.
+            let sigma_covers_all_type_params = !target.type_params.is_empty()
+                && target
+                    .type_params
+                    .iter()
+                    .all(|tp| sigma.contains_key(tp.name.as_str()));
+            if sigma_covers_all_type_params {
                 // Sort by position to guarantee deterministic mangle order
                 // regardless of outcome.substitution iteration order.
                 candidates_by_position.sort_by_key(|(pos, _)| *pos);
@@ -418,6 +447,27 @@ pub(crate) fn phase_auto_type_param_resolution(
                     //   - sub_components[*].args  (CompiledExpr call-site values)
                     //   - realizations, connections, objective (geometry/eval exprs)
                     //   - match_arm_groups, forall_templates, assoc_fns, assoc_types
+                    //
+                    // Defensive invariant pin (#6854): the guard above now
+                    // guarantees every declared type parameter of `target` is
+                    // in `sigma`, so no top-level `value_cells` entry should
+                    // retain a direct, unsubstituted `Type::TypeParam` for one
+                    // of `target`'s own params. Deliberately scoped to
+                    // top-level `value_cells` and to the direct variant only —
+                    // the α partial-coverage note directly above lists the
+                    // collections (sub_components[*].args, realizations,
+                    // connections, objective, match_arm_groups,
+                    // forall_templates, assoc_fns, assoc_types) that are
+                    // knowingly NOT substituted; asserting over those would
+                    // fire on healthy input.
+                    debug_assert!(
+                        !mono.value_cells.iter().any(|cell| matches!(
+                            &cell.cell_type,
+                            Type::TypeParam(n) if target.type_params.iter().any(|tp| &tp.name == n)
+                        )),
+                        "monomorph `{mono_name}` retains an unsubstituted type parameter in its top-level \
+                         value cells despite full sigma coverage (#6854)",
+                    );
                     // Mix the mono name into the content_hash so two distinct
                     // monomorphs that clone the same source hash (e.g. Bearing$A
                     // vs Bearing$B) produce different cache keys.
