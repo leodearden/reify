@@ -281,4 +281,143 @@ assert "C4: DAMAGE DETECTOR — the poisoned index is byte-identical after the r
 assert "C5: ... and unchanged in size ($_C_IDX_SIZE_BEFORE -> ${_C_IDX_SIZE_AFTER:-<gone>} bytes)" \
     bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ "$_C_IDX_SIZE_AFTER" "$_C_IDX_SIZE_BEFORE"
 
+# ---------------------------------------------------------------------------
+# Arm E — RUNNER CONTRACT (verify.sh): the selective-infra plan leaf carries the
+# scrub.
+#
+# Derived BEHAVIOURALLY from a real `--print-plan` (hermetic by design: it runs
+# nothing), not from a grep of verify.sh's source.  A staged
+# tests/prd-gate/fixtures/*.ri unconditionally pulls
+# tests/infra/test_reify_audit_ptodo.sh into the plan via
+# select_cheap_ptodo_gate — which is precisely the overlay-sanctioned PRD-fixture
+# landing path that produced the reported failure.
+#
+# The expected prefix is read from reify_git_env_scrub_prefix, never hand-written
+# here: a literal copy would silently stop matching the moment
+# REIFY_GIT_ENV_SCRUB_VARS widens, turning this pin into a lie.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- E: verify.sh's selective-infra leaf carries the scrub prefix ---"
+
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+# shellcheck source=tests/infra/plan_capture_lib.sh
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
+# _mk_plan_fixture VARNAME — a throwaway repo that a copied verify.sh can run
+# --print-plan inside.
+#
+# `cp -R scripts` rather than the hand-maintained per-lib copy list the older
+# --print-plan sandboxes use (test_verify_scope.sh's make_fixture and siblings):
+# copying the WHOLE directory is immune to source-closure drift by construction,
+# so this fixture needs no assert_source_closure_copied preflight and cannot
+# become the copy-list-drift class (tasks 4525/4626/4625) that preflight exists
+# to catch.  scripts/ is 2.5 MB / ~106 files, so the copy is cheap.
+_mk_plan_fixture() {
+    local _var="$1" d
+    d="$(mktemp -d)"
+    _TMPDIRS+=("$d")
+    cp -R "$REPO_ROOT/scripts" "$d/scripts"
+    mkdir -p "$d/.config"
+    cp "$REPO_ROOT/.config/nextest.toml" "$d/.config/nextest.toml"
+    _clean_git -C "$d" init -q
+    _clean_git -C "$d" config user.email "test@test.com"
+    _clean_git -C "$d" config user.name "Test"
+    printf -v "$_var" '%s' "$d"
+}
+
+E_FIX=""
+_mk_plan_fixture E_FIX
+mkdir -p "$E_FIX/tests/prd-gate/fixtures"
+printf 'x\n' > "$E_FIX/tests/prd-gate/fixtures/git_env_scrub_probe.ri"
+_clean_git -C "$E_FIX" add tests/prd-gate/fixtures/git_env_scrub_probe.ri
+
+_E_PLAN=""
+capture_print_plan _E_PLAN "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null' \
+    _ "$E_FIX" || true
+
+_E_LEAF="$(printf '%s\n' "$_E_PLAN" | grep 'test_reify_audit_ptodo\.sh' | head -1 || true)"
+_E_PREFIX=""
+if _has_fn reify_git_env_scrub_prefix; then
+    _E_PREFIX="$(reify_git_env_scrub_prefix)"
+fi
+
+# Non-vacuity FIRST: without a leaf to inspect, E2/E3 would pass or fail for
+# reasons that have nothing to do with the scrub.
+assert "E1: staged prd-gate .ri yields a tests/infra/test_reify_audit_ptodo.sh plan leaf (guard is not vacuous)" \
+    test -n "$_E_LEAF"
+assert "E2: that leaf carries the scrub prefix from reify_git_env_scrub_prefix ('${_E_PREFIX:-<none>}')" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$_E_LEAF" "$_E_PREFIX"
+assert "E3: ... positioned between the timeout and the bash it wraps" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "timeout.*env -u GIT_DIR.*bash"' _ "$_E_LEAF"
+
+# ---------------------------------------------------------------------------
+# Arm F — RUNNER CONTRACT (run_all.sh): EVERY member spawn carries the scrub.
+#
+# A COUNTING assertion, deliberately not a list of today's six line numbers
+# (1384/1449/1856/1893/1924/2005), which rot on the next edit above them: a NEW
+# unscrubbed spawn site added later must fail this guard.
+#
+# Line continuations are folded first, so a spawn whose `reify_git_env_scrub`
+# sits on the preceding physical line (the `env -u REIFY_RUN_ALL_MEMBER_SUBSET`
+# site does exactly that) is counted as the one logical statement it is.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- F: every run_all.sh member spawn carries the scrub ---"
+
+RUN_ALL="$SCRIPT_DIR/run_all.sh"
+_F_SPAWN_FLOOR=6
+
+_F_LOGICAL="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$RUN_ALL")"
+_F_SPAWNS="$(printf '%s\n' "$_F_LOGICAL" \
+    | grep -E 'bash "\$INFRA_DIR/|bash "\$test_file"' || true)"
+_F_TOTAL="$(printf '%s\n' "$_F_SPAWNS" | grep -c . || true)"
+_F_SCRUBBED="$(printf '%s\n' "$_F_SPAWNS" | grep -c 'reify_git_env_scrub' || true)"
+
+# Floor, not equality: run_all.sh gaining a seventh spawn site must not red this
+# arm, but losing the ability to SEE the spawn sites (a reshaped invocation the
+# pattern no longer matches) must.
+assert "F1: run_all.sh member-spawn sites found >= $_F_SPAWN_FLOOR (pattern still sees them; got $_F_TOTAL)" \
+    bash -c '[ "${1:-0}" -ge "$2" ]' _ "$_F_TOTAL" "$_F_SPAWN_FLOOR"
+assert "F2: EVERY member spawn is wrapped in reify_git_env_scrub ($_F_SCRUBBED of $_F_TOTAL)" \
+    bash -c '[ "${1:-0}" -eq "${2:-0}" ]' _ "$_F_SCRUBBED" "$_F_TOTAL"
+assert "F3: run_all.sh sources scripts/lib_git_env_scrub.sh" \
+    grep -qE '^[[:space:]]*(source|\.)[[:space:]].*lib_git_env_scrub\.sh"' "$RUN_ALL"
+
+# ---------------------------------------------------------------------------
+# Arm G — HOSTILE-ENV INVARIANT REGRESSION GUARD.
+#
+# tests/infra/test_host_global_unit_pinning.sh documents (at :79-83 and
+# :144-148) a DELIBERATE refusal to scrub GIT_* for the code under test: its A6
+# arm poisons GIT_DIR/GIT_WORK_TREE on purpose to prove
+# scripts/lib_main_checkout.sh's resolver neutralizes them itself, and states
+# that "a harness that pre-cleaned the environment would be certifying a posture
+# production never actually has".
+#
+# A6 sets its poison EXPLICITLY per-command (`GIT_DIR=... GIT_WORK_TREE=... git
+# -C ...` at :311-313) rather than inheriting it, so the runner scrub should not
+# reach it — but that is an INFERENCE, so pin it.  If this arm ever goes red, do
+# NOT weaken it: it means the runner scrub genuinely conflicts with a documented
+# invariant and needs escalation.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- G: the deliberately-hostile-env member still passes through the scrub ---"
+
+HOST_GLOBAL_TEST="$SCRIPT_DIR/test_host_global_unit_pinning.sh"
+_G_OUT=""
+_G_RC=0
+if _has_fn reify_git_env_scrub && [ -f "$HOST_GLOBAL_TEST" ]; then
+    _G_OUT="$(reify_git_env_scrub bash "$HOST_GLOBAL_TEST" 2>&1)" || _G_RC=$?
+else
+    _G_RC=127
+fi
+_G_LINE="$(printf '%s\n' "$_G_OUT" \
+    | grep -E '^Results: [0-9]+ passed, [0-9]+ failed$' | tail -1 || true)"
+
+assert "G1: test_host_global_unit_pinning.sh exits 0 through reify_git_env_scrub (got rc=$_G_RC)" \
+    test "$_G_RC" -eq 0
+assert "G2: ... reporting 0 failed — its A6 self-poisoning invariant survives the runner scrub (got: ${_G_LINE:-<none>})" \
+    bash -c '[ -n "$1" ] && printf "%s\n" "$1" | grep -q " 0 failed$"' _ "$_G_LINE"
+
 test_summary
