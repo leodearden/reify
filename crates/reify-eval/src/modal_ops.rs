@@ -1161,7 +1161,19 @@ pub(crate) fn run_modal_analysis(
     let options = &value_inputs[4];
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
     let reference_direction = extract_reference_direction(options);
-    let (alpha, beta) = extract_damping(options);
+    // Task #6878: the damping plan replaces the bare `extract_damping` pair.
+    //
+    // HOISTED HERE, above the mesh build / cache lookup / assembly, for three
+    // reasons: it is O(1) and needs no assembly, so it costs nothing where it
+    // sits; the `MaterialDamping`-over-a-non-`Damped`-material rejection must
+    // short-circuit BEFORE the expensive assemble + eigensolve rather than after
+    // (see the guard above); and resolving it once keeps the per-mode loop a
+    // single addition.
+    //
+    // Nothing downstream of this line changes for a pre-#6878 descriptor: the
+    // eigensolve, the assembly cache key (which deliberately EXCLUDES damping)
+    // and the `ModalResult.damping` echo are all untouched.
+    let plan = plan_modal_damping(options, &value_inputs[0]);
     let element_order = extract_element_order(options);
     // Map the order to the cache-key discriminant from the SAME source that picks
     // the ModalMesh below, so the key and the assembled (K, M) can never disagree
@@ -1255,7 +1267,15 @@ pub(crate) fn run_modal_analysis(
         .enumerate()
         .map(|(i, &f)| {
             let omega = 2.0 * PI * f;
-            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
+            // Task #6878: ADDITIVE composition, ζ_i = ζ_material + ζ_extra(ω_i).
+            //
+            // For `Absent` / `NoDamping` / `Rayleigh` / `Unsupported`,
+            // `zeta_material` is exactly 0.0 and `(alpha, beta)` are bit-for-bit
+            // what `extract_damping` returned before this task, so this
+            // expression reduces to the landed `rayleigh_damping_ratio(α, β, ω)`
+            // and those results are byte-identical (B4).
+            let damping_ratio =
+                plan.zeta_material + rayleigh_damping_ratio(plan.alpha, plan.beta, omega);
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
             let fields: PersistentMap<String, Value> = [
                 // `Mode.frequency : Frequency` (modal_analysis.ri, task 4548) —
@@ -3067,6 +3087,19 @@ fn classify_descriptor(val: &Value) -> DampingKind {
 /// whole descriptor, not a coefficient. Both are handled by the FEA producer's
 /// damping plan (`plan_modal_damping`), which consumes [`classify_damping`]
 /// directly. A future reader must not "fix" the flattening here.
+///
+/// NO PRODUCTION CALLER REMAINS as of #6878. [`run_modal_analysis`] was the last
+/// one, and it now consumes [`plan_modal_damping`] instead — which is the whole
+/// point: an `(α, β)` pair cannot express the modal-strain-energy term. The fn is
+/// deliberately RETAINED rather than deleted, because its lossy-view contract is
+/// load-bearing documentation for this seam and is pinned by two landed tests
+/// that are witnesses for something else:
+/// `extract_damping_discriminates_rayleigh_from_none` is task #6093's witness for
+/// `read_scalar_si`'s bare-`Value::Real` tolerance (nothing else in this crate
+/// exercises that arm), and `mechanism_modal_warns_on_unsupported_damping_descriptor`'s
+/// Case C pins that splitting the classifier left this view bit-for-bit
+/// unchanged. Deleting the fn would delete both witnesses.
+#[allow(dead_code)]
 fn extract_damping(val: &Value) -> (f64, f64) {
     match classify_damping(val) {
         DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
@@ -3074,6 +3107,94 @@ fn extract_damping(val: &Value) -> (f64, f64) {
         // a future descriptor SHOULD flatten to the undamped pair here without a
         // compile error, because this fn's whole contract is the lossy view.
         _ => (0.0, 0.0),
+    }
+}
+
+/// The per-solve damping contributions [`run_modal_analysis`] applies, resolved
+/// ONCE from the options and the material before any expensive work runs.
+///
+/// Two INDEPENDENT contributions, summed per mode:
+///   `zeta_material` — the modal-strain-energy term, MODE-INDEPENDENT on this
+///                     path (see [`plan_modal_damping`] for why);
+///   `(alpha, beta)` — the Rayleigh coefficients, fed verbatim to the existing
+///                     `rayleigh_damping_ratio(α, β, ω)`, which is mode-dependent
+///                     through ω.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ModalDampingPlan {
+    zeta_material: f64,
+    alpha: f64,
+    beta: f64,
+}
+
+/// Resolve the damping descriptor plus the material's loss factor into a
+/// [`ModalDampingPlan`] (task #6878, PRD leaf β).
+///
+/// ## The B4 argument, structurally
+///
+/// For every PRE-EXISTING descriptor this returns `zeta_material == 0.0` and an
+/// `(alpha, beta)` pair that is bit-for-bit what [`extract_damping`] returned
+/// before #6878. The per-mode expression therefore reduces to exactly the landed
+/// one, and `NoDamping` / `RayleighDamping` results are byte-identical. That is
+/// a property of this table, not of a test — but it is also pinned by
+/// `trampoline_composes_material_damping_additively_with_extra` and by the
+/// author-surface `material_damping_leaves_nodamping_and_rayleigh_byte_identical`.
+///
+/// ## Why ζ_material is MODE-INDEPENDENT here
+///
+/// PRD §C5 defines it as ½·(Σ_e η_e·SE_e)/(Σ_e SE_e). [`run_modal_analysis`]
+/// reads exactly ONE material (`value_inputs[0]`), so every η_e is the same η and
+/// the energy ratio is ≡ 1 **by construction, for any mode shape whatsoever** —
+/// giving ζ = η/2 exactly, with no dependence on φ and no eigensolve accuracy
+/// required. It is implemented as that algebraic short-circuit rather than by
+/// summing per-element SE_e: the sum would add per-element work, re-derive
+/// element matrices outside `assemble_modal_km`, produce the same number to fp
+/// rounding, and introduce accumulation error into an assertion whose whole point
+/// is exactness. The heterogeneous case — where the ratio is genuinely ≠ 1 and ζ
+/// genuinely varies by mode — is a later leaf of the same PRD and is deliberately
+/// not implemented here.
+///
+/// ## `Unsupported` is deliberately left as it was
+///
+/// The FEA path flattens an unimplemented descriptor to the undamped triple, as
+/// it did before #6878. Making that degrade LOUD on this path (as
+/// `run_mechanism_modal` already does) is a real gap, but it is a different
+/// descriptor family and out of this leaf's scope — noted, not widened.
+fn plan_modal_damping(options: &Value, material: &Value) -> ModalDampingPlan {
+    const UNDAMPED: ModalDampingPlan = ModalDampingPlan {
+        zeta_material: 0.0,
+        alpha: 0.0,
+        beta: 0.0,
+    };
+    match classify_damping(options) {
+        DampingKind::Absent | DampingKind::NoDamping => UNDAMPED,
+        DampingKind::Rayleigh { alpha, beta } => ModalDampingPlan {
+            zeta_material: 0.0,
+            alpha,
+            beta,
+        },
+        // See the note above: unchanged pre-#6878 behaviour, deliberately.
+        DampingKind::Unsupported(_) => UNDAMPED,
+        DampingKind::Material { extra } => {
+            // The `None` case is short-circuited by `run_modal_analysis`'s
+            // `E_ModalDampingMaterialNotDamped` guard long before this point, so
+            // it is unreachable here; `unwrap_or(0.0)` is the inert floor for
+            // that unreachability rather than a silent substitution.
+            let eta = extract_loss_factor(material).unwrap_or(0.0);
+            let (alpha, beta) = match *extra {
+                DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+                DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
+                // A descriptor we cannot honour in `extra` position. The MSE
+                // half IS applied — this is a partial degrade, not a failure —
+                // so the companion contributes 0. step-12 adds the coded
+                // warning that keeps that honest.
+                DampingKind::Unsupported(_) | DampingKind::Material { .. } => (0.0, 0.0),
+            };
+            ModalDampingPlan {
+                zeta_material: eta / 2.0,
+                alpha,
+                beta,
+            }
+        }
     }
 }
 
