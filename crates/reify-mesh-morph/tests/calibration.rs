@@ -386,12 +386,7 @@ fn calibration_fixtures_are_conforming_simplicial_complexes() {
     // conformity is radius-invariant; expected chi = 2 at every radius.
     for &r in &[0.05_f64, 0.15, 0.19] {
         let (mesh, _surface) = fixtures::bracket(1.0, 0.2, r, 4);
-        assert_boundary_is_conforming_manifold(
-            &mesh,
-            "bracket",
-            &format!("fillet_radius={r}"),
-            2,
-        );
+        assert_boundary_is_conforming_manifold(&mesh, "bracket", &format!("fillet_radius={r}"), 2);
     }
 
     // plate_with_hole — the control. Already conforming both before and
@@ -407,6 +402,68 @@ fn calibration_fixtures_are_conforming_simplicial_complexes() {
             "plate_with_hole",
             &format!("n_radial={n_radial},n_through={n_through}"),
             0,
+        );
+    }
+}
+
+/// Characterisation guard, not a RED-then-GREEN step: this passes on
+/// arrival BECAUSE step-2 preserved `bracket`'s mesh size exactly (only
+/// which diagonal splits each shared interface quad changed). Its value is
+/// forward-looking — it makes the size-preservation property explicit and
+/// executable, so that a future attempt to "fix" a conformity problem by
+/// SPLITTING an interface (adding vertices or elements) trips a named
+/// assertion instead of silently invalidating the calibration goldens and
+/// task #6638's scale ladder.
+#[test]
+fn bracket_element_count_follows_the_documented_closed_form() {
+    // tets(n) = 18n³ + 12n² - 6n for n ≥ 2 — measured 180, 576, 1320, 2520,
+    // 9936 at n=2,3,4,5,8 respectively; all five agree with the closed
+    // form. Five points overdetermine a 3-parameter cubic, so this
+    // genuinely pins the form rather than just a lookup table.
+    for &n in &[2usize, 3, 4, 5, 8] {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, n);
+        let n_tets = (mesh.tet_indices().unwrap().len() / 4) as i64;
+        let nf = n as i64;
+        let expected = 18 * nf * nf * nf + 12 * nf * nf - 6 * nf;
+        assert_eq!(
+            n_tets, expected,
+            "bracket(1.0, 0.2, 0.1, n={n}): tet count {n_tets} does not match the \
+             documented closed form 18n³+12n²-6n = {expected}"
+        );
+    }
+
+    // n=1 is the documented EXCEPTION: 108 tets, not the closed form's 24,
+    // because n_a/n_arm/n_z are `max(n, 2)` (= 2 at n=1) while n_r is `n`
+    // (= 1), so the closed form (which assumes all four subdivision counts
+    // equal n) does not apply.
+    {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, 1);
+        let n_tets = mesh.tet_indices().unwrap().len() / 4;
+        assert_eq!(
+            n_tets, 108,
+            "bracket(1.0, 0.2, 0.1, n=1): tet count {n_tets} != 108 (the documented n=1 \
+             exception to the closed form — n_a/n_arm/n_z=max(1,2)=2 while n_r=1)"
+        );
+    }
+
+    // Vertex-count anchor: bracket(1.0, 0.2, 0.1, 4) has exactly 365
+    // vertices and 1320 tets — the two numbers that were bit-identical
+    // before and after step-2's interface repair (only which diagonal
+    // splits each shared quad changed, never the vertex table or element
+    // count).
+    {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, 4);
+        let n_vertices = mesh.vertices.len() / 3;
+        let n_tets = mesh.tet_indices().unwrap().len() / 4;
+        assert_eq!(
+            n_vertices, 365,
+            "bracket(1.0, 0.2, 0.1, n=4): vertex count {n_vertices} != 365 (bit-identical \
+             before/after the step-2 interface repair)"
+        );
+        assert_eq!(
+            n_tets, 1320,
+            "bracket(1.0, 0.2, 0.1, n=4): tet count {n_tets} != 1320 (bit-identical \
+             before/after the step-2 interface repair)"
         );
     }
 }
