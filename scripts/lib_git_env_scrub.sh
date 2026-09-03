@@ -69,10 +69,14 @@ _REIFY_LIB_GIT_ENV_SCRUB_SH_SOURCED=1
 # below derive their `env -u` argv by iterating this string, so widening the
 # list automatically reaches the runner helper AND the plan-prefix emitter.
 #
-# Today this is the MEASURED HOOK-EXPORTED FLOOR — the three variables git
-# actually exports into a hook's process tree.  See the drift guard named in
-# the header for the direction this list is allowed to move.
-REIFY_GIT_ENV_SCRUB_VARS="GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE"
+# The bash mirror of crates/reify-test-support/src/git_env.rs's
+# REPO_REDIRECT_VARS.  The first three are the MEASURED HOOK-EXPORTED FLOOR (git
+# actually exports GIT_INDEX_FILE, and GIT_DIR/GIT_WORK_TREE are its documented
+# siblings); the remaining five are the same class — each redirects part of
+# "which repository / which objects", so each can silently override an explicit
+# `git -C <root>`.  See the drift guard named in the header for the direction
+# this list is allowed to move.
+REIFY_GIT_ENV_SCRUB_VARS="GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX"
 export REIFY_GIT_ENV_SCRUB_VARS
 
 # reify_git_env_scrub <cmd> [args...] — run <cmd> with every
