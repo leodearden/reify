@@ -316,7 +316,7 @@ assert "C5: ... and unchanged in size ($_C_IDX_SIZE_BEFORE -> ${_C_IDX_SIZE_AFTE
     bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ "$_C_IDX_SIZE_AFTER" "$_C_IDX_SIZE_BEFORE"
 
 # ---------------------------------------------------------------------------
-# Arm C-PRESERVE (C6-C10) — the REVERSE direction: the scrub must not remove
+# Arm C-PRESERVE (C6-C11) — the REVERSE direction: the scrub must not remove
 # TOO MUCH.
 #
 # Every other arm here, and arm D's drift guard explicitly ("the only direction
