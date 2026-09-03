@@ -42,8 +42,8 @@ mode-superposition transient response. Concretely:
 // examples/modal/printer_gantry_modes.ri
 let gantry = printer_gantry_part();
 let bcs = [
-    FixedSupport(at: gantry_mount_left),
-    FixedSupport(at: gantry_mount_right),
+    PinnedSupport(at: gantry_mount_left),
+    PinnedSupport(at: gantry_mount_right),
 ];
 
 let modes = modal_analysis(gantry, ModalOptions(
@@ -56,6 +56,21 @@ let modes = modal_analysis(gantry, ModalOptions(
 let f1 = modes.modes[0].frequency;
 report("first mode = " ++ show(f1));   // expected ~120 Hz
 ```
+
+Boundary-condition realization is **per named face and kind-aware**: what a
+support constrains on its target face is decided by the support's own kind,
+not by how many supports the model carries. A `PinnedSupport` pins only the
+transverse DOF on its named face; every other kind (e.g. `FixedSupport`)
+clamps all three translational DOFs there. The gantry above rests on its two
+end mounts rather than being welded to them, so both are `PinnedSupport` —
+and because *both* beam-axis end faces are named and every support naming
+one is `PinnedSupport`, this is the simply-supported (pin-pin) special case:
+the two end faces are realized with the minimal neutral-axis anchors needed
+to remove rigid-body motion, on top of the per-face transverse pin, with no
+change to that existing pin-pin realization. Spelling the same two mounts as
+`FixedSupport` instead would describe a genuinely different, stiffer
+clamped-clamped gantry (a ≈2.27× higher fundamental for a uniform beam) —
+not this resting-mount configuration.
 
 ```reify
 // examples/modal/transient_step_response.ri
