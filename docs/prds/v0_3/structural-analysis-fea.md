@@ -168,6 +168,13 @@ Twenty-two tasks. Several depend on v0.2 work (multi-kernel mesh path, per-purpo
 **Stdlib surface (independent of v0.2 gates):**
 
 1. `ElasticMaterial` trait + starter material library (`Steel_AISI_1045`, `Aluminium_6061_T6`, `Titanium_Ti6Al4V`, `ABS_Plastic`) with per-property provenance metadata. Fields: `youngs_modulus : Pressure`, `poisson_ratio : Number` (constrained `[0, 0.5)`), `density : Density`, `yield_stress : Pressure` (optional).
+   > **NOTE 2026-09-03 (#6877).** The four fields listed above are what **v0.3 delivered**, and the
+   > `ElasticMaterial` **trait** named here still carries exactly them today (`materials_fea.ri:130-147`)
+   > — so this deliverable reads unchanged. Separately, in v0.6 the four **library presets** gained
+   > `loss_factor : Real` + `loss_factor_provenance` and now declare `: DampedMaterial + Visual`
+   > (`materials_fea.ri:272` Steel, `:329` Al, `:386` Ti, `:446` ABS), where
+   > `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`) refines the v0.3 bound. `loss_factor`
+   > lives on the `Damped` mixin (`:194-202`), **not** on `ElasticMaterial`.
 2. `Load` stdlib hierarchy: `PointLoad`, `PressureLoad`, `TractionLoad`, `BodyForce` / `Gravity`, all targeting topology selectors. Constructor signatures + selector validation.
 3. `Support` stdlib hierarchy: `FixedSupport`, `DisplacementSupport`, `RollerSupport`. Constructor signatures + selector validation.
 4. `ElasticOptions` stdlib type and `ElasticResult` struct. Options include: `element_order` (default `P1`, override `P2`), `mesh_size` override, `max_iter`, `cg_tolerance`, `threads` (default `num_cpus::get()`, single-threaded auto-fallback under 10K DOF). Result includes: displacement field, stress field, max von Mises, converged flag, iterations.
