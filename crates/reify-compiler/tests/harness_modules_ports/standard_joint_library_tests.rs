@@ -15,6 +15,12 @@
 //!     joint bodies against regression. GREEN from the moment the β self-check
 //!     machinery is wired (pre-landed).
 //!
+//! (b′) Non-vacuity companions (task 6384) — (a) and (b) both assert a
+//!     diagnostic is ABSENT, an oracle a SKIPPED verdict satisfies as readily as
+//!     a clean one. These use a positive/mutation oracle instead, over an inline
+//!     body and over the shipped joints.ri text respectively, so the silence
+//!     above is known to be a computed verdict. See the (b′) header below.
+//!
 //! DOF derivation — nominal rigid-body freedom = (3 rot, 3 trans):
 //!   revolute:    concentric(Axis,Axis)(2,2) + on(Point,Plane)(0,1) → Σ=(2,3) → residual(1,0) ✓
 //!   prismatic:   concentric(Axis,Axis)(2,2) + perpendicular(Axis,Axis)(1,0) → Σ=(3,2) → residual(0,1) ✓
@@ -325,8 +331,9 @@ fn assert_single_dof_mismatch(
 ///
 /// Scope note: like the (b) tests, these rows compile INLINE joint definitions
 /// rather than reading `stdlib/joints.ri`, so they pin the classifier and the
-/// verdict machinery, NOT the stdlib bodies. `standard_joint_library_compiles_clean`
-/// (section (a)) is what observes the real stdlib text.
+/// verdict machinery, NOT the stdlib bodies. The shipped file's own bytes are
+/// covered by `stdlib_spherical_over_declared_dof_is_diagnosed` below, which is
+/// also what makes section (a)'s diagnostic-absence oracle mean anything.
 #[test]
 fn orientation_dof_is_classified_not_skipped() {
     for (label, source, declared_phrase, residual_phrase) in [
@@ -349,6 +356,72 @@ fn orientation_dof_is_classified_not_skipped() {
     ] {
         assert_single_dof_mismatch(label, source, declared_phrase, residual_phrase);
     }
+}
+
+/// The SHIPPED `stdlib/joints.ri` text must itself reach the verdict — proven
+/// by mutating that text and requiring the mismatch to fire.
+///
+/// `standard_joint_library_compiles_clean` (section (a)) is the only test in
+/// this file that reads the shipped file, and its oracle is diagnostic-ABSENCE
+/// — the one oracle a SKIPPED verdict satisfies exactly as well as a clean one
+/// (ORACLE CHOICE above). The rows in `orientation_dof_is_classified_not_skipped`
+/// fix that for the classifier, but they compile INLINE text. So without this
+/// test, editing joints.ri's `with orientation: Orientation` to any
+/// unresolvable name — or reverting the resolver arm — would leave every test
+/// here green: (a) because the verdict silently skips, (b)/(b′) because they
+/// never read the file.
+///
+/// The mutation over-declares `spherical`'s DOF record in place:
+/// `orientation: Orientation` → `{ orientation: Orientation, extra: Angle }` =
+/// (4 rot, 0 trans), against the untouched `coincident(c, d)` residual
+/// (3 rot, 0 trans). Everything else in the file — including `ball`, which
+/// keeps the other of the two `with orientation: Orientation` occurrences and
+/// stays clean — is byte-for-byte the shipped text, which is why exactly one
+/// mismatch is expected. Section (a)'s silence is thereby attributable to a
+/// COMPUTED verdict over the real bytes rather than to a skip.
+///
+/// The pre-assert on the anchor is load-bearing, not defensive noise: the
+/// anchor spans the `joint spherical(…)` line precisely so it selects one of
+/// those two occurrences, and if joints.ri is ever reformatted a
+/// silently-zero-substitution mutation would compile the UNMODIFIED file and
+/// this test would go vacuous in exactly the way it exists to prevent.
+#[test]
+fn stdlib_spherical_over_declared_dof_is_diagnosed() {
+    // Split so the mutation is visibly a swap of the `with` line alone, with
+    // the preceding `joint` line serving only to disambiguate spherical from
+    // ball. Kept byte-exact against stdlib/joints.ri (4-space continuation
+    // indent included) — the anchor assert below is what enforces that.
+    const SPHERICAL_DECL: &str = "joint spherical(c: Point3<Length>, d: Point3<Length>)\n";
+    const DECLARED_DOF: &str = "    with orientation: Orientation";
+    const OVER_DECLARED_DOF: &str = "    with { orientation: Orientation, extra: Angle }";
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/joints.ri");
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("cannot read stdlib/joints.ri at `{path}`: {e}"));
+
+    let anchor = format!("{SPHERICAL_DECL}{DECLARED_DOF}");
+    assert_eq!(
+        source.matches(anchor.as_str()).count(),
+        1,
+        "the `spherical` DOF-record anchor must occur EXACTLY once in \
+         stdlib/joints.ri, or the mutation below is not the mutation this test \
+         claims to make. Zero occurrences means the file was reformatted and \
+         this test silently stopped mutating anything; more than one means the \
+         anchor no longer discriminates spherical from ball. Re-derive the \
+         anchor from the file rather than relaxing this assert.\nanchor:\n{anchor}"
+    );
+    let mutated = source.replace(
+        anchor.as_str(),
+        &format!("{SPHERICAL_DECL}{OVER_DECLARED_DOF}"),
+    );
+
+    assert_single_dof_mismatch(
+        "stdlib/joints.ri with `spherical` over-declared to (4rot,0trans) \
+         vs its own unmodified coincident residual (3rot,0trans)",
+        &mutated,
+        "declared 4 rotational free DOF",
+        "3 rot + 0 trans",
+    );
 }
 
 // ── (c) B8 boundary tests ─────────────────────────────────────────────────────
