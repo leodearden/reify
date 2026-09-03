@@ -145,6 +145,12 @@
 //! requires. Under-count and orphan-row verdicts are Medium (exit-neutral), so
 //! an opportunistic fix never turns a diff RED.
 //!
+//! A High summary also names the LINE of every code-less site in the file
+//! ([`format_site_lines`], capped at [`PDIAG_SUMMARY_LINE_CAP`]). The ratchet
+//! compares counts and cannot know which constructor was added, so the list is
+//! the whole file's — intersect it with the diff. The Medium summaries carry
+//! no lines: their remedy is regeneration, not an edit at a site.
+//!
 //! Reference: `docs/prds/v0_6/eradicate-silent-undef.md` §3 Leg C, §6.7-6.8,
 //! §7 "PDIAG baseline", §8 row 8. Remediation recipe for a RED diff:
 //! `docs/notes/diagnostic-severity-policy.md` §3.
@@ -871,6 +877,36 @@ enum RatchetVerdict {
     OrphanRow { path: String, baseline: u32 },
 }
 
+/// How many site line numbers a High summary spells out before eliding the
+/// tail.
+///
+/// A `NewFile` verdict on a big file can carry a hundred sites, and an
+/// `Exceeded` names EVERY code-less site in the file rather than only the new
+/// ones (the detector compares counts, so it cannot know which constructor was
+/// added). A dozen is enough to intersect against a diff by eye; past that the
+/// list stops being a hint and becomes a wall. The elision says how many were
+/// dropped so the number in the summary and the number of lines listed never
+/// silently disagree.
+const PDIAG_SUMMARY_LINE_CAP: usize = 12;
+
+/// ` at line 118` / ` at lines 118, 204, 511` / ` at lines … (+7 more)` — the
+/// clause a High summary appends after its site count. Empty for an empty
+/// slice, so a verdict with no census entry renders exactly as it did before
+/// lines were threaded through.
+fn format_site_lines(lines: &[usize]) -> String {
+    match lines {
+        [] => String::new(),
+        [one] => format!(" at line {one}"),
+        _ => {
+            let shown: Vec<String> =
+                lines.iter().take(PDIAG_SUMMARY_LINE_CAP).map(usize::to_string).collect();
+            let elided = lines.len().saturating_sub(shown.len());
+            let more = if elided > 0 { format!(" (+{elided} more)") } else { String::new() };
+            format!(" at lines {}{more}", shown.join(", "))
+        }
+    }
+}
+
 impl RatchetVerdict {
     /// The file this verdict is about.
     fn path(&self) -> &str {
@@ -897,18 +933,26 @@ impl RatchetVerdict {
     /// Render to a [`Finding`]. High summaries carry BOTH remediations (attach
     /// a code, or take the reviewed opt-out) and Medium summaries the exact
     /// regeneration command, so no finding is a dead end.
-    fn into_finding(self) -> Finding {
+    ///
+    /// `lines` is the census's list of code-less site lines for this verdict's
+    /// path ([`Census::sites`]), spelled into the two High summaries by
+    /// [`format_site_lines`]. The Medium summaries ignore it: their remedy is
+    /// regeneration, not an edit at a site. An empty slice renders nothing, so
+    /// an `OrphanRow` — which by construction has no census entry — is
+    /// unchanged.
+    fn into_finding(self, lines: &[usize]) -> Finding {
         let severity = self.severity();
         let path = self.path().to_string();
+        let at = format_site_lines(lines);
         let summary = match &self {
             Self::Exceeded { path, live, baseline } => format!(
-                "pdiag-ratchet: {path} has {live} code-less Diagnostic::error/warning site(s), \
+                "pdiag-ratchet: {path} has {live} code-less Diagnostic::error/warning site(s){at}, \
                  baseline allows {baseline} — attach a DiagnosticCode (see {SEVERITY_POLICY_DOC}) \
                  or add a trailing `// {PDIAG_ALLOW} — reason`"
             ),
             Self::NewFile { path, live } => format!(
                 "pdiag-ratchet: {path} is new to the baseline and has {live} code-less \
-                 Diagnostic::error/warning site(s) — attach a DiagnosticCode (see \
+                 Diagnostic::error/warning site(s){at} — attach a DiagnosticCode (see \
                  {SEVERITY_POLICY_DOC}) or add a trailing `// {PDIAG_ALLOW} — reason`"
             ),
             Self::Stale { path, live, baseline } => format!(
@@ -1078,8 +1122,8 @@ pub fn live_counts(ctx: &AuditContext) -> BTreeMap<String, u32> {
 /// sweep, which is a legitimate manifest (the end state the ratchet is aimed
 /// at) and must stay writable.
 pub fn census_summary(ctx: &AuditContext) -> (usize, BTreeMap<String, u32>) {
-    let Census { swept, counts } = census(ctx);
-    (swept, counts)
+    let Census { swept, sites } = census(ctx);
+    (swept, counts_of(&sites))
 }
 
 /// Render a census as the manifest's bytes: [`BASELINE_HEADER`], then one
@@ -1109,16 +1153,34 @@ pub fn render_baseline(counts: &BTreeMap<String, u32>) -> String {
     out
 }
 
-/// One census pass: what [`live_counts`] returns, plus how many swept files
-/// the enumeration actually reached.
+/// One census pass: the per-file code-less SITE LINES, plus how many swept
+/// files the enumeration actually reached.
 struct Census {
     /// Swept paths `ls_files()` yielded — INCLUDING clean ones, which
-    /// contribute no `counts` entry. Zero here means the enumeration itself
+    /// contribute no `sites` entry. Zero here means the enumeration itself
     /// came back empty, which is a different fact from "the tree is clean";
     /// [`check`] is the consumer that has to tell those two apart.
     swept: usize,
-    /// `swept path -> code-less site count`, files with zero sites omitted.
-    counts: BTreeMap<String, u32>,
+    /// `swept path -> 1-based line of each code-less site`, ascending, files
+    /// with zero sites omitted.
+    ///
+    /// Lines rather than a bare count because [`scan_file`] already computes
+    /// them and a High finding that names only a count makes the author
+    /// re-derive by hand which constructor the scanner considered code-less —
+    /// a non-trivial exercise given the [`PDIAG_CODE_WINDOW`] window, the
+    /// comment mask and the per-anchor escape binding. The manifest grammar is
+    /// unchanged: the count is `.len()` ([`counts_of`]).
+    sites: BTreeMap<String, Vec<usize>>,
+}
+
+/// The per-file counts a census renders into the manifest: `sites.len()` per
+/// entry.
+///
+/// The ONE place the line list collapses to the manifest's `u32`, so
+/// [`live_counts`], [`census_summary`] and [`check`]'s ratchet input can never
+/// disagree about what a row means.
+fn counts_of(sites: &BTreeMap<String, Vec<usize>>) -> BTreeMap<String, u32> {
+    sites.iter().map(|(path, lines)| (path.clone(), lines.len() as u32)).collect()
 }
 
 /// The single working-tree pass behind BOTH [`live_counts`] and [`check`].
@@ -1129,7 +1191,7 @@ struct Census {
 /// worse foundation for a hard gate than one possibly-stale answer.
 fn census(ctx: &AuditContext) -> Census {
     let mut swept = 0usize;
-    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut sites: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for path in ctx.git.ls_files() {
         if !is_swept_path(&path) {
             continue;
@@ -1139,12 +1201,15 @@ fn census(ctx: &AuditContext) -> Census {
             Ok(content) => content,
             Err(_) => continue,
         };
-        let codeless = scan_file(&content).iter().filter(|site| !site.coded).count();
-        if codeless > 0 {
-            counts.insert(path, codeless as u32);
+        // Source order, which `scan_file` already guarantees — the order a
+        // reader will walk the file in.
+        let codeless: Vec<usize> =
+            scan_file(&content).iter().filter(|site| !site.coded).map(|site| site.line).collect();
+        if !codeless.is_empty() {
+            sites.insert(path, codeless);
         }
     }
-    Census { swept, counts }
+    Census { swept, sites }
 }
 
 /// PDIAG entry point — see the module header for the heuristic and scope.
@@ -1173,7 +1238,8 @@ fn census(ctx: &AuditContext) -> Census {
 ///   nothing. Symmetry matters here: BOTH inputs to the ratchet now fail loud
 ///   when they vanish wholesale, so a green PDIAG means the detector looked.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    let Census { swept, counts: live } = census(ctx);
+    let Census { swept, sites } = census(ctx);
+    let live = counts_of(&sites);
 
     // Resolved under `ctx.project_root`, never `CARGO_MANIFEST_DIR`, so the
     // CLI-level fixture trees can point the whole detector at a tempdir —
@@ -1193,9 +1259,16 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         return vec![empty_census_finding(baseline.len())];
     }
 
+    // The census's line lists are carried through to rendering so a High names
+    // WHERE the code-less constructors are, not just how many there are. A
+    // verdict whose path has no census entry (`OrphanRow`, by construction) gets
+    // an empty slice and renders exactly as before.
     ratchet(&live, &baseline)
         .into_iter()
-        .map(RatchetVerdict::into_finding)
+        .map(|verdict| {
+            let lines = sites.get(verdict.path()).map_or(&[][..], Vec::as_slice);
+            verdict.into_finding(lines)
+        })
         .collect()
 }
 
@@ -2307,12 +2380,12 @@ mod tests {
             RatchetVerdict::Exceeded { path: GEOM.to_string(), live: 4, baseline: 3 },
             RatchetVerdict::NewFile { path: GEOM.to_string(), live: 2 },
         ] {
-            let finding = high.into_finding();
+            let finding = high.into_finding(&[118, 204]);
             assert_eq!(finding.severity, Severity::High);
             assert_eq!(finding.pattern, Pattern::PDiag);
             assert_eq!(finding.task_id, GEOM);
             assert_eq!(finding.evidence, vec![EvidenceRef::File { path: GEOM.to_string() }]);
-            for needle in [GEOM, SEVERITY_POLICY_DOC, PDIAG_ALLOW] {
+            for needle in [GEOM, SEVERITY_POLICY_DOC, PDIAG_ALLOW, "at lines 118, 204"] {
                 assert!(
                     finding.summary.contains(needle),
                     "{needle} missing from {:?}",
@@ -2323,13 +2396,39 @@ mod tests {
     }
 
     #[test]
+    fn high_summaries_name_the_code_less_lines_singly_plurally_and_elided() {
+        // The count alone forces the author to re-derive which constructor the
+        // scanner called code-less — a non-trivial exercise given the window,
+        // the comment mask and the per-anchor escape binding.
+        assert_eq!(format_site_lines(&[]), "");
+        assert_eq!(format_site_lines(&[7]), " at line 7");
+        assert_eq!(format_site_lines(&[7, 19, 22]), " at lines 7, 19, 22");
+
+        // Past the cap the tail is elided WITH its size, so the listed lines and
+        // the summary's own site count never silently disagree.
+        let many: Vec<usize> = (1..=PDIAG_SUMMARY_LINE_CAP + 3).collect();
+        let rendered = format_site_lines(&many);
+        assert!(rendered.ends_with("(+3 more)"), "{rendered}");
+        // One separator fewer than the lines listed — i.e. exactly the cap.
+        assert_eq!(
+            rendered.matches(", ").count(),
+            PDIAG_SUMMARY_LINE_CAP - 1,
+            "exactly the cap is listed: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!(", {}", PDIAG_SUMMARY_LINE_CAP + 1)),
+            "the line past the cap must be elided, not listed: {rendered}"
+        );
+    }
+
+    #[test]
     fn medium_findings_name_the_regeneration_command() {
         // The advisory is only actionable if it says how to clear itself.
         for medium in [
             RatchetVerdict::Stale { path: GEOM.to_string(), live: 2, baseline: 3 },
             RatchetVerdict::OrphanRow { path: GEOM.to_string(), baseline: 3 },
         ] {
-            let finding = medium.into_finding();
+            let finding = medium.into_finding(&[118, 204]);
             assert_eq!(finding.severity, Severity::Medium);
             assert_eq!(finding.task_id, GEOM);
             for needle in [GEOM, BASELINE_GEN_BIN] {
@@ -2339,6 +2438,13 @@ mod tests {
                     finding.summary
                 );
             }
+            // The slack verdicts are cleared by REGENERATING, not by editing a
+            // site, so listing lines there would be a pointer to nowhere.
+            assert!(
+                !finding.summary.contains("at line"),
+                "a Medium advisory must not list site lines: {:?}",
+                finding.summary
+            );
         }
     }
 
@@ -2394,6 +2500,34 @@ mod tests {
         let mut fx = Fixture::new(tmp.path());
         fx.write(GEOM, &codeless_src(2)).baseline("");
         assert_eq!(fx.keys(), vec![(GEOM.to_string(), Severity::High)]);
+    }
+
+    #[test]
+    fn a_high_finding_names_the_live_scan_s_code_less_lines() {
+        // End to end: the census's line numbers reach the summary, so an author
+        // who trips the gate is told WHICH constructors the scanner called
+        // code-less instead of re-deriving them by hand against the window, the
+        // comment mask and the escape binding.
+        let src = "// header\n\
+                       let x = 1;\n\
+                       out.push(Diagnostic::error(m));\n\
+                       let y = 2;\n\
+                       out.push(Diagnostic::warning(m));\n";
+        for (baseline, needle) in
+            [(format!("{GEOM} 1\n"), "site(s) at lines 3, 5,"), (String::new(), "site(s) at lines 3, 5 ")]
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut fx = Fixture::new(tmp.path());
+            fx.write(GEOM, src).baseline(&baseline);
+            let findings = fx.run();
+            assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+            assert_eq!(findings[0].severity, Severity::High);
+            assert!(
+                findings[0].summary.contains(needle),
+                "{needle:?} missing from {:?}",
+                findings[0].summary
+            );
+        }
     }
 
     #[test]

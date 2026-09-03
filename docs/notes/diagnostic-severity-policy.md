@@ -140,6 +140,14 @@ Migration of the pre-existing backlog is **opportunistic**, per PRD §6 decision
 3: enforcement is for *new* sites. You are not asked to fix a file you merely
 touched.
 
+**The finding names the lines.** A High summary lists the 1-based line of every
+code-less site the scan found in that file (a dozen at most, with the rest
+elided as `(+N more)`) — for example `… 3 code-less
+Diagnostic::error/warning site(s) at lines 118, 204, 511, baseline allows 2`.
+The detector compares *counts*, so it cannot know which constructor you added:
+intersect that list with your own diff. The Medium advisories carry no lines,
+because their remedy is regeneration rather than an edit at a site.
+
 Three legitimate remedies, in preference order:
 
 ### (a) Attach a code — the default
