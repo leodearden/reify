@@ -10,6 +10,16 @@
 //! scheduler stack it pinned; the WARM_STARTABLE coextension invariant itself
 //! remains covered by `reify-runtime/src/warm_startable_assert.rs`.
 //!
+//! The T3/T5 wording above is load-bearing, not stylistic: those lines narrate
+//! work that is obsolete or already landed, NOT work outstanding, and each
+//! carries a `#NNNN` cite to a terminal task. Phrasing them as an outstanding
+//! deferral would make them PTODO lane δ-B findings (comment line + canonical
+//! cite + deferral prose => High `orphaned`, hard gate) and red the §6.6
+//! ratchet. If natural phrasing is ever worth it, take the sanctioned §6.8
+//! escape (`ptodo:allow`) rather than re-wording around the detector; class
+//! and rationale: `docs/prds/reify-audit-ptodo-detector.md` §16 Row 2,
+//! "narrated non-deferral".
+//!
 //! All tests use real `reify_eval::cache::NodeId` values so that the
 //! `impl HasNodeKind for NodeId` bridge in `reify-eval/src/cache.rs` is exercised
 //! against the production type rather than a test stub.

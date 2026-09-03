@@ -1245,6 +1245,16 @@ mod tests {
     /// the ratchet went RED with a stale entry, and the entry was deleted
     /// here rather than left to rot. `temp_dirs.rs`'s own two self-trigger
     /// sites are exempted per-line instead of listed here (see pre-2).
+    ///
+    /// The PAST TENSE above is load-bearing, not stylistic. This paragraph
+    /// narrates a deferral that has since been RESOLVED, on lines that also
+    /// carry a `#NNNN` cite to the terminal task that resolved it — the shape
+    /// PTODO lane δ-B claims (comment line + canonical cite + deferral prose
+    /// => High `orphaned`, hard gate). Re-phrasing it as an outstanding
+    /// deferral therefore reds the §6.6 ratchet. If natural phrasing is ever
+    /// worth it, take the sanctioned §6.8 escape (`ptodo:allow`) rather than
+    /// re-wording around the detector; class and rationale: PRD
+    /// `reify-audit-ptodo-detector.md` §16 Row 2, "narrated non-deferral".
     const SWEEP_EXCEPTIONS: &[(&str, usize, &str)] = &[];
 
     /// The live ratchet. Every `.rs` file in the workspace — `src/`, `tests/`,

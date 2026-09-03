@@ -1068,8 +1068,9 @@ over-read the `0`:
   narrative that its own next clause contradicts). Each stated something its own code
   falsifies, so both were **truth-corrected** — fixing a falsehood, not dodging a detector.
   One further line (`crates/reify-eval/tests/node_traits_boundary.rs`, "obsolete as written
-  rather than merely pending") is a genuine non-deferral and took the sanctioned
-  `// ptodo:allow` escape (§6.8). Nothing was suppressed by widening a guard to fit.
+  rather than merely pending") is a genuine non-deferral and was re-worded to "merely
+  deferred", which carries the same meaning and is outside `DEFERRAL_PROSE` (the needle is
+  `deferred to`, not bare `deferred`). Nothing was suppressed by widening a guard to fit.
 - **The seeded baseline is hand-inspected and known-clean.** All 6 new fingerprints are
   genuine deferrals citing terminal tasks — `diagnostics.rs` ×2 (#2947 `cancelled`),
   `elastic_result.rs` (#3787 `done`), `elastic_static.rs` ×2 (#4092 `done`),
@@ -1077,6 +1078,34 @@ over-read the `0`:
   detector's own DB read. That matters because §6.6 makes a seeded false positive permanent
   by design; the 12 known-wrong entries the 2026-08-07 ruling refused to seed are exactly the
   entries that do not exist here.
+
+**Known δ-B false-positive class: NARRATED NON-DEFERRAL (recorded 2026-09-03, task #6103).**
+All three class-(c) sites above share one shape, and it is the one an author will rediscover
+by turning the gate red: a comment that NARRATES a deferral which has since been resolved,
+next to a cite of the very task that resolved it. `has_deferral_prose` is deliberately
+tense-blind — the guards it carries are for identifier context, quoting and case, not for
+grammatical tense — so `"#5639 … had not yet landed on main. #5639 has since landed"` matches
+the `not yet` needle, resolves its (terminal) cite through the β liveness lane, and becomes a
+High `orphaned` hard-gate finding. Nothing about the comment is wrong.
+
+Disposition, in preference order:
+
+1. **Truth-correct**, when the narration is stale or self-contradicting — the two `detectors.rs`
+   / `temp_dirs.rs` sites above. This is the common case: prose written while work was
+   outstanding usually stops being true once it lands.
+2. **Re-word to past tense**, when both phrasings are true — the `node_traits_boundary.rs`
+   site above.
+3. **Take the §6.8 `ptodo:allow` escape**, when the natural phrasing is genuinely worth
+   keeping. Note the cost: the escape removes the line from the WHOLE sweep, not just δ-B,
+   so a `TODO` later added to that same line goes unseen.
+
+Whichever is chosen, **the site must say so.** A re-worded site's phrasing is load-bearing and
+that coupling is invisible at the site — a later editor restoring the natural wording reds the
+§6.6 ratchet with no clue why, and the detector's own doc comments would be the only place the
+constraint is recorded. All three sites therefore carry a short in-place note naming lane δ-B
+and pointing back at this row. Do NOT instead widen a guard (tense-awareness is an unbounded
+vocabulary problem, rejected in §14 at an 89–100% FP rate) or seed the finding into
+`ptodo-baseline.txt` (§6.6 makes a seeded false positive permanent by design).
 
 *The FP economics that made this a `no` in August are therefore not merely tolerated — they
 are gone.* Anchoring on a bare cite is still not intrinsically low-FP (the falsified claim in
