@@ -23,13 +23,14 @@ pub mod values;
 
 pub use builders::*;
 // Deliberately NOT `pub use examples_corpus::*;`, for the same reason spelled
-// out for `git_env` below: `examples_dir`, `discover_ri_files`,
-// `relative_to_examples_dir` and `filter_skipped` are generic enough names
-// that hoisting them into a crate root which many test files glob-import
-// (`use reify_test_support::*;`) would turn a future same-named item in any
-// other glob-exported module into an E0659 ambiguity at every such use site.
-// Both real consumers spell the module path, so `pub mod examples_corpus;`
-// above is the whole surface.
+// out for `git_env` below: `examples_dir`, `discover_ri_files`, `relative_to`,
+// `relative_to_examples_dir`, `filter_skipped_under` and `filter_skipped` are
+// generic enough names that hoisting them into a crate root which many test
+// files glob-import (`use reify_test_support::*;`) would turn a future
+// same-named item in any other glob-exported module into an E0659 ambiguity at
+// every such use site — and the bare `relative_to` / `filter_skipped_under`
+// root-taking forms make that likelier, not less. Both real consumers spell the
+// module path, so `pub mod examples_corpus;` above is the whole surface.
 pub use fixtures::*;
 // Deliberately NOT `pub use git_env::*;`. `sanitize` and `REPO_REDIRECT_VARS`
 // are generic enough names that hoisting them into a crate root which many
