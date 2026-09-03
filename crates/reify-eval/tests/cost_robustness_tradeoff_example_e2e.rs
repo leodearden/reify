@@ -20,28 +20,22 @@
 //!     (λ=1.0, λ=0.5, λ=0.0 over one shared Money cost and one shared constraint
 //!     set) plus the file's objectiveless `CentralityReference` control. Asserts
 //!     zero error-severity diagnostics, every λ strictly inside the feasible
-//!     region, and — per task #5715 — a REAL, SEED-INDEPENDENT λ signal: the λ=1
-//!     anchor reaches the cost's closed-form interior optimum (NOT a constraint
-//!     boundary — see the note below), the λ=0 anchor reaches the engine's
-//!     centrality default, i.e. the max-min-slack point (cross-checked against
-//!     `CentralityReference`, which the engine resolves through that same
-//!     synthesised default), and the three λ are strictly ordered with a minimum
-//!     pairwise separation — with every one of them provably distinct from the
-//!     solver's constraint-derived seed.
+//!     region, and — per task #5715 — a REAL, SEED-INDEPENDENT λ signal: λ=1
+//!     reaches the cost's closed-form interior optimum, λ=0 reaches the engine's
+//!     centrality default (cross-checked against `CentralityReference`, which the
+//!     engine resolves through that same synthesised default), and the three λ
+//!     are strictly ordered with a minimum pairwise separation.
 //!
-//!     Both halves of that separation take a deliberate lever in the example.
-//!     The λ=1 half needs a cost with a reachable INTERIOR optimum; the λ=0 half
-//!     needs an ASYMMETRIC constraint set (`thickness * 2 < 30mm` alongside the
-//!     `1mm`/`25mm` box), because for a plain two-sided box the derived seed
-//!     midpoint IS the max-min-slack point by construction and no choice of
-//!     numbers could tell a real λ=0 solve apart from a seed fallback.
-//!
-//!     This replaces the #5618/#5715 characterization pin (`spread < 1e-9`),
-//!     which recorded the degenerate state in which both anchors had collapsed
-//!     onto that seed. The complementary zero-margin-BOUNDARY form of the λ=1
-//!     invariant (monotone cost, explicit tight `AutoParam` bounds) stays
-//!     verified at the solver level in
-//!     `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
+//!     WHY the example is shaped the way it is — the interior-optimum cost, the
+//!     asymmetric third constraint, and the two solver behaviours that made the
+//!     old sweep degenerate — is derived in full in that file's HEADER, which
+//!     owns that derivation. This test quotes only the target values it asserts
+//!     and why each is distinct from the solver's seed. It replaces the
+//!     #5618/#5715 characterization pin (`spread < 1e-9`), which recorded the
+//!     degenerate state in which both anchors had collapsed onto that seed. The
+//!     complementary zero-margin-BOUNDARY form of the λ=1 invariant (monotone
+//!     cost, explicit tight `AutoParam` bounds) stays verified at the solver
+//!     level in `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, ValueCellId};
@@ -180,24 +174,17 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
 ///   * λ=0 → the engine's centrality default over the three-half-space region:
 ///     the max-min-slack point, 31/3 mm — cross-checked against
 ///     `CentralityReference`, which the engine resolves through that same
-///     synthesised `Maximize(min_slack)`. NOT the geometric Chebyshev centre;
-///     the slacks are un-normalised, so a scaled constraint outweighs its
-///     geometric distance (spelled out at assertion (ii));
+///     synthesised `Maximize(min_slack)`. NOT the geometric Chebyshev centre
+///     (assertion (ii) states the caveat and its coupling cost);
 ///   * λ=0.5 → strictly between, with a minimum pairwise separation of
 ///     `LAMBDA_SEPARATION_M`.
 ///
 /// This replaces the #5715 characterization pin (`spread < 1e-9`), which recorded
-/// the degenerate state described in that task: with a MONOTONE cost the λ=1
-/// optimum sits past a strict `>` boundary the floor-free anchor cannot reach
-/// (the constraint penalty has zero slope at its own root, and `.ri`-compiled
-/// autos always get `bounds: None` — `engine_eval.rs::build_auto_param_list`), so
-/// `solve_core_with_sd_tolerance`'s drift fallback reported THE SEED; and for a
-/// plain two-sided box that seed midpoint IS the max-min-slack point, i.e. the
-/// λ=0 target, by construction. Both anchors therefore collapsed onto one point.
-/// The example now breaks that second coincidence with an ASYMMETRIC third
-/// constraint (`thickness * 2 < 30mm`), whose gradient differs from the box's, so
-/// the centrality argmax and the bounding-box midpoint are no longer the same
-/// point.
+/// the degenerate state described in that task: with a MONOTONE cost and a
+/// SYMMETRIC constraint box, both anchors collapsed onto the solver's own seed.
+/// The example's two levers — an interior-optimum cost and an asymmetric third
+/// constraint — are what separate them; its header derives both, and neither is
+/// restated here.
 ///
 /// Reads the example from disk (not a fixture copy) — mirrors
 /// `continuous_cost_min_example_e2e.rs`'s disk-path convention; compile-level
@@ -272,18 +259,13 @@ fn example_lambda_sweep_cost_optimum_blend_centre() {
     // The example's cost is `unit_cost * (thickness / 1mm + 25mm / thickness)`,
     // i.e. `5USD · (a·t + b/t)` with `a = 1/(1mm)` and `b = 25mm`. Then
     //     d/dt (a·t + b/t) = a − b/t² = 0  →  t* = sqrt(b/a) = sqrt(25mm · 1mm) = 5mm,
-    // and it is the UNIQUE global minimum on `t > 0` since the second derivative
-    // `2b/t³` is strictly positive there.
+    // the UNIQUE global minimum on `t > 0` (second derivative `2b/t³` > 0 there).
+    // Being STRICTLY INTERIOR is what makes it reachable where a monotone cost's
+    // optimum is not — the example header derives why, and it is not restated here.
     //
-    // Why this is reachable where a monotone cost's optimum is not: 5mm is
-    // STRICTLY INTERIOR to the feasible region, so the constraint penalty is
-    // identically zero in a neighbourhood of it. There is no zero-slope-at-the-root
-    // interaction with the penalty, no infeasible drift, and hence no
-    // `solve_core_with_sd_tolerance` seed fallback — the very failure mode that
-    // made the old monotone-cost sweep flat (task #5715, γ #4791).
-    //
-    // 5mm is NOT the solver's constraint-derived seed (13mm, measured) and NOT the
-    // robustness anchor (the max-min-slack point, 31/3 mm). This assertion can
+    // 5mm is neither the robustness anchor (31/3 mm, below) nor the solver's
+    // constraint-derived seed (13mm AS MEASURED TODAY — see the header's
+    // "MEASURED-TODAY" note; it is not a derived invariant). This assertion can
     // therefore only pass if the λ=1 anchor genuinely optimised the cost.
     assert!(
         (t_pure_cost - 0.005).abs() < ANCHOR_TOL_M,
@@ -311,29 +293,43 @@ fn example_lambda_sweep_cost_optimum_blend_centre() {
         t_centrality,
     );
 
-    // (ii) CLOSED FORM. The slacks are `t − 1mm`, `25mm − t` and `30mm − 2t`.
-    // `collect_slack_terms` (solver.rs) folds them RAW — un-normalised by each
-    // constraint's gradient — and `build_centrality_objective` maximises their
-    // minimum, so the binding pair is `t − 1mm` (slope +1) against `30mm − 2t`
-    // (slope −2):
+    // (ii) CLOSED FORM — deliberately coupled to an implementation choice. Read
+    // the COUPLING CAVEAT below before "fixing" this constant.
+    //
+    // The slacks are `t − 1mm`, `25mm − t` and `30mm − 2t`. `collect_slack_terms`
+    // (solver.rs) folds them RAW — un-normalised by each constraint's gradient —
+    // and `build_centrality_objective` maximises their minimum, so the binding
+    // pair is `t − 1mm` (slope +1) against `30mm − 2t` (slope −2):
     //     t − 1 = 30 − 2t  →  t = 31/3 mm ≈ 10.3333mm,
     // at which the remaining slack `25mm − t = 14.667mm` comfortably exceeds the
-    // binding value `9.333mm` and is therefore non-binding.
+    // binding value `9.333mm` and is therefore non-binding. It is NOT the
+    // geometric Chebyshev centre (the largest ball inscribed in (1mm, 15mm) is
+    // centred at 8mm); PRD §8.1 requires λ=0 to reduce to the ENGINE's centrality
+    // default, so 31/3 mm — not 8mm — is contract-correct today.
     //
-    // This max-min-RAW-slack point is NOT the geometric Chebyshev centre: the
-    // largest ball inscribed in the feasible region (1mm, 15mm) is centred at 8mm.
-    // The scaled `thickness * 2 < 30mm` weighs double its geometric distance
-    // precisely because the slack is un-normalised. PRD §8.1 requires λ=0 to reduce
-    // to the ENGINE's centrality default, so 31/3 mm — not 8mm — is the
-    // contract-correct target, and assertion (i) above cross-checks it against a
-    // value the engine itself computed.
+    // COUPLING CAVEAT. That RAW fold is a deliberate divergence from the owning
+    // PRD: `docs/prds/v0_6/constraint-solver-completion.md` §3.4 defines the
+    // default centrality objective the other way round, as the max-min
+    // *normalised* slack `min_j gⱼ(x)/scaleⱼ`. Under that definition the correct
+    // target here becomes the geometric centre, 8mm. So if the divergence is ever
+    // reconciled, THIS assertion is the one that reds, and 8mm is the expected new
+    // target rather than a behaviour regression — retarget it, do not chase it as
+    // a bug. Assertion (i) above carries the real contract ("λ=0 reduces to the
+    // engine's centrality default"), is normalisation-agnostic, and keeps passing
+    // straight across such a reconciliation; this assertion adds the independent
+    // closed form that stops (i) from being satisfiable by two equally-wrong
+    // values.
     //
-    // 31/3 mm is also 2.667mm from the solver's constraint-derived seed midpoint
-    // (13mm: `derive_from_side` recognises only `p OP far`, `p − k OP far` and
-    // `k − p OP far`, so the `Mul` near side of `thickness * 2 < 30mm` contributes
-    // a centrality slack without tightening the derived box, which stays
-    // `[1mm, 25mm]`). That gap is >250x ANCHOR_TOL_M, so a drift fallback onto the
-    // seed cannot pass this assertion — which is the whole point of task #5715.
+    // Seed-distinctness survives that reconciliation either way. 31/3 mm sits
+    // 2.667mm from the solver's constraint-derived seed midpoint (13mm AS MEASURED
+    // TODAY — the example header's "MEASURED-TODAY" note explains why that figure
+    // is a measurement of `derive_from_side`'s current recognition set, not a
+    // derived invariant), i.e. >250x ANCHOR_TOL_M, so a drift fallback onto the
+    // seed cannot pass — the whole point of task #5715. An 8mm target against the
+    // 8mm seed that a widened `derive_from_side` would produce is the ONE
+    // combination that would lose that bite; assertion (i) plus the λ=1 and
+    // ordering assertions would still hold the line, but re-derive the separation
+    // here if both changes ever land together.
     assert!(
         (t_robust - 31.0 / 3.0 * 0.001).abs() < ANCHOR_TOL_M,
         "λ=0.0 must reach the closed-form max-min-slack point 31/3 mm ≈ 1.03333e-2 m \

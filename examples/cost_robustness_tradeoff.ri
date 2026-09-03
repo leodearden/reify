@@ -21,6 +21,10 @@ module cost_robustness_tradeoff
 // one per anchor; both are load-bearing, and removing either collapses the
 // sweep back onto a single point (task #5715).
 //
+// This header OWNS the derivation below. `docs/reify-language-spec.md` §10.8
+// and `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 cite it instead of
+// restating it, and the e2e test quotes only the two target values it asserts.
+//
 // # Lever 1 — why the cost is U-shaped, not monotone
 //
 // The cost is material-plus-handling shaped: `thickness / 1mm` grows with the
@@ -61,6 +65,18 @@ module cost_robustness_tradeoff
 // box — it stays `[1mm, 25mm]`, midpoint 13mm. Centrality argmax 10.33mm, seed
 // 13mm: distinct, so the λ=0 anchor is now checkable.
 //
+// ## The 13mm seed is MEASURED-TODAY, not a derived invariant
+//
+// Every "13mm" figure in this header and in the e2e test's comments is a
+// measurement of the CURRENT `derive_from_side` recognition set — an internal
+// heuristic that is free to widen. If it ever gains coefficient support, the
+// derived box becomes `[1mm, 15mm]`, the seed becomes 8mm, and those figures go
+// stale. Nothing under test breaks when that happens: every pinned target here
+// (5mm, 31/3 mm, and the `CentralityReference` cross-check) is seed-INDEPENDENT
+// by construction, and 8mm is no closer to any of them than 13mm was. Only the
+// PROSE would be wrong — so re-measure these figures rather than trusting them,
+// and do not cite them as derived facts.
+//
 // Two precision notes on that argmax, both load-bearing:
 //
 //   * It is the max-min-RAW-slack point, NOT the geometric Chebyshev centre.
@@ -80,6 +96,11 @@ module cost_robustness_tradeoff
 //     upper side at all, so `extract_initial_point` would fall to its one-sided
 //     arm and seed at `1mm + max(0.1·1mm, 1µm) = 1.1mm` — silently changing what
 //     the e2e test measures.
+//     Worth naming plainly: that makes it a redundant constraint kept for a
+//     TEST-OBSERVABILITY reason rather than a modelling one — not a pattern to
+//     copy into a real design. It earns its place only because this file's job
+//     IS to exhibit the λ dial. Should `derive_from_side` widen as described
+//     above, it stops being load-bearing and should simply be deleted.
 //
 // `CentralityReference` is the objectiveless control for exactly that check: the
 // same auto param and the same three constraints with NO `minimize` at all, so
