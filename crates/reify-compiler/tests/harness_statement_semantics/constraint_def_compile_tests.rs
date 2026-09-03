@@ -19,6 +19,46 @@ fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Look up the constraint def named `def_name` in `module` and return its ONE
+/// param, asserting both that the def survived compilation and that it has
+/// exactly one param.
+///
+/// The param-type tests below all follow the same shape (compile a one-param
+/// `constraint def K`, then assert something about `params[0].ty`). Indexing
+/// `params[0]` directly makes a dropped param surface as a bare
+/// index-out-of-bounds panic instead of the assertion message the test was
+/// written to produce; this helper turns that failure mode into a named
+/// arity assertion, and removes the repeated find/index boilerplate.
+fn sole_param<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    def_name: &str,
+) -> &'a CompiledConstraintParam {
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == def_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "constraint def '{}' must be present in module.constraint_defs; found: {:?}",
+                def_name,
+                module
+                    .constraint_defs
+                    .iter()
+                    .map(|d| &d.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        def.params.len(),
+        1,
+        "expected constraint def '{}' to have exactly 1 param, got {}: {:?}",
+        def_name,
+        def.params.len(),
+        def.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+    &def.params[0]
+}
+
 /// Create a temporary project directory with `stdlib/` pre-created.
 ///
 /// Returns `(TempDir, PathBuf)` — keep the `TempDir` alive for the test's
@@ -1503,18 +1543,7 @@ constraint def K {
         errors
     );
 
-    let def: &CompiledConstraintDef = module
-        .constraint_defs
-        .iter()
-        .find(|d| d.name == "K")
-        .expect("K constraint def must be present in module.constraint_defs");
-    assert_eq!(
-        def.params.len(),
-        1,
-        "expected K to have exactly 1 param (g), got {}",
-        def.params.len()
-    );
-    let param: &CompiledConstraintParam = &def.params[0];
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
     assert_eq!(
         param.ty,
         Some(Type::Enum("Zq".to_string())),
@@ -1546,12 +1575,7 @@ constraint def K {
         errors
     );
 
-    let def: &CompiledConstraintDef = module
-        .constraint_defs
-        .iter()
-        .find(|d| d.name == "K")
-        .expect("K constraint def must be present in module.constraint_defs");
-    let param: &CompiledConstraintParam = &def.params[0];
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
     assert_eq!(
         param.ty,
         Some(Type::Enum("ThreadSystem".to_string())),
@@ -1600,12 +1624,7 @@ constraint def K {
         errors
     );
 
-    let def: &CompiledConstraintDef = module
-        .constraint_defs
-        .iter()
-        .find(|d| d.name == "K")
-        .expect("K constraint def must be present in module.constraint_defs");
-    let param: &CompiledConstraintParam = &def.params[0];
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
     assert_eq!(
         param.ty,
         Some(Type::Enum("Zq".to_string())),
@@ -1643,12 +1662,7 @@ constraint def K {
         errors
     );
 
-    let def: &CompiledConstraintDef = module
-        .constraint_defs
-        .iter()
-        .find(|d| d.name == "K")
-        .expect("K constraint def must be present in module.constraint_defs");
-    let param: &CompiledConstraintParam = &def.params[0];
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
     assert_eq!(
         param.ty,
         Some(Type::Enum("Zq".to_string())),
@@ -1715,12 +1729,7 @@ constraint def K {
         unknown_type_diags
     );
 
-    let def: &CompiledConstraintDef = module
-        .constraint_defs
-        .iter()
-        .find(|d| d.name == "K")
-        .expect("K constraint def must be present in module.constraint_defs");
-    let param: &CompiledConstraintParam = &def.params[0];
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
     // Mechanism witness, derived from the `type_args.is_empty()` gate on the
     // ambient enum fallback rather than observed and then rationalised: with a
     // non-empty `type_args` list the fallback is unreachable, so resolution
@@ -1771,12 +1780,7 @@ constraint def K {
         unknown_type_diags
     );
 
-    let def: &CompiledConstraintDef = module
-        .constraint_defs
-        .iter()
-        .find(|d| d.name == "K")
-        .expect("K constraint def must be present in module.constraint_defs");
-    let param: &CompiledConstraintParam = &def.params[0];
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
     // Same mechanism as the direct case above: the alias hop feeds the
     // SUPPRESSION path only, never the resolution path, so `ty` stays `None`
     // here while the bare `AL` spelling resolves to `Some(Enum("Zq"))`.
