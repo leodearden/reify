@@ -49,11 +49,18 @@
 //!
 //! ## Accepted residual imprecision
 //!
-//! Both directions are deliberate and both are *permissive* — the detector
-//! never manufactures a false RED:
+//! Every entry below is deliberate, and all but the first are *permissive* —
+//! they under-count, so they can weaken the gate but not manufacture a RED.
+//! The leading bullet is the honest exception: a quoted anchor IS counted, so
+//! a false RED is possible there in principle. It is accepted rather than
+//! lexed away because none exists in the swept corpus and one `pdiag:allow`
+//! clears it. (The other false-RED route — a nested `/* /* */ */` region
+//! reading as live code — was a real defect and is now closed by
+//! [`comment_mask`]'s depth counter.)
 //!
 //! - An anchor token inside a string literal on a code line is counted as a
-//!   site (none observed in the corpus; `pdiag:allow` escapes it).
+//!   site (none observed in the corpus; `pdiag:allow` escapes it). This is the
+//!   one entry here that errs toward a false RED rather than away from it.
 //! - An unrelated `.with_code(` inside a site's window can mark it coded —
 //!   7/730 sites repo-wide, all in `#[cfg(test)]` code this detector excludes.
 //!   "Permissive" understates it: unlike the other entries here, this one can
@@ -67,7 +74,9 @@
 //!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
 //!   literal (`"a//b"`) swallow a real `.with_code(` and produce a false RED.
 //!   The cost is that a `//` or `/*` inside a string literal can still nudge the
-//!   block-region state — which only ever masks MORE lines, i.e. under-counts.
+//!   block-region state — which only ever masks MORE lines, i.e. under-counts
+//!   (a string-literal `/*` opens a region rustc would not, and now needs a
+//!   `*/` to pop it; a string-literal `*/` at depth zero is simply ignored).
 //! - A `.with_code(` sitting in a trailing `//` comment on the anchor line
 //!   itself marks the site coded. Permissive, and vanishingly rare.
 //! - The `* ` block-comment-continuation form also matches a WRAPPED
@@ -253,11 +262,24 @@ fn line_escaped(line: &str) -> bool {
 /// too — 19 such lines exist in the swept corpus. The effect is permissive
 /// only (see the module header's residual-imprecision list); tightening it
 /// would mean tracking block-comment adjacency, which buys nothing today.
+///
+/// The region state is a DEPTH COUNTER, not a boolean, because Rust block
+/// comments nest: in `/* outer /* inner */ still outer */` the first `*/`
+/// closes only the inner comment. A boolean cleared the region there and
+/// declared the remaining outer-comment lines live code, which is the one way
+/// this mask could manufacture a FALSE RED — commenting out a diagnostic-
+/// emitting block that already contains a `/* … */` note would census the
+/// commented-out constructor as a real code-less site, a hard-gate High on a
+/// new file. Depth-counting matches rustc's own left-to-right pairing.
+/// [`crate::pdoccover`] tracks the same depth for its (quote-aware, mid-line-
+/// stripping) purposes; sharing one tracker would mean exporting it across
+/// detectors and inheriting a stripping policy this mask deliberately refuses,
+/// so the two stay separate and the divergence is stated here instead.
 fn comment_mask(lines: &[&str]) -> Vec<bool> {
     let mut mask = Vec::with_capacity(lines.len());
-    let mut in_block = false;
+    let mut depth = 0usize;
     for line in lines {
-        let started_in_block = in_block;
+        let started_in_block = depth > 0;
         // Walk the line for `/*` / `*/` tokens to carry the region state
         // forward. `//` ends the scan: the rest of the line is a comment, so a
         // `/*` after it must not open a region.
@@ -268,14 +290,22 @@ fn comment_mask(lines: &[&str]) -> Vec<bool> {
         let mut i = 0usize;
         while i < bytes.len() {
             let pair = (bytes[i], bytes.get(i + 1).copied());
-            if in_block {
+            if depth > 0 {
+                // Nested opener FIRST: inside a region, `/*` deepens it and
+                // only the matching `*/` pops back out. A stray `*/` at depth
+                // 0 is ignored rather than underflowing.
+                if pair == (b'/', Some(b'*')) {
+                    depth += 1;
+                    i += 2;
+                    continue;
+                }
                 if pair == (b'*', Some(b'/')) {
-                    in_block = false;
+                    depth -= 1;
                     i += 2;
                     continue;
                 }
             } else if pair == (b'/', Some(b'*')) {
-                in_block = true;
+                depth = 1;
                 i += 2;
                 continue;
             } else if pair == (b'/', Some(b'/')) {
@@ -1499,6 +1529,40 @@ mod tests {
         // after an inline `/* note */` on a code line would be lost.
         let src = "    let x = 1; /* note */ diagnostics.push(Diagnostic::error(m));";
         assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn nested_block_comment_keeps_the_region_open_past_the_inner_close() {
+        // Rust block comments NEST. A boolean region flag cleared on the inner
+        // `*/` and declared the rest of the OUTER comment live code, censusing
+        // a commented-out constructor as a real code-less site — a false RED on
+        // a new file, and the exact shape produced by commenting out a block
+        // that already contains a `/* … */` note.
+        let src = file(&[
+            "/* outer",
+            "   /* inner */",
+            "   diagnostics.push(Diagnostic::error(msg));",
+            "*/",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn nested_block_comment_reopens_live_code_only_at_the_outer_close() {
+        // The complement of the test above: depth must return to zero exactly
+        // once, so an anchor on the outer closing line's tail is live again and
+        // one `*/` too few keeps everything masked.
+        let closed = file(&[
+            "/* a /* b */ c */",
+            "let y = Diagnostic::warning(m);",
+        ]);
+        assert_eq!(sites(&closed), vec![(2, false)]);
+
+        // One `*/` short: the outer region is still open, so the line below is
+        // masked and contributes nothing.
+        let unclosed = file(&["/* a /* b */ c", "let y = Diagnostic::warning(m);"]);
+        assert_eq!(sites(&unclosed), none());
     }
 
     #[test]
