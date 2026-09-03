@@ -224,6 +224,7 @@ make_runnable_verify_fixture() {
         lib_clock_stop.sh \
         cpu-admit.sh \
         lib_proc_reaper.sh \
+        lib_git_env_scrub.sh \
         gen-nextest-config.sh \
         heavy-test-filter-lib.sh \
         verify-pipeline-infra-tests.txt
