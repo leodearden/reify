@@ -229,13 +229,6 @@ impl DualEnv {
     }
 }
 
-/// Path segment marking a descent OUT of a call site and INTO the callee's
-/// body.  Argument children occupy `0..arity`, so `u16::MAX` cannot collide
-/// with them, and the call site's own path prefix keeps two call sites of the
-/// same function distinguishable — which is what lets λ tell which call site's
-/// kink moved.
-const CALLEE_MARKER: u16 = u16::MAX;
-
 /// Is THIS node (not its subtree) non-smooth?  O(1) on the node's kind.
 fn node_is_kink(e: &CompiledExpr) -> bool {
     match &e.kind {

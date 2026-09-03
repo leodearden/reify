@@ -41,6 +41,30 @@ use std::hash::{Hash, Hasher};
 
 use reify_ir::{BinOp, Value};
 
+/// Path segment marking a descent OUT of a call site and INTO the callee's
+/// body.
+///
+/// Argument children occupy `0..arity`, so the top of the `u16` range cannot
+/// collide with them, and the call site's own path prefix keeps two call sites
+/// of the same function distinguishable — which is what lets λ tell which call
+/// site's kink moved.
+pub const CALLEE_MARKER: u16 = u16::MAX;
+
+/// Path segment marking a descent into a solver DEPENDENT CELL's own
+/// expression.  The segment after it is the cell's index in `dependent_cells`
+/// stored order, so two derived cells' kinks are separately addressable.
+///
+/// # Why these two live together
+///
+/// They are the only segments that can never be a structural child index, and
+/// two reserved values defined in one place cannot silently drift into
+/// collision.  A collision would not fail loudly: it would name the wrong node
+/// in a `W_SOLVER_NONSMOOTH_STALL` diagnostic and — worse — make two genuinely
+/// different kinks compare EQUAL, so λ would see one signature where there are
+/// two and never count the alternation.  `dual_branch_signature_tests.rs` pins
+/// their distinctness and their position above every structural index.
+pub const DEPENDENT_MARKER: u16 = u16::MAX - 1;
+
 /// Where a kink sits in the expression tree: the structural child-index path
 /// from the residual root.
 ///
@@ -219,6 +243,36 @@ impl BranchRecord {
     /// True when the traversal encountered no non-smooth node.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// This record with every entry re-sited under `prefix`.
+    ///
+    /// Each entry's [`KinkSite`] becomes `prefix ++ site.path()`; the kind and
+    /// the choice are untouched.  A record produced by evaluating some
+    /// SUBSIDIARY expression — a solver dependent cell, say — is root-relative
+    /// to that expression, so folding it into a residual's record needs its
+    /// sites moved into a namespace of their own or they would read as sites in
+    /// the residual's own tree.
+    ///
+    /// Prefixing composes: applying two prefixes in turn is the same as
+    /// applying their concatenation, so a nested fold needs no special case.
+    pub fn prefixed(&self, prefix: &[u16]) -> BranchRecord {
+        BranchRecord {
+            entries: self
+                .entries
+                .iter()
+                .map(|e| BranchEntry {
+                    site: KinkSite::new([prefix, e.site.path()].concat()),
+                    kind: e.kind.clone(),
+                    choice: e.choice.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Append every entry of `other`, in order, leaving their sites as they are.
+    pub fn extend_from(&mut self, other: &BranchRecord) {
+        self.entries.extend(other.entries.iter().cloned());
     }
 
     /// The first site, in traversal order, at which these two records
