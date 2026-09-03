@@ -49,6 +49,15 @@ fn find_structure(name: &str) -> &'static TopologyTemplate {
         })
 }
 
+/// Look up a compiled function by name within the `std/dynamics` module.
+///
+/// This mirrors `trajectory_stdlib_compile.rs`'s `find_function` (itself
+/// layered on that file's generic `find_named`) rather than sharing it:
+/// integration-test binaries each compile as a separate crate, so a private
+/// helper in one `tests/*.rs` file cannot be called from another. A shared
+/// `reify_test_support::helpers` version was suggested in review but is left
+/// for a follow-up outside this task's file scope, since generalizing it
+/// touches `trajectory_stdlib_compile.rs` too.
 fn find_function(name: &str) -> &'static CompiledFunction {
     let module = load_stdlib_module();
     module
