@@ -7,7 +7,8 @@
 //! expressions, strips its `type_params`, and rewrites the originating
 //! `SubComponentDecl.structure_name` to the monomorph name.
 
-use reify_core::{DiagnosticCode, Severity, Type};
+use reify_config::Manifest;
+use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
 use reify_test_support::compile_source_with_stdlib;
 
 /// Keystone test: a single `auto:` use-site produces a monomorph template.
@@ -812,5 +813,207 @@ fn non_constructible_two_use_sites_emits_one_diagnostic() {
         1,
         "expected exactly one 'Bearing$RequiredSeal' monomorph template, got: {:?}",
         monomorphs
+    );
+}
+
+// ─── task 6854: tighten partial-coverage guard beyond !sigma.is_empty() ──────
+
+/// Depth-bound BFS-fallback partial resolution: `max_depth=1` forces a 2-param
+/// `auto:` use-site into the v0.1 BFS fallback, which halts on U's
+/// `NoCandidate` (no `Gasket` implementor exists) after already selecting T.
+/// `resolve_auto_type_params_with_backtracking`'s joint-recheck only runs when
+/// `outcome.substitution.len() == params.len()` (auto_type_param.rs:1586), so
+/// this PARTIAL substitution (`{T: SealA}`, U unresolved) sails through
+/// unchanged — today's `!sigma.is_empty()` guard in `auto_type_param_phase.rs`
+/// still synthesizes a "Widget$SealA" monomorph with `type_params` cleared
+/// while its `slot_u` cell keeps `Type::TypeParam("U")`.
+///
+/// RED today (#6854): the broken monomorph is synthesized and passes the old
+/// guard. GREEN once the guard requires full `target.type_params` coverage.
+#[test]
+fn depth_bound_partial_resolution_synthesizes_no_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+
+    let cfg = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 1\n")
+        .expect("valid manifest")
+        .auto_type_params()
+        .clone();
+
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    let compiled = reify_compiler::compile_with_stdlib_with_config(&parsed, &cfg);
+
+    // (1) No partial monomorph is synthesized.
+    assert!(
+        !compiled.templates.iter().any(|t| t.name == "Widget$SealA"),
+        "partial resolution (T selected, U: NoCandidate) must NOT synthesize \
+         'Widget$SealA'; got templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (2) WidgetAssembly's sub 'w' must still reference the generic template.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget",
+        "sub 'w' must still reference the generic 'Widget' template on partial \
+         resolution, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (3) General invariant: no '$'-named, type-params-empty template retains
+    // a top-level TypeParam value cell.
+    let leaks: Vec<String> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name.contains('$') && t.type_params.is_empty())
+        .flat_map(|t| {
+            t.value_cells
+                .iter()
+                .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+                .map(move |c| {
+                    format!(
+                        "template '{}' cell '{}': {:?}",
+                        t.name, c.id.member, c.cell_type
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "invariant violation: a '$'-named template with empty type_params \
+         retains a TypeParam value cell: {:?}",
+        leaks
+    );
+
+    // (4) The resolver's own diagnostic still fires — the fix must not
+    // suppress it.
+    let no_candidate_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate))
+        .collect();
+    assert!(
+        !no_candidate_errors.is_empty(),
+        "expected AutoTypeParamNoCandidate to still fire on U's zero-candidate \
+         pool; got diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// Cross-product-cap BFS-fallback partial resolution: `max_cross_product_size=1`
+/// with T (1 candidate) x U (2 candidates, `GasketA`/`GasketB`) = cross-product
+/// size 2 > 1 forces the same BFS fallback. BFS selects T (`SealA`, sole
+/// candidate) then hits U's ≥2-feasible-candidates `Ambiguous` outcome (strict
+/// `auto:`, not `auto(free):`) and halts — again a PARTIAL substitution
+/// (`{T: SealA}` only) that today's `!sigma.is_empty()` guard still turns into
+/// a "Widget$SealA" monomorph with a leaked `Type::TypeParam("U")` slot_u cell.
+///
+/// RED today (#6854); GREEN once the guard requires full `target.type_params`
+/// coverage.
+#[test]
+fn cross_product_cap_partial_resolution_synthesizes_no_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def GasketB : Gasket { param g : Real = 1.5 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+
+    let cfg = Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 1\n")
+        .expect("valid manifest")
+        .auto_type_params()
+        .clone();
+
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    let compiled = reify_compiler::compile_with_stdlib_with_config(&parsed, &cfg);
+
+    // (1) No partial monomorph is synthesized.
+    assert!(
+        !compiled.templates.iter().any(|t| t.name == "Widget$SealA"),
+        "partial resolution (T selected, U: Ambiguous) must NOT synthesize \
+         'Widget$SealA'; got templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (2) WidgetAssembly's sub 'w' must still reference the generic template.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget",
+        "sub 'w' must still reference the generic 'Widget' template on partial \
+         resolution, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (3) General invariant: no '$'-named, type-params-empty template retains
+    // a top-level TypeParam value cell.
+    let leaks: Vec<String> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name.contains('$') && t.type_params.is_empty())
+        .flat_map(|t| {
+            t.value_cells
+                .iter()
+                .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+                .map(move |c| {
+                    format!(
+                        "template '{}' cell '{}': {:?}",
+                        t.name, c.id.member, c.cell_type
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "invariant violation: a '$'-named template with empty type_params \
+         retains a TypeParam value cell: {:?}",
+        leaks
+    );
+
+    // (4) The resolver's own diagnostic still fires — the fix must not
+    // suppress it.
+    let ambiguous_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous))
+        .collect();
+    assert!(
+        !ambiguous_errors.is_empty(),
+        "expected AutoTypeParamAmbiguous to still fire on U's 2-feasible-candidate \
+         pool; got diagnostics: {:#?}",
+        compiled.diagnostics
     );
 }
