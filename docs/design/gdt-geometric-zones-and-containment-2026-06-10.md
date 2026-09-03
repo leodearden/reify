@@ -203,7 +203,7 @@ convention, as DFM thickness). Kernel-less runs report `Indeterminate` (C1 pinne
 
 ## 7. Key survey evidence (condensed)
 
-- Scalar surface + opaque slots: `tolerancing.ri:46-51,227-232`; `tolerancing.rs:118-150`;
+- Scalar surface + opaque slots: `tolerancing.ri:46-51,227-232`; `tolerancing.rs` (`fn iso_it_tolerance`);
   `type_resolution.rs:563-565`; `Datum` never instantiated.
 - Zone composability: `GeometryOp::{Cylinder:535,Tube:542,Box:529,Extrude:680,Sweep:692,
   Difference:569-583,Thicken:793}`; missing face-offset slab (Thicken solid-only,

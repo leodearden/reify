@@ -25,7 +25,7 @@ stamped by commit_planning).
   tessellation/boolean tolerance ≪ band (torus precedent: `assert_volume_near(…,0.02)`).
 - `loud-envelope-rejection` — **producer: this leaf** — `E_ThreadSolidOutOfEnvelope` +
   recorded UndefCause are α's own deliverable; house pattern proven at
-  `crates/reify-stdlib/src/tolerancing.rs:197-214` (`diagnose`, re-exported to
+  `crates/reify-stdlib/src/tolerancing.rs` (`pub fn diagnose`, re-exported to
   reify-expr `lib.rs:1960,1989`). Eval-exit-nonzero substrate: cmd_eval Severity::Error
   gate (task 4458).
 
@@ -58,7 +58,7 @@ stamped by commit_planning).
   behavioural test `crates/reify-eval/tests/ports_mechanical_thread_eval.rs:191-272`;
   `examples/bracket.ri:10-12`.
 - `iso-it-tolerance-wired` — **PASS** (wired) —
-  `crates/reify-stdlib/src/tolerancing.rs:112-128`, dispatcher arm `:15-22`, reached
+  `crates/reify-stdlib/src/tolerancing.rs` (`fn iso_it_tolerance`), dispatcher arm `:15-22`, reached
   from `eval_builtin` (`crates/reify-stdlib/src/lib.rs:225,286`); value pin precedent
   24.969 µm (`crates/reify-compiler/tests/tolerancing_tests.rs:1177-1262`).
 - `string-param-type` — **PASS** (wired) — `examples/cost_aggregation.ri:22`
