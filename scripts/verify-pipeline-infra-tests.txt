@@ -354,8 +354,9 @@ scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
 # requires-full-gate scripts/setup-dev.sh` -> exit 1), so such a diff does not
 # force the full --scope all gate either. Multiple rows per artifact are the
 # established pattern — setup-dev.sh already carries the OCCT row above.
-# The suite is `pool`-classified and hermetic (mktemp git fixtures, a no-op
-# systemctl shim, sandboxed HOME; ~2s), so it is safe to run inline in the
+# The suite is `pool`-classified and hermetic (mktemp git fixtures, a recording
+# systemctl shim, sandboxed HOME; ~4s measured 2026-09-03 with Parts A-C, up
+# from ~2s when only Parts A-B existed), so it is safe to run inline in the
 # selective-infra block, which has no serialization machinery.
 # scripts/lib_main_checkout.sh is the resolver the generator sources; a
 # resolver-only edit is the other half of the same contract (Part A).
@@ -370,22 +371,37 @@ scripts/lib_main_checkout.sh            tests/infra/test_host_global_unit_pinnin
 # scripts/verify-pipeline-paths.txt) — so a task-scope verify whose diff touched
 # ONLY that script selected zero infra poles AND did not route to the full
 # --scope all gate. Exactly the hole the 5888 rows above closed for setup-dev.sh.
-#   row 1  the script's own suite; its Block H now carries the H8d/H8e static
-#          pins that a silent revert of the migration would red.
+#   row 1  the script's own suite — the regression matrix for everything the
+#          migration had to leave untouched (the REIFY_MAIN_CHECKOUT override
+#          path, the fallback and its warn, the no-bus fail-open, --seed-only's
+#          zero-sudo contract), plus the H8d canary on the source line itself.
 #   row 2  test_host_global_unit_pinning.sh Part C sed-EXTRACTS install_boot_unit()
 #          out of that same file, so an edit to the script changes the artifact
 #          under test there too — the one-artifact-multiple-rows pattern
-#          setup-dev.sh already uses for its OCCT and pinning rows.
-#   row 3  the coupling 6864 CREATES. The redirect script now sources the
-#          resolver, so a resolver-only edit can break the boot-unit pin; the
-#          lib row above points only at test_host_global_unit_pinning.sh.
+#          setup-dev.sh already uses for its OCCT and pinning rows. This is the
+#          row that carries the migration's actual CONTRACT: Part C is the only
+#          coverage in the repo that runs the resolver with REIFY_MAIN_CHECKOUT
+#          UNSET, and so the only thing that reds on a silent revert.
+#
+# DELIBERATELY NO `scripts/lib_main_checkout.sh -> test_agent_cache_redirect.sh`
+# ROW, though the migration does create that coupling. That suite cannot detect
+# a resolver regression: every behavioural case in its Block H pins
+# REIFY_MAIN_CHECKOUT explicitly (run_redirect hardcodes it), so layer 1 of
+# reify_main_checkout short-circuits the derivation and no run there observes
+# it — its only lib-touching assertion is H8f, a `test -f && test -r` existence
+# check. The coupling is already carried by the
+# `scripts/lib_main_checkout.sh -> tests/infra/test_host_global_unit_pinning.sh`
+# row in the 5888 block above, which now selects Part C as well as Part A. A
+# third row would buy an existence check for ~12s of wall clock on every
+# resolver edit, while READING as though it closed the coupling.
+#
 # test_agent_cache_redirect.sh is `pool`-classified and hermetic (a fake $HOME
 # with synthetic cargo/npm trees, PATH-stubbed sudo/systemctl, mktemp cache root
-# and tmpfiles dir; ~2s), so it is safe to run inline in the selective-infra
-# block, which has no serialization machinery.
+# and tmpfiles dir; ~12s measured over three runs 2026-09-03 — the slowest pole
+# in this block, but still cheap enough to run inline in the selective-infra
+# block, which has no serialization machinery).
 scripts/setup-agent-cache-redirect.sh   tests/infra/test_agent_cache_redirect.sh
 scripts/setup-agent-cache-redirect.sh   tests/infra/test_host_global_unit_pinning.sh
-scripts/lib_main_checkout.sh            tests/infra/test_agent_cache_redirect.sh
 
 # Task 6758 (spec-conformance leaf α): the sc-anchor substrate for
 # docs/reify-language-spec.md — the opaque, randomly-minted paragraph-level

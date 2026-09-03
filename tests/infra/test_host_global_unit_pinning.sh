@@ -93,6 +93,68 @@ _fixture_git() {
 }
 
 # ---------------------------------------------------------------------------
+# SHARED GENERATOR-FIXTURE SCAFFOLDING (Parts B and C).
+#
+# The two generator fixtures below are NOT merged into one: they commit
+# different executables, strip different exec bits, and extract a different
+# function out of a different script, and their mode sets do not overlap.  What
+# IS identical is the mechanical scaffolding — the mktemp root, the recording
+# systemctl shim, the initial commit — and those live here rather than being
+# written twice, so a fix to any of them (a new variable in _fixture_git's strip
+# set, a shim that records exit codes) cannot land for one Part's harness and
+# silently leave the other on the old posture.
+# ---------------------------------------------------------------------------
+
+# _mk_fixture_root <stem> — MAIN-SHELL ONLY, and transitively so is every caller.
+# Mints a canonicalized mktemp root, registers it in _TMPDIRS for the EXIT trap,
+# and sets _FIXTURE_ROOT.  It sets a global rather than echoing because an
+# append performed inside a command-substitution SUBSHELL is silently discarded,
+# leaking the whole fixture tree — see _mk_two_checkout_fixture's banner.
+#
+# `pwd -P` canonicalizes so fixture paths compare byte-for-byte against git's
+# own absolute output (macOS /tmp -> /private/tmp, and any symlinked TMPDIR).
+_FIXTURE_ROOT=""
+_mk_fixture_root() {
+    local stem="$1" root
+    root="$(mktemp -d "${TMPDIR:-/tmp}/${stem}-XXXXXX")" || return 1
+    root="$(cd "$root" && pwd -P)" || return 1
+    _TMPDIRS+=("$root")
+    _FIXTURE_ROOT="$root"
+}
+
+# _write_systemctl_shim <bindir> <logfile> — a `systemctl` placed earlier on PATH
+# than the real one, RECORDING its argv to <logfile> and exiting 0.  Neither
+# generator's daemon-reload / `enable --now` may reach the host.
+#
+# Recording rather than merely no-op is load-bearing: both generators write
+# their unit files well before their reload/enable tail, so unit PRESENCE cannot
+# distinguish "installed" from "aborted two lines later".  Only the log can, and
+# B9c and C4 depend on exactly that distinction.
+_write_systemctl_shim() {
+    local bindir="$1" log="$2"
+    mkdir -p "$bindir" || return 1
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %s\nexit 0\n' "$log" \
+        > "$bindir/systemctl" || return 1
+    chmod +x "$bindir/systemctl" || return 1
+}
+
+# _fixture_init_commit <dir> — `git init -b main` + `add -A` + an initial commit
+# that is independent of the developer's identity and signing config.  Routed
+# through _fixture_git so an ambient GIT_DIR cannot redirect it at the REAL
+# repository (see that function's banner).
+#
+# Committing before the caller's `git worktree add` is what makes a linked lane
+# check out its own separate, mode-755 inodes — the asymmetry every noexec mode
+# below depends on.
+_fixture_init_commit() {
+    local dir="$1"
+    _fixture_git init -q -b main "$dir" || return 1
+    _fixture_git -C "$dir" add -A || return 1
+    _fixture_git -C "$dir" -c user.name=t -c user.email=t@example.invalid \
+        -c commit.gpgsign=false commit -q -m init || return 1
+}
+
+# ---------------------------------------------------------------------------
 # _mk_two_checkout_fixture <stem> — MAIN-SHELL ONLY. Mints a temp MAIN checkout
 # with a REAL linked worktree beside it, and sets FIX_ROOT / FIX_MAIN /
 # FIX_LANE.
@@ -410,9 +472,8 @@ echo "--- B0: generator fixture (function extracted into a FAKE LANE) ---"
 # ---------------------------------------------------------------------------
 _mk_generator_fixture() {
     local stem="$1" mode="${2:-main-exec}" root
-    root="$(mktemp -d "${TMPDIR:-/tmp}/${stem}-XXXXXX")" || return 1
-    root="$(cd "$root" && pwd -P)" || return 1
-    _TMPDIRS+=("$root")
+    _mk_fixture_root "$stem" || return 1
+    root="$_FIXTURE_ROOT"
     GEN_ROOT="$root"
     GEN_MAIN="$root/main"
     GEN_LANE="$root/lane"
@@ -421,17 +482,10 @@ _mk_generator_fixture() {
 
     mkdir -p "$GEN_MAIN/scripts" "$GEN_HOME/.cargo/bin" "$root/shim" || return 1
 
-    # A no-op `systemctl` earlier on PATH than the real one. The installer runs
-    # `daemon-reload` and `enable --now`; neither may reach the host.
-    #
-    # It RECORDS its argv to $GEN_ROOT/systemctl.log. install_build_services()
-    # writes the unit files well before its daemon-reload/enable tail, so unit
-    # PRESENCE cannot distinguish "installed" from "aborted two lines later".
-    # The log can, and B9c depends on that distinction.
+    # The recording `systemctl` (see _write_systemctl_shim). B9c is the case
+    # that needs the recording rather than a bare no-op.
     GEN_SYSTEMCTL_LOG="$root/systemctl.log"
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %s\nexit 0\n' \
-        "$GEN_SYSTEMCTL_LOG" > "$root/shim/systemctl" || return 1
-    chmod +x "$root/shim/systemctl" || return 1
+    _write_systemctl_shim "$root/shim" "$GEN_SYSTEMCTL_LOG" || return 1
 
     # The two executables the jobserver units name in their ExecStart, plus the
     # resolver the installer sources.
@@ -440,10 +494,7 @@ _mk_generator_fixture() {
     cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$GEN_MAIN/scripts/lib_main_checkout.sh" || return 1
     chmod +x "$GEN_MAIN/scripts/jobserver-balancer.py" "$GEN_MAIN/scripts/jobserver-canary.sh" || return 1
 
-    _fixture_git init -q -b main "$GEN_MAIN" || return 1
-    _fixture_git -C "$GEN_MAIN" add -A || return 1
-    _fixture_git -C "$GEN_MAIN" -c user.name=t -c user.email=t@example.invalid \
-        -c commit.gpgsign=false commit -q -m init || return 1
+    _fixture_init_commit "$GEN_MAIN" || return 1
 
     if [ "$mode" = main-only ]; then
         # No linked worktree at all: the invoking tree IS the main checkout, so
@@ -821,10 +872,12 @@ assert "B9d: the chmod failure is reported rather than swallowed" \
 # explicitly — its run_redirect helper hardcodes it so no run can reach the real
 # host default, and H8/H11b override it again — and layer 1 of
 # reify_main_checkout honours that override verbatim. So no run THERE can
-# observe which resolver produced the answer; those 143 assertions are
-# regression coverage, not discrimination. Only a run with REIFY_MAIN_CHECKOUT
-# UNSET, inside a real linked worktree, discriminates. That is this Part. Block
-# H keeps the static pins (H8d-H8f) and the regression matrix.
+# observe which resolver produced the answer; that suite's behavioural
+# assertions are regression coverage, not discrimination. Only a run with REIFY_MAIN_CHECKOUT
+# UNSET, inside a real linked worktree, discriminates. That is this Part —
+# which makes C1c, not any grep, the assertion a silent revert of the migration
+# has to get past. Block H keeps the regression matrix plus one cheap local
+# canary (H8d, with H8f as its non-vacuity).
 #
 # The BU_* globals are deliberately NOT the GEN_* ones Part B uses. Part B's
 # sections rebind those in place, and a shared name would suggest the two Parts
@@ -846,7 +899,12 @@ assert "B9d: the chmod failure is reported rather than swallowed" \
 #                reify_main_checkout() fails outright -> fail-open with an EMPTY
 #                main_checkout. C6.
 #   nolib        the resolver is absent from the invoking tree entirely, so the
-#                `-r` source guard (and `declare -F`) is what has to hold. C7.
+#                `-r` source guard is what has to hold. C7.
+#   nofunc       the resolver is PRESENT, readable, and sources cleanly — it
+#                just defines nothing, because its own source guard is already
+#                satisfied. `-r` passes and the `.` succeeds, so the resolution
+#                has to come back EMPTY without taking the function down with
+#                it. The state C7 structurally cannot reach. C9.
 #
 # The fallback branches matter disproportionately: they are the ones whose
 # guards, if inverted or dropped, silently re-create the original 203/EXEC
@@ -867,9 +925,8 @@ assert "B9d: the chmod failure is reported rather than swallowed" \
 # ---------------------------------------------------------------------------
 _mk_boot_unit_fixture() {
     local stem="$1" mode="${2:-lane}" root
-    root="$(mktemp -d "${TMPDIR:-/tmp}/${stem}-XXXXXX")" || return 1
-    root="$(cd "$root" && pwd -P)" || return 1
-    _TMPDIRS+=("$root")
+    _mk_fixture_root "$stem" || return 1
+    root="$_FIXTURE_ROOT"
     BU_ROOT="$root"
     BU_MAIN="$root/main"
     BU_LANE="$root/lane"
@@ -879,17 +936,12 @@ _mk_boot_unit_fixture() {
 
     mkdir -p "$BU_MAIN/scripts" "$BU_HOME/.config" "$root/shim" || return 1
 
-    # A recording `systemctl` earlier on PATH than the real one. The function
-    # probes the --user bus with `show-environment` and then runs daemon-reload
-    # and `enable --now`; none of those may reach the host.
-    #
-    # It RECORDS its argv. The unit file is written well before the
-    # reload/enable tail, so unit PRESENCE cannot distinguish "installed" from
-    # "aborted two lines later" — only the log can, and C4 depends on that.
+    # The recording `systemctl` (see _write_systemctl_shim). This function also
+    # PROBES the --user bus with `show-environment` before doing anything, so
+    # the shim is what keeps the whole Part from short-circuiting into the
+    # no-bus skip on a CI box. C4 is the case that needs the recording.
     BU_SYSTEMCTL_LOG="$root/systemctl.log"
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %s\nexit 0\n' \
-        "$BU_SYSTEMCTL_LOG" > "$root/shim/systemctl" || return 1
-    chmod +x "$root/shim/systemctl" || return 1
+    _write_systemctl_shim "$root/shim" "$BU_SYSTEMCTL_LOG" || return 1
 
     # The MAIN checkout holds the executable copy the unit's ExecStart must
     # name, plus the resolver the function sources.
@@ -897,10 +949,7 @@ _mk_boot_unit_fixture() {
     cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$BU_MAIN/scripts/" || return 1
     chmod +x "$BU_MAIN/scripts/setup-agent-cache-redirect.sh" || return 1
 
-    _fixture_git init -q -b main "$BU_MAIN" || return 1
-    _fixture_git -C "$BU_MAIN" add -A || return 1
-    _fixture_git -C "$BU_MAIN" -c user.name=t -c user.email=t@example.invalid \
-        -c commit.gpgsign=false commit -q -m init || return 1
+    _fixture_init_commit "$BU_MAIN" || return 1
 
     if [ "$mode" = lane-norepo ]; then
         # A plain directory, NOT a worktree: `git worktree add` is skipped
@@ -924,6 +973,22 @@ _mk_boot_unit_fixture() {
 
     if [ "$mode" = nolib ]; then
         rm -f "$BU_LANE/scripts/lib_main_checkout.sh" || return 1
+    fi
+
+    if [ "$mode" = nofunc ]; then
+        # REPRODUCED, not simulated: this IS the real lib, with its own source-
+        # guard variable pre-set on the line above it. Sourcing it therefore
+        # takes the `return 0` at lib_main_checkout.sh's guard and defines
+        # NOTHING — precisely what an exported
+        # _REIFY_LIB_MAIN_CHECKOUT_SH_SOURCED=1 in the ambient environment does
+        # in production, and what a half-written or renamed-function lib does by
+        # accident. Unlike nolib, `-r` passes and the `.` succeeds here, so the
+        # fail-open outcome has to come from the CALL SITE rather than from the
+        # source guard. See C9's banner for what that does and does not pin.
+        {
+            printf '%s\n' '_REIFY_LIB_MAIN_CHECKOUT_SH_SOURCED=1'
+            cat "$BU_MAIN/scripts/lib_main_checkout.sh"
+        } > "$BU_LANE/scripts/lib_main_checkout.sh" || return 1
     fi
 
     mkdir -p "$BU_LANE/scripts" || return 1
@@ -1025,6 +1090,17 @@ assert "C1c: ExecStart == <main checkout>/scripts/setup-agent-cache-redirect.sh 
               = "ExecStart=$2/scripts/setup-agent-cache-redirect.sh --seed-only" ]' \
         _ "$BU_UNIT" "$BU_MAIN"
 
+# What gives C5f/C6d/C7d teeth in the other direction. Those three assert the
+# fallback warn is PRESENT; without this, a regression that warned
+# UNCONDITIONALLY — the `[ -n "$stable" ] && [ -x "$stable" ]` short-circuit
+# dropped, or the warn hoisted above the branch — would leave every one of them
+# green AND leave C1c/C2/C3 green, because the ExecStart would still be right.
+# The suite would then be unable to tell "pinned cleanly" from "pinned correctly
+# while shouting a spurious fallback warning at every operator", which is what
+# trains operators to ignore the one warn that matters.
+assert "C1d: the success path emits NO fallback warn" \
+    bash -c '! grep -qF "pinning the boot unit at the invoking copy" "$1"' _ "$_BU_ERR"
+
 # The half that gives C1c teeth: the lane path is what a ${BASH_SOURCE[0]}-derived
 # ExecStart would have baked in, and it vanishes the next time that lane is
 # reclaimed.
@@ -1087,6 +1163,13 @@ assert "C5f: the installer WARNS that it pinned at the invoking copy" \
 assert "C5g: the warn names the resolved main checkout it rejected" \
     bash -c 'grep -qF -- "$2" "$1"' _ "$_BU2_ERR" "$BU_MAIN"
 
+# The remedy clause is branch-specific, and this is the branch it must NOT
+# appear on: the derivation SUCCEEDED here, so telling the operator to set
+# REIFY_MAIN_CHECKOUT would point them at a knob that changes nothing. C6e is
+# the positive half.
+assert "C5h: the warn does NOT offer the REIFY_MAIN_CHECKOUT remedy (it resolved)" \
+    bash -c '! grep -qF "set REIFY_MAIN_CHECKOUT" "$1"' _ "$_BU2_ERR"
+
 echo ""
 echo "--- C6: FAIL-OPEN — the resolver fails outright (anchor is not a worktree) ---"
 
@@ -1116,12 +1199,21 @@ assert "C6c: the unit is STILL installed, pinned at the invoking lane copy" \
 assert "C6d: the installer WARNS that it pinned at the invoking copy" \
     grep -qF 'pinning the boot unit at the invoking copy' "$_BU3_ERR"
 
+# `<unresolved>` says what failed but not what to do about it, and the unit the
+# operator is left with is the ephemeral one — the 203/EXEC shape. On this
+# branch the warn must therefore name the override that pins it at a stable
+# path; C5h is the negative half, on the branch where it would be wrong advice.
+assert "C6e: the warn names the REIFY_MAIN_CHECKOUT remedy" \
+    grep -qF 'set REIFY_MAIN_CHECKOUT' "$_BU3_ERR"
+
 echo ""
 echo "--- C7: FAIL-OPEN — the resolver is not present in the invoking tree ---"
 
-# Proves the `-r` source guard and the `declare -F` guard are load-bearing
-# rather than decorative: with neither the file nor the function available, the
-# function must still produce a working unit.
+# Proves the `-r` SOURCE GUARD is load-bearing rather than decorative: with the
+# file absent, the function must still produce a working unit. It says nothing
+# about what happens when the lib is present but defines nothing — `-r`
+# short-circuits before anything downstream is reached — which is why C9 exists
+# as a separate case rather than as more assertions here.
 _mk_boot_unit_fixture reify-bootfix-nolib nolib   # main shell, NOT $( )
 
 assert "C7a: NON-VACUITY — the invoking tree holds no lib_main_checkout.sh" \
@@ -1162,6 +1254,59 @@ assert "C8c: (nolib) the emitted unit carries no root-relative path" \
 
 assert "C8d: (nolib) the warn carries no root-relative path" \
     _no_root_relative_path "$_BU4_ERR"
+
+echo ""
+echo "--- C9: FAIL-OPEN — the resolver sources cleanly but defines nothing ---"
+
+# The present-but-defines-nothing state, which C7 structurally CANNOT reach:
+# there the file is absent, so the `-r` guard short-circuits and nothing
+# downstream of it is exercised at all. Here `-r` passes and the `.` succeeds,
+# and the resolution still has to come back empty without taking the function
+# down with it.
+#
+# Not a contrived state: _REIFY_LIB_MAIN_CHECKOUT_SH_SOURCED is a plain shell
+# variable, so an exported value in the ambient environment makes the REAL,
+# unmodified lib take its source-guard `return 0` before defining anything —
+# which is exactly what this fixture reproduces. A half-written lib, or one
+# whose function was renamed, lands in the same state by accident.
+#
+# WHAT THIS PINS IS THE OUTCOME, NOT WHICH GUARD PRODUCES IT — deliberately, and
+# on measurement rather than taste. Deleting install_boot_unit()'s `declare -F`
+# guard leaves this entire Part green, because
+# `$(reify_main_checkout ... 2>/dev/null || true)` already absorbs the
+# command-not-found (exit 127) into an empty string without tripping
+# `set -euo pipefail` — probed directly, both by that mutation and standalone.
+# The two call-site guards are therefore REDUNDANT here rather than layered, and
+# an assertion naming `declare -F` as the load-bearing one would be pinning
+# something false. What must hold — and what C9c-C9f pin — is that this state
+# degrades fail-open at all, whichever guard gets there first.
+_mk_boot_unit_fixture reify-bootfix-nofunc nofunc   # main shell, NOT $( )
+
+assert "C9a: NON-VACUITY — the lib IS present and readable in the invoking tree" \
+    bash -c '[ -r "$1/scripts/lib_main_checkout.sh" ]' _ "$BU_LANE"
+
+assert "C9b: NON-VACUITY — sourcing it defines no reify_main_checkout" \
+    bash -c '. "$1" >/dev/null 2>&1; ! declare -F reify_main_checkout >/dev/null 2>&1' \
+        _ "$BU_LANE/scripts/lib_main_checkout.sh"
+
+_BU5_RC=0
+_BU5_ERR="$BU_ROOT/boot.err"
+_BU5_UNIT="$BU_UNIT"
+_run_boot_unit >"$BU_ROOT/boot.out" 2>"$_BU5_ERR" || _BU5_RC=$?
+
+assert "C9c: install_boot_unit() still exits 0 when the lib defines nothing" \
+    bash -c '[ "$1" = "0" ] || { cat "$2" >&2; exit 1; }' _ "$_BU5_RC" "$_BU5_ERR"
+
+assert "C9d: the unit is STILL installed, pinned at the invoking lane copy" \
+    bash -c '[ "$(grep "^ExecStart=" "$1" | head -1)" \
+              = "ExecStart=$2/scripts/setup-agent-cache-redirect.sh --seed-only" ]' \
+        _ "$_BU5_UNIT" "$BU_LANE"
+
+assert "C9e: the installer WARNS that it pinned at the invoking copy" \
+    grep -qF 'pinning the boot unit at the invoking copy' "$_BU5_ERR"
+
+assert "C9f: the warn carries no root-relative path" \
+    _no_root_relative_path "$_BU5_ERR"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
