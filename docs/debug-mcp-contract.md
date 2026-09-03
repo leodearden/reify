@@ -228,6 +228,18 @@ difference — the stale-baseline desync (bug #7) inverted. So both handlers pus
 the returned `GuiState` via `query_frontend("apply_gui_state", …)` exactly as
 the mutating tools do; the baseline can never move past the frontend.
 
+That uniformity has a **stated cost**, self-inflicted by the choice: the
+rebuild is needed only because a pure-I/O tool routes through the seam, and the
+push is needed only because the rebuild refreshed the baseline. On a heavy
+design an AI `reify_save_file` therefore pays a full `tessellate_snapshot` plus
+material resolution, and then a frontend `engine.initFromState(…)` (store
+re-init + mesh rebuild), to write bytes already in memory. A cheap
+committed-buffer accessor would avoid both and would be safe — nothing changed,
+so nothing need be pushed — but it trades the four-tools-one-seam structure
+that §6.2 invariant (a) and task 5100's structural claim rest on, which is a
+design change rather than an optimisation. The cost has **not** been measured
+on a real (non-mock) kernel; the number belongs here once it exists.
+
 **`reify_save_file` never guesses its target.** `file_path` is the one
 OPTIONAL write-tool param, so "absent" carries the live meaning *save the
 ACTIVE file* — which makes two silent-fallback shapes reachable, and both are
@@ -320,6 +332,17 @@ A new frontend-mediated tool requires three coordinated changes:
      `gui/test/visual/assertions.ts` — each is mechanically enforced
      (parity case (c)/(f); assertions.test.ts case (a), task-5934), so
      omitting either reds the suite rather than silently drifting.
+   - the params read through a PURE extractor
+     (`reify_<tool>_params`), never bare `params["…"]` literals in the
+     handler body. The handlers need a `DebugServerState`/`AppHandle` and so
+     cannot be driven headlessly, which leaves the param NAMES they read
+     otherwise unchecked: a handler reading `params["path"]` while its
+     ToolDef advertised `output_path` would keep every guard above green
+     while every AI client got `output_path is required`.
+     `reify_write_tool_params_match_their_advertised_schemas` closes that by
+     building each tool's params object out of its own `input_schema`
+     property names (and, separately, out of just its `required` list) and
+     feeding it through the extractor the handler calls.
 
 ### Dispatch flow
 

@@ -2027,6 +2027,62 @@ fn reify_write_optional_str_param(params: &Value, field: &str) -> Result<Option<
     }
 }
 
+// ── Param extractors ──
+//
+// Each write tool's params → its handler's arguments, as a PURE function
+// rather than a run of `reify_write_str_param` calls inline in the handler.
+//
+// The handlers themselves need a `DebugServerState`/`AppHandle` and so cannot
+// be driven headlessly (see the test module's note), which left the param
+// NAMES each one reads unchecked against the schema its own `ToolDef`
+// advertises: they were bare string literals in the handler body. A handler
+// that read `"path"` while its ToolDef advertised `"output_path"` would leave
+// the schema-parity test (which only inspects `tool_defs()`), the envelope
+// test (which only calls the pure envelope fns),
+// `reify_write_params_reject_missing_fields` (which passes its OWN field
+// name) and debugParity cases (f)/(g) (names only) ALL green while every AI
+// client got `output_path is required`. Extracted here, the two halves are
+// tied together by `reify_write_tool_params_match_their_advertised_schemas`,
+// which builds each tool's params object out of its own schema's property
+// names (task #5097 δ, review finding).
+//
+// `reify_open_file`'s extractor is `open_file_path_param`, which lives beside
+// `handle_reify_open_file` because accepting BOTH spellings is what makes it
+// one funnel with the debug-native `open_file`; the table-driven test covers
+// it there.
+
+/// `reify_set_parameter` → `(cell_id, value)`. Both REQUIRED.
+pub(crate) fn reify_set_parameter_params(params: &Value) -> Result<(String, String), String> {
+    Ok((
+        reify_write_str_param(params, "cell_id")?,
+        reify_write_str_param(params, "value")?,
+    ))
+}
+
+/// `reify_update_source` → `(file_path, content)`. Both REQUIRED.
+pub(crate) fn reify_update_source_params(params: &Value) -> Result<(String, String), String> {
+    Ok((
+        reify_write_str_param(params, "file_path")?,
+        reify_write_str_param(params, "content")?,
+    ))
+}
+
+/// `reify_save_file` → the OPTIONAL save-as target; `None` means the ACTIVE
+/// file, which is why this is the one tool whose schema lists no `required`
+/// and the one extractor that must tell ABSENT from WRONG-TYPED (see
+/// [`reify_write_optional_str_param`]).
+pub(crate) fn reify_save_file_params(params: &Value) -> Result<Option<String>, String> {
+    reify_write_optional_str_param(params, "file_path")
+}
+
+/// `reify_export` → `(format, output_path)`. Both REQUIRED.
+pub(crate) fn reify_export_params(params: &Value) -> Result<(String, String), String> {
+    Ok((
+        reify_write_str_param(params, "format")?,
+        reify_write_str_param(params, "output_path")?,
+    ))
+}
+
 // ── Result envelopes ──
 //
 // Each write tool's success reply, built by a PURE function rather than inline
@@ -2182,8 +2238,7 @@ async fn handle_reify_set_parameter(
     state: &DebugServerState,
     params: Value,
 ) -> Result<Value, String> {
-    let cell_id = reify_write_str_param(&params, "cell_id")?;
-    let value = reify_write_str_param(&params, "value")?;
+    let (cell_id, value) = reify_set_parameter_params(&params)?;
 
     let gs = reify_set_parameter_on_engine_and_refresh_baseline(
         &state.engine,
@@ -2477,8 +2532,7 @@ async fn handle_reify_update_source(
     state: &DebugServerState,
     params: Value,
 ) -> Result<Value, String> {
-    let file_path = reify_write_str_param(&params, "file_path")?;
-    let content = reify_write_str_param(&params, "content")?;
+    let (file_path, content) = reify_update_source_params(&params)?;
 
     let gs = reify_update_source_on_engine_and_refresh_baseline(
         &state.engine,
@@ -2542,6 +2596,26 @@ async fn handle_reify_update_source(
 /// pushes the returned `GuiState` to the frontend rather than dropping it: a
 /// baseline refreshed from a rebuild the frontend never saw would swallow the
 /// difference.
+///
+/// # The cost of that uniformity, stated rather than assumed
+///
+/// It is not free, and it is SELF-INFLICTED by the choice above: the rebuild
+/// is needed only because a pure-I/O tool routes through the seam, and the
+/// push is needed only because the rebuild refreshed the baseline. So an AI
+/// `reify_save_file` on a heavy design pays a full `tessellate_snapshot` plus
+/// material resolution, and then a frontend `engine.initFromState(…)` (a store
+/// re-init and mesh rebuild) — to write bytes that were already in memory.
+/// A cheap committed-buffer accessor (the shape of `canonical_file_path()` /
+/// `holds_rejected_source()`) would avoid both, and would be SAFE precisely
+/// because nothing changed: leave `last_state` untouched, push nothing.
+///
+/// It is deliberately not done here. The four-tools-one-seam structure is the
+/// claim θ (task 5100) anchors on and the reason §6.2 invariant (a) needs no
+/// per-tool exception; trading it for a per-tool fast path is a design change,
+/// not an optimisation. The cost has NOT been measured on a real (non-mock)
+/// kernel — the number belongs in this doc once it exists, and until then this
+/// paragraph is the honest statement of what is being traded (task #5097 δ,
+/// review finding).
 ///
 /// **It persists the SESSION's buffer, not a caller-supplied one** — and
 /// `files[0].content` is not unconditionally the committed text: after a
@@ -2630,7 +2704,7 @@ async fn handle_reify_save_file(
     // no `required` for this tool, and omitting it means "the active file".
     // A WRONG-TYPED `file_path` is refused rather than read as absent — see
     // `reify_write_optional_str_param`.
-    let file_path = reify_write_optional_str_param(&params, "file_path")?;
+    let file_path = reify_save_file_params(&params)?;
     let gs =
         reify_save_file_on_engine_and_refresh_baseline(&state.engine, &state.last_state, file_path)
             .await?;
@@ -2681,8 +2755,7 @@ pub async fn reify_export_on_engine_and_refresh_baseline(
 /// the baseline refresh consumes, so it must reach the frontend too or the
 /// baseline advances past it.
 async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let format = reify_write_str_param(&params, "format")?;
-    let output_path = reify_write_str_param(&params, "output_path")?;
+    let (format, output_path) = reify_export_params(&params)?;
     let gs = reify_export_on_engine_and_refresh_baseline(
         &state.engine,
         &state.last_state,
@@ -5138,6 +5211,118 @@ structure def Part {
             reify_write_str_param(&json!({ "value": "120mm" }), "value"),
             Ok("120mm".to_string())
         );
+    }
+
+    /// The fifth drift surface the cluster's four guards do NOT cover: a
+    /// handler reading a param name its own `ToolDef` does not advertise.
+    ///
+    /// Every param name a handler reads is a bare string literal, and no test
+    /// can drive the handlers themselves (they need a
+    /// `DebugServerState`/`AppHandle`). So if `handle_reify_export` read
+    /// `params["path"]` while its schema advertised `output_path`, the
+    /// schema-parity test (`tool_defs()` only), the envelope test (pure
+    /// envelope fns only), `reify_write_params_reject_missing_fields` (passes
+    /// its own field name) and debugParity cases (f)/(g) (names only) would
+    /// ALL stay green while every AI client got `output_path is required`.
+    ///
+    /// This closes it from the other side: for each of the five tools, read
+    /// the property names out of ITS OWN `input_schema` and feed a params
+    /// object built from exactly those keys through the extractor the handler
+    /// actually calls. Schema and handler cannot disagree without reddening
+    /// this (task #5097 δ, review finding).
+    #[test]
+    fn reify_write_tool_params_match_their_advertised_schemas() {
+        // Each entry adapts one tool's extractor to a common shape — the
+        // RETURN values are pinned by the envelope test; what is under test
+        // here is purely which KEYS each one reads.
+        type Extract = fn(&Value) -> Result<(), String>;
+        let tools: Vec<(&str, Extract)> = vec![
+            ("reify_set_parameter", |p| {
+                reify_set_parameter_params(p).map(|_| ())
+            }),
+            ("reify_update_source", |p| {
+                reify_update_source_params(p).map(|_| ())
+            }),
+            // The funnel's shared extractor — the one `handle_reify_open_file`
+            // and `handle_open_file` both call.
+            ("reify_open_file", |p| open_file_path_param(p).map(|_| ())),
+            ("reify_save_file", |p| reify_save_file_params(p).map(|_| ())),
+            ("reify_export", |p| reify_export_params(p).map(|_| ())),
+        ];
+
+        let defs = tool_defs();
+        for (name, extract) in tools {
+            let def = defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("{name} must be advertised in tool_defs()"));
+
+            let props = def.input_schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{name}'s schema must declare properties"));
+            assert!(
+                !props.is_empty(),
+                "{name}'s schema must declare at least one property"
+            );
+
+            // (a) A call that supplies EXACTLY what the schema advertises must
+            // be accepted. This is the direction that catches a handler
+            // reading a name the schema does not carry.
+            let full: serde_json::Map<String, Value> = props
+                .keys()
+                .map(|k| {
+                    // Every advertised property on these five tools is a
+                    // string; a non-string one would need its own sample
+                    // value here, so assert the assumption rather than
+                    // silently feeding a string to an integer param.
+                    assert_eq!(
+                        def.input_schema["properties"][k]["type"].as_str(),
+                        Some("string"),
+                        "{name}.{k} is not a string param — this test's sample \
+                         value needs widening"
+                    );
+                    (k.clone(), json!("sample"))
+                })
+                .collect();
+            extract(&Value::Object(full)).unwrap_or_else(|e| {
+                panic!(
+                    "{name}: the handler refused a params object built from its \
+                     OWN advertised property names — schema and handler have \
+                     drifted: {e}"
+                )
+            });
+
+            // (b) A call that supplies exactly the schema's `required` list —
+            // and nothing more — must ALSO be accepted, or the handler is
+            // demanding a field it advertises as optional. `reify_save_file`
+            // has no `required` at all, so this feeds it `{}`: the "save the
+            // ACTIVE file" default, which must not be refused at the params
+            // boundary.
+            let required: Vec<&str> = def.input_schema["required"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let minimal: serde_json::Map<String, Value> = required
+                .iter()
+                .map(|k| ((*k).to_string(), json!("sample")))
+                .collect();
+            extract(&Value::Object(minimal)).unwrap_or_else(|e| {
+                panic!(
+                    "{name}: the handler refused a params object carrying every \
+                     REQUIRED field ({required:?}) — it is demanding a field its \
+                     schema advertises as optional: {e}"
+                )
+            });
+
+            // (c) Every name in `required` must actually BE a property, or the
+            // schema is self-contradictory and (b) proves nothing.
+            for k in &required {
+                assert!(
+                    props.contains_key(*k),
+                    "{name}: `required` names {k}, which is not among its properties"
+                );
+            }
+        }
     }
 
     /// The push-reply half of the frontend contract: `query_frontend` resolves
