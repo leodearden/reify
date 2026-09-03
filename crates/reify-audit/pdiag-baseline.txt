@@ -67,7 +67,7 @@ crates/reify-eval/src/engine_constraints.rs 1
 crates/reify-eval/src/engine_edit.rs 6
 crates/reify-eval/src/engine_eval.rs 23
 crates/reify-eval/src/geometry_ops.rs 136
-crates/reify-eval/src/modal_ops.rs 19
+crates/reify-eval/src/modal_ops.rs 21
 crates/reify-eval/src/morph_producer.rs 1
 crates/reify-eval/src/realization_content.rs 4
 crates/reify-eval/src/relate_solve.rs 3
