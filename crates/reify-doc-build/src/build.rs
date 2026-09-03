@@ -671,6 +671,18 @@ fn type_to_string(ty: &Type) -> String {
 /// production construction site, `convert_type_params`
 /// (`crates/reify-compiler/src/type_resolution.rs:3839-3852`), always builds
 /// it as `vec![]`, so a `<…>` arm here would be dead code.
+///
+/// **MIRRORED GRAMMAR — keep in sync.** `format_type_params` in
+/// `crates/reify-lsp/src/hover.rs` (task #6341) renders this same
+/// user-visible grammar (`name`, `": "` + bounds joined with `" + "`, `" = "` +
+/// default) for LSP hover and, via `format_type_alias_signature`, for
+/// completion `detail`. The two exist separately only because they consume
+/// different shapes — `reify_ir::TypeParam` here, `reify_ast::TypeParamDecl`
+/// there — and the crates have no shared home for an AST/IR-agnostic
+/// renderer. Change one and the other must change too, or hover and the
+/// generated docs will disagree about the same declaration; if a shared
+/// crate ever becomes available, hoist a single renderer parameterized over
+/// the bound-name iterator.
 fn render_type_params(params: &[reify_ir::TypeParam]) -> Vec<String> {
     params
         .iter()
