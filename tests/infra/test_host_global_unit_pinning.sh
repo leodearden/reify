@@ -19,8 +19,10 @@
 # the resolved main checkout into both ExecStarts (and the chmod that makes
 # exactly those two executables runnable), leaving every per-worktree call site
 # alone — which is what B5b/B5c pin.  Same defect class, same fix shape, as the
-# prior art in scripts/setup-agent-cache-redirect.sh:498-507,549-560, and the
-# same host convention already encoded on
+# prior art in scripts/setup-agent-cache-redirect.sh's install_boot_unit()
+# (cited by FUNCTION rather than line range, so the reference cannot rot; that
+# site was itself migrated onto this same resolver by task 6864 — Part C), and
+# the same host convention already encoded on
 # deploy/systemd/reify-warm-lane{,-gc}.service
 # (#4720): a host-global unit names the stable main checkout.
 #
