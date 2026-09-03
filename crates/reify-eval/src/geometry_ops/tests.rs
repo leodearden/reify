@@ -1724,10 +1724,11 @@
     /// Warning (measured pre-change: Bool gave `Ok(iso_level: 0.0)` + one
     /// non-Error Warning; it must now be a typed Error naming the actual type).
     /// The real source shape that reaches that `Bool` row is
-    /// `isosurface(g, adaptive: true)` — a positional-lowering quirk documented
-    /// once at the `Isosurface` arm in `geometry_ops.rs` (owner: task #6313) and
-    /// pinned end-to-end by `pattern_spacing_units_e2e.rs`'s
-    /// `skipped_optional_iso_slot_binds_adaptive_positionally`.
+    /// `isosurface(g, adaptive: true)` — a positional-lowering quirk (owner:
+    /// live task #6313) pinned end-to-end by `pattern_spacing_units_e2e.rs`'s
+    /// `skipped_optional_iso_slot_binds_adaptive_positionally`. Because that
+    /// spelling is real, the `Bool` row alone also carries a supplementary
+    /// `Severity::Info` hint naming it; see the per-row count below.
     ///
     /// The positive control that keeps this from passing vacuously is the
     /// already-shipped
@@ -1735,26 +1736,34 @@
     /// (`literal_length(0.005)` -> 0.005, zero diagnostics), which passes both
     /// before and after and is deliberately NOT duplicated here.
     ///
-    /// RED until step-4 routes a PRESENT `iso` through `required_length_arg`.
+    /// RED until step-4 routes a PRESENT `iso` through `optional_length_arg`.
     #[test]
     fn compile_geometry_op_isosurface_non_length_iso_is_rejected_not_read_as_metres() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        for (label, iso_expr) in [
+        // Third column: how many diagnostics this row must produce IN TOTAL.
+        // It is 1 everywhere except `Bool`, where the typed rejection is joined
+        // by the supplementary `Severity::Info` #6313 positional-binding hint —
+        // pinned as an exact count, per row, so a hint that started firing on
+        // the OTHER rows (where the author really did type a bare number and the
+        // hint would be noise) fails here.
+        for (label, iso_expr, expected_diagnostics) in [
             (
                 "bare Int",
                 reify_ir::CompiledExpr::literal(
                     reify_ir::Value::Int(5),
                     reify_core::Type::dimensionless_scalar(),
                 ),
+                1,
             ),
-            ("bare Real", literal_f64(5.0)),
+            ("bare Real", literal_f64(5.0), 1),
             (
                 "wrong-dimension Scalar (MASS)",
                 literal_scalar(5.0, reify_core::DimensionVector::MASS),
+                1,
             ),
-            ("Bool", literal_bool(true)),
+            ("Bool", literal_bool(true), 2),
         ] {
             let op = CompiledGeometryOp::Isosurface {
                 grid: GeomRef::Step(0),
@@ -1772,9 +1781,10 @@
                 &mut diagnostics,
             );
             // Exact equality, not a bare `is_err()`: the INVALID arm's
-            // caller-facing wording is owned solely by `required_length_arg`
-            // (D9), so pinning the string is what proves this position
-            // DELEGATES rather than forking a local message — a fork would
+            // caller-facing wording is owned solely by `length_arg_to_result`
+            // (D9), shared by both arities of the named-arg route, so pinning
+            // the string is what proves this position DELEGATES rather than
+            // forking a local message — a fork would
             // still drop the op and still satisfy `is_err()`. Mirrors the
             // `expect_err` style of the Undef sibling below, closing the arm
             // that was previously asymmetric. (Asserted on the `Err` string
@@ -1790,7 +1800,7 @@
             assert_eq!(
                 err, "missing or non-Length argument 'iso' for isosurface",
                 "{label}: the rejected-value wording is inherited from \
-                 `required_length_arg`, not forked locally"
+                 `length_arg_to_result`, not forked locally"
             );
 
             // TOTAL count first, then the filtered one. The filter alone is the
@@ -1802,10 +1812,21 @@
             // exact-count lock rather than staying asymmetric.
             assert_eq!(
                 diagnostics.len(),
+                expected_diagnostics,
+                "{label}: the typed rejection (plus, for Bool alone, the #6313 \
+                 hint) must be the ONLY diagnostics on this path — no surviving \
+                 warn-and-default Warning alongside them; got: {diagnostics:?}"
+            );
+            // Severity, not just count: the supplementary hint must never be an
+            // Error, or `reify eval` would report two failures for one bad input.
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .filter(|d| d.severity == reify_core::Severity::Error)
+                    .count(),
                 1,
-                "{label}: the typed rejection must be the ONLY diagnostic on this \
-                 path — no surviving warn-and-default Warning alongside it; \
-                 got: {diagnostics:?}"
+                "{label}: exactly ONE Error-severity diagnostic; any supplementary \
+                 hint is advisory; got: {diagnostics:?}"
             );
             let rejections: Vec<&Diagnostic> = diagnostics
                 .iter()
@@ -1831,7 +1852,7 @@
             );
 
             // Wording is inherited from `ArgRejection::message` via
-            // `required_length_arg` — the SINGLE owner (D9). No forked text.
+            // `optional_length_arg` — the SINGLE owner (D9). No forked text.
             for needle in [
                 "isosurface",
                 "iso",
@@ -1855,7 +1876,7 @@
     ///
     /// Exact equality on the message, same shape as
     /// `pattern_kind_label_in_diagnostics_is_the_dsl_builtin_name`: this wording
-    /// is owned solely by `required_length_arg`, so pinning it here proves the
+    /// is owned solely by `length_arg_to_result`, so pinning it here proves the
     /// delegation rather than a forked local message. (Asserted on the `Err`
     /// string via `expect_err` because `reify_ir::GeometryOp` is not `PartialEq`.)
     ///
@@ -1888,7 +1909,7 @@
         assert_eq!(
             err, "argument 'iso' for isosurface is unresolved (Undef)",
             "an Undef `iso` gets the DISTINCT unresolved wording owned by \
-             `required_length_arg`, not \"missing or non-Length\""
+             `length_arg_to_result`, not \"missing or non-Length\""
         );
         assert!(
             diagnostics.is_empty(),
@@ -1943,6 +1964,92 @@
             diagnostics.is_empty(),
             "an Accepted LENGTH Scalar pushes ZERO diagnostics; got: {diagnostics:?}"
         );
+    }
+
+    /// The FOURTH and last reachable `LengthArg` outcome at this position: an
+    /// ACCEPTED but NON-FINITE Length. With this test the `iso` slot pins all
+    /// four — `Length` (the `0mm` / `5mm` positive controls), `Unresolved` (the
+    /// Undef sibling), `Invalid` via `Rejected` (the four-row rejection table),
+    /// and `Invalid` via the non-finite arm here.
+    ///
+    /// It is a DIFFERENT diagnostic shape from the rejection table's, which is
+    /// why the table cannot simply grow a row: `f64::INFINITY` with a LENGTH
+    /// dimension is `Accepted` by `accept_arg` — it IS a Length, merely ±inf —
+    /// so `accept_length_value` takes its own `Severity::Warning` branch,
+    /// carries NO `DimensionedArgRejected` code, and never mints the "expects
+    /// Length, got …" text. Only the `Err` (and hence the DROP) is shared. That
+    /// un-promoted severity is a deliberate, tracked residual, not a defect
+    /// here: task 6157 owns it workspace-wide, and this test pins today's shape
+    /// so the promotion shows up as an expected diff rather than a surprise.
+    ///
+    /// Reachable from real source as `iso: 1mm / 0`. What it guards is the
+    /// obvious wrong fix: an isovalue of ±inf must DROP the op, not be handed to
+    /// marching cubes.
+    #[test]
+    fn compile_geometry_op_isosurface_non_finite_length_iso_drops_op_with_warning() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+            ("NaN", f64::NAN),
+        ] {
+            let op = CompiledGeometryOp::Isosurface {
+                grid: GeomRef::Step(0),
+                args: vec![("iso".to_string(), literal_length(si))],
+            };
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+
+            let err = match result {
+                Err(e) => e,
+                Ok(op) => panic!(
+                    "{label}: a non-finite `iso` must DROP the op rather than reach \
+                     marching cubes; got: Ok({op:?})"
+                ),
+            };
+            assert_eq!(
+                err, "missing or non-Length argument 'iso' for isosurface",
+                "{label}: the non-finite arm returns `Invalid`, so it inherits the \
+                 same `Err` wording from `length_arg_to_result`"
+            );
+
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "{label}: exactly one diagnostic — the non-finite Warning, with no \
+                 rejection alongside it; got: {diagnostics:?}"
+            );
+            assert_eq!(
+                diagnostics[0].message,
+                "argument 'iso' for isosurface evaluated to a non-finite Length",
+                "{label}: wording is owned by `accept_length_value`'s non-finite arm"
+            );
+            assert_eq!(
+                diagnostics[0].severity,
+                reify_core::Severity::Warning,
+                "{label}: today's severity — Warning, NOT the Error the Rejected \
+                 arm carries (task 6157 owns promoting it); got: {:?}",
+                diagnostics[0]
+            );
+            assert_eq!(
+                diagnostics[0].code, None,
+                "{label}: an Accepted-but-non-finite value produces no \
+                 `ArgRejection`, so there is no `DimensionedArgRejected` code to \
+                 carry; got: {:?}",
+                diagnostics[0]
+            );
+        }
     }
 
     /// Helper: build a CompiledExpr literal from a Value::Transform

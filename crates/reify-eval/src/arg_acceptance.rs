@@ -27,6 +27,17 @@
 //! analogous renderer problem in a GRID rather than a stream, and answers it the
 //! same way (`GridCoordName`, rendering `control_points[r][c].{x|y|z}`).
 //!
+//! The named-arg route has TWO ARITIES, and a new optional dimensioned slot
+//! should reuse the second rather than open-code it: `required_length_arg` (an
+//! absent arg is a diagnosed failure) and, since task 5755,
+//! `optional_length_arg` (an absent arg is `Ok(None)`, so the caller supplies
+//! its own documented default, while a PRESENT one is gated identically). Both
+//! mint their `Err` text from the same `length_arg_to_result`, so an optional
+//! slot is not a second dialect. This is an ARITY of the named-arg route, not a
+//! fourth route: the value is obtained by the same argument-name lookup +
+//! `eval_expr`, which is what "route" distinguishes above. `isosurface`'s `iso`
+//! (below) is its first caller.
+//!
 //! | family    | builtin / position                                   | task |
 //! |-----------|------------------------------------------------------|------|
 //! | pattern   | linear + 2-D spacing, arbitrary-pattern offsets, mirror-plane origin | 5214 |
@@ -36,7 +47,7 @@
 //! | curve     | `line_segment` endpoints `x1`…`z2`; `arc` centre `cx`/`cy`/`cz` + `radius`; `helix` `radius`/`pitch`/`height` | 5623 |
 //! | curve     | `interp` + `bezier` variadic coordinate triples (EVERY position); `nurbs` pole coordinates (`2 .. 2 + 3·n_points`) — via the variadic route | 5658 |
 //! | profile   | `polygon` variadic 2-D vertex pairs (EVERY position) — via the variadic route | 5661 |
-//! | surface   | `isosurface` isovalue `iso` — OPTIONAL: only a PRESENT `iso` is gated; an ABSENT one keeps a deliberate un-gated `0.0` default (decision D12; rationale at the `Isosurface` arm in `geometry_ops`), so the absent branch is NOT a residual hole | 5755 |
+//! | surface   | `isosurface` isovalue `iso` — OPTIONAL: only a PRESENT `iso` is gated; an ABSENT one keeps a deliberate un-gated `0.0` default (decision D12) — via `optional_length_arg`, so the absent branch is NOT a residual hole | 5755 |
 //! | primitive | `box` width/height/depth, `cylinder` radius/height, `sphere` radius, `tube` outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge` width/depth/height/top_width, `torus` major/minor_radius, `half_space` POINT `px`/`py`/`pz` (21 fields) | 5743 |
 //! | profile   | `rectangle` width/height, `circle` radius, `ellipse` semi_major/semi_minor (5 fields) | 5743 |
 //! | modify    | `fillet` radius, `chamfer` distance, `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset, `zone_slab` width, `offset_solid`/`offset_curve` distance (9 fields) | 5744 |
