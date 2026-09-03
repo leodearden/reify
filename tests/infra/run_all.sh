@@ -1197,6 +1197,28 @@ _H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
 _H2_CPU_ADMIT_LIB="$_H2_REPO_ROOT/scripts/cpu-admit.sh"
 _H2_LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# Git repository-environment scrub for member spawns (task #7106).
+#
+# Sourced UNCONDITIONALLY — outside the _H2_POOL_ACTIVE block below — because
+# the legacy all-serial fallback path spawns members too, and an unscrubbed
+# member there would corrupt the invoking lane's index just as readily as a
+# pooled one. Hard-required rather than fail-open for the same reason: a
+# silently-absent scrub is the exact defect this closes. run_all.sh is always
+# invoked as $SCRIPT_DIR/run_all.sh from the real tests/infra (only INFRA_DIR is
+# ever redirected at a fixture), so this path always resolves.
+#
+# git exports GIT_INDEX_FILE into every hook, it OUTRANKS `git -C`, and hermetic
+# fixtures under tests/infra build throwaway repos with `git -C "$FIX"` without
+# ever cd-ing — so an unscrubbed member writes the fixture's file list into the
+# REAL index (measured: 480763 -> 4827 bytes). See the lib's header.
+_RA_GIT_ENV_SCRUB_LIB="$_H2_REPO_ROOT/scripts/lib_git_env_scrub.sh"
+if [ ! -f "$_RA_GIT_ENV_SCRUB_LIB" ]; then
+    echo "run_all.sh: ERROR — scripts/lib_git_env_scrub.sh not found at $_RA_GIT_ENV_SCRUB_LIB" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$_RA_GIT_ENV_SCRUB_LIB"
+
 # FLAKY ledger path (task #5142): overridable for test isolation; defaults
 # under the repo's git-ignored data/verify-logs/ tree (.git/info/exclude),
 # so the default file is never accidentally committed.
@@ -1381,7 +1403,7 @@ if [ "$SCOPE" = "host-infra" ]; then
         echo ""
         echo "--- Running: $_h9_name ---"
         _h9_child_rc=0
-        bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
         if [ "$_h9_child_rc" -eq 0 ]; then
             echo "  RESULT: PASS ($_h9_name)"
         else
@@ -1446,7 +1468,7 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
             # corrupting that member's self-tests. The subset knob governs
             # only the outer/top-level discovery, never a member's own
             # nested invocations.
-            env -u REIFY_RUN_ALL_MEMBER_SUBSET \
+            reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET \
                 bash "$INFRA_DIR/$_ra_subset_base" > "$_ra_subset_tmp" 2>&1 || _ra_subset_rc=$?
             _ra_emit_sanitized "$_ra_subset_tmp" "$_ra_subset_base"
             if [ "$_ra_subset_rc" -eq 0 ]; then
@@ -1853,7 +1875,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
             slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" || _h2_slot_rc=$?
-            bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
+            reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
             fi
@@ -1890,7 +1912,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
         _h2_rc=0
-        bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_rc=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_rc=$?
         echo "$_h2_rc" > "$_H2_WORKDIR/${_h2_i}.rc"
     done
 
@@ -1921,7 +1943,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         _h2_first_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
         [ "$_h2_first_rc" -eq 0 ] && continue
         _h2_retry_rc_val=0
-        bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.retry.out" 2>&1 || _h2_retry_rc_val=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.retry.out" 2>&1 || _h2_retry_rc_val=$?
         echo "$_h2_retry_rc_val" > "$_H2_WORKDIR/${_h2_i}.retry.rc"
         _h2_retried["$_h2_name"]=1
         _h2_retry_rc["$_h2_name"]="$_h2_retry_rc_val"
@@ -2002,7 +2024,7 @@ else
         echo ""
         echo "--- Running: $basename ---"
         _ra_legacy_rc=0
-        bash "$test_file" || _ra_legacy_rc=$?
+        reify_git_env_scrub bash "$test_file" || _ra_legacy_rc=$?
         if [ "$_ra_legacy_rc" -eq 0 ]; then
             echo "  RESULT: PASS ($basename)"
         else

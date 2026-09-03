@@ -382,8 +382,47 @@ assert "F1: run_all.sh member-spawn sites found >= $_F_SPAWN_FLOOR (pattern stil
     bash -c '[ "${1:-0}" -ge "$2" ]' _ "$_F_TOTAL" "$_F_SPAWN_FLOOR"
 assert "F2: EVERY member spawn is wrapped in reify_git_env_scrub ($_F_SCRUBBED of $_F_TOTAL)" \
     bash -c '[ "${1:-0}" -eq "${2:-0}" ]' _ "$_F_SCRUBBED" "$_F_TOTAL"
-assert "F3: run_all.sh sources scripts/lib_git_env_scrub.sh" \
-    grep -qE '^[[:space:]]*(source|\.)[[:space:]].*lib_git_env_scrub\.sh"' "$RUN_ALL"
+# F3 is the END-TO-END proof the two counting arms above cannot give: run the
+# real run_all.sh over a one-member fixture INFRA_DIR under a hook-shaped
+# hostile env, and have the member report which scrubbed variables actually
+# reached it.  This subsumes a `grep` for the source line — an unsourced lib
+# makes run_all.sh exit before the member runs, which F3a catches.
+#
+# The probe's variable list is baked from REIFY_GIT_ENV_SCRUB_VARS at generation
+# time, so it widens with the list rather than pinning today's eight.
+F3_FIX="$(mktemp -d)"
+_TMPDIRS+=("$F3_FIX")
+F3_REPORT="$F3_FIX/probe-report.txt"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'exec > %q 2>&1\n' "$F3_REPORT"
+    printf 'for _v in %s; do\n' "$REIFY_GIT_ENV_SCRUB_VARS"
+    printf '    [ -n "${!_v:-}" ] && printf "LEAK %%s=%%s\\n" "$_v" "${!_v}"\n'
+    printf 'done\n'
+    printf 'printf "PROBE_RAN\\n"\n'
+    printf 'exit 0\n'
+} > "$F3_FIX/test_git_env_probe.sh"
+chmod +x "$F3_FIX/test_git_env_probe.sh"
+
+S_RUNALL=""
+_mk_repo S_RUNALL
+printf 'seed\n' > "$S_RUNALL/seed.txt"
+_clean_git -C "$S_RUNALL" add seed.txt
+
+# Hook-shaped: GIT_INDEX_FILE and only GIT_INDEX_FILE, pointed at a throwaway
+# repo (task #7106 pre-1 — never a real checkout).
+(
+    export GIT_INDEX_FILE="$S_RUNALL/.git/index"
+    bash "$RUN_ALL" "$F3_FIX" >/dev/null 2>&1
+) || true
+
+_F3_REPORT_TEXT=""
+[ -f "$F3_REPORT" ] && _F3_REPORT_TEXT="$(cat "$F3_REPORT")"
+
+assert "F3a: the fixture member actually ran under run_all.sh (guard is not vacuous)" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "PROBE_RAN"' _ "$_F3_REPORT_TEXT"
+assert "F3b: NO scrubbed variable reached the member (got: ${_F3_REPORT_TEXT//$'\n'/ | })" \
+    bash -c '! printf "%s\n" "$1" | grep -q "^LEAK "' _ "$_F3_REPORT_TEXT"
 
 # ---------------------------------------------------------------------------
 # Arm G — HOSTILE-ENV INVARIANT REGRESSION GUARD.

@@ -381,6 +381,24 @@ fi
 # shellcheck source=scripts/heavy-test-filter-lib.sh
 source "$SCRIPT_DIR/heavy-test-filter-lib.sh"
 
+# Git repository-environment scrub for infra-test EXECUTION (task #7106).
+# Provides REIFY_GIT_ENV_SCRUB_VARS / reify_git_env_scrub /
+# reify_git_env_scrub_prefix; the last is interpolated into the selective-infra
+# plan leaf below. git exports GIT_INDEX_FILE into every hook, it OUTRANKS
+# `git -C`, and tests/infra fixtures build hermetic repos with `git -C "$FIX"`
+# without ever cd-ing — so an unscrubbed member writes the fixture's file list
+# into the REAL index (measured: 480763 -> 4827 bytes). See the lib's header.
+#
+# Sourced HERE, at load time, and applied only at the test-execution leaf: the
+# scope-derivation phase legitimately reads the hook environment
+# (CHANGED_FILES_RAW comes from `git diff --cached`) and must stay untouched.
+if [ ! -f "$SCRIPT_DIR/lib_git_env_scrub.sh" ]; then
+    echo "verify.sh: ERROR — scripts/lib_git_env_scrub.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$SCRIPT_DIR/lib_git_env_scrub.sh"
+
 # Fail loudly at load time (not at a mid-run nextest parse error) if the
 # sourced constant is somehow empty — an empty REIFY_HEAVY_NEXTEST_FILTER
 # would make the REIFY_GATE_EXCLUDE_HEAVY=1 fragment below `-E "not ()"`,
@@ -3074,9 +3092,18 @@ build_plan() {
     # cf. test_run_all_ambient_isolation.sh, task 4961).
     if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         local _glob
+        # Git repository-environment scrub (task #7106), interpolated from
+        # reify_git_env_scrub_prefix so this leaf and the runner helper can never
+        # disagree about the variable set. It sits INSIDE the leaf, between the
+        # timeout and the bash it wraps — NOT in add_tool's _LD_SCRUB, which
+        # prefixes EVERY plan line and would rewrite every plan string, breaking
+        # the --print-plan byte-identity oracles (test_occt_flock_gate.sh Tests
+        # 17/17b, test_verify_scope.sh, test_occt_gated_scope.sh).
+        local _git_scrub
+        _git_scrub="$(reify_git_env_scrub_prefix)"
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m $_git_scrub bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi
