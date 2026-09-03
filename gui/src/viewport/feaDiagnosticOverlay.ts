@@ -32,6 +32,7 @@ import {
 import type { Scene } from 'three';
 import type { MeshData } from '../types';
 import type { DofDirectionInfo, FeaDiagnosticInfo } from '../types';
+import { OVERLAY_RENDER_ORDER } from './renderOrder';
 
 // ---------------------------------------------------------------------------
 // Arrow color constants
@@ -262,9 +263,6 @@ export function problemElementOutlinePositions(
 // ---------------------------------------------------------------------------
 // Overlay manager (THREE.js layer)
 // ---------------------------------------------------------------------------
-
-/** renderOrder for the overlay Group — above the default mesh layer (renderOrder 0). */
-const OVERLAY_RENDER_ORDER = 1;
 
 /** Hex colour for problem-element outline (red). */
 const PROBLEM_ELEMENT_COLOR = 0xff0000;
