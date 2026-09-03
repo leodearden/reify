@@ -22,7 +22,11 @@
 //!
 //! # What counts as a violation
 //!
-//! Three shapes, all observed in the tree:
+//! Five shapes. The first three are observed in the tree; shapes 4 and 5 have
+//! no live instance today and are closed pre-emptively, because "the gate
+//! reports a clean workspace" must not be readable as stronger than the shapes
+//! it can actually see — and shape 5 in particular is LITERALLY the dispatch
+//! form this task deleted, so a new crate could reintroduce it verbatim.
 //!
 //! 1. [`SiteKind::MatchArm`] — a string literal equal to a seed name in
 //!    PATTERN position, i.e. followed by `=>` (possibly through `|`
@@ -46,7 +50,24 @@
 //!    `&str` param" rule would inflate the ledger with entries that name no
 //!    dispatch at all.
 //!
-//! 4. [`SiteKind::UnresolvedArmHead`] — not a shape at all, but the scanner
+//! 4. [`SiteKind::EqualityTest`] — a seed name compared with `==` / `!=`
+//!    (`if name == "von_mises" { … }`), on either side of the operator. The
+//!    match arm of shape 1 written as an `if`, and lexically invisible to it:
+//!    [`match_arm_head`] walks forward from the literal, hits `{` or an ident
+//!    and DECIDES `NotArm`, so nothing downstream looks again. See
+//!    [`is_equality_operand`].
+//!
+//! 5. [`SiteKind::NameList`] — a seed name inside an array/slice of string
+//!    literals, i.e. `const PARSE_FN_NAMES: &[&str] = &["parse_length", …]`
+//!    paired with a `.contains(&name)` membership test somewhere else. That is
+//!    the exact `PARSE_FN_NAMES` / `ANALYSIS_FN_NAMES` mechanism α replaced,
+//!    and `reify-compiler`'s `units.rs` registry-vs-legacy disjointness test
+//!    covers only the slices that EXIST — a new one in a new crate would be
+//!    invisible to it. Flagged at the literals' definition site, which is the
+//!    only place the shape is lexically visible at all. See
+//!    [`is_string_array_element`].
+//!
+//! 6. [`SiteKind::UnresolvedArmHead`] — not a shape at all, but the scanner
 //!    admitting it could not decide: the arm-head walk reached end of source
 //!    without resolving `=>` (arm) or a non-pattern token (not an arm), and
 //!    nothing else claimed the literal. Reported rather than dropped, on the
@@ -76,12 +97,33 @@
 //!   string→builtin table lives.
 //! - **Anything outside `crates/*/src/`** — `tests/`, `benches/`, `examples/`
 //!   and the GUI's TypeScript are out of the seed gate's remit.
+//!
+//! # What this scan still cannot see
+//!
+//! Stated rather than left to be inferred from the absence of findings, so a
+//! later leaf does not read the gate as stronger than it is. Every entry below
+//! is a shape a determined author could use to dispatch on a seed name without
+//! tripping any rule above; none has a live instance today, and closing them
+//! is workspace-wide task ω's business, not the seed gate's:
+//!
+//! - **A macro that takes patterns.** `matches!(name, "von_mises")` puts the
+//!   literal in pattern position without a `=>` anywhere, so [`match_arm_head`]
+//!   decides `NotArm`. Same for any macro with match-like arms.
+//! - **A name that is never a literal at the dispatch site**: built by
+//!   `format!`, read from a const in another crate, or compared through a
+//!   binding (`let n = SOME_CONST; if name == n`). Purely lexical rules cannot
+//!   follow a value; only shape 3's one-hop `&str` forwarding is chased, and
+//!   only one hop.
+//! - **String methods other than `==`**: `name.starts_with("von_mises")`,
+//!   `name.eq("von_mises")`. Not swept because the method surface is open
+//!   ended; the array shape (5) covers the collection form these usually take.
 
 mod common;
 use common::workspace_root;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 // ── the ledger ──────────────────────────────────────────────────────────────
 
@@ -192,6 +234,13 @@ enum SiteKind {
     /// `eval_builtin(<that parameter>, …)` — the same defect as
     /// [`SiteKind::EvalCall`], one hop later. See [`Forwarder`].
     ForwardedEvalCall,
+    /// `name == "von_mises"` / `"von_mises" != name` — a builtin identified by
+    /// comparing a string, which is the `match` arm written as an `if`.
+    EqualityTest,
+    /// A seed name inside an array/slice of string literals — the
+    /// `const ANALYSIS_FN_NAMES: &[&str] = &[…]` + `.contains(&name)` shape.
+    /// This is LITERALLY the legacy form α deleted.
+    NameList,
     /// The arm-head walk ran off the end of the file without reaching either
     /// verdict, and no other shape claimed the literal — so the site is
     /// UNCLASSIFIED.
@@ -212,6 +261,8 @@ impl SiteKind {
             SiteKind::ForwardedEvalCall => {
                 "name string forwarded one hop into an eval_builtin call"
             }
+            SiteKind::EqualityTest => "builtin identified by a `==`/`!=` string comparison",
+            SiteKind::NameList => "name literal in a string-literal name slice",
             SiteKind::UnresolvedArmHead => {
                 "arm-head scan reached end of file undecided — site UNCLASSIFIED"
             }
@@ -566,6 +617,21 @@ fn literal_start_index(len: usize, lits: &[StrLit]) -> Vec<Option<usize>> {
     idx
 }
 
+/// The reverse of [`literal_start_index`]: `lit_start_at[i]` is `Some(start)`
+/// when a string literal ENDS at byte `i` (one past its closing quote).
+///
+/// Needed by the LEFTWARD walks — [`is_string_array_element`] steps back over
+/// a preceding element in O(1) instead of rescanning the literal list.
+fn literal_end_index(len: usize, lits: &[StrLit]) -> Vec<Option<usize>> {
+    let mut idx = vec![None; len + 1];
+    for l in lits {
+        if l.end < idx.len() {
+            idx[l.end] = Some(l.start);
+        }
+    }
+    idx
+}
+
 /// Byte-level "is this offset inside a string literal?" mask.
 fn literal_mask(len: usize, lits: &[StrLit]) -> Vec<bool> {
     let mut mask = vec![false; len + 1];
@@ -701,6 +767,78 @@ fn is_eval_call(code: &[u8], lit_start: usize) -> bool {
         }
     }
     &code[start..paren] == b"eval_builtin"
+}
+
+/// Is the literal spanning `lit_start..lit_end` an operand of a `==` / `!=`
+/// comparison — `if name == "von_mises"`, or the mirrored
+/// `if "von_mises" != name`?
+///
+/// The `match`-arm shape written as an `if`, and lexically invisible to
+/// [`match_arm_head`]: the walk from the literal's end hits `{` (or the ident)
+/// and DECIDES `NotArm`, so nothing downstream ever looks again.
+///
+/// Both neighbours are checked because either side may hold the literal. The
+/// two-byte test is exact rather than "contains `=`": a bare `=` is
+/// assignment (`let n = "von_mises";`, not dispatch), `=>` is a match arm
+/// (already classified), and `<=` / `>=` are orderings whose second byte is
+/// `=` but whose first is not.
+fn is_equality_operand(code: &[u8], lit_start: usize, lit_end: usize) -> bool {
+    // ── `<expr> == "seed"` ──────────────────────────────────────────────────
+    let mut i = lit_start;
+    while i > 0 && code[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i >= 2 && code[i - 1] == b'=' && (code[i - 2] == b'=' || code[i - 2] == b'!') {
+        return true;
+    }
+
+    // ── `"seed" == <expr>` ──────────────────────────────────────────────────
+    let mut j = lit_end;
+    while j < code.len() && code[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    j + 1 < code.len() && (code[j] == b'=' || code[j] == b'!') && code[j + 1] == b'='
+}
+
+/// Is the literal starting at `lit_start` an element of an array/slice literal
+/// whose elements up to that point are all string literals — the
+/// `&["parse_length", "parse_length_r"]` shape?
+///
+/// This is the one that matters most: `const PARSE_FN_NAMES: &[&str] = &[…]`
+/// plus a `.contains(&name)` membership test is EXACTLY the legacy dispatch
+/// form this task deleted, and it is invisible to every other rule here (each
+/// literal is followed by `,` or `]`, so the arm-head walk decides `NotArm`).
+/// The literals live at the DEFINITION, so flagging the array closes the shape
+/// wherever the membership test is later written.
+///
+/// The walk is leftward from the literal over whitespace, `,` separators and
+/// whole preceding string literals; anything else — an ident, `(`, `{` — is a
+/// decided no. That keeps `eval_builtin("von_mises", &[tensor])` and
+/// `[("von_mises", 1), …]` out (both hit `(` or an ident immediately), at the
+/// cost of also flagging a string-keyed index expression `m["von_mises"]`.
+/// That over-report is deliberate and in this file's usual direction: a
+/// string-keyed map lookup on a builtin name IS the dispatch shape the gate
+/// exists to catch.
+fn is_string_array_element(code: &[u8], lit_start_at: &[Option<usize>], lit_start: usize) -> bool {
+    let mut i = lit_start;
+    loop {
+        while i > 0 && code[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 {
+            return false;
+        }
+        // A preceding element: step over the whole literal in one jump.
+        if let Some(start) = lit_start_at[i] {
+            i = start;
+            continue;
+        }
+        match code[i - 1] {
+            b'[' => return true,
+            b',' => i -= 1,
+            _ => return false,
+        }
+    }
 }
 
 // ── one-hop `&str` forwarding ───────────────────────────────────────────────
@@ -1100,6 +1238,7 @@ fn classify_text(
     let (mut code, lits) = strip_comments_and_collect_literals(src);
     mask_cfg_test_blocks(&mut code, &lits);
     let lit_end_at = literal_start_index(code.len(), &lits);
+    let lit_start_at = literal_end_index(code.len(), &lits);
     let forwarded = forwarded_literal_starts(&code, &lit_end_at, forwarders);
 
     let mut sites = Vec::new();
@@ -1122,6 +1261,10 @@ fn classify_text(
             SiteKind::EvalCall
         } else if forwarded.contains(&lit.start) {
             SiteKind::ForwardedEvalCall
+        } else if is_equality_operand(&code, lit.start, lit.end) {
+            SiteKind::EqualityTest
+        } else if is_string_array_element(&code, &lit_start_at, lit.start) {
+            SiteKind::NameList
         } else if arm == ArmHead::Inconclusive {
             SiteKind::UnresolvedArmHead
         } else {
@@ -1214,12 +1357,33 @@ fn seed_names() -> BTreeSet<String> {
         .collect()
 }
 
+/// The workspace sweep, run ONCE per test binary.
+///
+/// The three gate tests below all need the same sweep, and [`scan`] makes two
+/// full passes over every `crates/*/src/**/*.rs` (forwarder discovery, then
+/// classification), re-reading and re-lexing each file — so a per-test call
+/// meant six full-workspace sweeps per binary.
+///
+/// Memoising is sound because BOTH of `scan`'s inputs are fixed for the whole
+/// binary: [`workspace_root`] is a constant path, and [`seed_names`] is derived
+/// from the immutable `rows()` table, so there is no second key a later τ could
+/// widen without widening the table itself. `OnceLock` also makes the shared
+/// sweep safe under the test harness's default parallel threads.
+///
+/// The fixture-driven scanner tests deliberately do NOT go through this: they
+/// call [`classify_text`] / [`find_forwarders_in`] on synthetic sources, which
+/// is what keeps the scanner's own behaviour pinned against fixtures rather
+/// than against whatever the tree happens to contain.
+fn workspace_sites() -> &'static [Site] {
+    static SITES: OnceLock<Vec<Site>> = OnceLock::new();
+    SITES.get_or_init(|| scan(&workspace_root(), &seed_names()))
+}
+
 // ── the gate ────────────────────────────────────────────────────────────────
 
 #[test]
 fn no_unledgered_seed_name_string_dispatch_outside_reify_builtins() {
-    let root = workspace_root();
-    let sites = scan(&root, &seed_names());
+    let sites = workspace_sites();
 
     let unledgered: Vec<&Site> = sites
         .iter()
@@ -1256,8 +1420,7 @@ fn no_unledgered_seed_name_string_dispatch_outside_reify_builtins() {
 /// rather than hiding it.
 #[test]
 fn every_ledger_entry_names_a_site_that_still_exists() {
-    let root = workspace_root();
-    let sites = scan(&root, &seed_names());
+    let sites = workspace_sites();
 
     let stale: Vec<String> = SEED_STRING_DISPATCH_LEDGER
         .iter()
@@ -1294,8 +1457,7 @@ fn every_ledger_entry_names_a_site_that_still_exists() {
 /// So each is asserted on its own, with a message naming its own cause.
 #[test]
 fn the_scan_still_finds_every_ledgered_site() {
-    let root = workspace_root();
-    let sites = scan(&root, &seed_names());
+    let sites = workspace_sites();
 
     // (a) Pair-level agreement — the granularity the ledger actually models.
     let found: BTreeSet<(&str, &str)> = sites
@@ -1321,7 +1483,7 @@ fn the_scan_still_finds_every_ledgered_site() {
     //     gate is pair-keyed by design, so this is the only place the addition
     //     surfaces.
     let mut by_pair: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
-    for site in &sites {
+    for site in sites {
         by_pair
             .entry((site.file.as_str(), site.name.as_str()))
             .or_default()
@@ -1572,6 +1734,74 @@ fn dispatch(name: &str, args: &[Value]) -> Value {
         found, expected,
         "a guarded arm, an or-pattern alternative, and an eval_builtin call \
          must all be recognised"
+    );
+}
+
+/// The two shapes with no live instance in the tree — an `==` comparison and a
+/// `&[&str]` name slice — are recognised, and the near-miss shapes that sit
+/// next to them are NOT.
+///
+/// Pinned against a fixture precisely because the tree contains neither: run
+/// only over the workspace, these two rules could silently stop matching and
+/// every gate test would still pass. The near-miss half matters just as much —
+/// a rule that flagged `let n = "von_mises";` or `eval_builtin("von_mises",
+/// &[t])`'s argument slice would push noise into the ledger and train readers
+/// to widen it.
+#[test]
+fn equality_and_name_slice_shapes_are_recognised_and_near_misses_are_not() {
+    let src = r###"
+const ANALYSIS_FN_NAMES: &[&str] = &["von_mises", "principal_stresses"];
+
+fn ladder(name: &str, args: &[Value]) -> Value {
+    if name == "max_shear" {
+        return reduce(args);
+    }
+    if "safety_factor" != name && ANALYSIS_FN_NAMES.contains(&name) {
+        return reduce(args);
+    }
+    // Near misses: an assignment, a call argument, and a tuple element.
+    let label = "parse_length";
+    note(label, "parse_length_r", &[args.len()]);
+    let table = [("stress_invariants", 1)];
+    dispatch(table, label)
+}
+"###;
+    let names: BTreeSet<String> = [
+        "von_mises",
+        "principal_stresses",
+        "max_shear",
+        "safety_factor",
+        "parse_length",
+        "parse_length_r",
+        "stress_invariants",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+
+    let mut found: Vec<(String, SiteKind)> = classify_text("fixture.rs", src, &[], &names)
+        .into_iter()
+        .map(|s| (s.name, s.kind))
+        .collect();
+    found.sort();
+
+    let mut expected = vec![
+        // The slice's two elements — the `PARSE_FN_NAMES` shape α deleted.
+        ("von_mises".to_string(), SiteKind::NameList),
+        ("principal_stresses".to_string(), SiteKind::NameList),
+        // `name == "max_shear"`, and the mirrored `"safety_factor" != name`.
+        ("max_shear".to_string(), SiteKind::EqualityTest),
+        ("safety_factor".to_string(), SiteKind::EqualityTest),
+    ];
+    expected.sort();
+
+    assert_eq!(
+        found, expected,
+        "an `==`/`!=` comparison on either side and every element of a \
+         string-literal name slice must be flagged \u{2014} while a plain \
+         assignment (`let label = \"parse_length\"`), an ordinary call \
+         argument (\"parse_length_r\") and a tuple element \
+         (\"stress_invariants\") must not be"
     );
 }
 
