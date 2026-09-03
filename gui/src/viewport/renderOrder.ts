@@ -1,5 +1,6 @@
 /**
- * The viewport's draw-order ladder, and the source of truth for its HELPER tier.
+ * The viewport's draw-order ladder, and the source of truth for every tier this
+ * codebase sets.
  *
  * three.js sorts a render list by `renderOrder` BEFORE `z` — in both
  * `painterSortStable` (opaque pass) and `reversePainterSortStable` (transparent
@@ -12,11 +13,12 @@
  *
  * ## What this module owns
  *
- * All four tiers are defined here and imported at their use sites:
+ * Every tier this codebase controls is defined here — the mesh tier at 0 is
+ * three.js's default, not one of ours — and each is imported at its use site:
  * `meshManager.ts` imports `UNDERLAY_RENDER_ORDER` and `feaDiagnosticOverlay.ts`
  * imports `OVERLAY_RENDER_ORDER`, so this module is the single source of truth
- * for the whole ladder — `renderOrder.test.ts` asserts directly against the
- * real symbols, not a scan of the modules that use them.
+ * for every renderOrder the viewport sets — `renderOrder.test.ts` asserts
+ * directly against the real symbols, not a scan of the modules that use them.
  *
  * ## The invariant this tier exists to enforce (#6587, #4214)
  *
