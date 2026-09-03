@@ -1484,39 +1484,52 @@ structure SphereCheck {
 /// below the `1mm` (1e-3 m) bound (1.61x inside) → used by BT7 to verify
 /// `Satisfied`.
 ///
-/// **Single source of truth for these numbers.** The other sites that depend on
-/// them — `crates/reify-cli/tests/fixtures/representation_within_satisfied.ri`
-/// and its gate `crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs` —
-/// point here rather than restating the digits, so retuning this constant cannot
-/// leave a stale copy behind. BT7's pre-condition below is the only
-/// machine-checked copy.
+/// **Single source of truth for the 8-point measured table below and the
+/// wall-clock choice rationale.** The other sites that depend on the table —
+/// `crates/reify-cli/tests/fixtures/representation_within_satisfied.ri` and
+/// its gate `crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs` —
+/// point here rather than restating the digits, so retuning this constant
+/// cannot leave a stale copy behind. BT7's pre-condition below is the only
+/// machine-checked copy. This comment does not own the MECHANISM behind these
+/// numbers — the staircase model, the tread/tooth ratios, their periods, and
+/// the OCCT internal constants that produce them are owned by PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 and are
+/// cited, not restated, below. Nor does it own the fixture-facing margin
+/// narrative for the 1.61x figure (the drift canary, the "adequate but not far
+/// below" caution) — that lives on the "#precision and the
+/// RepresentationWithin margin" note in
+/// `crates/reify-cli/tests/fixtures/dfm_with_repr_within.ri`; 1.61x appears
+/// below only because BT7's assertions consume it directly.
 ///
 /// Measured achieved facet-chord deviation on the 1 m sphere, by requested
 /// deflection (each value reproduced on a second independent run):
 ///
 /// ```text
 ///   0.10mm → 2.078e-4    0.35mm → 7.271e-4    0.49mm → 1.013e-3  VIOLATES
-///   0.25mm → 5.198e-4    0.48mm → 9.988e-4    0.50mm → 3.807e-4  (off-trend)
+///   0.25mm → 5.198e-4    0.48mm → 9.988e-4    0.50mm → 3.807e-4  (tooth)
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
-/// Every point except 0.50mm sits at 2.067x-2.081x the requested deflection — a
-/// 0.65% spread, i.e. very close to LINEAR. (An earlier revision of this doc
-/// called the curve a "sawtooth" that swings ~3x between adjacent values; no
-/// measurement here supports that, and it is corrected rather than repeated.)
-/// The linear trend puts the 1e-3 m bound crossing at ~0.4815mm, which is what
-/// makes 0.49mm and 0.51mm violate. 0.50mm is the one measured exception at
-/// 0.76x; OCCT meshes each edge into an INTEGER segment count, so isolated steps
-/// like it are possible and linearity is not guaranteed outside the measured
-/// range — re-measure rather than extrapolate far. BT7's pre-condition carries
-/// the recipe.
+/// Per PRD §2's staircase model, seven of these eight points sit on the
+/// ~2.075x tread branch (measured 2.067x-2.081x the requested deflection);
+/// exactly one, 0.50mm → 3.807e-4, sits at 0.7614x, closely matching the PRD's
+/// ~0.758x tooth branch. That model explains all eight points with no
+/// exceptions — the measurement and the OCCT internal-constant citations
+/// behind it live in PRD §2 and are not re-derived here.
 ///
-/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper to
-/// tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves with
-/// machine load) and still passes, as do both its measured neighbours, so there
-/// is no cliff within ±17%. The faster 0.48mm/0.50mm were rejected: 0.48mm clears
-/// the bound by only 0.12%, and 0.50mm passes only as an isolated off-trend point
-/// with violations on both sides.
+/// 0.50mm is therefore not an isolated off-trend outlier but the PRD's
+/// documented, recurrent, periodic downward tooth. It is still rejected as a
+/// precision choice, but on the correct ground: a point on a tooth clears the
+/// bound only because of where the tooth happens to sit relative to it, so its
+/// pass is phase-dependent and not reproducible under drift, unlike a tread
+/// point's margin.
+///
+/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper
+/// to tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves
+/// with machine load) and still passes, as do both its measured neighbours,
+/// 0.25mm and 0.35mm. The faster 0.48mm/0.50mm were rejected: 0.48mm clears
+/// the bound by only 0.12%, and 0.50mm passes only by sitting on a tooth, with
+/// tread-branch violations on both sides.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
