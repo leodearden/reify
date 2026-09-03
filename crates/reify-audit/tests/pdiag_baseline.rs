@@ -8,8 +8,10 @@
 //! `RatchetVerdict` variants carry deltas, not a complete census.
 //!
 //! So `pdiag` exposes exactly one extra seam for the generator,
-//! [`reify_audit::pdiag::live_counts`], and the generator is a thin renderer
-//! over it. That is the PRD §6.6 "derivation lives in ONE place" invariant,
+//! [`reify_audit::pdiag::live_counts`] — taken by the generator through
+//! [`reify_audit::pdiag::census_summary`], which is that same census plus the
+//! swept-file total the generator refuses on — and the generator is a thin
+//! renderer over it. That is the PRD §6.6 "derivation lives in ONE place" invariant,
 //! mirroring how `ptodo-baseline-gen` calls `ptodo::fingerprint` rather than
 //! re-deriving fingerprints: generation and enforcement read the SAME scan, so
 //! a regenerated baseline can never disagree with the ratchet that checks it.
@@ -283,6 +285,47 @@ fn live_counts_is_blind_to_the_committed_baseline() {
 fn an_empty_tree_yields_an_empty_census() {
     let tmp = tempfile::tempdir().expect("tempdir");
     assert_eq!(Fixture::new(tmp.path()).counts(), BTreeMap::new());
+}
+
+#[test]
+fn census_summary_reports_swept_files_alongside_the_counts() {
+    // The generator's degenerate-census refusal keys on `swept`, so the two
+    // facts must be separable: a tree whose every diagnostic already carries a
+    // code is CLEAN (rows: none, swept: non-zero) and its zero-row manifest is
+    // the end state the ratchet is aimed at — writing it must stay possible.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
+    fx.write("crates/reify-eval/src/coded.rs", &coded_src(4));
+    fx.write("crates/reify-eval/src/clean.rs", "pub fn nothing() {}\n");
+
+    let (swept, counts) = fx.summary();
+    assert_eq!(swept, 2, "both in-scope files were swept even though neither has a row");
+    assert_eq!(counts, BTreeMap::new());
+    assert_eq!(counts, fx.counts(), "census_summary's map IS live_counts");
+}
+
+#[test]
+fn census_summary_reports_zero_swept_when_the_enumeration_comes_back_empty() {
+    // `RealGitOps::ls_files` degrades to `vec![]` on ANY git failure, and the
+    // generator's recipe redirects stdout over the committed manifest — so this
+    // is the exact state in which emitting a header-only file would WIPE the
+    // ratchet's own baseline. `swept == 0` is the signal it refuses on.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    assert_eq!(Fixture::new(tmp.path()).summary().0, 0);
+}
+
+#[test]
+fn tracked_files_all_out_of_scope_report_zero_swept() {
+    // "Swept" is post-scope, not raw `ls_files` output: a tree that tracks only
+    // out-of-scope paths censused nothing, and the generator must treat it the
+    // same as an enumeration failure rather than render an empty manifest.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
+    fx.write("crates/reify-eval/tests/harness.rs", &codeless_src(3));
+    fx.write("scripts/helper.rs", &codeless_src(3));
+    fx.write("crates/reify-eval/src/notes.md", &codeless_src(3));
+
+    assert_eq!(fx.summary().0, 0);
 }
 
 // -----------------------------------------------------------------------

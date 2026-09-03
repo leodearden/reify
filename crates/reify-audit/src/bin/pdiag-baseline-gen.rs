@@ -1,8 +1,9 @@
 //! `pdiag-baseline-gen` — the SINGLE canonical regenerator for
 //! `crates/reify-audit/pdiag-baseline.txt` (task #5405, PRD §6.6/§7).
 //!
-//! It is a thin renderer over `pdiag::live_counts` — the exact census
-//! `pdiag::check` diffs against this manifest. Using ONE Rust derivation for
+//! It is a thin renderer over `pdiag::census_summary` (`pdiag::live_counts`
+//! plus the swept-file total) — the exact census `pdiag::check` diffs against
+//! this manifest. Using ONE Rust derivation for
 //! both generation and enforcement is what makes drift structurally
 //! impossible: a freshly regenerated baseline is, by construction, one the
 //! ratchet accepts. (The same reason `ptodo-baseline-gen` calls
@@ -23,8 +24,18 @@
 //! spelling of "clean". Diagnostics go to stderr; stdout is the manifest and
 //! nothing else.
 //!
-//! Always exits 0: this tool reports the tree, it does not judge it. Judging is
-//! `reify-audit --pattern PDIAG`'s job.
+//! Exit codes: `0` on a census that reached at least one swept file — this tool
+//! reports the tree, it does not judge it, so a big backlog still exits 0
+//! (judging is `reify-audit --pattern PDIAG`'s job). `2` on a bad argument.
+//! `3` on a DEGENERATE census: `git ls-files` reached zero swept files, so
+//! stdout stays empty and the recipe above cannot truncate the ratchet's own
+//! manifest to a header-only file. `RealGitOps::ls_files` degrades to an empty
+//! list on ANY git failure — spawn error, non-zero exit, non-UTF-8 output — so
+//! without that branch, running this outside the worktree or with a mistyped
+//! `--project-root` would silently wipe the baseline and still exit 0. The
+//! symmetric guard on the enforcement side is `pdiag::check`'s
+//! `pdiag-census-empty` High; both halves of the ratchet now fail loud when
+//! their census vanishes.
 //!
 //! **Regenerating is not a remediation.** Rerunning this after adding a
 //! code-less diagnostic simply re-blesses it. The remediation triad — attach a
@@ -88,9 +99,29 @@ fn main() {
         producer_branch: None,
     };
 
-    // `live_counts` already omits zero-count files and yields ascending path
-    // order, which is exactly the manifest's grammar — hence "thin renderer".
-    let counts = reify_audit::pdiag::live_counts(&ctx);
+    // `census_summary` is `live_counts` plus the swept-file count: the counts
+    // already omit zero-count files and yield ascending path order, which is
+    // exactly the manifest's grammar — hence "thin renderer" — while `swept`
+    // is what distinguishes a clean tree from a census that never happened.
+    let (swept, counts) = reify_audit::pdiag::census_summary(&ctx);
+
+    // The generator's half of the fail-loud-on-a-vanished-census posture.
+    // Checked BEFORE anything reaches stdout: the documented recipe redirects
+    // stdout over the committed manifest, and the shell truncates that file
+    // before this process even starts, so "print a header and exit 0" IS the
+    // wipe. `swept == 0` is the only degenerate case — an empty `counts` with a
+    // real sweep is a clean tree, and a clean tree's zero-row manifest is the
+    // end state the ratchet is aimed at.
+    if swept == 0 {
+        eprintln!(
+            "pdiag-baseline-gen: git enumeration returned no swept files — refusing to \
+             emit a manifest that would truncate crates/reify-audit/pdiag-baseline.txt \
+             to its header. Check that the run is inside the git worktree, that \
+             --project-root ({project_root:?}) points at it, and that `git ls-files` \
+             succeeds there; regenerate only once enumeration works again."
+        );
+        std::process::exit(3);
+    }
 
     // Both halves — the census AND the `#` preamble plus row rendering — are
     // the library's, so this binary owns no derivation of the manifest format
@@ -103,7 +134,7 @@ fn main() {
 
     let sites: u32 = counts.values().sum();
     eprintln!(
-        "pdiag-baseline-gen: {} file(s), {sites} code-less site(s)",
+        "pdiag-baseline-gen: {swept} swept file(s), {} with rows, {sites} code-less site(s)",
         counts.len()
     );
 }

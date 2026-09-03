@@ -212,7 +212,12 @@ added a site. Neither is remedied by (a)/(b)/(c):
 - **`pdiag-census-empty`** — `git ls-files` returned no swept files while the
   manifest still holds rows. Almost always the run was not inside the git
   worktree, or `git` itself failed there. Fix the invocation; regenerating
-  against a broken census would wipe the manifest.
+  against a broken census would wipe the manifest. The generator refuses that
+  wipe rather than relying on this warning: `pdiag-baseline-gen` exits **3**
+  and writes nothing to stdout when its own census reaches zero swept files,
+  so the redirect in (c) cannot truncate the baseline to its header. (The
+  shell truncates the target *before* the process starts, so an exit-0
+  header-only render would already have been the damage.)
 
 Both are deliberately High rather than advisory. The ratchet has two inputs —
 the manifest and the census — and when either goes missing *wholesale* the

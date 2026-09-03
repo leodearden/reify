@@ -1049,8 +1049,37 @@ fn empty_census_finding(rows: usize) -> Finding {
 ///
 /// Deliberately blind to the manifest: the census must be reconstructible from
 /// the tree alone, or the generator could never regenerate from scratch.
+///
+/// The count-only face of [`census_summary`], which is what the generator now
+/// calls: it needs the swept-file total as well, to refuse rather than render
+/// over the manifest when the enumeration comes back empty.
+// G-allow: the census seam's count-only face — consumed by tests/pdiag_baseline.rs (seam + on-demand byte-identity checks) and pdiag::test_support::Fixture::counts; the generator takes census_summary, whose swept total its degenerate-census refusal needs
 pub fn live_counts(ctx: &AuditContext) -> BTreeMap<String, u32> {
-    census(ctx).counts
+    census_summary(ctx).1
+}
+
+/// [`live_counts`], plus the number of swept files the enumeration actually
+/// reached — the fact that tells "the tree is clean" apart from "the census
+/// never happened".
+///
+/// Exists because BOTH halves of the ratchet have to fail loud on a vanished
+/// census, not just [`check`]. [`crate::RealGitOps::ls_files`] degrades to
+/// `vec![]` on any git failure, and the generator's documented recipe redirects
+/// stdout straight over the committed manifest
+/// (`… > crates/reify-audit/pdiag-baseline.txt`) — so a run outside the
+/// worktree, with a mistyped `--project-root`, or against a broken `git` would
+/// otherwise render a header-only file over the ratchet's own manifest and exit
+/// 0. `src/bin/pdiag-baseline-gen.rs` refuses on `swept == 0` for exactly the
+/// reason [`empty_census_finding`] is a High rather than a pile of orphan-row
+/// advisories.
+///
+/// The count is swept files, not counted ones: a tree whose every diagnostic
+/// already carries a code is clean and yields an empty map with a non-zero
+/// sweep, which is a legitimate manifest (the end state the ratchet is aimed
+/// at) and must stay writable.
+pub fn census_summary(ctx: &AuditContext) -> (usize, BTreeMap<String, u32>) {
+    let Census { swept, counts } = census(ctx);
+    (swept, counts)
 }
 
 /// Render a census as the manifest's bytes: [`BASELINE_HEADER`], then one
@@ -1196,7 +1225,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 #[cfg(any(test, feature = "test-support"))]
 // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
 pub mod test_support {
-    use super::{BASELINE_PATH, check, live_counts};
+    use super::{BASELINE_PATH, census_summary, check, live_counts};
     use crate::{AuditContext, Finding, MockGitOps, MockJCodemunchOps, Severity};
     use rusqlite::Connection;
     use std::collections::{BTreeMap, HashMap};
@@ -1263,6 +1292,13 @@ pub mod test_support {
         // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
         pub fn counts(&self) -> BTreeMap<String, u32> {
             self.with_ctx(live_counts)
+        }
+
+        /// [`census_summary`] over this tree — [`counts`](Self::counts) plus the
+        /// swept-file total the generator's degenerate-census refusal keys on.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn summary(&self) -> (usize, BTreeMap<String, u32>) {
+            self.with_ctx(census_summary)
         }
 
         /// [`check`] over this tree — the detector end to end.
