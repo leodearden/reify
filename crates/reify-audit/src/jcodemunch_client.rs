@@ -484,11 +484,47 @@ fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
 /// it with a bare `.as_u64()` would then silently drop the whole row in a
 /// `filter_map` adapter (`changed_symbols_from_wire`, `dead_symbols_from_wire`)
 /// — turning a version-drift grammar change into a silently-empty result,
-/// exactly the failure mode this module exists to avoid. Returns `None` when
-/// the field is absent or is neither a number nor a string parseable as `u64`.
+/// exactly the failure mode this module exists to avoid.
+///
+/// An INTEGRAL, non-negative FLOAT counts as a number here, in both its
+/// JSON-number and its string spelling. `serde_json`'s `as_u64()` returns
+/// `None` for any f64-backed number however integral its value, and
+/// `coerce_value` produces exactly that for a `float`-typed column — so a
+/// wire that types `line` as `float` (or writes `99.0` under a type-less
+/// spec) would otherwise read as ABSENT. That is worse than a dropped row
+/// here: every caller collapses `None` to `.unwrap_or(0)`, and `0` is the
+/// documented "the wire never emitted a `line` column" sentinel that
+/// [`stale_decl_line_diagnostic`] partitions its remedy on — so a present,
+/// correct column would have been diagnosed as a grammar drift. See
+/// `changed_symbols_from_wire_reads_an_integral_float_line_column`.
+///
+/// The widening stays BOUNDED — a negative, fractional, or non-numeric
+/// value is still `None` rather than being rounded or saturated into a
+/// plausible-looking line number, since inventing a location is the one
+/// failure this module's neutral-answer discipline refuses. Returns `None`
+/// when the field is absent, or is present but not a non-negative whole
+/// number in any of those spellings.
 fn row_u64(row: &Value, key: &str) -> Option<u64> {
     let v = row.get(key)?;
-    v.as_u64().or_else(|| v.as_str()?.parse().ok())
+    if let Some(n) = v.as_u64() {
+        return Some(n);
+    }
+    if let Some(f) = v.as_f64() {
+        // A JSON number that is not a `u64`: integral and in range, or nothing.
+        return u64_from_integral_f64(f);
+    }
+    let s = v.as_str()?.trim();
+    s.parse::<u64>()
+        .ok()
+        .or_else(|| s.parse::<f64>().ok().and_then(u64_from_integral_f64))
+}
+
+/// `Some(f as u64)` when `f` is a non-negative whole number representable as
+/// a `u64`, `None` otherwise. Split out of [`row_u64`] because the same test
+/// applies to a JSON number and to a float-shaped string, and the two must
+/// not drift.
+fn u64_from_integral_f64(f: f64) -> Option<u64> {
+    (f.is_finite() && f.fract() == 0.0 && f >= 0.0 && f <= u64::MAX as f64).then_some(f as u64)
 }
 
 /// Read an `f64` field from a MUNCH row, tolerating both a JSON number and a
@@ -1820,6 +1856,83 @@ mod tests {
         assert_eq!(symbols[0].name, "widget");
         assert_eq!(symbols[0].file, "a.rs");
         assert_eq!(symbols[0].line, 99);
+    }
+
+    /// A `line` column typed `float` on the wire, or written float-shaped
+    /// under a type-less spec, is PRESENT and CORRECT — it must not be
+    /// reported as an omitted column.
+    ///
+    /// `coerce_value` routes `ColType::Float` through
+    /// `serde_json::Number::from_f64`, and `serde_json`'s `as_u64()`
+    /// returns `None` for an f64-backed number no matter how integral its
+    /// value is. Before this widening, `row_u64` fell through to
+    /// `as_str()` (also `None` for a number) and returned `None`; the call
+    /// site's `.unwrap_or(0)` then produced the SAME `0` that means "the
+    /// wire never emitted a `line` column", and
+    /// `stale_decl_line_diagnostic` told the operator to expect a grammar
+    /// drift that had not happened. That defeats exactly the remedy split
+    /// `stale_decl_line_diagnostic_splits_its_remedy_by_cause` exists to
+    /// guarantee.
+    #[test]
+    fn changed_symbols_from_wire_reads_an_integral_float_line_column() {
+        // Explicitly `float`-typed: a JSON number `serde_json` stores as f64.
+        let typed = concat!(
+            "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:added_symbols:name|file|line:str|str|float\n",
+            "t,widget,a.rs,99\n",
+        );
+        let v = munch_decode(typed).expect("decode float-typed added_symbols munch");
+        assert!(
+            v["added_symbols"][0]["line"].as_u64().is_none(),
+            "premise: an f64-backed JSON number has no as_u64(); got {:?}",
+            v["added_symbols"][0]["line"]
+        );
+        let symbols = changed_symbols_from_wire(&v);
+        assert_eq!(symbols.len(), 1, "the row must survive; got {symbols:?}");
+        assert_eq!(
+            symbols[0].line, 99,
+            "a float-typed but integral `line` is a REPORTED line, not the \
+             `0` no-line sentinel; got {symbols:?}"
+        );
+
+        // Float-SHAPED under a type-less spec: arrives as the string "99.0",
+        // which `parse::<u64>()` alone rejects.
+        let typeless = concat!(
+            "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:added_symbols:name|file|line\n",
+            "t,widget,a.rs,99.0\n",
+        );
+        let v2 = munch_decode(typeless).expect("decode type-less added_symbols munch");
+        let symbols2 = changed_symbols_from_wire(&v2);
+        assert_eq!(symbols2.len(), 1, "the row must survive; got {symbols2:?}");
+        assert_eq!(
+            symbols2[0].line, 99,
+            "a float-shaped string line must decode too; got {symbols2:?}"
+        );
+
+        // The widening stays BOUNDED: a value that is genuinely not a
+        // non-negative whole number still falls back to the `0` sentinel
+        // rather than being rounded into a plausible-looking line number.
+        for bad in ["abc", "-5", "99.5"] {
+            let row = json!({ "name": "widget", "file": "a.rs", "line": bad });
+            assert_eq!(
+                row_u64(&row, "line"),
+                None,
+                "{bad:?} is not a usable 1-based line number"
+            );
+        }
+        assert_eq!(
+            row_u64(&json!({ "line": -5 }), "line"),
+            None,
+            "a negative JSON number is not a usable 1-based line number"
+        );
+        assert_eq!(
+            row_u64(&json!({ "line": 99.5 }), "line"),
+            None,
+            "a non-integral JSON number is not a usable 1-based line number"
+        );
     }
 
     /// The other half of the same tolerance contract: `line` is OPTIONAL.
