@@ -2820,6 +2820,55 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
     }
 }
 
+/// Read the per-material hysteretic loss factor η off a material value.
+///
+/// `Some(η)` means "this material conforms to `trait Damped`
+/// (`param loss_factor : Real`, `crates/reify-compiler/stdlib/materials_fea.ri`,
+/// task #6877) and here is its loss factor". `None` means "this material does
+/// NOT carry a usable loss factor" — which is the trigger for the
+/// `E_ModalDampingMaterialNotDamped` rejection in [`run_modal_analysis`], not a
+/// value to substitute a default for.
+///
+/// NON-DEFENSIVE ON PURPOSE — note the asymmetry with the neighbouring
+/// [`extract_isotropic_material`], which reads a MISSING field as `0.0`. That
+/// choice is right there: the type-checker guarantees `youngs_modulus` /
+/// `poisson_ratio` on any real `ElasticMaterial`, so its floor is unreachable
+/// scaffolding. Here the opposite is true and measured:
+/// `modal_analysis(material : ElasticMaterial, …)` does NOT require `Damped`, so
+/// a `structure def PlainSteel : ElasticMaterial { … }` type-checks, evaluates
+/// clean, and reaches this fn with no `loss_factor` at all. The absence is a
+/// real, reachable, author-caused condition and IS the signal — folding it to
+/// `0.0` would reconstruct exactly the silent ζ = 0 that PRD §C6 forbids.
+///
+/// The `Option` also keeps a genuinely-undamped CONFORMER (`loss_factor = 0.0` →
+/// `Some(0.0)`, accepted) distinct from a NON-conformer (`None`, rejected) — a
+/// distinction a bare `f64` cannot carry.
+///
+/// The numeric read is gated on the value actually BEING one of the spellings a
+/// stdlib `Real` field takes, rather than delegating to [`read_scalar_si`]
+/// unconditionally: that helper's `_ => 0.0` floor is precisely the behaviour
+/// that must not fire here. A negative or non-finite η is also rejected —
+/// `trait Damped`'s `constraint loss_factor >= 0` is the CHECK-time gate on the
+/// author surface, but a hand-built runtime value can carry a NaN past it, and a
+/// NaN ζ must not reach `Mode.damping_ratio`.
+fn extract_loss_factor(val: &Value) -> Option<f64> {
+    let Value::StructureInstance(data) = val else {
+        return None;
+    };
+    let raw = data.fields.get("loss_factor")?;
+    // Gate on the VARIANT, then convert. `read_scalar_si` is reused for the
+    // conversion so the tolerated spellings cannot drift apart from it, but its
+    // catch-all is deliberately unreachable from here.
+    if !matches!(
+        raw,
+        Value::Real(_) | Value::Int(_) | Value::Scalar { .. }
+    ) {
+        return None;
+    }
+    let eta = read_scalar_si(raw);
+    (eta.is_finite() && eta >= 0.0).then_some(eta)
+}
+
 /// Extract the eigensolver knobs `(n_modes, tol, max_iters, sigma)` from a
 /// `ModalOptions` StructureInstance, falling back to the PRD §4.3 defaults
 /// (`n_modes = 10`, `tol = 1e-9`, `max_iters = 200`, `sigma = 0`) when the value
@@ -3791,7 +3840,8 @@ mod tests {
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
         degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
         eigensolve_modal, extract_damping,
-        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
+        extract_density_or_degenerate, extract_eigen_knobs, extract_loss_factor,
+        extract_reference_direction,
         mode_shape_value, nearest_node, placeholder_part, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
         simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
