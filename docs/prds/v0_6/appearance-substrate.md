@@ -158,13 +158,16 @@ gate fixture maps 1:1 to the shipped surface. β then only *consumes* `Visual`.
 
 ### 4.3 Library-wide appearance (task γ)
 
-Each FEA library material gains ~~`: ElasticMaterial + Visual`~~ + an **editorial** `appearance` member
+Each FEA library material gains `: ElasticMaterial + Visual` + an **editorial** `appearance` member
 (explicit `(r,g,b)`, `named=""` — so γ does **not** depend on the RAL seed breadth): steel grey-satin,
 aluminium light-grey, titanium grey-satin, ABS matte off-white. The `Material` struct's default
 appearance (neutral grey) is set in β. Values are **editorial, not physically derived** — the physical
 optics path (`materials_optical.ri`) is explicitly separate (decision 5).
 
-**SUPERSEDED 2026-09-03 by task #6877** (struck clause only): the four presets now declare
+**SUPERSEDED 2026-09-03 by task #6877** — scoped to the `: ElasticMaterial + Visual` clause of the
+paragraph above, which is preserved as written (the four sibling files corrected by the same task
+append dated overlays rather than editing the record, and this paragraph follows that convention):
+the four presets now declare
 `: DampedMaterial + Visual` (`materials_fea.ri:272` Steel, `:329` Al, `:386` Ti, `:446` ABS). #6877
 added a `Damped` mixin trait carrying `loss_factor : Real`, and the named intersection
 `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`) **refines** the bound γ declared rather
@@ -318,11 +321,13 @@ the "one material" is an inline `Material(appearance: …)` in δ's fixture (nee
   (C-as-integration-gate) plus reify-eval unit coverage of `resolve_color` (B3/B4) and back-compat
   (B2). *Prereqs:* α. `grammar_confirmed=true`.
 - **γ — library-wide appearance.** *Modules:* `crates/reify-compiler/stdlib/materials_fea.ri` (the 4
-  materials gain ~~`: ElasticMaterial + Visual`~~ + editorial `appearance`) + a CI example. *Leaf.* *Signal:*
+  materials gain `: ElasticMaterial + Visual` + editorial `appearance`) + a CI example. *Leaf.* *Signal:*
   a committed `examples/material_appearance_library.ri` (runs in CI via `examples_smoke`) instantiating
   each library material; each `.appearance` reads a non-`Undef` `Appearance` with its characteristic
   color (B6). *Prereqs:* α, β. `grammar_confirmed=true`.
-  **SUPERSEDED 2026-09-03 by task #6877** (struck clause only): the presets now declare
+  **SUPERSEDED 2026-09-03 by task #6877** — scoped to the `: ElasticMaterial + Visual` clause of the
+  row above, which is preserved verbatim as the record of what γ was scoped to deliver: the presets
+  now declare
   `: DampedMaterial + Visual` (`materials_fea.ri:272/329/386/446`), where
   `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`) refines the bound γ was scoped to
   deliver. γ's leaf metadata, signal and prereqs above stand as the record of what γ did; the
