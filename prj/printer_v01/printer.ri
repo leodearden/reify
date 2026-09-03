@@ -208,9 +208,11 @@ pub structure IdlerPulley {
 
 /// Drive capstan (copied from dev_capstan.ri — single-file, no cross-file
 /// import in v0.1; the sketch's blank_volume/body_volume acceptance cells are
-/// deliberately omitted here — `volume()` is unresolvable on the CHECK
-/// surface (it works under kernel-backed `reify eval`, post-#4145) and the
-/// machining metric belongs to the sketch). Helically-grooved
+/// deliberately omitted here — `volume()` was unresolvable on the CHECK
+/// surface when this was copied (it works under kernel-backed `reify eval`,
+/// post-#4145, and since 2026-09-03's binary `check` computes it too —
+/// kernel-exact, probe probe_vol_check.ri) and the machining metric belongs
+/// to the sketch). Helically-grooved
 /// dual-anchor winch drum, axis = local +Z, centred. Both ends of each belt
 /// loop anchor to it; rotation reels one end in / pays the other out. Carries
 /// BOTH windings of the belt's ±z moment pair (axially adjacent on one drum).
@@ -1958,9 +1960,13 @@ pub structure GantryFea {
     let half_span = span / 2
     let mount = FixedSupport(target: "root")
     let tip   = PointLoad(point: "tip", force: test_load)
+    // ShellForce.Off: the equivalent-EI section is SQUARE (thickness/extent
+    // 1.00), so the shell classifier's fallback warning fires on a cold
+    // compute cache; forcing the tet path is what the hint asks for and is
+    // the path the solve was already taking (values byte-identical, O5 round).
     let r_static = solve_elastic_static(
         material_static, half_span, h_eq, h_eq2, [tip], [mount],
-        ElasticOptions(element_order: ElementOrder.P2))
+        ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
     let defl_cant = max(r_static.displacement)
     let k_cant    : Stiffness = test_load * 1N / defl_cant
     let k_pair_ss : Stiffness = k_cant * 4        // SS bound, both tubes, mid-load
@@ -2319,7 +2325,9 @@ pub structure AFrame {
     let m_frame : Mass = m_side * 2 + m_base + m_back + m_lintel
 
     // ── Volume cross-check: kernel volume vs analytic (validates the whole
-    // boolean/mirror/pattern tree; eval-only — volume() is check-opaque) ────
+    // boolean/mirror/pattern tree; volume() resolves under eval AND, since
+    // the 2026-09-03 binary, under `check` — the band pair below went from
+    // indeterminate to a real verdict there, not vacuously) ────────────────
     let vol_side = fld_ly * fld_lz * side_t + mem_w * mem_w * fld_ly * 2
         + pil_wx * pil_wy * pil_h * 2
         + (sock_w * sock_len * sock_h - pi * (rail_d_m / 2 + 0.5mm) * (rail_d_m / 2 + 0.5mm) * sock_len) * 2
@@ -2450,8 +2458,540 @@ pub structure AFrame {
 
 /// Assembly D — Toolhead: 4-tool kinematic dock on the frame (the carriage that
 /// rides the gantry is modelled in CoreXY as the head carriage). v0.1 fits 2.
+/// Assembly D leaf — ONE swappable TOOL (hotend + direct-drive extruder +
+/// coupling half + connector mate) as a placeholder box in its own local
+/// frame (centred; the NOZZLE is at local −height/2, which the composing site
+/// puts on the build ceiling), carrying only the coupling features the O5
+/// dock study exercises:
+///  - THREE Maxwell BALLS on the +y (coupling) face, 120° apart on r_maxwell
+///    about the coupling centre (cpl_z above the tool centre), each crown
+///    protruding ball_protrude into the head plate's seats;
+///  - TWO DOCK PINS on the −y (rear) face near the top: square placeholders
+///    that slide along −y into the dock lintel's forward-opening pockets.
+/// Deliberately a LEAF: leaf ctor overrides propagate (#6592), so DToolhead
+/// (the carried tool) and ToolDock (the parked ones) both instantiate it from
+/// their own params and read its `body` — one geometry source, no
+/// per-station copies (probe p7_subread, 2026-09-03).
+pub structure ToolBody {
+    param width  : Length = 60mm    // X
+    param depth  : Length = 60mm    // Y (coupling face = +y, dock pins = −y)
+    param height : Length = 150mm   // Z (nozzle at −height/2)
+    param mass   : Mass   = 1.2kg   // Rapido-HF-class hotend + compact DD extruder + plate
+    param ball_d : Length = 12mm
+    param ball_protrude : Length = 8mm
+    param r_maxwell : Length = 22mm   // ball pitch-circle radius
+    param cpl_z  : Length = 25mm      // coupling centre above the tool centre
+    param pin_w  : Length = 8mm       // square placeholder dock pin
+    param pin_len : Length = 16mm
+    param pin_dx : Length = 20mm      // pin half-spacing (X)
+    param pin_z  : Length = 60mm      // pins near the top (above the tool centre)
+
+    let half_d  = depth / 2
+    let ball_r  = ball_d / 2
+    let ball_cy = half_d + ball_protrude - ball_r     // crown protrudes ball_protrude
+    let bx_a    = r_maxwell * 0.8660254               // cos 30°
+    let bz_a    = r_maxwell * 0.5                     // sin 30°
+    let pin_cy  = 0mm - half_d - pin_len / 2
+
+    let body = union_all(
+        box(width, depth, height),
+        translate(sphere(ball_r), 0mm, ball_cy, cpl_z + r_maxwell),
+        translate(sphere(ball_r), 0mm - bx_a, ball_cy, cpl_z - bz_a),
+        translate(sphere(ball_r), bx_a, ball_cy, cpl_z - bz_a),
+        translate(box(pin_w, pin_len, pin_w), 0mm - pin_dx, pin_cy, pin_z),
+        translate(box(pin_w, pin_len, pin_w), pin_dx, pin_cy, pin_z)
+    )
+
+    constraint ball_protrude < ball_d
+    constraint pin_z + pin_w / 2 < height / 2
+    constraint cpl_z + r_maxwell + ball_r < height / 2
+    constraint bx_a + ball_r < width / 2
+}
+
+/// Assembly D — toolhead: the HEAD half of the per-tool kinematic coupling +
+/// the lock + the service connectors, in the HEAD-CENTRED local frame (the
+/// CoreXY head block centre is the origin; Printer places this structure at
+/// the head's world pose). O5 round, 2026-09-03 — Leo's rulings:
+///  - REAR dock, tool on the head's REAR (−y) face (E3D/Jubilee topology):
+///    the coupling plate hangs on the block's rear face, the tool hangs
+///    behind it, nozzle_offset_y (≈ −91) behind the head centre. Engagement is
+///    HORIZONTAL (the head has no Z; the bed's Z cannot lift a tool): a −y
+///    plunge onto the three balls, lock, +y extract.
+///  - Tool envelope 60×60×150, 1.2 kg (params, not detail).
+///  - Coupling = Maxwell mount: three ball seats (V-grooves, modelled as
+///    rectangular pockets seat_depth deep) in the plate's rear face; the balls
+///    bridge tool_gap = ball_protrude − seat_depth between plate and tool.
+///  - LOCK: a rotating cam on the plate (cam boss placeholder) driven by a
+///    small surplus servo on the block's rear face above the plate; the drive
+///    is one of the spec's Ioni-HC allocation (electronics OUTSIDE the
+///    chamber). The preload is the retention budget: at peak_accel the tool's
+///    inertial pull off the coupling is m_tool·(a+g) — the constraint below
+///    holds it with ×1.5; the stretch-accel figure is a REPORT cell (1000 m/s²
+///    with a 1.2 kg tool needs ~1.8 kN — a cam won't do it; a design call for
+///    the stretch round, recorded here as a live cell).
+///  - Services: n_elec_pins / n_coolant_lines / n_air_lines are params; the
+///    connector block is a placeholder box at the plate's lower rear edge.
+///  - MASS: m_payload is what the head really drags; Printer pins CoreXY's
+///    head_payload assumption ≥ it so the O6 drive budget fails loudly if the
+///    toolhead grows (family-11 pin idiom).
+/// Head/envelope mirrors are PINNED LITERALS (#6662/#6592; Printer pins them).
 pub structure DToolhead {
-    param tool_dock_pitch : Length = 80mm
+    param tool_dock_pitch : Length = 80mm    // round-1 stub, now the dock pitch (== ToolDock.pitch)
+    param n_tools : Int = 4                  // == Envelope.tools_designed
+    // ── Head / envelope mirrors (pinned literals) ────────────────────────
+    param head_d : Length = 90mm             // == CarriageBlock depth (head block; 2-level read unavailable, hand-kept)
+    param nozzle_z_local : Length = 0mm - 205mm   // == env.build_z − motion z (600 − 805)
+    param peak_accel    : Acceleration = 100  * 1m / (1s * 1s)   // == env.peak_accel
+    param stretch_accel : Acceleration = 1000 * 1m / (1s * 1s)   // == env.stretch_accel
+    param g_acc : Acceleration = 9.81 * 1m / (1s * 1s)
+    // ── Tool envelope (single source; ToolDock mirrors these, pinned) ────
+    param tool_w : Length = 60mm
+    param tool_d : Length = 60mm
+    param tool_h : Length = 150mm
+    param m_tool : Mass = 1.2kg
+    param ball_protrude : Length = 8mm
+    param r_maxwell : Length = 22mm
+    param cpl_z : Length = 25mm
+    param pin_w  : Length = 8mm
+    param pin_len : Length = 16mm
+    param pin_dx : Length = 20mm
+    param pin_z  : Length = 60mm
+    // ── Coupling plate + lock + connectors ───────────────────────────────
+    param plate_t : Length = 12mm
+    param plate_w : Length = 90mm
+    param plate_h : Length = 120mm
+    param seat_depth : Length = 4mm          // V-groove depth (balls bridge ball_protrude − seat_depth)
+    param seat_w : Length = 14mm
+    param cam_w  : Length = 30mm
+    param cam_t  : Length = 8mm
+    param lock_motor_w : Length = 40mm
+    param lock_motor_h : Length = 50mm
+    param lock_preload : Force = 300N        // cam clamp force on the coupling
+    param conn_w : Length = 30mm
+    param conn_t : Length = 10mm
+    param conn_h : Length = 20mm
+    param n_elec_pins     : Int = 12
+    param n_coolant_lines : Int = 2
+    param n_air_lines     : Int = 1
+    param m_plate : Mass = 0.20kg
+    param m_lock  : Mass = 0.35kg            // cam + small servo (head-borne)
+    param m_conn  : Mass = 0.10kg
+
+    // ── Derived layout (head-local; −y = rear) ───────────────────────────
+    let y_plate_rear = 0mm - head_d / 2 - plate_t     // −57
+    let y_plate_c    = 0mm - head_d / 2 - plate_t / 2
+    let tool_gap     = ball_protrude - seat_depth      // 4: the balls bridge it
+    let tool_cy      = y_plate_rear - tool_gap - tool_d / 2   // −91
+    let tool_cz      = nozzle_z_local + tool_h / 2     // −130 (nozzle on the ceiling)
+    let cpl_cz       = tool_cz + cpl_z                 // coupling centre, head-local
+    /// Nozzle offset behind the head centre — the rail-lengthening round must
+    /// fold this into the Y reach (the nozzle, not the head, covers build_y).
+    let nozzle_offset_y : Length = tool_cy
+    let bx_a = r_maxwell * 0.8660254
+    let bz_a = r_maxwell * 0.5
+    let seat_y = y_plate_rear                          // cutter centred on the rear face (half in)
+
+    sub tool = ToolBody(
+        width: tool_w, depth: tool_d, height: tool_h, mass: m_tool,
+        ball_protrude: ball_protrude, r_maxwell: r_maxwell, cpl_z: cpl_z,
+        pin_w: pin_w, pin_len: pin_len, pin_dx: pin_dx, pin_z: pin_z
+    ) at transform3(orient_identity(), vec3(0mm, tool_cy, tool_cz))
+
+    // Coupling half: plate with three ball seats + cam boss + lock servo +
+    // connector block. ONE inlined tree so only `head_half` surfaces.
+    let head_half = union_all(
+        difference(
+            translate(box(plate_w, plate_t, plate_h), 0mm, y_plate_c, cpl_cz),
+            union_all(
+                translate(box(seat_w, seat_depth * 2, seat_w), 0mm, seat_y, cpl_cz + r_maxwell),
+                translate(box(seat_w, seat_depth * 2, seat_w), 0mm - bx_a, seat_y, cpl_cz - bz_a),
+                translate(box(seat_w, seat_depth * 2, seat_w), bx_a, seat_y, cpl_cz - bz_a)
+            )
+        ),
+        translate(box(cam_w, cam_t, cam_w), 0mm, y_plate_rear - cam_t / 2, cpl_cz),
+        translate(box(lock_motor_w, lock_motor_w, lock_motor_h), 0mm, y_plate_c, cpl_cz + plate_h / 2 + lock_motor_h / 2),
+        translate(box(conn_w, conn_t, conn_h), 0mm, y_plate_rear - conn_t / 2, cpl_cz - plate_h / 2 + conn_h / 2)
+    )
+
+    // ── Budgets ──────────────────────────────────────────────────────────
+    let m_payload : Mass = m_tool + m_plate + m_lock + m_conn
+    let f_lock_needed  : Force = m_tool * (peak_accel + g_acc) * 1.5
+    let f_lock_stretch : Force = m_tool * (stretch_accel + g_acc) * 1.5   // report: ~1.8 kN
+
+    constraint lock_preload > f_lock_needed
+    constraint seat_depth < ball_protrude
+    constraint tool_w < tool_dock_pitch
+    constraint plate_h > r_maxwell * 2 + seat_w
+    constraint n_tools >= 1
+}
+
+/// TOOL DOCK (assembly D, frame side) + the O5 PICKUP-TRAJECTORY CLEARANCE
+/// STUDY (2026-09-03). World coordinates, identity placement (frame-bound,
+/// AFrame idiom).
+///
+/// WHERE (Leo, 2026-09-03): the REAR strip. The gantry's lower tube band
+/// (z 635..695, all x) sweeps the whole footprint in y, so a parked tool at
+/// the nozzle plane must sit outside the future sweep: rear y −128..−30
+/// (back-wall inner face → sweep) or front (the open access aperture — ruled
+/// out). Dock = a REAR LINTEL spanning the rear pillars' inner faces
+/// (lin_x0..lin_x1, z dock_z0..+dock_h, y wall_in_y..+dock_d): it doubles as
+/// the rear top tie the back wall (field_top 620) cannot provide up here. Each
+/// station = two forward-opening POCKETS (linear_pattern of one pair, pitch
+/// == DToolhead.tool_dock_pitch) receiving the tool's two rear pins; a parked
+/// tool hangs on its pins tool_rear_gap in front of the lintel with its balls
+/// facing +y. Stations 0..3 from station_x0; station 3 must clear the EZBed
+/// rear lift column (col_x_min) — constrained. v0.1 fits 2 of 4.
+///
+/// TRAJECTORY (pickup of station 1, the worst case with both neighbours
+/// parked): (1) rapid at y_safe to x_s1; (2) PLUNGE −y from y_safe to
+/// y_engage (plate onto balls); (3) lock; (4) EXTRACT +y to y_safe; park is
+/// the reverse. The study's per-sample margins caught a real sizing error
+/// TWICE: y_safe had been derived from the carried tool's BODY vs the parked
+/// crowns (pins passed the parked faces at 2 mm), then from the pins vs the
+/// parked FACES (pins passed the crowns at 6 mm). The penetration gates were
+/// correctly silent both times — nothing touched — which is exactly why the
+/// margin floors are constraints too. y_safe now derives from pins vs crowns. Two open-chain mechanisms (one prismatic joint each,
+/// structurally distinct axes — identical joints alias, probe p1d):
+///  - mech_y: `carrier_y` = head block + lower head bearing + coupling plate
+///    + lock servo + the CARRIED tool + the lower gantry tube + both Y
+///    carriage blocks, modelled at the ENGAGED pose, j_y = 0..plunge_len (+y).
+///  - mech_x: `head_x` = the head parts alone at y_safe, j_x over the full X
+///    travel — the traverse past the parked tools.
+/// CLEARANCE ENCODING (engine probe outcome, this round — the honest one):
+///  LAYER 1 (margin, report): sweep() + flat_map(min_clearance) per sample.
+///    Cheap and exact as a distance — but BLIND to full containment on any
+///    boolean-derived body (compound shapes; C1 in the round ledger), so it
+///    is never the gate. No list reduction exists (min over the sweep is
+///    inexpressible, C6), and sweep()'s result is untyped so snaps[i] is a
+///    compile error (C3) — hence one snapshot() per sample below.
+///  LAYER 2 (the GATE): FK-pose the moving body per sample via
+///    apply_transform(body, transform_of(snapshot, id)), union the samples
+///    into a SAMPLED SWEPT SOLID, and require the PENETRATION VOLUME against
+///    each obstacle to vanish. Sample pitch (≤ 10 mm plunge, 50 mm traverse)
+///    is below the thinnest wall either sweep could tunnel through (lintel
+///    20, tool 60). No hull/minkowski/solid-sweep exists (C4/C5), so a
+///    sampled union is the ceiling.
+///  Bodies are all TOP-LEVEL lets (#5439: sub bodies never reach snapshots);
+///  the tool solid is read from a ToolBody sub in its LOCAL frame and
+///  translated here (#6583-safe by construction). Pose lets are `aux`
+///  (realised hidden) so the viewport shows the dock, not 20 ghost heads.
+/// REACH (live cells, no constraint — frame-round posture): the dock is at
+/// its FUTURE-correct position and is unreachable TODAY by reach_short_today
+/// (~131 mm: the rail-length defect #5098 gates the toolchanger outright),
+/// and the plunge passes through today's rear web (pen_web_today > 0: web
+/// externalization is a precondition, as the frame round already ruled).
+/// The rear-mounted tool costs frame_len_extra (= −nozzle_offset_y) of Y
+/// reach at the FRONT for the rail-lengthening round to absorb.
+pub structure ToolDock {
+    // ── Frame / motion / bed mirrors, PINNED LITERALS (Printer pins them) ──
+    param wall_in_y : Length = 0mm - 128mm   // == a_frame.y0 + side_t (back-wall inner face)
+    param lin_x0 : Length = 0mm - 100mm      // == centre_x − lin_len/2 (rear pillar inner faces)
+    param lin_x1 : Length = 600mm            // == centre_x + lin_len/2
+    param nozzle_z : Length = 600mm          // == env.build_z (nozzle plane = build ceiling)
+    param head_z  : Length = 805mm           // == a_frame.rail_z_m (motion placement z)
+    param head_cx : Length = 250mm           // == env.build_x/2 (motion placement x)
+    param travel_x : Length = 500mm          // == env.build_x (head-centre X reach)
+    param yh_min_today  : Length = 145mm     // == centre_y − travel_avail/2 (head-centre world y)
+    param yh_min_future : Length = 0mm       // post rail-lengthening reach (brief; hand-kept)
+    param blk_w : Length = 90mm              // == CarriageBlock defaults (2-level read unavailable)
+    param blk_d : Length = 90mm
+    param blk_h : Length = 300mm
+    param brg_od  : Length = 90mm            // == motion.x_brg_radius·2
+    param brg_len : Length = 150mm           // == motion.brg_len
+    param tube_od : Length = 60mm            // == motion.tube_or·2
+    param xr_off  : Length = 140mm           // == motion.x_rail_offset
+    param y_rail_offset : Length = 400mm     // == motion.y_rail_offset
+    param rail_run_x_min : Length = 611mm    // lower rail-run rope inner surface (650 − 36 − 3), hand-kept
+    param col_x_min : Length = 450mm         // == e_z_bed.col_single_x − col_w/2
+    // Today's rear web collar envelope (AFrame header measurement; vacates on externalization)
+    param web_x0 : Length = 66mm
+    param web_x1 : Length = 434mm
+    param web_y0 : Length = 0mm - 64mm
+    param web_y1 : Length = 16mm
+    param web_z0 : Length = 520mm
+    param web_z1 : Length = 657mm
+    // ── Toolhead mirrors (== DToolhead; pinned) ──────────────────────────
+    param pitch : Length = 80mm
+    param n_tools : Int = 4
+    param tool_w : Length = 60mm
+    param tool_d : Length = 60mm
+    param tool_h : Length = 150mm
+    param m_tool : Mass = 1.2kg
+    param ball_protrude : Length = 8mm
+    param r_maxwell : Length = 22mm
+    param cpl_z : Length = 25mm
+    param pin_w  : Length = 8mm
+    param pin_len : Length = 16mm
+    param pin_dx : Length = 20mm
+    param pin_z  : Length = 60mm
+    param plate_t : Length = 12mm
+    param plate_w : Length = 90mm
+    param plate_h : Length = 120mm
+    param seat_depth : Length = 4mm
+    param lock_motor_w : Length = 40mm
+    param lock_motor_h : Length = 50mm
+    // ── Dock construction ────────────────────────────────────────────────
+    param dock_d : Length = 20mm             // lintel depth (Y)
+    param dock_h : Length = 60mm             // lintel height (Z)
+    param pocket_clear : Length = 0.5mm      // pin-to-pocket side clearance
+    param pocket_extra : Length = 2mm        // pocket depth beyond the pin
+    param tool_rear_gap : Length = 1mm       // parked tool rear face → lintel front face
+    param clear_neighbour : Length = 10mm    // carried tool rear ↔ neighbours' ball crowns on the traverse line
+    param clear_engaged_min : Length = 5mm   // kinematic floor: carrier ↔ neighbours at the engaged pose
+    param clear_run : Length = 5mm           // lintel ↔ the lower rail runs (X)
+    param station_x0 : Length = 130mm        // station 0 centre (X)
+
+    // ── Layout ───────────────────────────────────────────────────────────
+    let dock_y1  = wall_in_y + dock_d                 // −108 lintel front face
+    let dock_cy  = wall_in_y + dock_d / 2
+    let dock_len = lin_x1 - lin_x0
+    let dock_cx  = (lin_x0 + lin_x1) / 2
+    let tool_cz  = nozzle_z + tool_h / 2              // 675 parked/carried tool centre z
+    let dock_cz  = tool_cz + pin_z                    // 735 pockets on the pin line
+    let dock_z0  = dock_cz - dock_h / 2
+    let dock_z1  = dock_cz + dock_h / 2
+    let parked_cy    = dock_y1 + tool_rear_gap + tool_d / 2   // −77
+    let parked_front = parked_cy + tool_d / 2                  // −47
+    let balls_front  = parked_front + ball_protrude            // −39
+    let x_s0 = station_x0
+    let x_s1 = station_x0 + pitch
+    let x_s2 = station_x0 + pitch * 2
+    let x_s3 = station_x0 + pitch * 3
+    let gap_lateral = pitch - tool_w                   // 20 between neighbours
+    let tool_gap    = ball_protrude - seat_depth       // 4
+    /// Head-centre world y when engaged at a station (tool coincident with
+    /// its parked pose): parked front + gap + plate + half block.
+    let y_engage : Length = parked_front + tool_gap + plate_t + blk_d / 2   // 14
+    let carried_rear_off = blk_d / 2 + plate_t + tool_gap + tool_d          // 121: head centre → carried tool rear
+    /// Traverse line: the carried tool's DOCK PINS (its rearmost feature)
+    /// clear the neighbours' BALL CROWNS (their foremost feature) by
+    /// clear_neighbour. The study's per-sample margins sized this twice:
+    /// run 1 (tool body vs crowns) read 2 mm, run 2 (pins vs faces) read
+    /// 6 mm — the pins and the crowns share a z band, so both extremes count.
+    let y_safe : Length = balls_front + clear_neighbour + carried_rear_off + pin_len   // 108
+    let plunge_len : Length = y_safe - y_engage                                       // 94
+    let nozzle_offset_y : Length = 0mm - (blk_d / 2 + plate_t + tool_gap + tool_d / 2)   // −91
+    let reach_short_today : Length = yh_min_today - y_engage   // 131 — LIVE (#5098 gates the dock)
+    let reach_margin_future : Length = y_engage - yh_min_future
+    let frame_len_extra : Length = 0mm - nozzle_offset_y         // Y reach the rear tool costs at the front
+    let cpl_cz = tool_cz + cpl_z                       // coupling centre z (world)
+
+    // ── Geometry (world) ─────────────────────────────────────────────────
+    /// Tool prototype: NOT placed — its body is read in the leaf's local
+    /// frame and translated here per station (single source, #6583-safe).
+    sub tool_proto = ToolBody(
+        width: tool_w, depth: tool_d, height: tool_h, mass: m_tool,
+        ball_protrude: ball_protrude, r_maxwell: r_maxwell, cpl_z: cpl_z,
+        pin_w: pin_w, pin_len: pin_len, pin_dx: pin_dx, pin_z: pin_z
+    )
+    aux let tool_local = self.tool_proto.body
+
+    let pocket_w = pin_w + pocket_clear * 2
+    let pocket_d = pin_len + pocket_extra
+    let pocket_cy = dock_y1 - pocket_d / 2
+    aux let pocket_pair = union(
+        translate(box(pocket_w, pocket_d, pocket_w), x_s0 - pin_dx, pocket_cy, dock_cz),
+        translate(box(pocket_w, pocket_d, pocket_w), x_s0 + pin_dx, pocket_cy, dock_cz)
+    )
+    /// The rear lintel with 4 × 2 forward-opening pockets.
+    let lintel = difference(
+        translate(box(dock_len, dock_d, dock_h), dock_cx, dock_cy, dock_cz),
+        linear_pattern(pocket_pair, 1, 0, 0, 4, pitch)
+    )
+    /// Parked tools at stations 0, 2, 3 (station 1 is being picked up).
+    let parked = union_all(
+        translate(tool_local, x_s0, parked_cy, tool_cz),
+        translate(tool_local, x_s2, parked_cy, tool_cz),
+        translate(tool_local, x_s3, parked_cy, tool_cz)
+    )
+    /// Today's rear web (collar envelope) — vacates on externalization.
+    aux let web_today = translate(
+        box(web_x1 - web_x0, web_y1 - web_y0, web_z1 - web_z0),
+        (web_x0 + web_x1) / 2, (web_y0 + web_y1) / 2, (web_z0 + web_z1) / 2
+    )
+
+    // Moving set at the ENGAGED pose (head centre (x_s1, y_engage, head_z)).
+    // Bearings/tubes as box envelopes (conservative). Upper bearing/tube
+    // (z ≥ 900) are far above the dock and omitted.
+    let hx = x_s1
+    let hy = y_engage
+    let plate_cy = hy - blk_d / 2 - plate_t / 2
+    let plate_cy_rear = hy - blk_d / 2 - plate_t
+    aux let carrier_y = union_all(
+        translate(box(blk_w, blk_d, blk_h), hx, hy, head_z),
+        translate(box(brg_len, brg_od, brg_od), hx, hy, head_z - xr_off),
+        translate(box(plate_w, plate_t, plate_h), hx, plate_cy, cpl_cz),
+        translate(box(lock_motor_w, lock_motor_w, lock_motor_h), hx, plate_cy, cpl_cz + plate_h / 2 + lock_motor_h / 2),
+        translate(tool_local, hx, plate_cy_rear - tool_gap - tool_d / 2, tool_cz),
+        translate(box(y_rail_offset * 2, tube_od, tube_od), head_cx, hy, head_z - xr_off),
+        translate(box(blk_w, blk_d, blk_h), head_cx - y_rail_offset, hy, head_z),
+        translate(box(blk_w, blk_d, blk_h), head_cx + y_rail_offset, hy, head_z)
+    )
+    // Head parts alone on the traverse line, at the X-travel start (world x 0).
+    let hy_s = y_safe
+    let plate_cy_s = hy_s - blk_d / 2 - plate_t / 2
+    let plate_cy_s_rear = hy_s - blk_d / 2 - plate_t
+    aux let head_x = union_all(
+        translate(box(blk_w, blk_d, blk_h), 0mm, hy_s, head_z),
+        translate(box(brg_len, brg_od, brg_od), 0mm, hy_s, head_z - xr_off),
+        translate(box(plate_w, plate_t, plate_h), 0mm, plate_cy_s, cpl_cz),
+        translate(box(lock_motor_w, lock_motor_w, lock_motor_h), 0mm, plate_cy_s, cpl_cz + plate_h / 2 + lock_motor_h / 2),
+        translate(tool_local, 0mm, plate_cy_s_rear - tool_gap - tool_d / 2, tool_cz)
+    )
+
+    // ── mech_y: the plunge/extract segment (+y from engaged) ─────────────
+    let j_y = prismatic(vec3(0, 1, 0), 0mm .. 94mm)
+    let my1 = body(mechanism(), "carrier_y", j_y)
+    let my2 = body(my1, "lintel", fixed())
+    let my3 = body(my2, "parked", fixed())
+    let id_car  = body_id_of(my3, "carrier_y")
+    let id_lin  = body_id_of(my3, "lintel")
+    let id_park = body_id_of(my3, "parked")
+    // Layer 1: per-sample margins (report).
+    let snaps_y = sweep(my3, j_y, 0mm .. 94mm, 9)
+    let margins_y_lintel = flat_map(snaps_y, |s| [min_clearance(s, id_car, id_lin)])
+    let margins_y_parked = flat_map(snaps_y, |s| [min_clearance(s, id_car, id_park)])
+    let n_y = snaps_y.count
+    // Layer 2: one snapshot per sample (sweep()'s list is not indexable).
+    let sy0 = snapshot(my3, [bind(j_y, 0mm)])
+    let sy1 = snapshot(my3, [bind(j_y, plunge_len * 0.125)])
+    let sy2 = snapshot(my3, [bind(j_y, plunge_len * 0.25)])
+    let sy3 = snapshot(my3, [bind(j_y, plunge_len * 0.375)])
+    let sy4 = snapshot(my3, [bind(j_y, plunge_len * 0.5)])
+    let sy5 = snapshot(my3, [bind(j_y, plunge_len * 0.625)])
+    let sy6 = snapshot(my3, [bind(j_y, plunge_len * 0.75)])
+    let sy7 = snapshot(my3, [bind(j_y, plunge_len * 0.875)])
+    let sy8 = snapshot(my3, [bind(j_y, plunge_len)])
+    aux let py0 = apply_transform(carrier_y, transform_of(sy0, id_car))
+    aux let py1 = apply_transform(carrier_y, transform_of(sy1, id_car))
+    aux let py2 = apply_transform(carrier_y, transform_of(sy2, id_car))
+    aux let py3 = apply_transform(carrier_y, transform_of(sy3, id_car))
+    aux let py4 = apply_transform(carrier_y, transform_of(sy4, id_car))
+    aux let py5 = apply_transform(carrier_y, transform_of(sy5, id_car))
+    aux let py6 = apply_transform(carrier_y, transform_of(sy6, id_car))
+    aux let py7 = apply_transform(carrier_y, transform_of(sy7, id_car))
+    aux let py8 = apply_transform(carrier_y, transform_of(sy8, id_car))
+    aux let swept_y = union_all(py0, py1, py2, py3, py4, py5, py6, py7, py8)
+    aux let overlap_y_lintel = intersection(swept_y, lintel)
+    aux let overlap_y_parked = intersection(swept_y, parked)
+    aux let overlap_y_web    = intersection(swept_y, web_today)
+    let pen_y_lintel : Volume = volume(overlap_y_lintel)
+    let pen_y_parked : Volume = volume(overlap_y_parked)
+    /// LIVE: the plunge runs through today's rear web (externalization precondition).
+    let pen_web_today : Volume = volume(overlap_y_web)
+    // Kinematic floors per sample (no list reduction exists — C6 — so the
+    // min over the sweep is spelled out): pins seated in their pockets at
+    // sample 0; the carried set vs the neighbours along the whole plunge.
+    let clr_engaged_lintel = min_clearance(sy0, id_car, id_lin)
+    let clr_y0 = min_clearance(sy0, id_car, id_park)
+    let clr_y1 = min_clearance(sy1, id_car, id_park)
+    let clr_y2 = min_clearance(sy2, id_car, id_park)
+    let clr_y3 = min_clearance(sy3, id_car, id_park)
+    let clr_y4 = min_clearance(sy4, id_car, id_park)
+    let clr_y5 = min_clearance(sy5, id_car, id_park)
+    let clr_y6 = min_clearance(sy6, id_car, id_park)
+    let clr_y7 = min_clearance(sy7, id_car, id_park)
+    let clr_y8 = min_clearance(sy8, id_car, id_park)
+
+    // ── mech_x: the traverse at y_safe over the full X travel ────────────
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let mx1 = body(mechanism(), "head_x", j_x)
+    let mx2 = body(mx1, "lintel", fixed())
+    let mx3 = body(mx2, "parked", fixed())
+    let id_hx     = body_id_of(mx3, "head_x")
+    let id_lin_x  = body_id_of(mx3, "lintel")
+    let id_park_x = body_id_of(mx3, "parked")
+    let snaps_x = sweep(mx3, j_x, 0mm .. 500mm, 11)
+    let margins_x_parked = flat_map(snaps_x, |s| [min_clearance(s, id_hx, id_park_x)])
+    let margins_x_lintel = flat_map(snaps_x, |s| [min_clearance(s, id_hx, id_lin_x)])
+    let n_x = snaps_x.count
+    let sx0  = snapshot(mx3, [bind(j_x, 0mm)])
+    let sx1  = snapshot(mx3, [bind(j_x, travel_x * 0.1)])
+    let sx2  = snapshot(mx3, [bind(j_x, travel_x * 0.2)])
+    let sx3  = snapshot(mx3, [bind(j_x, travel_x * 0.3)])
+    let sx4  = snapshot(mx3, [bind(j_x, travel_x * 0.4)])
+    let sx5  = snapshot(mx3, [bind(j_x, travel_x * 0.5)])
+    let sx6  = snapshot(mx3, [bind(j_x, travel_x * 0.6)])
+    let sx7  = snapshot(mx3, [bind(j_x, travel_x * 0.7)])
+    let sx8  = snapshot(mx3, [bind(j_x, travel_x * 0.8)])
+    let sx9  = snapshot(mx3, [bind(j_x, travel_x * 0.9)])
+    let sx10 = snapshot(mx3, [bind(j_x, travel_x)])
+    aux let px0  = apply_transform(head_x, transform_of(sx0,  id_hx))
+    aux let px1  = apply_transform(head_x, transform_of(sx1,  id_hx))
+    aux let px2  = apply_transform(head_x, transform_of(sx2,  id_hx))
+    aux let px3  = apply_transform(head_x, transform_of(sx3,  id_hx))
+    aux let px4  = apply_transform(head_x, transform_of(sx4,  id_hx))
+    aux let px5  = apply_transform(head_x, transform_of(sx5,  id_hx))
+    aux let px6  = apply_transform(head_x, transform_of(sx6,  id_hx))
+    aux let px7  = apply_transform(head_x, transform_of(sx7,  id_hx))
+    aux let px8  = apply_transform(head_x, transform_of(sx8,  id_hx))
+    aux let px9  = apply_transform(head_x, transform_of(sx9,  id_hx))
+    aux let px10 = apply_transform(head_x, transform_of(sx10, id_hx))
+    aux let swept_x = union_all(px0, px1, px2, px3, px4, px5, px6, px7, px8, px9, px10)
+    aux let overlap_x_parked = intersection(swept_x, parked)
+    aux let overlap_x_lintel = intersection(swept_x, lintel)
+    let pen_x_parked : Volume = volume(overlap_x_parked)
+    let pen_x_lintel : Volume = volume(overlap_x_lintel)
+    // Per-sample floors along the traverse (the governing one is the carried
+    // tool's pins vs the parked tools' front faces, at every station x).
+    let clr_x0  = min_clearance(sx0,  id_hx, id_park_x)
+    let clr_x1  = min_clearance(sx1,  id_hx, id_park_x)
+    let clr_x2  = min_clearance(sx2,  id_hx, id_park_x)
+    let clr_x3  = min_clearance(sx3,  id_hx, id_park_x)
+    let clr_x4  = min_clearance(sx4,  id_hx, id_park_x)
+    let clr_x5  = min_clearance(sx5,  id_hx, id_park_x)
+    let clr_x6  = min_clearance(sx6,  id_hx, id_park_x)
+    let clr_x7  = min_clearance(sx7,  id_hx, id_park_x)
+    let clr_x8  = min_clearance(sx8,  id_hx, id_park_x)
+    let clr_x9  = min_clearance(sx9,  id_hx, id_park_x)
+    let clr_x10 = min_clearance(sx10, id_hx, id_park_x)
+
+    // ── Constraints (future-invariant) ───────────────────────────────────
+    // THE GATES: sampled swept solids must not penetrate the fixed set.
+    constraint pen_y_lintel < 1mm^3
+    constraint pen_y_parked < 1mm^3
+    constraint pen_x_parked < 1mm^3
+    constraint pen_x_lintel < 1mm^3
+    // Kinematic floors: every sample (spelled out — C6).
+    constraint clr_engaged_lintel > pocket_clear * 0.9      // pins seated, not touching
+    constraint clr_y0 > clear_engaged_min
+    constraint clr_y1 > clear_engaged_min
+    constraint clr_y2 > clear_engaged_min
+    constraint clr_y3 > clear_engaged_min
+    constraint clr_y4 > clear_engaged_min
+    constraint clr_y5 > clear_engaged_min
+    constraint clr_y6 > clear_engaged_min
+    constraint clr_y7 > clear_engaged_min
+    constraint clr_y8 > clear_engaged_min
+    constraint clr_x0  > clear_neighbour * 0.9
+    constraint clr_x1  > clear_neighbour * 0.9
+    constraint clr_x2  > clear_neighbour * 0.9
+    constraint clr_x3  > clear_neighbour * 0.9
+    constraint clr_x4  > clear_neighbour * 0.9
+    constraint clr_x5  > clear_neighbour * 0.9
+    constraint clr_x6  > clear_neighbour * 0.9
+    constraint clr_x7  > clear_neighbour * 0.9
+    constraint clr_x8  > clear_neighbour * 0.9
+    constraint clr_x9  > clear_neighbour * 0.9
+    constraint clr_x10 > clear_neighbour * 0.9
+    constraint n_y == 9
+    constraint n_x == 11
+    // Layout.
+    constraint gap_lateral >= clear_engaged_min * 2
+    constraint y_engage > yh_min_future                      // reachable after the rail fix
+    constraint x_s3 + tool_w / 2 + clear_engaged_min < col_x_min   // clear of the EZBed rear column
+    constraint x_s0 - tool_w / 2 > lin_x0 + clear_engaged_min
+    constraint lin_x1 + clear_run < rail_run_x_min           // lintel clears the lower rail runs
+    constraint dock_z0 > nozzle_z                            // lintel above the build ceiling
+    constraint plunge_len > pin_len + pocket_extra           // extraction fully clears the pockets
+    constraint pocket_d < dock_d                             // pockets do not break through the back
+    constraint n_tools == 4                                  // the encoding is 4-station explicit (#5482)
+    constraint pin_dx * 2 + pocket_w < pitch
+    // The joint ranges are literals (sweep() takes literal ranges); pin them.
+    constraint plunge_len < 94mm + 0.001mm
+    constraint plunge_len > 94mm - 0.001mm
+    constraint travel_x < 500mm + 0.001mm
+    constraint travel_x > 500mm - 0.001mm
 }
 
 /// Assembly E — Z-bed: THREE-COLUMN tendon-lifted bed (O3 round, 2026-09-01;
@@ -2826,6 +3366,10 @@ pub structure JAuxiliary {
 //  O5. Toolchanger dock (D/I) — needs swept volumes / collision over a
 //      trajectory, a capability class tools/README.md already flags as
 //      missing: high finding yield, slower real geometry.
+//      RAN 2026-09-03 (ToolBody/DToolhead/ToolDock): no swept-volume
+//      primitive exists; the honest encoding is FK-posed sampled swept
+//      unions gated on penetration VOLUME (distance queries are blind to
+//      containment on boolean bodies). Dock gated on #5098 + externalization.
 //  O6. Drive-stiffness budget in-design — every rope length is now a first-
 //      class cell (v3.1/v3.2), so tendon-compliance → per-axis stiffness /
 //      first-mode estimates are pure cell algebra with units (N/mm, Hz);
@@ -2852,7 +3396,14 @@ pub structure Printer {
     sub motion = CoreXY()
         at transform3(orient_identity(), vec3(250mm, 400mm, 805mm))
 
+    /// O5 (2026-09-03): the toolhead rides the head — placed at the head's
+    /// home pose (x_head = y_head = 0 → the motion origin); its tool hangs
+    /// behind the block (rear-face coupling, Leo's ruling).
     sub d_toolhead = DToolhead()
+        at transform3(orient_identity(), vec3(250mm, 400mm, 805mm))
+    /// O5: rear tool dock + pickup-trajectory clearance study. Frame-bound →
+    /// world coordinates, identity placement (AFrame idiom).
+    sub tool_dock = ToolDock()
 
     sub e_z_bed = EZBed(
         build_x: self.env.build_x,
@@ -2979,4 +3530,86 @@ pub structure Printer {
     constraint self.e_z_bed.wall_in_l > self.a_frame.centre_x * 2 - self.a_frame.wall_cx + self.a_frame.side_t / 2 - o1_pin_slack
     constraint self.e_z_bed.back_in < self.a_frame.y0 + self.a_frame.side_t + o1_pin_slack
     constraint self.e_z_bed.back_in > self.a_frame.y0 + self.a_frame.side_t - o1_pin_slack
+
+    // ── O5: toolhead + dock PINS (frame/motion/bed truth → pinned literals) ─
+    // Toolhead ↔ envelope/motion.
+    constraint self.d_toolhead.n_tools == self.env.tools_designed
+    constraint self.d_toolhead.nozzle_z_local < self.env.build_z - self.a_frame.rail_z_m + o1_pin_slack
+    constraint self.d_toolhead.nozzle_z_local > self.env.build_z - self.a_frame.rail_z_m - o1_pin_slack
+    constraint self.d_toolhead.peak_accel    < self.env.peak_accel * 1.001
+    constraint self.d_toolhead.peak_accel    > self.env.peak_accel * 0.999
+    constraint self.d_toolhead.stretch_accel < self.env.stretch_accel * 1.001
+    constraint self.d_toolhead.stretch_accel > self.env.stretch_accel * 0.999
+    // The O6 head-payload assumption must cover what the toolhead really drags.
+    constraint self.motion.head_payload >= self.d_toolhead.m_payload
+    // Dock ↔ frame / envelope / motion / bed.
+    constraint self.tool_dock.wall_in_y < self.a_frame.y0 + self.a_frame.side_t + o1_pin_slack
+    constraint self.tool_dock.wall_in_y > self.a_frame.y0 + self.a_frame.side_t - o1_pin_slack
+    constraint self.tool_dock.lin_x0 < self.a_frame.centre_x - self.a_frame.lin_len / 2 + o1_pin_slack
+    constraint self.tool_dock.lin_x0 > self.a_frame.centre_x - self.a_frame.lin_len / 2 - o1_pin_slack
+    constraint self.tool_dock.lin_x1 < self.a_frame.centre_x + self.a_frame.lin_len / 2 + o1_pin_slack
+    constraint self.tool_dock.lin_x1 > self.a_frame.centre_x + self.a_frame.lin_len / 2 - o1_pin_slack
+    constraint self.tool_dock.nozzle_z < self.env.build_z + o1_pin_slack
+    constraint self.tool_dock.nozzle_z > self.env.build_z - o1_pin_slack
+    constraint self.tool_dock.head_z < self.a_frame.rail_z_m + o1_pin_slack
+    constraint self.tool_dock.head_z > self.a_frame.rail_z_m - o1_pin_slack
+    constraint self.tool_dock.head_cx < self.env.build_x / 2 + o1_pin_slack
+    constraint self.tool_dock.head_cx > self.env.build_x / 2 - o1_pin_slack
+    constraint self.tool_dock.travel_x < self.env.build_x + o1_pin_slack
+    constraint self.tool_dock.travel_x > self.env.build_x - o1_pin_slack
+    constraint self.tool_dock.yh_min_today < self.a_frame.centre_y - self.a_frame.travel_avail / 2 + o1_pin_slack
+    constraint self.tool_dock.yh_min_today > self.a_frame.centre_y - self.a_frame.travel_avail / 2 - o1_pin_slack
+    constraint self.tool_dock.brg_od  < self.motion.x_brg_radius * 2 + o1_pin_slack
+    constraint self.tool_dock.brg_od  > self.motion.x_brg_radius * 2 - o1_pin_slack
+    constraint self.tool_dock.brg_len < self.motion.brg_len + o1_pin_slack
+    constraint self.tool_dock.brg_len > self.motion.brg_len - o1_pin_slack
+    constraint self.tool_dock.tube_od < self.motion.tube_or * 2 + o1_pin_slack
+    constraint self.tool_dock.tube_od > self.motion.tube_or * 2 - o1_pin_slack
+    constraint self.tool_dock.xr_off  < self.motion.x_rail_offset + o1_pin_slack
+    constraint self.tool_dock.xr_off  > self.motion.x_rail_offset - o1_pin_slack
+    constraint self.tool_dock.y_rail_offset < self.motion.y_rail_offset + o1_pin_slack
+    constraint self.tool_dock.y_rail_offset > self.motion.y_rail_offset - o1_pin_slack
+    constraint self.tool_dock.col_x_min < self.e_z_bed.col_single_x - self.e_z_bed.col_w / 2 + o1_pin_slack
+    constraint self.tool_dock.col_x_min > self.e_z_bed.col_single_x - self.e_z_bed.col_w / 2 - o1_pin_slack
+    // Dock ↔ toolhead (tool envelope + coupling are single-sourced in DToolhead).
+    constraint self.tool_dock.n_tools == self.d_toolhead.n_tools
+    constraint self.tool_dock.pitch  < self.d_toolhead.tool_dock_pitch + o1_pin_slack
+    constraint self.tool_dock.pitch  > self.d_toolhead.tool_dock_pitch - o1_pin_slack
+    constraint self.tool_dock.tool_w < self.d_toolhead.tool_w + o1_pin_slack
+    constraint self.tool_dock.tool_w > self.d_toolhead.tool_w - o1_pin_slack
+    constraint self.tool_dock.tool_d < self.d_toolhead.tool_d + o1_pin_slack
+    constraint self.tool_dock.tool_d > self.d_toolhead.tool_d - o1_pin_slack
+    constraint self.tool_dock.tool_h < self.d_toolhead.tool_h + o1_pin_slack
+    constraint self.tool_dock.tool_h > self.d_toolhead.tool_h - o1_pin_slack
+    constraint self.tool_dock.ball_protrude < self.d_toolhead.ball_protrude + o1_pin_slack
+    constraint self.tool_dock.ball_protrude > self.d_toolhead.ball_protrude - o1_pin_slack
+    constraint self.tool_dock.r_maxwell < self.d_toolhead.r_maxwell + o1_pin_slack
+    constraint self.tool_dock.r_maxwell > self.d_toolhead.r_maxwell - o1_pin_slack
+    constraint self.tool_dock.cpl_z   < self.d_toolhead.cpl_z + o1_pin_slack
+    constraint self.tool_dock.cpl_z   > self.d_toolhead.cpl_z - o1_pin_slack
+    constraint self.tool_dock.pin_w   < self.d_toolhead.pin_w + o1_pin_slack
+    constraint self.tool_dock.pin_w   > self.d_toolhead.pin_w - o1_pin_slack
+    constraint self.tool_dock.pin_len < self.d_toolhead.pin_len + o1_pin_slack
+    constraint self.tool_dock.pin_len > self.d_toolhead.pin_len - o1_pin_slack
+    constraint self.tool_dock.pin_dx  < self.d_toolhead.pin_dx + o1_pin_slack
+    constraint self.tool_dock.pin_dx  > self.d_toolhead.pin_dx - o1_pin_slack
+    constraint self.tool_dock.pin_z   < self.d_toolhead.pin_z + o1_pin_slack
+    constraint self.tool_dock.pin_z   > self.d_toolhead.pin_z - o1_pin_slack
+    constraint self.tool_dock.plate_t < self.d_toolhead.plate_t + o1_pin_slack
+    constraint self.tool_dock.plate_t > self.d_toolhead.plate_t - o1_pin_slack
+    constraint self.tool_dock.plate_w < self.d_toolhead.plate_w + o1_pin_slack
+    constraint self.tool_dock.plate_w > self.d_toolhead.plate_w - o1_pin_slack
+    constraint self.tool_dock.plate_h < self.d_toolhead.plate_h + o1_pin_slack
+    constraint self.tool_dock.plate_h > self.d_toolhead.plate_h - o1_pin_slack
+    constraint self.tool_dock.seat_depth < self.d_toolhead.seat_depth + o1_pin_slack
+    constraint self.tool_dock.seat_depth > self.d_toolhead.seat_depth - o1_pin_slack
+    constraint self.tool_dock.lock_motor_w < self.d_toolhead.lock_motor_w + o1_pin_slack
+    constraint self.tool_dock.lock_motor_w > self.d_toolhead.lock_motor_w - o1_pin_slack
+    constraint self.tool_dock.lock_motor_h < self.d_toolhead.lock_motor_h + o1_pin_slack
+    constraint self.tool_dock.lock_motor_h > self.d_toolhead.lock_motor_h - o1_pin_slack
+    constraint self.tool_dock.blk_d  < self.d_toolhead.head_d + o1_pin_slack
+    constraint self.tool_dock.blk_d  > self.d_toolhead.head_d - o1_pin_slack
+    // Nozzle offset agrees between the two derivations (head-local vs world).
+    constraint self.tool_dock.nozzle_offset_y < self.d_toolhead.nozzle_offset_y + o1_pin_slack
+    constraint self.tool_dock.nozzle_offset_y > self.d_toolhead.nozzle_offset_y - o1_pin_slack
 }
