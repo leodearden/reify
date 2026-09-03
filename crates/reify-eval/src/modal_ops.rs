@@ -6722,6 +6722,204 @@ mod tests {
         );
     }
 
+    /// Task #6878 (PRD leaf β) step-9(c): the in-crate twin of B8's loud coded
+    /// rejection, plus the boundary the author-surface e2e cannot reach.
+    ///
+    /// A `MaterialDamping` solve over a material that does not conform to
+    /// `trait Damped` must be a LOUD eval-time Error naming the material and the
+    /// fix — never modes carrying a silent `damping_ratio = 0` (PRD §C6,
+    /// INV-SF-2/SF-6).
+    ///
+    /// ## The boundary only this altitude can pin
+    ///
+    /// A material carrying `loss_factor = 0.0` is a CONFORMING, explicitly
+    /// UNDAMPED material and must be ACCEPTED (ζ = 0 + ζ_extra, no Error). That
+    /// is the case most likely to be wrongly folded into the rejection, since it
+    /// produces the same ζ as the rejected case; only [`extract_loss_factor`]'s
+    /// `Option` keeps them apart. The author-surface e2e cannot reach it without
+    /// a second `structure def`, so it is pinned here where the material value is
+    /// built by hand.
+    ///
+    /// ## INV-SF-2
+    ///
+    /// The clause asserting `Severity::Error` IS the nonzero-exit assertion:
+    /// `cmd_eval`'s severity gate turns any Error-severity diagnostic into a
+    /// process exit code of 1 — verified independently on this branch by
+    /// observing `reify eval` return 1 on an `E_ModalNoModesComputed` Error.
+    ///
+    /// RED before step-10: measured on this branch, this exact shape yields a
+    /// full modes list with ζ = 0 and zero diagnostics.
+    #[test]
+    fn trampoline_rejects_material_damping_over_a_non_damped_material() {
+        const CODE: &str = "E_ModalDampingMaterialNotDamped";
+
+        /// Solve with an arbitrary material value and damping descriptor.
+        /// `damping: None` omits the field entirely — the `Absent` case, which
+        /// is a distinct classification from an explicit `NoDamping()`.
+        fn solve(material: Value, damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                material,
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        // ── THE REJECTION. A material with a density (so the more fundamental
+        // E_ModalNoMassMatrix guard passes) but NO loss_factor. ──────────────
+        {
+            let (modes, diagnostics) = solve(
+                material_with_density(Some(STEEL_DENSITY)),
+                Some(struct_instance("MaterialDamping", vec![])),
+            );
+
+            let errors: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert_eq!(
+                errors.len(),
+                1,
+                "expected EXACTLY ONE Error-severity diagnostic — zero means the \
+                 silent ζ = 0 defect is live, more than one means the guard did \
+                 not short-circuit; got {diagnostics:?}"
+            );
+            let message = &errors[0].message;
+            assert!(
+                message.starts_with(CODE),
+                "the diagnostic must start with the message-prefix code `{CODE}`; \
+                 got: {message}"
+            );
+            // NAMES THE MATERIAL. `material_with_density`'s type_name is
+            // `ElasticMaterial`, which is what an author would see.
+            assert!(
+                message.contains("ElasticMaterial"),
+                "the diagnostic must name the offending material's runtime type \
+                 so the author can locate it; got: {message}"
+            );
+            // NAMES THE FIX.
+            for needle in ["DampedMaterial", "loss_factor"] {
+                assert!(
+                    message.contains(needle),
+                    "the diagnostic must name the fix — it must mention \
+                     `{needle}`; got: {message}"
+                );
+            }
+            // DEGENERATE RESULT, not modes carrying ζ = 0. B8's normative
+            // wording is "eval error naming the material; NOT damping_ratio = 0".
+            assert!(
+                modes.is_empty(),
+                "the rejection must return the DEGENERATE empty-modes result — a \
+                 consumer reading ModalResult without inspecting diagnostics \
+                 would otherwise be back in the silent-zero shape (PRD §C6); got \
+                 {} modes",
+                modes.len()
+            );
+        }
+
+        // ── THE BOUNDARY: η = 0.0 is a CONFORMER and must be ACCEPTED. ───────
+        {
+            let (modes, diagnostics) = solve(
+                damped_material(0.0),
+                Some(struct_instance(
+                    "MaterialDamping",
+                    vec![("extra".to_string(), rayleigh_damping(0.0, 1e-4))],
+                )),
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "a material declaring `loss_factor = 0.0` CONFORMS to `Damped` — \
+                 it is explicitly undamped, not non-conforming — and must NOT be \
+                 rejected; got {diagnostics:?}"
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "an explicitly-undamped conforming material is a VALID solve and \
+                 must produce no Error at all; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "an explicitly-undamped conforming material must still return a \
+                 full modes list — a guard that degenerates a valid solve is \
+                 worse than no guard"
+            );
+            // ζ = η/2 + ζ_extra = 0 + β·ω/2, i.e. the extra companion alone.
+            let Value::StructureInstance(m) = &modes[0] else {
+                panic!("mode 0 must be a Mode StructureInstance")
+            };
+            let Some(Value::Scalar { si_value: f, .. }) = m.fields.get("frequency") else {
+                panic!("mode 0 frequency must be a Scalar")
+            };
+            let expected = rayleigh_damping_ratio(0.0, 1e-4, 2.0 * std::f64::consts::PI * f);
+            assert!(expected > 0.0, "the fixture β must give a nonzero ζ_extra");
+            let Some(Value::Real(zeta)) = m.fields.get("damping_ratio") else {
+                panic!("mode 0 damping_ratio must be a Real")
+            };
+            assert!(
+                (zeta - expected).abs() / expected < 1e-9,
+                "with η = 0 the MSE half contributes exactly 0, so ζ must be the \
+                 `extra` companion alone: expected {expected}, got {zeta}"
+            );
+        }
+
+        // ── THE SILENCE HALF: the same non-conforming material is perfectly
+        // usable under every descriptor that does not need a loss factor. ────
+        for (label, damping) in [
+            ("NoDamping", Some(struct_instance("NoDamping", vec![]))),
+            ("RayleighDamping", Some(rayleigh_damping(0.0, 1e-4))),
+            ("absent", None),
+        ] {
+            let (modes, diagnostics) = solve(material_with_density(Some(STEEL_DENSITY)), damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: a material with no loss_factor is perfectly valid under \
+                 a descriptor that does not need one — the rejection must key on \
+                 the DESCRIPTOR as well as on conformance; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
     /// Task #6878 (PRD leaf β) step-7: the in-crate twin of the three author-
     /// surface arms in
     /// `crates/reify-eval/tests/harness_modal/modal_material_damping_e2e.rs`,

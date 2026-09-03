@@ -451,3 +451,256 @@ fn material_damping_composes_additively_with_its_extra_descriptor() {
         );
     }
 }
+
+// ─── B8: the loud coded rejection ────────────────────────────────────────────
+
+/// The diagnostic code the FEA producer must emit when `MaterialDamping` is
+/// declared over a material that does not conform to `Damped`. A message-prefix
+/// code, matching every other modal/transient diagnostic in `modal_ops.rs`
+/// (`E_ModalNoMassMatrix`, `E_ModalNoModesComputed`, `E_TransientForcingMissing`,
+/// `W_MechanismModalUnsupportedDamping`) rather than a `DiagnosticCode` registry
+/// variant — that file's explicit, documented, opposite-to-the-house convention.
+const NOT_DAMPED_CODE: &str = "E_ModalDampingMaterialNotDamped";
+
+/// A source declaring a material that type-checks as `ElasticMaterial` but does
+/// NOT conform to `Damped`, and asking for `MaterialDamping` over it.
+///
+/// This is reachable ONLY because `modal_analysis(material : ElasticMaterial, …)`
+/// (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`) does not require
+/// `Damped` — verified on this branch: this exact source compiles and evaluates
+/// CLEAN today, exit 0, f₁ = 418.01 Hz, ζ = 0. That is the silent-zero defect B8
+/// converts, and it is why the rejection has to be eval-time.
+///
+/// `{damping}` is substituted per arm so the rejection and the three silence
+/// arms share one material and one geometry.
+const NOT_DAMPED_SOURCE_TEMPLATE: &str = r#"
+structure def PlainSteel : ElasticMaterial {
+    param youngs_modulus : Pressure = 205GPa
+    param poisson_ratio : Real = 0.29
+    param density : Density = 7850kg/m^3
+    param yield_stress : Option<Pressure> = some(310MPa)
+}
+
+structure def NotDampedProbe {
+    param length : Length = 100mm
+    param width  : Length = 20mm
+    param height : Length = 5mm
+
+    let plain = PlainSteel()
+    let mi = FEAMaterialInput(material: plain)
+    let root = FixedSupport(target: "x_min")
+
+    let opts = ModalOptions(
+        n_modes: 2,
+        boundary_conditions: [root],
+        damping: {damping},
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
+    )
+    let r = modal_analysis(mi.material, length, width, height, opts)
+    let n_modes_returned : Int = r.modes.count
+}
+"#;
+
+/// A `MaterialDamping` solve over a genuinely `Damped` material — the SILENCE
+/// arm that proves the rejection keys on conformance and not merely on the
+/// descriptor. Reuses the main [`SOURCE`] fixture's material.
+const DAMPED_MATERIAL_SOURCE: &str = r#"
+structure def DampedProbe {
+    param length : Length = 100mm
+    param width  : Length = 20mm
+    param height : Length = 5mm
+
+    let steel = Steel_AISI_1045()
+    let mi = FEAMaterialInput(material: steel)
+    let root = FixedSupport(target: "x_min")
+
+    let opts = ModalOptions(
+        n_modes: 2,
+        boundary_conditions: [root],
+        damping: MaterialDamping(),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
+    )
+    let r = modal_analysis(mi.material, length, width, height, opts)
+    let n_modes_returned : Int = r.modes.count
+}
+"#;
+
+/// Compile + eval `source`, asserting only that it COMPILES clean, and return
+/// `(mode count returned, eval diagnostics)`.
+///
+/// Deliberately does NOT assert eval is clean — these arms are exactly about
+/// what eval says.
+fn eval_diagnostics(struct_name: &str, source: &str) -> (i64, Vec<reify_core::Diagnostic>) {
+    let compiled = parse_and_compile_with_stdlib(source);
+    // (i) The source must COMPILE with no error-severity diagnostics. This is a
+    // deliberately EVAL-time rejection, not a check-time one — the compiler
+    // cannot catch it, because `modal_analysis`'s param is `ElasticMaterial`.
+    // Pinning both halves keeps the two channels from being confused.
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "the probe source must COMPILE with no error-severity diagnostics — the \
+         MaterialDamping/`Damped` mismatch is deliberately an eval-time \
+         rejection, not a check-time one; got:\n{:#?}",
+        errors_only(&compiled)
+    );
+    let mut engine = make_simple_engine();
+    register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+    let n = eval_result
+        .values
+        .get(&ValueCellId::new(struct_name, "n_modes_returned"))
+        .map(num)
+        .unwrap_or_else(|| {
+            panic!(
+                "{struct_name}.n_modes_returned not found; diagnostics: {:#?}",
+                eval_result.diagnostics
+            )
+        });
+    (n as i64, eval_result.diagnostics.clone())
+}
+
+/// **B8 — a `MaterialDamping` solve over a non-`Damped` material is a LOUD,
+/// CODED, eval-time Error naming the material and the fix.**
+///
+/// RED before step-10: measured on this branch, this exact source evaluates
+/// silently to `f₁ = 418.0101090358127 Hz`, `ζ = 0`, exit 0, zero diagnostics.
+///
+/// B8's normative wording is "eval error naming the material; NOT
+/// `damping_ratio = 0`", so clause (vi) is not decoration: a result that still
+/// hands back modes carrying a zero ζ fails the signal even with the Error
+/// present. A downstream consumer reading `ModalResult` without inspecting the
+/// diagnostics channel would be back in the silent-zero shape.
+///
+/// INV-SF-2. Clause (ii) asserts the severity is `Severity::Error`, which is
+/// what `cmd_eval`'s severity gate turns into a process exit code of 1 —
+/// verified independently on this branch by observing `reify eval` return 1 on
+/// an `E_ModalNoModesComputed` Error. Asserting the severity here is asserting
+/// the nonzero exit.
+#[test]
+fn material_damping_over_a_non_damped_material_is_a_coded_eval_error() {
+    let (n_modes, diagnostics) = eval_diagnostics(
+        "NotDampedProbe",
+        &NOT_DAMPED_SOURCE_TEMPLATE.replace("{damping}", "MaterialDamping()"),
+    );
+
+    // (ii) EXACTLY ONE Error-severity diagnostic — not zero (the defect), and
+    // not several (which would mean the guard fired downstream of itself).
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "a MaterialDamping solve over a material that does not conform to \
+         `Damped` must emit EXACTLY ONE Error-severity diagnostic. Zero means \
+         the silent ζ = 0 defect is still live (INV-SF-3); more than one means \
+         the guard did not short-circuit. Got: {diagnostics:#?}"
+    );
+    let message = &errors[0].message;
+
+    // (iii) the message-prefix code, at the START of the message.
+    assert!(
+        message.starts_with(NOT_DAMPED_CODE),
+        "the diagnostic must start with the code `{NOT_DAMPED_CODE}` (the \
+         message-prefix convention every other modal diagnostic in \
+         modal_ops.rs uses); got: {message}"
+    );
+
+    // (iv) it NAMES the offending material's runtime type, so the author can
+    // locate it — mirroring how `W_MechanismModalUnsupportedDamping` names the
+    // offending descriptor.
+    assert!(
+        message.contains("PlainSteel"),
+        "the diagnostic must name the offending material's runtime type so the \
+         author can locate it; got: {message}"
+    );
+
+    // (v) it NAMES THE FIX in the author's own vocabulary. A diagnostic that
+    // reports a problem without naming the one-line remedy just relocates the
+    // author's confusion.
+    for needle in ["DampedMaterial", "loss_factor"] {
+        assert!(
+            message.contains(needle),
+            "the diagnostic must name the fix — it must mention `{needle}` so \
+             the author knows what to add and where; got: {message}"
+        );
+    }
+
+    // (vi) NO MODES CARRYING ζ = 0. B8's normative wording is "eval error
+    // naming the material; NOT damping_ratio = 0", so an Error alongside a full
+    // modes list still fails the signal.
+    assert_eq!(
+        n_modes, 0,
+        "the rejection must return the DEGENERATE empty-modes ModalResult, not \
+         a full modes list whose damping_ratio is 0 — a consumer reading \
+         ModalResult without inspecting diagnostics would otherwise be back in \
+         the silent-zero shape (PRD §C6). Got {n_modes} modes."
+    );
+}
+
+/// **The SILENCE half of B8**, without which the new diagnostic is noise rather
+/// than signal.
+///
+/// Three arms that must emit NO `E_ModalDampingMaterialNotDamped` at all and
+/// must still return a full modes list:
+///   - the SAME non-`Damped` material under `NoDamping()` and under
+///     `RayleighDamping(...)` — the rejection must key on the DESCRIPTOR as well
+///     as on conformance, so a material with no loss factor stays perfectly
+///     usable for every damping model that does not need one;
+///   - `MaterialDamping()` over a genuinely `Damped` material
+///     (`Steel_AISI_1045`) — the rejection must key on CONFORMANCE as well as on
+///     the descriptor.
+///
+/// Together those two directions are what make the guard a conjunction rather
+/// than either half alone.
+#[test]
+fn the_not_damped_rejection_stays_silent_for_every_valid_combination() {
+    let cases: [(&str, &str, String); 3] = [
+        (
+            "NoDamping over a non-Damped material",
+            "NotDampedProbe",
+            NOT_DAMPED_SOURCE_TEMPLATE.replace("{damping}", "NoDamping()"),
+        ),
+        (
+            "RayleighDamping over a non-Damped material",
+            "NotDampedProbe",
+            NOT_DAMPED_SOURCE_TEMPLATE
+                .replace("{damping}", "RayleighDamping(alpha: 0.0Hz, beta: 0.0001s)"),
+        ),
+        (
+            "MaterialDamping over a genuinely Damped material",
+            "DampedProbe",
+            DAMPED_MATERIAL_SOURCE.to_string(),
+        ),
+    ];
+
+    for (label, struct_name, source) in cases {
+        let (n_modes, diagnostics) = eval_diagnostics(struct_name, &source);
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains(NOT_DAMPED_CODE)),
+            "{label}: must emit NO {NOT_DAMPED_CODE} diagnostic at any \
+             severity; got {diagnostics:#?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Error),
+            "{label}: is a valid solve and must produce no Error diagnostics at \
+             all; got {diagnostics:#?}"
+        );
+        assert!(
+            n_modes > 0,
+            "{label}: must still return a full modes list, got {n_modes} modes \
+             — a guard that degenerates a VALID solve is worse than no guard"
+        );
+    }
+}
