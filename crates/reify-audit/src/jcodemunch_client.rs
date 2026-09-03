@@ -1128,9 +1128,17 @@ fn extract_g_allow(line: &str) -> Option<String> {
 /// `p1_producer_orphan.rs`'s non-test-caller check therefore only ever sees
 /// same-file callers, even though its own condition does not spell out a
 /// same-file conjunct. Loosening this (e.g. if jcodemunch ever grows a
-/// server-side file-scope parameter — see the `JCodemunchOps::find_references`
-/// doc at `lib.rs:1206-1213` — or having P1 treat cross-file refs as their
-/// own signal) is tracked as a follow-up (#6504) rather than fixed here.
+/// server-side file-scope parameter — see the
+/// [`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references)
+/// doc, which is what states the MUST — or having P1 treat cross-file refs
+/// as their own signal) is tracked as a follow-up (#6504) rather than
+/// fixed here.
+///
+/// Cited by SYMBOL, never by line range: the three `lib.rs:1206-1213`
+/// citations this replaced had already drifted onto
+/// `FakeGitOps::set_diff_added_lines_in_commit`, and one of them was
+/// inside a live assertion message — so a failing run pointed the reader
+/// at an unrelated test-support setter.
 fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
     refs.into_iter().filter(|r| r.file == file).collect()
 }
@@ -3503,8 +3511,9 @@ mod tests {
         }
 
         /// Pins today's `RealJCodemunchOps::find_references` scoping
-        /// contract (`lib.rs:1206-1213`: production impls MUST scope to
-        /// `symbol.file`) through the production route, over the real-wire
+        /// contract ([`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references):
+        /// production impls MUST scope to `symbol.file`) through the
+        /// production route, over the real-wire
         /// 3-segment payload from
         /// `munch_decode_accepts_a_three_segment_table_spec_as_all_str`.
         /// Only the first row's file matches `symbol.file`, so exactly one
@@ -3545,8 +3554,8 @@ mod tests {
             assert_eq!(
                 refs.len(),
                 1,
-                "find_references must scope to symbol.file per lib.rs:1206-1213; \
-                 got {refs:?}",
+                "find_references must scope to symbol.file per the \
+                 JCodemunchOps::find_references doc in lib.rs; got {refs:?}",
             );
             assert_eq!(refs[0].file, symbol.file);
             assert_eq!(refs[0].line, 0, "the real wire reports no line");
