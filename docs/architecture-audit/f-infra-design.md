@@ -536,6 +536,43 @@ Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback
 
 **Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, the filter's `.metadata.done_at //` precedence picks it up automatically and the `updatedAt` fallback can be deleted. Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
 
+#### 11.2.1 Do the two load paths derive `done_at` equivalently? (2026-09-03, task 6985)
+
+**Equivalent on the shared tier.** For `status == "done"`, both the jq
+sidecar and the crate's live loader derive `done_at` from the same
+top-level `updatedAt` field, and both tolerate the `.NNN` fractional-second
+suffix: `scripts/reify-audit-snapshot-filter.jq:73` strips it via
+`sub("\\.[0-9]+Z$"; "Z")`, `crates/reify-audit/src/fused_memory_client.rs:405`
+via `time_str.split('.').next()`. Both yield `null`/`None` for non-done
+tasks and for an absent or unparseable `updatedAt`. The Rust parser
+additionally accepts `±HH:MM` offsets (`split_tz`, `:404`) that jq's
+`fromdateiso8601` rejects — a harmless superset, unreachable today since
+fused-memory's writer only ever emits `...Z`.
+
+**Not equivalent on the precedence tier.** The jq filter prefers
+`.metadata.done_at` before falling back to `updatedAt`
+(`scripts/reify-audit-snapshot-filter.jq:70`). `task_metadata_from_wire`
+(`fused_memory_client.rs:364-370`) does not implement that precedence — it
+derives `done_at` solely from the top-level `updatedAt`. Its `metadata`
+binding (`:327`) is read only for `files`, `done_provenance`, `prd`,
+`consumer_ref`, and `audit_foundation` (`:329-352`); `metadata.done_at` is
+never consulted.
+
+**Consequence: a latent forward-compatibility hazard, not a live bug.**
+§11.2's claim that once fused-memory exposes an explicit `metadata.done_at`
+"the filter picks it up automatically ... without requiring a code change"
+holds for the wrapper path only. Today the divergence is latent — upstream
+does not yet stamp `metadata.done_at`, so both paths compute the identical
+`updatedAt`-derived value and nothing is currently miscomputed. Once
+§11.2's own logged upstream follow-up lands, the wrapper path switches to
+the true done-flip timestamp while the live-loader path — which is what
+the live systemd hook actually runs, per §11.1.3 — silently keeps the
+`updatedAt` proxy; the two would then disagree by the full post-done edit
+skew for exactly the tasks P1 grades against its 14-day grace window (§5
+P1). Closing this is a one-tier change to `task_metadata_from_wire` (read
+`metadata.done_at` first, matching the jq precedence), deliberately left
+to a follow-up: this task holds `fused_memory_client.rs` read-only.
+
 ## 12. Implementation cost budget
 
 **Total estimate for slice 1 (T-1..T-7, excluding D-1):** ~1 implementation session of 90–150 minutes interactive, OR ~2-3 orchestrated tasks if priority-graded high enough to land in reasonable time under the narrow-lock scheduler (per `feedback_orchestrator_narrow_locks_favor_upfront_design.md`).
