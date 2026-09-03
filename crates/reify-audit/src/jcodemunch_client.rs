@@ -576,6 +576,66 @@ fn parse_signals_list(s: &str) -> Vec<String> {
         .collect()
 }
 
+// -----------------------------------------------------------------------
+// dropped_rows_diagnostic helper
+// -----------------------------------------------------------------------
+
+/// Compare a decoded table's row count against the number of records an
+/// adapter actually produced, and summarise any SHORTFALL into ONE
+/// diagnostic line — the adapters' counterpart to
+/// [`stale_decl_line_diagnostic`], and the same "collect, summarise, return
+/// it for the caller to `eprintln!`" idiom as
+/// [`read_source_lines_for_enrichment`].
+///
+/// Every wire adapter here is a `filter_map`, so a MANDATORY column that a
+/// future jcodemunch release renames or drops does not fail loudly — it
+/// evaluates `None` per row and the whole corpus quietly becomes an empty
+/// `Vec`. That is worse than an error: `get_dead_code_v2` losing
+/// `confidence`, or `find_references`' `__rows__` losing `file`, produces a
+/// result byte-for-byte identical to "this repo is clean" / "this symbol has
+/// zero references", and P1/PDEAD/PUNTESTED report accordingly. The drift is
+/// not hypothetical — 1.108.54 already dropped `find_references`' `line`
+/// column, which is what this task was filed for. The rows are still
+/// correctly dropped (a record missing what identifies it is not usable);
+/// what this adds is that the drop is never silent.
+///
+/// Returns `None` — deliberately, these are NOT drops — when:
+/// - `table` is absent from `decoded`, or is not an array. The adapter
+///   returns an empty vec by design and there were never any rows.
+/// - the table is EMPTY. A genuine empty answer (the P1 producer-orphan
+///   case) must not be reported as drift; see
+///   `find_references_from_wire_empty_rows_table_beats_a_decoy_table`.
+/// - `kept >= rows.len()`, the happy path.
+///
+/// Names the first row's actual column names, because the whole point is to
+/// make a RENAMED column legible without a second round-trip to the server.
+/// Summarises to ONE line for the same reason [`stale_decl_line_diagnostic`]
+/// does: a per-row print would be a stderr storm.
+fn dropped_rows_diagnostic(
+    tool: &str,
+    decoded: &Value,
+    table: &str,
+    kept: usize,
+) -> Option<String> {
+    let rows = decoded.get(table)?.as_array()?;
+    let dropped = rows.len().checked_sub(kept)?;
+    if dropped == 0 {
+        return None;
+    }
+    let columns: Vec<&str> = rows
+        .first()
+        .and_then(Value::as_object)
+        .map(|o| o.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    Some(format!(
+        "reify-audit: jcodemunch {tool}: dropped {dropped} of {} `{table}` row(s) — \
+         a mandatory column is missing or unreadable, so findings over those rows \
+         are silently absent; first row's columns: [{}]",
+        rows.len(),
+        columns.join(", ")
+    ))
+}
+
 /// Adapter: MUNCH-decoded value → `Vec<DeadSymbol>`.
 ///
 /// Reads the `dead_symbols` table; maps `id/name/kind/file/line/confidence`
@@ -802,9 +862,20 @@ fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
     Vec::new()
 }
 
-/// Decode a MUNCH row array (already known to carry a `file` field) into
-/// `Vec<SymbolReference>`. Shared by both the `__rows__`-preferred and the
+/// Decode a MUNCH row array into `Vec<SymbolReference>`, dropping any row
+/// without a `file`. Shared by both the `__rows__`-preferred and the
 /// fallback-scan paths in [`find_references_from_wire`].
+///
+/// Makes NO precondition on `file` being present: only ONE of its two
+/// callers establishes that. The fallback scan selects a table on
+/// `rows.iter().any(|r| r.get("file").is_some())`, but the `__rows__` path
+/// treats that table as authoritative and passes it straight through. So a
+/// release that renames `file` — the drift 1.108.54 already shipped for
+/// `line` — reaches here unchecked and every row drops, which is why the
+/// caller pairs this with [`dropped_rows_diagnostic`]: silently returning
+/// empty would be read as "this symbol has zero references" and turn every
+/// well-referenced symbol into a P1 producer-orphan finding. See
+/// `find_references_from_wire_is_loud_when_rows_carry_no_file_column`.
 fn references_from_rows(rows: &[Value]) -> Vec<SymbolReference> {
     rows.iter()
         .filter_map(|row| {
@@ -1495,6 +1566,14 @@ impl JCodemunchOps for RealJCodemunchOps {
             }
         };
         let mut symbols = changed_symbols_from_wire(&decoded);
+        // A row the adapter dropped is a MANDATORY column (`name`/`file`)
+        // the wire no longer carries. Reported once per call, never once
+        // per row — see `dropped_rows_diagnostic`.
+        if let Some(msg) =
+            dropped_rows_diagnostic("get_changed_symbols", &decoded, "added_symbols", symbols.len())
+        {
+            eprintln!("{msg}");
+        }
         // Enrichment (reading each declaring file, extracting suppression
         // flags) lives in `enrich_suppression_flags` so its stale-index
         // report is a RETURN VALUE a test can assert on rather than a bare
@@ -1529,6 +1608,16 @@ impl JCodemunchOps for RealJCodemunchOps {
             }
         };
         let refs = find_references_from_wire(&decoded);
+        // Counted BEFORE `filter_refs_to_file`: scoping to the declaring
+        // file is a deliberate narrowing, not a decode failure. What must
+        // be loud is `__rows__` rows the decoder could not read at all —
+        // an empty result there is indistinguishable from the genuine
+        // zero-reference answer P1 reads as a producer orphan.
+        if let Some(msg) =
+            dropped_rows_diagnostic("find_references", &decoded, "__rows__", refs.len())
+        {
+            eprintln!("{msg}");
+        }
         filter_refs_to_file(refs, &symbol.file)
     }
 
@@ -1546,7 +1635,16 @@ impl JCodemunchOps for RealJCodemunchOps {
                 return Vec::new();
             }
         };
-        dead_symbols_from_wire(&decoded)
+        let symbols = dead_symbols_from_wire(&decoded);
+        // `confidence` is mandatory here (it is what `min_confidence`
+        // filters on), so its drift would empty the whole PDEAD corpus and
+        // report a clean repo.
+        if let Some(msg) =
+            dropped_rows_diagnostic("get_dead_code_v2", &decoded, "dead_symbols", symbols.len())
+        {
+            eprintln!("{msg}");
+        }
+        symbols
     }
 
     fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol> {
@@ -1563,7 +1661,13 @@ impl JCodemunchOps for RealJCodemunchOps {
                 return Vec::new();
             }
         };
-        untested_symbols_from_wire(&decoded)
+        let symbols = untested_symbols_from_wire(&decoded);
+        if let Some(msg) =
+            dropped_rows_diagnostic("get_untested_symbols", &decoded, "symbols", symbols.len())
+        {
+            eprintln!("{msg}");
+        }
+        symbols
     }
 
     fn get_layer_violations(&self) -> Vec<LayerViolation> {
@@ -2076,6 +2180,139 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // amendment: the MANDATORY half of the mandatory/optional contract
+    // ------------------------------------------------------------------
+
+    /// The tolerance tests above all pin ONE direction of the
+    /// mandatory/optional contract — "an absent or string-encoded OPTIONAL
+    /// column must not drop the row". The complementary claim
+    /// (`dead_symbols_from_wire`'s doc: "`confidence` stays mandatory — it
+    /// is the value `min_confidence` filters on, so a default would
+    /// silently change which rows survive") lived only in prose, so a later
+    /// change that followed `line`'s precedent and added
+    /// `.unwrap_or_default()` to it would have left the whole suite green
+    /// while silently changing which rows PDEAD reports.
+    ///
+    /// Also pins the drop's LOUDNESS: dropping the row is correct, dropping
+    /// it silently is the "clean corpus" failure this module exists to
+    /// prevent.
+    #[test]
+    fn dead_symbols_from_wire_drops_a_row_missing_the_mandatory_confidence_column() {
+        let munch = concat!(
+            "#MUNCH/1 tool=get_dead_code_v2 enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:dead_symbols:id|name|kind|file|line|signals\n",
+            "t,a.rs::widget#function,widget,function,a.rs,99,['no_callers']\n",
+        );
+        let v = munch_decode(munch).expect("decode confidence-less dead_symbols munch");
+        let symbols = dead_symbols_from_wire(&v);
+        assert!(
+            symbols.is_empty(),
+            "`confidence` is MANDATORY — it is what `min_confidence` filters \
+             on, so a defaulted value would silently change which rows \
+             survive; got {symbols:?}"
+        );
+        let msg = dropped_rows_diagnostic("get_dead_code_v2", &v, "dead_symbols", symbols.len())
+            .expect("a dropped row must not be silent");
+        assert!(
+            msg.contains("reify-audit: jcodemunch"),
+            "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
+        );
+        assert!(
+            msg.contains("confidence") || msg.contains("signals"),
+            "diagnostic must name the columns the row DID carry, so a rename \
+             is legible; got: {msg}"
+        );
+    }
+
+    /// The `added_symbols` sibling of the test above, for the other prose-only
+    /// mandatory claim (`changed_symbols_from_wire`'s doc: "`name` and `file`
+    /// are MANDATORY — a row without them names no locatable symbol").
+    /// Defaulting `name` would inject unnamed symbols into the P1 sweep.
+    #[test]
+    fn changed_symbols_from_wire_drops_a_row_missing_the_mandatory_name_column() {
+        let munch = concat!(
+            "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:added_symbols:file|line\n",
+            "t,a.rs,99\n",
+        );
+        let v = munch_decode(munch).expect("decode name-less added_symbols munch");
+        let symbols = changed_symbols_from_wire(&v);
+        assert!(
+            symbols.is_empty(),
+            "`name` is MANDATORY — an unnamed symbol is not locatable and must \
+             not reach the P1 sweep; got {symbols:?}"
+        );
+        assert!(
+            dropped_rows_diagnostic("get_changed_symbols", &v, "added_symbols", symbols.len())
+                .is_some(),
+            "a dropped row must not be silent"
+        );
+    }
+
+    /// `dropped_rows_diagnostic` is the adapters' counterpart to
+    /// `stale_decl_line_diagnostic`: collect, summarise into ONE line,
+    /// return it for the caller to print.
+    #[test]
+    fn dropped_rows_diagnostic_fires_only_on_a_shortfall() {
+        let decoded = json!({
+            "dead_symbols": [
+                { "id": "a", "name": "widget", "file": "a.rs" },
+                { "id": "b", "name": "gadget", "file": "b.rs" },
+            ]
+        });
+        assert!(
+            dropped_rows_diagnostic("t", &decoded, "dead_symbols", 2).is_none(),
+            "no shortfall, no diagnostic"
+        );
+        assert!(
+            dropped_rows_diagnostic("t", &decoded, "absent_table", 0).is_none(),
+            "an ABSENT table is a different condition (the adapter returns \
+             an empty vec by design) and must not be reported as a drop"
+        );
+        assert!(
+            dropped_rows_diagnostic("t", &json!({ "dead_symbols": 7 }), "dead_symbols", 0)
+                .is_none(),
+            "a non-array table carries no rows to have dropped"
+        );
+        assert!(
+            dropped_rows_diagnostic("t", &json!({ "dead_symbols": [] }), "dead_symbols", 0)
+                .is_none(),
+            "an EMPTY table is a genuine empty answer, not a drop"
+        );
+
+        let msg = dropped_rows_diagnostic("get_dead_code_v2", &decoded, "dead_symbols", 1)
+            .expect("1 of 2 kept must diagnose");
+        assert!(
+            msg.contains("reify-audit: jcodemunch"),
+            "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
+        );
+        assert!(
+            msg.contains("get_dead_code_v2"),
+            "diagnostic must name the tool whose rows were dropped; got: {msg}"
+        );
+        assert!(
+            msg.contains("dead_symbols"),
+            "diagnostic must name the table; got: {msg}"
+        );
+        assert!(
+            mentions_count(&msg, 1) && mentions_count(&msg, 2),
+            "diagnostic must name both the dropped count and the row total; got: {msg}"
+        );
+        assert!(
+            msg.contains("id") && msg.contains("name") && msg.contains("file"),
+            "diagnostic must name the columns the first row actually carries, \
+             so a renamed column is legible without a second round-trip; got: {msg}"
+        );
+        assert_eq!(
+            msg.lines().count(),
+            1,
+            "diagnostic must stay one line regardless of the dropped count; got: {msg:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // step-11 / step-12: layer_violations_from_wire (both fixtures)
     // ------------------------------------------------------------------
 
@@ -2241,6 +2478,66 @@ mod tests {
         assert!(
             refs.is_empty(),
             "a table with no `file` column must not be matched"
+        );
+    }
+
+    /// The `__rows__` branch's counterpart to the test above, and the
+    /// failure direction that branch could not previously express.
+    ///
+    /// `find_references_from_wire` treats a present `__rows__` array as
+    /// AUTHORITATIVE and hands it straight to `references_from_rows`
+    /// WITHOUT the `file`-column check the fallback scan applies. So a
+    /// future release that renames the `file` column — exactly the drift
+    /// 1.108.54 already shipped for `line` — yields a `Vec` that is
+    /// byte-for-byte indistinguishable from the genuine "this symbol has
+    /// zero references" answer that
+    /// `find_references_from_wire_empty_rows_table_beats_a_decoy_table`
+    /// deliberately preserves. `p1_producer_orphan::check`'s
+    /// `has_non_test_caller` would then evaluate false for EVERY symbol
+    /// and P1 would emit a producer-orphan finding for every
+    /// well-referenced public symbol in a done task — a false-POSITIVE
+    /// storm, the opposite direction to the decoy-table hazard the
+    /// selector's doc reasons about.
+    ///
+    /// Dropping the rows stays correct (a reference with no file is not
+    /// something `filter_refs_to_file` can scope). Dropping them SILENTLY
+    /// is not, so this pins the diagnostic rather than the empty vec alone.
+    #[test]
+    fn find_references_from_wire_is_loud_when_rows_carry_no_file_column() {
+        let decoded = json!({
+            "__rows__": [
+                { "path": "crates/reify-audit/src/jcodemunch_client.rs", "match_type": "named" },
+                { "path": "crates/reify-audit/tests/p1.rs", "match_type": "named" },
+            ]
+        });
+        let refs = find_references_from_wire(&decoded);
+        assert!(
+            refs.is_empty(),
+            "a reference with no `file` cannot be scoped by filter_refs_to_file; \
+             got {refs:?}"
+        );
+        let msg = dropped_rows_diagnostic("find_references", &decoded, "__rows__", refs.len())
+            .expect(
+                "a renamed `file` column must not read as a genuine zero-reference \
+                 answer — that is a producer-orphan false positive for every symbol",
+            );
+        assert!(
+            msg.contains("path") && msg.contains("match_type"),
+            "diagnostic must name the columns the rows DO carry, so the rename is \
+             legible; got: {msg}"
+        );
+        assert!(
+            mentions_count(&msg, 2),
+            "diagnostic must name how many rows were dropped; got: {msg}"
+        );
+
+        // The genuine zero-reference answer stays silent: an EMPTY
+        // `__rows__` is the P1 producer-orphan case and must not be
+        // reported as drift.
+        assert!(
+            dropped_rows_diagnostic("find_references", &json!({ "__rows__": [] }), "__rows__", 0)
+                .is_none(),
+            "an empty __rows__ is a real answer, not a dropped row"
         );
     }
 
