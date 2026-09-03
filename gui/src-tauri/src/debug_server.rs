@@ -1703,7 +1703,14 @@ async fn handle_reify_open_file(
     params: Value,
 ) -> Result<Value, String> {
     let raw_path = open_file_path_param(&params)?;
-    let (_frontend, content) = open_path_into_engine(state, &raw_path).await?;
+    let (frontend, content) = open_path_into_engine(state, &raw_path).await?;
+    // The funnel's frontend reply is not part of THIS name's envelope, but it
+    // must still be inspected: `open_file` is frontend-mediated, so a refusal
+    // arrives as an in-band `{error}` object rather than a transport failure,
+    // and answering `{success: true, source}` over it would report a write the
+    // editor never applied (see [`frontend_ok`]). The debug-native twin
+    // surfaces the same refusal by returning the reply itself.
+    frontend_ok(frontend, "open_file")?;
     Ok(reify_open_file_envelope(&content))
 }
 
@@ -1759,6 +1766,63 @@ pub fn write_tool_frontend_payload(
         payload["file"] = json!({ "path": path, "content": content });
     }
     Ok(payload)
+}
+
+/// Refuse a `query_frontend` reply that carries the bridge's in-band
+/// `{error: string}` envelope, converting it to `Err`.
+///
+/// `DebugBridge::query_frontend` resolves `Ok(Value)` for ANY well-formed JSON
+/// reply — including `{"error": "unknown command: …"}`, which `bridge.ts`
+/// returns for an unregistered command AND for any handler that throws
+/// (docs/debug-mcp-contract.md §2a). A push that was REFUSED therefore looks
+/// exactly like one that landed.
+///
+/// For the δ write tools that is worse than a swallowed error message: the
+/// seam has ALREADY refreshed `last_state` to S1 by the time the push goes
+/// out, so a refused push leaves the baseline at S1 while the frontend still
+/// holds S0 — the stale-baseline desync (bug #7) the seam exists to prevent —
+/// and the AI client is told the write landed. Surfacing the refusal as `Err`
+/// cannot undo the engine mutation (nothing at this layer can), but it stops
+/// the tool from reporting success over a frontend that never applied the
+/// state, and the `Err` reaches the client through the existing `isError`
+/// path.
+///
+/// NOT reachable with today's payloads — the Rust side always builds a
+/// well-formed `file`/`guiState` object for a command the bridge registers —
+/// so this is a guard against a future frontend refactor, not a fix for a
+/// live bug (task #5097 δ, review finding).
+///
+/// A non-string `error` value is refused too, rendered via `to_string()`:
+/// unlike [`reify_write_str_param`], where "wrong type" and "absent" both end
+/// in the same refusal, here they end in OPPOSITE outcomes, so folding a
+/// mistyped `error` into "no error" would restore exactly the silent-success
+/// hole this closes. An absent or `null` `error` — and any non-object reply,
+/// which `Value::get` answers `None` for — passes through untouched.
+///
+/// **The two debug-native funnels are deliberately NOT routed through this.**
+/// `handle_open_file` and `handle_load_fixture` return the frontend's reply
+/// VERBATIM because the visual-regression harness reads that object, where an
+/// `{error}` reply is itself the answer. `handle_set_fea_case` predates this
+/// cluster and keeps its existing behaviour; it is named here so its omission
+/// reads as a decision rather than an oversight.
+///
+/// Pure/deterministic: no engine, no Tauri handle, no I/O — the same headless
+/// testability contract as [`write_tool_frontend_payload`], pinned by
+/// `frontend_ok_refuses_the_bridge_error_envelope` and, across a real
+/// `DebugTransport` round-trip, by
+/// `frontend_error_envelope_is_refused_after_the_transport`
+/// (tests/debug_boundary_tests.rs).
+pub(crate) fn frontend_ok(reply: Value, command: &str) -> Result<Value, String> {
+    match reply.get("error") {
+        None | Some(Value::Null) => Ok(reply),
+        Some(e) => {
+            let msg = e
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| e.to_string());
+            Err(format!("{command} push refused by the frontend: {msg}"))
+        }
+    }
 }
 
 /// Pure serializer: packs a `GuiState` and a case name into the JSON object
@@ -2073,6 +2137,38 @@ pub async fn reify_set_parameter_on_engine_and_refresh_baseline(
 ///     envelope `crates/reify-mcp/src/tools/write.rs` returns for this tool
 ///     name, so an AI client sees one shape across both surfaces.
 ///
+/// # Why the diagnostics are a SECOND engine read
+///
+/// The `GuiState` step 1 returns already carries a `compile_diagnostics` list,
+/// so reading `get_diagnostics()` again looks redundant. It is not: the two
+/// are different facts. `build_gui_state` derives `compile_diagnostics` via
+/// `EngineSession::build_compile_diagnostics`, which is `get_diagnostics()`
+/// PLUS the live-edit compile-failure diags, a synthesized `hot-reload-error`
+/// entry, and build/realization-time geometry ERRORS folded in from
+/// `tess_diag_cache` — a strict superset. What reify-mcp returns under this
+/// tool name is `ctx.get_diagnostics()` (`crates/reify-mcp/src/tools/
+/// write.rs`), i.e. the NARROWER list, so the extra round-trip is what keeps
+/// the two surfaces' envelopes in parity; deriving the envelope from
+/// `gs.compile_diagnostics` would quietly widen it. The cost is one more
+/// `run_on_engine` thread, and the two lists are read from different
+/// snapshots — harmless under the serial-debug-ops assumption below, and
+/// stated here rather than left implicit (task #5097 δ, review finding).
+///
+/// # When `new_value` is null
+///
+/// The envelope nulls `new_value`/`unit` (keeping the key set invariant) if
+/// the committed cell is absent from the rebuilt `GuiState`, where reify-mcp's
+/// `TauriToolContext::set_parameter` instead errors with
+/// `"parameter '<cell_id>' not found in result"`. This surface does NOT mirror
+/// that, deliberately: by this point the splice has been written to the user's
+/// `.ri`, the recompile has committed and the `GuiState` has been pushed to the
+/// frontend, so answering `Err` would report a failure for a write that
+/// landed — the same lie as reporting success for one that did not, inverted.
+/// The arm is in any case all but unreachable: `apply_param_to_source_str`
+/// refuses an unknown `cell_id` before anything is committed. The divergence
+/// is stated in docs/debug-mcp-contract.md's AI-write-tools section alongside
+/// the other exceptions (task #5097 δ, review finding).
+///
 /// NOTE: as on `handle_set_fea_case`, step 1 refreshes `last_state` BEFORE
 /// step 3's push lands S1 on the frontend, so a normal command interleaved in
 /// that window would diff against S1 while the frontend is still at S0. Safe
@@ -2108,10 +2204,13 @@ async fn handle_reify_set_parameter(
     let diagnostics = run_on_engine(&state.engine, |s| Ok(s.get_diagnostics())).await?;
 
     let payload = write_tool_frontend_payload(&gs, None)?;
-    state
+    let reply = state
         .debug_bridge
         .query_frontend("apply_gui_state", payload)
         .await?;
+    // A refused push must not be reported as a landed write — the baseline is
+    // already at S1 (see [`frontend_ok`]).
+    frontend_ok(reply, "apply_gui_state")?;
 
     Ok(reify_set_parameter_envelope(new_value, unit, diagnostics))
 }
@@ -2232,7 +2331,12 @@ pub async fn reify_update_source_on_engine_and_refresh_baseline(
 ///    `EngineSession::get_diagnostics` stamps and therefore the one an AI
 ///    client is most likely to echo back — via
 ///    [`crate::engine::source_key_matches_path`], which lives beside the
-///    `module_key` that MINTS it so the two can never drift;
+///    `module_key` that MINTS it so the two can never drift. That predicate is
+///    ASYMMETRIC and is called here `(requested, active)`: the caller's
+///    spelling is its LOOSE side (a real path or the stem-only key), the
+///    session's entry path its STRICT side (the one whose stem is taken). That
+///    is the same argument order `filter_diagnostics_for_file` uses, and both
+///    directions are pinned by `source_key_matches_path_is_directional`;
 ///  * any other on-disk spelling (relative, `..`, symlink) that
 ///    `canonicalize`s to the active file.
 ///
@@ -2354,6 +2458,19 @@ pub(crate) fn filter_diagnostics_for_file(
 ///     is otherwise the same one `crates/reify-mcp/src/tools/write.rs`
 ///     returns for this tool name.
 ///
+/// The diagnostics are a SECOND engine read for the reason spelled out on
+/// [`handle_reify_set_parameter`] — `gs.compile_diagnostics` is a strict
+/// SUPERSET of `get_diagnostics()` (it folds in live-edit failure diags, the
+/// `hot-reload-error` synthetic and build-time geometry errors), while
+/// reify-mcp filters `ctx.get_diagnostics()` for this tool name.
+///
+/// That read also re-reads the session's entry path, in the SAME lock rather
+/// than a third one of its own. It cannot have moved since the guard read it:
+/// `EngineSession::update_source` commits with `FilePathUpdate::Preserve` by
+/// construction (engine.rs, task 3370) — which is the very reason the
+/// active-file guard exists — so the two reads agree structurally, not merely
+/// under the serial-debug-ops assumption.
+///
 /// Inherits the serial-debug-ops caveat stated on
 /// [`handle_reify_set_parameter`]: the refresh lands before the push.
 async fn handle_reify_update_source(
@@ -2388,10 +2505,13 @@ async fn handle_reify_update_source(
 
     let push_path = resolve_update_source_push_path(active.as_deref(), &file_path);
     let payload = write_tool_frontend_payload(&gs, Some((&push_path, &content)))?;
-    state
+    let reply = state
         .debug_bridge
         .query_frontend("apply_gui_state", payload)
         .await?;
+    // A refused push must not be reported as a landed write — the baseline is
+    // already at S1 (see [`frontend_ok`]).
+    frontend_ok(reply, "apply_gui_state")?;
 
     Ok(reify_update_source_envelope(filtered))
 }
@@ -2515,10 +2635,13 @@ async fn handle_reify_save_file(
         reify_save_file_on_engine_and_refresh_baseline(&state.engine, &state.last_state, file_path)
             .await?;
     let payload = write_tool_frontend_payload(&gs, None)?;
-    state
+    let reply = state
         .debug_bridge
         .query_frontend("apply_gui_state", payload)
         .await?;
+    // A refused push must not be reported as a landed write — the baseline is
+    // already at S1 (see [`frontend_ok`]).
+    frontend_ok(reply, "apply_gui_state")?;
     Ok(reify_save_file_envelope())
 }
 
@@ -2568,10 +2691,13 @@ async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<
     )
     .await?;
     let payload = write_tool_frontend_payload(&gs, None)?;
-    state
+    let reply = state
         .debug_bridge
         .query_frontend("apply_gui_state", payload)
         .await?;
+    // A refused push must not be reported as a landed write — the baseline is
+    // already at S1 (see [`frontend_ok`]).
+    frontend_ok(reply, "apply_gui_state")?;
     Ok(reify_export_envelope(&output_path))
 }
 
@@ -5012,6 +5138,55 @@ structure def Part {
             reify_write_str_param(&json!({ "value": "120mm" }), "value"),
             Ok("120mm".to_string())
         );
+    }
+
+    /// The push-reply half of the frontend contract: `query_frontend` resolves
+    /// `Ok(Value)` for the bridge's in-band `{error}` envelope just as readily
+    /// as for a real result, so every δ write tool inspects it via
+    /// [`frontend_ok`] before answering. Pinned over literals here; the same
+    /// discrimination is pinned across a real `DebugTransport` round-trip by
+    /// `frontend_error_envelope_is_refused_after_the_transport`.
+    #[test]
+    fn frontend_ok_refuses_the_bridge_error_envelope() {
+        // The shape `bridge.ts` actually produces for an unregistered command
+        // and for any handler that throws.
+        let refused = frontend_ok(
+            json!({ "error": "unknown command: apply_gui_state" }),
+            "apply_gui_state",
+        )
+        .expect_err("an {error} reply must not be read as a landed push");
+        assert_eq!(
+            refused,
+            "apply_gui_state push refused by the frontend: unknown command: apply_gui_state"
+        );
+
+        // A NON-STRING error is refused too. Here "wrong type" and "absent"
+        // end in opposite outcomes, so folding them (as the required-param
+        // helper deliberately does) would restore the silent-success hole.
+        let mistyped = frontend_ok(json!({ "error": { "code": 7 } }), "apply_gui_state")
+            .expect_err("a non-string error must still be refused");
+        assert!(
+            mistyped.starts_with("apply_gui_state push refused by the frontend: "),
+            "unexpected refusal: {mistyped}"
+        );
+
+        // A real reply passes through VERBATIM — the debug-native `open_file`
+        // twin hands this object straight to the visual-regression harness.
+        let ok = json!({ "ok": true, "path": "/tmp/part.ri" });
+        assert_eq!(
+            frontend_ok(ok.clone(), "open_file"),
+            Ok(ok),
+            "a successful reply must survive the check unchanged"
+        );
+
+        // An explicit `null` error, an absent one, and a non-object reply all
+        // mean "no error" — the frontend has no other way to spell it.
+        assert_eq!(
+            frontend_ok(json!({ "error": Value::Null }), "apply_gui_state"),
+            Ok(json!({ "error": Value::Null }))
+        );
+        assert_eq!(frontend_ok(json!({}), "apply_gui_state"), Ok(json!({})));
+        assert_eq!(frontend_ok(json!(true), "apply_gui_state"), Ok(json!(true)));
     }
 
     // ── Task 5097 δ step-11: RED — `reify_update_source`, the in-memory

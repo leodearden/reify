@@ -211,3 +211,59 @@ async fn write_tool_frontend_payload_omits_file_when_absent() {
     );
 }
 
+
+/// The write tools' push REPLY, across the same seam as the push itself: the
+/// bridge answers an unregistered command (or a handler that threw) with an
+/// in-band `{error: string}` object, and `DebugTransport` delivers it as a
+/// perfectly well-formed `Ok(Value)` — which is why
+/// `error_envelope_passes_through_transport` above is a PASSTHROUGH contract
+/// rather than a failure one.
+///
+/// So the discrimination has to happen above the transport, and this pins it
+/// there end to end: refusal payload → transport → `frontend_ok` → `Err`. The
+/// consequence it guards is specific to the δ write tools — the seam has
+/// already refreshed the delta baseline to S1 before the push goes out, so a
+/// refused push that reads as success leaves `last_state` ahead of the
+/// frontend (bug #7) while the AI client is told the write landed
+/// (task #5097 δ, review finding).
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn frontend_error_envelope_is_refused_after_the_transport() {
+    let transport = Arc::new(DebugTransport::new());
+    let t = transport.clone();
+    tokio::spawn(async move {
+        loop {
+            if t.resolve(1, r#"{"error":"unknown command: apply_gui_state"}"#.to_string())
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+
+    let (id, rx) = transport.create_request().unwrap();
+    assert_eq!(id, 1, "first id on a fresh transport should be 1");
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        .await
+        .expect("resolve timed out")
+        .expect("channel dropped");
+    let reply: serde_json::Value = serde_json::from_str(&raw).expect("reply must be JSON");
+
+    // The transport itself is content-blind: this is an `Ok` value, and a
+    // handler that ignored it would answer `success: true`.
+    assert_eq!(reply["error"], "unknown command: apply_gui_state");
+
+    let err = crate::debug_server::frontend_ok(reply, "apply_gui_state")
+        .expect_err("an {error} reply must be refused, not read as a landed push");
+    assert_eq!(
+        err,
+        "apply_gui_state push refused by the frontend: unknown command: apply_gui_state"
+    );
+
+    // A real `apply_gui_state` reply — the frontend handler returns an empty
+    // object — survives the same path untouched.
+    let ok = crate::debug_server::frontend_ok(serde_json::json!({}), "apply_gui_state")
+        .expect("a successful push must not be refused");
+    assert_eq!(ok, serde_json::json!({}));
+}

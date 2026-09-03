@@ -766,40 +766,62 @@ pub(crate) fn module_key(name: &str) -> String {
     format!("{}.ri", name)
 }
 
-/// Does a stamped source key `key` refer to the file a caller named as
-/// `requested`?
+/// Does `spelling` name the same source file as the filesystem path `path`?
 ///
-/// Diagnostics and `source_map` entries are stamped with
-/// [`module_key`]`(module_name)` = `"<stem>.ri"` — see `resolve_source`
+/// **The two positions are NOT interchangeable — this predicate is
+/// asymmetric.** `spelling` is the loose side: either a real path, or the
+/// stem-only `"<stem>.ri"` module key. `path` is the strict side: the real
+/// filesystem path whose stem is authoritative. `f("part.ri",
+/// "/tmp/x/part.ri")` is `true`; `f("/tmp/x/part.ri", "part.ri")` is `false`,
+/// because only the SECOND argument's stem is ever taken. Both live call
+/// directions honour that (see below); do not "simplify" the call order.
+///
+/// Why the loose side exists: diagnostics and `source_map` entries are stamped
+/// with [`module_key`]`(module_name)` = `"<stem>.ri"` — see `resolve_source`
 /// (:3259-3265), which is what `get_diagnostics` hands to
-/// `diagnostics_to_info`, and `UnresolvedGuiState`'s note at commands.rs:539.
-/// That key is NEVER a filesystem path. The reify-debug write tools, by
-/// contrast, receive a caller-supplied REAL path (`/tmp/x/part.ri`) — that is
-/// what their ToolDefs advertise and what every caller passes.
-///
-/// So a bare `==` between the two is **VACUOUS**: it matches nothing and
-/// silently drops every diagnostic, which is exactly the bug this predicate
-/// exists to close (task #5097 δ, review finding). It accepts EITHER spelling
-/// and still discriminates on the stem — `/tmp/x/other.ri` does not match a
-/// `"part.ri"` key.
+/// `diagnostics_to_info`, and `UnresolvedGuiState`'s note at commands.rs:539 —
+/// while the reify-debug write tools receive a caller-supplied REAL path
+/// (`/tmp/x/part.ri`), which is what their ToolDefs advertise. So a bare `==`
+/// between the two is **VACUOUS**: it matches nothing and silently drops every
+/// diagnostic, which is exactly the bug this predicate exists to close (task
+/// #5097 δ, review finding). It accepts either spelling on the loose side and
+/// still discriminates on the stem — `"other.ri"` does not match
+/// `/tmp/x/part.ri`.
 ///
 /// The comparison spelling is built with [`module_key`] itself rather than a
 /// second `format!("{}.ri", ...)`, so the matcher and the minter of the key
 /// can never drift.
 ///
-/// Used by `debug_server::filter_diagnostics_for_file`, and gated to match:
-/// `debug_server` is the only consumer and is itself `#[cfg(feature = "gui")]`
-/// in lib.rs, so an ungated definition is dead code in the default-feature
-/// build that `scripts/verify.sh`'s `clippy ... -- -D warnings` pass runs.
+/// # The two live call directions
+///
+/// Both put the possibly-stem-only spelling FIRST and the real path SECOND:
+///
+///  * `debug_server::filter_diagnostics_for_file` —
+///    `f(&d.file_path, requested)`: the STAMPED key is the loose side, the
+///    caller's path the strict one.
+///  * `debug_server::update_source_target_matches_active` —
+///    `f(requested, active)`: the CALLER's spelling is the loose side (an AI
+///    client may echo back the stem-only key it read off a diagnostic), the
+///    session's own entry path the strict one.
+///
+/// Both are pinned by `source_key_matches_path_is_directional`, including the
+/// asymmetry itself, so a future tightening (rejecting an absolute `spelling`,
+/// or taking stems on both sides) cannot silently break the active-file guard
+/// while the diagnostics filter stays green (task #5097 δ, review finding).
+///
+/// Gated to match its consumers: `debug_server` is the only one and is itself
+/// `#[cfg(feature = "gui")]` in lib.rs, so an ungated definition is dead code
+/// in the default-feature build that `scripts/verify.sh`'s
+/// `clippy ... -- -D warnings` pass runs.
 #[cfg(feature = "gui")]
-pub(crate) fn source_key_matches_path(key: &str, requested: &str) -> bool {
-    key == requested
-        || Path::new(requested)
+pub(crate) fn source_key_matches_path(spelling: &str, path: &str) -> bool {
+    spelling == path
+        || Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
             .map(module_key)
             .as_deref()
-            == Some(key)
+            == Some(spelling)
 }
 
 /// Returns `true` for any `std` or `std.*` import path.

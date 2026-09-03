@@ -21404,3 +21404,53 @@ fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
     );
 }
 
+
+/// `source_key_matches_path` is DIRECTIONAL, and both of its live call sites
+/// depend on that. `debug_server::filter_diagnostics_for_file` calls it
+/// `(stamped_key, caller_path)`; `update_source_target_matches_active` calls
+/// it `(caller_spelling, active_path)`. Both put the possibly-stem-only
+/// spelling first and the real filesystem path second — but only the second
+/// argument's stem is ever taken, so swapping them changes the answer.
+///
+/// Pinned here (rather than only through the two debug_server predicates that
+/// consume it) so a future tightening — rejecting an absolute first argument,
+/// or taking stems on BOTH sides — cannot silently break the active-file guard
+/// while the diagnostics filter stays green (task #5097 δ, review finding).
+#[cfg(feature = "gui")]
+#[test]
+fn source_key_matches_path_is_directional() {
+    use crate::engine::source_key_matches_path;
+
+    // Direction 1 — the diagnostics filter: the engine stamps the stem-only
+    // module key, the caller supplies a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/tmp/x/part.ri"),
+        "the stamped module key must match the caller's real path"
+    );
+    // Direction 2 — the active-file guard: an AI client echoes back the
+    // stem-only key it read off a diagnostic, the session holds a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/home/u/proj/part.ri"),
+        "the guard must accept the stem-only spelling of the active file"
+    );
+    // Verbatim equality is accepted in either direction (the `==` arm).
+    assert!(source_key_matches_path("/tmp/x/part.ri", "/tmp/x/part.ri"));
+    assert!(source_key_matches_path("part.ri", "part.ri"));
+
+    // THE ASYMMETRY. Only the SECOND argument's stem is taken, so the reverse
+    // of the accepting case above is a REJECT. This is not an accident to be
+    // "cleaned up": both call sites are written to it.
+    assert!(
+        !source_key_matches_path("/tmp/x/part.ri", "part.ri"),
+        "the loose (stem-only) side is the FIRST argument, never the second"
+    );
+
+    // It still discriminates on the stem — a different file is not the same
+    // file in either direction.
+    assert!(!source_key_matches_path("other.ri", "/tmp/x/part.ri"));
+    assert!(!source_key_matches_path("part.ri", "/tmp/x/other.ri"));
+
+    // A path with no file stem cannot match anything but itself.
+    assert!(!source_key_matches_path("part.ri", "/"));
+    assert!(source_key_matches_path("/", "/"));
+}

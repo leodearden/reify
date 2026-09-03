@@ -108,6 +108,21 @@ invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
 `query_frontend("apply_gui_state", …)` push, never `emit_delta`. There is no
 private emit path on the debug surface; do not add one.
 
+**Every write tool inspects its push REPLY.** `DebugBridge::query_frontend`
+resolves `Ok(Value)` for any well-formed JSON reply — including the in-band
+`{error: string}` envelope `bridge.ts` returns for an unregistered command or a
+handler that threw (§2a) — so a REFUSED push is indistinguishable from a landed
+one at the transport. All five tools therefore route their reply through
+`frontend_ok`, which converts that envelope into
+`Err("<command> push refused by the frontend: …")`. The consequence is specific
+to this cluster: the seam has already refreshed `last_state` to S1 by the time
+the push goes out, so a refused push read as success leaves the baseline ahead
+of the frontend — bug #7 again — while the AI client is told the write landed.
+The two DEBUG-NATIVE funnels are deliberately exempt: `open_file` and
+`load_fixture` return the frontend's reply verbatim because the
+visual-regression harness reads that object, where an `{error}` reply is itself
+the answer.
+
 **`reify_open_file` and `open_file` are ONE funnel under two names**, not two
 implementations. Both resolve their path with `open_file_path_param` — which
 accepts either the reify-mcp spelling `file_path` or the debug-native `path`
@@ -177,6 +192,28 @@ warning stream.
 `reify_set_parameter`, by contrast, returns its diagnostics **unfiltered**,
 which is exactly what `crates/reify-mcp/src/tools/write.rs` does for that tool
 name; keep it that way so the two surfaces' envelopes stay in parity.
+
+Both tools read their diagnostics with a SECOND engine call rather than
+reusing the `GuiState.compile_diagnostics` the write seam just returned, and
+the two are not interchangeable: `build_gui_state` derives
+`compile_diagnostics` from `EngineSession::build_compile_diagnostics`, which is
+`get_diagnostics()` **plus** live-edit compile-failure diags, a synthesized
+`hot-reload-error` entry, and build/realization-time geometry errors folded in
+from `tess_diag_cache`. reify-mcp returns the narrower `ctx.get_diagnostics()`
+for both tool names, so the extra round-trip is what holds the envelopes in
+parity — deriving them from the `GuiState` would quietly widen both.
+
+**`reify_set_parameter` nulls an absent value where reify-mcp errors.** If the
+committed cell is missing from the rebuilt `GuiState`, this surface answers
+`{success: true, new_value: null, unit: null, …}` — the key set stays invariant
+— while `TauriToolContext::set_parameter` on the reify-mcp surface returns
+`"parameter '<cell_id>' not found in result"`. The divergence is deliberate:
+by the time the cell is looked up here the splice has been written to the
+user's `.ri`, the recompile has committed and the `GuiState` has been pushed to
+the frontend, so an `Err` would report failure for a write that LANDED. The arm
+is close to unreachable anyway — `apply_param_to_source_str` refuses an unknown
+`cell_id` before committing anything — but a client that learned "success
+implies a value" on the other surface should read this paragraph, not infer it.
 
 **`reify_save_file` and `reify_export` are pure I/O — but they still push.**
 Neither commits new engine state, yet both route through
