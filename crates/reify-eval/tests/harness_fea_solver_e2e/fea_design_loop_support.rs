@@ -11,13 +11,10 @@
 //! does NOT guard here (its SCOPE_PATHSPECS exclude `tests/`). A second hand-rolled
 //! copy is therefore a copy nothing keeps in step.
 //!
-//! # Known remaining duplicate
-//!
-//! `fea_in_the_loop_producer` (task #4880) still constructs its engine and declares
-//! its own interior thresholds inline, identically. Task #2930 could not migrate it
-//! — that module is outside the task's file scope — so the extraction is deliberately
-//! half-done and this note is the pointer for whoever finishes it. Filed as a
-//! follow-up; migrating it is a two-line change against this module.
+//! `fea_in_the_loop_producer` (task #4880) also consumes [`fea_loop_engine`] and the
+//! two threshold constants below, rather than constructing its own copies (task #6607
+//! finished the migration task #2930 could not — that module was outside #2930's file
+//! scope).
 
 use reify_constraints::DimensionalSolver;
 use reify_eval::Engine;
