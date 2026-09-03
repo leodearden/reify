@@ -850,7 +850,7 @@ module.exports = grammar({
     // non-breaking widening, because no v1 source can occupy that slot.
     //
     // ── INV-SF-7 `parse-is-value-faithful` ──
-    // (docs/legibility/design-invariants.md:195-220.)  This body is the FIRST
+    // (docs/legibility/design-invariants.md:247-273.)  This body is the FIRST
     // place in the language where a `let_declaration` and a bare expression are
     // siblings with no separator token, so the adjacency readings were MEASURED
     // rather than assumed.  All five are pinned by

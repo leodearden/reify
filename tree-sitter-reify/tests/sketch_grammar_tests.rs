@@ -456,7 +456,7 @@ fn sketch_block_admitted_in_guarded_block() {
 
 // ── INV-SF-7 `parse-is-value-faithful` ───────────────────────────────────────
 //
-// `docs/legibility/design-invariants.md:195-220`. The sketch body is the FIRST
+// `docs/legibility/design-invariants.md:247-273`. The sketch body is the FIRST
 // construct in the language where a `let_declaration` and a bare expression are
 // siblings with no separator token (`relate` bodies hold only bare expressions;
 // `_member` holds only keyword-led declarations), so the invariant's checkable
