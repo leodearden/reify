@@ -6,6 +6,15 @@
 **Mechanism count:** 14
 **Gap count:** 14
 
+> **Overlay notice (2026-09-03):** this is a **dated 2026-05-12 snapshot** that now carries dated
+> `CORRECTION` overlays below (see M-001). Its named-symbol claims are **partly superseded**:
+> `OrthotropicMaterial` and `TransverseIsotropicMaterial` shipped on **2026-05-26** in
+> `crates/reify-compiler/stdlib/constitutive.ri` (task 3779 γ, commit `6d77ce0c0a`) — two weeks
+> *after* this audit ran — so the Top-concerns bullet "Every named runtime entity in the PRD is
+> fiction" no longer holds in full. That bullet is deliberately left as written (it was true on
+> 2026-05-12); read it together with the M-001 overlay. `Laminate`, `Ply`, `tsai_wu` and `hashin`
+> do remain absent; `max_strain` was not re-checked and no claim is made about it here.
+
 ## Top concerns
 
 - **Every named runtime entity in the PRD is fiction.** No `OrthotropicMaterial`, `Laminate`, `Ply`, `tsai_wu`, `hashin`, or `max_strain` symbol exists anywhere in the codebase (`crates/`, `stdlib/*.ri`, or PRDs). The PRD is a green-field design, with no scaffolding yet — but it lands on top of the already-broken structure-constructor evaluation (GR-001), the unresolved `Field<X,Y>` param-position issue (TODO #3117), and a not-yet-shipped parent shells PRD.
@@ -23,26 +32,64 @@
 - **Blocks:** Tasks gated on this PRD activation (none currently queued).
 - **Note:** Type would be a new structure-def with 10 cells; co-blocks with GR-001 (struct-constructor eval) and the open question of whether `ElasticMaterial` trait covers orthotropic or a new `OrthotropicElasticMaterial` trait is needed (the trait's surface in `materials_fea.ri:88` was designed for isotropic).
 
-> **CORRECTION 2026-09-03 (#6877) — the materials_fea.ri anchors and field list above have drifted;
-> M-001 and M-002 both stand as written.** This is a dated audit snapshot (**Date:** 2026-05-12), so
-> the Evidence bullets are preserved as the record of what was measured then. What changed since:
+> **CORRECTION 2026-09-03 (#6877) — the materials_fea.ri anchors and field list above have
+> drifted; M-002's *first* evidence sentence still holds.** This is a dated audit snapshot
+> (**Date:** 2026-05-12), so the Evidence bullets are preserved as the record of what was measured
+> then. What #6877 changed:
 >
 > - The four presets now declare `: DampedMaterial + Visual` and carry **five** elastic/damping
 >   properties — `youngs_modulus`, `poisson_ratio`, `density`, `yield_stress`, `loss_factor` — plus a
 >   `loss_factor_provenance : MaterialPropertyProvenance` member (`materials_fea.ri:303`, `:360`,
 >   `:417`, `:477`). #6877 introduced the `Damped` mixin trait (`:194-202`) and the named intersection
 >   `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`).
-> - **M-001's conclusion is unaffected and stays FICTION.** `loss_factor` (η) is a *scalar* hysteretic
->   damping ratio, not a directional modulus and not a ply allowable — so the presets remain
->   isotropic-only exactly as this audit said. No `Orthotropic`/`Laminate`/`Ply` symbol exists today.
-> - **M-002's claim below is STILL TRUE of the trait.** `ElasticMaterial` requires
+> - `loss_factor` (η) is a *scalar* hysteretic damping ratio, not a directional modulus and not a ply
+>   allowable — so #6877 did **not** make these four presets orthotropic; they remain isotropic-only
+>   exactly as this audit said. #6877 is therefore *not* the delta that moves M-001; for that, see the
+>   second correction immediately below, which is a different and earlier change.
+> - **M-002's first evidence sentence is STILL TRUE of the trait.** `ElasticMaterial` requires
 >   `youngs_modulus, poisson_ratio, density, yield_stress` only: #6877 put `loss_factor` on the
->   separate `Damped` mixin, **not** on `ElasticMaterial`, which is unchanged. Only M-002's `:88`
->   anchor drifted, and the open design fork it raises — whether `ElasticMaterial` covers orthotropic
->   or a new `OrthotropicElasticMaterial` trait is needed — is untouched.
+>   separate `Damped` mixin, **not** on `ElasticMaterial`, which is unchanged by #6877.
 > - **Anchor drift:** `ElasticMaterial` trait `materials_fea.ri:88` → **`:130-147`**; the preset span
 >   `materials_fea.ri:132-249` → **`:272-492`** (Steel `:272`, Al `:329`, Ti `:386`, ABS `:446`).
 >   Grep the named symbol rather than trusting these numbers.
+
+> **CORRECTION 2026-09-03 (task 3779 γ, PRD `docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md`,
+> landed 2026-05-26) — M-001 is now PARTIAL, not FICTION; M-002's *second* evidence sentence is
+> SUPERSEDED.** This is a **separate and earlier** delta from the #6877 one above and must not be
+> conflated with it: it landed two weeks *after* this audit's **Date:** 2026-05-12, in commits
+> `6d77ce0c0a` (`reify-compiler/stdlib`) and `7abf09ed11` (`reify-solver-elastic`).
+>
+> - **`OrthotropicMaterial` exists.** `structure def OrthotropicMaterial : ConstitutiveLaw` at
+>   `crates/reify-compiler/stdlib/constitutive.ri:88` — the 9-constant orthotropic conformer
+>   (`e1`/`e2`/`e3`, `g12`/`g13`/`g23`, `nu12`/`nu13`/`nu23`, `density`), each physical param paired
+>   with a `..._provenance : MaterialPropertyProvenance` slot. `structure def
+>   TransverseIsotropicMaterial : ConstitutiveLaw` (5-constant) is at `constitutive.ri:125`. The
+>   module is loaded as `std.constitutive` (`crates/reify-compiler/src/stdlib_loader.rs:106`).
+> - **M-001 → PARTIAL.** The named symbol exists and supplies directional moduli — a *superset* of the
+>   `E1, E2, G12, ν12, density` cells this mechanism asked for. Still absent: the five ply allowables
+>   `X_T`, `X_C`, `Y_T`, `Y_C`, `S`, which no material structure in `stdlib/*.ri` declares.
+> - **M-002's second evidence sentence is SUPERSEDED.** "no `MaterialConstitutiveLaw` trait abstracts
+>   over isotropic vs orthotropic" no longer holds. Note the shipped abstraction is spelled
+>   **`ConstitutiveLaw`**, *not* the audit's hypothesised `MaterialConstitutiveLaw` — grep the shipped
+>   name. It exists on both sides of the seam: the DSL marker trait `trait ConstitutiveLaw { }`
+>   (`materials_fea.ri:105`, with `trait ElasticMaterial : ConstitutiveLaw` at `:130`), and the Rust
+>   `pub trait ConstitutiveLaw` (`crates/reify-solver-elastic/src/constitutive.rs:35`) with
+>   `fn d_matrix_local(&self) -> [[f64; 6]; 6]` at `:39`, implemented for `pub struct
+>   OrthotropicMaterial` (`:206`, impl at `:395`) alongside `IsotropicElastic` (impl at `:177`).
+>   The design fork M-002 named was thus resolved *away from* extending `ElasticMaterial`: orthotropic
+>   shipped as a sibling structure under a shared `ConstitutiveLaw`, not as an
+>   `OrthotropicElasticMaterial` trait.
+> - **`Laminate`, `Ply`, `tsai_wu` and `hashin` remain FICTION** — zero definitions anywhere in
+>   `crates/` (including `stdlib/*.ri`) as of 2026-09-03. The laminate/ply half of this PRD is still
+>   green-field; only the orthotropic-material half is not.
+>
+> **NON-EXHAUSTIVE — this overlay re-verified M-001 and M-002 ONLY.** M-003…M-014 were *not*
+> re-checked against the landed anisotropic work and must be re-verified rather than trusted. M-003 in
+> particular is known to be at least partly stale — its "`IsotropicElastic::d_matrix()` … is the only
+> D-matrix builder" no longer holds now that `OrthotropicMaterial::d_matrix_local`
+> (`reify-solver-elastic/src/constitutive.rs:356`, trait impl `:402`) and
+> `TransverseIsotropicMaterial::d_matrix_local` (`:496`, impl `:514`) exist. Flagged here, **not**
+> adjudicated; re-audit M-003…M-014 before relying on them.
 
 ### M-002: Orthotropic constitutive law trait surface (per-direction moduli, ply allowables)
 
