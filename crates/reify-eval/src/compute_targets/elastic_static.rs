@@ -11495,18 +11495,98 @@ mod tests {
         }
     }
 
-    /// Amendment (task #5084 review, suggestion 1): `anisotropic_material_from_value`
-    /// must still `panic!` — not return `Err` — when the law `StructureInstance`'s
-    /// `type_name` is neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`.
-    /// This is the one deliberate, permanent exception documented on the function
-    /// (see doc comment and this task's design decision): the fixed
-    /// `FeaValueShapeError` taxonomy has no variant for "type_name is neither known
-    /// law", and the branch is unreachable-by-construction since the DSL only ever
-    /// emits the two known laws. Pinning this as `#[should_panic]` guards against a
-    /// future refactor (e.g. D6/D9) silently swallowing or downgrading this panic.
+    /// A well-formed isotropic-shaped law `StructureInstance` — `type_name`
+    /// is deliberately neither `OrthotropicMaterial` nor
+    /// `TransverseIsotropicMaterial` (a real isotropic preset name), with
+    /// `youngs_modulus`/`poisson_ratio` fields satisfying
+    /// `IsotropicElastic::debug_assert_valid` (`E > 0`, `-1 < ν < 0.5`,
+    /// constitutive.rs:110) so a debug-build read doesn't abort inside
+    /// `d_matrix` for the wrong reason. Shared by the isotropic-fallback
+    /// tests below (task #7210).
+    fn isotropic_steel_law() -> Value {
+        let fields: PersistentMap<String, Value> = [
+            (
+                "youngs_modulus".to_string(),
+                Value::Scalar { si_value: 2.0e11, dimension: DimensionVector::PRESSURE },
+            ),
+            ("poisson_ratio".to_string(), Value::Real(0.29)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// task #7210: `anisotropic_material_from_value` must accept an
+    /// ISOTROPIC `ConstitutiveLaw` as `AnisotropicMaterial.law` — not just
+    /// the two named anisotropic laws — and lift it through
+    /// `AnisotropicMaterial::from_law`, honouring the PARSED `MaterialFrame`
+    /// (not `IDENTITY`). `AnisotropicMaterial.law` is declared
+    /// `ConstitutiveLaw` (constitutive.ri:152) and every isotropic preset is
+    /// a `DampedMaterial : ElasticMaterial + Damped`
+    /// (materials_fea.ri:224/272/329/386/446), so an isotropic law here is
+    /// legal input — this is the surface #6880 δ's
+    /// `sandwich_material(axis, [(3mm, steel), (16mm, eg), (3mm, steel)])`
+    /// needs.
+    ///
+    /// The frame is deliberately NON-identity: an isotropic `D` is rotation
+    /// invariant, so a lazy implementation that copies `classify_material`'s
+    /// homogeneous arms and passes `IDENTITY` would still produce a
+    /// plausible-looking `d_matrix_global()`, but `AnisotropicMaterial.frame`
+    /// itself would silently diverge from the input `MaterialFrame`. The
+    /// `assert_eq!` below catches that directly on `.frame`, before any
+    /// rotation happens.
+    ///
+    /// Exactness: `from_law` is `Self { d_local: law.d_matrix_local(), frame
+    /// }` — the same construction run on the same inputs in the same
+    /// binary — so the comparison is bitwise, not approximate. The expected
+    /// 3×3 is independently re-derived from the chosen axes (not copied from
+    /// prose): columns = local basis vectors in global coordinates, i.e.
+    /// `frame[row] = [x[row], y[row], z[row]]`.
+    ///
+    /// RED: see module-section comment above; `_ => panic!(..)` currently
+    /// fires for this `type_name` before either law field is read.
     #[test]
-    #[should_panic(expected = "unsupported law type")]
-    fn anisotropic_material_from_value_panics_on_unsupported_law_type() {
+    fn anisotropic_material_from_value_accepts_isotropic_law_and_honours_frame() {
+        let (x, y, z) = ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        let aniso_fields: PersistentMap<String, Value> = [
+            ("law".to_string(), isotropic_steel_law()),
+            ("frame".to_string(), frame_with_axes(x, y, z, Value::Real)),
+        ]
+        .into_iter()
+        .collect();
+
+        // frame[row] = [x[row], y[row], z[row]] (columns = local axes in global).
+        let expected_frame = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        assert_eq!(
+            anisotropic_material_from_value(&anisotropic_material(aniso_fields)),
+            Ok(AnisotropicMaterial::from_law(
+                &IsotropicElastic { youngs_modulus: 2.0e11, poisson_ratio: 0.29 },
+                expected_frame,
+            ))
+        );
+    }
+
+    /// task #7210: supersedes `anisotropic_material_from_value_panics_on_
+    /// unsupported_law_type` (task #5084 review, suggestion 1). That test
+    /// pinned a `panic!` as "the one deliberate, permanent exception" on the
+    /// premise that the DSL only ever emits `Orthotropic`/`TransverseIsotropic`
+    /// laws into `AnisotropicMaterial.law`. That premise is false today:
+    /// `AnisotropicMaterial.law` is declared `ConstitutiveLaw`
+    /// (constitutive.ri:152), and every isotropic preset is a
+    /// `DampedMaterial : ElasticMaterial + Damped` (materials_fea.ri:224/
+    /// 272/329/386/446), so isotropic laws are legal there — the panic was
+    /// live, not merely prospective. A law that is neither of the two named
+    /// anisotropic laws now falls through to the isotropic extractor; a law
+    /// that ALSO fails to read as isotropic (as here — no fields at all)
+    /// surfaces as `Err(FeaValueShapeError::MissingField)`, not a panic.
+    /// Fixture kept verbatim from the superseded test.
+    #[test]
+    fn anisotropic_material_from_value_rejects_law_without_isotropic_fields() {
         let law = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
             type_name: "BogusMaterial".to_string(),
@@ -11523,7 +11603,183 @@ mod tests {
         .into_iter()
         .collect();
 
-        let _ = anisotropic_material_from_value(&anisotropic_material(fields));
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "youngs_modulus");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"youngs_modulus\" }}) for a law \
+                 with neither a known anisotropic type_name nor isotropic fields, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
+    /// `youngs_modulus` field on an isotropic-shaped law (a `type_name` that
+    /// is neither of the two named anisotropic laws, read through the
+    /// isotropic fallback arm) with `Err(FeaValueShapeError::ExpectedScalar
+    /// { .. })` instead of panicking. Mirrors
+    /// `anisotropic_material_from_value_rejects_malformed_{orthotropic,
+    /// transverse_isotropic}_law` above for the third law arm. `poisson_ratio`
+    /// is well-formed so the assertion isolates the `youngs_modulus`
+    /// rejection.
+    #[test]
+    fn anisotropic_material_from_value_rejects_malformed_isotropic_law() {
+        let law_fields: PersistentMap<String, Value> = [
+            ("youngs_modulus".to_string(), Value::Real(1.0)), // wrong-typed: field under test
+            ("poisson_ratio".to_string(), Value::Real(0.3)),
+        ]
+        .into_iter()
+        .collect();
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Aluminium_6061_T6".to_string(),
+            version: 1,
+            fields: law_fields,
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type youngs_modulus \
+             field on an isotropic-shaped law, got: {:?}",
+            res
+        );
+    }
+
+    /// `anisotropic_material_from_value` must reject an isotropic-shaped law
+    /// missing `poisson_ratio` with `Err(FeaValueShapeError::MissingField {
+    /// field: "poisson_ratio", .. })`. `youngs_modulus` is well-formed,
+    /// proving control reaches the SECOND field read of the isotropic
+    /// fallback rather than bailing out at the first (mirrors
+    /// `extract_material_rejects_missing_poisson_ratio`'s precedent for the
+    /// leaf this arm delegates to).
+    #[test]
+    fn anisotropic_material_from_value_rejects_isotropic_law_missing_poisson_ratio() {
+        let law_fields: PersistentMap<String, Value> = [(
+            "youngs_modulus".to_string(),
+            Value::Scalar { si_value: 2.0e11, dimension: DimensionVector::PRESSURE },
+        )]
+        .into_iter()
+        .collect();
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Titanium_Ti6Al4V".to_string(),
+            version: 1,
+            fields: law_fields,
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "poisson_ratio");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"poisson_ratio\" }}) for an \
+                 isotropic-shaped law missing poisson_ratio, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Caller-boundary regression pin (task #7210): `classify_material_as_
+    /// printed_zones` — the function the pre-#7210 panic message named
+    /// directly ("... AsPrintedZones AnisotropicMaterial: ...") — must
+    /// accept an AsPrintedZones lambda whose three zone materials
+    /// (`mat_wall`/`mat_skin`/`mat_infill`) carry an ISOTROPIC law, not just
+    /// Orthotropic/TransverseIsotropic. Guards against a fix that only
+    /// patches `anisotropic_material_from_value` in a way not reachable from
+    /// this caller.
+    ///
+    /// Hand-builds the 7-element lambda directly (rather than reusing the
+    /// shared `het_as_printed_field` fixture, which always wraps an
+    /// isotropic-ALIAS `OrthotropicMaterial` law — not a genuinely
+    /// isotropic-shaped `type_name` — so it cannot exercise this arm).
+    ///
+    /// `expected_frame` is `het_material_frame([0.0, 0.0, 1.0])`'s
+    /// local→global matrix, independently re-derived from that fixture's own
+    /// construction (reference vector = [1,0,0] since |z·x̂| < 0.9, x =
+    /// normalize(ref × z) = [0,-1,0], y = z × x = [1,0,0], frame[row] =
+    /// [x[row], y[row], z[row]]) rather than trusted from prose.
+    #[test]
+    fn classify_material_as_printed_zones_accepts_isotropic_zone_laws() {
+        let len = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
+        let point3 = |v: [f64; 3]| Value::Point(vec![len(v[0]), len(v[1]), len(v[2])]);
+        let zone_fields = || -> PersistentMap<String, Value> {
+            [
+                ("law".to_string(), isotropic_steel_law()),
+                (
+                    "frame".to_string(),
+                    as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+                ),
+            ]
+            .into_iter()
+            .collect()
+        };
+        let params = Value::List(vec![
+            Value::Real(2.0),    // walls
+            Value::Real(3.0),    // top_bottom_layers
+            Value::Real(0.0002), // layer_height
+            Value::Real(0.0004), // line_width
+            Value::Real(0.0),    // bx
+            Value::Real(0.0),    // by
+            Value::Real(1.0),    // bz
+        ]);
+        let lambda = Value::List(vec![
+            point3([0.0, 0.0, 0.0]),
+            point3([0.02, 0.01, 0.01]),
+            params,
+            Value::Real(0.5),                    // cos_threshold
+            anisotropic_material(zone_fields()), // mat_wall
+            anisotropic_material(zone_fields()), // mat_skin
+            anisotropic_material(zone_fields()), // mat_infill
+        ]);
+
+        let expected_frame = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let expected_cell = AnisotropicMaterial::from_law(
+            &IsotropicElastic { youngs_modulus: 2.0e11, poisson_ratio: 0.29 },
+            expected_frame,
+        );
+
+        match classify_material_as_printed_zones(&lambda) {
+            Ok(MaterialModel::Heterogeneous(f)) => {
+                assert_eq!(f.cells.len(), 3);
+                assert_eq!(f.cells[0], expected_cell);
+                assert_eq!(f.cells[1], expected_cell);
+                assert_eq!(f.cells[2], expected_cell);
+            }
+            Ok(MaterialModel::Isotropic(_)) => {
+                panic!("expected Ok(Heterogeneous) for an AsPrintedZones lambda, got Isotropic")
+            }
+            Ok(MaterialModel::Anisotropic(_)) => {
+                panic!("expected Ok(Heterogeneous) for an AsPrintedZones lambda, got Anisotropic")
+            }
+            Err(e) => panic!(
+                "expected Ok(Heterogeneous) for zone materials carrying an isotropic \
+                 law, got Err({:?})",
+                e
+            ),
+        }
     }
 
     // ── task 5848: MaterialFrame's axes are DIMENSIONLESS, and nothing on the
