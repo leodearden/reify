@@ -56,7 +56,6 @@ cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
 
 SCRUB_LIB="$REPO_ROOT/scripts/lib_git_env_scrub.sh"
-PTODO_TEST="$SCRIPT_DIR/test_reify_audit_ptodo.sh"
 
 # _clean_git <git args...> — git for FIXTURE CONSTRUCTION AND INSPECTION only,
 # with the ambient repository environment stripped.  Deliberately hand-written
@@ -213,29 +212,18 @@ done <<< "$_D_RUST_VARS"
 echo ""
 echo "--- C: a member test survives a hook-shaped hostile env through the scrub ---"
 
-# Floor, not equality: adding subtests to test_reify_audit_ptodo.sh must not red
-# this file, but a degraded/skipped run (which reports far fewer) must.
-_C_PASS_FLOOR=22
-
-_C_BASE_OUT=""
-_C_BASE_RC=0
-_C_BASE_OUT="$(bash "$PTODO_TEST" 2>&1)" || _C_BASE_RC=$?
-_C_BASE_LINE="$(printf '%s\n' "$_C_BASE_OUT" \
-    | grep -E '^Results: [0-9]+ passed, [0-9]+ failed$' | tail -1 || true)"
-_C_BASE_PASSED="$(printf '%s\n' "$_C_BASE_LINE" | sed -n 's/^Results: \([0-9]*\) passed.*/\1/p')"
-
-assert "C0a: clean-env baseline of test_reify_audit_ptodo.sh exits 0" \
-    test "$_C_BASE_RC" -eq 0
-assert "C0b: clean-env baseline emits a Results line" test -n "$_C_BASE_LINE"
-assert "C0c: clean-env baseline reports 0 failed (got: ${_C_BASE_LINE:-<none>})" \
-    bash -c 'printf "%s\n" "$1" | grep -q " 0 failed$"' _ "$_C_BASE_LINE"
-assert "C0d: clean-env baseline passed-count >= $_C_PASS_FLOOR (not a RATCHET_SKIP/degraded run; got: ${_C_BASE_PASSED:-0})" \
-    bash -c '[ -n "$1" ] && [ "$1" -ge "$2" ]' _ "${_C_BASE_PASSED:-}" "$_C_PASS_FLOOR"
-
 S_POISON=""
+F_WORK=""
 _mk_repo S_POISON
+_mk_repo F_WORK
+
 printf 'poison-seed\n' > "$S_POISON/poison_seed.txt"
 _clean_git -C "$S_POISON" add poison_seed.txt
+
+# F's seeds are deliberately left UNSTAGED: the probe's `git add -A` below IS
+# the write under test, so F's own index must still be empty when it runs.
+printf 'alpha\n' > "$F_WORK/probe_alpha.txt"
+printf 'beta\n' > "$F_WORK/probe_beta.txt"
 
 _C_IDX="$S_POISON/.git/index"
 _C_IDX_SHA_BEFORE=""
@@ -247,27 +235,49 @@ fi
 assert "C1: poisoned-index snapshot precondition — S's index exists and is non-empty" \
     bash -c '[ -n "$1" ] && [ "${2:-0}" -gt 0 ]' _ "$_C_IDX_SHA_BEFORE" "$_C_IDX_SIZE_BEFORE"
 
+# The probe — a single-purpose stand-in for an UNSANITIZED member test, doing
+# the one thing every hermetic infra fixture does: `git -C <fixture> add -A`
+# with no `cd`.  It calls BARE `git`, never `_clean_git`, on purpose — a probe
+# that pre-scrubbed its own environment would leave the helper nothing to
+# neutralize and the arm would certify nothing.  Same generator shape as F3.
+C_FIX="$(mktemp -d)"
+_TMPDIRS+=("$C_FIX")
+C_REPORT="$C_FIX/probe-report.txt"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'git -C %q add -A\n' "$F_WORK"
+    printf '{\n'
+    printf '    printf "PROBE_RAN\\n"\n'
+    printf '    git -C %q ls-files --cached\n' "$F_WORK"
+    printf '} > %q 2>&1\n' "$C_REPORT"
+    printf 'exit 0\n'
+} > "$C_FIX/git_env_probe.sh"
+chmod +x "$C_FIX/git_env_probe.sh"
+
 # The hook-shaped env: git 2.43 exports GIT_INDEX_FILE and ONLY GIT_INDEX_FILE
 # into pre-commit / pre-merge-commit (measured).  Exported in a SUBSHELL, never
 # as a `VAR=v func` prefix — bash keeps such an assignment set after a SHELL
 # FUNCTION returns, which would silently poison every later arm in this file.
-_C_SCRUBBED_OUT=""
-_C_SCRUBBED_RC=0
 if _has_fn reify_git_env_scrub; then
-    _C_SCRUBBED_OUT="$(
+    (
         export GIT_INDEX_FILE="$_C_IDX"
-        reify_git_env_scrub bash "$PTODO_TEST" 2>&1
-    )" || _C_SCRUBBED_RC=$?
-else
-    _C_SCRUBBED_RC=127
+        reify_git_env_scrub bash "$C_FIX/git_env_probe.sh"
+    ) || true
 fi
-_C_SCRUBBED_LINE="$(printf '%s\n' "$_C_SCRUBBED_OUT" \
-    | grep -E '^Results: [0-9]+ passed, [0-9]+ failed$' | tail -1 || true)"
 
-assert "C2: poisoned + scrubbed run exits 0 (got rc=$_C_SCRUBBED_RC)" \
-    test "$_C_SCRUBBED_RC" -eq 0
-assert "C3: poisoned + scrubbed Results line is IDENTICAL to the clean-env baseline (baseline: '${_C_BASE_LINE:-<none>}', scrubbed: '${_C_SCRUBBED_LINE:-<none>}')" \
-    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ "$_C_SCRUBBED_LINE" "$_C_BASE_LINE"
+_C_REPORT_TEXT=""
+[ -f "$C_REPORT" ] && _C_REPORT_TEXT="$(cat "$C_REPORT")"
+
+assert "C2: the probe actually ran through the scrub (guard is not vacuous)" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "PROBE_RAN"' _ "$_C_REPORT_TEXT"
+# Non-vacuity floor for C4/C5, and the replacement for the old pass-count
+# assertion: it proves the git write under test GENUINELY HAPPENED, so a
+# byte-identical S index below reads as "the write was redirected correctly"
+# rather than "no write was ever attempted".  A probe that silently no-op'd
+# would otherwise satisfy C4 and C5 vacuously.
+assert "C3: ... and its \`git add -A\` really staged F's seeded files (got: ${_C_REPORT_TEXT//$'\n'/ | })" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "probe_alpha.txt" && printf "%s\n" "$1" | grep -qx "probe_beta.txt"' \
+        _ "$_C_REPORT_TEXT"
 
 _C_IDX_SHA_AFTER=""
 _C_IDX_SIZE_AFTER=""
