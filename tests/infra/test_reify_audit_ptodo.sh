@@ -489,6 +489,10 @@ FIX_C_TASKS="" # scenario (c) tasks-file bypass (empty JSON array, avoids MCP lo
 _err_tmp=""    # stderr capture file for run_audit (task #4800 defense-in-depth)
 FIX_E=""       # scenario (e) G-allow orphaned-cite fixture temp dir
 GEN_ERR_TMP="" # scenario (a) generator stderr capture (6.6 scan evidence, #6241)
+FIX_F=""       # scenario (f) δ-A hard-gate fixture temp dir
+FIX_F2=""      # scenario (f) δ-A benign control repo temp dir
+FIX_G=""       # scenario (g) δ-B hard-gate fixture temp dir
+FIX_G2=""      # scenario (g) δ-B benign control repo temp dir
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
@@ -503,6 +507,10 @@ cleanup_all() {
     [ -n "$_err_tmp"    ] && rm -f  "$_err_tmp"     || true
     [ -n "$FIX_E"       ] && rm -rf "$FIX_E"        || true
     [ -n "$GEN_ERR_TMP" ] && rm -f  "$GEN_ERR_TMP"  || true
+    [ -n "$FIX_F"       ] && rm -rf "$FIX_F"        || true
+    [ -n "$FIX_F2"      ] && rm -rf "$FIX_F2"       || true
+    [ -n "$FIX_G"       ] && rm -rf "$FIX_G"        || true
+    [ -n "$FIX_G2"      ] && rm -rf "$FIX_G2"       || true
 }
 trap cleanup_all EXIT
 
