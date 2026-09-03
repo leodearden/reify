@@ -56,12 +56,24 @@ use reify_core::Type;
 /// argc-keyed [`lookup`](reify_builtins::lookup) plus the arity diagnostics
 /// that arrive with it in τ-numeric (PRD §3 decision 5).
 pub(crate) fn registry_result_type(name: &str, args: &[Type]) -> Option<Type> {
-    if !registry_owns(name) {
-        // Unregistered name (empty group) or a not-yet-possible overload.
-        return None;
-    }
+    // `?` here IS the "not mine" carve-out: an unregistered name (empty group)
+    // or a not-yet-possible overload.
+    reify_builtins::row(sole_row_id(name)?).result.resolve(args)
+}
+
+/// The one row that owns `name`, or `None` for an unregistered name (empty
+/// group) or a multi-row group (an arity overload).
+///
+/// The single place this crate asks "does the registry hold exactly one answer
+/// for this name?". Both public entry points below are written in terms of it,
+/// which is what makes [`registry_owns`] *definitionally*
+/// [`registry_result_type`]'s precondition rather than a restatement that
+/// could drift — and what keeps a registry HIT to ONE
+/// [`name_group`](reify_builtins::name_group) scan per entry point instead of
+/// two.
+fn sole_row_id(name: &str) -> Option<reify_builtins::BuiltinId> {
     match reify_builtins::name_group(name) {
-        [id] => reify_builtins::row(*id).result.resolve(args),
+        [id] => Some(*id),
         _ => None,
     }
 }
@@ -70,8 +82,8 @@ pub(crate) fn registry_result_type(name: &str, args: &[Type]) -> Option<Type> {
 ///
 /// This is [`registry_result_type`]'s own precondition, hoisted so a caller can
 /// test it BEFORE paying to materialise the argument types. It allocates
-/// nothing and clones nothing — it is one [`name_group`](reify_builtins::name_group)
-/// call and a slice-shape match.
+/// nothing and clones nothing — it is one [`sole_row_id`] call, i.e. one
+/// [`name_group`](reify_builtins::name_group) scan and a slice-shape match.
 ///
 /// # Why `expr.rs` needs it
 ///
@@ -93,10 +105,11 @@ pub(crate) fn registry_result_type(name: &str, args: &[Type]) -> Option<Type> {
 /// anyway, so guarding on it is behaviour-preserving; the converse does NOT
 /// hold, since an `ArgAware` resolver may still decline for the arguments it is
 /// handed. If the two ever drift, the guard would start swallowing real
-/// registry answers silently — which is why `registry_result_type` above is
-/// written to CALL this function rather than restate the test, and why
+/// registry answers silently — which is why both are written over the one
+/// [`sole_row_id`] resolution rather than restating the test against each
+/// other, and why
 /// `tests/harness_builtin_registry/registry_seed_result_types.rs` pins the
 /// implication row-derived over `rows()`.
 pub(crate) fn registry_owns(name: &str) -> bool {
-    matches!(reify_builtins::name_group(name), [_])
+    sole_row_id(name).is_some()
 }
