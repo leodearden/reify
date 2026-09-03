@@ -146,6 +146,60 @@ assert "B4: reify_git_env_scrub is defined in the sourcing shell" _has_fn reify_
 assert "B5: reify_git_env_scrub_prefix is defined in the sourcing shell" _has_fn reify_git_env_scrub_prefix
 
 # ---------------------------------------------------------------------------
+# Arm D — DRIFT GUARD: REIFY_GIT_ENV_SCRUB_VARS is a SUPERSET of the
+# workspace's canonical Rust answer, crates/reify-test-support/src/git_env.rs's
+# REPO_REDIRECT_VARS.
+#
+# DERIVED from that source on every infra run, never a second hardcoded copy —
+# the house PT-DRIFT / PG-DRIFT pattern (tests/infra/test_verify_scope.sh
+# re-derives is_swept_ext and the prd-gate coupled set the same way).
+#
+# ONE-WAY BY DESIGN, exactly like PT-DRIFT: this fires when the RUST set gains a
+# variable the bash list lacks.  The reverse — bash carrying an extra var the
+# Rust set later drops — is left free, so the only direction of error this
+# permits is OVER-scrubbing, never a silent coverage hole.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- D: bash scrub list is a superset of Rust's REPO_REDIRECT_VARS (derive-from-source) ---"
+
+GIT_ENV_RS="$REPO_ROOT/crates/reify-test-support/src/git_env.rs"
+
+assert "D0: crates/reify-test-support/src/git_env.rs exists (the derivation's source)" \
+    test -f "$GIT_ENV_RS"
+
+# Comment lines are stripped BEFORE the string capture so a future comment
+# inside the literal that happens to quote a GIT_* name cannot inflate the
+# derived set.
+_D_RUST_VARS=""
+if [ -f "$GIT_ENV_RS" ]; then
+    _D_RUST_VARS="$(sed -n '/^pub const REPO_REDIRECT_VARS/,/^\];/p' "$GIT_ENV_RS" \
+        | grep -v '^[[:space:]]*//' \
+        | grep -o '"GIT_[A-Z_]*"' | tr -d '"' | sort -u || true)"
+fi
+
+# Non-vacuity FIRST: a renamed constant, a reshaped literal or a broken sed
+# range must fail LOUDLY here rather than silently comparing against the empty
+# set — which every containment assertion below would satisfy trivially.
+assert "D1: derived REPO_REDIRECT_VARS set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_D_RUST_VARS"
+assert "D2: derived set contains GIT_DIR (the parse really read the constant, not some other literal)" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "GIT_DIR"' _ "$_D_RUST_VARS"
+
+_in_scrub_list() {
+    local _needle="$1" _v
+    for _v in ${REIFY_GIT_ENV_SCRUB_VARS:-}; do
+        [ "$_v" = "$_needle" ] && return 0
+    done
+    return 1
+}
+
+while IFS= read -r _d_var; do
+    [ -n "$_d_var" ] || continue
+    assert "D3: $_d_var (REPO_REDIRECT_VARS) is present in REIFY_GIT_ENV_SCRUB_VARS" \
+        _in_scrub_list "$_d_var"
+done <<< "$_D_RUST_VARS"
+
+# ---------------------------------------------------------------------------
 # Arm C — BEHAVIOURAL: a member test run through the scrub under a hook-shaped
 # hostile env is green, and the poisoned index is untouched.
 #
