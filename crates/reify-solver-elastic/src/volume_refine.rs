@@ -348,6 +348,111 @@ pub(crate) fn project_per_element_sizes_to_vertices(
     vertex_sizes
 }
 
+/// Position of vertex `v` of `volume_mesh`, widened to `f64`.
+///
+/// Only [`signed_tet_volume`] reads this — the emitted surface copies the
+/// `f32` coordinates through unchanged, so the extractor never round-trips a
+/// position through `f64` (see [`boundary_surface_mesh`]'s bit-equality
+/// contract).
+fn volume_vertex_position(volume_mesh: &VolumeMesh, v: u32) -> [f64; 3] {
+    let base = v as usize * 3;
+    [
+        volume_mesh.vertices[base] as f64,
+        volume_mesh.vertices[base + 1] as f64,
+        volume_mesh.vertices[base + 2] as f64,
+    ]
+}
+
+/// Signed volume of tet `[a, b, c, d]`: `dot(d-a, cross(b-a, c-a)) / 6`.
+///
+/// Positive iff `[a, b, c, d]` is positively oriented, which is the
+/// precondition [`boundary_surface_mesh`]'s outward face table assumes. Gmsh
+/// does not contractually emit positively-oriented tets, so the sign is
+/// checked per element rather than assumed.
+fn signed_tet_volume(volume_mesh: &VolumeMesh, a: u32, b: u32, c: u32, d: u32) -> f64 {
+    let pa = volume_vertex_position(volume_mesh, a);
+    let pb = volume_vertex_position(volume_mesh, b);
+    let pc = volume_vertex_position(volume_mesh, c);
+    let pd = volume_vertex_position(volume_mesh, d);
+    let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+    let v = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+    let w = [pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2]];
+    let cross = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    (w[0] * cross[0] + w[1] * cross[1] + w[2] * cross[2]) / 6.0
+}
+
+/// The four faces of tet `[a, b, c, d]`, each wound OUTWARD.
+///
+/// The table `(b,c,d), (a,d,c), (a,b,d), (a,c,b)` is the canonical
+/// outward-normal winding for a POSITIVELY oriented tet. When the element is
+/// negatively oriented the whole tet is mirrored, so every face's winding is
+/// flipped (swap the last two corners) to keep the emitted normals outward.
+/// See [`signed_tet_volume`] for why the orientation is measured rather than
+/// assumed.
+fn outward_tet_faces(volume_mesh: &VolumeMesh, a: u32, b: u32, c: u32, d: u32) -> [[u32; 3]; 4] {
+    let mut faces = [[b, c, d], [a, d, c], [a, b, d], [a, c, b]];
+    if signed_tet_volume(volume_mesh, a, b, c, d) < 0.0 {
+        for face in &mut faces {
+            face.swap(1, 2);
+        }
+    }
+    faces
+}
+
+/// Reconstruct the boundary surface of a tet [`VolumeMesh`] as an
+/// outward-wound triangle [`Mesh`].
+///
+/// # Why this exists
+///
+/// [`refine_with_size_field`] and [`crate::adaptive::refine_marked_elements`]
+/// both take a `surface: &Mesh` argument: the remesher works by re-meshing
+/// the volume enclosed by that surface under a new size field, so a caller
+/// must supply the boundary its volume mesh came from. On the *realized*
+/// (`body : Solid`) path that surface is not available — a realization read
+/// handle carries exactly one content variant, and for
+/// `solver::elastic_static` that variant is the `VolumeMesh`. This function
+/// recovers the surface from the volume mesh instead.
+///
+/// # Why deriving it from the volume mesh is the RIGHT source, not just the
+/// available one
+///
+/// [`refine_with_size_field_validated`] transfers per-element sizes onto the
+/// surface by a NEAREST-VERTEX scan
+/// ([`project_volume_to_surface_vertices`]). That transfer is only meaningful
+/// when the mesh being refined actually came from the supplied surface. A
+/// boundary extracted from the volume mesh has vertices that are an exact
+/// (bit-equal) SUBSET of that mesh's vertices, so every nearest-vertex lookup
+/// is a distance-0 identity — strictly tighter than an independently
+/// tessellated surface of the same solid, whose triangulation would not share
+/// vertices with the tet mesh at all.
+///
+/// # Errors
+///
+/// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
+/// connectivity is not tetrahedral.
+pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineError> {
+    let tet_indices = volume_mesh
+        .tet_indices()
+        .ok_or(RefineError::UnsupportedConnectivity)?;
+
+    let mut indices = Vec::new();
+    for tet in tet_indices.chunks_exact(4) {
+        for face in outward_tet_faces(volume_mesh, tet[0], tet[1], tet[2], tet[3]) {
+            indices.extend_from_slice(&face);
+        }
+    }
+
+    Ok(Mesh {
+        vertices: volume_mesh.vertices.clone(),
+        indices,
+        normals: None,
+    })
+}
+
 /// Remesh the volume enclosed by `surface` using per-element size hints.
 ///
 /// Validates `size_hints`, projects them to per-vertex sizes (via

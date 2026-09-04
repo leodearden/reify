@@ -737,6 +737,14 @@ pub use sweep::{
 // is enforced by the orchestrator, not by the projector itself. External
 // callers cannot misuse it with a short slice.
 pub use volume_refine::{RefineError, refine_with_size_field};
+// Task 4909: the free-face boundary extractor. `refine_with_size_field` and
+// `adaptive::refine_marked_elements` both require the closed surface their
+// volume mesh was meshed from; on the realized (`body : Solid`) path that
+// surface is not carried by the realization handle, so it is reconstructed
+// from the tet mesh itself. See `volume_refine::boundary_surface_mesh` for
+// why the volume mesh is the *right* source and not merely the available one
+// (it makes the nearest-vertex size transfer a distance-0 identity).
+pub use volume_refine::boundary_surface_mesh;
 // Task 3868: κ — additive joint-stiffness kernel.
 // PRD compliant-joints-flexures.md §7.2: each spring-loaded joint contributes
 // K[dof,dof] += k to the global stiffness matrix; empty contributions → rigid
