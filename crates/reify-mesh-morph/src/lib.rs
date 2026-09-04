@@ -1273,4 +1273,250 @@ mod tests {
             }
         });
     }
+
+    // ── Task #6637: compose_morph's end-of-pipeline contracts ─────────────────
+
+    /// A stub `GeometryKernel` whose `closest_point_on_shape` is the IDENTITY —
+    /// every boundary node projects onto its own current position, so the tick
+    /// prescribes zero displacement. That is the degenerate case a morph
+    /// smoother must handle exactly, and the one the position-smoothing
+    /// formulation got catastrophically wrong (task #6637).
+    struct IdentityKernel;
+
+    impl reify_ir::GeometryKernel for IdentityKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            Err(reify_ir::GeometryError::OperationFailed("unused".into()))
+        }
+        fn query(&self, _q: &reify_ir::GeometryQuery) -> Result<Value, reify_ir::QueryError> {
+            Err(reify_ir::QueryError::QueryFailed("unused".into()))
+        }
+        fn export(
+            &self,
+            _h: GeometryHandleId,
+            _f: reify_ir::ExportFormat,
+            _w: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            Err(reify_ir::ExportError::FormatError("unused".into()))
+        }
+        fn tessellate(
+            &self,
+            _h: GeometryHandleId,
+            _t: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            Err(reify_ir::TessError::TessellationFailed("unused".into()))
+        }
+        fn closest_point_on_shape(
+            &self,
+            _handle: GeometryHandleId,
+            point: [f64; 3],
+        ) -> Result<[f64; 3], reify_ir::QueryError> {
+            Ok(point)
+        }
+    }
+
+    /// Old/new `BRep` fixture pair with a face bijection `h(10) -> h(20)` and an
+    /// edge bijection `h(30) -> h(40)`. Stage A passes (identical graphs) and
+    /// Stage B pairs both kinds by `TopologyAttribute` equality.
+    struct BijectionFixture {
+        old_graph: EvaluationGraph,
+        new_graph: EvaluationGraph,
+        values: ValueMap,
+        old_table: TopologyAttributeTable,
+        new_table: TopologyAttributeTable,
+        // Owned so the `BRep` borrows below outlive the accessor call.
+        old_faces: [GeometryHandleId; 1],
+        new_faces: [GeometryHandleId; 1],
+        old_edges: [GeometryHandleId; 1],
+        new_edges: [GeometryHandleId; 1],
+    }
+
+    impl BijectionFixture {
+        fn new() -> Self {
+            let id = ValueCellId::new("Part", "width");
+            let old_graph = graph_with_cell(&id, Type::length());
+            let new_graph = old_graph.clone();
+            let mut values = ValueMap::new();
+            values.insert(id, Value::length(0.05));
+
+            let mut old_table = TopologyAttributeTable::default();
+            old_table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h(10),
+                },
+                attr(Role::Cap(CapKind::Top), 0),
+            );
+            old_table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h(30),
+                },
+                attr(Role::Side, 0),
+            );
+            let mut new_table = TopologyAttributeTable::default();
+            new_table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h(20),
+                },
+                attr(Role::Cap(CapKind::Top), 0),
+            );
+            new_table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h(40),
+                },
+                attr(Role::Side, 0),
+            );
+
+            Self {
+                old_graph,
+                new_graph,
+                values,
+                old_table,
+                new_table,
+                old_faces: [h(10)],
+                new_faces: [h(20)],
+                old_edges: [h(30)],
+                new_edges: [h(40)],
+            }
+        }
+
+        fn old_brep(&self) -> BRep<'_> {
+            BRep {
+                graph: &self.old_graph,
+                values: &self.values,
+                topology_attributes: &self.old_table,
+                faces: &self.old_faces,
+                edges: &self.old_edges,
+                vertices: &[],
+            }
+        }
+
+        fn new_brep(&self) -> BRep<'_> {
+            BRep {
+                graph: &self.new_graph,
+                values: &self.values,
+                topology_attributes: &self.new_table,
+                faces: &self.new_faces,
+                edges: &self.new_edges,
+                vertices: &[],
+            }
+        }
+    }
+
+    /// Boundary association for [`single_tet_mesh`] leaving node 3 FREE. Node 3
+    /// sits at (0, 0, 1) while the centroid of its three topological
+    /// neighbours is (1/3, 1/3, 0) — maximally irregular, which is exactly
+    /// what discriminates a displacement-field morph from position smoothing.
+    fn irregular_boundary() -> BoundaryAssociation {
+        let mut boundary = BoundaryAssociation::default();
+        boundary.associate(0, NodeAttachment::OnFace(h(10)));
+        boundary.associate(1, NodeAttachment::OnFace(h(10)));
+        boundary.associate(2, NodeAttachment::OnEdge(h(30)));
+        boundary
+    }
+
+    /// (a) A NO-OP tick — every boundary node projects onto its own current
+    /// position — must MORPH, returning the input unchanged, not degrade to a
+    /// remesh.
+    ///
+    /// RED before the task-#6637 laplacian fix: position smoothing sent the
+    /// free node 3 from (0, 0, 1) to its neighbour centroid (1/3, 1/3, 0),
+    /// collapsing the tet and hard-failing the quality gate under a boundary
+    /// that had not moved at all. Kept permanently as the regression guard.
+    #[test]
+    fn compose_morph_no_op_tick_on_an_irregular_mesh_returns_ok_unchanged_and_records_one_morphed()
+    {
+        with_diag_lock(|| {
+            let fixture = BijectionFixture::new();
+            let source = single_tet_mesh();
+            let before = diagnostics::snapshot();
+
+            let morphed = compose_morph(
+                &source,
+                &irregular_boundary(),
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &IdentityKernel,
+                &MorphOptions::default(),
+            )
+            .expect("a no-op tick must morph, not fail");
+
+            assert_eq!(
+                morphed.vertices, source.vertices,
+                "a zero-displacement tick must return the vertices bit-identical"
+            );
+            assert_eq!(
+                morphed.tet_indices(),
+                source.tet_indices(),
+                "morph must preserve connectivity"
+            );
+
+            let after = diagnostics::snapshot();
+            assert_eq!(
+                after.morphed,
+                before.morphed + 1,
+                "exactly one morph recorded"
+            );
+            assert_eq!(
+                after.remeshed_quality_hard_fail, before.remeshed_quality_hard_fail,
+                "a no-op tick must not trip the quality gate"
+            );
+        });
+    }
+
+    /// (b) A successful morph must carry the source's `BoundaryAssociation`
+    /// forward, RE-KEYED onto the new BRep.
+    ///
+    /// This is what lets the NEXT tick morph: `engine_build.rs` stashes the
+    /// morphed mesh verbatim as the next `MorphSource.source_mesh`, and
+    /// `morph_producer.rs::decide_morph_or_remesh` bails to `Remesh` when
+    /// `source_mesh.boundary` is `None` — so without this the morph arm can
+    /// only ever fire on every OTHER tick.
+    ///
+    /// RED before step S6: both solvers hard-code `boundary: None` and
+    /// `compose_morph` returned their output verbatim.
+    #[test]
+    fn compose_morph_returns_a_mesh_whose_boundary_is_the_source_association_rekeyed_to_the_new_brep()
+     {
+        with_diag_lock(|| {
+            let fixture = BijectionFixture::new();
+            let source = single_tet_mesh();
+            let boundary = irregular_boundary();
+
+            let morphed = compose_morph(
+                &source,
+                &boundary,
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &IdentityKernel,
+                &MorphOptions::default(),
+            )
+            .expect("a no-op tick must morph, not fail");
+
+            let carried = morphed
+                .boundary
+                .as_ref()
+                .expect("a successful morph must forward a BoundaryAssociation, not None");
+
+            assert_eq!(
+                carried.len(),
+                boundary.len(),
+                "re-keying must not drop or add nodes"
+            );
+            // Node indices survive; handles name the NEW BRep, not the old one.
+            assert_eq!(carried.get(0), Some(NodeAttachment::OnFace(h(20))));
+            assert_eq!(carried.get(1), Some(NodeAttachment::OnFace(h(20))));
+            assert_eq!(carried.get(2), Some(NodeAttachment::OnEdge(h(40))));
+            assert_ne!(
+                carried.get(0),
+                Some(NodeAttachment::OnFace(h(10))),
+                "the forwarded association must not still name OLD-BRep handles"
+            );
+        });
+    }
 }
