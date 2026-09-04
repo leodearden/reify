@@ -73,21 +73,11 @@
 # recorded acceptance evidence passes it explicitly rather than relying on the
 # default.
 #
-# PIN-BUMP CHECKLIST — this env var is accepted but DEPRECATED upstream; the
-# package logs "will be removed in v2.0. Use config.jsonc instead." A bump past
-# v2.0 must re-establish the lever in config.jsonc BEFORE landing, or the
-# identity silently reverts:
-#   * THE KEY IS `"git_root_identity": false`, NOT `"identity_mode": "local"`.
-#     `config.py:384` is the shipped default that has to be flipped; `:474` is
-#     its CONFIG_TYPES entry — the map a key must appear in to survive the load
-#     at all.
-#   * `"identity_mode"` is a TRAP: the shipped config template advertises it
-#     (config.py:1872-1896, even presenting it as the preferred spelling) yet at
-#     1.108.54 it is in neither DEFAULTS nor CONFIG_TYPES, so it is discarded
-#     silently on the load path (config.py:708, "Ignore unknown keys silently").
-#   * Run `jcodemunch-mcp config --check` (server.py:6042) against any
-#     config.jsonc a bump introduces: `validate_config` DOES name an
-#     unrecognised key (config.py:1194). It is the only signal upstream gives.
+# PIN-BUMP CHECKLIST: consolidated into `scripts/lib_jcodemunch_pin.sh` (#6454),
+# the ONE definition site for the pin, the interpreter and this lever. Its
+# header carries the v2.0 deprecation, the `"git_root_identity": false`
+# successor with both config.py cites, the `"identity_mode"` trap and the
+# `config --check` instruction. Read it before bumping anything here.
 # Carried as an explicit `env` prefix rather than an `export` so `--dry-run`
 # prints a command that actually reproduces the behaviour when pasted.
 #
@@ -111,6 +101,23 @@
 # Prerequisites: uvx (https://docs.astral.sh/uv/), curl, jq.
 
 set -euo pipefail
+
+# Self-location, so the sibling lib resolves regardless of CWD: both guard
+# suites invoke this script by ABSOLUTE PATH from REPO_ROOT, and operators run
+# it from anywhere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The invocation triple — JC_PIN, JC_PYTHON, JC_IDENTITY_ENV — has ONE
+# definition site (#6454). The existence check is not boilerplate: without it a
+# missing or renamed lib surfaces as an unbound-variable failure deep inside
+# argv construction below, which reads as a bug in THIS script rather than as a
+# missing file.
+if [ ! -f "$SCRIPT_DIR/lib_jcodemunch_pin.sh" ]; then
+    echo "with-jcodemunch-serve.sh: ERROR — scripts/lib_jcodemunch_pin.sh not found next to with-jcodemunch-serve.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_jcodemunch_pin.sh
+source "$SCRIPT_DIR/lib_jcodemunch_pin.sh"
 
 # The one port D5 names. `--port` moves it; the guard needs that because it is a
 # `pool` member and must never bind a host-global fixed port.
@@ -245,57 +252,26 @@ fi
 # previously-indexed file absent from its list — server.py:6505,
 # index_folder.py:1505-1511, sqlite_store.py:1698), and neither is `watch`.
 #
-# THE PIN IS COPIED, NOT SHARED. Four sites carry this version and nothing in
-# the repo asserts they agree, so a bump has to touch all four in one change:
-#   * here (δ, the serve side);
-#   * `scripts/jcodemunch-index-reify.sh:394` (β, the indexer side) — a serve on
-#     an older wheel than the indexer that wrote the index is precisely the
-#     drift this list exists to prevent;
-#   * `crates/reify-audit/tests/jcodemunch_session_live.rs:76` (α's
-#     JCODEMUNCH_PIN);
-#   * the `--dry-run` needle in `tests/infra/test_with_jcodemunch_serve.sh`,
-#     which is what fails loudly if THIS line alone moves.
-# THE LIST IS NO LONGER PROSE-ONLY: that same guard now greps the version out of
-# β and α and asserts all three agree with the argv this script constructs, so a
-# bump that touches one site fails the gate instead of drifting silently.
-# Hoisting the three values (pin, interpreter, identity lever) into one sourced
-# `scripts/lib_jcodemunch_pin.sh` is still the real fix, and it remains out of
-# δ's scope: δ holds neither β nor α. Tracked as #6454.
-JC_PIN="jcodemunch-mcp==1.108.54"
-
-# THE INTERPRETER IS PART OF THE PIN (esc-6107-4). `--from jcodemunch-mcp==…`
-# alone is only HALF a pin: it fixes the package and leaves the interpreter
-# floating, and uvx defaults to the newest interpreter uv manages — on this host
-# cpython-3.14.0+freethreaded, against which a transitive dep publishes no
-# compatible wheel ("Failed to download and build
-# `tree-sitter-embedded-template==0.25.0` … not compatible with the current
-# Python 3.14t"), so the bare form does not run at all.
+# THE PIN, THE INTERPRETER AND THE IDENTITY LEVER ALL COME FROM THE LIB.
+# `scripts/lib_jcodemunch_pin.sh`, sourced at the top of this file, defines
+# JC_PIN, JC_PYTHON and JC_IDENTITY_ENV — there and nowhere else (#6454). Its
+# header carries the PIN-BUMP CHECKLIST, the interpreter provenance (the bare
+# unpinned-interpreter form does not run AT ALL on this host: uvx defaults to
+# cpython-3.14.0+freethreaded and a transitive dep of the pinned wheel publishes
+# no 3.14t wheel) and the consumer inventory. Both guard suites cross-check
+# every consumer's CONSTRUCTED argv against the lib, so a one-sided bump fails
+# the gate instead of drifting silently.
 #
-# 3.13 vs 3.12 — the two siblings measured DIFFERENT values against DIFFERENT
-# subcommands, and this is the reconciliation: α measured `--python 3.12`
-# against `serve` (jcodemunch_session_live.rs:157-159), while β measured 3.13
-# against the heavier `watch` path, which resolves the full dependency closure
-# (a superset of what `serve` needs). 3.13 is chosen here for sibling-
-# consistency with β and because a closure that resolved for `watch` necessarily
-# covers `serve`.
+# THE ONE THING STILL OWNED INDEPENDENTLY: α
+# (`crates/reify-audit/tests/jcodemunch_session_live.rs`) cannot source a shell
+# lib, and today its INTERPRETER is its own — it hardcodes `--python 3.12`
+# against `serve` while δ and β both run 3.13. Only the PIN is cross-checked
+# between them; reconciling the interpreter is #6548.
 #
-# MEASURED 2026-08-22 (task 6109 step-15), so this is no longer an inference:
-# `--python 3.13` resolves the pinned 1.108.54 and SERVES. `uvx` installed 37
-# packages in 311 ms from a warm cache, the serve answered `initialize` as
-# `jcodemunch-mcp` on 8901, and three full wrapped runs completed over it
-# (readiness ~13 s cold, ~5 s warm). No fallback to 3.12 was needed.
-JC_PYTHON="3.13"
-
-# ── THE IDENTITY LEVER IS PART OF THE INVOCATION ─────────────────────────────
-#
-# Carried as an explicit argv PREFIX rather than an `export`, so `--dry-run`
-# prints a command that actually reproduces this behaviour when pasted. The
-# full rationale and the PIN-BUMP CHECKLIST are in this file's header; the one
-# line that matters here is that without it jcodemunch answers for
+# WHY THE LEVER MATTERS HERE SPECIFICALLY: without it jcodemunch answers for
 # `leodearden/reify` (the empty husk) instead of the per-path
 # `local/reify-4ae45bbd` that β indexes, and the wrapped command then audits
 # nothing while emitting a perfectly well-formed empty findings array.
-JC_IDENTITY_ENV=(env JCODEMUNCH_GIT_ROOT_IDENTITY=0)
 
 SERVE_CMD=(uvx --python "$JC_PYTHON" --from "$JC_PIN" jcodemunch-mcp)
 if [ -n "${REIFY_JC_SERVE_CMD:-}" ]; then
