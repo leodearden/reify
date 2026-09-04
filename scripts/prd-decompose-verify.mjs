@@ -26,9 +26,17 @@
 // Uses ONLY Workflow-injected globals: agent, parallel, pipeline, log, phase,
 // args, budget, workflow.  Does NOT use tmp_file or shell (not injected).
 //
-// Batch verdict: blocks on any FAIL/UNPROVABLE/HARNESS_ERROR from any leaf.
-// The script returns a summary object with per-leaf verdicts and aggregate
-// blocking status.
+// Batch verdict: blocks on any FAIL/UNPROVABLE/HARNESS_ERROR from any leaf that
+// carries executed-probe evidence.  The script returns a summary object with
+// per-leaf verdicts and aggregate blocking status.
+//
+// Two lines of defence against a verdict with no evidence behind it:
+//   1. RESULT_RECORD_SCHEMA (below) — an agent cannot EMIT a record without a
+//      capability, a verdict from the closed vocabulary, an argv-array command
+//      and an integer exit_code.
+//   2. The Python harness (has_probe_evidence / classify_record) — anything
+//      that still arrives evidence-free is reported as MALFORMED rather than
+//      tabulated as a premise falsification (PRD §6 decision 4).
 //
 // Committed under scripts/ (not .claude/workflows/ which is .gitignored) so
 // β can reference it by a stable path and D4 can re-run it.  .mjs extension
@@ -71,22 +79,62 @@ const PREMISES_SCHEMA = {
     },
 };
 
+// One α --json result record (prd-capability-check.py's --json record shape).
+//
+// This is the FIRST line of defence for the evidence gate; the Python harness
+// (has_probe_evidence / classify_record) is the second.  Left as the former
+// `{type:"object"}`, the schema accepted three shapes that all reached the
+// synthesis step and were tabulated as premise falsifications:
+//
+//   - a PREMISE record (no verdict key at all) validating as a RESULT record;
+//   - a record with no `command`/`exit_code` — an unexecuted promise;
+//   - `command: "target/release/reify eval f.ri"` (a STRING), which the report
+//     builder then rendered character-by-character.
+//
+// Requiring capability/verdict/command/exit_code, pinning `verdict` to the
+// PRD §6 decision 3 vocabulary, and typing `command` as an array of strings
+// makes all three unrepresentable at the agent boundary.
+const RESULT_RECORD_SCHEMA = {
+    type: "object",
+    required: ["capability", "verdict", "command", "exit_code"],
+    properties: {
+        capability: { type: "string" },
+        probe_kind: { type: "string" },
+        verdict:    { type: "string",
+                      enum: ["PASS", "FAIL", "UNPROVABLE", "HARNESS_ERROR"] },
+        // argv TOKENS, never a ready-to-paste shell string.
+        command:    { type: "array", items: { type: "string" } },
+        // A real process outcome.  -1 when no process ran (HARNESS_ERROR).
+        exit_code:  { type: "integer" },
+        stdout:     { type: "string" },
+        stderr:     { type: "string" },
+    },
+};
+
 const RESULTS_SCHEMA = {
     type: "object",
     required: ["prover"],
     properties: {
-        prover:    { type: "array", items: { type: "object" } },
-        adversary: { type: "array", items: { type: "object" } },
+        prover:    { type: "array", items: RESULT_RECORD_SCHEMA },
+        adversary: { type: "array", items: RESULT_RECORD_SCHEMA },
     },
 };
 
+// `malformed`, `fixture_absent`, `executed` and `total` are DECLARED but NOT
+// required: the Synthesize agent shells the Python harness and returns its JSON
+// verbatim, so requiring them would hard-fail against any harness build that
+// predates them.  Stage 3 defaults them with `?? []` / `?? 0` instead.
 const VERDICT_SCHEMA = {
     type: "object",
     required: ["blocks", "blocking", "report"],
     properties: {
-        blocks:   { type: "boolean" },
-        blocking: { type: "array", items: { type: "string" } },
-        report:   { type: "string" },
+        blocks:         { type: "boolean" },
+        blocking:       { type: "array", items: { type: "string" } },
+        report:         { type: "string" },
+        malformed:      { type: "array", items: { type: "string" } },
+        fixture_absent: { type: "array", items: { type: "string" } },
+        executed:       { type: "integer" },
+        total:          { type: "integer" },
     },
 };
 
@@ -245,6 +293,19 @@ Steps (use your own shell/file tools):
    Capture the full stdout JSON. Parse the "results" array from it.
 5. Return {prover: [result_records...], adversary: []}.
 
+RECORD SHAPE — every result record MUST carry all four of capability, verdict,
+command and exit_code, and:
+  - \`command\` MUST be an ARRAY OF STRINGS (argv tokens, e.g.
+    ["python3", "scripts/prd-capability-check.py", "--json", "/tmp/ps.json"]).
+    Do NOT return a single ready-to-paste shell string — it is not re-runnable
+    as captured evidence and the schema rejects it.
+  - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
+  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
+Pass through α's captured command/exit_code/stdout/stderr VERBATIM — do not
+reconstruct, re-quote or summarize them.  A blocking verdict with no captured
+command+exit_code is discarded by the harness as an unexecuted promise, so an
+invented record wins you nothing.
+
 If any step fails, return a single HARNESS_ERROR result record:
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
    command: [], exit_code: -1, stdout: "", stderr: "<error detail>"}`,
@@ -273,6 +334,16 @@ Instructions:
 3. Return any additional result records as the "adversary" field.
 4. You can only ADD blocking signals — if you find nothing new, return empty
    adversary list.
+
+RECORD SHAPE — every result record MUST carry all four of capability, verdict,
+command and exit_code, and:
+  - \`command\` MUST be an ARRAY OF STRINGS (argv tokens), never a single
+    ready-to-paste shell string.
+  - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
+  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
+A FAIL you did not actually RUN is not a falsification — the harness discards
+any blocking record with no captured command+exit_code as an unexecuted
+promise.  Report only what you probed, with α's captured output verbatim.
 
 Return JSON: {prover: [], adversary: [result_records...]}`,
                     { label: `adversary:${idx}`, phase: "Adversary", schema: RESULTS_SCHEMA, model: "opus", effort: "xhigh" }
@@ -304,8 +375,16 @@ Steps (use your own shell/file tools):
      /tmp/pdv_results_${idx}.json
 2. Run: python3 scripts/prd-decompose-verify.py synthesize /tmp/pdv_results_${idx}.json
    Capture stdout VERBATIM.
-3. Parse the stdout as JSON — it is a BatchVerdict object {blocks, blocking, report}.
-4. Return that object directly. Do NOT summarize or alter the report field.
+3. Parse the stdout as JSON — it is a BatchVerdict object
+     {blocks, blocking, report, malformed, fixture_absent, executed, total}.
+4. Return that object VERBATIM, including malformed, fixture_absent, executed
+   and total. Do NOT summarize or alter the report field, do NOT drop fields you
+   do not recognize, and do NOT recompute \`blocks\` yourself — the harness is
+   the adjudicator and you are relaying its answer.
+
+NOTE: exit code 0 from the harness does NOT mean "verified". Malformed and
+fixture-absent records do not block, so a batch can exit 0 having probed
+nothing. Relay executed/total unchanged so the caller can tell the difference.
 
 If the command fails or stdout is not valid JSON, return:
   {blocks: true, blocking: ["${leafLabel}"], report: "<error from synthesize>"}`,
