@@ -202,7 +202,7 @@ fn max_von_mises_over_real_solve_elastic_static_stress_field_is_not_undef() {
     // would be asserting nothing.
     let sf = backing_sampled_field(&field);
     assert!(
-        !sf.data.is_empty() && sf.data.len() % 9 == 0,
+        !sf.data.is_empty() && sf.data.len().is_multiple_of(9),
         "stress buffer must be a non-empty stride-9 tensor buffer, got len {}",
         sf.data.len()
     );
