@@ -2037,5 +2037,181 @@ class TestFixtureAbsent(unittest.TestCase):
         self.assertFalse(bv.blocks)
 
 
+# ---------------------------------------------------------------------------
+# task #7257 step-09 (RED): RESULTS_SCHEMA must constrain the record shape
+# ---------------------------------------------------------------------------
+
+class TestMjsResultsSchema(unittest.TestCase):
+    """The agent-output schema is the FIRST line of defence for ARM 1.
+
+    RESULTS_SCHEMA today declares `prover`/`adversary` as
+    `{type:"array", items:{type:"object"}}` — no required keys, no verdict
+    enum, no type on `command`.  Consequences measured on this branch:
+
+      - a PREMISE record validates as a RESULT record;
+      - a record with no `command`/`exit_code` at all validates, which is
+        exactly the unexecuted promise the Python evidence gate now catches;
+      - `"command": "target/release/reify eval f.ri"` (a STRING) validates,
+        which is the character-explosion source.
+
+    The Python gate is the second line of defence and stays.  This schema kills
+    the malformed shapes at source so an agent cannot emit them at all.
+
+    Source-sliced out of the .mjs the same way TestMjsNormalizeLeaves does:
+    everything BEFORE the `const _wfResult = await` IIFE anchor, evaluated via
+    `new Function` — no injected-globals mock, no IIFE execution.
+
+    GREEN in task #7257 step-10.
+    """
+
+    _MARK = "SCHEMAS_RESULT:"
+    _REQUIRED_KEYS = {"capability", "verdict", "command", "exit_code"}
+    _VERDICT_ENUM = ["PASS", "FAIL", "UNPROVABLE", "HARNESS_ERROR"]
+
+    def _harness_source(self) -> str:
+        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        return f"""\
+import {{ readFileSync }} from "node:fs";
+
+const MARK = "{self._MARK}";
+const MJS_PATH = "{mjs_abs}";
+
+let src = readFileSync(MJS_PATH, "utf8");
+const ANCHOR = "const _wfResult = await";
+const anchorIdx = src.indexOf(ANCHOR);
+if (anchorIdx === -1) {{
+    console.error("ANCHOR_NOT_FOUND: " + ANCHOR);
+    process.exit(1);
+}}
+let head = src.slice(0, anchorIdx);
+head = head.replace("export const meta", "const meta");
+
+let schemas;
+try {{
+    schemas = new Function(head + "\\nreturn {{ RESULTS_SCHEMA, VERDICT_SCHEMA }};")();
+}} catch (e) {{
+    console.error("SCHEMA_EXTRACT_FAILED: " + e.message);
+    process.exit(1);
+}}
+console.log(MARK + JSON.stringify(schemas));
+"""
+
+    def _schemas(self) -> dict:
+        """Run the extraction harness and return {RESULTS_SCHEMA, VERDICT_SCHEMA}."""
+        harness_src = self._harness_source()
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            input=harness_src, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"node exited {result.returncode}; stderr: {result.stderr!r}",
+        )
+        lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._MARK)]
+        self.assertTrue(lines, f"no schema marker in stdout; stdout: {result.stdout!r}")
+        return json.loads(lines[-1][len(self._MARK):])
+
+    def _record_items(self, role: str) -> dict:
+        """The `items` sub-schema constraining one α result record for `role`."""
+        results = self._schemas()["RESULTS_SCHEMA"]
+        self.assertIn(role, results["properties"],
+                      f"RESULTS_SCHEMA has no {role!r} property")
+        prop = results["properties"][role]
+        self.assertIn("items", prop, f"{role} declares no `items` record constraint")
+        return prop["items"]
+
+    # ── (1)(2) both roles constrain the record's required keys ───────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_prover_items_require_the_evidence_keys(self):
+        """A prover record must declare capability, verdict, command AND exit_code."""
+        items = self._record_items("prover")
+        required = set(items.get("required", []))
+        self.assertTrue(
+            self._REQUIRED_KEYS.issubset(required),
+            f"prover items.required is missing {self._REQUIRED_KEYS - required}; "
+            f"got {sorted(required)}",
+        )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_adversary_items_require_the_evidence_keys(self):
+        """The Adversary is constrained too — not just the Prover.
+
+        The Adversary is the role that can only ADD blocking signals, so an
+        unconstrained adversary record is the cheapest route to a vacuous block.
+        """
+        items = self._record_items("adversary")
+        required = set(items.get("required", []))
+        self.assertTrue(
+            self._REQUIRED_KEYS.issubset(required),
+            f"adversary items.required is missing {self._REQUIRED_KEYS - required}; "
+            f"got {sorted(required)}",
+        )
+
+    # ── (3) the verdict vocabulary is closed ─────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_verdict_is_a_closed_enum(self):
+        """PRD §6 decision 3 fixes the verdict vocabulary; the schema pins it."""
+        for role in ("prover", "adversary"):
+            with self.subTest(role=role):
+                props = self._record_items(role).get("properties", {})
+                self.assertIn("verdict", props, f"{role} items declares no verdict")
+                self.assertEqual(props["verdict"].get("enum"), self._VERDICT_ENUM)
+
+    # ── (4) the constraint that kills the string-command shape at source ─────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_command_is_an_array_of_strings(self):
+        """`command` must be argv tokens, never a ready-to-paste shell string."""
+        for role in ("prover", "adversary"):
+            with self.subTest(role=role):
+                props = self._record_items(role).get("properties", {})
+                self.assertIn("command", props, f"{role} items declares no command")
+                self.assertEqual(
+                    props["command"],
+                    {"type": "array", "items": {"type": "string"}},
+                    f"{role} command must be an array of strings; got {props['command']!r}",
+                )
+
+    # ── (5) exit_code is an integer, and null is not an accepted type ────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_exit_code_is_an_integer_and_not_nullable(self):
+        """A null exit_code is the unexecuted-promise shape; the schema rejects it."""
+        for role in ("prover", "adversary"):
+            with self.subTest(role=role):
+                props = self._record_items(role).get("properties", {})
+                self.assertIn("exit_code", props, f"{role} items declares no exit_code")
+                declared = props["exit_code"].get("type")
+                self.assertEqual(declared, "integer",
+                                 f"{role} exit_code.type must be 'integer'; got {declared!r}")
+                self.assertNotIn(
+                    "null", declared if isinstance(declared, list) else [declared],
+                    f"{role} exit_code must not accept null",
+                )
+
+    # ── (6) VERDICT_SCHEMA declares, but does not require, the new fields ────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_verdict_schema_declares_the_new_batchverdict_fields(self):
+        """The harness now emits malformed/fixture_absent/executed/total."""
+        props = self._schemas()["VERDICT_SCHEMA"].get("properties", {})
+        for key in ("malformed", "fixture_absent", "executed", "total"):
+            self.assertIn(key, props,
+                          f"VERDICT_SCHEMA declares no {key!r}; got {sorted(props)}")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_verdict_schema_required_is_unchanged(self):
+        """The new fields are DECLARED, not REQUIRED.
+
+        Requiring them would hard-fail the Synthesize agent against any harness
+        build that predates them, turning a compatible additive change into an
+        outage.  The .mjs defaults them with `?? []` / `?? 0` instead.
+        """
+        required = self._schemas()["VERDICT_SCHEMA"].get("required", [])
+        self.assertEqual(required, ["blocks", "blocking", "report"])
+
+
 if __name__ == "__main__":
     unittest.main()
