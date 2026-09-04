@@ -324,6 +324,30 @@ _PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' | _pg_der
 # must fail loudly here instead of vacuously passing an empty loop.
 assert "PG-DRIFT: derived coupled-fixture set is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PG_COUPLED"
+# INJECTION self-tests for the reviewed 'pg-drift:allow' escape hatch. All four
+# drive synthetic lines through the SAME _pg_derive helper the real run above
+# uses, so they can never drift from the production pipeline; they live in this
+# '.sh' file while the pathspec is '*.rs', so they can never leak into the real
+# derived set either — the same safety PG-DRIFT-DIR's self-tests below rely on.
+# The worked example throughout is the case BOTH real incidents were:
+# documentation prose asserting that a fixture is UNCOUPLED (#5540, #5371).
+assert "PG-DRIFT: marker self-test — an UNMARKED prose mention IS still derived (the guard must keep biting: this is #5540's 19->20 and #5371's 12->13 delta)" \
+    test "$(printf '%s\n' \
+        '//! see tests/prd-gate/fixtures/pg_drift_marker_probe.ri for the silent-accept case' \
+        | _pg_derive | wc -l || true)" -eq 1
+assert "PG-DRIFT: marker self-test — the SAME line carrying an inline 'pg-drift:allow — <reason>' is NOT derived (reviewed prose about an uncoupled fixture must not force a FALSE _RUST_COUPLED_RI_FIXTURES row)" \
+    test "$(printf '%s\n' \
+        '//! tests/prd-gate/fixtures/pg_drift_marker_probe.ri (pg-drift:allow — reviewed: prose only, no compiled target reads it)' \
+        | _pg_derive | wc -l || true)" -eq 0
+assert "PG-DRIFT: marker self-test — a marker on the PRECEDING line suppresses NOTHING (the filter drops MATCHED lines, so the marker must ride on the matched line itself)" \
+    test "$(printf '%s\n' \
+        '//! pg-drift:allow — reviewed, see below' \
+        '//! see tests/prd-gate/fixtures/pg_drift_marker_probe.ri' \
+        | _pg_derive | wc -l || true)" -eq 1
+assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT cross-suppress half (a) (forces the filter literal to be the exact 'pg-drift:allow'; a shortened 'pg-drift' would silently mute every reviewed directory walk here too)" \
+    test "$(printf '%s\n' \
+        '//! tests/prd-gate/fixtures/pg_drift_marker_probe.ri // pg-drift-dir:allow — reviewed walk' \
+        | _pg_derive | wc -l || true)" -eq 1
 while IFS= read -r _pg_path; do
     [ -n "$_pg_path" ] || continue
     plan_for staged "$_pg_path"
