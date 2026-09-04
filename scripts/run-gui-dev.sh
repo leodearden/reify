@@ -4,15 +4,43 @@
 # Usage: scripts/run-gui-dev.sh <file.ri>
 #
 # Performs every build step needed to launch reify-gui in dev mode:
-#   1. Install gui/sidecar/ npm deps (tsup needs typescript at runtime).
-#   2. Build the sidecar (idempotent; ~20ms tsup bundle).
-#   3. Install gui/ npm deps (vite needs them).
-#   4. Start the vite dev server in the background and wait for :${REIFY_VITE_PORT:-1420}.
-#   5. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
-#   6. Export REIFY_DEBUG=1 + OCCT LD_LIBRARY_PATH.
-#   7. Run target/debug/reify-gui <file.ri> as a backgrounded child and
+#   1. Validate args, then PREFLIGHT: refuse a launch that is already known to
+#      fail (no display; the vite port already served) BEFORE any expensive
+#      step. Bypass the whole block with REIFY_GUI_SKIP_PREFLIGHT=1.
+#   2. Install gui/sidecar/ npm deps (tsup needs typescript at runtime).
+#   3. Build the sidecar (idempotent; ~20ms tsup bundle).
+#   4. Install gui/ npm deps (vite needs them).
+#   5. Start the vite dev server in its own PROCESS GROUP in the background and
+#      wait for :${REIFY_VITE_PORT:-1420}.
+#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
+#   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
+#      renderer default.
+#   8. Run target/debug/reify-gui <file.ri> as a backgrounded child and
 #      `wait`, so SIGTERM/SIGINT to this script reach the trap which reaps
-#      both vite and reify-gui.
+#      both the vite process GROUP and reify-gui.
+#
+# ---------------------------------------------------------------------------
+# Environment contract
+# ---------------------------------------------------------------------------
+# LD_LIBRARY_PATH  An inherited value is PRESERVED — entries are never scrubbed
+#                  or reordered — but /opt/reify-deps/tbb-pin is prepended
+#                  AHEAD of it. This is load-bearing: the loader searches
+#                  LD_LIBRARY_PATH before DT_RUNPATH, so a caller value naming
+#                  /usr/lib/x86_64-linux-gnu would otherwise bind the system
+#                  libtbb 12.11 over the deps 12.18 and defeat #5192's
+#                  mechanism A''. A one-line notice is emitted only when a
+#                  non-empty value was actually inherited.
+#
+# WEBKIT_DISABLE_DMABUF_RENDERER
+#                  Defaults to 1 (mirrors gui/test/visual/lib_e2e_smoke.sh
+#                  §2b). Without it, WebKitGTK aborts on an NVIDIA host with
+#                  "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
+#                  Export 0 to restore the DMABUF path where it works.
+#
+# REIFY_GUI_SKIP_PREFLIGHT
+#                  Set to 1 to skip the display and vite-port preflights. They
+#                  run before any build, so this is the break-glass for an
+#                  unusual environment (e.g. a deliberately headless run).
 #
 # IMPORTANT: this script does NOT `exec` the GUI binary. `exec` would replace
 # the shell process with the binary, killing the trap that reaps vite.

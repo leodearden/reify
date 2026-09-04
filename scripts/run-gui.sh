@@ -4,11 +4,25 @@
 # Usage: scripts/run-gui.sh <file.ri>
 #
 # Performs every build step needed to launch reify-gui from a clean checkout:
-#   1. Build the sidecar (idempotent; ~20ms tsup bundle).
-#   2. Install gui/ npm deps + build the frontend (produces gui/dist).
-#   3. Build the reify-gui cargo binary in release mode (with feature `gui`).
-#   4. Export LD_LIBRARY_PATH so OCCT's bundled shared libraries are found.
-#   5. exec target/release/reify-gui <file.ri>.
+#   1. Validate args, then PREFLIGHT: refuse a launch with no display BEFORE
+#      any expensive step. Bypass with REIFY_GUI_SKIP_PREFLIGHT=1.
+#   2. Build the sidecar (idempotent; ~20ms tsup bundle).
+#   3. Install gui/ npm deps + build the frontend (produces gui/dist).
+#   4. Build the reify-gui cargo binary in release mode (with feature `gui`).
+#   5. Export LD_LIBRARY_PATH (OCCT's bundled libs + the tbb pin) and the
+#      WebKit renderer default.
+#   6. exec target/release/reify-gui <file.ri>.
+#
+# Environment contract (full version in scripts/run-gui-dev.sh's header):
+#   LD_LIBRARY_PATH   an inherited value is PRESERVED, but
+#                     /opt/reify-deps/tbb-pin is prepended ahead of it — the
+#                     loader searches LD_LIBRARY_PATH before DT_RUNPATH, so a
+#                     caller path naming /usr/lib/x86_64-linux-gnu would
+#                     otherwise bind system libtbb 12.11 over the deps 12.18
+#                     and defeat #5192's pin.
+#   WEBKIT_DISABLE_DMABUF_RENDERER   defaults to 1; export 0 to restore the
+#                     DMABUF path on a host where it works.
+#   REIFY_GUI_SKIP_PREFLIGHT         set to 1 to skip the display preflight.
 #
 # For dev-mode (vite dev server, configurable debug MCP port, devtools)
 # use scripts/run-gui-dev.sh instead.

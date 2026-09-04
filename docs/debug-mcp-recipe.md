@@ -22,6 +22,17 @@ scripts/run-gui-dev.sh path/to/fixture.ri
 
 The debug server accepts MCP `tools/call` JSON-RPC on `http://127.0.0.1:${REIFY_DEBUG_PORT:-3939}/mcp`.
 
+The launcher now self-defends against a hostile environment, so the
+`env -u LD_LIBRARY_PATH WEBKIT_DISABLE_DMABUF_RENDERER=1 scripts/run-gui-dev.sh ...`
+prefix that used to be required is no longer needed: it preserves an inherited
+`LD_LIBRARY_PATH` but prepends `/opt/reify-deps/tbb-pin` ahead of it (the loader
+searches `LD_LIBRARY_PATH` before `DT_RUNPATH`, so an inherited `/usr/lib` path
+would otherwise bind system libtbb 12.11 over the deps 12.18), and it defaults
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` itself. It also preflights the display and
+the vite port *before* the build, so a headless shell or a port another worktree
+already serves fails in milliseconds instead of after a multi-minute cargo
+build — set `REIFY_GUI_SKIP_PREFLIGHT=1` to bypass those two checks.
+
 ---
 
 ## 2. Run the e2e value-assertion suite
