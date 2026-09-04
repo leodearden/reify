@@ -12,8 +12,16 @@ It handles:
 
 CLI subcommands:
     bind      <premises.json>     — emit probe-set JSON to stdout (exit 0)
-    synthesize <results.json>     — emit BatchVerdict JSON;
-                                    exit 0 (all pass) or 1 (blocks)
+    synthesize <results.json>     — emit BatchVerdict JSON
+                                    {blocks, blocking, report, malformed,
+                                     fixture_absent, executed, total};
+                                    exit 0 (nothing blocks) or 1 (blocks)
+
+                                    Exit 0 is NOT by itself a clean pass:
+                                    malformed / fixture-absent records do not
+                                    block, so a batch can exit 0 having
+                                    verified nothing.  Read `executed` against
+                                    `total` before trusting it.
 
 Reuses α (`prd-capability-check.py`) in-process via importlib — the same loader
 pattern used by `test_prd_capability_check.py`.  α's file is NOT edited.
@@ -658,10 +666,26 @@ def main(argv: List[str]) -> int:
                     results.json, emit BatchVerdict JSON to stdout.
                     Exit 0 if nothing blocks, 1 if blocks, 64 on error.
 
+                    The emitted object carries:
+                        blocks          bool  — any evidence-backed falsification
+                        blocking        [str] — those capabilities
+                        report          str   — captured evidence, by section
+                        malformed       [str] — blocking verdicts with NO
+                                                executed-probe evidence
+                        fixture_absent  [str] — probes whose target file was missing
+                        executed        int   — records with probe evidence
+                        total           int   — records synthesized
+
     Exit codes:
-        0   success (bind: OK; synthesize: all pass)
-        1   synthesize: at least one probe blocks
+        0   success (bind: OK; synthesize: nothing blocks)
+        1   synthesize: at least one evidence-backed probe blocks
         64  usage / argument / IO / parse error  (sysexits EX_USAGE)
+
+    IMPORTANT — exit 0 is NOT by itself a clean pass.  MALFORMED and
+    fixture-absent records do not block, so a batch can exit 0 having verified
+    nothing.  A caller that wants "verified" rather than merely "not falsified"
+    must additionally require empty `malformed` and `fixture_absent` and read
+    `executed` against `total`.
     """
     parser = argparse.ArgumentParser(
         prog="prd-decompose-verify.py",
@@ -729,6 +753,10 @@ def main(argv: List[str]) -> int:
             "blocks": bv.blocks,
             "blocking": bv.blocking,
             "report": bv.report,
+            "malformed": bv.malformed,
+            "fixture_absent": bv.fixture_absent,
+            "executed": bv.executed,
+            "total": bv.total,
         }
         sys.stdout.write(json.dumps(output, indent=4))
         sys.stdout.write("\n")
