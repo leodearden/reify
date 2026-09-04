@@ -7,72 +7,23 @@
 
 #![cfg(has_gmsh)]
 
-use std::sync::Mutex;
+mod common;
 
-use reify_kernel_gmsh::refine_volume::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
-use reify_kernel_gmsh::{MeshingOptions, ffi, init, mesh_plane_2d, refine_volume_with_size_field};
+// The clamp probe and its serialising mutex are shared verbatim with
+// `tests/mesh_to_volume_clamp_hermeticity.rs`, the other half of this
+// discipline. Declared by path rather than through `common/mod.rs`, whose
+// stated scope is the #6200 geometry fixtures; see `common/clamp_probe.rs` for
+// why one copy matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
+
+use clamp_probe::{
+    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, poison_global_mesh_size_clamp, probe_triangle_count,
+    set_global_mesh_size_clamp,
+};
+use common::unit_cube_mesh;
 use reify_ir::{ElementOrderTag, Mesh};
-
-/// Whole-test-body serialisation, layered *above* `init::GMSH_LOCK`.
-///
-/// Every test in this binary manipulates the process-global gmsh mesh-size
-/// clamp across MULTIPLE lock acquisitions — poison, then call
-/// `refine_volume_with_size_field` (which takes `GMSH_LOCK` itself); or
-/// baseline, refine, re-measure. `GMSH_LOCK` is released between those steps,
-/// so cargo's parallel test threads can interleave inside the gap.
-///
-/// That interleave cannot produce a false FAILURE, only a false PASS, which is
-/// the worse direction for a regression guard: the fix resets the clamp to
-/// gmsh's defaults on every exit, so a sibling refine landing in the gap
-/// *erases the poison*. The poisoned leg of the inbound-hermeticity assertion
-/// would then silently become a second defaults run and compare equal for the
-/// wrong reason.
-///
-/// Taking this mutex as the first statement of every test that touches gmsh
-/// makes each poison → refine → measure sequence atomic with respect to its
-/// siblings. `GMSH_LOCK` is strictly finer-grained (always acquired while this
-/// one is held, never the reverse), so the nesting order is fixed and adds no
-/// deadlock risk. Poison recovery matches the crate convention at
-/// `mesh_profile_2d.rs`: a panicking test must not cascade into "lock
-/// poisoned" failures for every sibling.
-static CLAMP_TEST_ORDER: Mutex<()> = Mutex::new(());
-
-/// Inline copy of `crates/reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:19-48`.
-///
-/// Duplicated rather than dev-dep'ing on `reify-kernel-manifold` to avoid an
-/// awkward layering — gmsh would otherwise dev-depend on manifold solely for
-/// this 30-line fixture. When B-rep test fixtures consolidate into a shared
-/// crate, this helper can move there.
-fn unit_cube_mesh() -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0_f32, 0.0, 0.0, // 0
-            1.0, 0.0, 0.0, // 1
-            1.0, 1.0, 0.0, // 2
-            0.0, 1.0, 0.0, // 3
-            0.0, 0.0, 1.0, // 4
-            1.0, 0.0, 1.0, // 5
-            1.0, 1.0, 1.0, // 6
-            0.0, 1.0, 1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
+use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
 
 /// A `unit_cube_mesh` scaled uniformly about the origin, i.e. the box
 /// `[0,scale]^3`.
@@ -85,38 +36,6 @@ fn scaled_cube_mesh(scale: f32) -> Mesh {
         *v *= scale;
     }
     cube
-}
-
-/// Gmsh's documented defaults for the `Mesh.MeshSizeMin`/`MeshSizeMax` pair —
-/// no floor, effectively no cap. This is the state a caller that writes no
-/// clamp of its own (e.g. `mesh_plane_2d` with no requested size) expects.
-///
-/// Built from the production constants rather than from literals so the two
-/// cannot drift: if `refine_volume.rs` ever corrects its notion of gmsh's
-/// defaults, a private copy here would keep asserting against the stale pair
-/// and this file's "from gmsh's defaults" run would quietly stop being from
-/// gmsh's defaults — weakening the inbound-hermeticity assertion instead of
-/// failing it.
-const GMSH_CLAMP_DEFAULTS: (f64, f64) = (GMSH_MESH_SIZE_MIN_DEFAULT, GMSH_MESH_SIZE_MAX_DEFAULT);
-
-/// Write the process-global gmsh mesh-size clamp.
-///
-/// gmsh's option table is process-global and is **not** reset by `gmshClear()`,
-/// so `Mesh.MeshSizeMin` / `Mesh.MeshSizeMax` written by one call survive into
-/// every later call in the same process. Acquires `GMSH_LOCK` for the duration
-/// of the two writes and releases it before returning, so the subsequent
-/// `refine_volume_with_size_field` call can take the lock itself.
-fn set_global_mesh_size_clamp((min, max): (f64, f64)) {
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    init::ensure_initialized();
-    ffi::option_set_number("Mesh.MeshSizeMin", min).expect("set MeshSizeMin");
-    ffi::option_set_number("Mesh.MeshSizeMax", max).expect("set MeshSizeMax");
-}
-
-/// Pin the clamp shut at `size`, reproducing the state a sibling entry point
-/// leaves behind (`Min == Max == its own requested size`).
-fn poison_global_mesh_size_clamp(size: f64) {
-    set_global_mesh_size_clamp((size, size));
 }
 
 /// Remesh `cube` with the given per-vertex hints and return the P1 tet count.
@@ -464,13 +383,20 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
 /// Structure — measure the same defaults-relying call twice, straddling a
 /// refine:
 ///
-/// 1. **Warm-up refine.** Not decoration: this function also leaks
-///    `Mesh.MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary`
-///    (task #6212, deliberately out of #6211's scope). Running one refine
-///    first puts those three in their post-refine state for BOTH measurements,
-///    so the only thing that can differ between them is the clamp — the thing
-///    under test. Without it this test would be order-dependent in the same way
-///    `uniform_smaller_size_field_produces_more_tets` is.
+/// 1. **Warm-up refine.** Not decoration: a refine also writes
+///    `Mesh.ElementOrder`, which `mesh_plane_2d` never sets and
+///    [`probe_triangle_count`] does not pin. Running one refine first puts it
+///    in its post-refine state for BOTH measurements, so the only thing that
+///    can differ between them is the clamp — the thing under test.
+///    `ElementOrderTag::P1` throughout, so a leaked `Mesh.ElementOrder = 2`
+///    (which would make gmsh emit 6-node triangles and the probe's readback
+///    return nothing) never arises here.
+///
+///    It used to carry a second job — normalising the
+///    `Mesh.MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary` trio
+///    a refine leaks (task #6212, still open) — which the probe now does for
+///    itself, unconditionally, so the measurement no longer depends on this
+///    warm-up having run.
 /// 2. **Baseline**, from an explicitly-defaulted clamp.
 /// 3. **A fine refine** — `FINE_HINT` is 20x finer than the plane's own
 ///    extent, so a leak is loud rather than marginal.
@@ -480,26 +406,23 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
 /// FINE_HINT` and returns a far denser 2D mesh than step 2, and the equality
 /// fails. Needs no `option_get_number` getter: it observes the leak's effect,
 /// not the option table.
+///
+/// # Measured, with `MeshSizeClampReset::armed` commented out of `refine_volume`
+///
+/// baseline = **162** triangles, after `refine_at(FINE_HINT = 0.05)` = **944** —
+/// a 5.8x jump on an assertion that is an exact equality, so the margin is far
+/// outside any rounding. The 162 is the same baseline
+/// `mesh_to_volume_clamp_hermeticity.rs` measures in its own process, which is
+/// the point of sharing [`probe_triangle_count`]: one instrument, one reading,
+/// whatever the process has been through.
 #[test]
 fn refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
 
-    /// Unit square in the XY plane — the defaults-relying 2D probe.
-    const PROBE_OUTER: [[f64; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     /// The hint the refine in the middle requests. 20x finer than the probe's
     /// extent, so a leaked cap changes the probe's triangle count by orders of
     /// magnitude rather than by a rounding.
     const FINE_HINT: f64 = 0.05;
-
-    // `mesh_size: None` — the whole point: this call writes no clamp and so
-    // reports whatever `Mesh.MeshSizeMax` the process happens to be carrying.
-    let probe_triangle_count = || {
-        mesh_plane_2d(&PROBE_OUTER, &[], None, false, true)
-            .expect("mesh_plane_2d must succeed for a unit square")
-            .triangle_indices
-            .len()
-            / 3
-    };
 
     let cube = unit_cube_mesh();
     let n_surface_verts = cube.vertices.len() / 3;
