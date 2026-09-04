@@ -13,6 +13,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# allocate_free_port — the canonical free-ephemeral-port helper, used by
+# _rgs_free_port below.
+# shellcheck source=scripts/lib_portable.sh
+source "$REPO_ROOT/scripts/lib_portable.sh"
+
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
@@ -372,8 +377,15 @@ _rgs_mktemp() {
 
 # _rgs_free_port — an ephemeral port nothing is bound to, so a test never
 # collides with another worktree's vite on :1420 (task 2308).
+#
+# Delegates to scripts/lib_portable.sh's allocate_free_port rather than
+# re-inlining the python3 one-liner: that library's own header (lib_portable.sh
+# :29-31) already cites THIS file as the origin of the idiom, and it adds the
+# `command -v python3` guard the inline copy lacked — so a host without python3
+# gets a named error ("python3 not found on PATH; cannot allocate a free port")
+# instead of bash's bare `python3: command not found`.
 _rgs_free_port() {
-    python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1])'
+    allocate_free_port
 }
 
 # _mk_rungui_dev_fixture <dir>
@@ -749,12 +761,39 @@ echo "--- Test 28: launchers prepend /opt/reify-deps/tbb-pin ahead of the caller
 # So the launchers must lead with the pin dir while PRESERVING what they were
 # handed.
 
-# Cheap text drift-guard — runs on every host, including one with no deps tree.
-assert "scripts/run-gui-dev.sh names '/opt/reify-deps/tbb-pin'" \
-    grep -qF '/opt/reify-deps/tbb-pin' "$RUN_GUI_DEV"
+# Cheap text drift-guards — they run on every host, including one with no deps
+# tree, where the behavioural half below is skipped entirely and these are the
+# ONLY coverage of the whole tbb-pin mechanism.
+#
+# Every guard here is therefore anchored to an EXECUTABLE line. A bare
+# `grep -F /opt/reify-deps/tbb-pin` would also be satisfied by the header
+# comments that merely mention the path, so deleting the entire pin block could
+# leave it green — the same trap Test 31's spawn guard already avoids by
+# anchoring to `^[[:space:]]*npm run dev`.
+#
+# The pin itself now lives in scripts/lib_gui_launch.sh (#7254 amendment), so
+# the guards come in two halves: the lib must still implement the pin, and each
+# launcher must still source the lib and CALL it. Neither half alone is enough
+# — a launcher that dropped the call would otherwise pass on a host where the
+# behavioural half is skipped.
+assert "scripts/lib_gui_launch.sh assigns GUI_LAUNCH_TBB_PIN_DIR=/opt/reify-deps/tbb-pin" \
+    bash -c 'grep -qE "^[[:space:]]*GUI_LAUNCH_TBB_PIN_DIR=\"?/opt/reify-deps/tbb-pin\"?$" "$1"' _ "$LIB_GUI_LAUNCH"
 
-assert "scripts/run-gui.sh names '/opt/reify-deps/tbb-pin'" \
-    grep -qF '/opt/reify-deps/tbb-pin' "$RUN_GUI"
+assert "scripts/lib_gui_launch.sh prepends GUI_LAUNCH_TBB_PIN_DIR to LD_LIBRARY_PATH" \
+    bash -c 'grep -qE "^[[:space:]]*export LD_LIBRARY_PATH=\"\\\$GUI_LAUNCH_TBB_PIN_DIR" "$1"' _ "$LIB_GUI_LAUNCH"
+
+for _t28_script in "$RUN_GUI_DEV" "$RUN_GUI"; do
+    _t28_name="$(basename "$_t28_script")"
+
+    assert "scripts/$_t28_name sources lib_gui_launch.sh" \
+        bash -c 'grep -qE "^[[:space:]]*(source|\\.) .*lib_gui_launch\.sh" "$1"' _ "$_t28_script"
+
+    assert "scripts/$_t28_name calls gui_launch_env_pin" \
+        bash -c 'grep -qE "^[[:space:]]*gui_launch_env_pin[[:space:]]*$" "$1"' _ "$_t28_script"
+
+    assert "scripts/$_t28_name calls gui_launch_preflight_display" \
+        bash -c 'grep -qE "^[[:space:]]*gui_launch_preflight_display\b" "$1"' _ "$_t28_script"
+done
 
 # The behavioural half needs the real pin dir: the scripts only prepend a dir
 # that EXISTS. Mirrors the tbb_pin_present() host gate in
