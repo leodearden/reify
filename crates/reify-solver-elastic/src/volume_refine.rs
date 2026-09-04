@@ -901,4 +901,135 @@ mod tests {
             );
         }
     }
+
+    // ---- step-3/4 pins: free-face selection + interior-vertex compaction ----
+
+    /// Unit cube `[0,1]^3` (vertices 0..=7, the [`box_surface_mesh`] corner
+    /// ordering) fanned into 12 tets about an INTERIOR centre node (vertex 8):
+    /// one tet per outward-wound boundary triangle.
+    ///
+    /// Every one of the 12 boundary triangles appears in exactly one tet, and
+    /// every face touching the centre node is shared by exactly two tets — so
+    /// the free-face set is precisely the cube boundary, and vertex 8 is
+    /// referenced by all 12 elements yet by NO free face. That makes it the
+    /// minimal fixture for both halves of the extractor's contract: dropping
+    /// interior faces, and compacting away the interior vertex they were the
+    /// only carrier of.
+    fn cube_fan_with_interior_node() -> VolumeMesh {
+        #[rustfmt::skip]
+        let corners: [[f32; 3]; 8] = [
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0],
+        ];
+        #[rustfmt::skip]
+        let boundary_tris: [[u32; 3]; 12] = [
+            [0, 2, 1], [0, 3, 2], // -Z
+            [4, 5, 6], [4, 6, 7], // +Z
+            [0, 1, 5], [0, 5, 4], // -Y
+            [3, 7, 6], [3, 6, 2], // +Y
+            [0, 4, 7], [0, 7, 3], // -X
+            [1, 2, 6], [1, 6, 5], // +X
+        ];
+
+        let mut vertices: Vec<f32> = corners.iter().flatten().copied().collect();
+        vertices.extend_from_slice(&[0.5, 0.5, 0.5]); // 8 = interior centre
+
+        let mut indices = Vec::with_capacity(48);
+        for tri in boundary_tris {
+            indices.extend_from_slice(&[tri[0], tri[1], tri[2], 8]);
+        }
+
+        VolumeMesh {
+            vertices,
+            connectivity: VolumeConnectivity::Tet {
+                indices,
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// The extractor must keep only FREE faces (those belonging to exactly
+    /// one element) and must compact away vertices no free face references.
+    ///
+    /// (a) Two tets sharing one face emit 6 triangles, not 8 — a face seen
+    ///     twice is interior.
+    /// (b) A vertex interior to the volume must not survive into the surface,
+    ///     and the kept triangles must be renumbered against the compacted
+    ///     vertex buffer.
+    /// (c) Every surviving surface vertex must be BIT-EQUAL to some volume
+    ///     vertex. This is the property that makes
+    ///     `project_volume_to_surface_vertices`' nearest-vertex size transfer
+    ///     a distance-0 identity rather than an approximation.
+    #[test]
+    fn boundary_surface_mesh_drops_shared_faces_and_compacts_interior_vertices() {
+        // (a) shared-face drop.
+        let bipyramid = two_tet_bipyramid();
+        let surf = boundary_surface_mesh(&bipyramid).expect("bipyramid is a well-formed tet mesh");
+        assert_eq!(
+            surf.indices.len() / 3,
+            6,
+            "two tets sharing face (0,1,2) must emit 6 free faces, not 8 \
+             (got indices={:?})",
+            surf.indices,
+        );
+
+        // (b) interior-vertex compaction.
+        let vm = cube_fan_with_interior_node();
+        let surf = boundary_surface_mesh(&vm).expect("cube fan is a well-formed tet mesh");
+
+        assert_eq!(
+            surf.indices.len() / 3,
+            12,
+            "the free-face set of a centre-node cube fan is exactly the 12 \
+             boundary triangles",
+        );
+
+        let n_surf_verts = surf.vertices.len() / 3;
+        for (k, &i) in surf.indices.iter().enumerate() {
+            assert!(
+                (i as usize) < n_surf_verts,
+                "index {k} = {i} is out of range for the compacted vertex \
+                 buffer (n={n_surf_verts}) - the kept faces were not renumbered",
+            );
+        }
+        for v in 0..n_surf_verts {
+            let p = [
+                surf.vertices[v * 3],
+                surf.vertices[v * 3 + 1],
+                surf.vertices[v * 3 + 2],
+            ];
+            assert_ne!(
+                p,
+                [0.5_f32, 0.5, 0.5],
+                "the interior centre node must be compacted away, but it \
+                 survived at surface vertex {v}",
+            );
+        }
+
+        // (c) the surface vertex set is a bit-equal SUBSET of the volume's.
+        assert!(
+            n_surf_verts <= vm.vertices.len() / 3,
+            "extraction must never invent vertices: {n_surf_verts} surface vs {} volume",
+            vm.vertices.len() / 3,
+        );
+        let volume_positions: Vec<[f32; 3]> = vm
+            .vertices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        for v in 0..n_surf_verts {
+            let p = [
+                surf.vertices[v * 3],
+                surf.vertices[v * 3 + 1],
+                surf.vertices[v * 3 + 2],
+            ];
+            assert!(
+                volume_positions.contains(&p),
+                "surface vertex {v} at {p:?} is not bit-equal to any volume \
+                 vertex - the distance-0 nearest-vertex identity is broken",
+            );
+        }
+    }
 }
