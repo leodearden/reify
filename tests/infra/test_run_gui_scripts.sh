@@ -321,32 +321,86 @@ assert "run-gui-dev.sh with non-existent .ri exits non-zero" \
 assert "run-gui-dev.sh non-existent .ri error message mentions 'not found'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$dev_miss_out"
 
+# =============================================================================
+# Reusable fixture machinery for the behavioural launcher tests
+# =============================================================================
+# Every behavioural test below runs a COPY of a launcher script out of a
+# throwaway tmpdir, because both launchers resolve REPO_ROOT from
+# ${BASH_SOURCE[0]}/.. — copying the script into $tmpdir/scripts/ makes
+# REPO_ROOT=$tmpdir, so the stubbed gui/, bin/ and target/ trees below are the
+# ones the script actually sees.
+#
+# WHY a cumulative array instead of a per-test `trap ... EXIT`: bash keeps ONE
+# EXIT trap per shell, so a second `trap 'rm -rf "$dir"' EXIT` silently
+# REPLACES the first and leaks the earlier tmpdir. Each fixture registers
+# itself in _RGS_TMPDIRS instead, and the single trap installed here reaps all
+# of them.
+
+_RGS_TMPDIRS=()
+
+_rgs_cleanup() {
+    local _d
+    for _d in ${_RGS_TMPDIRS[@]+"${_RGS_TMPDIRS[@]}"}; do
+        [ -n "$_d" ] && rm -rf "$_d"
+    done
+}
+trap '_rgs_cleanup' EXIT
+
+# _rgs_mktemp <varname> — mktemp -d, assigned to <varname>, registered for
+# cleanup at EXIT.
+#
+# WHY an out-parameter instead of printing the path: `d=$(_rgs_mktemp)` would
+# run the function in a command-substitution SUBSHELL, so the
+# `_RGS_TMPDIRS+=(...)` append would be discarded with that subshell and the
+# tmpdir would leak past the EXIT trap (measured: one stray tmp.XXXX per run).
+# `printf -v` assigns in the CALLER's shell, keeping the registration live.
+_rgs_mktemp() {
+    local _d
+    _d=$(mktemp -d)
+    _RGS_TMPDIRS+=("$_d")
+    printf -v "$1" '%s' "$_d"
+}
+
+# _rgs_free_port — an ephemeral port nothing is bound to, so a test never
+# collides with another worktree's vite on :1420 (task 2308).
+_rgs_free_port() {
+    python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1])'
+}
+
+# _mk_rungui_dev_fixture <dir>
+#
+# Builds the parts of the fixture EVERY run-gui-dev.sh behavioural test needs:
+# the script copy (so REPO_ROOT=<dir>), a no-op build-sidecar.sh, a minimal
+# gui/package.json so `(cd gui && npm install ...)` does not crash on a missing
+# dir, an empty test.ri (the script requires the file to exist), and an empty
+# bin/ for the caller's stubs. Stub authoring (npm, curl, cargo, the reify-gui
+# binary) is deliberately left to the CALLER — each test drives a different
+# branch and needs different stub behaviour.
+_mk_rungui_dev_fixture() {
+    local dir="$1"
+
+    mkdir -p "$dir/scripts" "$dir/gui/sidecar" "$dir/bin"
+    cp "$RUN_GUI_DEV" "$dir/scripts/run-gui-dev.sh"
+    chmod +x "$dir/scripts/run-gui-dev.sh"
+
+    # Stub: build-sidecar.sh — no-op so the script reaches the vite spawn.
+    cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
+#!/usr/bin/env bash
+exit 0
+SIDECAR_STUB
+    chmod +x "$dir/gui/sidecar/build-sidecar.sh"
+
+    printf '{}' > "$dir/gui/package.json"
+    touch "$dir/test.ri"
+}
+
 # -- Test 25: behavioral — vite-process-death early-exit branch ---------------
 echo ""
 echo "--- Test 25: run-gui-dev.sh vite-process-death early-exit branch ---"
 
-_t25_tmpdir=$(mktemp -d)
-_t25_port=$(python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1])')
-trap 'rm -rf "$_t25_tmpdir"' EXIT
-
-# Build temp fixture: the script resolves REPO_ROOT from ${BASH_SOURCE[0]}/..
-# so we copy run-gui-dev.sh into $tmpdir/scripts/ to make REPO_ROOT=$tmpdir.
-mkdir -p "$_t25_tmpdir/scripts" "$_t25_tmpdir/gui/sidecar" "$_t25_tmpdir/bin"
-cp "$RUN_GUI_DEV" "$_t25_tmpdir/scripts/run-gui-dev.sh"
-chmod +x "$_t25_tmpdir/scripts/run-gui-dev.sh"
-
-# Stub: build-sidecar.sh — no-op so the script reaches the vite spawn.
-cat > "$_t25_tmpdir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
-#!/usr/bin/env bash
-exit 0
-SIDECAR_STUB
-chmod +x "$_t25_tmpdir/gui/sidecar/build-sidecar.sh"
-
-# Minimal package.json so (cd gui && npm install ...) does not crash on missing dir.
-printf '{}' > "$_t25_tmpdir/gui/package.json"
-
-# Empty fixture file (the script requires a .ri file that exists).
-touch "$_t25_tmpdir/test.ri"
+_rgs_mktemp _t25_tmpdir
+_t25_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t25_tmpdir"
 
 # Stub npm: install → exit 0 (no-op); run dev → exit 1 immediately so the
 # polling loop's `kill -0 "$VITE_PID"` branch fires and the early-exit path runs.
