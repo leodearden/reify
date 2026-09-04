@@ -244,10 +244,61 @@ pub async fn lsp_request_on_worker(
 /// Order among NOTIFICATIONS is preserved exactly — they share one FIFO
 /// consumer, which is what `didChange` correctness rests on. The one ordering
 /// property given up is query-versus-notification: a query may now read text
-/// older than a concurrently-processing `didChange`. That is staleness, never
-/// corruption (`reify-lsp`'s own `RwLock`/`Mutex` serialise the accesses for
-/// safety), and it is precisely the pre-task-5772 behaviour on the
-/// multi-threaded tauri runtime.
+/// older than a concurrently-processing `didChange`. Server-side that is
+/// staleness, never corruption (`reify-lsp`'s own `RwLock`/`Mutex` serialise
+/// the accesses for safety), and it is precisely the pre-task-5772 behaviour on
+/// the multi-threaded tauri runtime. What the CLIENT then does with a stale
+/// answer is not uniform across the eight, which is the next section.
+///
+/// # `rename` is in this set, and its staleness costs more than the other seven
+///
+/// Said here rather than left to read as just another read-only query. The
+/// classification is correct — `ReifyLanguageServer::rename`
+/// (`crates/reify-lsp/src/server.rs:503`) takes `state.read().await`, clones
+/// what it needs and drops the guard before its `spawn_blocking`, mutating
+/// nothing server-side — so `rename` belongs in the concurrency-safe set by
+/// this function's stated key. Its CONSEQUENCE, however, differs in kind from
+/// the other seven.
+///
+/// A stale `hover` or `references` result is displayed: a stale answer. A stale
+/// `rename` result is APPLIED. It comes back as a `WorkspaceEdit` whose
+/// `changes` map carries no version (`gui/src/editor/lspClient.ts` documents
+/// "Reify's rename only ever populates `changes`"), and the frontend applies it
+/// with no version guard — so ranges computed against text a `didChange` has
+/// since replaced land as wrong-offset edits in the user's buffer. That is
+/// document corruption, not staleness, and it is the one entry in this table
+/// where the two words differ. Task #7118 owns the fix (versioned
+/// `documentChanges` plus a client-side version check);
+/// [`crate::large_stack::Lane`] carries the full disclosure.
+///
+/// ## Why `rename` is NOT moved to the ordered lane in the meantime
+///
+/// The obvious interim mitigation — serialize `rename` against the notification
+/// stream until #7118 lands — was considered and rejected on a MEASUREMENT
+/// rather than a preference: it narrows the window without closing it, and pays
+/// for the narrowing in the coin this task exists to save.
+///
+/// The ordered lane can only guarantee that a `didChange` the server has
+/// already been HANDED is processed first. It cannot order text the server has
+/// not received — and the frontend debounces `didChange` by
+/// `EDITOR_DEBOUNCE_MS = 300` (`gui/src/editor/Editor.tsx:40`, applied at
+/// `:538`), so the client can be holding up to 300 ms of unsent edits at the
+/// moment it issues the rename. Against those the ordered lane offers nothing.
+/// Only the client-side version check closes that half, which is exactly why
+/// #7118 specifies BOTH halves and not just the server one.
+///
+/// Against that partial gain the costs are concrete. A workspace-wide rename on
+/// the ordered lane would hold the only notification consumer for its full
+/// duration, restoring for `rename` precisely the total head-of-line blocking
+/// this task exists to bound. And it would key one entry of this table on a
+/// FRONTEND deficiency rather than on protocol semantics — the same rot shape
+/// the `spawn_blocking` alternative is rejected for two sections above, and
+/// with the same failure mode: nothing would red the day #7118 landed and the
+/// exception outlived its reason.
+///
+/// So the window is disclosed and tracked rather than half-closed. Revisit this
+/// arm when #7118 lands — not to move `rename`, but to delete these two
+/// sections.
 pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stack::JobSender> {
     let concurrency_safe = matches!(
         method,
@@ -260,6 +311,11 @@ pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stac
             | "textDocument/documentSymbol"
             | "textDocument/documentHighlight"
             | "textDocument/prepareRename"
+            // Read-only server-side like the rest (server.rs:503), but its
+            // result is APPLIED rather than displayed — see "`rename` is in
+            // this set, and its staleness costs more than the other seven"
+            // above, and task #7118. It is here deliberately, not by
+            // resemblance to its neighbours.
             | "textDocument/rename"
             | "textDocument/references"
     );

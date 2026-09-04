@@ -81,10 +81,12 @@
 //!
 //! # What is still NOT covered
 //!
-//! Four boundaries, stated as limits rather than left to be inferred. Items 3
+//! Five boundaries, stated as limits rather than left to be inferred. Items 3
 //! and 4 were OPEN at task 5772 and are now bounded rather than unbounded (task
 //! 6517); they are restated as the narrower limits that actually hold, not
 //! deleted, because a limit that stopped being total did not stop existing.
+//! Item 5 is the reverse case — a limit item 3's bound does NOT reach, stated
+//! for the same reason.
 //!
 //! 1. **Four LSP methods do not get the large stack.**
 //!    `InProcessLsp::handle_request`'s `textDocument/definition`,
@@ -109,6 +111,8 @@
 //!    read-only queries. Head-of-line blocking among queries is therefore
 //!    bounded at [`LSP_POOL_SIZE`] — the fifth simultaneous in-flight query
 //!    queues — rather than total, as it was when one consumer served all of LSP.
+//!    That is a bound on CONSUMERS; queries against the SAME document have a
+//!    tighter one that this does not reach, which is item 5.
 //!    Notifications still serialize against each other, which is a REQUIREMENT
 //!    (reordering two `didChange`es is corruption, not staleness) rather than a
 //!    residual limit. The routing lives in
@@ -131,6 +135,31 @@
 //!      The check is a structural guarantee, not a live saving. Exact citations
 //!      are in [`dispatch_async`]'s "Drop-cancellation" section; see also
 //!      [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
+//! 5. **[`LSP_POOL_SIZE`] bounds CROSS-document query concurrency more tightly
+//!    than SAME-document concurrency.** Item 3's bound is a bound on CONSUMERS,
+//!    not on parses, and the difference bites in the commonest case rather than
+//!    an edge one — a single cursor move issues hover, `documentHighlight` and
+//!    completion against ONE uri. Measured in `reify-lsp`:
+//!    `DocumentState::parsed_module` holds a `std::sync::Mutex` across the whole
+//!    `parse_with_stdlib` call (`crates/reify-lsp/src/document.rs:65`), and
+//!    `DocumentStore::update` replaces the entire `DocumentState` — its parse
+//!    cache included — on every `didChange` (`document.rs:111`, the stated
+//!    invalidation point). So immediately after each keystroke that document's
+//!    cache is COLD, and the pool consumers that reach it concurrently
+//!    serialize on a blocking lock, each holding one 256 MiB consumer while
+//!    parked in it. The effective depth against a same-document burst is
+//!    therefore nearer ONE parse than four-way concurrency; against queries on
+//!    DIFFERENT documents the [`LSP_POOL_SIZE`] bound holds exactly as item 3
+//!    states it. Neither a regression (before task 6517 all LSP work serialized
+//!    anyway) nor unsoundness (the `Mutex` recovers poisoning), and not
+//!    closable from this crate: the fix is to compute the parse OUTSIDE the
+//!    lock and install it afterwards — a double parse under a race, no
+//!    serialization — which is a change in `reify-lsp`, filed as a task 6517
+//!    follow-up (`suggestion_hash` `6517-lsp-same-document-parse-mutex`). It is
+//!    stated rather than left implicit because it is the first thing a latency
+//!    measurement would hit, and a module this insistent that a limit which
+//!    stopped being total did not stop existing should not leave its own
+//!    tightest one unsaid.
 //!
 //! So the invariant this module establishes is: "compile-bearing and
 //! high-frequency engine work, plus the inline LSP dispatch arms, run on a large
@@ -666,7 +695,9 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// the sharpest case — a workspace-wide `references` or `rename` holding a
 /// consumer for its full duration while its deep frames run on the blocking
 /// pool's ~2 MiB threads (module docs item 1) — now costs one of
-/// [`LSP_POOL_SIZE`] consumers instead of the only one.
+/// [`LSP_POOL_SIZE`] consumers instead of the only one. [`LSP_POOL_SIZE`] is
+/// the bound on CONSUMERS; module docs item 5 states the tighter one that holds
+/// among queries against the SAME document, which this number does not reach.
 ///
 /// A pool needed two arguments before it could be an instance of this mechanism
 /// rather than a second design. Both are discharged:
