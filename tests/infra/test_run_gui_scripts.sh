@@ -456,4 +456,76 @@ assert "run-gui-dev.sh: vite-death branch emits 'vite process exited'" \
 assert "run-gui-dev.sh: vite-death branch does NOT hit the 30s timeout message" \
     bash -c '! printf "%s\n" "$1" | grep -qF "did not become ready"' _ "$_t25_out"
 
+# -- Test 26: behavioral — vite-port preflight refuses an occupied port -------
+echo ""
+echo "--- Test 26: run-gui-dev.sh refuses an already-served vite port ---"
+
+# The readiness loop (§5) calls curl BEFORE checking `kill -0 "$VITE_PID"`, so
+# a FOREIGN listener on the port makes curl succeed on iteration 1 and the
+# script happily pairs a fresh reify-gui with a stale, unrelated vite — while
+# the vite it just spawned has already died on vite.config.ts's strictPort.
+# The only ordering that closes this is a PRE-spawn occupancy check, and it has
+# to run before the expensive steps: npm install, the sidecar build, the vite
+# spawn and a ~2-minute cargo build.
+
+_rgs_mktemp _t26_tmpdir
+_t26_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t26_tmpdir"
+
+# Stub npm: drops a marker on EVERY invocation. Its ABSENCE is the assertion
+# that the refusal happened before any expensive step.
+cat > "$_t26_tmpdir/bin/npm" <<'NPM_STUB'
+#!/usr/bin/env bash
+: > "${_RGS_NPM_MARKER:?_RGS_NPM_MARKER must be set by the test}"
+exit 0
+NPM_STUB
+chmod +x "$_t26_tmpdir/bin/npm"
+
+# Stub curl: succeeds unconditionally — something is already answering on the
+# port, which is precisely the condition the preflight must refuse.
+cat > "$_t26_tmpdir/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+exit 0
+CURL_STUB
+chmod +x "$_t26_tmpdir/bin/curl"
+
+# Stub cargo: short-circuits the release build so the SKIP case below stays
+# fast and does not depend on a real toolchain.
+cat > "$_t26_tmpdir/bin/cargo" <<'CARGO_STUB'
+#!/usr/bin/env bash
+exit 1
+CARGO_STUB
+chmod +x "$_t26_tmpdir/bin/cargo"
+
+# DISPLAY is pinned so this test isolates the PORT gate: the display preflight
+# lives in the same block and would otherwise mask it on a headless runner.
+_t26_rc=0
+_t26_out=$(DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
+    _RGS_NPM_MARKER="$_t26_tmpdir/npm-invoked" \
+    PATH="$_t26_tmpdir/bin:$PATH" \
+    bash "$_t26_tmpdir/scripts/run-gui-dev.sh" "$_t26_tmpdir/test.ri" 2>&1) || _t26_rc=$?
+
+assert "run-gui-dev.sh: occupied vite port exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t26_rc"
+
+assert "run-gui-dev.sh: occupied-port error names the port number" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$_t26_out" "$_t26_port"
+
+assert "run-gui-dev.sh: occupied-port error says the port is already in use" \
+    bash -c 'printf "%s\n" "$1" | grep -qiF "already"' _ "$_t26_out"
+
+assert "run-gui-dev.sh: occupied-port refusal happens BEFORE any npm invocation" \
+    bash -c '! [ -e "$1" ]' _ "$_t26_tmpdir/npm-invoked"
+
+# Break-glass: REIFY_GUI_SKIP_PREFLIGHT=1 must get past the port gate.
+rm -f "$_t26_tmpdir/npm-invoked"
+DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
+    _RGS_NPM_MARKER="$_t26_tmpdir/npm-invoked" \
+    REIFY_GUI_SKIP_PREFLIGHT=1 \
+    PATH="$_t26_tmpdir/bin:$PATH" \
+    bash "$_t26_tmpdir/scripts/run-gui-dev.sh" "$_t26_tmpdir/test.ri" >/dev/null 2>&1 || true
+
+assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 bypasses the port gate" \
+    test -e "$_t26_tmpdir/npm-invoked"
+
 test_summary
