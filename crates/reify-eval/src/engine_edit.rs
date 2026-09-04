@@ -34,7 +34,9 @@
 //! `dispatch_merged_cluster_solve_cached` (task #5118).
 //!
 //! Each arm writes some subset of eight legs. Four are uniform across
-//! all six arms; four are not:
+//! all six arms; four are not. Legs 1-4 describe the MAIN resolution
+//! write-back of each arm; wave-2 and post-wave2 phases are covered
+//! per-arm in leg 5.
 //!
 //! 1. `values` — uniform
 //! 2. snapshot map as `Determined` — uniform
@@ -87,7 +89,7 @@
 //!    a local resolved-ids set seeded from the solver's resolved
 //!    values. In [`Engine::eval`]'s and [`Engine::eval_cached`]'s
 //!    per-template arms it is a strict superset of that:
-//!    `write_solved_pinned_connector_autos` (engine_eval.rs:1803) also
+//!    `write_solved_pinned_connector_autos` (in `engine_eval.rs`) also
 //!    inserts each pinned connector-instance auto (their merged-cluster
 //!    branches take no pinned-connector write-back, per leg 5 above, so
 //!    this superset is per-template-arm only). For `eval_cached` this
