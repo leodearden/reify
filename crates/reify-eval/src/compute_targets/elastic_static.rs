@@ -11262,4 +11262,84 @@ mod tests {
         value_inputs[5] = malformed_supports;
         assert_gate_does_not_reject(value_inputs);
     }
+
+    // ── task 4909: RealizedAdaptiveProblem ───────────────────────────────────
+
+    /// step-11 RED (task 4909):
+    /// `RealizedAdaptiveProblem::solve_and_estimate` solves on the REALIZED
+    /// tet mesh it was handed — not on a synthetic box — and reports a Z-Z
+    /// `AdaptiveEstimate` sized by that mesh.
+    ///
+    /// The `n_dofs` assertion is deliberately expressed against what
+    /// `volume_mesh_to_solver_mesh` yields rather than against the raw vertex
+    /// count: that helper compacts orphan (element-unreferenced) vertices out,
+    /// and a real gmsh remesh CAN emit them. Left in, an orphan node gets no
+    /// stiffness contribution, silently inflating `n_dofs` and panicking
+    /// downstream in `apply_dirichlet_row_elimination` ("no explicit diagonal
+    /// entry"). Pinning the post-compaction count is what keeps the two in
+    /// step.
+    ///
+    /// No gmsh: `solve_and_estimate` never touches `surface` (only `refine`
+    /// does), so this runs unconditionally in every build.
+    ///
+    /// RED: `RealizedAdaptiveProblem` does not exist yet → compile-fail until
+    /// step-12.
+    #[test]
+    fn realized_adaptive_problem_solve_and_estimate_reports_per_element_and_dofs_of_the_realized_mesh()
+     {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        // Non-degenerate x-extent: the realized arm re-derives the coordinate
+        // x_min/x_max BC node sets from the mesh AABB on every solve.
+        let volume_mesh = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+
+        let (coords, tets) = volume_mesh_to_solver_mesh(&volume_mesh)
+            .expect("a P1 Freudenthal box is a widenable solver mesh");
+        let expected_tets = tets.len();
+        let expected_dofs = 3 * coords.len();
+
+        let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
+            .expect("a P1 tet box has an extractable boundary");
+
+        let mut problem = RealizedAdaptiveProblem::new(
+            iso,
+            volume_mesh,
+            surface,
+            reify_solver_elastic::MeshingOptions {
+                mesh_size: Some(0.25),
+                deterministic: true,
+                ..Default::default()
+            },
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        );
+
+        let est = problem.solve_and_estimate();
+
+        assert_eq!(
+            est.per_element.len(),
+            expected_tets,
+            "per_element must have one entry per tet of the REALIZED mesh",
+        );
+        assert_eq!(
+            est.n_dofs, expected_dofs,
+            "n_dofs must be 3 * the POST-COMPACTION node count",
+        );
+        assert!(
+            est.global_indicator.is_finite() && est.global_indicator >= 0.0,
+            "global_indicator must be finite and non-negative, got {}",
+            est.global_indicator,
+        );
+        assert_eq!(
+            problem.last_global_indicator, est.global_indicator,
+            "the problem must record the returned global_indicator",
+        );
+        assert_eq!(
+            problem.last_n_dofs, est.n_dofs,
+            "the problem must record the returned n_dofs",
+        );
+    }
 }
