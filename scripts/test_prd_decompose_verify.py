@@ -819,6 +819,113 @@ class TestMainCLI(unittest.TestCase):
         obj = json.loads(out)
         self.assertTrue(obj["blocks"])
 
+    # ── task #7257 step-07 (RED): the evidence gate on the CLI surface ───────
+
+    def _evidence_free_record(self, capability: str, verdict: str = "FAIL") -> dict:
+        """A blocking verdict carrying no executed-probe evidence."""
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": [],
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+        }
+
+    def _fixture_absent_record(self, capability: str) -> dict:
+        """An executed FAIL whose probe could not find its target file."""
+        return self._result_record(
+            capability, "FAIL", exit_code=1,
+            stderr="Error: No such file or directory (os error 2)",
+        )
+
+    def test_synthesize_only_evidence_free_fails_exits_0(self):
+        """A file of nothing but unexecuted promises does not block the batch."""
+        tmp = self._make_results_file(
+            prover=[self._evidence_free_record("vacuous-1"),
+                    self._evidence_free_record("vacuous-2", "UNPROVABLE")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0, f"evidence-free records must not block; stdout={out!r}")
+        obj = json.loads(out)
+        self.assertFalse(obj["blocks"])
+        self.assertEqual(sorted(obj["malformed"]), ["vacuous-1", "vacuous-2"])
+
+    def test_synthesize_one_executed_fail_among_vacuous_exits_1_with_one_blocker(self):
+        """The real finding still blocks, and it is the ONLY thing listed."""
+        tmp = self._make_results_file(
+            prover=[self._evidence_free_record("vacuous-1"),
+                    self._result_record("REAL fail", "FAIL", exit_code=1,
+                                        stderr="type mismatch: expected axis"),
+                    self._evidence_free_record("vacuous-2")],
+            adversary=[self._evidence_free_record("vacuous-3")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 1)
+        obj = json.loads(out)
+        self.assertEqual(obj["blocking"], ["REAL fail"])
+        self.assertEqual(len(obj["blocking"]), 1)
+
+    def test_synthesize_json_carries_all_seven_keys_with_right_types(self):
+        """The emitted JSON is the full BatchVerdict, not just the old three keys."""
+        tmp = self._make_results_file(
+            prover=[self._result_record("cap", "PASS")],
+        )
+        try:
+            _, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        obj = json.loads(out)
+        for key in ("blocks", "blocking", "report", "malformed",
+                    "fixture_absent", "executed", "total"):
+            self.assertIn(key, obj, f"synthesize JSON is missing {key!r}")
+        self.assertIsInstance(obj["blocks"], bool)
+        self.assertIsInstance(obj["blocking"], list)
+        self.assertIsInstance(obj["report"], str)
+        self.assertIsInstance(obj["malformed"], list)
+        self.assertIsInstance(obj["fixture_absent"], list)
+        self.assertIsInstance(obj["executed"], int)
+        self.assertIsInstance(obj["total"], int)
+
+    def test_synthesize_only_fixture_absent_exits_0_and_names_it(self):
+        """A missing fixture is a deliverable signal, not a batch-blocking failure."""
+        tmp = self._make_results_file(
+            prover=[self._fixture_absent_record("fixture-absent cap")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0, f"fixture-absent must not block; stdout={out!r}")
+        obj = json.loads(out)
+        self.assertFalse(obj["blocks"])
+        self.assertEqual(obj["fixture_absent"], ["fixture-absent cap"])
+
+    def test_synthesize_all_pass_reports_a_clean_basis(self):
+        """Happy-path regression guard: executed == total, nothing set aside."""
+        tmp = self._make_results_file(
+            prover=[self._result_record("cap-A", "PASS"),
+                    self._result_record("cap-B", "PASS")],
+            adversary=[self._result_record("cap-C", "PASS")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0)
+        obj = json.loads(out)
+        self.assertEqual(obj["total"], 3)
+        self.assertEqual(obj["executed"], 3)
+        self.assertEqual(obj["malformed"], [])
+        self.assertEqual(obj["fixture_absent"], [])
+
 
 # ---------------------------------------------------------------------------
 # step-09 (RED): Workflow .mjs syntax-validity contract
