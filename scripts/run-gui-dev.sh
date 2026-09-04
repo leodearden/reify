@@ -63,6 +63,45 @@ REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
 REIFY_DEBUG_PORT="${REIFY_DEBUG_PORT:-3939}"
 export REIFY_DEBUG_PORT
 
+# -- 1b. Preflight: refuse to run into a known-bad launch --------------------
+# These checks are deliberately the FIRST thing after arg/port resolution and
+# before every expensive step (npm install, sidecar build, vite spawn, and a
+# cargo build that can take minutes). Each failure below is one a user would
+# otherwise only see after that wait.
+#
+# Set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass the whole block (break-glass).
+if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
+    # Vite port occupancy. §5's readiness loop calls curl BEFORE checking
+    # `kill -0 "$VITE_PID"`, so a FOREIGN listener on this port makes curl
+    # succeed on iteration 1 — while the vite we spawn has already exited on
+    # vite.config.ts's `strictPort: true`. The script would then pair a fresh
+    # reify-gui with a stale, unrelated vite serving another worktree's build.
+    # A pre-spawn occupancy check is the only ordering that closes that.
+    #
+    # `|| true` keeps the probe set -e-safe: a FAILING curl is the normal,
+    # healthy path (nothing is listening yet).
+    _preflight_port_rc=0
+    curl -fsS --max-time 2 "http://127.0.0.1:$REIFY_VITE_PORT/" >/dev/null 2>&1 \
+        || _preflight_port_rc=$?
+    if [ "$_preflight_port_rc" -eq 0 ]; then
+        echo "Error: vite port $REIFY_VITE_PORT is already in use — something is already serving http://127.0.0.1:$REIFY_VITE_PORT/" >&2
+        # Best-effort listener pid. `ss` is not guaranteed present, and its
+        # absence must never fail the script — the message above already
+        # stands on its own.
+        _preflight_listener=""
+        if command -v ss >/dev/null 2>&1; then
+            _preflight_listener="$(ss -ltnpH "sport = :$REIFY_VITE_PORT" 2>/dev/null \
+                | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
+        fi
+        if [ -n "$_preflight_listener" ]; then
+            echo "  Listener pid $_preflight_listener (\`ls -l /proc/$_preflight_listener/cwd\` shows which worktree it serves); free it with \`kill $_preflight_listener\`, or pick another port with REIFY_VITE_PORT=<port>." >&2
+        else
+            echo "  Free the port, or pick another one with REIFY_VITE_PORT=<port>." >&2
+        fi
+        exit 1
+    fi
+fi
+
 # -- 2. Install sidecar npm deps ---------------------------------------------
 # build-sidecar.sh runs `npx tsup`, which requires `typescript` to be present
 # in gui/sidecar/node_modules. On a fresh checkout (or fresh worktree) this
