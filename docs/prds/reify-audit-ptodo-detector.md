@@ -498,7 +498,8 @@ not per family. It is a property of the PRD-relative *register* (a document-loca
 small), not of the `task` noun, so a fourth family added later inherits it instead of having
 to remember it. It keys on DIGIT COUNT rather than on a `PRD` left-context window, because a
 window fails in both directions: a long path can push `PRD` outside any sane window
-(`crates/reify-core/src/diagnostics.rs:3304`), while `task #333 per PRD §Slice B`
+(``(task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11)``, five sites in
+`crates/reify-core/src/diagnostics.rs`), while `task #333 per PRD §Slice B`
 (`crates/reify-compiler/src/stdlib_loader.rs:257`) would have a symmetric window kill a
 GENUINE cite. The bound is safe **by construction** against the legacy short task ids: every
 three-digit-and-up id falls outside it, so no `#NNN` cite can be suppressed (the corpus's
@@ -1195,9 +1196,10 @@ The originally-scoped user-observable signal named three sites. `engine_build.rs
 reachable only by δ-B and therefore **moved to the follow-up** under the 2026-08-07 ruling;
 they were not a miss and were not silently dropped.
 
-**Both are now delivered by #6103**, at their drifted current lines `:4279`
-(``/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring``) and
-`:4334` (``/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will``),
+**Both are now delivered by #6103**, identified here by line TEXT rather than by a line
+number that rots on the next rebase:
+``/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring`` and
+``/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will``,
 each reported as a High `orphaned` finding and seeded into `ptodo-baseline.txt`. The line drift
 since 2026-08-07 is immaterial to the gate: `fingerprint()` is line-number-erased by §6.6
 design, which is precisely why that erasure exists. The originally-scoped signal is complete;
