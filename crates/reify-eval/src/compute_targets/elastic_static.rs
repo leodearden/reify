@@ -11608,4 +11608,192 @@ mod tests {
             "the problem must record the returned n_dofs",
         );
     }
+
+    /// Centroid of tet `conn` over `coords`.
+    fn tet_centroid_of(coords: &[[f64; 3]], conn: &[usize; 4]) -> [f64; 3] {
+        let mut c = [0.0_f64; 3];
+        for &n in conn {
+            for a in 0..3 {
+                c[a] += coords[n][a] / 4.0;
+            }
+        }
+        c
+    }
+
+    /// `sizes[e]` for the element `e` whose centroid is nearest `query`.
+    ///
+    /// A POSITION lookup, not an index one: `refine` performs a full remesh
+    /// from surface and preserves NO element index, so a marked element's
+    /// index before the refine has no relationship to any index after it.
+    fn nearest_element_size_at(
+        coords: &[[f64; 3]],
+        conns: &[[usize; 4]],
+        sizes: &[f64],
+        query: [f64; 3],
+    ) -> f64 {
+        let (best, _) = conns
+            .iter()
+            .map(|conn| tet_centroid_of(coords, conn))
+            .enumerate()
+            .map(|(e, c)| {
+                let d2 = (0..3).map(|a| (c[a] - query[a]).powi(2)).sum::<f64>();
+                (e, d2)
+            })
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .expect("mesh must be non-empty");
+        sizes[best]
+    }
+
+    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is REAL GMSH
+    /// OUTPUT (remeshed from a hand-built box's extracted boundary) and whose
+    /// `surface` is that gmsh mesh's own extracted boundary.
+    ///
+    /// Reaches gmsh only through `reify_solver_elastic` re-exports — naming
+    /// `reify_kernel_gmsh::*` from a reify-eval test binary would pull gmsh's
+    /// `inventory::submit!` in and break OCCT-only registry assertions
+    /// (reify-eval/Cargo.toml's dead-strip invariant).
+    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
+        let opts = reify_solver_elastic::MeshingOptions {
+            mesh_size: Some(seed_size),
+            deterministic: true,
+            ..Default::default()
+        };
+        let seed = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [8, 1, 1]);
+        let seed_surface = reify_solver_elastic::boundary_surface_mesh(&seed)
+            .expect("a P1 tet box has an extractable boundary");
+        let (_, seed_tets) =
+            volume_mesh_to_solver_mesh(&seed).expect("the hand-built seed is widenable");
+        let volume_mesh = reify_solver_elastic::refine_with_size_field(
+            &seed_surface,
+            &seed,
+            &vec![seed_size; seed_tets.len()],
+            &opts,
+        )
+        .expect("seeding a real gmsh volume from the box boundary must succeed");
+        let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
+            .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
+
+        RealizedAdaptiveProblem::new(
+            IsotropicElastic {
+                youngs_modulus: 200e9,
+                poisson_ratio: 0.3,
+            },
+            volume_mesh,
+            surface,
+            opts,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        )
+    }
+
+    /// step-13 RED (task 4909): `refine` genuinely CONSUMES the Dörfler-marked
+    /// element set — it drives a real gmsh size-field remesh that grows the
+    /// mesh and shrinks the elements in the marked region.
+    ///
+    /// This is the assertion that distinguishes 4909 from 4902: the uniform
+    /// fallback lane ignores `marked` entirely and doubles a synthetic grid.
+    ///
+    /// Sampling is by POSITION, never by index — a full remesh preserves no
+    /// index. The shape mirrors the landed, always-on, passing
+    /// `fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh` in
+    /// `reify-solver-elastic`'s `tests/aposteriori_validation.rs`, which is
+    /// what makes this premise achievable on a box under real gmsh.
+    ///
+    /// Deliberately NO far-region "roughly unchanged" numeric band: that
+    /// test's landed sibling is `#[ignore]`d for cross-gmsh-version
+    /// instability, and resurrecting the shape on an always-on merge gate
+    /// would be knowingly planting a flaky test.
+    ///
+    /// Gated on the RUNTIME const, not `cfg(has_gmsh)`: a cfg emitted by the
+    /// gmsh crate's build.rs does not propagate to dependents, so a cfg gate
+    /// here would compile to false on every host including ones with libgmsh.
+    ///
+    /// RED: `impl AdaptiveProblem for RealizedAdaptiveProblem` does not exist
+    /// yet, so `refine` is not a method → compile-fail until step-14.
+    #[test]
+    fn realized_adaptive_problem_refine_consumes_marks_and_shrinks_the_marked_region() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+
+        let mut problem = gmsh_realized_problem(0.05);
+
+        let est = problem.solve_and_estimate();
+        let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
+        assert!(
+            !marked.is_empty(),
+            "a bending load state must Dorfler-mark at least one element, \
+             otherwise the rest of this test proves nothing",
+        );
+
+        let (coords_before, conns_before) = volume_mesh_to_solver_mesh(&problem.volume_mesh)
+            .expect("the seeded gmsh mesh is widenable");
+        let n_before = conns_before.len();
+
+        // Sample at the centroid of the WORST marked element — the place the
+        // size field is asked to shrink hardest.
+        let worst = *marked
+            .iter()
+            .max_by(|&&a, &&b| {
+                est.per_element[a]
+                    .partial_cmp(&est.per_element[b])
+                    .unwrap()
+            })
+            .expect("marked is non-empty");
+        let marked_point = tet_centroid_of(&coords_before, &conns_before[worst]);
+        let size_marked_before = problem.current_sizes[worst];
+
+        problem
+            .refine(&marked)
+            .expect("refine must succeed when GMSH_AVAILABLE");
+
+        let (coords_after, conns_after) = volume_mesh_to_solver_mesh(&problem.volume_mesh)
+            .expect("the refined gmsh mesh is widenable");
+        let n_after = conns_after.len();
+
+        assert!(
+            n_after > n_before,
+            "a mark-driven refine must strictly grow the element count: \
+             {n_before} -> {n_after}",
+        );
+        assert_eq!(
+            problem.current_sizes.len(),
+            n_after,
+            "current_sizes must track the NEW element count",
+        );
+
+        let size_marked_after = nearest_element_size_at(
+            &coords_after,
+            &conns_after,
+            &problem.current_sizes,
+            marked_point,
+        );
+        assert!(
+            size_marked_after < size_marked_before,
+            "the marked region's characteristic size must shrink: \
+             before={size_marked_before}, after={size_marked_after}",
+        );
+
+        // An EMPTY marked set halves nothing (`dorfler_size_hints` returns
+        // `current_sizes` verbatim), so the remesh runs against an unchanged
+        // size field and cannot concentrate anywhere. Comparing the two runs
+        // from the same seed is what proves the growth above was driven by the
+        // MARKS and not merely by re-meshing.
+        let mut unmarked = gmsh_realized_problem(0.05);
+        unmarked.solve_and_estimate();
+        unmarked
+            .refine(&[])
+            .expect("an empty marked set must still remesh cleanly");
+        let (_, conns_unmarked) = volume_mesh_to_solver_mesh(&unmarked.volume_mesh)
+            .expect("the unmarked remesh is widenable");
+        assert!(
+            n_after > conns_unmarked.len(),
+            "a MARK-DRIVEN refine must grow the mesh strictly more than an \
+             empty-mark remesh of the same seed: marked={n_after}, \
+             unmarked={}",
+            conns_unmarked.len(),
+        );
+    }
 }
