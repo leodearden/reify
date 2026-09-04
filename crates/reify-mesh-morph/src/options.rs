@@ -178,11 +178,14 @@ pub struct MorphOptions {
     /// PRD §"Spatially-varying fictitious stiffness": default 0.3.
     pub fictitious_poisson_ratio: f64,
 
-    /// Number of Jacobi iterations the Laplacian quick-pass runs before
-    /// returning the smoothed mesh.
+    /// Number of Jacobi passes the Laplacian quick-pass runs over the
+    /// boundary DISPLACEMENT field before returning the morphed mesh.
     ///
-    /// PRD task #6 ("Laplacian quick-pass for trivially small changes"):
-    /// 5–10 iterations is the typical range; default 8. Engine wiring
+    /// The passes smooth `u` (the displacement), not the absolute positions,
+    /// so the count controls only how far boundary motion is diffused into
+    /// the interior — it cannot make the interior drift on its own (task
+    /// #6637). PRD task #6 ("Laplacian quick-pass for trivially small
+    /// changes"): 5–10 is the typical range; default 8. Engine wiring
     /// (PRD task #10) reads this value and forwards it to
     /// [`crate::laplacian::laplacian_smooth`].
     pub laplacian_iterations: u32,
