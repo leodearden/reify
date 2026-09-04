@@ -327,6 +327,21 @@ scripts/jcodemunch-index-reify.sh    tests/infra/test_jcodemunch_index_reify.sh
 # reify-audit consumer depends on.
 scripts/with-jcodemunch-serve.sh    tests/infra/test_with_jcodemunch_serve.sh
 
+# Task 6454: the invocation triple — the wheel pin, the interpreter and the
+# identity lever — has ONE definition site, and this is it. Both β and δ above
+# now SOURCE it rather than carrying their own copies, so an edit HERE changes
+# what both of them spawn.
+#
+# TWO ROWS, deliberately, following the same one-artifact-multiple-rows pattern
+# as scripts/seed-warm-lane.sh above: column 1 is matched by EXACT STRING
+# EQUALITY, never by glob or directory prefix, so a single row would select only
+# one consumer's guard suite and a lib-only edit would leave the other unchecked
+# — and a lib-only edit is exactly the shape a pin bump takes. Each suite
+# cross-checks its OWN SUT's constructed --dry-run argv against this file, so
+# both poles are load-bearing and neither is redundant with the other.
+scripts/lib_jcodemunch_pin.sh    tests/infra/test_with_jcodemunch_serve.sh
+scripts/lib_jcodemunch_pin.sh    tests/infra/test_jcodemunch_index_reify.sh
+
 # Task 6320: the merge-worker trivial-pass oracle and its static manifest had
 # NO row here at all, so a guard-only or manifest-only task-scope verify
 # selected ZERO infra poles (select_infra_tests() matches artifact paths
