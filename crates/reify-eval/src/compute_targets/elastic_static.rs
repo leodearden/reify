@@ -12148,4 +12148,311 @@ mod tests {
              got: {diags_a:?}",
         );
     }
+
+    /// A P1 tet mesh whose face `(0,1,2)` is shared by THREE elements.
+    ///
+    /// Deliberately chosen over the Hex mesh the step description names:
+    /// a Hex `VolumeMesh` never REACHES `boundary_surface_mesh`, because
+    /// `volume_mesh_to_solver_mesh` rejects it upstream, so
+    /// `realized_solver_mesh_with_handle` yields no handle at all and the
+    /// localized lane is never even considered. A non-manifold TET mesh is
+    /// the reachable trigger: it widens cleanly (P1, stride-4, in-range
+    /// indices) so a handle IS selected, and only then does boundary
+    /// extraction fail — which is the arm under test. x-extent is 1.0, well
+    /// above `MIN_SOLVE_X_EXTENT`.
+    fn non_manifold_tet_mesh() -> reify_ir::VolumeMesh {
+        reify_ir::VolumeMesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                0.0, 0.0,  0.0, // 0 |
+                1.0, 0.0,  0.0, // 1 |- shared face (0,1,2)
+                0.0, 1.0,  0.0, // 2 |
+                0.0, 0.0,  1.0, // 3 apex above
+                0.0, 0.0, -1.0, // 4 apex below
+                1.0, 1.0,  1.0, // 5 third apex
+            ],
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 0, 1, 2, 4, 0, 1, 2, 5],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// step-17 RED (task 4909): when the gmsh-realized lane cannot run, the
+    /// solve must FALL BACK to 4902's uniform lane — never fail.
+    ///
+    /// The load-bearing claim: an `adaptive: true` request must NEVER regress
+    /// from "an answer with uniform-fallback a-posteriori fields" to
+    /// `ComputeOutcome::Failed` just because the gmsh lane was unavailable.
+    /// Every trigger below asserts the SAME two outcomes — `Completed` with a
+    /// real a-posteriori triple, plus a Warning naming the specific reason.
+    #[test]
+    fn adaptive_branch_falls_back_to_uniform_refinement_when_the_gmsh_lane_is_unavailable() {
+        use reify_ir::{
+            BoundaryAssociation, GeometryHandleId, NodeAttachment, PersistentMap,
+            StructureInstanceData, StructureTypeId,
+        };
+
+        // ── (a) A `target`-carrying Support forces `bc_override` to Some. ──
+        //
+        // Node indices do NOT survive a remesh, so an index-based override
+        // cannot be carried into iteration 2 — the lane must refuse rather
+        // than silently clamp unrelated nodes.
+        let dims = [2.0_f64, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let x_min_face = [0u32, 3, 6, 9];
+        let x_max_face = [2u32, 5, 8, 11];
+        let h_clamp = GeometryHandleId(201);
+        let h_load = GeometryHandleId(202);
+        let mut boundary = BoundaryAssociation::default();
+        for &n in &x_max_face {
+            boundary.associate(n, NodeAttachment::OnFace(h_clamp));
+        }
+        for &n in &x_min_face {
+            boundary.associate(n, NodeAttachment::OnFace(h_load));
+        }
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        vm.boundary = Some(boundary);
+
+        let geom_handle = |id: GeometryHandleId| -> Value {
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(id),
+            }
+        };
+        let supports_with_target: Value = {
+            let fields: PersistentMap<String, Value> = [(
+                "target".to_string(),
+                Value::List(vec![geom_handle(h_clamp)]),
+            )]
+            .into_iter()
+            .collect();
+            Value::List(vec![Value::StructureInstance(Box::new(
+                StructureInstanceData {
+                    type_id: StructureTypeId(u32::MAX),
+                    type_name: "FixedSupport".to_string(),
+                    version: 1,
+                    fields,
+                },
+            ))])
+        };
+
+        let value_inputs_a = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            supports_with_target,
+            adaptive_options(),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome_a = solve_elastic_static_trampoline(
+            &value_inputs_a,
+            &[vm_read_handle(vm)],
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        assert_fell_back_to_uniform(outcome_a, "selector-resolved", "(a) bc_override present");
+
+        // ── (b) A realized mesh whose boundary cannot be extracted. ──
+        let (_, diags_b) = {
+            let outcome = run_adaptive_trampoline_outcome(&[vm_read_handle(non_manifold_tet_mesh())]);
+            assert_fell_back_to_uniform(
+                outcome,
+                "boundary surface",
+                "(b) non-manifold realized mesh",
+            )
+        };
+        assert!(
+            diags_b
+                .iter()
+                .any(|d| d.message.contains("non-manifold")),
+            "the boundary-extraction warning must carry the RefineError's own \
+             Display text so the caller can see WHY, got: {diags_b:?}",
+        );
+
+        // ── (b2) A Hex realized mesh must also never Fail. ──
+        //
+        // Unlike (b) this one is invisible to the lane selector entirely
+        // (`volume_mesh_to_solver_mesh` rejects Hex upstream, so no handle is
+        // selected and the solve runs on the synthetic box), so NO warning
+        // names boundary extraction. The load-bearing half still holds: the
+        // outcome is Completed with a real adaptive triple.
+        let hex = reify_ir::VolumeMesh {
+            vertices: (0..8u32)
+                .flat_map(|i| {
+                    [
+                        (i & 1) as f32,
+                        ((i >> 1) & 1) as f32,
+                        ((i >> 2) & 1) as f32,
+                    ]
+                })
+                .collect(),
+            connectivity: reify_ir::VolumeConnectivity::Hex {
+                indices: (0..8u32).collect(),
+            },
+            normals: None,
+            boundary: None,
+        };
+        let (fields_b2, diags_b2) =
+            match run_adaptive_trampoline_outcome(&[vm_read_handle(hex)]) {
+                ComputeOutcome::Completed {
+                    result,
+                    diagnostics,
+                    ..
+                } => match result {
+                    Value::StructureInstance(d) => (d.fields, diagnostics),
+                    other => panic!("(b2) expected ElasticResult, got {other:?}"),
+                },
+                other => panic!("(b2) an adaptive request must never Fail, got {other:?}"),
+            };
+        assert!(
+            matches!(
+                fields_b2.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "(b2) a Hex realized mesh must still produce a real adaptive triple",
+        );
+        assert!(
+            !diags_b2
+                .iter()
+                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER)),
+            "(b2) a Hex mesh must not reach the localized lane, got: {diags_b2:?}",
+        );
+
+        // ── (d) The lane is gated by the RUNTIME const, not a cfg. ──
+        //
+        // Verified in a stub build and skipped-as-satisfied in a gmsh build:
+        // when `GMSH_AVAILABLE` is false NO realized mesh may reach the
+        // localized lane, however well-formed it is.
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            let outcome_d = run_adaptive_trampoline_outcome(&[vm_read_handle(
+                make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]),
+            )]);
+            assert_fell_back_to_uniform(outcome_d, "libgmsh", "(d) !GMSH_AVAILABLE");
+        }
+    }
+
+    /// Drive the adaptive trampoline and return the raw outcome.
+    fn run_adaptive_trampoline_outcome(
+        realization_inputs: &[RealizationReadHandle],
+    ) -> ComputeOutcome {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            adaptive_options(),
+        ];
+        let cancellation = CancellationHandle::new();
+        solve_elastic_static_trampoline(
+            &value_inputs,
+            realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        )
+    }
+
+    /// Assert the SAME two outcomes every fallback trigger must produce:
+    /// `Completed` with a real uniform-lane a-posteriori triple, and a
+    /// Warning whose message contains `reason_marker`.
+    fn assert_fell_back_to_uniform(
+        outcome: ComputeOutcome,
+        reason_marker: &str,
+        case: &str,
+    ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        let (fields, diagnostics) = match outcome {
+            ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("{case}: expected an ElasticResult, got {other:?}"),
+            },
+            other => panic!(
+                "{case}: an `adaptive: true` request must NEVER regress to Failed just \
+                 because the gmsh lane could not run, got {other:?}"
+            ),
+        };
+        assert!(
+            matches!(
+                fields.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "{case}: the uniform fallback must still produce a real a-posteriori triple, \
+             got: {:?}",
+            fields.get("global_relative_energy_error"),
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)),
+            "{case}: 4902's UNIFORM lane must have run, got: {diagnostics:?}",
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER)),
+            "{case}: the localized lane must NOT have run, got: {diagnostics:?}",
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.severity
+                == reify_core::Severity::Warning
+                && d.message.contains(reason_marker)),
+            "{case}: expected a Warning naming the specific reason ({reason_marker:?}), \
+             got: {diagnostics:?}",
+        );
+        (fields, diagnostics)
+    }
+
+    /// step-17 RED, trigger (c): a `RefineError` raised at RUNTIME (libgmsh
+    /// linked, but this remesh cannot be performed) must propagate out of
+    /// `refine` so the wiring site can catch it and re-run the uniform lane.
+    ///
+    /// Injected deterministically rather than by hunting for a gmsh-hostile
+    /// geometry: a `current_sizes` / element-count mismatch is exactly the
+    /// `SizeHintsLengthMismatch` guard `refine_marked_elements` runs BEFORE
+    /// any gmsh call, so this is build-independent and cannot flake across
+    /// gmsh versions.
+    #[test]
+    fn realized_adaptive_problem_refine_propagates_a_refine_error() {
+        let volume_mesh = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+        let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
+            .expect("a P1 tet box has an extractable boundary");
+        let mut problem = RealizedAdaptiveProblem::new(
+            IsotropicElastic {
+                youngs_modulus: 200e9,
+                poisson_ratio: 0.3,
+            },
+            volume_mesh,
+            surface,
+            reify_solver_elastic::MeshingOptions::default(),
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        );
+        // Desynchronise the size field from the mesh.
+        problem.current_sizes.truncate(1);
+
+        let err = problem
+            .refine(&[0])
+            .expect_err("a desynchronised size field must raise a RefineError");
+        assert!(
+            matches!(
+                err,
+                reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+            ),
+            "expected SizeHintsLengthMismatch, got: {err:?}",
+        );
+    }
 }
