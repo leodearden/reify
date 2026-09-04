@@ -3270,6 +3270,16 @@ struct ModalDampingPlan {
 /// floor to fall through, and no second call site that has to replicate a guard
 /// to keep this one correct. A future producer that starts calling this fn
 /// inherits the rejection rather than having to remember it.
+///
+/// `clippy::result_large_err` is allowed for the same reason its sibling guard
+/// [`extract_density_or_degenerate`] allows it, and deliberately by the same
+/// mechanism so the two read alike: the `Err` carries a [`ComputeOutcome`] that
+/// [`run_modal_analysis`] returns BY VALUE and consumes immediately (the whole
+/// compute contract traffics in by-value `ComputeOutcome`), so boxing this
+/// transient rejection would add an allocation on a path that is about to return
+/// anyway, for no benefit — and would leave the file's two short-circuit guards
+/// gratuitously different in shape.
+#[allow(clippy::result_large_err)]
 fn plan_modal_damping(
     options: &Value,
     material: &Value,
@@ -7237,7 +7247,10 @@ mod tests {
                 "top-level NoDamping",
                 Some(struct_instance("NoDamping", vec![])),
             ),
-            ("top-level RayleighDamping", Some(rayleigh_damping(0.0, 1e-4))),
+            (
+                "top-level RayleighDamping",
+                Some(rayleigh_damping(0.0, 1e-4)),
+            ),
             (
                 "top-level MaterialDamping",
                 Some(struct_instance("MaterialDamping", vec![])),
