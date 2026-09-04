@@ -306,7 +306,37 @@ assert "PG-RENAME-b: renaming an uncoupled fixture stays RUN_RUST=0 RUN_GUI=0 RU
 # verify.sh, so it survives any refactor of how the list is stored. (a) is
 # deliberately comment-inclusive (a doc-comment mention counts): no
 # code-vs-comment discrimination needed, and it always errs conservative.
-# Today (a) derives 11 paths and (b) is empty.
+#
+#  (a) ESCAPE HATCH — `pg-drift:allow`, the leaf-level sibling of half (b)'s
+#      `pg-drift-dir:allow` (task 6986). GRAMMAR: an inline
+#      `pg-drift:allow — <reason>` ON THE MATCHED LINE drops that line from the
+#      derived set; the reason is required.
+#
+#      WHY IT EXISTS. Erring conservative has one perverse case, and it is the
+#      case BOTH real incidents were: documentation prose that NAMES a
+#      genuinely UNCOUPLED fixture. Comment-inclusiveness makes that sentence
+#      the only thing telling the checker a compiled target reads the file — so
+#      the more carefully an author documents "nothing reads this", the more
+#      likely they are to red the gate. #5540 reddened post-merge verify that
+#      way while documenting solver_unification_tangent_silent_accept.ri; #5371
+#      derived 13 paths against a 12-entry list at branch HEAD a6be4e30a7. The
+#      marker is therefore usable on a line with NO reading test target at all,
+#      which is exactly the point.
+#
+#      REMEDY ORDER when this half reds: FIRST decide whether a compiled target
+#      really reads the fixture. If it does, add <name>.ri to verify.sh's
+#      _RUST_COUPLED_RI_FIXTURES. If it does NOT, mark the line — do not add a
+#      row that is FALSE, and do not reword the prose to avoid spelling the
+#      path (the #5540/#5371 workaround, which degrades the documentation and
+#      is invisible to anyone who has not read the incident).
+#
+#      GOTCHA: the marker must sit ON the matched line. One line above
+#      suppresses nothing, because the filter drops matched LINES.
+#
+#      RESIDUAL, stated as honestly as (b) states its own: the filter drops the
+#      WHOLE line, so a marked line that ALSO names a genuinely coupled fixture
+#      would drop that one too. Accepted — the same granularity
+#      `pg-drift-dir:allow` already has.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PG-DRIFT: every *.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
@@ -317,8 +347,14 @@ _PG_FIX_PAT='tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri'
 # self-tests go through: full matched LINES in, sorted-unique fixture paths out.
 # `-o` lives here rather than on `git grep` so the helper still sees whole
 # lines — the self-tests therefore exercise the production pipeline instead of
-# restating it.
-_pg_derive() { grep -o -E "$_PG_FIX_PAT" | sort -u; }
+# restating it, and the reviewed-marker filter has somewhere to stand.
+# That filter runs FIRST, before `-o` projects the line away. Its literal is the
+# EXACT `pg-drift:allow`: a shortened `pg-drift` would also swallow half (b)'s
+# reviewed `pg-drift-dir:allow` walks (pinned by the cross-suppression self-test
+# below). Callers keep the `|| true` the surrounding code already uses — under
+# `set -euo pipefail` a `grep` that suppresses every line exits 1, which is now
+# a legitimate outcome rather than a fault.
+_pg_derive() { grep -v 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u; }
 _PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' | _pg_derive || true)"
 # Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
 # must fail loudly here instead of vacuously passing an empty loop.
