@@ -1622,5 +1622,178 @@ class TestCommandNormalization(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# task #7257 step-03 (RED): evidence gate for blocking records (ARM 1, item 1)
+# ---------------------------------------------------------------------------
+
+class TestEvidenceGate(unittest.TestCase):
+    """A blocking verdict with no executed-probe evidence is a harness defect.
+
+    PRD §6 decision 4: "Captured output is mandatory on every verdict. […]
+    Every D1 result carries the exact command + stdout/stderr + exit code, so a
+    human (or D4) can re-derive the verdict without re-running."  An
+    evidence-free record is therefore not a valid falsification at all — it is
+    an unexecuted promise, and tabulating it as `blocking` buries the ONE real
+    finding among N vacuous ones (the observed pi-report failure).
+
+    GREEN in task #7257 step-04 (has_probe_evidence / classify_record).
+    """
+
+    def _result(self, capability: str, verdict: str, *,
+                command: Any = ("reify", "check", "/fixture.ri"),
+                exit_code: Any = 1,
+                stdout: str = "", stderr: str = "",
+                omit_command: bool = False,
+                omit_exit_code: bool = False) -> dict:
+        """Build a synthetic α --json result record, with omissions on request."""
+        rec: dict = {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": list(command) if isinstance(command, tuple) else command,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+        if omit_command:
+            del rec["command"]
+        if omit_exit_code:
+            del rec["exit_code"]
+        return rec
+
+    # ── (1)(2) evidence-free FAIL: not blocking, but named as malformed ──────
+
+    def test_evidence_free_fail_does_not_block(self):
+        """A FAIL with command [] and exit_code None must not appear in blocking."""
+        rec = self._result("evidence-free cap", "FAIL", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertNotIn("evidence-free cap", bv.blocking)
+        self.assertFalse(bv.blocks, "an unexecuted promise must not block the batch")
+
+    def test_evidence_free_fail_is_reported_as_malformed(self):
+        """The same record's capability IS surfaced — as malformed, not blocking."""
+        rec = self._result("evidence-free cap", "FAIL", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("evidence-free cap", bv.malformed)
+
+    # ── (3)(4) partial evidence is still no evidence ─────────────────────────
+
+    def test_missing_command_key_is_malformed(self):
+        """A record with no `command` key at all → malformed, not blocking."""
+        rec = self._result("no-command cap", "FAIL", omit_command=True)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("no-command cap", bv.malformed)
+        self.assertNotIn("no-command cap", bv.blocking)
+
+    def test_missing_exit_code_key_is_malformed(self):
+        """A non-empty command but no `exit_code` key → no process outcome → malformed."""
+        rec = self._result("no-exit-code cap", "UNPROVABLE", omit_exit_code=True)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("no-exit-code cap", bv.malformed)
+        self.assertNotIn("no-exit-code cap", bv.blocking)
+
+    def test_exit_code_zero_is_valid_evidence(self):
+        """exit_code 0 is a real outcome — `is not None`, not truthiness."""
+        rec = self._result("exit-zero cap", "FAIL", exit_code=0)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("exit-zero cap", bv.blocking)
+        self.assertEqual(bv.malformed, [])
+
+    # ── (5) the headline signal: one real finding is no longer buried ────────
+
+    def test_one_executed_fail_among_evidence_free_fails_is_the_only_blocker(self):
+        """The real finding stands alone; the three vacuous ones do not dilute it."""
+        role_results = {
+            "prover": [
+                self._result("vacuous-1", "FAIL", command=[], exit_code=None),
+                self._result("REAL executed fail", "FAIL", exit_code=1,
+                             stderr="type mismatch: expected axis"),
+                self._result("vacuous-2", "FAIL", omit_command=True),
+            ],
+            "adversary": [
+                self._result("vacuous-3", "UNPROVABLE", command=[], omit_exit_code=True),
+            ],
+        }
+        bv = pdv.synthesize_batch(role_results)
+        self.assertTrue(bv.blocks)
+        self.assertEqual(bv.blocking, ["REAL executed fail"])
+        self.assertEqual(sorted(bv.malformed), ["vacuous-1", "vacuous-2", "vacuous-3"])
+
+    # ── (6) existing blocking semantics preserved for executed probes ────────
+
+    def test_executed_unprovable_still_blocks(self):
+        """An executed UNPROVABLE keeps blocking (unchanged semantics)."""
+        rec = self._result("unprovable cap", "UNPROVABLE", exit_code=2)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("unprovable cap", bv.blocking)
+
+    def test_executed_harness_error_still_blocks(self):
+        """An executed HARNESS_ERROR keeps blocking (unchanged semantics)."""
+        rec = self._result("harness-error cap", "HARNESS_ERROR", exit_code=-1,
+                           stderr="probe runner crashed")
+        bv = pdv.synthesize_batch({"prover": [], "adversary": [rec]})
+        self.assertTrue(bv.blocks)
+        self.assertIn("harness-error cap", bv.blocking)
+
+    # ── (7) a PREMISE-shaped record is neither blocking nor malformed ────────
+
+    def test_premise_shaped_record_is_neither_blocking_nor_malformed(self):
+        """RESULTS_SCHEMA is loose enough today that a premise validates as a result.
+
+        Such a record has no `verdict` key at all.  It is not a falsification
+        and it is not an evidence-free BLOCKING verdict either — the evidence
+        gate must not manufacture a malformed entry out of it.
+        """
+        premise_shaped = {
+            "capability": "a revolute joint rejects a non-axis argument",
+            "assertion_kind": "rejection",
+            "fixture": "tests/prd-gate/fixtures/revolute-non-axis.ri",
+        }
+        bv = pdv.synthesize_batch({"prover": [premise_shaped], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.blocking, [])
+        self.assertEqual(bv.malformed, [])
+
+    def test_pass_record_is_not_malformed_even_without_evidence(self):
+        """The gate applies to BLOCKING verdicts only; a PASS is not re-litigated."""
+        rec = self._result("passing cap", "PASS", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.malformed, [])
+        self.assertEqual(bv.blocking, [])
+
+    # ── (8) executed / total counters ────────────────────────────────────────
+
+    def test_executed_and_total_counters_on_a_mixed_set(self):
+        """`executed` counts records with probe evidence; `total` counts all records."""
+        role_results = {
+            "prover": [
+                self._result("p-pass", "PASS", exit_code=0),
+                self._result("p-fail", "FAIL", exit_code=1),
+                self._result("p-vacuous", "FAIL", command=[], exit_code=None),
+            ],
+            "adversary": [
+                self._result("a-pass", "PASS", exit_code=0),
+                self._result("a-vacuous", "UNPROVABLE", omit_command=True),
+            ],
+        }
+        bv = pdv.synthesize_batch(role_results)
+        self.assertEqual(bv.total, 5)
+        self.assertEqual(bv.executed, 3)
+
+    def test_counters_are_zero_on_an_empty_batch(self):
+        """An empty batch reports 0 executed of 0 total (not a silent pass basis)."""
+        bv = pdv.synthesize_batch({"prover": [], "adversary": []})
+        self.assertEqual(bv.total, 0)
+        self.assertEqual(bv.executed, 0)
+
+    def test_malformed_report_section_names_the_capability(self):
+        """A malformed record is visible in the report, labelled as a harness defect."""
+        rec = self._result("evidence-free cap", "FAIL", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("evidence-free cap", bv.report)
+        self.assertIn("MALFORMED", bv.report)
+
+
 if __name__ == "__main__":
     unittest.main()
