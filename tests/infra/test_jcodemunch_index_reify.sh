@@ -542,6 +542,75 @@ argv_word_absent() {
     return 0
 }
 
+# -- THE LIB IS THE SINGLE DEFINITION SITE (#6454) ---------------------------
+#
+# β's half of the cross-site check. The invocation triple — wheel pin,
+# interpreter, identity lever — has ONE definition site,
+# scripts/lib_jcodemunch_pin.sh, and β SOURCES it rather than carrying its own
+# copies. The sibling suite tests/infra/test_with_jcodemunch_serve.sh owns δ's
+# and α's halves; each suite cross-checks against its OWN SUT's constructed
+# argv, so neither has to execute the other's script.
+JC_PIN_LIB_FILE="$REPO_ROOT/scripts/lib_jcodemunch_pin.sh"
+
+# ONE awk with an `exit` and no pipeline — a `… | head -n1` would be an
+# early-closing consumer under `set -euo pipefail`. It emits NOTHING when it
+# does not match, and the caller refuses that emptiness through the suite's own
+# require_nonempty rather than comparing "" against "" and reporting agreement.
+jc_pin_lib() {
+    [ -f "$JC_PIN_LIB_FILE" ] || return 0
+    awk '/^JC_PIN=/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_LIB_FILE"
+}
+
+# b9_argv_agrees_with_lib <root> — β's CONSTRUCTED argv carries exactly the
+# requirement string the lib defines. Read out of the argv rather than out of
+# β's source, so what is tested is what would really be spawned — INCLUDING the
+# sourcing plumbing that has to deliver it.
+b9_argv_agrees_with_lib() {
+    local root="$1" pin
+    pin="$(jc_pin_lib)" || true
+    require_nonempty "JC_PIN defined by $JC_PIN_LIB_FILE" "$pin" || return 1
+    argv_has "$root" "$pin"
+}
+
+# THE STRUCTURAL HALF, and the load-bearing one. Every copy of the triple
+# AGREES today, so b9_argv_agrees_with_lib alone is green whether or not β
+# sources the lib — it was green the moment the lib was created. What needs
+# pinning is that the lib is the SOLE definition site AND that its value reaches
+# the argv. Neither half is sufficient alone.
+b9_beta_defines_no_triple() {
+    local v hit rc=0
+    for v in JC_PIN JC_PYTHON JC_IDENTITY_ENV; do
+        hit="$(grep -n "^$v=" "$JC_INDEX" || true)"
+        if [ -n "$hit" ]; then
+            printf 'β still defines %s itself:\n  %s\n' "$v" "$hit" >&2
+            rc=1
+        fi
+    done
+    if [ "$rc" -ne 0 ]; then
+        printf '  The triple has ONE definition site — scripts/lib_jcodemunch_pin.sh (#6454).\n  β must SOURCE it, never re-declare it.\n' >&2
+    fi
+    return "$rc"
+}
+
+# The guarded-source shape, not merely a `source`: scripts/verify.sh:347-352 is
+# the repo's canonical spelling, and the `[ ! -f … ]` half is what turns a
+# missing or renamed lib into an error naming the file instead of an unbound
+# variable failing deep inside argv construction.
+b9_beta_sources_the_lib() {
+    local src_line guard_line
+    src_line="$(grep -n '^[[:space:]]*source .*lib_jcodemunch_pin\.sh' "$JC_INDEX" || true)"
+    if [ -z "$src_line" ]; then
+        printf 'β never sources scripts/lib_jcodemunch_pin.sh\n  Expected the canonical guarded-source shape (cf. scripts/verify.sh:347-352).\n' >&2
+        return 1
+    fi
+    guard_line="$(grep -n '\[ ! -f .*lib_jcodemunch_pin\.sh' "$JC_INDEX" || true)"
+    if [ -z "$guard_line" ]; then
+        printf 'β sources the lib but carries no [ ! -f … ] existence guard:\n  %s\n' "$src_line" >&2
+        return 1
+    fi
+    return 0
+}
+
 # argv_subcommand_is <root> <expected> — the token immediately after the
 # `jcodemunch-mcp` entry point is the subcommand.
 argv_subcommand_is() {
@@ -1086,6 +1155,15 @@ else
     assert "argv pins jcodemunch-mcp==1.108.54" \
         argv_has "$ARGV_ROOT" "jcodemunch-mcp==1.108.54"
 
+    # THE COMPLEMENTARY HALF of the needle above, which stays LITERAL on
+    # purpose: β's argv is now DERIVED from scripts/lib_jcodemunch_pin.sh, so a
+    # needle that read its expectation from the lib would be comparing the lib
+    # to itself — tautologically green, and silently so. The literal is the
+    # independent oracle that fails when the LIB's value moves; this assertion
+    # is the one that fails when the lib's value stops REACHING the argv.
+    assert "argv carries exactly the JC_PIN the lib defines (the plumbing delivers)" \
+        b9_argv_agrees_with_lib "$ARGV_ROOT"
+
     # All three flags re-verified on the `watch` subparser at 1.108.54
     # (server.py:6326-6369).
     assert "argv uses the 'watch' subcommand" \
@@ -1121,6 +1199,14 @@ else
     assert "argv NEVER uses the 'index' subcommand (the only path to --paths-from)" \
         argv_word_absent "$ARGV_ROOT" index
 fi
+
+# Deliberately OUTSIDE the ARGV_ROOT guard above: these two read β's SOURCE, not
+# its argv, so a failed mktemp must not silently take the single-definition
+# coverage with it.
+assert "β defines none of JC_PIN/JC_PYTHON/JC_IDENTITY_ENV itself (single definition site)" \
+    b9_beta_defines_no_triple
+assert "β sources scripts/lib_jcodemunch_pin.sh behind an existence guard" \
+    b9_beta_sources_the_lib
 
 # -- Test 11: run summary and exit propagation -------------------------------
 # Driven by a stub indexer through the REIFY_JC_INDEXER_CMD seam, so the two
