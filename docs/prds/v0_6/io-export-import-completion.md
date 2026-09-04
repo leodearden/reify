@@ -283,9 +283,9 @@ for AP242 — NOT the 'AP2xx' shorthand; the `write.step.schema` *input selector
 | δ driver | DSL occurrence drives **format+path** with no `-o`/extension | requires α (surface) + β (STL) + the value-map/`surface_export_bodies` substrate — all upstream/existing. **No** capability owned by a downstream task. |
 | δ relative path | output at `<design-dir>/o.stl`, not CWD | path join is deterministic; the design-file dir is known at build. |
 | ε STEP version | written `FILE_SCHEMA` contains `CONFIG_CONTROL_DESIGN` (AP203's EXPRESS schema name) | OCCT `write.step.schema` is a real static param; AP203/AP214 first-class, AP242 best-effort w/ fallback warning. FILE_SCHEMA carries the EXPRESS schema name, not the AP2xx shorthand. |
-| ζ STEP import | re-exported AABB matches fixture dims within **1e-6 m** | OCCT reader is standard; bound is on bounding-box (a B-rep-stable quantity), **not** byte/topology equality — avoids the round-trip-exactness trap. |
+| ζ STEP import | re-exported AABB matches fixture dims within **1e-3 mm** | OCCT reader is standard; bound is on bounding-box (a B-rep-stable quantity), **not** byte/topology equality — avoids the round-trip-exactness trap. The AABB is read off a millimetre-emitting STL (§4.2), and 1e-3 mm is ~280x above the export path's own worst-case f32 quantization (~3.6e-6 mm on a 30 mm part, measured on `MM_PER_METRE_F32`) — so the bound is achievable, while the naive **1e-6 mm** reading would sit *below* that quantization. |
 
-No numeric-method *floor* is asserted (no FEA/solver bound). The only tolerance, ζ's 1e-6 m AABB
+No numeric-method *floor* is asserted (no FEA/solver bound). The only tolerance, ζ's 1e-3 mm AABB
 match, is a geometric round-trip stability bound, comfortably above OCCT's STEP read/write precision.
 
 ---
@@ -334,7 +334,7 @@ Invariants: one artifact per `: Output` occurrence instance (except `DisplayOutp
 | B6 | **Driver multi-output** | `.ri` w/ `STLOutput` + `STEPOutput` | both `o.stl` and `o2.step` written in one build |
 | B7 | **Driver relative path** | design at `sub/foo.ri`, `path:"o.stl"` | output at `sub/o.stl`, **not** `cwd/o.stl` |
 | B8 | STEP version | `STEPOutput(version: AP203)` | written STEP `FILE_SCHEMA` contains `CONFIG_CONTROL_DESIGN` (AP203's EXPRESS schema name) |
-| B9 | STEP import round-trip | committed `fixture.step` (known dims) | `step_import` → re-export STL; AABB matches within 1e-6 m |
+| B9 | STEP import round-trip | committed `fixture.step` (known dims) | `step_import` → re-export STL; AABB matches within 1e-3 mm |
 | B10 | Back-compat `-o` | `reify build box.ri -o x.stl` | single STL; imperative path unchanged |
 
 ---
@@ -406,7 +406,7 @@ Greek labels → task IDs at decompose. **Active batch (flip to pending): α β 
   `reify-kernel-occt/cpp/occt_wrapper.cpp` + `src/lib.rs`, `reify-stdlib` (`eval_builtin`),
   `reify-eval` (geometry-import seam), `reify-compiler` (STEPInput wiring). *Leaf.* *Signal:* a
   committed `fixture.step` (known dims) imported via `let g = step_import("fixture.step")`;
-  `reify build` re-exports `g` to STL whose AABB matches the fixture dims within `1e-6 m` (round-trip,
+  `reify build` re-exports `g` to STL whose AABB matches the fixture dims within `1e-3 mm` (round-trip,
   not byte-exact). *Prereqs:* α.
 - **ι — [DEFERRED tracker] PointCloud import.** Stub PRD `io-import-pointcloud.md`. *Stays deferred.*
 - **κ — [DEFERRED tracker] `DisplayOutput` → viewport drive.** Stub PRD `io-display-output-viewport.md`.
