@@ -25,7 +25,7 @@
 //!     distinction.
 
 use crate::values::point3;
-use reify_ir::Value;
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// Struts-then-cables member order — the ONE index space that `force_densities`
 /// and `member_forces` share. `TRIPLEX_MEMBERS[..TRIPLEX_STRUTS]` are the three
@@ -96,11 +96,82 @@ pub fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
     Value::List(rows.iter().map(row).collect())
 }
 
+/// Assemble a `Tensegrity` structure `Value` from raw node / strut / cable
+/// fields.
+///
+/// `surfaces` is an [`Option`] and the distinction is LOAD-BEARING: `None`
+/// OMITS the `surfaces` key from the field map entirely, where `Some(v)`
+/// inserts it. A structure with no `surfaces` key is the line-only input; one
+/// carrying a PRESENT-but-empty `surfaces` list is a different input. `None`
+/// must never be lowered to `Value::Undef` or to an empty list — the combined
+/// membrane δ suite asserts the no-surfaces path returns an empty
+/// `surface_stresses` echo and never an absent one, so both shapes have to stay
+/// reachable and distinguishable.
+pub fn tensegrity(
+    nodes: Vec<Value>,
+    struts: Value,
+    cables: Value,
+    surfaces: Option<Value>,
+) -> Value {
+    let mut fields: PersistentMap<String, Value> = PersistentMap::default();
+    fields.insert("nodes".to_string(), Value::List(nodes));
+    fields.insert("struts".to_string(), struts);
+    fields.insert("cables".to_string(), cables);
+    if let Some(surfaces) = surfaces {
+        fields.insert("surfaces".to_string(), surfaces);
+    }
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// The canonical triplex as a `Tensegrity` structure: [`triplex_nodes`] at the
+/// requested heights, with [`TRIPLEX_MEMBERS`] split at [`TRIPLEX_STRUTS`] into
+/// the `struts` and `cables` fields.
+///
+/// Both parameters carry a real difference between the call sites this replaced:
+/// `triplex_tensegrity(1.0, 0.0, ..)` is the gauge / T1b prism,
+/// `triplex_tensegrity(1.0, -1.0, ..)` the taller δ one. See [`tensegrity`] for
+/// what `surfaces: None` means.
+pub fn triplex_tensegrity(top_z: f64, bottom_z: f64, surfaces: Option<Value>) -> Value {
+    let pair = |&(j, k): &(usize, usize)| [j as i64, k as i64];
+    let struts: Vec<[i64; 2]> = TRIPLEX_MEMBERS[..TRIPLEX_STRUTS].iter().map(pair).collect();
+    let cables: Vec<[i64; 2]> = TRIPLEX_MEMBERS[TRIPLEX_STRUTS..].iter().map(pair).collect();
+    tensegrity(
+        triplex_nodes(top_z, bottom_z),
+        index_lists(&struts),
+        index_lists(&cables),
+        surfaces,
+    )
+}
+
+/// Both membrane end caps of the triplex: the top cap over nodes 0, 1, 2 and the
+/// bottom cap over nodes 3, 4, 5. The top cap spans the three FREE nodes of the
+/// anchored solve, so it genuinely enters `D_ff` rather than sitting inertly on
+/// the anchored side.
+pub fn triplex_caps() -> Value {
+    index_lists(&[[0, 1, 2], [3, 4, 5]])
+}
+
+/// Group ids in [`TRIPLEX_MEMBERS`] order: the three struts to group 0, the six
+/// horizontals (top and bottom rings) to group 1, the three verticals to group 2.
+pub fn triplex_group_ids() -> Value {
+    Value::List([0i64, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2].into_iter().map(Value::Int).collect())
+}
+
+/// One seed ratio per group, in group-id order: struts compressive (−1),
+/// horizontals and verticals tensile (+1).
+pub fn triplex_seeds() -> Value {
+    Value::List(vec![Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
-    use reify_ir::{PersistentMap, StructureTypeId};
 
     /// The azimuth formulation used by the two *pre-refactor* inline copies
     /// (`tensegrity_t1b_form_find_e2e.rs` and
