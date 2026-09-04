@@ -99,6 +99,21 @@ pub enum RefineError {
         /// `volume_mesh.vertices.len()`.
         len: usize,
     },
+    /// A face of `volume_mesh` is shared by THREE OR MORE elements, so the
+    /// mesh has no well-defined two-manifold boundary (task 4909).
+    ///
+    /// Raised by [`boundary_surface_mesh`]. A free-face extractor keeps the
+    /// faces seen exactly once; a face seen twice is interior. A face seen
+    /// three or more times fits neither category, and silently dropping it
+    /// would emit a surface with a hole — which gmsh reports much later and
+    /// far less legibly as "no dim=2 entities after classify+create_geometry;
+    /// surface may be open or non-manifold".
+    NonManifoldBoundary {
+        /// The offending face, as its three vertex indices ascending.
+        face: [u32; 3],
+        /// How many elements share it (always `>= 3`).
+        incident_elements: usize,
+    },
 }
 
 impl fmt::Display for RefineError {
@@ -148,6 +163,15 @@ impl fmt::Display for RefineError {
                 f,
                 "malformed vertex buffer: {len} floats is not a whole multiple of \
                  3, so it does not describe a whole number of XYZ positions"
+            ),
+            RefineError::NonManifoldBoundary {
+                face,
+                incident_elements,
+            } => write!(
+                f,
+                "non-manifold mesh: face ({}, {}, {}) is shared by {incident_elements} \
+                 elements, so the mesh has no well-defined boundary surface",
+                face[0], face[1], face[2],
             ),
         }
     }
@@ -461,6 +485,22 @@ fn sorted_face_key(face: [u32; 3]) -> [u32; 3] {
 /// tessellated surface of the same solid, whose triangulation would not share
 /// vertices with the tet mesh at all.
 ///
+/// # Measured behaviour on real gmsh output (task 4909, libgmsh 4.15.2)
+///
+/// Seeding a volume from a hand-wound unit cube under a uniform 0.5 size
+/// field yields 181 P1 tets; this function extracts 150 triangles over 77
+/// vertices from it, which satisfies `V - E + F = 77 - 225 + 150 = 2` — a
+/// closed genus-0 manifold. `refine_marked_elements` accepts that extracted
+/// boundary and remeshes 181 -> 667 tets when the `x < 0.5` half is marked,
+/// so `classify_surfaces` does find 0D corner entities on it (the "no corner
+/// sizes applied" failure mode does not occur at this seed density).
+///
+/// On that same output, 0 of 181 tets were emitted NEGATIVELY oriented, so
+/// the orientation swap in [`outward_tet_faces`] was dormant: the canonical
+/// face table alone sufficed. The swap is retained because gmsh does not
+/// contractually guarantee positive orientation, and is pinned directly by
+/// `boundary_surface_mesh_of_a_mirrored_tet_still_emits_outward_faces`.
+///
 /// # Element order
 ///
 /// P1 and P2 tets are both accepted; a P2 element contributes CORNER-ONLY
@@ -476,7 +516,9 @@ fn sorted_face_key(face: [u32; 3]) -> [u32; 3] {
 /// whole multiple of the per-element stride, and
 /// [`RefineError::InvalidTetIndex`] for an index addressing a vertex that
 /// does not exist — plus [`RefineError::MalformedVertexBuffer`] for a vertex
-/// buffer that does not describe a whole number of XYZ positions.
+/// buffer that does not describe a whole number of XYZ positions, and
+/// [`RefineError::NonManifoldBoundary`] for a mesh with a face shared by
+/// three or more elements.
 pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineError> {
     // Mesh-shape gate: the SAME chokepoint `refine_with_size_field` and
     // `adaptive::refine_marked_elements` run first, rather than a second,
@@ -515,6 +557,26 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
             *face_counts.entry(sorted_face_key(face)).or_insert(0) += 1;
             faces.push(face);
         }
+    }
+
+    // Manifoldness gate. A face belongs to one element (boundary) or two
+    // (interior); three or more means the mesh has no well-defined
+    // two-manifold boundary. Rejecting here turns what gmsh would otherwise
+    // report late and opaquely ("no dim=2 entities after
+    // classify+create_geometry") into a precise, build-agnostic error naming
+    // the offending face.
+    //
+    // The scan walks `faces` (element order) rather than the map, so the face
+    // REPORTED for a mesh with several bad faces is deterministic.
+    if let Some(bad) = faces
+        .iter()
+        .find(|face| face_counts[&sorted_face_key(**face)] > 2)
+    {
+        let key = sorted_face_key(*bad);
+        return Err(RefineError::NonManifoldBoundary {
+            face: key,
+            incident_elements: face_counts[&key] as usize,
+        });
     }
 
     // Pass 2 — keep exactly the FREE faces (seen once). A face seen twice
@@ -1317,6 +1379,97 @@ mod tests {
             assert!(
                 p.iter().all(|c| *c == 0.0 || *c == 1.0),
                 "surface vertex {v} at {p:?} is a mid-side node, not a corner",
+            );
+        }
+    }
+
+    /// A mesh whose face is shared by THREE elements has no well-defined
+    /// two-manifold boundary and must be rejected, not silently emitted with
+    /// a hole.
+    ///
+    /// Dropping the over-shared face would produce an OPEN surface, which
+    /// gmsh reports only much later and far less legibly as "no dim=2
+    /// entities after classify+create_geometry; surface may be open or
+    /// non-manifold".
+    #[test]
+    fn boundary_surface_mesh_rejects_a_face_shared_by_three_elements() {
+        // Three tets fanned around the shared triangle (0,1,2), with apexes
+        // 3, 4 and 5 on both sides and in the plane's normal direction.
+        let vm = VolumeMesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                0.0, 0.0,  0.0, // 0 |
+                1.0, 0.0,  0.0, // 1 |- shared face (0,1,2)
+                0.0, 1.0,  0.0, // 2 |
+                0.0, 0.0,  1.0, // 3 apex above
+                0.0, 0.0, -1.0, // 4 apex below
+                1.0, 1.0,  1.0, // 5 third apex
+            ],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 3, //
+                    0, 1, 2, 4, //
+                    0, 1, 2, 5, //
+                ],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+
+        assert!(
+            matches!(
+                boundary_surface_mesh(&vm),
+                Err(RefineError::NonManifoldBoundary {
+                    face: [0, 1, 2],
+                    incident_elements: 3,
+                }),
+            ),
+            "a face shared by three elements must be rejected as \
+             NonManifoldBoundary, got: {:?}",
+            boundary_surface_mesh(&vm),
+        );
+    }
+
+    /// A NEGATIVELY oriented (mirrored) element must still emit outward-wound
+    /// faces — the branch [`outward_tet_faces`]' signed-volume swap exists
+    /// for.
+    ///
+    /// This branch is dormant on real gmsh output (measured: 0 of 181 tets
+    /// negatively oriented, see [`boundary_surface_mesh`]'s doc), so without
+    /// this test it would be untested code. Gmsh does not contractually
+    /// guarantee positive orientation, so the guard is kept and pinned here
+    /// rather than removed.
+    #[test]
+    fn boundary_surface_mesh_of_a_mirrored_tet_still_emits_outward_faces() {
+        let mut vm = single_tet_mesh();
+        // Swap two corners: same geometry, opposite orientation.
+        vm.connectivity = VolumeConnectivity::Tet {
+            indices: vec![0, 2, 1, 3],
+            order: ElementOrderTag::P1,
+        };
+        assert!(
+            signed_tet_volume(&vm, 0, 2, 1, 3) < 0.0,
+            "fixture precondition: [0,2,1,3] must be negatively oriented",
+        );
+
+        let mesh = boundary_surface_mesh(&vm).expect("a mirrored tet is still a valid tet mesh");
+
+        assert_eq!(mesh.indices.len(), 12, "a single tet has 4 faces");
+        let body_centroid = volume_centroid(&vm);
+        for t in 0..mesh.indices.len() / 3 {
+            let n = triangle_normal(&mesh, t);
+            let c = triangle_centroid(&mesh, t);
+            let outward = [
+                c[0] - body_centroid[0],
+                c[1] - body_centroid[1],
+                c[2] - body_centroid[2],
+            ];
+            let dot = n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2];
+            assert!(
+                dot > 0.0,
+                "face {t} of a MIRRORED tet must still be wound OUTWARD: \
+                 normal={n:?}, outward={outward:?}, dot={dot}",
             );
         }
     }
