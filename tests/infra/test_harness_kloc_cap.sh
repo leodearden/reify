@@ -109,6 +109,14 @@
 #       the 7 override binaries instead is likewise refused — see the clause
 #       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #6461).
 #
+#       SUBJECT: harness compile units ONLY. Every OTHER top-level
+#       `tests/*.rs` in these 5 crates — the 7 override binaries and the 348
+#       grandfathered baseline standalones — is UNCAPPED BY DESIGN, not by
+#       omission: the cap is a consolidation-SIZING parameter, and neither is
+#       a consolidation product. Rationale and measured headroom: the clause
+#       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #7004).
+#       Pinned non-vacuously by Section 3c below.
+#
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
 #       `tests/common/` helpers. rustc compiles a SEPARATE COPY of such a file
@@ -344,7 +352,13 @@ harness_layout_violations() {
     # below.
 
     # The 7 override binaries (I1) are allow-listed by file stem — never
-    # re-accretion violations. Build the lookup set once per call.
+    # re-accretion violations. Reaching the `continue` below via this set
+    # also means rule (a)'s cap arm above was never reached for this file at
+    # all (its base didn't match `harness_*.rs)`) — so an override stem is
+    # never cap-checked, not merely found under threshold. That is a
+    # deliberate exemption (task #7004; rationale beside `_HL_OVERRIDE_STEMS`
+    # in harness-layout-lib.sh), pinned non-vacuously by Section 3c below.
+    # Build the lookup set once per call.
     local -A _override_set=()
     local _ov
     for _ov in "${OVERRIDE_BINARIES[@]}"; do
@@ -357,6 +371,15 @@ harness_layout_violations() {
         base="$(basename "$f")"
 
         # rule (a): kLOC cap governs the harness_<subsystem>.rs compile units.
+        # The `harness_*.rs)` pattern below is the cap's ONLY gate: a file
+        # whose base does not match it skips this arm entirely and is never
+        # measured against cap_lines, however large it is. The arm's own
+        # `continue` then confines rule (b) below to non-harness files — a
+        # harness root, once cap-checked here, is never also re-accretion-
+        # checked. Section 3c pins the arm's complement non-vacuously: an
+        # over-cap OVERRIDE stem, which never reaches this arm, contributes
+        # zero cap violations in the same scan where an over-cap harness
+        # fires.
         case "$base" in
             harness_*.rs)
                 IFS=' ' read -r lines root_lines module_lines module_files external_lines external_files \
