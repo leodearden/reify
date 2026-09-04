@@ -30,15 +30,11 @@ reify-core.workspace = true
 # `MockContainmentQuery` without pulling reify-eval into reify-expr's own test
 # graph (task #6322, follow-up to #6216).
 #
-# NOT GATE-ENFORCED: the 130-vs-185 figure is a MEASUREMENT (re-verified on this
-# branch: 130 unique crates, zero reify-expr/faer/nalgebra/gemm lines), not an
-# invariant any verify-pipeline step asserts — nothing reds if a later edit
-# silently re-adds those 55 crates. Task #7123 carries the durable fix (a
-# tests/infra `cargo tree` guard, which #6322 could not land because the new
-# test needs a tests/infra/run-all-classification.manifest row outside #6322's
-# lock set) together with the enumerated regression vectors and the one-line
-# re-check recipe. Delete this paragraph when that guard lands, rather than
-# letting a second copy of the rationale drift alongside it.
+# NOT GATE-ENFORCED: the 130-vs-185 figure above is a MEASUREMENT, not an
+# invariant any verify-pipeline step asserts. Re-check in place with
+#   cargo tree -p reify-audit --edges normal --prefix none | sort -u
+# — expect 130 unique crates and zero reify-expr/faer/nalgebra/gemm lines.
+# Durable guard + the regression vectors it must cover: task #7123.
 reify-expr = { workspace = true, optional = true }
 reify-ir.workspace = true
 reify-syntax.workspace = true
@@ -65,15 +61,6 @@ eval-helpers = ["dep:reify-eval", "dep:reify-constraints", "containment-doubles"
 # reify-expr's own test graph. `eval-helpers` includes it so today's
 # consumers (which enable `eval-helpers`) are unaffected.
 #
-# Coverage gap, recorded rather than closed — tracked as the second item of
-# task #7123: `cargo test --workspace` (and `cargo clippy --workspace
-# --all-targets`) unifies this crate's features to `eval-helpers` ∪
-# `containment-doubles`, so the containment-doubles-ONLY configuration is built
-# only by a targeted invocation (`cargo test -p reify-expr`, or `cargo check -p
-# reify-test-support --features containment-doubles` — green as of task #6322).
-# Closing it means adding that one `cargo check` line to the verify pipeline's
-# per-crate feature-matrix step, which is outside #6322's lock set. The gap is
-# narrow: it takes an item gated on `containment-doubles` alone that reaches for
-# a reify-eval/reify-constraints symbol, which `eval-helpers` would supply and
-# this feature would not.
+# Coverage gap (no workspace-wide invocation builds the containment-doubles-only
+# configuration): tracked as the second item of task #7123.
 containment-doubles = ["dep:reify-expr"]

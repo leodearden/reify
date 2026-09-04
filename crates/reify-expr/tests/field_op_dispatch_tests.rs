@@ -289,7 +289,7 @@ fn sample_restricted_scaffold_returns_undef() {
     );
 }
 
-// ── step-3 RED (task δ 4222): ContainmentQuery mock resolver ───────────────
+// ── ContainmentQuery mock resolver (task δ 4222, step-3/step-4) ────────────
 //
 // Test the four dispatch cases for `sample(restricted, pt)`:
 //   (a) resolver → Some(true)  (inside)       → inner field value
@@ -298,9 +298,9 @@ fn sample_restricted_scaffold_returns_undef() {
 //   (d) no resolver attached   (EvalContext::simple) → Value::Undef (already
 //       covered by `sample_restricted_scaffold_returns_undef` above)
 //
-// RED today: `ContainmentQuery` trait and `EvalContext::with_containment` do
-// not exist in reify-expr → compile-fail.
-// GREEN after step-4: the trait and builder are added.
+// Dispatch is exercised through the shared
+// `reify_test_support::mocks::MockContainmentQuery` double (task #6322);
+// `reify_expr::EvalContext::with_containment` wires it into the context.
 
 /// Build a `Value::Field { source: Restricted, lambda: List[inner, region] }`
 /// suitable for mock-resolver tests.
@@ -329,8 +329,7 @@ fn make_restricted_constant_field() -> (Value, Value, Type) {
 
 /// resolver → `Some(true)` (inside): `sample` returns the inner field value (42.0).
 ///
-/// **RED today**: `ContainmentQuery`/`with_containment` absent → compile-fail.
-/// **GREEN after step-4**: arm dispatches to `sample_field_at(inner, at, ctx)`.
+/// The inside arm dispatches to `sample_field_at(inner, at, ctx)`.
 #[test]
 fn mock_resolver_some_true_returns_inner_value() {
     let (restricted, at, field_type) = make_restricted_constant_field();
@@ -351,8 +350,7 @@ fn mock_resolver_some_true_returns_inner_value() {
 
 /// resolver → `Some(false)` (outside): `sample` returns `Value::Undef`.
 ///
-/// **RED today**: `ContainmentQuery`/`with_containment` absent → compile-fail.
-/// **GREEN after step-4**: arm returns `Value::Undef`.
+/// The outside arm returns `Value::Undef`.
 #[test]
 fn mock_resolver_some_false_returns_undef() {
     let (restricted, at, field_type) = make_restricted_constant_field();
@@ -373,8 +371,7 @@ fn mock_resolver_some_false_returns_undef() {
 
 /// resolver → `None` (indeterminate): `sample` returns `Value::Undef`.
 ///
-/// **RED today**: `ContainmentQuery`/`with_containment` absent → compile-fail.
-/// **GREEN after step-4**: `None` arm returns `Value::Undef`.
+/// The `None` (indeterminate) arm returns `Value::Undef`.
 #[test]
 fn mock_resolver_none_returns_undef() {
     let (restricted, at, field_type) = make_restricted_constant_field();
