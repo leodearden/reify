@@ -264,8 +264,12 @@ Return a JSON object {premises: [...]} matching the schema.`,
         // to write temp files and shell out — no tmp_file/shell globals needed.
         async ({ leaf, leafLabel, enumerated, idx }) => {
             if (!enumerated || !enumerated.premises || enumerated.premises.length === 0) {
-                log(`[${idx}] No premises enumerated for leaf: ${leafLabel} — skipping proof.`); // eslint-disable-line no-undef
-                return { leaf, leafLabel, idx, prover: [], adversary: [] };
+                // Carry the reason forward. Without this marker stage 3 cannot tell
+                // "nothing was asserted" from "everything asserted held", because
+                // synthesizing an empty record set is vacuously non-blocking.
+                log(`[${idx}] UNENUMERATED — Enumerator returned zero premises for leaf: ${leafLabel}. ` // eslint-disable-line no-undef
+                    + `NO probe will run and this leaf is NOT verified.`);
+                return { leaf, leafLabel, idx, prover: [], adversary: [], unenumerated: true };
             }
 
             const premisesJson = JSON.stringify(enumerated, null, 2);
@@ -358,7 +362,28 @@ Return JSON: {prover: [], adversary: [result_records...]}`,
 
         // Stage 3: Synthesize — agent receives combined records inline, runs
         // deterministic harness, returns BatchVerdict via VERDICT_SCHEMA.
-        async ({ leaf, leafLabel, idx, prover, adversary }) => {
+        async ({ leaf, leafLabel, idx, prover, adversary, unenumerated }) => {
+            // A leaf whose Enumerator produced nothing was never probed. Do NOT
+            // pay a Synthesize agent to adjudicate an empty record set: α over {}
+            // is vacuously non-blocking, so the call could only ever come back
+            // clean — which is precisely how "nothing ran" gets laundered into
+            // "nothing failed". Short-circuit with an explicit disposition.
+            if (unenumerated) {
+                log(`[${idx}] ${leafLabel}: UNENUMERATED — no probe executed.`); // eslint-disable-line no-undef
+                return {
+                    leafLabel,
+                    blocks: false,
+                    blocking: [],
+                    report: `${leafLabel} — Enumerator returned zero premises; NO probe `
+                        + `was executed for this leaf. This is NOT a verified pass.`,
+                    disposition: "UNENUMERATED",
+                    malformed: [],
+                    fixture_absent: [],
+                    executed: 0,
+                    total: 0,
+                };
+            }
+
             const resultsJson = JSON.stringify({ prover, adversary }, null, 2);
 
             const synthesized = await agent( // eslint-disable-line no-undef
@@ -397,10 +422,31 @@ If the command fails or stdout is not valid JSON, return:
                 report: `synthesize agent returned null for leaf: ${leafLabel}`,
             };
 
-            log(`[${idx}] ${leafLabel}: ${verdict.blocks ? "BLOCKS" : "PASS"}` // eslint-disable-line no-undef
+            // Per-leaf disposition. `blocks: false` is NOT the same as verified:
+            // the harness does not block on MALFORMED or fixture-absent records,
+            // so a leaf can come back clean having executed no probe at all.
+            //   BLOCKS       — an evidence-backed falsification
+            //   NOT_VERIFIED — nothing was executed (malformed / fixture-absent only)
+            //   VERIFIED     — at least one probe ran and nothing blocked
+            // The new fields default (`?? []` / `?? 0`) so a Synthesize agent
+            // relaying an older harness build still produces a usable verdict.
+            const executed = verdict.executed ?? 0;
+            const disposition = verdict.blocks
+                ? "BLOCKS"
+                : (executed === 0 ? "NOT_VERIFIED" : "VERIFIED");
+
+            log(`[${idx}] ${leafLabel}: ${disposition}` // eslint-disable-line no-undef
                 + (verdict.blocking && verdict.blocking.length > 0 ? ` — ${verdict.blocking.join(", ")}` : ""));
 
-            return { leafLabel, ...verdict };
+            return {
+                leafLabel,
+                ...verdict,
+                disposition,
+                malformed: verdict.malformed ?? [],
+                fixture_absent: verdict.fixture_absent ?? [],
+                executed,
+                total: verdict.total ?? 0,
+            };
         },
     );
 
