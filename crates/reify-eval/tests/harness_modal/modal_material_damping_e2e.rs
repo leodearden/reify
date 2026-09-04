@@ -63,7 +63,9 @@
 //! `_RUST_COUPLED_RI_FIXTURES` in `scripts/verify.sh`, a verify-pipeline file
 //! that escalates this change to the full global gate.
 
+use std::collections::HashMap;
 use std::f64::consts::PI;
+use std::sync::OnceLock;
 
 use reify_core::ValueCellId;
 use reify_eval::compute_targets::register_compute_fns;
@@ -174,61 +176,97 @@ const MODES: [&str; 2] = ["1", "2"];
 /// `Scalar`). Panics on a non-numeric cell so a shape regression fails loudly.
 /// Mirrors `mechanism_modal_damping_e2e.rs::num`.
 fn num(v: &Value) -> f64 {
+    numeric(v).unwrap_or_else(|| panic!("expected a numeric cell, got {v:?}"))
+}
+
+/// The non-panicking half of [`num`], for filtering a whole value-cell map down
+/// to its scalar entries. `None` means "not a number", not "zero".
+fn numeric(v: &Value) -> Option<f64> {
     match v {
-        Value::Real(r) => *r,
-        Value::Int(n) => *n as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected a numeric cell, got {other:?}"),
+        Value::Real(r) => Some(*r),
+        Value::Int(n) => Some(*n as f64),
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        _ => None,
     }
 }
 
-/// Compile + evaluate [`SOURCE`], asserting it is clean at BOTH altitudes, and
-/// return a reader over its value cells.
+/// Memoized numeric cells of [`SOURCE`], keyed by cell name.
 ///
-/// Compiling clean is asserted here rather than in each test because it is a
-/// precondition of every arm: a source that failed to type-check would make
-/// every ζ assertion below vacuous (the cells would simply be absent, and the
-/// panic would name a missing cell rather than the real cause).
-fn eval_probe() -> impl Fn(&str) -> f64 {
-    let compiled = parse_and_compile_with_stdlib(SOURCE);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "the MaterialDamping probe source must compile with no error-severity \
-         diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-    let mut engine = make_simple_engine();
-    register_compute_fns(&mut engine);
-    let eval_result = engine.eval(&compiled);
+/// [`SOURCE`] carries FOUR P2 modal eigensolves, and all three probe tests below
+/// read the same four arms. Evaluating it per test meant three full stdlib
+/// compiles and twelve solves where four would do. Measured on this branch with
+/// `--test-threads=1` over those three tests: **74.21 s before, 22.50 s after** —
+/// the predicted 3 evaluations → 1, and now within noise of ONE probe test run
+/// alone (27.87 s measured).
+///
+/// REACH, stated honestly: the gate runs `cargo nextest run`, which executes each
+/// test in its OWN PROCESS, so under the gate every test still pays one solve set
+/// and this cache is a no-op there. The win is on the `cargo test` / libtest path
+/// (one process, threaded or serial) — i.e. the dev loop, and any future test in
+/// this file needing a second read of the same fixture. It is never a regression,
+/// and it is what keeps the cost flat as ζ (#6882) and η (#6883) add tests to
+/// this same harness root.
+///
+/// Only NUMERIC cells are retained: every cell the assertions read is a scalar,
+/// and keeping the map `f64`-valued means it is trivially `Sync` and the reader
+/// stays a plain lookup. A non-numeric cell is therefore reported as missing —
+/// the panic message says so, so a shape regression still fails loudly rather
+/// than silently reading a wrong number.
+static PROBE_CELLS: OnceLock<HashMap<String, f64>> = OnceLock::new();
 
-    let errors: Vec<_> = eval_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_core::Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "eval must produce no Error diagnostics for a well-formed damped solve, \
-         got: {errors:#?}"
-    );
+/// Compile + evaluate [`SOURCE`] ONCE, asserting it is clean at BOTH altitudes,
+/// and return a reader over its numeric value cells.
+///
+/// Compiling clean is asserted inside the memoized body rather than in each test
+/// because it is a precondition of every arm: a source that failed to type-check
+/// would make every ζ assertion below vacuous (the cells would simply be absent,
+/// and the panic would name a missing cell rather than the real cause). The
+/// assertions live in the `OnceLock` initializer, so the FIRST test to call this
+/// is the one that reports a broken fixture — and a panic there poisons nothing,
+/// since a failed initializer simply leaves the cell empty for the next caller to
+/// retry and fail identically.
+fn eval_probe() -> impl Fn(&str) -> f64 {
+    let cells = PROBE_CELLS.get_or_init(|| {
+        let compiled = parse_and_compile_with_stdlib(SOURCE);
+        assert!(
+            errors_only(&compiled).is_empty(),
+            "the MaterialDamping probe source must compile with no error-severity \
+             diagnostics, got:\n{:#?}",
+            errors_only(&compiled)
+        );
+        let mut engine = make_simple_engine();
+        register_compute_fns(&mut engine);
+        let eval_result = engine.eval(&compiled);
+
+        let errors: Vec<_> = eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "eval must produce no Error diagnostics for a well-formed damped solve, \
+             got: {errors:#?}"
+        );
+
+        eval_result
+            .values
+            .iter()
+            .filter(|(id, _)| id.entity == "MaterialDampingProbe")
+            .filter_map(|(id, v)| numeric(v).map(|n| (id.member.clone(), n)))
+            .collect()
+    });
 
     move |name: &str| {
-        let v = eval_result
-            .values
-            .get(&ValueCellId::new("MaterialDampingProbe", name))
-            .unwrap_or_else(|| {
-                panic!(
-                    "MaterialDampingProbe.{name} not found in eval result; \
-                     cells present: {:#?}\nall diagnostics: {:#?}",
-                    eval_result
-                        .values
-                        .iter()
-                        .map(|(id, _)| id)
-                        .collect::<Vec<_>>(),
-                    eval_result.diagnostics
-                )
-            });
-        num(v)
+        *cells.get(name).unwrap_or_else(|| {
+            let mut present: Vec<&str> = cells.keys().map(String::as_str).collect();
+            present.sort_unstable();
+            panic!(
+                "MaterialDampingProbe.{name} not found among the probe's numeric \
+                 cells (a non-numeric cell reads as missing here, so this is \
+                 equally a shape regression); numeric cells present: {present:?}"
+            )
+        })
     }
 }
 
@@ -538,6 +576,12 @@ structure def DampedProbe {
 ///
 /// Deliberately does NOT assert eval is clean — these arms are exactly about
 /// what eval says.
+///
+/// Deliberately NOT memoized the way [`eval_probe`] is, either: its four call
+/// sites pass four DISTINCT sources (three damping arms over the non-`Damped`
+/// material, plus `MaterialDamping` over a `Damped` one) and each is evaluated
+/// exactly once, so a cache would add a keyed map and buy nothing. If a future
+/// leaf adds a second reader of one of these sources, memoize then.
 fn eval_diagnostics(struct_name: &str, source: &str) -> (i64, Vec<reify_core::Diagnostic>) {
     let compiled = parse_and_compile_with_stdlib(source);
     // (i) The source must COMPILE with no error-severity diagnostics. This is a
