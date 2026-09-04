@@ -94,6 +94,17 @@ cd "$REPO_ROOT"
 # Vite dev server port: default 1420, overridable via REIFY_VITE_PORT.
 # Used by tests/infra/test_run_gui_scripts.sh Test 25 to avoid collisions
 # with another worktree's vite already bound to :1420. See task 2308.
+#
+# TEST-ONLY KNOB — do NOT advertise it as a remedy for an occupied port.
+# It is honoured by the vite spawn (§4) and the readiness poll (§5) ONLY.
+# The launched binary does not read it: gui/src-tauri/tauri.conf.json pins
+# `"devUrl": "http://localhost:1420"`, which tauri bakes into reify-gui at
+# COMPILE time, and nothing under gui/src-tauri/src/ reads REIFY_VITE_PORT.
+# So overriding it for a real launch moves OUR vite off :1420 while reify-gui
+# still loads :1420 — i.e. the foreign listener that prompted the override,
+# or a connection-refused window — and the launcher reports success anyway.
+# Making it user-facing requires the GUI-side half first (a build-time devUrl
+# override via TAURI_CONFIG, or reading the env var in the Rust shell).
 REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
 
 # Debug server port: default 3939, overridable via REIFY_DEBUG_PORT.
@@ -147,9 +158,13 @@ if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
                 | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
         fi
         if [ -n "$_preflight_listener" ]; then
-            echo "  Listener pid $_preflight_listener (\`ls -l /proc/$_preflight_listener/cwd\` shows which worktree it serves); free it with \`kill $_preflight_listener\`, or pick another port with REIFY_VITE_PORT=<port>." >&2
+            # Freeing the port is the ONLY remedy offered on purpose: see the
+            # REIFY_VITE_PORT comment at §1 — reify-gui's devUrl is baked to
+            # :1420 at compile time, so relocating vite would leave the GUI
+            # pointed at this very listener.
+            echo "  Listener pid $_preflight_listener (\`ls -l /proc/$_preflight_listener/cwd\` shows which worktree it serves); free it with \`kill $_preflight_listener\`." >&2
         else
-            echo "  Free the port, or pick another one with REIFY_VITE_PORT=<port>." >&2
+            echo "  Free the port before retrying." >&2
         fi
         exit 1
     fi

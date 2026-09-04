@@ -611,6 +611,21 @@ assert "run-gui-dev.sh: occupied-port error says the port is already in use" \
 assert "run-gui-dev.sh: occupied-port refusal happens BEFORE any npm invocation" \
     bash -c '! [ -e "$1" ]' _ "$_t26_tmpdir/npm-invoked"
 
+# The refusal must NOT offer REIFY_VITE_PORT as the remedy. That knob is
+# honoured by the vite spawn and the readiness poll only: reify-gui's frontend
+# URL comes from gui/src-tauri/tauri.conf.json's `"devUrl":
+# "http://localhost:1420"`, which tauri bakes in at COMPILE time, and nothing
+# under gui/src-tauri/src/ reads the variable. Taking that advice would move
+# OUR vite off :1420 while the launched binary still loads :1420 — the very
+# foreign listener this preflight refused — and the launcher would report
+# success the whole way. Freeing the port is the only remedy that works, so
+# this guards against the suggestion being reintroduced.
+assert "run-gui-dev.sh: occupied-port error does NOT advertise REIFY_VITE_PORT as a remedy" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "REIFY_VITE_PORT="' _ "$_t26_out"
+
+assert "run-gui-dev.sh: occupied-port error tells the user to free the port" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "free (it|the port)"' _ "$_t26_out"
+
 # Break-glass: REIFY_GUI_SKIP_PREFLIGHT=1 must get past the port gate.
 rm -f "$_t26_tmpdir/npm-invoked"
 DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
