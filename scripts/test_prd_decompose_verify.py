@@ -2629,5 +2629,123 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
                          ["malformed-records leaf (epsilon)"])
 
 
+# ---------------------------------------------------------------------------
+# task #7257 step-15 (RED): the user-observable signal, end to end
+# ---------------------------------------------------------------------------
+
+class TestUserObservableSignal(unittest.TestCase):
+    """One synthesize call must make all four ARM 1 sub-signals legible at once.
+
+    This is the report a human actually reads.  The observed pi report scored
+    five capabilities as blocking when exactly one had been probed, rendered a
+    string command character-by-character, and stated nowhere how many of its
+    records carried evidence.  A reader could not tell a falsification from an
+    unexecuted promise, and had no count to check the verdict against.
+
+    GREEN in task #7257 step-16 (the counts header).
+    """
+
+    _STRING_CMD = "target/release/reify eval f.ri"
+    _EXPLODED = "t a r g e t"
+
+    def _mixed_batch(self):
+        """One executed FAIL + three evidence-free + one fixture-absent + one string-command."""
+        return {
+            "prover": [
+                # (1) the ONE genuine, evidence-backed falsification
+                {"capability": "REAL executed fail", "probe_kind": "check",
+                 "verdict": "FAIL",
+                 "command": ["reify", "check", "tests/prd-gate/fixtures/x.ri"],
+                 "exit_code": 0, "stdout": "All constraints satisfied.", "stderr": ""},
+                # (2) three unexecuted promises
+                {"capability": "vacuous-1", "probe_kind": "check", "verdict": "FAIL",
+                 "command": [], "exit_code": None, "stdout": "", "stderr": ""},
+                {"capability": "vacuous-2", "probe_kind": "ir", "verdict": "UNPROVABLE",
+                 "command": [], "stdout": "", "stderr": ""},
+                {"capability": "vacuous-3", "probe_kind": "check", "verdict": "FAIL",
+                 "exit_code": None, "stdout": "", "stderr": ""},
+                # (3) a probe that ran but could not find its fixture
+                {"capability": "fixture-absent cap", "probe_kind": "ir", "verdict": "FAIL",
+                 "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
+                 "exit_code": 1, "stdout": "",
+                 "stderr": "Error: No such file or directory (os error 2)"},
+            ],
+            "adversary": [
+                # (4) an evidence-backed falsification whose command is a STRING
+                {"capability": "string-command cap", "probe_kind": "ir", "verdict": "FAIL",
+                 "command": self._STRING_CMD, "exit_code": 1, "stdout": "",
+                 "stderr": "assertion did not hold"},
+            ],
+        }
+
+    def test_only_evidence_backed_records_block(self):
+        """blocks is true, and `blocking` is EXACTLY the evidence-backed set.
+
+        The string-command record blocks too, and correctly so — a string
+        command normalizes to one token, so the record does carry executed-probe
+        evidence.  What it must NOT do is render exploded (asserted below).
+        The three vacuous records and the fixture-absent one are what disappear
+        from `blocking`, which is the signal: 6 records in, 2 real findings out,
+        not 6 undifferentiated blockers.
+        """
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertTrue(bv.blocks)
+        self.assertEqual(sorted(bv.blocking), ["REAL executed fail", "string-command cap"])
+
+    def test_the_three_unexecuted_promises_are_listed_as_malformed(self):
+        """Each vacuous record is still named — just under the right heading."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertEqual(sorted(bv.malformed), ["vacuous-1", "vacuous-2", "vacuous-3"])
+
+    def test_the_fixture_absent_record_is_listed_separately(self):
+        """A missing deliverable is its own category, not a falsification."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
+
+    def test_the_string_command_renders_verbatim(self):
+        """Captured evidence stays re-runnable."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertIn(self._STRING_CMD, bv.report)
+        self.assertNotIn(self._EXPLODED, bv.report)
+
+    def test_report_opens_with_a_machine_readable_counts_header(self):
+        """The report states its own basis on line 1, before any evidence block.
+
+        Without this a reader has to count report sections by hand to learn how
+        much of the batch was actually probed — which is exactly the arithmetic
+        nobody did on the pi report.
+        """
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        header = bv.report.splitlines()[0]
+        self.assertIn("records:", header, f"report header missing; got {header!r}")
+        for token in ("6 total", "3 with executed-probe evidence", "2 blocking",
+                      "3 malformed", "1 fixture-absent"):
+            self.assertIn(token, header,
+                          f"counts header must state {token!r}; got {header!r}")
+
+    def test_counts_header_is_emitted_even_when_nothing_blocks(self):
+        """An all-clear report still states the basis of its all-clear."""
+        bv = pdv.synthesize_batch({
+            "prover": [{"capability": "cap", "probe_kind": "check", "verdict": "PASS",
+                        "command": ["reify", "check", "f.ri"], "exit_code": 0,
+                        "stdout": "", "stderr": ""}],
+            "adversary": [],
+        })
+        header = bv.report.splitlines()[0]
+        self.assertIn("records:", header, f"report header missing; got {header!r}")
+        self.assertIn("1 total", header)
+        self.assertIn("0 blocking", header)
+
+    def test_counts_header_agrees_with_the_structured_fields(self):
+        """The header is derived from the same counters, never hand-maintained."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        header = bv.report.splitlines()[0]
+        self.assertIn(f"{bv.total} total", header)
+        self.assertIn(f"{bv.executed} with executed-probe evidence", header)
+        self.assertIn(f"{len(bv.blocking)} blocking", header)
+        self.assertIn(f"{len(bv.malformed)} malformed", header)
+        self.assertIn(f"{len(bv.fixture_absent)} fixture-absent", header)
+
+
 if __name__ == "__main__":
     unittest.main()
