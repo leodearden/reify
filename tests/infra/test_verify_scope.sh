@@ -384,6 +384,34 @@ assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT
     test "$(printf '%s\n' \
         '//! tests/prd-gate/fixtures/pg_drift_marker_probe.ri // pg-drift-dir:allow — reviewed walk' \
         | _pg_derive | wc -l || true)" -eq 1
+# The allow-marker must not become a blanket mute — the same obligation
+# PG-DRIFT-DIR carries for its own marker below. Two assertions bound it.
+#
+# (A) LEDGER PIN. Count the reviewed mentions, so silently deleting the marked
+# line (or its required reason) is itself a change this guard notices. The
+# count comes from `| grep … | wc -l` on a PIPE, never from `git grep -c`,
+# which prints `path:count` rather than a bare number.
+_PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
+    | grep 'pg-drift:allow' | wc -l || true)"
+assert "PG-DRIFT: exactly one reviewed 'pg-drift:allow' fixture mention is expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence); found $_PG_ALLOWED_MENTIONS" \
+    test "$_PG_ALLOWED_MENTIONS" -eq 1
+# (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
+# this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
+# classifier. A marked basename that IS in _RUST_COUPLED_RI_FIXTURES would mean
+# the marker is hiding a genuinely coupled fixture from the one guard that
+# keeps that list honest, and a later deletion of the row would go unnoticed.
+# The hatch is therefore unusable as a mute in EITHER direction: mark a truly
+# coupled fixture and this reds; leave a stale row behind and this reds.
+# Non-vacuity is supplied by (A) — it guarantees at least one marked line —
+# so do NOT add a redundant `test -n` here.
+_PG_MARKED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
+    | grep 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u || true)"
+while IFS= read -r _pg_marked_path; do
+    [ -n "$_pg_marked_path" ] || continue
+    plan_for staged "$_pg_marked_path"
+    assert "PG-DRIFT: $_pg_marked_path is 'pg-drift:allow'-marked -> RUN_RUST=0 (the marker says nothing compiled reads it; if that is false the marker is muting a real coupling, and if it is true the fixture must NOT be in verify.sh's _RUST_COUPLED_RI_FIXTURES)" \
+        plan_has 'RUN_RUST=0'
+done <<< "$_PG_MARKED"
 while IFS= read -r _pg_path; do
     [ -n "$_pg_path" ] || continue
     plan_for staged "$_pg_path"
