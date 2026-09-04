@@ -205,6 +205,46 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# normalize_command() — coerce a captured `command` field to a token list
+# ---------------------------------------------------------------------------
+
+def normalize_command(value: Any) -> List[str]:
+    """Coerce an α result record's `command` field to a list of string tokens.
+
+    α always emits `command` as a list of argv tokens, but a record can reach
+    this harness from an LLM agent (Prover / Adversary) that returned a
+    ready-to-paste shell STRING instead.  Rendering that with `" ".join(...)`
+    joins it CHARACTER-by-character:
+
+        " ".join("reify eval f.ri")  ->  "r e i f y   e v a l   f . r i"
+
+    which destroys the captured evidence a human is meant to re-run (PRD §6
+    decision 4).  Normalization rules:
+
+        list / tuple  ->  [str(item) for item in value]   (argv tokens)
+        str           ->  [value]                          (ONE token)
+        anything else ->  []                               (no evidence)
+
+    A string becomes a SINGLE-element list precisely so that `" ".join(...)`
+    reproduces it verbatim.  `shlex.split` is deliberately NOT used: splitting
+    would rewrite captured evidence into a re-quoted form that is no longer
+    byte-identical to what was recorded, and a malformed quote would raise
+    mid-report.  Captured evidence is reported, never re-derived.
+
+    Args:
+        value: The raw `command` field as received (any JSON-decoded type).
+
+    Returns:
+        A list of string tokens; empty when the value carries no command.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # BatchVerdict — output of synthesize_batch
 # ---------------------------------------------------------------------------
 
@@ -273,7 +313,7 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
             blocking.append(capability)
 
             # Build evidence block for this blocking probe.
-            cmd_str = " ".join(rec.get("command", []))
+            cmd_str = " ".join(normalize_command(rec.get("command")))
             exit_code = rec.get("exit_code", "?")
             stdout = rec.get("stdout", "")
             stderr = rec.get("stderr", "")
