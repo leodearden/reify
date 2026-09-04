@@ -979,4 +979,117 @@ assert "run-gui-dev.sh: no orphaned vite GRANDCHILD survives the script" \
 assert "run-gui-dev.sh: the npm process itself does not survive the script" \
     bash -c '[ "$1" -eq 0 ]' _ "$_t30_npm_survived"
 
+# -- Test 31: behavioral — vite must not inherit the controlling terminal -----
+echo ""
+echo "--- Test 31: run-gui-dev.sh spawns vite with stdin detached from the tty ---"
+
+# Bash gives an asynchronous command /dev/null stdin only while job control is
+# OFF. Test 30's fix put the vite spawn under `set -m`, which silently handed
+# the backgrounded npm the launcher's CONTROLLING TERMINAL while leaving it in
+# a BACKGROUND process group — the classic recipe for SIGTTIN/SIGTTOU. vite 6
+# gates its CLI shortcuts on `process.stdin.isTTY` and then builds a readline
+# over stdin, so a dev server started that way can be STOPPED by the kernel:
+# `kill -0 "$VITE_PID"` still succeeds on a stopped process, so §5's
+# vite-death branch never fires and the launcher waits on a frozen server.
+#
+# CRITICAL fixture mechanic: this is observable ONLY when the launcher has a
+# controlling terminal. The suite otherwise runs with no tty at all — fd 0 is
+# already not a terminal — so it is structurally blind to the regression, which
+# is exactly why every earlier behavioural test passed while the defect
+# shipped. `script` supplies the pty.
+
+# pty-INDEPENDENT drift-guard: runs on every host, including one with no
+# util-linux `script`. Anchored to a line STARTING with `npm run dev` so it
+# checks the actual spawn and cannot be satisfied by a comment that merely
+# mentions the redirect.
+assert "scripts/run-gui-dev.sh spawns 'npm run dev' with stdin redirected from /dev/null" \
+    bash -c 'grep -E "^[[:space:]]*npm run dev" "$1" | grep -qF "</dev/null"' _ "$RUN_GUI_DEV"
+
+# util-linux `script` is present here (2.39.3) but is NOT in scripts/setup-dev.sh's
+# APT_PACKAGES/TAURI_DEPS, so it must never be hard-required. Same host-gate
+# shape as Test 28's `[ -d /opt/reify-deps/tbb-pin ]`.
+if command -v script >/dev/null 2>&1; then
+    _rgs_mktemp _t31_tmpdir
+    _t31_port=$(_rgs_free_port)
+    _mk_rungui_dev_fixture "$_t31_tmpdir"
+    _rgs_stub_cargo "$_t31_tmpdir"
+
+    # npm stub: `run dev` records its OWN stdin identity before staying alive.
+    # The command substitution inherits this shell's fd 0, so /proc/self/fd/0
+    # resolves to the same file; `> file` redirects stdout only and leaves
+    # fd 0 untouched. `exec sleep` for the same reason as
+    # _rgs_stub_npm_serving: this pid must BE the long-lived process.
+    cat > "$_t31_tmpdir/bin/npm" <<'NPM_STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+    run)
+        shift
+        [ "${1:-}" = dev ] || exit 0
+        printf '%s' "$$" > "${_RGS_NPM_PID:?_RGS_NPM_PID must be set by the test}"
+        {
+            printf 'fd0=%s\n' "$(readlink /proc/self/fd/0 2>/dev/null || echo unknown)"
+            if [ -t 0 ]; then printf 'isatty=yes\n'; else printf 'isatty=no\n'; fi
+        } > "${_RGS_STDIN_DUMP:?_RGS_STDIN_DUMP must be set by the test}"
+        exec sleep 30
+        ;;
+    *) exit 0 ;;
+esac
+NPM_STUB
+    chmod +x "$_t31_tmpdir/bin/npm"
+
+    # Readiness must not race the fixture: report the port FREE on the §1b
+    # preflight probe, then "up" only once the stub has recorded its stdin.
+    cat > "$_t31_tmpdir/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+_c="${_RGS_CURL_COUNTER:?_RGS_CURL_COUNTER must be set by the test}"
+_n=0
+[ -f "$_c" ] && _n=$(cat "$_c")
+_n=$((_n + 1))
+printf '%s' "$_n" > "$_c"
+[ "$_n" -eq 1 ] && exit 7
+[ -s "${_RGS_STDIN_DUMP:?_RGS_STDIN_DUMP must be set by the test}" ] && exit 0
+exit 7
+CURL_STUB
+    chmod +x "$_t31_tmpdir/bin/curl"
+
+    # A reify-gui that exits at once, so the script reaches its own exit and
+    # the cleanup trap tears the stub vite down.
+    mkdir -p "$_t31_tmpdir/target/debug"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$_t31_tmpdir/target/debug/reify-gui"
+    chmod +x "$_t31_tmpdir/target/debug/reify-gui"
+
+    script -qec "env DISPLAY=:99 \
+        REIFY_VITE_PORT=$_t31_port \
+        _RGS_CURL_COUNTER=$_t31_tmpdir/curl-count \
+        _RGS_NPM_PID=$_t31_tmpdir/vite-npm.pid \
+        _RGS_STDIN_DUMP=$_t31_tmpdir/vite-stdin \
+        PATH=$_t31_tmpdir/bin:$PATH \
+        bash $_t31_tmpdir/scripts/run-gui-dev.sh $_t31_tmpdir/test.ri" /dev/null \
+        >/dev/null 2>&1 || true
+
+    _t31_npm_pid=$(cat "$_t31_tmpdir/vite-npm.pid" 2>/dev/null || true)
+    _t31_fd0=$(_rgs_env_dump_get "$_t31_tmpdir/vite-stdin" fd0)
+    _t31_isatty=$(_rgs_env_dump_get "$_t31_tmpdir/vite-stdin" isatty)
+
+    # Unconditional backstop (same shape as Test 30): a RED run must never leak
+    # the backgrounded stub npm into the lane pool.
+    if [ -n "$_t31_npm_pid" ]; then kill -9 "$_t31_npm_pid" 2>/dev/null || true; fi
+
+    assert "run-gui-dev.sh: the pty fixture actually recorded vite's stdin" \
+        bash -c '[ -n "$1" ]' _ "$_t31_fd0"
+
+    assert "run-gui-dev.sh: vite's stdin is exactly /dev/null" \
+        bash -c '[ "$1" = /dev/null ]' _ "$_t31_fd0"
+
+    assert "run-gui-dev.sh: vite's stdin is NOT a /dev/pts/* terminal device" \
+        bash -c 'case "$1" in /dev/pts/*) exit 1 ;; *) exit 0 ;; esac' _ "$_t31_fd0"
+
+    assert "run-gui-dev.sh: vite observes '[ -t 0 ]' as FALSE" \
+        bash -c '[ "$1" = no ]' _ "$_t31_isatty"
+else
+    echo "  SKIP: util-linux \`script\` absent on this host — the pty half of"
+    echo "  SKIP: Test 31 needs a controlling terminal to be observable at all;"
+    echo "  SKIP: the text drift-guard above still ran."
+fi
+
 test_summary
