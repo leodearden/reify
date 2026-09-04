@@ -127,7 +127,13 @@
 #       `violations=` increment. The gating half of the signal is the shrinking
 #       `_KLOC_WARN_KNOWN` subset ratchet (Section 5d) — a unit may LEAVE the
 #       warn set freely, but a unit ARRIVING in it is red and must be
-#       acknowledged in the same diff.
+#       acknowledged in the same diff. Free departure has a cost, though: the
+#       departed unit's row lingers as a permanently-permissive entry that
+#       would wave the unit back through if it ever grew over the line again.
+#       So Section 5d also prints a NON-GATING `PRUNE:` note for any known row
+#       that did not WARN this run, and DOES red on a row whose file no longer
+#       exists on disk at all — that one is dead by construction, not merely
+#       stale, and can only be produced by the very diff that moved the file.
 #
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
@@ -330,8 +336,8 @@ CAP_LINES=20000
 # The tier is ADVISORY BY DESIGN: it never changes the exit code and never
 # increments `violations=`. That is not timidity, it is the only shape that
 # could land. At introduction (task #6121) TWO live units were already above a
-# 90% line — harness_fea_solver_e2e at 19265 (96.3%, split by this same task)
-# and crates/reify-syntax/tests/harness_syntax.rs at 18617 (93.0%, outside this
+# 90% line — harness_fea_solver_e2e at 19429 (97.1%, split by this same task)
+# and crates/reify-syntax/tests/harness_syntax.rs at 18957 (94.8%, outside this
 # task's scope — see _KLOC_WARN_KNOWN below). A GATING warn
 # would therefore have turned the merge gate RED on main the moment it landed,
 # and would have kept re-firing on every innocent downstream rebaser — exactly
@@ -345,7 +351,7 @@ WARN_PCT=90
 # list freely (that is progress and must never turn the gate red), but a unit
 # ARRIVING must be added deliberately in the same diff -- which is exactly the
 # "surface the squeeze before it breaks" signal task #6121 added the WARN tier
-# for. harness_syntax.rs measured 18617/20000 = 93.0% as of task #6121; it is
+# for. harness_syntax.rs measured 18957/20000 = 94.8% as of task #6121; it is
 # listed here because it is outside that task's scope, NOT because it is
 # acceptable — the remedy is still rule (a)'s split. Deliberately no "tracked
 # elsewhere" claim and no #NNNN cite: none existed when this was written, and
@@ -355,7 +361,9 @@ WARN_PCT=90
 # Kept in-script rather than in a new manifest file because this guard already
 # carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
 # shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
-# needed. Enforced as a SUBSET in Section 5d.
+# needed. Enforced as a SUBSET in Section 5d, which also reports the prune
+# direction the subset check is blind to: an advisory `PRUNE:` note for a row
+# that stopped WARNing, and a RED for a row whose file is no longer on disk.
 _KLOC_WARN_KNOWN=( "crates/reify-syntax/tests/harness_syntax.rs" )
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
@@ -1893,16 +1901,24 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # raising the cap, which would have contradicted the ratified 10-20 kLOC band
 # of PRD §3 W1/§7 and loosened the C2 ratchet to fit its first offender.
 #
-# RE-MEASURED, task #6121 (15 live harness units). harness_fea_solver_e2e had
-# climbed back to 19265 = 105 root + 18769 module + 391 external, 96.3% of the
-# cap — under it, so the pass/fail cap said nothing, which is precisely the
-# blind spot the advisory WARN tier now covers. Same remedy applied, again a
-# split rather than a cap raise: the `stress_*` group left for
-# harness_stress_scenarios (task #6121), leaving 15951 = 99 root + 15461
-# module + 391 external (79.8%) and a new 3377-line unit (69 root + 3308
-# module + 0 external, 16.9%). The tightest live unit is now
-# crates/reify-syntax/tests/harness_syntax.rs at 18617 (93.0%) — the sole
-# member of _KLOC_WARN_KNOWN, ratcheted by Section 5d.
+# RE-MEASURED, task #6121 (32 live harness units across the 5 consolidatable
+# crates). harness_fea_solver_e2e had climbed back to 19429 = 107 root + 18931
+# module (43 files) + 391 external, 97.1% of the cap — under it, so the
+# pass/fail cap said nothing, which is precisely the blind spot the advisory
+# WARN tier now covers. Same remedy applied, again a split rather than a cap
+# raise: the `stress_*` group left for harness_stress_scenarios (task #6121),
+# leaving 16118 = 104 root + 15623 module (36 files) + 391 external (80.6%) and
+# a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%). The tightest
+# live unit is now crates/reify-syntax/tests/harness_syntax.rs at 18957 = 148
+# root + 18739 module + 70 external (94.8%) — the sole member of
+# _KLOC_WARN_KNOWN, ratcheted by Section 5d.
+#
+# Every figure in this paragraph is a LIVE `harness_layout_unit_lines` reading:
+# the pre-split one taken at this branch's base (bf5b91d9de), the rest at the
+# amendment commit. They run ~160 lines above the projections task #6121's plan
+# quoted (19265 / 15951) because that plan measured an earlier base and main
+# has since added a 43rd module file to the dir — the split's ~3.3 kLOC delta is
+# unaffected, only the absolute totals moved.
 
 # ===========================================================================
 # Section 5c: live non-vacuity of the EXTERNAL attribution — the out-of-module-
@@ -1943,6 +1959,23 @@ assert "5c: at least one live harness attributes an out-of-module-dir include (e
 # the moment harness_syntax innocently dropped below 90%, punishing progress.
 # Section 5's live SUMMARY assert therefore tolerates any warn COUNT; WHICH
 # units warn is pinned here.
+#
+# SUBSET-ONLY CUTS BOTH WAYS, so (c) below closes the other direction. Because
+# departure is free and silent, a row whose unit dropped back under the line
+# lingers forever as a permanently-permissive entry — and if that unit later
+# grew back over 90%, (a) would wave it through and the "an ARRIVING unit must
+# be acknowledged" property would be lost for that path with nothing on screen
+# saying so. (a) cannot see it (it only inspects live WARNs) and (b) cannot
+# either (it only compares two counts). (c) makes the stale row VISIBLE without
+# making it FATAL, splitting the two failure modes by severity:
+#   - unit still on disk, no longer WARNs -> ADVISORY `PRUNE:` note. Gating
+#     this would re-introduce exactly the punish-progress red the equality pin
+#     was rejected for, and would land on whoever shrank the unit rather than
+#     on whoever curates this list.
+#   - path not on disk at all             -> GATING. Such a row can never WARN
+#     again, so it is dead rather than stale; and the only diff that can create
+#     one is the diff that renamed or deleted the harness, which is precisely
+#     where the row's removal belongs.
 #
 # Reuses Section 5's ALREADY-CAPTURED $_live_out — no second live scan. Same
 # one-scan-feeds-two-sections discipline Sections 5b/5c use, and for the same
@@ -2004,6 +2037,55 @@ assert "5d: every live WARNing unit is a member of the checked-in _KLOC_WARN_KNO
 _s5d_emitted="$(printf '%s\n' "$_live_out" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
 assert "5d: the WARN file= extraction parsed exactly as many entries as the live scan emitted (non-vacuity)" \
     test "${#_s5d_live_files[@]}" -eq "$_s5d_emitted"
+
+# (c) PRUNE DIRECTION: report known rows that did not WARN this run (advisory)
+# and fail on known rows whose file is gone (gating). See the banner above for
+# why the two are split by severity.
+_s5d_live_set=""
+for _s5d_f in ${_s5d_live_files[@]+"${_s5d_live_files[@]}"}; do
+    _s5d_live_set="$_s5d_live_set|$_s5d_f|"
+done
+
+_s5d_dead=()
+_s5d_stale=()
+for _s5d_k in "${_KLOC_WARN_KNOWN[@]}"; do
+    # Dead beats stale: a missing file cannot WARN, so reporting it as merely
+    # "no longer warning" would understate it. Check existence first.
+    if [ ! -f "$REPO_ROOT/$_s5d_k" ]; then
+        _s5d_dead+=("$_s5d_k")
+        continue
+    fi
+    case "$_s5d_live_set" in
+        *"|$_s5d_k|"*) ;;
+        *) _s5d_stale+=("$_s5d_k") ;;
+    esac
+done
+
+for _s5d_k in ${_s5d_stale[@]+"${_s5d_stale[@]}"}; do
+    echo "  PRUNE: _KLOC_WARN_KNOWN row '$_s5d_k' emitted no WARN this run — it is"
+    echo "  back under ${WARN_PCT}% of CAP_LINES=${CAP_LINES}. ADVISORY, not a failure:"
+    echo "  drop the row next time this file is touched, so the row cannot silently"
+    echo "  re-admit the unit if it grows back over the line."
+done
+if [ "${#_s5d_stale[@]}" -eq 0 ] && [ "${#_s5d_dead[@]}" -eq 0 ]; then
+    echo "  (prune check: all ${#_KLOC_WARN_KNOWN[@]} _KLOC_WARN_KNOWN row(s) still live-WARN — nothing stale)"
+fi
+
+# Same verbatim-dump idiom as (a): an operator reading an ARCHIVED merge-verify
+# log gets the offending rows without re-deriving anything by hand.
+if [ "${#_s5d_dead[@]}" -ne 0 ]; then
+    echo "  ---- Section 5d: DEAD _KLOC_WARN_KNOWN rows (path not on disk) ----"
+    for _s5d_k in "${_s5d_dead[@]}"; do
+        echo "    $_s5d_k"
+    done
+    echo "  REMEDY: the harness was renamed, split or deleted, so this row can"
+    echo "  never fire again. Drop it — or repoint it at the new path if the unit"
+    echo "  merely moved and is still over the line — IN THE SAME DIFF."
+    echo "  ---- Section 5d: end DEAD rows ----"
+fi
+
+assert "5d: every _KLOC_WARN_KNOWN row names a file that still exists on disk (no dead allowlist rows)" \
+    test "${#_s5d_dead[@]}" -eq 0
 
 # ===========================================================================
 # Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root
