@@ -2,18 +2,21 @@
 //!
 //! Task #5281 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf EVAL-2):
 //! folds the former standalone `tests/<file>.rs` binaries for the fea_/tensegrity_/
-//! objective_/multi_/process_/as_printed_/kinematic_ subsystems into this single
-//! compile unit to cut the merge-gate link count. Layout-only — no `#[test]` fn is added
-//! or removed. Each former file is included as a stem-named module so its
-//! `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset) resolves
-//! unchanged. Explicit `#[path]` is required: this harness root is an integration-test
-//! crate root, where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`,
-//! not the `harness_fea_solver_e2e/` subdir.
+//! stress_/objective_/multi_/process_/as_printed_/kinematic_ subsystems into this single
+//! compile unit to cut the merge-gate link count. That stem list is HISTORICAL — it names
+//! the #5281 fold set as it stood then, NOT today's contents: two of those groups have
+//! since LEFT (next paragraph) and a `jacobian_` stem has since ARRIVED (task #6102), so
+//! the `mod` declarations below are the authoritative inventory of what lives here now.
+//! Layout-only — no `#[test]` fn is added or removed. Each former file is included as a
+//! stem-named module so its `<file>::<test>` module path (and thus every
+//! `test(/^<file>::/)` filterset) resolves unchanged. Explicit `#[path]` is required:
+//! this harness root is an integration-test crate root, where a bare `mod <file>;` would
+//! resolve to the sibling `tests/<file>.rs`, not the `harness_fea_solver_e2e/` subdir.
 //!
 //! TWO groups have since LEFT this harness under rule (a)'s split remedy, each recorded
 //! in the root it moved to: `process_dfm_*` -> `harness_process_dfm.rs` (task #4880, at
 //! 20034 > 20000), and `stress_*` -> `harness_stress_scenarios.rs` (task #6121, at
-//! 19265/20000 = 96.3% — split while there was still headroom, prompted by the advisory
+//! 19429/20000 = 97.1% — split while there was still headroom, prompted by the advisory
 //! WARN tier the same task added to `tests/infra/test_harness_kloc_cap.sh`). Neither was
 //! a behaviour change: both were layout-only moves that preserved every `<file>::<test>`
 //! module path.

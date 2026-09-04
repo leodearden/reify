@@ -4,9 +4,9 @@
 //! Split out of `harness_fea_solver_e2e.rs` (task #6121). That harness — itself the task
 //! #5281 consolidation of the fea_/tensegrity_/stress_/objective_/multi_/process_/
 //! as_printed_/kinematic_ standalones, already once split by task #4880 to create
-//! `harness_process_dfm.rs` — had climbed back to 19265 of the 20000-line
+//! `harness_process_dfm.rs` — had climbed back to 19429 of the 20000-line
 //! per-compile-unit cap enforced by `tests/infra/test_harness_kloc_cap.sh` rule (a):
-//! 96.3%, with module_lines=18769 across 42 files and only 735 lines of headroom. That
+//! 97.1%, with module_lines=18931 across 43 files and only 571 lines of headroom. That
 //! rule's prescribed remedy for a module_lines-dominated squeeze is exactly this: "a
 //! harness that grows past the cap must be SPLIT into a second `harness_<subsystem2>.rs`,
 //! never allowed to balloon unbounded — and never accommodated by raising the cap".
