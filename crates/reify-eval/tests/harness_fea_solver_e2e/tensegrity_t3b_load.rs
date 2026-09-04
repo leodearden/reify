@@ -26,17 +26,9 @@
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::make_simple_engine;
+use reify_test_support::{make_simple_engine, point3};
 
 // ── Value crafting helpers ───────────────────────────────────────────────────
-
-/// A Length-typed coordinate Scalar (SI metres) — how `point3(..m, ..)` lowers.
-fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
-}
 
 /// A Force-typed Scalar (SI newtons).
 fn force(n: f64) -> Value {
@@ -44,11 +36,6 @@ fn force(n: f64) -> Value {
         si_value: n,
         dimension: DimensionVector::FORCE,
     }
-}
-
-/// A 3-component `Value::Point` node coordinate (Length scalars).
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
 }
 
 /// A 3-component `Value::Vector` force load (Force scalars).
@@ -77,9 +64,9 @@ fn area(a: f64) -> Value {
 /// cables `[[0,1],[1,2]]` — the T3b golden topology.
 fn two_cable_string(l: f64) -> Value {
     let nodes = Value::List(vec![
-        node(0.0, 0.0, 0.0),     // node 0 — anchor
-        node(l, 0.0, 0.0),       // node 1 — free
-        node(2.0 * l, 0.0, 0.0), // node 2 — anchor
+        point3(0.0, 0.0, 0.0),     // node 0 — anchor
+        point3(l, 0.0, 0.0),       // node 1 — free
+        point3(2.0 * l, 0.0, 0.0), // node 2 — anchor
     ]);
     let struts = Value::List(vec![]);
     let cables = Value::List(vec![
@@ -593,10 +580,10 @@ fn solver_tensegrity_load_target_is_registered() {
 /// anchor(2)` plus the isolated node 3. `struts: []`, cables `[[0,1],[1,2]]`.
 fn two_cable_string_with_orphan(l: f64) -> Value {
     let nodes = Value::List(vec![
-        node(0.0, 0.0, 0.0),         // 0 — anchor
-        node(l, 0.0, 0.0),           // 1 — free + cabled
-        node(2.0 * l, 0.0, 0.0),     // 2 — anchor
-        node(5.0 * l, 5.0 * l, 0.0), // 3 — FREE ORPHAN: no member, not a support
+        point3(0.0, 0.0, 0.0),         // 0 — anchor
+        point3(l, 0.0, 0.0),           // 1 — free + cabled
+        point3(2.0 * l, 0.0, 0.0),     // 2 — anchor
+        point3(5.0 * l, 5.0 * l, 0.0), // 3 — FREE ORPHAN: no member, not a support
     ]);
     let struts = Value::List(vec![]);
     let cables = Value::List(vec![
