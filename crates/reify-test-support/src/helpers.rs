@@ -738,27 +738,24 @@ pub fn run_modify_pipeline(
 /// expression should prefer [`get_let_expr_in`], which delegates here.
 ///
 /// Resolution matches on `id.member` alone; `id.entity` is not considered,
-/// and the first match in declaration order wins silently. A single
-/// `TopologyTemplate` can carry more than one cell with the same member name
-/// scoped to different sub-entities — e.g. `phase_sub_override_autos` /
-/// `phase_connect_auto_params` in `entities_phase.rs` push sub-entity-scoped
-/// `ValueCellDecl`s onto the *parent* template — so for a template known to
-/// carry sub-entity-scoped cells, check the returned cell's `id.entity` (or
-/// resolve by hand) rather than assuming the top-level cell was returned.
-///
-/// This first-match-wins order is a deliberate compatibility trade-off, not
-/// an oversight: the ~280 call sites this helper was introduced to replace
-/// already resolve by member name alone, so an entity-aware or
-/// ambiguity-rejecting variant would not be a drop-in for them, and is
-/// pinned by `test_get_value_cell_in_resolves_first_match_when_member_name_is_ambiguous`
-/// below so a change to this order is a deliberate, visible decision rather
-/// than a silent regression. Add an entity-scoped sibling helper (e.g.
-/// `get_value_cell_of(module, template, entity, member)`) if a real caller
-/// needs one, rather than changing this helper's resolution order.
+/// and the first match in declaration order wins silently — behaviour pinned
+/// by a unit test, so a change to this order is a deliberate, visible
+/// decision rather than a silent regression. Entity-scoped cells can shadow:
+/// a single `TopologyTemplate` can carry more than one cell with the same
+/// member name scoped to different sub-entities (e.g.
+/// `phase_sub_override_autos` / `phase_connect_auto_params` in
+/// `entities_phase.rs` push sub-entity-scoped `ValueCellDecl`s onto the
+/// *parent* template), so for a template known to carry sub-entity-scoped
+/// cells, check the returned cell's `id.entity` (or resolve by hand) rather
+/// than assuming the top-level cell was returned. Add an entity-scoped
+/// sibling helper (e.g. `get_value_cell_of(module, template, entity,
+/// member)`) if a real caller needs different resolution, rather than
+/// changing this helper's order.
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
 #[track_caller]
 pub fn get_value_cell_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -773,7 +770,14 @@ pub fn get_value_cell_in<'a>(
         .iter()
         .find(|vc| vc.id.member == cell_name)
     else {
-        panic!("no value cell named '{cell_name}' in template '{template_name}'")
+        let available: Vec<String> = template
+            .value_cells
+            .iter()
+            .map(|vc| vc.id.to_string())
+            .collect();
+        panic!(
+            "no value cell named '{cell_name}' in template '{template_name}'; has: {available:?}"
+        )
     };
     cell
 }
@@ -792,8 +796,8 @@ pub fn get_value_cell_in<'a>(
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists (raised by
 ///   [`get_value_cell_in`]).
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent
-///   (raised by [`get_value_cell_in`]).
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the cell
+///   is absent (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in<'a>(
