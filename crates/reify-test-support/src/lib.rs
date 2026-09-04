@@ -18,6 +18,7 @@ pub mod orphan_audit;
 pub mod prd_gate_probe_set;
 pub mod specialization_fixtures;
 pub mod temp_dirs;
+pub mod tensegrity_fixtures;
 pub mod tolerance_fixtures;
 pub mod tracing_support;
 pub mod value_decompose;
