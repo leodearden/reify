@@ -232,6 +232,107 @@ mod tests {
         }
     }
 
+    // ── Shared irregular fixtures ────────────────────────────────────────────
+    //
+    // Both fixtures below are deliberately IRREGULAR: every interior node sits
+    // well off the centroid of its topological neighbours. That is what makes
+    // them discriminating for a *morph* smoother. On a regular fixture (an
+    // interior node already sitting at its neighbour centroid) smoothing
+    // absolute POSITIONS and harmonically extending the boundary DISPLACEMENT
+    // field agree pointwise, so the difference between the two formulations is
+    // invisible — which is exactly why the structured procedural grids used by
+    // `tests/calibration.rs` never caught the position-smoothing defect.
+
+    /// Node positions of [`cone_fixture`], in node order `a, b, c, d, p`,
+    /// widened to f64 (f32 → f64 widening is exact, so these are the same
+    /// values `laplacian_smooth` reads out of `vertices`).
+    const CONE_NODES: [[f64; 3]; 5] = [
+        [0.0, 0.0, 0.0], // 0: a
+        [1.0, 0.0, 0.0], // 1: b
+        [0.0, 1.0, 0.0], // 2: c
+        [0.0, 0.0, 1.0], // 3: d
+        [0.5, 0.5, 0.5], // 4: p — interior, OFF the (0.25, 0.25, 0.25) centroid
+    ];
+
+    /// 4-tet "cone": 5 vertices `a, b, c, d, p` where `a, b, c, d` (nodes 0–3)
+    /// are the boundary and `p` (node 4) is the only interior node, shared by
+    /// every tet. `p`'s topological neighbours are exactly `{a, b, c, d}` — all
+    /// pinned — so a single Jacobi pass already reaches the fixed point and
+    /// closed-form assertions on this fixture are exact rather than asymptotic.
+    fn cone_fixture() -> VolumeMesh {
+        VolumeMesh {
+            vertices: CONE_NODES
+                .iter()
+                .flat_map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+                .collect(),
+            // Four tets all sharing p (node 4).
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 4, // a, b, c, p
+                    0, 1, 3, 4, // a, b, d, p
+                    0, 2, 3, 4, // a, c, d, p
+                    1, 2, 3, 4, // b, c, d, p
+                ],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// Node positions of [`chain_fixture`], in node order
+    /// `a, b, c, p, q, d, e, f`, widened to f64.
+    const CHAIN_NODES: [[f64; 3]; 8] = [
+        [10.0, 0.0, 0.0], // 0: a
+        [0.0, 10.0, 0.0], // 1: b
+        [0.0, 0.0, 10.0], // 2: c
+        [1.0, 1.0, 1.0],  // 3: p — interior
+        [2.0, 2.0, 2.0],  // 4: q — interior
+        [20.0, 0.0, 0.0], // 5: d
+        [0.0, 20.0, 0.0], // 6: e
+        [0.0, 0.0, 20.0], // 7: f
+    ];
+
+    /// The six pinned boundary node indices of [`chain_fixture`]:
+    /// `a, b, c` (0–2) and `d, e, f` (5–7). Nodes 3 (`p`) and 4 (`q`) are the
+    /// free interior pair.
+    const CHAIN_BOUNDARY: [u32; 6] = [0, 1, 2, 5, 6, 7];
+
+    /// 3-tet "chain": two interior nodes `p` (3) and `q` (4), adjacent to each
+    /// other and each to a subset of the six pinned boundary nodes. Neighbour
+    /// sets, from the tets' C(4,2) = 6 unordered edge pairs, are
+    /// `p → {a, b, c, q, d, e}` (6) and `q → {p, d, e, f}` (4). Both interior
+    /// nodes sit far off their neighbour centroids (`p`'s is ≈ (5.3, 5.3, 2.0),
+    /// `q`'s is ≈ (5.25, 5.25, 7.75)).
+    fn chain_fixture() -> VolumeMesh {
+        VolumeMesh {
+            vertices: CHAIN_NODES
+                .iter()
+                .flat_map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+                .collect(),
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 3, // a, b, c, p
+                    3, 4, 5, 6, // p, q, d, e
+                    4, 5, 6, 7, // q, d, e, f
+                ],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// Node `idx`'s position in `mesh`, as an `[f32; 3]`.
+    fn node_at(mesh: &VolumeMesh, idx: usize) -> [f32; 3] {
+        let base = idx * 3;
+        [
+            mesh.vertices[base],
+            mesh.vertices[base + 1],
+            mesh.vertices[base + 2],
+        ]
+    }
+
     // ── Step-3: smoke test for the public API surface ─────────────────────────
 
     #[test]
@@ -358,27 +459,7 @@ mod tests {
     fn laplacian_smooth_with_one_iteration_smooths_interior_node_to_centroid_of_its_topological_neighbors()
      {
         // Layout: nodes 0..3 = a, b, c, d; node 4 = p.
-        let mesh = VolumeMesh {
-            vertices: vec![
-                0.0_f32, 0.0, 0.0, // 0: a
-                1.0, 0.0, 0.0, // 1: b
-                0.0, 1.0, 0.0, // 2: c
-                0.0, 0.0, 1.0, // 3: d
-                0.5, 0.5, 0.5, // 4: p (off-centre)
-            ],
-            // Four tets all sharing p (node 4).
-            connectivity: VolumeConnectivity::Tet {
-                indices: vec![
-                    0, 1, 2, 4, // a, b, c, p
-                    0, 1, 3, 4, // a, b, d, p
-                    0, 2, 3, 4, // a, c, d, p
-                    1, 2, 3, 4, // b, c, d, p
-                ],
-                order: ElementOrderTag::P1,
-            },
-            normals: None,
-            boundary: None,
-        };
+        let mesh = cone_fixture();
 
         // Pin a, b, c, d to displaced positions; leave p free.
         let displaced_a = [0.1_f64, 0.0, 0.0];
@@ -457,28 +538,7 @@ mod tests {
         // Tet 3: {q, d, e, f}  → q's neighbours = {p, d, e, f}.
         //
         // 8 vertices: 0=a, 1=b, 2=c, 3=p, 4=q, 5=d, 6=e, 7=f.
-        let mesh = VolumeMesh {
-            vertices: vec![
-                10.0_f32, 0.0, 0.0, // 0: a
-                0.0, 10.0, 0.0, // 1: b
-                0.0, 0.0, 10.0, // 2: c
-                1.0, 1.0, 1.0, // 3: p (interior)
-                2.0, 2.0, 2.0, // 4: q (interior)
-                20.0, 0.0, 0.0, // 5: d
-                0.0, 20.0, 0.0, // 6: e
-                0.0, 0.0, 20.0, // 7: f
-            ],
-            connectivity: VolumeConnectivity::Tet {
-                indices: vec![
-                    0, 1, 2, 3, // a, b, c, p
-                    3, 4, 5, 6, // p, q, d, e
-                    4, 5, 6, 7, // q, d, e, f
-                ],
-                order: ElementOrderTag::P1,
-            },
-            normals: None,
-            boundary: None,
-        };
+        let mesh = chain_fixture();
 
         // Pin all six boundary nodes to themselves (no displacement) — the
         // test focus is the interior propagation, not the boundary motion.
@@ -583,6 +643,146 @@ mod tests {
             "iter=1 and iter=2 should produce different interior positions; \
              got p1={p_out1:?} p2={p_out2:?} q1={q_out1:?} q2={q_out2:?}"
         );
+    }
+
+    // ── Task #6637: morph-smoother invariants ────────────────────────────────
+    //
+    // A morph smoother's job is to deform a mesh so it follows a *moving
+    // boundary*. Three invariants follow directly from that job description,
+    // and none of them holds for a smoother of absolute POSITIONS on an
+    // irregular mesh:
+    //
+    //   (a) zero boundary displacement is the exact identity;
+    //   (b) no interior node moves further than the largest prescribed
+    //       boundary move (the discrete maximum principle);
+    //   (c) a uniform boundary translation translates the whole mesh rigidly.
+    //
+    // Measured on the real OCCT+gmsh e2e source mesh (≈841 nodes, 1189 tets,
+    // 10 mm box): the position-smoothing formulation violated (a) by moving
+    // interior nodes 1.86e-3 m — 18.6 % of the box edge — under a *zero*
+    // boundary displacement, inverting element 14 (jacobian −0.87) and hard-
+    // failing the morph quality gate. The displacement-field formulation moves
+    // nodes by at most the boundary displacement (2.5e-4 m on that tick) at 8,
+    // 50, 200 and 1000 iterations alike.
+
+    /// (a) With every boundary node pinned to its own current position, the
+    /// smoother must be the identity — EXACTLY, not approximately.
+    ///
+    /// Bit equality is the right assertion here, not a tolerance: under the
+    /// displacement formulation `u` is `0.0` at every node, `mean(0.0, …)` is
+    /// `0.0` in IEEE-754, `old + 0.0 == old`, and narrowing an f64 that was
+    /// widened from f32 is lossless. Any drift at all means the smoother is
+    /// moving nodes for reasons unrelated to the boundary.
+    #[test]
+    fn laplacian_smooth_with_zero_boundary_displacement_returns_the_input_mesh_unchanged() {
+        let mesh = chain_fixture();
+        let prescribed: Vec<(u32, [f64; 3])> = CHAIN_BOUNDARY
+            .iter()
+            .map(|&idx| (idx, CHAIN_NODES[idx as usize]))
+            .collect();
+
+        // 8 == MorphOptions::laplacian_iterations' production default.
+        let out = laplacian_smooth(&mesh, &prescribed, 8).unwrap();
+
+        assert_eq!(
+            out.vertices, mesh.vertices,
+            "zero boundary displacement must leave every vertex bit-identical"
+        );
+    }
+
+    /// (b) Discrete maximum principle: every Jacobi iterate of an interior
+    /// node's displacement is a convex combination of its neighbours'
+    /// displacements, and the interior field is seeded at zero, so the whole
+    /// field stays inside the convex hull of the prescribed boundary data. No
+    /// interior node may therefore move further than the largest prescribed
+    /// boundary move.
+    #[test]
+    fn laplacian_smooth_interior_displacement_never_exceeds_max_prescribed_boundary_displacement() {
+        let mesh = chain_fixture();
+
+        // Translate d, e, f (nodes 5–7) by +0.5 along x; leave a, b, c pinned
+        // in place. The largest prescribed boundary displacement is thus 0.5.
+        const SHIFT: f64 = 0.5;
+        let prescribed: Vec<(u32, [f64; 3])> = CHAIN_BOUNDARY
+            .iter()
+            .map(|&idx| {
+                let mut target = CHAIN_NODES[idx as usize];
+                if idx >= 5 {
+                    target[0] += SHIFT;
+                }
+                (idx, target)
+            })
+            .collect();
+
+        let mut max_boundary = 0.0_f64;
+        for (idx, target) in &prescribed {
+            let old = CHAIN_NODES[*idx as usize];
+            for axis in 0..3 {
+                max_boundary = max_boundary.max((target[axis] - old[axis]).abs());
+            }
+        }
+        assert!(
+            (max_boundary - SHIFT).abs() < 1e-12,
+            "fixture sanity: max boundary displacement should be {SHIFT}, got {max_boundary}"
+        );
+
+        let out = laplacian_smooth(&mesh, &prescribed, 8).unwrap();
+
+        // The two free interior nodes are p (3) and q (4).
+        for interior in [3_usize, 4] {
+            let old = CHAIN_NODES[interior];
+            let new = node_at(&out, interior);
+            for axis in 0..3 {
+                let moved = (f64::from(new[axis]) - old[axis]).abs();
+                assert!(
+                    moved <= max_boundary + 1e-6,
+                    "interior node {interior} axis {axis} moved {moved}, exceeding the \
+                     max prescribed boundary displacement {max_boundary}"
+                );
+            }
+        }
+    }
+
+    /// (c) A rigid translation of the whole boundary must translate every node
+    /// — interior included — by that same vector. The interior carries no
+    /// information of its own here; a smoother that reshapes the interior
+    /// under a rigid boundary motion is destroying input mesh quality for
+    /// free.
+    ///
+    /// Uses the cone fixture so the answer is exact after a single pass: `p`'s
+    /// four neighbours are all pinned, so `u_p = mean(δ, δ, δ, δ) = δ`. `δ` is
+    /// dyadic, which makes that mean bit-exact.
+    #[test]
+    fn laplacian_smooth_uniform_boundary_translation_translates_every_node_by_the_same_vector() {
+        let mesh = cone_fixture();
+        const DELTA: [f64; 3] = [0.5, 0.25, -0.125];
+
+        // Nodes 0–3 (a, b, c, d) are the boundary; node 4 (p) is interior.
+        let prescribed: Vec<(u32, [f64; 3])> = (0..4_u32)
+            .map(|idx| {
+                let old = CONE_NODES[idx as usize];
+                (
+                    idx,
+                    [old[0] + DELTA[0], old[1] + DELTA[1], old[2] + DELTA[2]],
+                )
+            })
+            .collect();
+
+        let out = laplacian_smooth(&mesh, &prescribed, 8).unwrap();
+
+        let tol = 1e-6_f32;
+        for (idx, old) in CONE_NODES.iter().enumerate() {
+            let new = node_at(&out, idx);
+            for axis in 0..3 {
+                let expected = (old[axis] + DELTA[axis]) as f32;
+                assert!(
+                    (new[axis] - expected).abs() <= tol,
+                    "node {idx} axis {axis}: got {} expected {expected} — a rigid \
+                     boundary translation must move every node by δ",
+                    new[axis]
+                );
+            }
+        }
     }
 
     // ── Step-15: orphan interior node leaves position unchanged ──────────────
