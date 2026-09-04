@@ -470,10 +470,61 @@ If the command fails or stdout is not valid JSON, return:
         ...filtered.filter(v => v.blocks).flatMap(v => v.blocking || []),
     ];
 
-    const summary = anyBlocks
-        ? `γ BLOCKS — ${allBlocking.length} premise(s)/leaf(ves) failed or dropped`
-            + (dropped > 0 ? ` (${dropped} leaf(ves) dropped by pipeline errors)` : "")
-        : `γ PASS — all ${filtered.length} leaf(ves) verified`;
+    // ── Probed-vs-unprobed accounting (task #7257 ARM 2) ─────────────────────
+    //
+    // `blocks: false` was the ONLY batch-level signal, and it cannot distinguish
+    // "every premise held" from "no premise was ever checked" — a batch of
+    // zero-premise leaves reported "γ PASS — all N leaf(ves) verified".  These
+    // counters make the basis of the verdict readable straight off the return,
+    // without opening journal.jsonl.
+    const leaves_total = filtered.length;
+    const unenumerated_leaves = filtered
+        .filter(v => v.disposition === "UNENUMERATED")
+        .map(v => v.leafLabel);
+    const not_verified_leaves = filtered
+        .filter(v => v.disposition === "NOT_VERIFIED")
+        .map(v => v.leafLabel);
+    // A leaf counts as probed only when a probe actually executed: BLOCKS and
+    // VERIFIED both required executed evidence, UNENUMERATED and NOT_VERIFIED
+    // did not.
+    const leaves_probed = filtered.filter(
+        v => v.disposition === "VERIFIED" || v.disposition === "BLOCKS").length;
+    const leaves_unenumerated = unenumerated_leaves.length;
+    const leaves_not_verified = not_verified_leaves.length;
+
+    const malformed_records = filtered.reduce(
+        (n, v) => n + (v.malformed ?? []).length, 0);
+    const fixture_absent_records = filtered.reduce(
+        (n, v) => n + (v.fixture_absent ?? []).length, 0);
+
+    // Three outcomes, not two.  INCOMPLETE sits between BLOCKS and PASS: nothing
+    // was falsified, but nothing was verified either, so it is NOT a pass.
+    const disposition = anyBlocks
+        ? "BLOCKS"
+        : ((leaves_unenumerated > 0 || leaves_not_verified > 0
+            || malformed_records > 0 || fixture_absent_records > 0)
+            ? "INCOMPLETE"
+            : "PASS");
+
+    const unprobedLabels = [...unenumerated_leaves, ...not_verified_leaves];
+
+    let summary;
+    if (disposition === "BLOCKS") {
+        summary = `γ BLOCKS — ${allBlocking.length} premise(s)/leaf(ves) failed or dropped`
+            + (dropped > 0 ? ` (${dropped} leaf(ves) dropped by pipeline errors)` : "");
+    } else if (disposition === "INCOMPLETE") {
+        summary = `γ INCOMPLETE — ${leaves_probed} of ${leaves_total} leaf(ves) had a `
+            + `probe executed; nothing was falsified, but the unprobed remainder is `
+            + `NOT verified and this is NOT a pass`
+            + (unprobedLabels.length > 0
+                ? `. Never probed: ${unprobedLabels.join(", ")}` : "")
+            + (malformed_records > 0
+                ? `. ${malformed_records} record(s) had no executed-probe evidence` : "")
+            + (fixture_absent_records > 0
+                ? `. ${fixture_absent_records} probe(s) could not find their fixture` : "");
+    } else {
+        summary = `γ PASS — all ${leaves_total} leaf(ves) verified (${leaves_probed} probed)`;
+    }
 
     log(summary); // eslint-disable-line no-undef
 
@@ -481,6 +532,15 @@ If the command fails or stdout is not valid JSON, return:
         blocks: anyBlocks,
         leaf_verdicts: filtered,
         summary,
+        disposition,
+        leaves_total,
+        leaves_probed,
+        leaves_unenumerated,
+        leaves_not_verified,
+        unenumerated_leaves,
+        not_verified_leaves,
+        malformed_records,
+        fixture_absent_records,
     };
 
 })();
