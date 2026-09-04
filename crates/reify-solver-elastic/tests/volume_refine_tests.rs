@@ -742,3 +742,48 @@ fn avg_tet_edge_in_region_x_ge(vm: &VolumeMesh, threshold: f64) -> f64 {
     }
     if count == 0 { 0.0 } else { total_edge / count as f64 }
 }
+
+// ---------------------------------------------------------------------------
+// step-7/8: the gmsh re-export seam
+// ---------------------------------------------------------------------------
+
+/// `reify-solver-elastic` must re-export the two gmsh symbols its own PUBLIC
+/// refine signatures require, so a downstream crate can call them without
+/// naming `reify_kernel_gmsh::*`.
+///
+/// This closes a pre-existing API gap: `refine_with_size_field` and
+/// `adaptive::refine_marked_elements` both take `&MeshingOptions` in their
+/// public signature, but the crate re-exported neither that type nor the
+/// availability const — so no downstream crate could construct the argument
+/// or runtime-gate on gmsh presence.
+///
+/// It matters because `reify-eval` is FORBIDDEN to name the gmsh crate:
+/// `reify-eval/Cargo.toml` makes `reify-kernel-gmsh` a DEV-dep with a
+/// dead-strip invariant ("DO NOT reference any `reify_kernel_gmsh::*` symbol
+/// from other reify-eval unit or integration tests — doing so would pull
+/// gmsh's `inventory::submit!` into their binaries and break OCCT-only
+/// `kernel_count` / registry-size assertions"). Re-exporting from
+/// `reify-solver-elastic` — a NORMAL dep of reify-eval that already
+/// normal-deps `reify-kernel-gmsh` — keeps that invariant literally true.
+///
+/// The `reify_kernel_gmsh::GMSH_AVAILABLE` reference below is the ONE place
+/// the gmsh path is named, and it is legitimate here: this test lives INSIDE
+/// `reify-solver-elastic`, where gmsh is a normal dep. Its purpose is to pin
+/// that the re-export is the same const and cannot silently drift.
+#[test]
+fn solver_elastic_reexports_the_gmsh_types_its_public_refine_signature_requires() {
+    let options = reify_solver_elastic::MeshingOptions {
+        mesh_size: Some(0.25),
+        deterministic: true,
+        ..Default::default()
+    };
+    assert_eq!(options.mesh_size, Some(0.25));
+    assert!(options.deterministic);
+
+    assert_eq!(
+        reify_solver_elastic::GMSH_AVAILABLE,
+        reify_kernel_gmsh::GMSH_AVAILABLE,
+        "the re-exported availability const must BE the kernel's, not a copy \
+         that can drift from it",
+    );
+}
