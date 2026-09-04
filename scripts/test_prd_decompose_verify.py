@@ -2213,5 +2213,252 @@ console.log(MARK + JSON.stringify(schemas));
         self.assertEqual(required, ["blocks", "blocking", "report"])
 
 
+# ---------------------------------------------------------------------------
+# task #7257 steps 11/13: parameterized .mjs scenario harness
+# ---------------------------------------------------------------------------
+
+_MJS_RESULT_MARK = "SCENARIO_RESULT:"
+_MJS_PHASES_MARK = "SCENARIO_PHASES:"
+
+
+def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
+    """Build a Node ESM harness that runs the FULL .mjs body under a mock of
+    Workflow's injected globals and ONLY those, with a PARAMETERIZED agent.
+
+    Args:
+        leaves_js:    a JS expression for globalThis.args (the leaf array).
+        responses_js: a JS expression evaluating to an object mapping a
+                      lower-cased phase name to either a value or a
+                      (prompt, opts) => value function.
+
+    The harness records every phase the .mjs actually invokes, so a test can
+    assert on stages that were SKIPPED as well as on the returned verdict.
+    """
+    mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+    return f"""\
+import {{ readFileSync }} from "node:fs";
+
+const MJS_PATH = "{mjs_abs}";
+const RESULT_MARK = "{_MJS_RESULT_MARK}";
+const PHASES_MARK = "{_MJS_PHASES_MARK}";
+
+// ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
+globalThis.__PHASES = [];
+const RESPONSES = {responses_js};
+globalThis.agent = async (prompt, opts = {{}}) => {{
+    const phase = (opts.phase || "").toLowerCase();
+    globalThis.__PHASES.push(phase);
+    const r = RESPONSES[phase];
+    if (typeof r === "function") return r(prompt, opts);
+    if (r !== undefined) return r;
+    return {{}};
+}};
+
+// ── mock: pipeline(items, ...stages) — threads each item through in order ────
+globalThis.pipeline = async (items, ...stages) => {{
+    const results = [];
+    for (const item of items) {{
+        let val = item;
+        for (const stage of stages) {{
+            val = await stage(val, item, results.length);
+        }}
+        results.push(val);
+    }}
+    return results;
+}};
+
+globalThis.parallel = async (thunks) => Promise.all(thunks.map(t => t()));
+globalThis.__LOG_LINES = [];
+globalThis.log = (..._a) => {{ globalThis.__LOG_LINES.push(_a.map(String).join(" ")); }};
+globalThis.phase = (..._a) => {{}};
+globalThis.args = {leaves_js};
+globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }};
+globalThis.workflow = async () => {{}};
+
+// ── execute the .mjs body and capture its top-level return ──────────────────
+let src = readFileSync(MJS_PATH, "utf8");
+src = src.replace("export const meta", "const meta");
+const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
+const result = await new AsyncFunction(src)();
+console.log(RESULT_MARK + JSON.stringify(result));
+console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
+"""
+
+
+class _MjsScenarioMixin:
+    """Shared runner for the parameterized .mjs scenario harness."""
+
+    # A leaf that enumerates one premise, probes it, and synthesizes a clean,
+    # EVIDENCE-BACKED verified verdict — the "normal path" control.
+    VERIFIED_RESPONSES = """{
+    enumerate: { premises: [{
+        text: "revolute rejects non-axis arg",
+        assertion_kind: "rejection",
+        fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+        match: { exit_code: 1 },
+        capability: "arg-vs-param rejection (mock)",
+    }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check",
+        verdict: "PASS",
+        command: ["reify", "check", "f.ri"],
+        exit_code: 1,
+        stdout: "",
+        stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 1, total: 1 },
+}"""
+
+    # A leaf whose Enumerator returns nothing at all.
+    UNENUMERATED_RESPONSES = """{
+    enumerate: { premises: [] },
+    prove: { prover: [], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 0, total: 0 },
+}"""
+
+    def _run_scenario(self, leaves_js: str, responses_js: str):
+        """Run the .mjs under the scenario harness; return (verdict, phases)."""
+        harness_src = _mjs_scenario_source(leaves_js, responses_js)
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            input=harness_src, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"node exited {result.returncode}; stderr: {result.stderr!r}; "
+            f"stdout: {result.stdout!r}",
+        )
+        res_lines = [ln for ln in result.stdout.splitlines()
+                     if ln.startswith(_MJS_RESULT_MARK)]
+        ph_lines = [ln for ln in result.stdout.splitlines()
+                    if ln.startswith(_MJS_PHASES_MARK)]
+        self.assertTrue(res_lines, f"no result marker; stdout: {result.stdout!r}")
+        self.assertTrue(ph_lines, f"no phases marker; stdout: {result.stdout!r}")
+        verdict = json.loads(res_lines[-1][len(_MJS_RESULT_MARK):])
+        phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
+        return verdict, phases
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-11 (RED): a zero-premise leaf is not a verified leaf (ARM 2)
+# ---------------------------------------------------------------------------
+
+class TestMjsUnenumeratedLeaf(unittest.TestCase, _MjsScenarioMixin):
+    """A leaf whose Enumerator returned zero premises was never probed.
+
+    Measured on this branch BEFORE the fix, driving one zero-premise leaf:
+        leaf_verdicts[0] == {leafLabel, blocks: false, blocking: [], report: ""}
+        summary          == "γ PASS — all 1 leaf(ves) verified"
+        phases           == ["enumerate", "synthesize"]
+
+    That is byte-identical in shape to a genuinely verified leaf, so the ONE
+    signal that matters — "nothing was checked here" — is unrecoverable from
+    the return value.  It also still burned a Synthesize agent call to
+    synthesize an empty record set (α over {} is vacuously non-blocking).
+
+    GREEN in task #7257 step-12.
+    """
+
+    _LABEL = "zero-premise leaf (delta)"
+    _LEAF_JS = '[{ signal: "zero-premise leaf (delta)" }]'
+
+    def _unenumerated(self):
+        return self._run_scenario(self._LEAF_JS, self.UNENUMERATED_RESPONSES)
+
+    # ── (1)(2) the per-leaf disposition ──────────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_leaf_verdict_carries_unenumerated_disposition(self):
+        """The leaf verdict says, in one field, that nothing was enumerated."""
+        verdict, _ = self._unenumerated()
+        self.assertEqual(len(verdict["leaf_verdicts"]), 1)
+        leaf = verdict["leaf_verdicts"][0]
+        self.assertEqual(
+            leaf.get("disposition"), "UNENUMERATED",
+            f"zero-premise leaf must be dispositioned UNENUMERATED; got {leaf!r}",
+        )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_unenumerated_differs_from_a_verified_leaf(self):
+        """The whole point: the two outcomes must be distinguishable."""
+        unenum, _ = self._unenumerated()
+        verified, _ = self._run_scenario(
+            '[{ signal: "normally verified leaf" }]', self.VERIFIED_RESPONSES)
+
+        unenum_leaf = unenum["leaf_verdicts"][0]
+        verified_leaf = verified["leaf_verdicts"][0]
+
+        self.assertEqual(verified_leaf.get("disposition"), "VERIFIED",
+                         f"control leaf must be VERIFIED; got {verified_leaf!r}")
+        self.assertNotEqual(
+            unenum_leaf.get("disposition"), verified_leaf.get("disposition"),
+            "a never-probed leaf must not share a disposition with a verified one",
+        )
+        # Both are non-blocking — which is exactly why `blocks` alone is not enough.
+        self.assertFalse(unenum_leaf["blocks"])
+        self.assertFalse(verified_leaf["blocks"])
+
+    # ── (3)(4)(5) the batch-level signal ─────────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_batch_disposition_is_not_pass(self):
+        """A batch that probed nothing did not pass."""
+        verdict, _ = self._unenumerated()
+        self.assertIn("disposition", verdict,
+                      f"batch verdict has no disposition; keys {sorted(verdict)}")
+        self.assertNotEqual(verdict["disposition"], "PASS")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_unenumerated_leaf_label_is_listed_at_top_level(self):
+        """The caller can name the never-probed leaf without opening journal.jsonl."""
+        verdict, _ = self._unenumerated()
+        self.assertIn("unenumerated_leaves", verdict,
+                      f"batch verdict has no unenumerated_leaves; keys {sorted(verdict)}")
+        self.assertEqual(verdict["unenumerated_leaves"], [self._LABEL])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_summary_names_the_leaf_and_the_probed_count(self):
+        """The one-line summary must not read as a pass."""
+        verdict, _ = self._unenumerated()
+        summary = verdict["summary"]
+        self.assertIn(self._LABEL, summary,
+                      f"summary must name the never-probed leaf; got {summary!r}")
+        self.assertIn("0 of 1", summary,
+                      f"summary must state the probed count; got {summary!r}")
+        self.assertNotIn("PASS", summary,
+                         f"a never-probed batch must not summarize as PASS; got {summary!r}")
+
+    # ── (6) the stage-3 short-circuit ────────────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_synthesize_agent_is_not_called_for_a_zero_premise_leaf(self):
+        """There is nothing to synthesize — do not pay an agent to say so.
+
+        α over an empty record set is vacuously non-blocking, so the call could
+        only ever return a clean verdict.  Skipping it is both cheaper and one
+        less way to launder 'nothing ran' into 'nothing failed'.
+        """
+        _, phases = self._unenumerated()
+        self.assertNotIn(
+            "synthesize", phases,
+            f"stage 3 must short-circuit on an unenumerated leaf; phases {phases!r}",
+        )
+        self.assertIn("enumerate", phases,
+                      f"the Enumerator must still run; phases {phases!r}")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_verified_control_leaf_still_calls_synthesize(self):
+        """The short-circuit is scoped to the empty case — regression guard."""
+        _, phases = self._run_scenario(
+            '[{ signal: "normally verified leaf" }]', self.VERIFIED_RESPONSES)
+        self.assertIn("synthesize", phases,
+                      f"the normal path must still synthesize; phases {phases!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
