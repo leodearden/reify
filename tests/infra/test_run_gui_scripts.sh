@@ -394,6 +394,64 @@ SIDECAR_STUB
     touch "$dir/test.ri"
 }
 
+# _mk_rungui_fixture <dir> — the run-gui.sh (release launcher) equivalent.
+# Same shape; run-gui.sh has no vite/curl involvement, so it needs no bin/curl.
+_mk_rungui_fixture() {
+    local dir="$1"
+
+    mkdir -p "$dir/scripts" "$dir/gui/sidecar" "$dir/bin"
+    cp "$RUN_GUI" "$dir/scripts/run-gui.sh"
+    chmod +x "$dir/scripts/run-gui.sh"
+
+    cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
+#!/usr/bin/env bash
+exit 0
+SIDECAR_STUB
+    chmod +x "$dir/gui/sidecar/build-sidecar.sh"
+
+    printf '{}' > "$dir/gui/package.json"
+    touch "$dir/test.ri"
+}
+
+# _rgs_stub_npm_marker <dir> — an npm that drops "$_RGS_NPM_MARKER" on EVERY
+# invocation. The marker's ABSENCE is how the preflight tests prove a refusal
+# beat the first expensive step.
+_rgs_stub_npm_marker() {
+    cat > "$1/bin/npm" <<'NPM_STUB'
+#!/usr/bin/env bash
+: > "${_RGS_NPM_MARKER:?_RGS_NPM_MARKER must be set by the test}"
+exit 0
+NPM_STUB
+    chmod +x "$1/bin/npm"
+}
+
+# _rgs_stub_curl_stateful <dir> — a curl whose FIRST call reports the port FREE
+# and whose every later call reports it SERVED.
+#
+# Both answers are needed in one run: call 1 is the §1b port preflight, which
+# must pass (exit 7 = CURLE_COULDNT_CONNECT, "no listener"), and calls 2+ are
+# the §5 readiness poll, which must succeed so the script proceeds to the
+# launch. Callers MUST reset "$_RGS_CURL_COUNTER" between script invocations.
+_rgs_stub_curl_stateful() {
+    cat > "$1/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+_c="${_RGS_CURL_COUNTER:?_RGS_CURL_COUNTER must be set by the test}"
+_n=0
+[ -f "$_c" ] && _n=$(cat "$_c")
+_n=$((_n + 1))
+printf '%s' "$_n" > "$_c"
+[ "$_n" -eq 1 ] && exit 7
+exit 0
+CURL_STUB
+    chmod +x "$1/bin/curl"
+}
+
+# _rgs_stub_cargo <dir> [rc] — a cargo that short-circuits the real build.
+_rgs_stub_cargo() {
+    printf '#!/usr/bin/env bash\nexit %s\n' "${2:-0}" > "$1/bin/cargo"
+    chmod +x "$1/bin/cargo"
+}
+
 # -- Test 25: behavioral — vite-process-death early-exit branch ---------------
 echo ""
 echo "--- Test 25: run-gui-dev.sh vite-process-death early-exit branch ---"
@@ -472,30 +530,18 @@ _rgs_mktemp _t26_tmpdir
 _t26_port=$(_rgs_free_port)
 _mk_rungui_dev_fixture "$_t26_tmpdir"
 
-# Stub npm: drops a marker on EVERY invocation. Its ABSENCE is the assertion
-# that the refusal happened before any expensive step.
-cat > "$_t26_tmpdir/bin/npm" <<'NPM_STUB'
-#!/usr/bin/env bash
-: > "${_RGS_NPM_MARKER:?_RGS_NPM_MARKER must be set by the test}"
-exit 0
-NPM_STUB
-chmod +x "$_t26_tmpdir/bin/npm"
+_rgs_stub_npm_marker "$_t26_tmpdir"
+_rgs_stub_cargo "$_t26_tmpdir" 1
 
 # Stub curl: succeeds unconditionally — something is already answering on the
-# port, which is precisely the condition the preflight must refuse.
+# port, which is precisely the condition the preflight must refuse. (This is
+# the one test that does NOT want the stateful stub: here the port is served
+# from the very first probe.)
 cat > "$_t26_tmpdir/bin/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
 exit 0
 CURL_STUB
 chmod +x "$_t26_tmpdir/bin/curl"
-
-# Stub cargo: short-circuits the release build so the SKIP case below stays
-# fast and does not depend on a real toolchain.
-cat > "$_t26_tmpdir/bin/cargo" <<'CARGO_STUB'
-#!/usr/bin/env bash
-exit 1
-CARGO_STUB
-chmod +x "$_t26_tmpdir/bin/cargo"
 
 # DISPLAY is pinned so this test isolates the PORT gate: the display preflight
 # lives in the same block and would otherwise mask it on a headless runner.
@@ -527,5 +573,90 @@ DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
 
 assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 bypasses the port gate" \
     test -e "$_t26_tmpdir/npm-invoked"
+
+# -- Test 27: behavioral — display preflight fails fast, both launchers ------
+echo ""
+echo "--- Test 27: launchers refuse to build with no display ---"
+
+# reify-gui is a GTK/WebKit app: with neither DISPLAY nor WAYLAND_DISPLAY it
+# cannot open a window at all. Without a gate the user pays npm install plus a
+# ~2-minute cargo build before finding that out, so the check must precede
+# every expensive step in BOTH launchers.
+
+# --- 27a: run-gui-dev.sh ---
+_rgs_mktemp _t27dev_tmpdir
+_t27dev_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t27dev_tmpdir"
+_rgs_stub_npm_marker "$_t27dev_tmpdir"
+_rgs_stub_curl_stateful "$_t27dev_tmpdir"
+_rgs_stub_cargo "$_t27dev_tmpdir"
+
+# _t27_run_dev <extra-env-assignment...> — reset both bits of fixture state
+# (the npm marker and the stateful-curl counter) and run the dev launcher.
+_t27_run_dev() {
+    rm -f "$_t27dev_tmpdir/npm-invoked" "$_t27dev_tmpdir/curl-count"
+    env -u DISPLAY -u WAYLAND_DISPLAY \
+        REIFY_VITE_PORT="$_t27dev_port" \
+        _RGS_NPM_MARKER="$_t27dev_tmpdir/npm-invoked" \
+        _RGS_CURL_COUNTER="$_t27dev_tmpdir/curl-count" \
+        PATH="$_t27dev_tmpdir/bin:$PATH" \
+        "$@" \
+        bash "$_t27dev_tmpdir/scripts/run-gui-dev.sh" "$_t27dev_tmpdir/test.ri" 2>&1
+}
+
+_t27dev_rc=0
+_t27dev_out=$(_t27_run_dev) || _t27dev_rc=$?
+
+assert "run-gui-dev.sh: no display exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t27dev_rc"
+
+assert "run-gui-dev.sh: no-display error names DISPLAY on a single line" \
+    bash -c 'printf "%s\n" "$1" | grep -F DISPLAY | grep -qiE "display|unset"' _ "$_t27dev_out"
+
+assert "run-gui-dev.sh: no-display refusal happens BEFORE any npm invocation" \
+    bash -c '! [ -e "$1" ]' _ "$_t27dev_tmpdir/npm-invoked"
+
+_t27_run_dev DISPLAY=:99 >/dev/null 2>&1 || true
+assert "run-gui-dev.sh: DISPLAY=:99 gets past the display gate" \
+    test -e "$_t27dev_tmpdir/npm-invoked"
+
+_t27_run_dev REIFY_GUI_SKIP_PREFLIGHT=1 >/dev/null 2>&1 || true
+assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 bypasses the display gate" \
+    test -e "$_t27dev_tmpdir/npm-invoked"
+
+# --- 27b: run-gui.sh ---
+_rgs_mktemp _t27rel_tmpdir
+_mk_rungui_fixture "$_t27rel_tmpdir"
+_rgs_stub_npm_marker "$_t27rel_tmpdir"
+_rgs_stub_cargo "$_t27rel_tmpdir"
+
+_t27_run_rel() {
+    rm -f "$_t27rel_tmpdir/npm-invoked"
+    env -u DISPLAY -u WAYLAND_DISPLAY \
+        _RGS_NPM_MARKER="$_t27rel_tmpdir/npm-invoked" \
+        PATH="$_t27rel_tmpdir/bin:$PATH" \
+        "$@" \
+        bash "$_t27rel_tmpdir/scripts/run-gui.sh" "$_t27rel_tmpdir/test.ri" 2>&1
+}
+
+_t27rel_rc=0
+_t27rel_out=$(_t27_run_rel) || _t27rel_rc=$?
+
+assert "run-gui.sh: no display exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t27rel_rc"
+
+assert "run-gui.sh: no-display error names DISPLAY on a single line" \
+    bash -c 'printf "%s\n" "$1" | grep -F DISPLAY | grep -qiE "display|unset"' _ "$_t27rel_out"
+
+assert "run-gui.sh: no-display refusal happens BEFORE any npm invocation" \
+    bash -c '! [ -e "$1" ]' _ "$_t27rel_tmpdir/npm-invoked"
+
+_t27_run_rel DISPLAY=:99 >/dev/null 2>&1 || true
+assert "run-gui.sh: DISPLAY=:99 gets past the display gate" \
+    test -e "$_t27rel_tmpdir/npm-invoked"
+
+_t27_run_rel REIFY_GUI_SKIP_PREFLIGHT=1 >/dev/null 2>&1 || true
+assert "run-gui.sh: REIFY_GUI_SKIP_PREFLIGHT=1 bypasses the display gate" \
+    test -e "$_t27rel_tmpdir/npm-invoked"
 
 test_summary
