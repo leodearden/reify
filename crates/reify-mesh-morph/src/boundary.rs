@@ -266,6 +266,77 @@ pub fn compute_dirichlet_bcs(
     Ok(result)
 }
 
+// ── rekey_boundary_association ────────────────────────────────────────────────
+
+/// Re-key a [`BoundaryAssociation`] from the OLD B-rep onto the NEW one,
+/// mapping every attachment's handle through `correspondence`.
+///
+/// ## Why node indices survive verbatim
+///
+/// Both morph solvers preserve connectivity by construction — `laplacian_smooth`
+/// and `elasticity_morph` each clone the source `tet_indices` and deform the
+/// vertices in place, so vertex `i` of the morphed mesh is the same mesh node
+/// as vertex `i` of the source. A `BoundaryAssociation` keys on exactly that
+/// node index, so the per-node attachments stay valid across a morph. The only
+/// thing that goes stale is the B-rep entity each attachment *names*: the old
+/// shape's handles do not exist on the new shape. That is what this function
+/// repairs, and it is why the node index is copied through untouched rather
+/// than recomputed.
+///
+/// ## Why this matters (task #6637)
+///
+/// `engine_build.rs` stashes a successful morph's output verbatim as the next
+/// tick's `MorphSource.source_mesh` (`store_volume_mesh` stores the
+/// `VolumeMesh` unchanged), and `morph_producer.rs::decide_morph_or_remesh`
+/// bails to `Remesh` when `source_mesh.boundary` is `None`. Since both solvers
+/// hard-code `boundary: None` on their output — correctly, as neither has
+/// access to a `CorrespondenceMap` — a morph that forwarded nothing would let
+/// the arm fire on only every OTHER tick. Attaching the re-keyed association at
+/// the [`crate::compose_morph`] seam, which does own the correspondence, is
+/// what makes consecutive parameter ticks keep morphing.
+///
+/// ## Failure is fail-closed, and total
+///
+/// Returns `None` on the FIRST attachment whose old handle has no entry in the
+/// matching map. A partially re-keyed association is strictly worse than none:
+/// the surviving old handles would resolve against the new B-rep to whatever
+/// entity happens to share their id, so the next tick's
+/// [`compute_dirichlet_bcs`] would project those nodes onto the wrong entities
+/// silently — no error, just a quietly wrong mesh. `None` degrades that tick to
+/// an honest remesh instead. Dropping the offending node would be equally
+/// wrong: it would silently unpin a boundary node and let the smoother pull it
+/// into the interior.
+///
+/// An EMPTY association re-keys to `Some(empty)`, not `None` — an association
+/// with no nodes is well-formed, and it is a case `compose_morph` can
+/// legitimately hand over.
+pub fn rekey_boundary_association(
+    boundary: &BoundaryAssociation,
+    correspondence: &CorrespondenceMap,
+) -> Option<BoundaryAssociation> {
+    let mut rekeyed = BoundaryAssociation::default();
+
+    for (node_idx, attachment) in boundary.iter() {
+        // Same map-per-kind routing compute_dirichlet_bcs uses; only the
+        // failure shape differs (Option here, structured ProjectionFailure
+        // there, which carries the offending handle for diagnostics).
+        let remapped = match attachment {
+            NodeAttachment::OnFace(old) => {
+                NodeAttachment::OnFace(correspondence.face_to_face.get(&old).copied()?)
+            }
+            NodeAttachment::OnEdge(old) => {
+                NodeAttachment::OnEdge(correspondence.edge_to_edge.get(&old).copied()?)
+            }
+            NodeAttachment::OnVertex(old) => {
+                NodeAttachment::OnVertex(correspondence.vertex_to_vertex.get(&old).copied()?)
+            }
+        };
+        rekeyed.associate(node_idx, remapped);
+    }
+
+    Some(rekeyed)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

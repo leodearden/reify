@@ -118,7 +118,7 @@ pub use diagnostics::{
 };
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
-    compute_dirichlet_bcs,
+    compute_dirichlet_bcs, rekey_boundary_association,
 };
 pub use elasticity::{ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
