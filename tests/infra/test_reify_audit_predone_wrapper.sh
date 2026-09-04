@@ -331,6 +331,19 @@ assert "5f-e: done task with a non-string updatedAt gets done_at null" \
 # arm that handles "+HH:MM". The two loaders still disagree on offset-form
 # timestamps -- but under this fix the jq side degrades that ONE row instead of
 # aborting the whole snapshot, which is the property this guard exists for.
+#
+# ACCEPTED, BUT TRACKED -- not merely narrated. `catch null` makes this
+# particular failure permanently QUIET: done_at=null reproduces the ORIGINAL
+# task-3731 silent-skip (P1's 14-day grace comparison skips the row entirely)
+# and the only signal is the wrapper's stderr WARNING, on a systemd hook path
+# nobody is likely reading. It is unreachable today -- fused-memory's
+# sqlite_task_backend.py updatedAt writer only emits ...Z -- so 7236 pinned it
+# rather than widening the sidecar's parser. Closing it (matching split_tz's
+# "+HH:MM" and no-TZ arms) is filed as fused-memory follow-up ticket
+# tkt_0RT8TN837CA7QP5T4GFH8Q5VYZ. When that lands, THIS assertion and its
+# comment flip in the same diff, and any widened parser must stay TOTAL: jq's
+# capture/match produce EMPTY on no-match, which inside `map({...})` DROPS the
+# whole row -- the same data-loss trap that made `fromdateiso8601?` wrong.
 assert "5f-f: valid ISO-8601 with a numeric TZ offset degrades to null, not an abort" \
     bash -c 'jq -e '"'"'[.[] | select(.task_id=="d4")] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
@@ -460,6 +473,16 @@ _SELF_TEST_PATH="$SCRIPT_DIR/test_reify_audit_predone_wrapper.sh"
 # emitter loop, so a glob that resolves to a non-regular path is excluded here
 # exactly as it would be at runtime. Same idiom as
 # tests/infra/test_govtest_slice_reaper.sh Block K.
+#
+# KNOWN MIRROR, tracked. This is the FOURTH hand-rolled copy of that parse:
+# scripts/verify.sh:1355 (select_infra_tests(), the production original),
+# scripts/verify-pipeline-guard.sh:626 (which carries its own MUST-NOT-DRIFT
+# warning about being a copy), test_govtest_slice_reaper.sh's _map_targets_for,
+# and this one. Converging the two TEST-side copies onto one helper is filed as
+# fused-memory follow-up ticket tkt_0RT8TP6EJR02PMGD2DF0BJ77XK; it was out of
+# reach for task 7236, whose module locks covered neither the reaper suite nor
+# test_helpers.sh. The two PRODUCTION copies stay independent on purpose -- a
+# test that sourced the implementation it asserts against would be vacuous.
 _map_selects_self() {
     local _want="$1" _artifact _glob _line _expanded
     [ -f "$VP_INFRA_MAP" ] || return 1

@@ -47,6 +47,14 @@
 #      degradation for legacy fused-memory rows; the wrapper warns loudly on
 #      every such row (see its missing_done_at sanity check).
 #
+#      That last divergence is ACCEPTED BUT TRACKED, not just narrated:
+#      widening this parser to match parse_iso8601_to_epoch's split_tz arms
+#      ("+HH:MM"/"-HH:MM", and the bare no-TZ form it reads as UTC) is filed as
+#      fused-memory follow-up ticket tkt_0RT8TN837CA7QP5T4GFH8Q5VYZ. Any such
+#      widening MUST stay total: jq's capture/match produce EMPTY on no-match,
+#      and an empty result inside this map({...}) DROPS the whole row -- the
+#      same data-loss trap that makes `fromdateiso8601?` wrong, below.
+#
 #      This deliberately matches the crate's live loader — the `?`-chained
 #      Option<i64> in crates/reify-audit/src/fused_memory_client.rs
 #      (parse_iso8601_to_epoch) — where a bad timestamp yields None for one
