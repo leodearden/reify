@@ -108,9 +108,30 @@ At decompose time, invoke the D3 verification workflow **before finalising the l
 Workflow({scriptPath: "scripts/prd-decompose-verify.mjs"})
 ```
 
-Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversary** → **Synthesize**. The Enumerator extracts every premise the leaf signal asserts and enforces the negative-assertion mandate (every "X is rejected" must become a probe that observes the rejection actually fires). Prover and Adversary run in parallel: the Prover authors a probe per premise and runs it through α (`scripts/prd-capability-check.py`); the Adversary independently hunts unlisted premises and falsifications. Synthesize aggregates results. The deterministic harness is `scripts/prd-decompose-verify.py`.
+`scripts/prd-decompose-verify.mjs` is the **entry point** — a thin orchestration shell over `scripts/prd-decompose-verify.py`, the **deterministic harness** it shells out to. All load-bearing adjudication (premise binding, the evidence gate, record classification, the captured-output report) lives in the Python harness and is unit-tested there; the `.mjs` only drives agents and aggregates.
+
+Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversary** → **Synthesize**. The Enumerator extracts every premise the leaf signal asserts and enforces the negative-assertion mandate (every "X is rejected" must become a probe that observes the rejection actually fires). Prover and Adversary run in parallel: the Prover authors a probe per premise and runs it through α (`scripts/prd-capability-check.py`); the Adversary independently hunts unlisted premises and falsifications. Synthesize aggregates results.
 
 **Blocks the batch** on any `FAIL`/`UNPROVABLE`/`HARNESS_ERROR` with captured command output attached — instead of tabulating an unexecuted promise. (`UNPROVABLE` blocks the same as `FAIL`: "no probe vector can currently observe this" is as dangerous as "the premise is false".)
+
+### Reading the result — `blocks: false` is not a pass
+
+The gate fails in **both** directions, so `blocks` alone is not the answer. Read these fields off the workflow's top-level return; none of them requires opening `journal.jsonl`:
+
+| Field | Read it for |
+|---|---|
+| `disposition` | `BLOCKS` / `INCOMPLETE` / `PASS` — the headline. **`INCOMPLETE` is NOT a pass.** |
+| `blocks` | true only for an evidence-backed falsification |
+| `leaves_probed` vs `leaves_total` | how much of the batch actually had a probe execute |
+| `unenumerated_leaves` | labels of leaves whose Enumerator returned zero premises — never probed |
+| `not_verified_leaves` | labels of leaves that ran but executed no probe |
+| `malformed_records` | count of blocking verdicts that carried **no** executed-probe evidence |
+| `fixture_absent_records` | count of probes that could not find their fixture |
+
+- **`INCOMPLETE` means nothing was falsified and nothing was verified.** Treat it as "the gate did not run here", not as a green light. Fix the named leaves and re-run before finalising the batch.
+- **A `MALFORMED` record is a harness defect, not a premise falsification.** PRD §6 decision 4 makes captured output mandatory on every verdict, so a blocking verdict with no command + exit code is an unexecuted promise. It is reported and counted, but it does not block — and it does not mean the premise is false.
+- **A fixture-absent record is a deliverable signal, not a falsification.** At decompose time the `.ri` fixture a premise probes is very often the leaf's own deliverable, so ENOENT means "write the fixture", not "the design is wrong".
+- The per-leaf `report` opens with a machine-readable counts header (`records: N total, K with executed-probe evidence, …`) so a leaf's verdict can be checked against its own arithmetic.
 
 The script is at `scripts/prd-decompose-verify.mjs` (committed to git — **not** `.claude/workflows/`, which is `.gitignored`), so the path is stable and D4 can re-run it at dispatch time.
 

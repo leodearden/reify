@@ -384,8 +384,11 @@ class BatchVerdict:
         blocks         — True iff any evidence-backed FAIL / UNPROVABLE /
                          HARNESS_ERROR was found
         blocking       — capability strings for evidence-backed blocking probes
-        report         — human/machine-readable string embedding captured
-                         evidence (command, exit_code, stdout, stderr)
+        report         — human/machine-readable string.  Line 1 is always a
+                         machine-readable counts header stating total /
+                         executed / blocking / malformed / fixture-absent;
+                         labelled sections below it embed the captured evidence
+                         (command, exit_code, stdout, stderr) per record
         malformed      — capability strings for blocking verdicts that carry NO
                          executed-probe evidence.  A harness defect, not a
                          falsification: these do NOT set `blocks`, but they mean
@@ -534,7 +537,16 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
 
     blocks = len(blocking) > 0
 
-    sections: List[str] = []
+    # Machine-readable counts header, always first and always emitted — an
+    # all-clear report must state the basis of its all-clear too.  Without it a
+    # reader has to count report sections by hand to learn how much of the batch
+    # was actually probed, which is how a report of N blocking capabilities got
+    # read as N falsifications when only one had been executed.
+    sections: List[str] = [
+        f"records: {len(all_records)} total, {executed} with executed-probe evidence, "
+        f"{len(blocking)} blocking, {len(malformed)} malformed, "
+        f"{len(fixture_absent)} fixture-absent"
+    ]
     if report_parts:
         sections.append("\n\n".join(report_parts))
     if malformed_parts:
@@ -548,7 +560,7 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
             "deliverable; not a falsification):\n\n"
             + "\n\n".join(fixture_absent_parts)
         )
-    report = "\n\n".join(sections) if sections else ""
+    report = "\n\n".join(sections)
 
     return BatchVerdict(
         blocks=blocks,
