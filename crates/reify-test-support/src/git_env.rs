@@ -133,7 +133,12 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// - `crate::ignore_hygiene::extract_ignore_reason` — read by
 ///   `reify_audit::ptodo`'s scan for the §8.3 γ reason policy, and the
 ///   original reason `reify-audit` carries this crate as a normal dependency
-///   rather than a dev-dependency.
+///   rather than a dev-dependency. It stays below the edge for the same
+///   reason the pair above does: it is pinned to agree with its siblings
+///   `ignore_attr`/`check_ignore_reasons` on which ignore-attribute forms
+///   carry a reason, and those have below-edge callers (`reify-expr`'s
+///   `field_calculus_tests`, this crate's `tests/ignore_reason_hygiene`)
+///   that could not reach a definition above it.
 ///
 /// Items, not a census of their call sites: a census rots on the next rename
 /// while still reading as authoritative — see `reify_audit::git_env`'s module
