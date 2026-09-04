@@ -352,6 +352,43 @@ fn check_ierr(name: &str, ierr: c_int) -> Result<(), GeometryError> {
 }
 
 // ---------------------------------------------------------------------------
+// Buffer helpers
+// ---------------------------------------------------------------------------
+
+/// Copy a gmsh-allocated out-buffer into an owned `Vec`, then free it via
+/// `gmshFree`.
+///
+/// Matches the guard convention every out-param reader in this module used
+/// before this helper existed: a null `ptr` returns an empty `Vec` and is
+/// never passed to `gmshFree` (nothing was allocated); a non-null `ptr` is
+/// freed unconditionally, even when `n == 0`, since gmsh may still have
+/// allocated an empty buffer.
+///
+/// Centralises the free-*before*-check ordering every call site needs:
+/// callers must run this (and copy any data out) before propagating a
+/// non-zero `ierr` via `?`, or the gmsh-allocated buffer leaks on the error
+/// path.
+///
+/// # Safety
+/// `ptr` must be null, or a valid pointer previously returned by a gmsh
+/// out-param call, addressing at least `n` contiguous, initialised `T`s,
+/// not aliased, and not already freed.
+unsafe fn take_gmsh_buf<T: Copy>(ptr: *mut T, n: usize) -> Vec<T> {
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    let v = if n == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(ptr, n) }.to_vec()
+    };
+    unsafe {
+        gmshFree(ptr as *mut c_void);
+    }
+    v
+}
+
+// ---------------------------------------------------------------------------
 // Safe Rust wrappers
 // ---------------------------------------------------------------------------
 
@@ -555,27 +592,15 @@ pub fn get_nodes_all() -> Result<(Vec<u64>, Vec<f64>), GeometryError> {
             &mut ierr,
         );
     }
-    let node_tags: Vec<u64> = if node_tags_ptr.is_null() || node_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(node_tags_ptr as *const u64, node_tags_n) }.to_vec()
-    };
-    let coords: Vec<f64> = if coord_ptr.is_null() || coord_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(coord_ptr, coord_n) }.to_vec()
-    };
-    unsafe {
-        if !node_tags_ptr.is_null() {
-            gmshFree(node_tags_ptr as *mut c_void);
-        }
-        if !coord_ptr.is_null() {
-            gmshFree(coord_ptr as *mut c_void);
-        }
-        if !param_ptr.is_null() {
-            gmshFree(param_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: each pointer is either null or was just populated by the
+    // gmshModelMeshGetNodes call above, owning at least `*_n` contiguous,
+    // initialised elements — take_gmsh_buf's precondition.
+    let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
+    let coords: Vec<f64> = unsafe { take_gmsh_buf(coord_ptr, coord_n) };
+    // paramCoord was requested with returnParametricCoord=0 above, so its
+    // contents are unused — still route it through take_gmsh_buf so a
+    // gmsh-allocated (possibly empty) buffer is freed rather than leaked.
+    let _ = unsafe { take_gmsh_buf(param_ptr, param_n) };
     check_ierr("gmshModelMeshGetNodes", ierr)?;
     Ok((node_tags, coords))
 }
@@ -681,16 +706,10 @@ pub fn get_entity_tags(dim: i32) -> Result<Vec<i32>, GeometryError> {
     unsafe {
         gmshModelGetEntities(&mut dim_tags_ptr, &mut dim_tags_n, dim, &mut ierr);
     }
-    let pairs: Vec<c_int> = if dim_tags_ptr.is_null() || dim_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(dim_tags_ptr, dim_tags_n) }.to_vec()
-    };
-    unsafe {
-        if !dim_tags_ptr.is_null() {
-            gmshFree(dim_tags_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: dim_tags_ptr is either null or was just populated by the
+    // gmshModelGetEntities call above, owning at least dim_tags_n
+    // contiguous, initialised elements.
+    let pairs: Vec<c_int> = unsafe { take_gmsh_buf(dim_tags_ptr, dim_tags_n) };
     check_ierr("gmshModelGetEntities", ierr)?;
     // gmsh returns flat (dim, tag) pairs — collect every odd index.
     let tags: Vec<i32> = pairs.chunks_exact(2).map(|p| p[1]).collect();
@@ -721,24 +740,11 @@ pub fn get_elements_by_type(element_type: i32) -> Result<(Vec<u64>, Vec<u64>), G
             &mut ierr,
         );
     }
-    let elem_tags: Vec<u64> = if elem_tags_ptr.is_null() || elem_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(elem_tags_ptr as *const u64, elem_tags_n) }.to_vec()
-    };
-    let node_tags: Vec<u64> = if node_tags_ptr.is_null() || node_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(node_tags_ptr as *const u64, node_tags_n) }.to_vec()
-    };
-    unsafe {
-        if !elem_tags_ptr.is_null() {
-            gmshFree(elem_tags_ptr as *mut c_void);
-        }
-        if !node_tags_ptr.is_null() {
-            gmshFree(node_tags_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: each pointer is either null or was just populated by the
+    // gmshModelMeshGetElementsByType call above, owning at least `*_n`
+    // contiguous, initialised elements.
+    let elem_tags: Vec<u64> = unsafe { take_gmsh_buf(elem_tags_ptr as *mut u64, elem_tags_n) };
+    let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
     check_ierr("gmshModelMeshGetElementsByType", ierr)?;
     Ok((elem_tags, node_tags))
 }
@@ -869,27 +875,15 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
             &mut ierr,
         );
     }
-    let node_tags: Vec<u64> = if node_tags_ptr.is_null() || node_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(node_tags_ptr as *const u64, node_tags_n) }.to_vec()
-    };
-    let coords: Vec<f64> = if coord_ptr.is_null() || coord_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(coord_ptr, coord_n) }.to_vec()
-    };
-    unsafe {
-        if !node_tags_ptr.is_null() {
-            gmshFree(node_tags_ptr as *mut c_void);
-        }
-        if !coord_ptr.is_null() {
-            gmshFree(coord_ptr as *mut c_void);
-        }
-        if !param_ptr.is_null() {
-            gmshFree(param_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: each pointer is either null or was just populated by the
+    // gmshModelMeshGetNodes call above, owning at least `*_n` contiguous,
+    // initialised elements.
+    let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
+    let coords: Vec<f64> = unsafe { take_gmsh_buf(coord_ptr, coord_n) };
+    // paramCoord was requested with returnParametricCoord=0 above, so its
+    // contents are unused — still route it through take_gmsh_buf so a
+    // gmsh-allocated (possibly empty) buffer is freed rather than leaked.
+    let _ = unsafe { take_gmsh_buf(param_ptr, param_n) };
     check_ierr("gmshModelMeshGetNodes(entity)", ierr)?;
     Ok((node_tags, coords))
 }
@@ -990,16 +984,10 @@ pub fn get_element_types(dim: i32, tag: i32) -> Result<Vec<i32>, GeometryError> 
     unsafe {
         gmshModelMeshGetElementTypes(&mut types_ptr, &mut types_n, dim, tag, &mut ierr);
     }
-    let types: Vec<i32> = if types_ptr.is_null() || types_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(types_ptr, types_n) }.to_vec()
-    };
-    unsafe {
-        if !types_ptr.is_null() {
-            gmshFree(types_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: types_ptr is either null or was just populated by the
+    // gmshModelMeshGetElementTypes call above, owning at least types_n
+    // contiguous, initialised elements.
+    let types: Vec<i32> = unsafe { take_gmsh_buf(types_ptr, types_n) };
     check_ierr("gmshModelMeshGetElementTypes", ierr)?;
     Ok(types)
 }
