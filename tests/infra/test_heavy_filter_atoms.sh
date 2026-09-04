@@ -36,6 +36,22 @@
 #      filterset matches nothing, and the exclusion is silently dead.
 #      Non-vacuity: both branches are exercised against REAL on-disk siblings
 #      every run, so the machinery cannot rot while its live atom is inert.
+#   G. Gate residency (task #6630): a named set of cheap regression guards must
+#      NOT live in any heavy-gated submodule. A test-scoped atom is a
+#      SUBMODULE-granularity eviction -- it sweeps every test in that stem off
+#      the task/merge gate into the offline-only lane -- so a cheap guard that
+#      merely happens to share a file with an expensive test silently loses its
+#      gate coverage, which is what #6630 found and fixed. G re-walks the SAME
+#      `$_TEST_SCOPED` atom list F parses (so it tracks future atom additions
+#      with no edit here) and asserts, for every heavy stem that resolves to a
+#      real file, that the file declares NONE of `_GATE_RESIDENT_TESTS` (G1).
+#      G2 is the non-vacuity counterweight: each named test must be declared in
+#      EXACTLY ONE file under the harness module dir, and that file's stem must
+#      be `mod`-declared in the harness root -- without it, deleting or
+#      renaming the tests would satisfy G1 vacuously and silently re-open the
+#      very coverage hole #6630 closed (an undeclared member compiles into
+#      nothing, the same hazard rule (d) of tests/infra/test_harness_kloc_cap.sh
+#      mechanizes). G3 guards G1 against iterating an empty name list.
 #
 # Compile-free -- this test never invokes cargo.
 
@@ -288,5 +304,110 @@ if [ -n "$_TEST_SCOPED" ] && [[ "$(printf '%s\n' "$_TEST_SCOPED" | head -n1)" =~
 else
     echo "  (self-check skipped: no test-scoped atom parsed -- see the assertion above)"
 fi
+
+# ---------------------------------------------------------------------------
+# Assertion G: gate residency of the named regression guards (task #6630)
+# ---------------------------------------------------------------------------
+# Assertion F proves a test-scoped atom RESOLVES. This one is about what that
+# resolution COSTS the tests it catches by association.
+#
+# A test-scoped atom is submodule-granular, not test-granular: `test(/^<stem>::/)`
+# evicts EVERY test in that stem from the task/merge gate (verify.sh:740's
+# `-E "not ($heavy)"` under REIFY_GATE_EXCLUDE_HEAVY=1) and re-homes it on the
+# asynchronous offline lane (verify.sh:751). That is correct and deliberate for
+# the expensive test the atom was written for -- but any CHEAP test that merely
+# shares the file rides along and silently loses its gate coverage. That is not
+# hypothetical: task #5025's two ~0.7s edit-path dispatch guards sat inside
+# `fea_in_the_loop_producer` alongside the ~490s producer, so the 7th atom swept
+# them off the gate; `nextest list -E "not ($heavy)"` matched ZERO of them.
+# Task #6630 moved them to a sibling stem outside the atom. This assertion is
+# the standing guard that keeps them there -- re-homing them back into any
+# heavy-gated stem must be a FAILURE here, not a silent regression.
+echo ""
+echo "--- Assertion G: gate residency of the named regression guards (task #6630) ---"
+
+# The tests that MUST stay on the task/merge gate, by exact fn name. Explicit
+# and commented so adding a future one is a single-line edit. Membership rule:
+# a test belongs here if it is cheap enough to afford on the gate AND guards a
+# regression whose feedback is worthless if it only arrives on the async lane.
+_GATE_RESIDENT_TESTS=(
+    # Task #5025 edit-path optimized-compute dispatch guards; 1.554s / 1.864s
+    # measured 2026-09-04 against a 233-test binary whose per-test mean is
+    # ~2.25s -- i.e. cheaper than average, hence unambiguously gate-affordable.
+    edit_source_dispatches_optimized_compute_into_solver_cost_loop
+    edit_param_dispatches_optimized_compute_into_solver_cost_loop
+)
+
+# _declares_test_fn <file> <fn> -- 0 iff <file> declares `fn <fn>(` at column 0.
+# Anchored at column 0 for the same reason _submodule_mod_declared is: that is
+# how the tree writes free test fns (the `#[test]` attribute sits on the
+# PRECEDING line, exactly as `#[path = "..."]` precedes `mod`). Anchoring also
+# keeps the many DOC-COMMENT mentions of these names -- `//!`/`///` lines that
+# cross-reference them -- from false-matching, which an unanchored grep would.
+# <fn> comes from the literal array above and carries no regex metacharacters.
+_declares_test_fn() {
+    grep -qE "^fn ${2}\(" "$1"
+}
+
+# Negation helper: `assert` invokes its predicate as a command, so the negative
+# half needs a real command that SUCCEEDS on absence rather than a `!` prefix.
+_lacks_test_fn() {
+    ! _declares_test_fn "$1" "$2"
+}
+
+# (G3) Non-vacuity for G1's inner loop. Mirrors Assertion F's own "at least 1
+# test-scoped atom parsed" guard: an emptied list would leave G1 silently
+# iterating over nothing and reporting a clean bill of health.
+assert "at least 1 gate-resident test name is listed (an emptied _GATE_RESIDENT_TESTS would make the residency check below silently vacuous)" \
+    test "${#_GATE_RESIDENT_TESTS[@]}" -gt 0
+
+# (G1) NEGATIVE: no heavy-gated submodule file may declare a gate-resident test.
+# Derives its file set from `$_TEST_SCOPED` -- the same list Assertion F walks,
+# parsed once from $REIFY_HEAVY_NEXTEST_FILTER -- so a future test-scoped atom
+# is covered here automatically and the guard cannot drift from the atom list it
+# guards. Absent files are skipped (an inert atom evicts nothing; F announces it).
+if [ -n "$_TEST_SCOPED" ]; then
+    while IFS= read -r _g_ts; do
+        [ -n "$_g_ts" ] || continue
+        if [[ "$_g_ts" =~ $_ts_re ]]; then
+            _g_pkg="${BASH_REMATCH[1]}"
+            _g_bin="${BASH_REMATCH[2]}"
+            _g_stem="${BASH_REMATCH[3]}"
+            _g_file="$REPO_ROOT/crates/$_g_pkg/tests/$_g_bin/$_g_stem.rs"
+            [ -f "$_g_file" ] || continue
+            for _g_fn in "${_GATE_RESIDENT_TESTS[@]}"; do
+                assert "crates/$_g_pkg/tests/$_g_bin/$_g_stem.rs must NOT declare $_g_fn -- the test-scoped heavy atom 'package($_g_pkg) & binary($_g_bin) & test(/^$_g_stem::/)' sweeps that whole stem off the task/merge gate into the offline-only lane (task #6630)" \
+                    _lacks_test_fn "$_g_file" "$_g_fn"
+            done
+        fi
+    done <<< "$_TEST_SCOPED"
+fi
+
+# (G2) POSITIVE / non-vacuity: each named test must still EXIST, exactly once,
+# in a member the harness root actually compiles. Without this, deleting or
+# renaming the two tests would satisfy G1 trivially and drop the coverage this
+# assertion exists to protect, with the suite still green. Two counts matter:
+# exactly-1 declaring file (0 = gone/renamed; >1 = a duplicate that makes "which
+# one runs on the gate" ambiguous), and that file being `mod`-declared -- an
+# undeclared member compiles into nothing and runs nowhere.
+_G_MODULE_DIR="$REPO_ROOT/crates/reify-eval/tests/harness_fea_solver_e2e"
+for _g_fn in "${_GATE_RESIDENT_TESTS[@]}"; do
+    _g_hits=()
+    while IFS= read -r _g_cand; do
+        [ -n "$_g_cand" ] || continue
+        if _declares_test_fn "$_g_cand" "$_g_fn"; then
+            _g_hits+=("$_g_cand")
+        fi
+    done < <(find "$_G_MODULE_DIR" -maxdepth 1 -type f -name '*.rs' | LC_ALL=C sort)
+
+    assert "exactly 1 file under crates/reify-eval/tests/harness_fea_solver_e2e/ declares $_g_fn (found ${#_g_hits[@]}) -- 0 means the gate-resident test was deleted or renamed, >1 means a duplicate (task #6630)" \
+        test "${#_g_hits[@]}" -eq 1
+
+    if [ "${#_g_hits[@]}" -eq 1 ]; then
+        _g_home="$(basename "${_g_hits[0]}" .rs)"
+        assert "crates/reify-eval/tests/harness_fea_solver_e2e.rs declares 'mod $_g_home;', the submodule that houses $_g_fn (an undeclared member compiles into nothing and runs on no lane at all)" \
+            _submodule_mod_declared reify-eval harness_fea_solver_e2e "$_g_home"
+    fi
+done
 
 test_summary
