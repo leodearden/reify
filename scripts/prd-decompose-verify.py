@@ -24,7 +24,12 @@ Design decisions:
       deterministic and unit-tested, NOT left to the LLM Enumerator.
   D2: `synthesize_batch` unions Prover + Adversary results; blocks on any
       FAIL / UNPROVABLE / HARNESS_ERROR; Adversary can only ADD blocking
-      signals (net-positive recall, PRD decision 5).
+      signals (net-positive recall, PRD decision 5).  A blocking verdict only
+      counts when the record carries executed-probe evidence (a non-empty
+      command AND a non-None exit_code) — PRD §6 decision 4 makes captured
+      output mandatory on every verdict, so an evidence-free verdict is an
+      unexecuted promise (a harness defect) and is reported as MALFORMED
+      rather than tabulated as a premise falsification.
   D3: reuse α's exact output shape via importlib — no re-implementation.
 """
 
@@ -252,19 +257,104 @@ def normalize_command(value: Any) -> List[str]:
 _BLOCKING_VERDICTS = frozenset({"FAIL", "UNPROVABLE", "HARNESS_ERROR"})
 
 
+# Record classification (task #7257 ARM 1).  These are RECORD categories, NOT
+# new verdicts — PRD §6 decision 3 fixes the verdict vocabulary at
+# PASS / FAIL / UNPROVABLE (+ HARNESS_ERROR) and this harness does not extend it.
+CAT_NON_BLOCKING = "NON_BLOCKING"   # verdict outside _BLOCKING_VERDICTS (incl. PASS
+                                    # and premise-shaped records with no verdict key)
+CAT_MALFORMED = "MALFORMED"         # blocking verdict with no executed-probe evidence
+CAT_FIXTURE_ABSENT = "FIXTURE_ABSENT"   # probe ran but its fixture does not exist
+CAT_BLOCKING = "BLOCKING"           # a real, evidence-backed falsification
+
+
+def has_probe_evidence(rec: Dict[str, Any]) -> bool:
+    """True iff the record carries evidence that a probe process actually ran.
+
+    PRD §6 decision 4 makes captured output mandatory on every verdict: "Every
+    D1 result carries the exact command + stdout/stderr + exit code, so a human
+    (or D4) can re-derive the verdict without re-running."  The minimum
+    re-derivable evidence is therefore BOTH:
+
+      - a non-empty command (what was run), and
+      - a non-None exit_code (that a process produced an outcome).
+
+    `exit_code` is tested with `is not None`, NOT truthiness — exit_code 0 is a
+    real, and very common, process outcome.
+
+    Args:
+        rec: An α --json result record (or anything shaped like one).
+
+    Returns:
+        True when both command and exit_code evidence are present.
+    """
+    if not normalize_command(rec.get("command")):
+        return False
+    return rec.get("exit_code") is not None
+
+
+def classify_record(rec: Dict[str, Any]) -> str:
+    """Classify a result record into one of the CAT_* categories.
+
+    Precedence (first match wins):
+
+      1. NON_BLOCKING   — the verdict is not one of FAIL / UNPROVABLE /
+                          HARNESS_ERROR.  This covers PASS and also
+                          premise-shaped records that carry no `verdict` key at
+                          all (RESULTS_SCHEMA is loose enough today that a
+                          premise validates as a result).  The evidence gate
+                          deliberately does NOT re-litigate a non-blocking
+                          record: it exists to stop unexecuted promises from
+                          being tabulated as falsifications.
+      2. MALFORMED      — a blocking verdict with no executed-probe evidence.
+                          A harness defect, not a premise falsification.
+      3. BLOCKING       — an evidence-backed falsification.
+
+    Args:
+        rec: An α --json result record.
+
+    Returns:
+        One of CAT_NON_BLOCKING / CAT_MALFORMED / CAT_BLOCKING.
+    """
+    if rec.get("verdict", "") not in _BLOCKING_VERDICTS:
+        return CAT_NON_BLOCKING
+    if not has_probe_evidence(rec):
+        return CAT_MALFORMED
+    return CAT_BLOCKING
+
+
 @dataclass
 class BatchVerdict:
     """Result of synthesizing Prover + Adversary α result records.
 
     Fields:
-        blocks    — True iff any FAIL / UNPROVABLE / HARNESS_ERROR was found
-        blocking  — list of capability strings for blocking probes
-        report    — human/machine-readable string embedding captured evidence
-                    (command, exit_code, stdout, stderr) per blocking probe
+        blocks         — True iff any evidence-backed FAIL / UNPROVABLE /
+                         HARNESS_ERROR was found
+        blocking       — capability strings for evidence-backed blocking probes
+        report         — human/machine-readable string embedding captured
+                         evidence (command, exit_code, stdout, stderr)
+        malformed      — capability strings for blocking verdicts that carry NO
+                         executed-probe evidence.  A harness defect, not a
+                         falsification: these do NOT set `blocks`, but they mean
+                         the batch was not actually verified.
+        fixture_absent — capability strings whose probe could not run because
+                         the fixture does not exist (populated from step-06).
+        executed       — number of records carrying executed-probe evidence
+        total          — total number of records synthesized
+
+    `malformed` and `fixture_absent` default to empty and `executed`/`total` to
+    0 so the historical 3-argument construction stays valid.
+
+    NOTE for consumers: `blocks == False` alone is NOT a clean pass.  A batch
+    with malformed or fixture-absent records was not verified; read `executed`
+    against `total` before treating the batch as evidence of anything.
     """
     blocks: bool
     blocking: List[str]
     report: str
+    malformed: List[str] = field(default_factory=list)
+    fixture_absent: List[str] = field(default_factory=list)
+    executed: int = 0
+    total: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -283,14 +373,23 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         - Adversary can only ADD blocking signals; it never clears a Prover FAIL.
         - An all-PASS Adversary does NOT clear a Prover FAIL.
 
+    Evidence gate (PRD §6 decision 4, task #7257 ARM 1):
+        A blocking verdict is only tabulated as `blocking` when the record
+        carries executed-probe evidence (see has_probe_evidence).  A blocking
+        verdict with no evidence is an UNEXECUTED PROMISE — a harness defect —
+        and is routed to `malformed` instead, where it is reported but does not
+        set `blocks`.  Without this, one real falsification was buried among N
+        vacuous ones and a human reading the report could not tell them apart.
+
     Args:
         role_results: dict with "prover" and "adversary" keys, each mapping to
                       a list of α --json result records.  Both keys are optional
                       (default to empty list).
 
     Returns:
-        A BatchVerdict with blocks, blocking list, and a report string
-        embedding captured evidence for each blocking probe.
+        A BatchVerdict with blocks, blocking / malformed / fixture_absent
+        capability lists, executed / total counters, and a report string
+        embedding captured evidence for each non-passing probe.
     """
     prover_records = role_results.get("prover", [])
     adversary_records = role_results.get("adversary", [])
@@ -303,21 +402,32 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         all_records.append(dict(rec, _role="adversary"))
 
     blocking: List[str] = []
+    malformed: List[str] = []
+    fixture_absent: List[str] = []
     report_parts: List[str] = []
+    malformed_parts: List[str] = []
+    executed = 0
 
     for rec in all_records:
         verdict = rec.get("verdict", "")
-        if verdict in _BLOCKING_VERDICTS:
-            capability = rec.get("capability", "<unknown>")
-            role = rec.get("_role", "unknown")
-            blocking.append(capability)
+        capability = rec.get("capability", "<unknown>")
+        role = rec.get("_role", "unknown")
 
-            # Build evidence block for this blocking probe.
-            cmd_str = " ".join(normalize_command(rec.get("command")))
-            exit_code = rec.get("exit_code", "?")
-            stdout = rec.get("stdout", "")
-            stderr = rec.get("stderr", "")
+        if has_probe_evidence(rec):
+            executed += 1
 
+        category = classify_record(rec)
+        if category == CAT_NON_BLOCKING:
+            continue
+
+        # Captured evidence, normalized for rendering only — never rewritten.
+        cmd_str = " ".join(normalize_command(rec.get("command")))
+        exit_code = rec.get("exit_code", "?")
+        stdout = rec.get("stdout", "")
+        stderr = rec.get("stderr", "")
+
+        if category == CAT_MALFORMED:
+            malformed.append(capability)
             parts = [
                 f"[{verdict}] {capability} (role: {role})",
                 f"  command:   {cmd_str}",
@@ -327,13 +437,45 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
                 parts.append(f"  stdout:    {stdout}")
             if stderr:
                 parts.append(f"  stderr:    {stderr}")
+            malformed_parts.append("\n".join(parts))
+            continue
 
-            report_parts.append("\n".join(parts))
+        blocking.append(capability)
+
+        # Build evidence block for this blocking probe.
+        parts = [
+            f"[{verdict}] {capability} (role: {role})",
+            f"  command:   {cmd_str}",
+            f"  exit_code: {exit_code}",
+        ]
+        if stdout:
+            parts.append(f"  stdout:    {stdout}")
+        if stderr:
+            parts.append(f"  stderr:    {stderr}")
+
+        report_parts.append("\n".join(parts))
 
     blocks = len(blocking) > 0
-    report = "\n\n".join(report_parts) if report_parts else ""
 
-    return BatchVerdict(blocks=blocks, blocking=blocking, report=report)
+    sections: List[str] = []
+    if report_parts:
+        sections.append("\n\n".join(report_parts))
+    if malformed_parts:
+        sections.append(
+            "MALFORMED (no executed-probe evidence — harness defect, not a "
+            "falsification):\n\n" + "\n\n".join(malformed_parts)
+        )
+    report = "\n\n".join(sections) if sections else ""
+
+    return BatchVerdict(
+        blocks=blocks,
+        blocking=blocking,
+        report=report,
+        malformed=malformed,
+        fixture_absent=fixture_absent,
+        executed=executed,
+        total=len(all_records),
+    )
 
 
 # ---------------------------------------------------------------------------
