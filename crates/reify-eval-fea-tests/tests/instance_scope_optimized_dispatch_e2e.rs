@@ -200,10 +200,26 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
     // the sentinel shell produced. Asserting `Satisfied` (not merely
     // "not Indeterminate") also pins that the value that reached the
     // constraint is the real, positive stiffness.
-    assert!(
-        !result.constraint_results.is_empty(),
-        "expected the `constraint self.beam.k > 1N / 1m` to appear in \
-         constraint_results, got none"
+    //
+    // amend (#6662 reviewer_comprehensive round 4, suggestion #6 —
+    // test-coverage). Pinning the COUNT, not merely non-emptiness, matching
+    // `solver_visible_instance_scope_fea_cell_is_not_clobbered`'s step (c) in
+    // this same file: the fixture declares exactly ONE constraint
+    // (`constraint self.beam.k > 1N / 1m`), and under a bare `!is_empty()`
+    // guard a change that dropped it from `constraint_results` while any other
+    // entry appeared would still pass both this check and the `Satisfied` loop
+    // below — leaving the assertion that actually matters (a constraint
+    // reading a sub's FEA-derived cell was evaluated) silently unexercised.
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected exactly the one `constraint self.beam.k > 1N / 1m` in \
+         constraint_results, got {:?}",
+        result
+            .constraint_results
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
     for entry in &result.constraint_results {
         assert_ne!(

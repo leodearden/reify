@@ -221,6 +221,13 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // function entry avoids wasting budget on guard-false or depth-limited returns.
     *node_budget -= 1;
 
+    // ONE `@optimized`-name index for this recursion LEVEL's two phase calls
+    // (amend #6662 round-4 suggestion #4). It is not threaded across levels:
+    // `unfold_recursive_sub` is `pub(crate)` and called from `engine_eval.rs`,
+    // which is outside #6662's lock set, so adding a parameter to the recursive
+    // entry point is not available to this pass. See [`OptimizedNameIndex`].
+    let optimized_names = OptimizedNameIndex::new();
+
     // Phase 1 (top-down): Set params for next_entity so the next recursion level
     // can evaluate its guard using the child's param values.
     let child_values = elaborate_child_params_only(
@@ -235,6 +242,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         &concrete_args,
         meta_map,
         diagnostics,
+        &optimized_names,
     );
 
     // Phase 2 (recurse): Unfold ALL of child_template's recursive subs at the next level
@@ -322,6 +330,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         templates,
         prelude,
         diagnostics,
+        &optimized_names,
     );
 }
 
@@ -384,6 +393,11 @@ pub(crate) fn elaborate_child_instance<'t>(
     templates: &'t [TopologyTemplate],
     prelude: &'t [CompiledModule],
 ) {
+    // ONE `@optimized`-name index for this whole instance TREE — phase 1,
+    // phase 1.5, phase 2, and every nested-sub recursion level below them
+    // share it (amend #6662 reviewer_comprehensive round 4, suggestion #4). See
+    // [`OptimizedNameIndex`] for what this does and does not eliminate.
+    let optimized_names = OptimizedNameIndex::new();
     elaborate_child_instance_nested(
         values,
         snapshot,
@@ -399,6 +413,7 @@ pub(crate) fn elaborate_child_instance<'t>(
         templates,
         prelude,
         &mut Vec::new(),
+        &optimized_names,
     );
 }
 
@@ -473,10 +488,10 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// still owns the authoritative let commits, and the recursive path via
 /// `unfold_recursive_sub` reaches it unchanged.
 #[allow(clippy::too_many_arguments)]
-fn elaborate_child_instance_nested<'t>(
+fn elaborate_child_instance_nested<'t, 'f>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
@@ -488,6 +503,7 @@ fn elaborate_child_instance_nested<'t>(
     templates: &'t [TopologyTemplate],
     prelude: &'t [CompiledModule],
     ancestors: &mut Vec<&'t str>,
+    optimized_names: &OptimizedNameIndex<'f>,
 ) {
     let mut child_values = elaborate_child_params_only(
         values,
@@ -501,6 +517,7 @@ fn elaborate_child_instance_nested<'t>(
         args,
         meta_map,
         diagnostics,
+        optimized_names,
     );
 
     // Phase 1.5 (leaves-first, dependency-ordered): elaborate the child
@@ -513,10 +530,6 @@ fn elaborate_child_instance_nested<'t>(
     // and containment stays a no-op, matching `NoContainment`'s rationale.
     let arg_runtime_sink = RefCell::new(Vec::new());
     let arg_containment = NoContainment;
-    // One `@optimized`-name index for this phase's whole walk (amend #6662
-    // suggestion #3). Lazily built on the first `UserFunctionCall` probe, so an
-    // instance with no function-call lets pays nothing.
-    let optimized_names: OptimizedNameIndex = OptimizedNameIndex::new();
     // Every sub this phase declines to descend into, with the reason. Handed to
     // `report_unresolvable_nested_reads` below so a child let left `Undef` by a
     // skip is named rather than silently dropped. All four skip arms feed it,
@@ -713,7 +726,7 @@ fn elaborate_child_instance_nested<'t>(
                 let v = match resolve_optimized_instance_cell(
                     expr,
                     functions,
-                    &optimized_names,
+                    optimized_names,
                     child_template,
                     &key.member,
                     || extract_dependency_trace(expr).reads,
@@ -800,6 +813,7 @@ fn elaborate_child_instance_nested<'t>(
                     templates,
                     prelude,
                     ancestors,
+                    optimized_names,
                 );
 
                 // Project the freshly-committed nested cells into the overlay
@@ -919,6 +933,7 @@ fn elaborate_child_instance_nested<'t>(
         templates,
         prelude,
         diagnostics,
+        optimized_names,
     );
 
     // Never-silent-undef: any child let the loop above knowingly starved must
@@ -1290,7 +1305,7 @@ fn eval_child_expr(
 }
 
 /// The set of function NAMES in a `functions` slice that carry an
-/// `@optimized` attribute, built at most once per elaboration phase.
+/// `@optimized` attribute, built at most once per instance TREE.
 ///
 /// amend (#6662 reviewer_comprehensive, suggestion #3 — efficiency). The
 /// pre-filter inside [`optimized_target_of`] was `functions.iter().any(|f|
@@ -1298,15 +1313,38 @@ fn eval_child_expr(
 /// comparisons against the STDLIB-INCLUSIVE set, run once per
 /// `UserFunctionCall` cell per instance, so its cost scaled as
 /// instances × cells × |stdlib functions|. Hoisting the name set turns the
-/// per-cell half into one hash lookup.
+/// per-cell factor into one hash lookup.
 ///
 /// A `OnceCell`, not an eagerly-built set, because the build is only worth
-/// paying for when the phase actually probes something: a template whose cells
+/// paying for when the walk actually probes something: an instance whose cells
 /// contain no `UserFunctionCall` at all never reaches the lookup, and must not
-/// pay |functions| for the privilege. Each of the three instance-scope
-/// elaboration phases owns one, declared beside the loop it serves — the
-/// lifetime `'f` ties the borrowed names to the `functions` slice they were
-/// read from, so a cache can never outlive or be paired with a different slice.
+/// pay |functions| for the privilege. The lifetime `'f` ties the borrowed names
+/// to the `functions` slice they were read from, so a cache can never outlive
+/// or be paired with a different slice — which is also what makes SHARING one
+/// across phases safe to assert rather than merely believe.
+///
+/// # What this does and does not eliminate (round-4 suggestion #4)
+///
+/// The first cut declared one index per PHASE — three `OnceCell`s, in phase
+/// 1.5, `elaborate_child_params_only` and `elaborate_child_lets_only` — so the
+/// O(|functions|) build was still paid up to 3× per instance, once per
+/// collection element and once per nesting level included. Only the per-CELL
+/// factor had been removed, not the per-INSTANCE one, which the earlier wording
+/// ("one hash lookup") obscured.
+///
+/// [`elaborate_child_instance`] now owns ONE index and threads it through all
+/// three phases and every nested-sub recursion level, so a whole instance tree
+/// builds it at most once. `unfold_recursive_sub` owns one per recursion LEVEL
+/// (2 builds → 1), not one per unfolding: it is `pub(crate)` and recursive
+/// through a `pub(crate)` entry that `engine_eval.rs` calls, and `engine_eval.rs`
+/// was outside #6662's lock set.
+///
+/// RESIDUAL, stated rather than implied: the build is still paid once per
+/// top-level `elaborate_child_instance` call — i.e. once per sub, and once per
+/// COLLECTION ELEMENT, since `engine_eval.rs` loops elements at its own call
+/// site. Collapsing that last factor means building the index where the
+/// `functions` slice is owned for the whole pass (`engine_eval.rs`) and passing
+/// it in; the `'f` tie already makes that a signature change and nothing more.
 pub(crate) type OptimizedNameIndex<'f> = OnceCell<HashSet<&'f str>>;
 
 /// The ONE `@optimized`-cell probe: `Some(target)` iff `expr` is a
@@ -1694,8 +1732,20 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///   one vec `engine_eval.rs` threads through the whole sub-elaboration pass
 ///   (collection elements included), so a prefix scan over it dedupes across
 ///   sibling and collection instances alike, which a set scoped to one
-///   `elaborate_child_instance` call could not. The scan runs on the decline
-///   path only, and dedupe keeps the scanned vec short.
+///   `elaborate_child_instance` call could not.
+///
+///   COST, stated rather than implied (round-4 suggestion #3). Both scans run
+///   on the decline path only, and dedupe keeps the scanned `diagnostics` vec
+///   short — but it does NOT bound how many times that vec is scanned: in the
+///   very shape the dedupe was added for (a keyed/collection `sub` where every
+///   element declines) the function is still entered once per element. The
+///   dedupe scan is therefore ordered FIRST, so a repeat entry costs one
+///   `starts_with` walk of a short vec and never touches
+///   `template_cell_was_dispatched`'s unbounded `compute_nodes` walk. Making
+///   the repeat case O(1) needs a memo (`HashSet<ValueCellId>` keyed on the
+///   template cell) with the same lifetime as `diagnostics` — i.e. owned by
+///   `engine_eval.rs`, which was outside #6662's lock set — so it is a
+///   signature change deferred to a follow-up, not a rewrite of this function.
 ///
 ///   THE KEY MUST BE DELIMITED (round-3 review). The key is a literal prefix of
 ///   the message, and `target` is delimited by `{:?}`'s closing quote and the
@@ -1731,10 +1781,6 @@ fn report_optimized_instance_decline(
     if cause != DeclineCause::InputsDiffer {
         return;
     }
-    let template_cell = ValueCellId::new(&child_template.name, member);
-    if !template_cell_was_dispatched(snapshot, &template_cell) {
-        return;
-    }
     // The dedupe key is a literal PREFIX of the message, so the scan needs no
     // side table and cannot drift from the text it keys. The trailing `:` is
     // load-bearing — see the PER-TEMPLATE-CELL DEDUPE bullet above.
@@ -1742,7 +1788,16 @@ fn report_optimized_instance_decline(
         "@optimized target {:?} on {}.{}:",
         target, child_template.name, member
     );
+    // DEDUPE BEFORE the graph scan (amend round-4 suggestion #3): both are pure
+    // predicates, so the emitted set is identical either way, but this ordering
+    // keeps the already-reported case — every element after the first in the
+    // keyed/collection shape this dedupe exists for — off
+    // `template_cell_was_dispatched`'s unbounded `compute_nodes` walk entirely.
     if diagnostics.iter().any(|d| d.message.starts_with(&key)) {
+        return;
+    }
+    let template_cell = ValueCellId::new(&child_template.name, member);
+    if !template_cell_was_dispatched(snapshot, &template_cell) {
         return;
     }
     diagnostics.push(Diagnostic::warning(format!(
@@ -1760,10 +1815,10 @@ fn report_optimized_instance_decline(
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
 /// All param values are also written to the global `values`, `snapshot`, journal, and cache.
 #[allow(clippy::too_many_arguments)]
-fn elaborate_child_params_only(
+fn elaborate_child_params_only<'f>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
@@ -1772,6 +1827,7 @@ fn elaborate_child_params_only(
     args: &[(String, reify_ir::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
+    optimized_names: &OptimizedNameIndex<'f>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
     // runtime_sink is required by `cell_eval_ctx`; its contents are
@@ -1781,11 +1837,6 @@ fn elaborate_child_params_only(
     // decline below), deliberately not a general drain for this sink.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
-    // One `@optimized`-name index for this whole param loop (amend #6662
-    // suggestion #3); lazily built, so a template with no function-call param
-    // defaults pays nothing.
-    let optimized_names: OptimizedNameIndex = OptimizedNameIndex::new();
-
     for cell in &child_template.value_cells {
         if cell.kind != ValueCellKind::Param {
             continue;
@@ -1850,7 +1901,7 @@ fn elaborate_child_params_only(
             let resolution = resolve_optimized_instance_cell(
                 default_expr,
                 functions,
-                &optimized_names,
+                optimized_names,
                 child_template,
                 member,
                 || extract_dependency_trace(default_expr).reads,
@@ -1872,8 +1923,30 @@ fn elaborate_child_params_only(
             // which asks whether a ComputeNode names this template cell — is
             // false for every param default, and both scopes body-inline in
             // agreement. When the template-scope param-default gap (#6750)
-            // closes, the gate flips to true and this site starts reporting with
-            // no further change here, which is the point of wiring it now.
+            // closes, the gate flips to true and this site starts reporting,
+            // which is the point of wiring it now.
+            //
+            // CAVEAT that #6750 must resolve before relying on that (amend
+            // round-4 suggestion #5). Unlike phase 2, which walks
+            // `sorted_child_lets` in dependency order, THIS loop is plain
+            // DECLARATION order over `child_template.value_cells`, and the
+            // Auto-precedence branch above `continue`s without inserting at
+            // all. So for an `@optimized` param default that reads a SIBLING
+            // param declared after it, the gate compares `None` (instance,
+            // not yet inserted) against `Some(v)` (global) and returns
+            // `Unreusable` purely because of declaration order — not because
+            // anything is instance-specific.
+            //
+            // That is benign TODAY for two independent reasons: the fallback
+            // `eval_child_expr` resolves the missing read from
+            // `snapshot.values` anyway, so the VALUE is unaffected, and the
+            // registered-target gate is unconditionally false here, so no
+            // warning is emitted either. Both reasons stop holding the moment
+            // #6750 lands, at which point a forward-referencing param default
+            // would produce a spurious decline AND a spurious warning. The fix
+            // then is to order this loop by dependency (reusing
+            // `phase15_node_traces` + `topological_sort` as phase 2 does), not
+            // to weaken the gate.
             if let OptimizedInstanceResolution::Unreusable {
                 target,
                 cause,
@@ -1964,10 +2037,10 @@ fn elaborate_child_params_only(
 /// iterates the correct template's value_cells. When enqueuing children, the entity's
 /// template's sub_components determine child sub names and their target templates.
 #[allow(clippy::too_many_arguments)]
-fn elaborate_child_lets_only<'t>(
+fn elaborate_child_lets_only<'t, 'f>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
@@ -1979,6 +2052,7 @@ fn elaborate_child_lets_only<'t>(
     templates: &'t [TopologyTemplate],
     prelude: &'t [CompiledModule],
     diagnostics: &mut Vec<Diagnostic>,
+    optimized_names: &OptimizedNameIndex<'f>,
 ) {
     // runtime_sink is required by `cell_eval_ctx`; its contents are
     // discarded rather than appended to `diagnostics` above — pre-migration
@@ -2126,10 +2200,6 @@ fn elaborate_child_lets_only<'t>(
         )));
     }
 
-    // One `@optimized`-name index for this whole let loop (amend #6662
-    // suggestion #3); lazily built on the first `UserFunctionCall` probe.
-    let optimized_names: OptimizedNameIndex = OptimizedNameIndex::new();
-
     for child_node_id in sorted_child_lets {
         let expr = child_let_cells[&child_node_id];
         // child_let_cells is keyed exclusively by NodeId::Value; topological_sort returns
@@ -2173,7 +2243,7 @@ fn elaborate_child_lets_only<'t>(
         let resolution = resolve_optimized_instance_cell(
             expr,
             functions,
-            &optimized_names,
+            optimized_names,
             child_template,
             member,
             || reads,
