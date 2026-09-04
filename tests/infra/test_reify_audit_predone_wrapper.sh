@@ -349,6 +349,85 @@ assert "5f-h: the wrapper's missing_done_at snippet reports exactly d1,d3,d4" \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
 
 # ------------------------------------------------------------------------------
+# Check 5f-i..k: the SAME malformed payload, driven END-TO-END through the wrapper
+# ------------------------------------------------------------------------------
+# 5f-a..h above exercise the sidecar in ISOLATION, but the headline defect is
+# stated at the WRAPPER level: the curl|jq pipeline runs under
+# `set -euo pipefail`, so a jq abort takes the wrapper's `exit 125`
+# ("Infrastructure error") arm, and dark-factory's pre_done_hook.py blocks the
+# status flip on ANY non-zero rc -- i.e. ONE malformed row wedges every
+# done-flip in the project. Nothing above pins that claim end-to-end: 5e only
+# greps the wrapper for the sidecar's FILENAME, so a regression that
+# reintroduced the abort at the WRAPPER layer (a post-snapshot
+# `jq -e 'all(.[]; .done_at != null)'` gate, say, or the wrapper inlining its
+# own filter again) would leave every one of 5f-a..h green.
+#
+# The stub is Check 6's fake-curl-on-PATH shim rather than a real socket
+# listener on FUSED_MEMORY_MCP_URL: the seam under test is everything
+# DOWNSTREAM of the transport (sidecar -> `type == "array"` gate ->
+# missing_done_at warning -> child rc), and a shim keeps this check hermetic
+# and pool-classified (run-all-classification.manifest:160) with no port to
+# allocate and no listener to leak into a concurrently-running lane. Defined
+# here rather than reused from Check 6 because that harness is created ~70
+# lines below and its fake curl serves a DIFFERENT (empty-tasks) envelope.
+mkdir -p "$FILTER_TMPDIR/e2e-bin"
+
+# Fake curl: ignores every argument and emits the envelope named by
+# $FAKE_CURL_BODY, which is set on the wrapper invocation below and reaches
+# this shim through the wrapper's environment -- exactly how Check 6's shim
+# reads $FAKE_RC.
+cat > "$FILTER_TMPDIR/e2e-bin/curl" <<'E2E_CURL_EOF'
+#!/usr/bin/env bash
+cat "$FAKE_CURL_BODY"
+E2E_CURL_EOF
+chmod +x "$FILTER_TMPDIR/e2e-bin/curl"
+
+# Fake reify-audit: ignores every argument and exits 0, so the wrapper's rc is
+# the child's and 125 can only come from the snapshot path. Freshly created, so
+# its mtime is NOW and the freshness guard passes silently (that is Check 7/9's
+# territory, not this one's). REIFY_AUDIT_ADVISORY_SENTINEL is redirected into
+# the tmpdir regardless, so this check can never stamp the host-wide default
+# path and make an operator sweep report a stale fleet -- Check 6 exports that
+# same redirect, but only ~70 lines below here.
+cat > "$FILTER_TMPDIR/e2e-bin/reify-audit" <<'E2E_AUDIT_EOF'
+#!/usr/bin/env bash
+exit 0
+E2E_AUDIT_EOF
+chmod +x "$FILTER_TMPDIR/e2e-bin/reify-audit"
+
+# `2>&1 >/dev/null` keeps STDERR only (7b-ii's idiom); the rc is captured with
+# the same `set +e` / rc=$? / `set -e` form 5f-a uses.
+set +e
+E2E_STDERR=$(PATH="$FILTER_TMPDIR/e2e-bin:$PATH" \
+    FAKE_CURL_BODY="$FILTER_TMPDIR/fixture-malformed.json" \
+    REIFY_AUDIT_BIN="$FILTER_TMPDIR/e2e-bin/reify-audit" \
+    REIFY_AUDIT_ADVISORY_SENTINEL="$FILTER_TMPDIR/advisory-sentinel" \
+    bash "$WRAPPER" --task d2 --pre-done 2>&1 >/dev/null)
+e2e_rc=$?
+set -e
+
+# 5f-i: THE headline claim, at the layer it is claimed. 125 is the
+# "Infrastructure error" arm; 0 is the stub child's own rc, so a pass here says
+# the malformed row cost the run nothing.
+assert "5f-i: wrapper exits 0 (NOT the 125 Infrastructure arm) on a payload with a malformed updatedAt" \
+    bash -c 'test "$1" -eq 0' -- "$e2e_rc"
+
+# 5f-j: and it reached 0 by SUCCEEDING rather than by some other path that
+# happens to return 0 -- the 125 arm's own diagnostic must be absent.
+assert "5f-j: wrapper stderr carries no 'failed to fetch tasks' diagnostic" \
+    bash -c '! printf "%s" "$1" | grep -qF "failed to fetch tasks from fused-memory MCP"' \
+    -- "$E2E_STDERR"
+
+# 5f-k: the degradation is REPORTED, not swallowed. This is the wrapper's LIVE
+# warning (5f-h pins only the jq expression it is built from), naming exactly
+# the three degraded ids -- which also proves d2 (good neighbour) and d5
+# (metadata.done_at precedence) survived the round trip, since they are absent
+# from the list.
+assert "5f-k: wrapper stderr warns 'done tasks with no done_at' naming exactly d1,d3,d4" \
+    bash -c 'printf "%s" "$1" | grep -qF "WARNING: done tasks with no done_at (P1 will skip them): d1,d3,d4"' \
+    -- "$E2E_STDERR"
+
+# ------------------------------------------------------------------------------
 # Check 5g: the sidecar is wired to select THIS suite
 # ------------------------------------------------------------------------------
 # Measured at task 7236, and it contradicts the intuition that a script under
