@@ -182,6 +182,14 @@ header):**
 
 ### 4.2 STL + 3MF serializers (tasks β, γ)
 
+**Export length regime:** reify model space is SI **metres**; every export format here (STL, 3MF,
+STEP) emits **millimetres**, converted at the vertex-emit site. STL carries no unit field, so a
+re-parsed STL reads millimetre coordinates — any bound asserted against a re-exported STL must be
+denominated in mm. Authority: `MM_PER_METRE_F32` in `crates/reify-ir/src/geometry.rs`, applied by
+`write_stl_binary` / `write_stl_ascii` / `write_3mf` (which additionally declares
+`unit="millimeter"`), and `export_step`'s `SetLocalLengthUnit(1000.0)` /
+`SetWriteLengthUnit(1.0)` in `reify-kernel-occt`'s `occt_wrapper.cpp` — landed with task #6187.
+
 Both are **pure functions over the existing `Mesh`** — no kernel change beyond an `export()` arm:
 - `write_stl_binary(&Mesh, &mut dyn Write)` (default) + `write_stl_ascii(&Mesh, …)` in
   `reify-ir` (sibling of `Mesh`). Binary STL = 80-byte header + u32 count + 50·N bytes.
