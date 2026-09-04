@@ -452,6 +452,51 @@ _rgs_stub_cargo() {
     chmod +x "$1/bin/cargo"
 }
 
+# _rgs_stub_npm_serving <dir> — an npm whose `run dev` stays alive so the
+# readiness poll and the script's `wait` behave like the real thing, and whose
+# every other subcommand is a no-op.
+#
+# `exec sleep` (rather than `sleep` as a child) makes the stub process ITSELF
+# the sleeping process, so the cleanup trap's `kill "$VITE_PID"` terminates it
+# directly — bash defers a signal while a FOREGROUND child runs, so a plain
+# `sleep` would only die via the trap's `pkill -P` fallback.
+_rgs_stub_npm_serving() {
+    cat > "$1/bin/npm" <<'NPM_STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+    run)
+        shift
+        case "${1:-}" in
+            dev) exec sleep 30 ;;
+            *)   exit 0 ;;
+        esac
+        ;;
+    *) exit 0 ;;
+esac
+NPM_STUB
+    chmod +x "$1/bin/npm"
+}
+
+# _rgs_stub_gui_binary <dir> <relpath> — a stand-in for the built reify-gui
+# that records the environment the launcher handed it into "$_RGS_ENV_DUMP"
+# (one KEY=VALUE per line) and exits 0. Lets the tests observe LD_LIBRARY_PATH
+# ordering without launching anything real.
+_rgs_stub_gui_binary() {
+    mkdir -p "$(dirname "$1/$2")"
+    cat > "$1/$2" <<'GUI_STUB'
+#!/usr/bin/env bash
+printf 'LD_LIBRARY_PATH=%s\n' "${LD_LIBRARY_PATH:-}" > "${_RGS_ENV_DUMP:?_RGS_ENV_DUMP must be set by the test}"
+exit 0
+GUI_STUB
+    chmod +x "$1/$2"
+}
+
+# _rgs_env_dump_get <dump-file> <key> — the recorded value of <key>, or "".
+_rgs_env_dump_get() {
+    [ -f "$1" ] || return 0
+    sed -n "s/^$2=//p" "$1" | head -1
+}
+
 # -- Test 25: behavioral — vite-process-death early-exit branch ---------------
 echo ""
 echo "--- Test 25: run-gui-dev.sh vite-process-death early-exit branch ---"
@@ -658,5 +703,101 @@ assert "run-gui.sh: DISPLAY=:99 gets past the display gate" \
 _t27_run_rel REIFY_GUI_SKIP_PREFLIGHT=1 >/dev/null 2>&1 || true
 assert "run-gui.sh: REIFY_GUI_SKIP_PREFLIGHT=1 bypasses the display gate" \
     test -e "$_t27rel_tmpdir/npm-invoked"
+
+# -- Test 28: behavioral — the tbb pin dir leads an inherited LD_LIBRARY_PATH -
+echo ""
+echo "--- Test 28: launchers prepend /opt/reify-deps/tbb-pin ahead of the caller's LD_LIBRARY_PATH ---"
+
+# #5192 pinned oneTBB by putting /opt/reify-deps/tbb-pin FIRST in each binary's
+# DT_RUNPATH. But the loader searches LD_LIBRARY_PATH *before* DT_RUNPATH, so a
+# caller whose LD_LIBRARY_PATH names /usr/lib/x86_64-linux-gnu silently defeats
+# that: the binary binds the system libtbb 12.11 instead of the deps 12.18 and
+# dies on a missing symbol. Measured on this host:
+#   LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/reify-deps/lib
+#     -> libtbb.so.12 => /usr/lib/x86_64-linux-gnu/libtbb.so.12   (12.11, bad)
+#   LD_LIBRARY_PATH=/opt/reify-deps/tbb-pin:<the same>
+#     -> libtbb.so.12 => /opt/reify-deps/tbb-pin/libtbb.so.12      (12.18, good)
+# So the launchers must lead with the pin dir while PRESERVING what they were
+# handed.
+
+# Cheap text drift-guard — runs on every host, including one with no deps tree.
+assert "scripts/run-gui-dev.sh names '/opt/reify-deps/tbb-pin'" \
+    grep -qF '/opt/reify-deps/tbb-pin' "$RUN_GUI_DEV"
+
+assert "scripts/run-gui.sh names '/opt/reify-deps/tbb-pin'" \
+    grep -qF '/opt/reify-deps/tbb-pin' "$RUN_GUI"
+
+# The behavioural half needs the real pin dir: the scripts only prepend a dir
+# that EXISTS. Mirrors the tbb_pin_present() host gate in
+# gui/src-tauri/tests/rpath_smoke.rs.
+_t28_inherited="/usr/lib/x86_64-linux-gnu:/opt/reify-deps/lib"
+
+if [ -d /opt/reify-deps/tbb-pin ]; then
+    # --- 28a: run-gui-dev.sh ---
+    _rgs_mktemp _t28dev_tmpdir
+    _t28dev_port=$(_rgs_free_port)
+    _mk_rungui_dev_fixture "$_t28dev_tmpdir"
+    _rgs_stub_npm_serving "$_t28dev_tmpdir"
+    _rgs_stub_curl_stateful "$_t28dev_tmpdir"
+    _rgs_stub_cargo "$_t28dev_tmpdir"
+    _rgs_stub_gui_binary "$_t28dev_tmpdir" target/debug/reify-gui
+
+    _t28dev_out=$(DISPLAY=:99 \
+        LD_LIBRARY_PATH="$_t28_inherited" \
+        REIFY_VITE_PORT="$_t28dev_port" \
+        _RGS_CURL_COUNTER="$_t28dev_tmpdir/curl-count" \
+        _RGS_ENV_DUMP="$_t28dev_tmpdir/env-dump" \
+        PATH="$_t28dev_tmpdir/bin:$PATH" \
+        bash "$_t28dev_tmpdir/scripts/run-gui-dev.sh" "$_t28dev_tmpdir/test.ri" 2>&1) || true
+    _t28dev_llp=$(_rgs_env_dump_get "$_t28dev_tmpdir/env-dump" LD_LIBRARY_PATH)
+
+    assert "run-gui-dev.sh: launched binary saw a non-empty LD_LIBRARY_PATH" \
+        bash -c '[ -n "$1" ]' _ "$_t28dev_llp"
+
+    assert "run-gui-dev.sh: first LD_LIBRARY_PATH entry is exactly /opt/reify-deps/tbb-pin" \
+        bash -c '[ "${1%%:*}" = /opt/reify-deps/tbb-pin ]' _ "$_t28dev_llp"
+
+    assert "run-gui-dev.sh: inherited /usr/lib/x86_64-linux-gnu is preserved" \
+        bash -c 'printf "%s\n" "$1" | grep -qF /usr/lib/x86_64-linux-gnu' _ "$_t28dev_llp"
+
+    assert "run-gui-dev.sh: inherited /opt/reify-deps/lib is preserved" \
+        bash -c 'printf "%s\n" "$1" | grep -qF /opt/reify-deps/lib' _ "$_t28dev_llp"
+
+    assert "run-gui-dev.sh: emits a notice mentioning LD_LIBRARY_PATH" \
+        bash -c 'printf "%s\n" "$1" | grep -qF LD_LIBRARY_PATH' _ "$_t28dev_out"
+
+    # --- 28b: run-gui.sh ---
+    _rgs_mktemp _t28rel_tmpdir
+    _mk_rungui_fixture "$_t28rel_tmpdir"
+    _rgs_stub_npm_serving "$_t28rel_tmpdir"
+    _rgs_stub_cargo "$_t28rel_tmpdir"
+    _rgs_stub_gui_binary "$_t28rel_tmpdir" target/release/reify-gui
+
+    _t28rel_out=$(DISPLAY=:99 \
+        LD_LIBRARY_PATH="$_t28_inherited" \
+        _RGS_ENV_DUMP="$_t28rel_tmpdir/env-dump" \
+        PATH="$_t28rel_tmpdir/bin:$PATH" \
+        bash "$_t28rel_tmpdir/scripts/run-gui.sh" "$_t28rel_tmpdir/test.ri" 2>&1) || true
+    _t28rel_llp=$(_rgs_env_dump_get "$_t28rel_tmpdir/env-dump" LD_LIBRARY_PATH)
+
+    assert "run-gui.sh: launched binary saw a non-empty LD_LIBRARY_PATH" \
+        bash -c '[ -n "$1" ]' _ "$_t28rel_llp"
+
+    assert "run-gui.sh: first LD_LIBRARY_PATH entry is exactly /opt/reify-deps/tbb-pin" \
+        bash -c '[ "${1%%:*}" = /opt/reify-deps/tbb-pin ]' _ "$_t28rel_llp"
+
+    assert "run-gui.sh: inherited /usr/lib/x86_64-linux-gnu is preserved" \
+        bash -c 'printf "%s\n" "$1" | grep -qF /usr/lib/x86_64-linux-gnu' _ "$_t28rel_llp"
+
+    assert "run-gui.sh: inherited /opt/reify-deps/lib is preserved" \
+        bash -c 'printf "%s\n" "$1" | grep -qF /opt/reify-deps/lib' _ "$_t28rel_llp"
+
+    assert "run-gui.sh: emits a notice mentioning LD_LIBRARY_PATH" \
+        bash -c 'printf "%s\n" "$1" | grep -qF LD_LIBRARY_PATH' _ "$_t28rel_out"
+else
+    echo "  SKIP: /opt/reify-deps/tbb-pin absent on this host — behavioural half"
+    echo "  SKIP: needs the deps tree (scripts/build-manifold-deps.sh); the text"
+    echo "  SKIP: drift-guards above still ran."
+fi
 
 test_summary
