@@ -1518,7 +1518,10 @@ structure SphereCheck {
 /// sphere) falls inside PRD §2's stated d/R < 2.5e-4 regime for its third,
 /// ~1.49x branch, yet measures 2.078x — squarely on the tread, not ~1.49x.
 /// That is a conflict between this table and the PRD's regime boundary, not a
-/// counterexample to tread/tooth; re-measure before relying on that boundary.
+/// counterexample to tread/tooth. Amending PRD §2 is out of this file's
+/// scope; a follow-up to re-measure the boundary has been filed separately so
+/// the tension stays tracked rather than only noted here — do not rely on the
+/// d/R < 2.5e-4 boundary until it lands.
 /// The measurement and the OCCT internal-constant citations behind these
 /// branches live in PRD §2 and are not re-derived here.
 ///
@@ -1644,7 +1647,15 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // than when this was tuned still yields the correct verdict, so failing the
     // gate on it would turn a fully-correct environment red for no contractual
     // reason. (An earlier revision asserted a two-sided [4e-4, 8e-4] band and did
-    // exactly that.)
+    // exactly that.) The tooth-drift case named in the message below (0.3mm
+    // landing on the ~0.758x branch, ~2.27e-4 m) is a real, distinct failure
+    // mode, but a floor tight enough to gate on it risks the identical false
+    // positive, so this stays diagnostic-only rather than asserted — declined
+    // deliberately, not an oversight. That means it is visible only when run
+    // with `cargo test ... -- --nocapture`: libtest captures stderr for a
+    // passing test, so a plain `cargo test` run — and the repo's cargo
+    // output-condensation wrapper, which reports only PASS/FAIL counts — never
+    // surfaces this text, including the RETUNE instruction below.
     if achieved < 4e-4 {
         eprintln!(
             "BT7 note: fine sphere deviation ({achieved:.3e} m) is well below the \
