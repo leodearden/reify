@@ -511,3 +511,21 @@ scripts/tree-sitter-freshness.sh     tests/infra/test_tree_sitter_pipeline.sh
 # are cheap enough for the selective-infra block's inline, unserialized exec.
 scripts/reify-audit-freshness.sh        tests/infra/test_reify_audit_freshness.sh
 scripts/reify-audit-predone-wrapper.sh  tests/infra/test_reify_audit_predone_wrapper.sh
+
+# Task 7236: the snapshot-filter sidecar the wrapper above shells out to. Same
+# hole, one file over -- it had NO row here EITHER, and unlike the two rows
+# above it is not full-gate routed on its own (measured at 7236:
+# `verify-pipeline-guard.sh requires-full-gate scripts/reify-audit-snapshot-
+# filter.jq` -> 1 AND `is-registered` -> 1, i.e. registered by no route at
+# all). So a .jq-only diff selected ZERO infra poles, leaving the filter's own
+# guard -- test_reify_audit_predone_wrapper.sh Check 5f, which pins that ONE
+# unparseable updatedAt degrades per-row instead of aborting the whole
+# snapshot -- unrunnable on the very file it guards.
+#
+# Same surgical-registration rationale as the 7139 rows above, and the same
+# caution: do NOT add this path to scripts/verify-pipeline-paths.txt. A row
+# here is already a first-class registration (it satisfies test_verify_
+# pipeline_guard.sh's ANTI-DRIFT sweep) WITHOUT forcing `--scope all` on every
+# future edit to a one-line jq filter. The suite is the same hermetic,
+# seconds-long, `pool`-classified one row 513 selects.
+scripts/reify-audit-snapshot-filter.jq  tests/infra/test_reify_audit_predone_wrapper.sh
