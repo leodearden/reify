@@ -680,4 +680,120 @@ mod tests {
             "non-stub OperationFailed must map to RefineError::Gmsh(_), got: {mapped:?}",
         );
     }
+
+    // ---- step-1/2 pins: boundary_surface_mesh, the free-face extractor ----
+
+    /// Single positively-oriented P1 tet: `signed_volume([a,b,c,d]) > 0`
+    /// because `dot(d-a, cross(b-a, c-a)) = dot((0,0,1), (0,0,1)) = 1`.
+    fn single_tet_mesh() -> VolumeMesh {
+        VolumeMesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                0.0, 0.0, 0.0, // 0 = a
+                1.0, 0.0, 0.0, // 1 = b
+                0.0, 1.0, 0.0, // 2 = c
+                0.0, 0.0, 1.0, // 3 = d
+            ],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// `(x, y, z)` of surface-mesh vertex `v`, widened to `f64`.
+    fn surf_vertex(mesh: &Mesh, v: u32) -> [f64; 3] {
+        let base = v as usize * 3;
+        [
+            mesh.vertices[base] as f64,
+            mesh.vertices[base + 1] as f64,
+            mesh.vertices[base + 2] as f64,
+        ]
+    }
+
+    /// Right-hand-rule geometric normal of triangle `t` (NOT normalized —
+    /// only its SIGN against an outward reference direction is ever read).
+    fn triangle_normal(mesh: &Mesh, t: usize) -> [f64; 3] {
+        let p0 = surf_vertex(mesh, mesh.indices[t * 3]);
+        let p1 = surf_vertex(mesh, mesh.indices[t * 3 + 1]);
+        let p2 = surf_vertex(mesh, mesh.indices[t * 3 + 2]);
+        let u = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let v = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    }
+
+    /// Centroid of triangle `t`.
+    fn triangle_centroid(mesh: &Mesh, t: usize) -> [f64; 3] {
+        let mut c = [0.0_f64; 3];
+        for k in 0..3 {
+            let p = surf_vertex(mesh, mesh.indices[t * 3 + k]);
+            for a in 0..3 {
+                c[a] += p[a] / 3.0;
+            }
+        }
+        c
+    }
+
+    /// Mean of every vertex of `volume_mesh` — the interior reference point
+    /// an outward face must point AWAY from, for a convex body.
+    fn volume_centroid(volume_mesh: &VolumeMesh) -> [f64; 3] {
+        let n = volume_mesh.vertices.len() / 3;
+        let mut c = [0.0_f64; 3];
+        for i in 0..n {
+            for a in 0..3 {
+                c[a] += volume_mesh.vertices[i * 3 + a] as f64 / n as f64;
+            }
+        }
+        c
+    }
+
+    /// The boundary of a single tet is all four of its faces, each wound
+    /// OUTWARD.
+    ///
+    /// Outwardness is asserted geometrically rather than against a fixed
+    /// index table: for a convex body, a face is outward-wound iff its
+    /// right-hand-rule normal has a positive dot product with the vector
+    /// from the body centroid to the face centroid. That test is what
+    /// `refine_volume_with_size_field`'s `classify_surfaces` +
+    /// `geo_add_surface_loop` step ultimately depends on (an inward-wound
+    /// loop yields no volume), so it is the property worth pinning.
+    #[test]
+    fn boundary_surface_mesh_of_single_tet_emits_four_outward_wound_faces() {
+        let vm = single_tet_mesh();
+
+        let mesh = boundary_surface_mesh(&vm).expect("a single P1 tet is a well-formed tet mesh");
+
+        assert_eq!(
+            mesh.vertices.len(),
+            12,
+            "all 4 tet vertices lie on the boundary: 4 x 3 floats",
+        );
+        assert_eq!(
+            mesh.indices.len(),
+            12,
+            "a single tet has 4 boundary faces: 4 x 3 indices",
+        );
+
+        let body_centroid = volume_centroid(&vm);
+        for t in 0..mesh.indices.len() / 3 {
+            let n = triangle_normal(&mesh, t);
+            let c = triangle_centroid(&mesh, t);
+            let outward = [
+                c[0] - body_centroid[0],
+                c[1] - body_centroid[1],
+                c[2] - body_centroid[2],
+            ];
+            let dot = n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2];
+            assert!(
+                dot > 0.0,
+                "face {t} must be wound OUTWARD: normal={n:?}, outward={outward:?}, dot={dot}",
+            );
+        }
+    }
 }
