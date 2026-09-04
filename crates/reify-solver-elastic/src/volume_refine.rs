@@ -87,6 +87,18 @@ pub enum RefineError {
         /// `volume_mesh.vertices.len() / 3`, the exclusive upper bound.
         vertex_count: usize,
     },
+    /// `volume_mesh.vertices.len()` is not a whole multiple of 3, so the flat
+    /// buffer does not describe a whole number of XYZ positions (task 4909).
+    ///
+    /// Raised by [`boundary_surface_mesh`], which copies vertex positions
+    /// through by triple. Rejecting rather than truncating mirrors
+    /// `reify_eval::compute_targets::elastic_static::volume_mesh_to_solver_mesh`,
+    /// which returns `None` on the same condition instead of silently dropping
+    /// the trailing partial vertex via truncating integer division.
+    MalformedVertexBuffer {
+        /// `volume_mesh.vertices.len()`.
+        len: usize,
+    },
 }
 
 impl fmt::Display for RefineError {
@@ -131,6 +143,11 @@ impl fmt::Display for RefineError {
                 f,
                 "tet index {vertex_index} is out of range (mesh has {vertex_count} \
                  vertices)"
+            ),
+            RefineError::MalformedVertexBuffer { len } => write!(
+                f,
+                "malformed vertex buffer: {len} floats is not a whole multiple of \
+                 3, so it does not describe a whole number of XYZ positions"
             ),
         }
     }
@@ -444,11 +461,37 @@ fn sorted_face_key(face: [u32; 3]) -> [u32; 3] {
 /// tessellated surface of the same solid, whose triangulation would not share
 /// vertices with the tet mesh at all.
 ///
+/// # Element order
+///
+/// P1 and P2 tets are both accepted; a P2 element contributes CORNER-ONLY
+/// boundary triangles (its first four indices, gmsh canonical order). The
+/// surface is pushed to gmsh as linear triangles regardless of the volume
+/// element order requested, so mid-side nodes must not enter it.
+///
 /// # Errors
 ///
-/// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
-/// connectivity is not tetrahedral.
+/// Everything the shared [`tet_shape`] gate rejects —
+/// [`RefineError::UnsupportedConnectivity`] for a Hex/Wedge mesh,
+/// [`RefineError::MalformedTetIndices`] for an index buffer that is not a
+/// whole multiple of the per-element stride, and
+/// [`RefineError::InvalidTetIndex`] for an index addressing a vertex that
+/// does not exist — plus [`RefineError::MalformedVertexBuffer`] for a vertex
+/// buffer that does not describe a whole number of XYZ positions.
 pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineError> {
+    // Mesh-shape gate: the SAME chokepoint `refine_with_size_field` and
+    // `adaptive::refine_marked_elements` run first, rather than a second,
+    // divergent validator. It rejects Hex/Wedge, a non-multiple index buffer
+    // and out-of-range index VALUES — the last of which is load-bearing here,
+    // because `outward_tet_faces` reads `vertices[..]` unguarded.
+    let shape = tet_shape(volume_mesh)?;
+    // `tet_shape`'s index-range check uses a truncating `vertices.len() / 3`,
+    // so a trailing partial vertex slips past it. Reject rather than truncate,
+    // mirroring `volume_mesh_to_solver_mesh`'s `is_multiple_of(3)` guard.
+    if !volume_mesh.vertices.len().is_multiple_of(3) {
+        return Err(RefineError::MalformedVertexBuffer {
+            len: volume_mesh.vertices.len(),
+        });
+    }
     let tet_indices = volume_mesh
         .tet_indices()
         .ok_or(RefineError::UnsupportedConnectivity)?;
@@ -457,9 +500,17 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
     // outward winding, and tally each face's orientation-free key. Two tets
     // sharing a face necessarily wind it oppositely, so the key must be
     // orientation-free for the tally to see them as the same face.
-    let mut faces: Vec<[u32; 3]> = Vec::with_capacity(tet_indices.len());
+    //
+    // The walk uses `shape.stride` (4 for P1, 10 for P2) and reads only the
+    // FIRST FOUR indices of each element — the corner nodes, in gmsh
+    // canonical order. Mid-side nodes must not enter the surface: the surface
+    // handed to `refine_volume_with_size_field` is pushed as LINEAR
+    // `add_elements_2d(.., 2, ..)` triangles regardless of the requested
+    // volume element order, so a P2 element still contributes corner-only
+    // boundary triangles.
+    let mut faces: Vec<[u32; 3]> = Vec::with_capacity(shape.n_elements * 4);
     let mut face_counts: HashMap<[u32; 3], u32> = HashMap::new();
-    for tet in tet_indices.chunks_exact(4) {
+    for tet in tet_indices.chunks_exact(shape.stride) {
         for face in outward_tet_faces(volume_mesh, tet[0], tet[1], tet[2], tet[3]) {
             *face_counts.entry(sorted_face_key(face)).or_insert(0) += 1;
             faces.push(face);
@@ -1190,5 +1241,83 @@ mod tests {
              {{ vertex_index: 9, vertex_count: 4 }} rather than panicking, got: {:?}",
             boundary_surface_mesh(&out_of_range),
         );
+    }
+
+    /// A vertex buffer whose length is not a multiple of 3 does not describe a
+    /// whole number of XYZ positions. `tet_shape`'s own index-range check uses
+    /// a TRUNCATING `vertices.len() / 3`, so the trailing partial vertex slips
+    /// past it — hence the separate guard, mirroring
+    /// `volume_mesh_to_solver_mesh`'s `is_multiple_of(3)` rejection.
+    #[test]
+    fn boundary_surface_mesh_rejects_a_vertex_buffer_that_is_not_whole_positions() {
+        let mut vm = single_tet_mesh();
+        vm.vertices.push(0.0); // 13 floats: 4 positions + 1 stray
+        assert!(
+            matches!(
+                boundary_surface_mesh(&vm),
+                Err(RefineError::MalformedVertexBuffer { len: 13 }),
+            ),
+            "a 13-float vertex buffer must be rejected rather than truncated, got: {:?}",
+            boundary_surface_mesh(&vm),
+        );
+    }
+
+    /// A P2 element contributes CORNER-ONLY boundary triangles.
+    ///
+    /// The surface is handed to `refine_volume_with_size_field` as LINEAR
+    /// `add_elements_2d(.., 2, ..)` triangles regardless of the volume element
+    /// order requested, so the six mid-side nodes must not enter the surface —
+    /// they are referenced by no free face and are compacted away.
+    #[test]
+    fn boundary_surface_mesh_of_a_p2_tet_emits_corner_only_faces() {
+        // Corners 0..=3 are `single_tet_mesh`'s; 4..=9 are the six edge
+        // midpoints in gmsh canonical P2 order (01, 12, 02, 03, 13, 23).
+        #[rustfmt::skip]
+        let vertices = vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            0.0, 1.0, 0.0, // 2
+            0.0, 0.0, 1.0, // 3
+            0.5, 0.0, 0.0, // 4  = mid(0,1)
+            0.5, 0.5, 0.0, // 5  = mid(1,2)
+            0.0, 0.5, 0.0, // 6  = mid(0,2)
+            0.0, 0.0, 0.5, // 7  = mid(0,3)
+            0.5, 0.0, 0.5, // 8  = mid(1,3)
+            0.0, 0.5, 0.5, // 9  = mid(2,3)
+        ];
+        let vm = VolumeMesh {
+            vertices,
+            connectivity: VolumeConnectivity::Tet {
+                indices: (0..10_u32).collect(),
+                order: ElementOrderTag::P2,
+            },
+            normals: None,
+            boundary: None,
+        };
+
+        let surf = boundary_surface_mesh(&vm).expect("a single P2 tet is a well-formed tet mesh");
+
+        assert_eq!(
+            surf.indices.len() / 3,
+            4,
+            "a single tet has 4 boundary faces regardless of element order",
+        );
+        assert_eq!(
+            surf.vertices.len() / 3,
+            4,
+            "only the 4 CORNER nodes may reach the surface; the 6 mid-side \
+             nodes are referenced by no face and must be compacted away",
+        );
+        for v in 0..surf.vertices.len() / 3 {
+            let p = [
+                surf.vertices[v * 3],
+                surf.vertices[v * 3 + 1],
+                surf.vertices[v * 3 + 2],
+            ];
+            assert!(
+                p.iter().all(|c| *c == 0.0 || *c == 1.0),
+                "surface vertex {v} at {p:?} is a mid-side node, not a corner",
+            );
+        }
     }
 }
