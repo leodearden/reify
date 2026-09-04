@@ -1025,9 +1025,9 @@ mod tests {
     fn volume_centroid(volume_mesh: &VolumeMesh) -> [f64; 3] {
         let n = volume_mesh.vertices.len() / 3;
         let mut c = [0.0_f64; 3];
-        for i in 0..n {
-            for a in 0..3 {
-                c[a] += volume_mesh.vertices[i * 3 + a] as f64 / n as f64;
+        for vertex in volume_mesh.vertices.chunks_exact(3) {
+            for (axis, sum) in c.iter_mut().enumerate() {
+                *sum += vertex[axis] as f64 / n as f64;
             }
         }
         c
