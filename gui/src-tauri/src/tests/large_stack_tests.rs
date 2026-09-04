@@ -1767,41 +1767,47 @@ fn a_pool_job_may_submit_to_another_lane() {
 // have run before the test runs it by hand. No global lane is touched, and no
 // assertion depends on a race.
 
-/// (ah) An ABANDONED submission to an `OnAbandon::Discard` destination is
-/// dropped at the lane instead of driven.
+/// The shared body of (ah) and (aj0): manufacture an ABANDONED submission to a
+/// destination declared with `on_abandon`, and report whether the lane drove
+/// its future.
 ///
-/// The abandonment is SYNTHESISED — `tokio::time::timeout` elapsing drops the
-/// awaiting future, which drops the `oneshot` receiver and closes the
-/// `reply_tx` the job holds. It is not modelled on a production trigger,
-/// because in `tauri` 2.11.2 there isn't one short of runtime teardown: an
-/// abandoned `invoke` leaves the command future detached and running (see this
-/// section's header). This pins the mechanism, not a saving.
+/// (ah) and (aj0) differ in exactly two things — the destination's declared
+/// policy, and the polarity of the conclusion — so what they share is written
+/// ONCE here. Writing it twice is what would let the two drift, and every part
+/// of it is load-bearing: the synthetic sender whose `Receiver` this frame
+/// holds, the elapsing timeout that PERFORMS the abandonment, the `try_recv`
+/// proving the job was nonetheless enqueued, and the hand-invocation on a plain
+/// `std` thread. A fix applied to one copy would silently not reach the other.
+/// Same reason `observe_concurrent_arrivals` above exists.
 ///
-/// The job is then invoked ON A PLAIN THREAD rather than in this frame, for a
-/// reason that is the difference between an attributable RED and a confusing
-/// one: the job carries a `Handle::block_on`, and calling that inside this
+/// The preconditions are asserted HERE rather than by the callers, because they
+/// are preconditions of the MEASUREMENT and not either test's claim: the await
+/// must elapse (that elapse *is* the abandonment), the future must not have
+/// been polled beforehand (this frame holds the only `Receiver`), the job must
+/// have been enqueued regardless, and invoking it must not panic. Only the
+/// answer — was the future polled — is returned, and each caller asserts its
+/// own polarity on it.
+///
+/// # Why the job is invoked on a plain `std` thread
+///
+/// The job carries a `Handle::block_on`, and calling that inside this test's
 /// runtime panics "Cannot start a runtime from within a runtime". On a plain
-/// `std` thread it is legal — so at RED the future genuinely runs and this fails
-/// on the flag it is about, rather than on a nested-runtime panic that names
-/// nothing.
-///
-/// The join assertion is the second half of the claim: a skipped job must be a
-/// clean NO-OP, not a new failure mode. Returning early drops the captured
-/// future without polling it, which runs its destructors exactly as an abandoned
-/// Tauri command future did before task 5772.
-#[tokio::test]
-async fn an_abandoned_submission_is_dropped_at_the_lane_instead_of_driven() {
-    use crate::large_stack::{JobSender, OnAbandon, dispatch_async};
+/// `std` thread it is legal — so at RED the future genuinely runs and the
+/// caller fails on the flag it is about, rather than on a nested-runtime panic
+/// that names nothing.
+async fn abandoned_submission_was_polled(
+    on_abandon: crate::large_stack::OnAbandon,
+    sender_name: &'static str,
+) -> bool {
+    use crate::large_stack::{JobSender, dispatch_async};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    // The test HOLDS `rx`, so nothing drains the queue and the job provably
+    // This frame HOLDS `rx`, so nothing drains the queue and the job provably
     // cannot run before the hand-invocation below.
     let (tx, rx) = std::sync::mpsc::channel();
-    // `Discard` is the whole subject here: on an `OnAbandon::Run` destination
-    // this same submission MUST be driven, which is (aj0)'s claim.
-    let sender = JobSender::new("test-cancel", tx, OnAbandon::Discard);
+    let sender = JobSender::new(sender_name, tx, on_abandon);
 
     let polled = Arc::new(AtomicBool::new(false));
     let polled_in_fut = Arc::clone(&polled);
@@ -1821,28 +1827,46 @@ async fn an_abandoned_submission_is_dropped_at_the_lane_instead_of_driven() {
     );
     assert!(
         !polled.load(Ordering::SeqCst),
-        "precondition: the job cannot have run yet — this test holds the only \
+        "precondition: the job cannot have run yet — this frame holds the only \
          `Receiver`"
     );
 
-    let job = rx
-        .try_recv()
-        .expect("the abandoned request must still have been ENQUEUED — this test \
-                 is about what the lane does with it, not about whether it arrived");
+    let job = rx.try_recv().expect(
+        "the abandoned request must still have been ENQUEUED — these tests are \
+         about what the lane does with it, not about whether it arrived",
+    );
 
-    // A plain `std` thread is never a runtime context, so the job's
-    // `Handle::block_on` is legal there and a non-skipping impl genuinely drives
-    // the future — which is what makes the assertion below attributable.
-    std::thread::spawn(job)
-        .join()
-        .expect(
-            "invoking a skipped job must be a clean no-op: dropping the captured \
-             future must not panic, or cancellation would trade wasted work for a \
-             new failure mode",
-        );
+    std::thread::spawn(job).join().expect(
+        "invoking the job must be a clean no-op or a clean run, never a panic. \
+         On a `Discard` destination the captured future is dropped unpolled, \
+         and that drop must not panic — cancellation must not trade wasted work \
+         for a new failure mode.",
+    );
+
+    polled.load(Ordering::SeqCst)
+}
+
+/// (ah) An ABANDONED submission to an `OnAbandon::Discard` destination is
+/// dropped at the lane instead of driven.
+///
+/// The abandonment is SYNTHESISED by `abandoned_submission_was_polled` above —
+/// `tokio::time::timeout` elapsing drops the awaiting future, which drops the
+/// `oneshot` receiver and closes the `reply_tx` the job holds. It is not
+/// modelled on a production trigger, because in `tauri` 2.11.2 there isn't one
+/// short of runtime teardown: an abandoned `invoke` leaves the command future
+/// detached and running (see this section's header). This pins the mechanism,
+/// not a saving.
+///
+/// `Discard` is the whole subject: on an `OnAbandon::Run` destination this same
+/// submission MUST be driven, which is (aj0)'s claim and its visible twin.
+#[tokio::test]
+async fn an_abandoned_submission_is_dropped_at_the_lane_instead_of_driven() {
+    use crate::large_stack::OnAbandon;
+
+    let polled = abandoned_submission_was_polled(OnAbandon::Discard, "test-cancel").await;
 
     assert!(
-        !polled.load(Ordering::SeqCst),
+        !polled,
         "the lane must DISCARD a job whose awaiting side is gone, not drive it. \
          The future was polled, so the abandoned request ran anyway — occupying a \
          consumer and delaying the live requests queued behind it, which is \
@@ -1911,58 +1935,28 @@ async fn a_live_submission_is_still_driven() {
 /// (aj0) An abandoned submission to an `OnAbandon::Run` destination IS DRIVEN.
 ///
 /// (ah)'s structural twin, and the one that makes cancel-at-the-lane a property
-/// of the DESTINATION rather than a blanket rule. Same synthetic shape, same
-/// manufactured abandonment, only the declared policy differs — so a regression
-/// to the blanket `if reply_tx.is_closed()` reds exactly here and nowhere else.
+/// of the DESTINATION rather than a blanket rule. Same manufactured
+/// abandonment, through the same `abandoned_submission_was_polled` body — the
+/// declared policy is the ONLY thing that differs, which is what makes a
+/// regression to the blanket `if reply_tx.is_closed()` red exactly here and
+/// nowhere else. Sharing the body is what keeps that claim literally true
+/// rather than true by resemblance.
 ///
-/// What it is standing in for is not hypothetical. The ordered LSP lane carries
+/// What it stands in for is not hypothetical. The ordered LSP lane carries
 /// `textDocument/didOpen`; discarding one unrun means `InProcessLsp` never
 /// learns the document exists, `RwState::did_change` then takes its `didChange
 /// for unknown URI` branch and applies nothing, and every query handler answers
 /// `Ok(None)` for that URI. The file is permanently dark until it is closed and
 /// reopened. `lsp_bridge_tests`' (o2) pins that end-to-end through the real
 /// composition; this pins the primitive underneath it.
-///
-/// The job is invoked on a plain `std` thread for (ah)'s stated reason: it
-/// carries a `Handle::block_on`, which panics inside this runtime and is legal
-/// there.
 #[tokio::test]
 async fn an_abandoned_submission_to_a_run_destination_is_still_driven() {
-    use crate::large_stack::{JobSender, OnAbandon, dispatch_async};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
+    use crate::large_stack::OnAbandon;
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let sender = JobSender::new("test-run-anyway", tx, OnAbandon::Run);
-
-    let polled = Arc::new(AtomicBool::new(false));
-    let polled_in_fut = Arc::clone(&polled);
-
-    let elapsed = tokio::time::timeout(
-        Duration::from_millis(50),
-        dispatch_async(Some(&sender), async move {
-            polled_in_fut.store(true, Ordering::SeqCst);
-            7u32
-        }),
-    )
-    .await;
-    assert!(
-        elapsed.is_err(),
-        "precondition: with nobody draining the queue the await must time out — \
-         that elapse is what DROPS the submitted future and abandons the request"
-    );
-
-    let job = rx
-        .try_recv()
-        .expect("the abandoned request must still have been ENQUEUED");
-
-    std::thread::spawn(job)
-        .join()
-        .expect("running an abandoned job must not panic just because nobody is listening");
+    let polled = abandoned_submission_was_polled(OnAbandon::Run, "test-run-anyway").await;
 
     assert!(
-        polled.load(Ordering::SeqCst),
+        polled,
         "an `OnAbandon::Run` destination must DRIVE a job whose awaiting side is \
          gone. It was skipped — which for the ordered LSP lane means a queued \
          `didOpen` never reaches the server and the document stays permanently \
@@ -2189,18 +2183,28 @@ fn a_lane_reports_the_consumers_it_actually_started() {
     POOL.sender()
         .expect("the pool must start at least one consumer under test conditions");
 
+    // Strict equality, with the diagnostic carrying the triage rather than the
+    // assertion being softened — `>= 1` cannot see the silent narrowing this
+    // exists to catch, because that narrowing IS a count between 1 and `SIZE`.
+    // See (p)'s twin in `lsp_bridge_tests` for the same reasoning at length.
+    let started = POOL.started();
     assert_eq!(
-        POOL.started(),
-        SIZE,
-        "after creation the lane must report every consumer it actually \
-         spawned. `Lane::sender` warns and continues on a partial spawn \
-         failure, so this is the one number that distinguishes `size` \
-         consumers from one — and the assertion is against `SIZE` rather than \
-         `>= 1` because a shortfall is exactly the silent narrowing worth \
-         seeing."
+        started, SIZE,
+        "the lane started {started} of {SIZE} consumers. TRIAGE THE \
+         ENVIRONMENT FIRST, and the discriminator is on stderr: `Lane::sender` \
+         warns and continues on a partial spawn failure, printing `failed to \
+         spawn t6517-started lane consumer <i> of {SIZE}` with the OS error \
+         whenever a 256 MiB mapping was refused. This binary declares many at \
+         once — every lane and pool in it, across concurrently-running tests — \
+         so a restrictive `RLIMIT_AS`, `vm.overcommit_memory=2`, a low \
+         `vm.max_map_count` or a container memory cap can red this line with \
+         nothing in this crate having changed, which is precisely the case \
+         `Lane::sender` was written to survive. With NO such warning present \
+         the shortfall IS a code defect: a `started()` that under-reports \
+         makes (p)'s production guard meaningless."
     );
     assert_eq!(
-        POOL.started(),
+        started,
         POOL.size(),
         "on a healthy machine the realised count is the declared one; when it \
          is not, THAT is the fact worth reporting, and until `started()` \
