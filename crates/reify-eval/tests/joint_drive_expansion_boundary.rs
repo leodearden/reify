@@ -1251,38 +1251,58 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
     }
 }
 
-/// The joint-drive model with the child's LOWER BRACKET raised from `0.0` to
-/// `1.0` — moves the floored bound from the ABSOLUTE-floor regime into the
-/// RELATIVE-margin regime (see [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`]).
+/// Derive the BRACKET-SHIFTED variant from the shipped source by raising the
+/// child's LOWER BRACKET from `0.0` to `1.0` — moves the floored bound from
+/// the ABSOLUTE-floor regime into the RELATIVE-margin regime (see
+/// [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`]).
 ///
-/// Deliberately an INLINE source rather than an edit to the shipped
-/// `examples/whole_model_joint_drive.ri`, following the `OVERRIDE_SRC`
-/// precedent below: changing that file would perturb BT-5's hand-derived
-/// arithmetic and re-trigger the three example auto-enrolling gates
-/// (`examples_smoke`, the determinism walk, the no-bare-`Scalar` corpus check)
-/// for no benefit.
-const SHIFTED_LOWER_BRACKET_SRC: &str = r#"
-module joint_drive_shifted_lower_bracket
-
-structure def Rivet : Costed {
-    param supplier          : String = "Acme Fastener"
-    param part_number       : String = "R-4210"
-    param unit_cost         : Money  = 0.50USD
-    param lead_time         : Time   = 24h
-
-    param quantity_produced : Real   = auto(free)
-    constraint quantity_produced >= 1.0
-    constraint quantity_produced <= 100.0
+/// DERIVED, never transcribed — same rationale as [`strip_inlined_minimize`]
+/// above: a standalone copy of the model body would silently stop
+/// characterising the shipped example the moment its `unit_cost`, upper
+/// bracket, or structure changed, while this anti-rot test kept passing.
+/// Deriving from `src` also means the shipped
+/// `examples/whole_model_joint_drive.ri` itself is never edited: that would
+/// perturb BT-5's hand-derived arithmetic and re-trigger the three example
+/// auto-enrolling gates (`examples_smoke`, the determinism walk, the
+/// no-bare-`Scalar` corpus check) for no benefit, since the variant exists
+/// only to exercise the second margin regime.
+///
+/// Only the constraint line is touched — matched with the `constraint `
+/// keyword prefix so the substring is unambiguous (the bare
+/// `quantity_produced >= 0.0` also appears inside a header comment). The
+/// exactly-one assertion below is the guard on that claim, mirroring
+/// [`strip_inlined_minimize`]'s shape.
+fn shift_lower_bracket(src: &str) -> String {
+    const FROM: &str = "constraint quantity_produced >= 0.0";
+    const TO: &str = "constraint quantity_produced >= 1.0";
+    assert_eq!(
+        src.matches(FROM).count(),
+        1,
+        "exactly ONE `{FROM}` constraint must be present to derive the \
+         bracket-shifted variant — if the shipped example's lower bracket \
+         changed shape or count, this substitution is no longer well-defined \
+         and the variant would silently stop tracking the model it claims to \
+         be a variant of",
+    );
+    src.replacen(FROM, TO, 1)
 }
 
-structure RivetedPanel {
-    sub rivets = Rivet()
-
-    minimize cost(self.descendants)
-
-    let total_cost : Money = cost(self.descendants)
+/// The floored lower bound for a `param >= bracket` constraint under the
+/// robustness floor — the closed form derived in the docstring on
+/// [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`]:
+/// `bracket + max(REL_MARGIN × |bracket|, ABS_FLOOR_SI)`. Both constants are
+/// restated here BY VALUE, not imported: `solver.rs`'s `REL_MARGIN` /
+/// `ABS_FLOOR_SI` are private to that crate.
+///
+/// Used by BOTH arms of that test, so "the same rule at two brackets" is
+/// proven by construction — each arm asserts its OBSERVED value against this
+/// ONE function, rather than each carrying its own independently-typed-in
+/// expected constant.
+fn floored_lo(bracket: f64) -> f64 {
+    const REL_MARGIN: f64 = 0.02;
+    const ABS_FLOOR_SI: f64 = 1e-9;
+    bracket + (REL_MARGIN * bracket.abs()).max(ABS_FLOOR_SI)
 }
-"#;
 
 /// BT-5b — the merged auto lands ON the ROBUSTNESS-FLOORED lower bound, not on
 /// the raw constraint boundary and not on a fixed seed.
@@ -1341,28 +1361,34 @@ structure RivetedPanel {
 ///
 /// (a) Shipped model (bracket `0.0`) — ABSOLUTE-floor regime. The bound
 ///     magnitude is 0, so `m = max(0.02×0, 1e-9)` degenerates to the absolute
-///     floor `1e-9`, and the floored lower bound is `1e-9`.
-/// (b) Bracket-shifted variant (bracket `1.0`, [`SHIFTED_LOWER_BRACKET_SRC`])
-///     — RELATIVE-margin regime. `m = max(0.02×1.0, 1e-9) = 0.02`, so the
-///     floored lower bound is `1.02`. This matches the solver's own worked
-///     example ("`x > 1mm` → m = 20µm → floor: x ≥ 1.02mm", the doc comment
-///     on `const REL_MARGIN`) and its unit test
-///     `(lo.0 - 1.02).abs() < 1e-12`, named `derive_intervals_floor_slack_shapes`. It
-///     is also the direct executable REFUTATION of the header's former
-///     (falsified) claim that this bracket makes the solve report
-///     `RobustnessFloorInfeasible` — [`eval_ri_with_real_solver`] already
-///     asserts zero `Severity::Error`, so that regression would fail here
-///     automatically.
+///     floor `1e-9`, and the floored lower bound is `floored_lo(0.0) = 1e-9`.
+/// (b) Bracket-shifted variant (bracket `1.0`, derived by
+///     [`shift_lower_bracket`]) — RELATIVE-margin regime. `m = max(0.02×1.0,
+///     1e-9) = 0.02`, so the floored lower bound is `floored_lo(1.0) = 1.02`.
+///     This matches the solver's own worked example ("`x > 1mm` → m = 20µm →
+///     floor: x ≥ 1.02mm", the doc comment on `const REL_MARGIN`) and its
+///     unit test `(lo.0 - 1.02).abs() < 1e-12`, named
+///     `derive_intervals_floor_slack_shapes`. It is also the direct
+///     executable REFUTATION of the header's former (falsified) claim that
+///     this bracket makes the solve report `RobustnessFloorInfeasible` —
+///     [`eval_ri_with_real_solver`] already asserts zero `Severity::Error`,
+///     so that regression would fail here automatically.
+///
+/// Both arms assert their OBSERVED value against [`floored_lo`] evaluated at
+/// their OWN bracket, rather than each typing in its own expected constant —
+/// so "the same rule at two brackets" is proven by construction and needs no
+/// separate comparative assertion tying them together.
 ///
 /// # Not a house-norm violation
 ///
 /// The sibling BT-5 docstring's house norm forbids a precise CONVERGED value
 /// or a TUNED tolerance at the `.ri` layer (those belong at the
 /// `reify-constraints` layer with explicitly bounded autos). These assertions
-/// are different in kind: an order-of-magnitude band and a closed-form-margin
-/// tolerance, both derived from the two named solver constants above and only
-/// THEN confirmed against observation — never tuned to match an unknown
-/// output. BT-5's own comparative assertions above are left untouched.
+/// are different in kind: both are closed-form-margin tolerances, derived
+/// from the two named solver constants above via the shared [`floored_lo`]
+/// helper and only THEN confirmed against observation — never tuned to match
+/// an unknown output. BT-5's own comparative assertions above are left
+/// untouched.
 #[test]
 fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
     // ---- (a) shipped model — ABSOLUTE-floor regime (bracket 0.0). ----
@@ -1376,26 +1402,37 @@ fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
         "merged (shipped, bracket 0.0)",
     );
 
-    // `merged_q > 0.0`: non-vacuity guard — a collapsed/Undef-as-0.0 auto must
-    // not pass. `merged_q <= 1e-6`: an ORDER-OF-MAGNITUDE band, deliberately
-    // not a precise pin — 3 orders above the derived floor 1e-9 and 7+ orders
-    // below the frozen-cascade box centre 50.0.
+    // Pinned against `floored_lo(0.0)` itself — not merely `> 0.0` — so a
+    // regression that lands the auto at ~0+eps (the floor mechanism not
+    // firing at all, e.g. `synthesise_floor_constraints` skipped or the
+    // clamp reverting to the raw `0.0` bracket) FAILS here. A merely-positive
+    // lower guard could not distinguish that from the intended `1e-9`, which
+    // is exactly the gap BT-5's own comparative assertions already missed
+    // once for the stale `0.01` (task #5939 amendment: reviewer finding).
+    // Tolerance 1e-12 has ample margin: the observed diff from `1e-9` is at
+    // f64-noise level (~1e-17), the same clamp-snaps-exactly mechanism
+    // [`floored_lo`]'s doc comment cites for arm (b).
+    let expected_merged = floored_lo(0.0);
     assert!(
-        merged_q > 0.0 && merged_q <= 1e-6,
-        "BT-5b(a): the shipped model's merged auto must land in the \
-         ABSOLUTE-floor band (0.0, 1e-6] — derived from `m = max(REL_MARGIN × \
-         |0.0|, ABS_FLOOR_SI) = ABS_FLOOR_SI = 1e-9`, so the floored lower \
-         bound is 1e-9. Got merged_q={merged_q}.",
+        (merged_q - expected_merged).abs() <= 1e-12,
+        "BT-5b(a): the shipped model's merged auto must land at the \
+         ABSOLUTE-floor lower bound floored_lo(0.0) = {expected_merged} — `m \
+         = max(REL_MARGIN × |0.0|, ABS_FLOOR_SI)` degenerates to \
+         `ABS_FLOOR_SI` at a zero bracket. Got merged_q={merged_q} (diff \
+         {}).",
+        (merged_q - expected_merged).abs(),
     );
 
     // ---- (b) bracket-shifted variant — RELATIVE-margin regime (bracket 1.0). ----
 
+    // Derived from the SAME shipped source `merged_src` was just read from
+    // (see [`shift_lower_bracket`]), not a standalone transcription.
+    //
     // `eval_ri_with_real_solver` already asserts zero `Severity::Error`, so a
     // `RobustnessFloorInfeasible` regression on this bracket fails right here.
-    let shifted = eval_ri_with_real_solver(
-        SHIFTED_LOWER_BRACKET_SRC,
-        "bracket-shifted (`quantity_produced >= 1.0`)",
-    );
+    let shifted_src = shift_lower_bracket(&merged_src);
+    let shifted =
+        eval_ri_with_real_solver(&shifted_src, "bracket-shifted (`quantity_produced >= 1.0`)");
     let shifted_q = scalar_si(
         &shifted,
         &ValueCellId::new("Rivet", "quantity_produced"),
@@ -1408,25 +1445,22 @@ fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
     // `derive_intervals_floor_slack_shapes`) — derived from the closed form
     // first, confirmed against observation second, never tuned to match an
     // unknown output.
+    let expected_shifted = floored_lo(1.0);
     assert!(
-        (shifted_q - 1.02).abs() <= 1e-6,
+        (shifted_q - expected_shifted).abs() <= 1e-6,
         "BT-5b(b): the bracket-shifted variant's merged auto must land at the \
-         RELATIVE-margin floored lower bound 1.0 + max(0.02×1.0, 1e-9) = 1.02. \
-         Got shifted_q={shifted_q} (diff {}).",
-        (shifted_q - 1.02).abs(),
+         RELATIVE-margin floored lower bound floored_lo(1.0) = \
+         {expected_shifted} (1.0 + max(0.02×1.0, 1e-9)). Got \
+         shifted_q={shifted_q} (diff {}).",
+        (shifted_q - expected_shifted).abs(),
     );
 
-    // ---- (c) tie the two regimes together — this is the RULE, not two ----
-    // ---- coincidences. ----
-
-    assert!(
-        shifted_q > merged_q,
-        "BT-5b(c): raising the lower bracket from 0.0 to 1.0 must raise the \
-         floored argmin — the ABSOLUTE floor (1e-9) at bracket 0.0 is strictly \
-         below the RELATIVE-margin floor (1.02) at bracket 1.0, per \
-         `floored_lo = bracket + max(REL_MARGIN×|bracket|, ABS_FLOOR_SI)`. Got \
-         shifted_q={shifted_q} vs merged_q={merged_q}.",
-    );
+    // (a) and (b) above both assert their OBSERVED value against the SAME
+    // `floored_lo` closed-form helper evaluated at their own bracket, so
+    // "the same rule at two brackets" is proven BY CONSTRUCTION — a separate
+    // `shifted_q > merged_q` comparison here would be entailed by (a)'s
+    // tolerance band and (b)'s tolerance band and would carry no independent
+    // signal (task #5939 amendment: reviewer finding).
 }
 
 /// BT-6(a) — an INTRA-TEMPLATE let cycle in a model that ALSO carries an auto
