@@ -1,14 +1,105 @@
-//! Contract tests for the canonical triplex tensegrity fixture.
+//! THE single definition of the canonical triplex tensegrity fixture.
 //!
-//! STEP 1 (RED): this module deliberately carries *only* its `#[cfg(test)]`
-//! contract tests. The items they exercise land in step 2; until then the test
-//! build fails to compile, which is the RED signal.
+//! The "triplex" is the canonical symmetric triangular T-prism used across the
+//! form-finding suites: 6 nodes on a unit circumradius, 3 crossing struts and 9
+//! cables. Before this module it existed as three hand-maintained copies inside
+//! `crates/reify-eval/tests/harness_fea_solver_e2e/` (the force-density gauge,
+//! the T1b free-standing form-find, and the combined membrane δ suite), so a
+//! topology or node-order change had to be mirrored by hand across all three or
+//! they silently drifted apart.
+//!
+//! ANTI-DRIFT PROPERTY: changing the topology or node order *here* changes every
+//! consuming suite at once. That is the whole point — resist re-inlining a
+//! "just this once" local variant in a call site.
+//!
+//! The two axes on which the three copies genuinely differed are preserved as
+//! explicit parameters rather than normalised away, because both are
+//! load-bearing:
+//!
+//!   * `bottom_z` — the gauge and T1b prisms have their bottom triangle at
+//!     `z = 0.0`; δ's sits at `z = -1.0`, a taller prism that feeds a different
+//!     solve.
+//!   * `surfaces` — see [`tensegrity`]: T1b's structure OMITS the `surfaces`
+//!     field entirely, where the gauge and δ carry it. Absent and present-but-
+//!     empty are different inputs, and at least one test turns on the
+//!     distinction.
+
+use crate::values::point3;
+use reify_ir::Value;
+
+/// Struts-then-cables member order — the ONE index space that `force_densities`
+/// and `member_forces` share. `TRIPLEX_MEMBERS[..TRIPLEX_STRUTS]` are the three
+/// crossing struts (compression, q < 0); the rest are the top, bottom and
+/// vertical cable triples (tension, q > 0).
+///
+/// Reordering this changes the meaning of every per-member array handed to or
+/// returned by a form-find solve.
+pub const TRIPLEX_MEMBERS: [(usize, usize); 12] = [
+    (0, 4),
+    (1, 5),
+    (2, 3),
+    (0, 1),
+    (1, 2),
+    (2, 0),
+    (3, 4),
+    (4, 5),
+    (5, 3),
+    (0, 3),
+    (1, 4),
+    (2, 5),
+];
+
+/// Split point of [`TRIPLEX_MEMBERS`]: the first `TRIPLEX_STRUTS` entries are
+/// struts, the remainder cables. That split is what lets consumers re-assert the
+/// documented sign contract (struts q < 0, cables q > 0) instead of merely
+/// checking finiteness.
+pub const TRIPLEX_STRUTS: usize = 3;
+
+/// The anchored node set for the anchored (non-free-standing) solves: the bottom
+/// triangle {3, 4, 5} is fixed, the top triangle {0, 1, 2} is free.
+pub const TRIPLEX_ANCHORS: [i64; 3] = [3, 4, 5];
+
+/// The canonical symmetric triplex prism at circumradius 1: top triangle
+/// (nodes 0, 1, 2) at `top_z` and azimuth 120°·i, bottom triangle (nodes 3, 4,
+/// 5) at `bottom_z` and azimuth 120°·i + 30°.
+///
+/// `bottom_z` is a parameter, not a constant, because the pre-existing fixtures
+/// genuinely disagreed on it — gauge and T1b use `0.0`, δ uses `-1.0`. Silently
+/// picking one would change the geometry a solve converges from.
+///
+/// Coordinates are built with [`crate::values::point3`], so each node is a
+/// `Value::Point` of three LENGTH-dimensioned SI-metre `Value::Scalar`s.
+pub fn triplex_nodes(top_z: f64, bottom_z: f64) -> Vec<Value> {
+    // `.to_radians()` is `self * (PI / 180.0)`; the contract tests below pin
+    // that it agrees bit-for-bit with the explicit `* (PI / 180.0)` spelling the
+    // superseded T1b/δ copies used, so this collapse is not a numerical change.
+    let ring = |i: usize, twist: f64, z: f64| {
+        let a = (120.0 * (i as f64) + twist).to_radians();
+        point3(a.cos(), a.sin(), z)
+    };
+    let mut nodes: Vec<Value> = (0..3).map(|i| ring(i, 0.0, top_z)).collect();
+    nodes.extend((0..3).map(|i| ring(i, 30.0, bottom_z)));
+    nodes
+}
+
+/// The canonical triplex geometry: `triplex_nodes(1.0, 0.0)` — circumradius 1,
+/// height 1, 30° twist. This is the gauge / T1b prism.
+pub fn canonical_triplex_nodes() -> Vec<Value> {
+    triplex_nodes(1.0, 0.0)
+}
+
+/// Lower a list of index tuples (`[[j, k], …]` for struts and cables,
+/// `[[i, j, k], …]` for surfaces) the way the DSL lowers them: a `Value::List`
+/// of `Value::List`s of `Value::Int`.
+pub fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
+    let row = |r: &[i64; N]| Value::List(r.iter().map(|&i| Value::Int(i)).collect());
+    Value::List(rows.iter().map(row).collect())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
-    use reify_ir::Value;
 
     /// The azimuth formulation used by the two *pre-refactor* inline copies
     /// (`tensegrity_t1b_form_find_e2e.rs` and
@@ -89,9 +180,9 @@ mod tests {
         let nodes = canonical_triplex_nodes();
         assert_eq!(nodes.len(), 6, "the canonical triplex has exactly 6 nodes");
 
-        for i in 0..3 {
+        for (i, n) in nodes.iter().take(3).enumerate() {
             let a = azimuth_rads(120.0 * (i as f64));
-            let got = point_components(&nodes[i]);
+            let got = point_components(n);
             assert_bits_eq(got[0], a.cos(), &format!("top node {i} x"));
             assert_bits_eq(got[1], a.sin(), &format!("top node {i} y"));
             assert_bits_eq(got[2], 1.0, &format!("top node {i} z"));
@@ -147,11 +238,9 @@ mod tests {
             assert_bits_eq(d[0], c[0], &format!("node {i} x must not move with bottom_z"));
             assert_bits_eq(d[1], c[1], &format!("node {i} y must not move with bottom_z"));
         }
-        for i in 0..3 {
-            assert_bits_eq(point_components(&delta[i])[2], 1.0, &format!("top node {i} z"));
-        }
-        for i in 3..6 {
-            assert_bits_eq(point_components(&delta[i])[2], -1.0, &format!("bottom node {i} z"));
+        for (i, n) in delta.iter().enumerate() {
+            let (ring, want_z) = if i < 3 { ("top", 1.0) } else { ("bottom", -1.0) };
+            assert_bits_eq(point_components(n)[2], want_z, &format!("{ring} node {i} z"));
         }
     }
 
