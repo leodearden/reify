@@ -1094,4 +1094,101 @@ mod tests {
             );
         }
     }
+
+    // ---- step-5/6 pins: the shared tet_shape gate ----
+
+    /// `boundary_surface_mesh` must reject a mis-shaped mesh through the SAME
+    /// [`tet_shape`] chokepoint the two remesh entry points already use
+    /// (`refine_with_size_field`, `adaptive::refine_marked_elements`), rather
+    /// than growing a second, divergent validator.
+    ///
+    /// The out-of-range case is the load-bearing one: `outward_tet_faces`
+    /// reads `volume_mesh.vertices[..]` unguarded to measure the element's
+    /// signed volume, so without the gate an index addressing a
+    /// non-existent vertex aborts the process instead of returning a
+    /// `RefineError`.
+    #[test]
+    fn boundary_surface_mesh_rejects_malformed_meshes_through_the_shared_tet_shape_gate() {
+        // Hex connectivity: the refine pipeline is tet-only.
+        let hex = VolumeMesh {
+            vertices: vec![0.0_f32; 8 * 3],
+            connectivity: VolumeConnectivity::Hex {
+                indices: (0..8_u32).collect(),
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert!(
+            matches!(
+                boundary_surface_mesh(&hex),
+                Err(RefineError::UnsupportedConnectivity),
+            ),
+            "a Hex mesh must be rejected as UnsupportedConnectivity, got: {:?}",
+            boundary_surface_mesh(&hex),
+        );
+
+        let wedge = VolumeMesh {
+            vertices: vec![0.0_f32; 6 * 3],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: (0..6_u32).collect(),
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert!(
+            matches!(
+                boundary_surface_mesh(&wedge),
+                Err(RefineError::UnsupportedConnectivity),
+            ),
+            "a Wedge mesh must be rejected as UnsupportedConnectivity, got: {:?}",
+            boundary_surface_mesh(&wedge),
+        );
+
+        // Index buffer that is not a whole multiple of the P1 stride: 5
+        // indices describe neither one element nor two. Truncating to one
+        // would silently drop a corner.
+        let ragged = VolumeMesh {
+            vertices: vec![0.0_f32; 5 * 3],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert!(
+            matches!(
+                boundary_surface_mesh(&ragged),
+                Err(RefineError::MalformedTetIndices { len: 5, stride: 4 }),
+            ),
+            "a ragged index buffer must be rejected as MalformedTetIndices \
+             {{ len: 5, stride: 4 }}, got: {:?}",
+            boundary_surface_mesh(&ragged),
+        );
+
+        // Correctly SHAPED buffer whose index VALUE addresses a vertex that
+        // does not exist. Must return before any face enumeration touches
+        // `vertices[..]`, i.e. must not panic.
+        let out_of_range = VolumeMesh {
+            vertices: vec![0.0_f32; 4 * 3],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 9],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert!(
+            matches!(
+                boundary_surface_mesh(&out_of_range),
+                Err(RefineError::InvalidTetIndex {
+                    vertex_index: 9,
+                    vertex_count: 4,
+                }),
+            ),
+            "an out-of-range tet index must be rejected as InvalidTetIndex \
+             {{ vertex_index: 9, vertex_count: 4 }} rather than panicking, got: {:?}",
+            boundary_surface_mesh(&out_of_range),
+        );
+    }
 }
