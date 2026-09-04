@@ -100,6 +100,7 @@ pub fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
+    use reify_ir::{PersistentMap, StructureTypeId};
 
     /// The azimuth formulation used by the two *pre-refactor* inline copies
     /// (`tensegrity_t1b_form_find_e2e.rs` and
@@ -289,6 +290,184 @@ mod tests {
                 Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
             ]),
             "3-wide rows lower to 3-element Int lists"
+        );
+    }
+
+    /// Destructure a structure Value into its field map, asserting the
+    /// `StructureInstance` shape.
+    fn structure_fields(v: &Value) -> &PersistentMap<String, Value> {
+        match v {
+            Value::StructureInstance(d) => &d.fields,
+            other => panic!("expected a Value::StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// A minimal non-triplex member set, so the `tensegrity` assembler contract
+    /// is pinned independently of the triplex topology.
+    fn stub_members() -> (Value, Value) {
+        (index_lists(&[[0, 4]]), index_lists(&[[0, 1]]))
+    }
+
+    /// The `Tensegrity` header every consumer matches on, plus the 3-key field
+    /// map T1b's superseded copy built. `None` must OMIT `surfaces`.
+    #[test]
+    fn tensegrity_with_none_surfaces_omits_the_key_entirely() {
+        let (struts, cables) = stub_members();
+        let v = tensegrity(canonical_triplex_nodes(), struts, cables, None);
+
+        let d = match &v {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a Value::StructureInstance, got {other:?}"),
+        };
+        assert_eq!(d.type_id, StructureTypeId(0), "Tensegrity fixtures use type_id 0");
+        assert_eq!(d.type_name, "Tensegrity", "the type name every consumer matches on");
+        assert_eq!(d.version, 1, "Tensegrity is version 1 (not 0 like Provenance)");
+
+        assert_eq!(d.fields.len(), 3, "exactly nodes/struts/cables — no surfaces key");
+        for key in ["nodes", "struts", "cables"] {
+            assert!(d.fields.get(key).is_some(), "field `{key}` must be present");
+        }
+        assert_eq!(
+            d.fields.get("surfaces"),
+            None,
+            "None must OMIT `surfaces` — never insert Value::Undef, never an empty list"
+        );
+    }
+
+    /// `Some(v)` inserts the key, giving the 4-key map the gauge and δ copies
+    /// built.
+    #[test]
+    fn tensegrity_with_some_surfaces_inserts_the_key() {
+        let (struts, cables) = stub_members();
+        let caps = triplex_caps();
+        let v = tensegrity(canonical_triplex_nodes(), struts, cables, Some(caps.clone()));
+
+        let fields = structure_fields(&v);
+        assert_eq!(fields.len(), 4, "nodes/struts/cables/surfaces");
+        assert_eq!(fields.get("surfaces"), Some(&caps), "`surfaces` is carried through verbatim");
+    }
+
+    /// THE distinction that makes a naive one-fixture collapse unsafe: a
+    /// PRESENT-but-empty `surfaces` list is a different input from an ABSENT
+    /// `surfaces` key. δ's backward-compat test asserts the no-surfaces path
+    /// returns an EMPTY echo and never Undef/absent, so both shapes have to stay
+    /// reachable and distinguishable.
+    #[test]
+    fn present_but_empty_surfaces_is_distinct_from_absent_surfaces() {
+        let (struts, cables) = stub_members();
+        let empty = tensegrity(
+            canonical_triplex_nodes(),
+            struts.clone(),
+            cables.clone(),
+            Some(Value::List(vec![])),
+        );
+        let absent = tensegrity(canonical_triplex_nodes(), struts, cables, None);
+
+        assert_eq!(
+            structure_fields(&empty).get("surfaces"),
+            Some(&Value::List(vec![])),
+            "Some(empty list) must be PRESENT and empty"
+        );
+        assert_eq!(
+            structure_fields(&absent).get("surfaces"),
+            None,
+            "None must be ABSENT from the field map"
+        );
+        assert_eq!(structure_fields(&empty).len(), 4);
+        assert_eq!(structure_fields(&absent).len(), 3);
+        assert_ne!(empty, absent, "the two are different inputs to a form-find solve");
+    }
+
+    /// The kernel topology, transcribed from the superseded T1b and δ copies:
+    /// struts then top ring, bottom ring, verticals — in that exact order.
+    #[test]
+    fn triplex_tensegrity_lowers_the_kernel_topology() {
+        let v = triplex_tensegrity(1.0, 0.0, None);
+        let fields = structure_fields(&v);
+
+        assert_eq!(
+            fields.get("nodes"),
+            Some(&Value::List(canonical_triplex_nodes())),
+            "nodes are the canonical prism at the requested heights"
+        );
+        assert_eq!(
+            fields.get("struts"),
+            Some(&Value::List(vec![
+                Value::List(vec![Value::Int(0), Value::Int(4)]),
+                Value::List(vec![Value::Int(1), Value::Int(5)]),
+                Value::List(vec![Value::Int(2), Value::Int(3)]),
+            ])),
+            "struts are TRIPLEX_MEMBERS[..TRIPLEX_STRUTS]: the three crossing diagonals"
+        );
+        assert_eq!(
+            fields.get("cables"),
+            Some(&Value::List(vec![
+                // top ring
+                Value::List(vec![Value::Int(0), Value::Int(1)]),
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+                Value::List(vec![Value::Int(2), Value::Int(0)]),
+                // bottom ring
+                Value::List(vec![Value::Int(3), Value::Int(4)]),
+                Value::List(vec![Value::Int(4), Value::Int(5)]),
+                Value::List(vec![Value::Int(5), Value::Int(3)]),
+                // verticals
+                Value::List(vec![Value::Int(0), Value::Int(3)]),
+                Value::List(vec![Value::Int(1), Value::Int(4)]),
+                Value::List(vec![Value::Int(2), Value::Int(5)]),
+            ])),
+            "cables are TRIPLEX_MEMBERS[TRIPLEX_STRUTS..], in that exact order"
+        );
+    }
+
+    /// δ's instance: taller prism plus both end caps.
+    #[test]
+    fn triplex_tensegrity_carries_the_requested_geometry_and_surfaces() {
+        let v = triplex_tensegrity(1.0, -1.0, Some(triplex_caps()));
+        let fields = structure_fields(&v);
+
+        assert_eq!(
+            fields.get("nodes"),
+            Some(&Value::List(triplex_nodes(1.0, -1.0))),
+            "bottom_z reaches the assembled structure, not just triplex_nodes()"
+        );
+        assert_eq!(fields.get("surfaces"), Some(&triplex_caps()));
+        assert_eq!(fields.len(), 4);
+    }
+
+    /// The gauge's `caps()` and δ's inline `surfaces` literal were the same
+    /// value — top cap over nodes 0,1,2 and bottom cap over nodes 3,4,5.
+    #[test]
+    fn triplex_caps_are_the_two_end_triangles() {
+        assert_eq!(
+            triplex_caps(),
+            Value::List(vec![
+                Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]),
+                Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
+            ]),
+            "top cap over nodes 0,1,2 and bottom cap over nodes 3,4,5"
+        );
+    }
+
+    /// Struts to group 0, the six horizontals to group 1, the three verticals to
+    /// group 2 — byte-identical between the superseded T1b and δ copies.
+    #[test]
+    fn triplex_group_ids_follow_the_member_index_space() {
+        assert_eq!(
+            triplex_group_ids(),
+            Value::List(
+                [0i64, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2].into_iter().map(Value::Int).collect()
+            ),
+            "3 struts then 6 horizontals then 3 verticals, in TRIPLEX_MEMBERS order"
+        );
+    }
+
+    /// Seed ratios: struts compressive (−1), horizontals and verticals tensile (+1).
+    #[test]
+    fn triplex_seeds_are_one_compressive_and_two_tensile() {
+        assert_eq!(
+            triplex_seeds(),
+            Value::List(vec![Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)]),
+            "one seed per group, in group-id order"
         );
     }
 }
