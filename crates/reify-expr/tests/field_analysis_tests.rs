@@ -655,9 +655,12 @@ fn sample_safety_factor_field_returns_yield_over_von_mises() {
 // field — while `field_reductions.rs` was already written to consume exactly
 // the wrapper shape that `analysis.rs` refused to construct.
 //
-// The fixtures below are ported from `field_reductions_tests.rs:1968/2000/2018`
-// (integration test files are separate binaries, so they must be copied, not
-// imported).
+// The fixtures below are copied from `field_reductions_tests.rs:1968/2000/2018`.
+// That duplication is an accepted trade-off, not a language constraint: a
+// `tests/common/mod.rs` module (as `crates/reify-eval/tests/common/` does) or
+// the `reify-test-support` crate could share them. Hoisting would mean editing
+// `field_reductions_tests.rs`, which this task does not own, and the fixtures
+// are three small constructors whose numeric contracts are pinned there.
 
 /// Uniaxial window for a single principal stress σ: `[σ,0,0, 0,0,0, 0,0,0]`.
 ///
@@ -1212,101 +1215,18 @@ fn max_min_of_von_mises_over_sampled_field_reduce_to_closed_form() {
     );
 }
 
-/// `max`/`min` of `max_shear` over the Sampled stress fixture.
-///
-/// For a uniaxial window the eigenvalues are {0, 0, σ} ascending (σ > 0), so
-/// `compute_max_shear_3x3` = (eigs[2] − eigs[0]) / 2 = σ/2 exactly:
-/// {50e6, 125e6, 87.5e6}. Expected max = 125e6 Pa, min = 50e6 Pa.
-#[test]
-fn max_min_of_max_shear_over_sampled_field_reduce_to_closed_form() {
-    let (wrapper, wrapper_type) = wrapper_over_fixture("max_shear", pressure_scalar_type());
-
-    assert_eq!(
-        reduce(
-            "max",
-            wrapper.clone(),
-            wrapper_type.clone(),
-            pressure_scalar_type()
-        ),
-        pressure(125e6),
-        "max(max_shear(Sampled stress)) = max σ/2 = 250e6/2"
-    );
-    assert_eq!(
-        reduce("min", wrapper, wrapper_type, pressure_scalar_type()),
-        pressure(50e6),
-        "min(max_shear(Sampled stress)) = min σ/2 = 100e6/2"
-    );
-}
-
-/// `max`/`min` of `principal_stresses` over the Sampled stress fixture.
-///
-/// The projection is find_min-DEPENDENT (`field_reductions.rs`
-/// `project_principal_stresses_sampled`): `max` selects eigs[2] (σ₁, the
-/// largest principal stress) while `min` selects eigs[0] (σ₃, the smallest).
-/// For a uniaxial window the eigenvalues are {0, 0, σ}, so eigs[2] = σ and
-/// eigs[0] = 0 for every window. Expected max = 250e6 Pa, min = 0.0 Pa.
-///
-/// This find_min dependence is precisely why the wrapper is kept LAZY rather
-/// than eagerly projected at construction time: no single pre-projected
-/// buffer could serve both reductions.
-#[test]
-fn max_min_of_principal_stresses_over_sampled_field_reduce_to_closed_form() {
-    let (wrapper, wrapper_type) = wrapper_over_fixture(
-        "principal_stresses",
-        Type::List(Box::new(pressure_scalar_type())),
-    );
-
-    assert_eq!(
-        reduce(
-            "max",
-            wrapper.clone(),
-            wrapper_type.clone(),
-            pressure_scalar_type()
-        ),
-        pressure(250e6),
-        "max(principal_stresses(Sampled stress)) selects eigs[2] = the largest σ₁"
-    );
-    assert_eq!(
-        reduce("min", wrapper, wrapper_type, pressure_scalar_type()),
-        pressure(0.0),
-        "min(principal_stresses(Sampled stress)) selects eigs[0] = σ₃ = 0 for a uniaxial window"
-    );
-}
-
-/// `max`/`min` of `safety_factor` over the Sampled stress fixture.
-///
-/// safety_factor = yield / von Mises. With yield = 500e6 and von Mises =
-/// {100e6, 250e6, 175e6}: {5.0, 2.0, 2.857…}. Only the two exactly
-/// representable extremes are asserted — 500/175 is deliberately NOT asserted.
-///
-/// The codomain is `Type::dimensionless_scalar()`, and `wrap_codomain` maps a
-/// dimensionless scalar to `Value::Real`, not `Value::Scalar { DIMENSIONLESS }`.
-#[test]
-fn max_min_of_safety_factor_over_sampled_field_reduce_to_closed_form() {
-    let (field, field_type) = sampled_stress_fixture();
-    let wrapper = eval_safety_factor(field, field_type, 500e6);
-    assert_ne!(wrapper, Value::Undef, "safety_factor wrapper must construct");
-    let wrapper_type = Type::Field {
-        domain: Box::new(Type::dimensionless_scalar()),
-        codomain: Box::new(Type::dimensionless_scalar()),
-    };
-
-    assert_eq!(
-        reduce(
-            "max",
-            wrapper.clone(),
-            wrapper_type.clone(),
-            Type::dimensionless_scalar()
-        ),
-        Value::Real(5.0),
-        "max(safety_factor(.., 500e6)) = 500e6 / 100e6 = 5.0 (the least-stressed window)"
-    );
-    assert_eq!(
-        reduce("min", wrapper, wrapper_type, Type::dimensionless_scalar()),
-        Value::Real(2.0),
-        "min(safety_factor(.., 500e6)) = 500e6 / 250e6 = 2.0 (the most-stressed window)"
-    );
-}
+// The other three wrapper kinds are NOT re-reduced here. `max_shear`,
+// `principal_stresses` and `safety_factor` own their per-kernel numeric oracles
+// in `field_reductions_tests.rs`
+// (`max_min_max_shear_derived_sampled_field_returns_correct_extremum`,
+// `max_min_principal_stresses_...`, `max_min_safety_factor_...`) — over this
+// same uniaxial fixture, against the same expected numbers. Those tests
+// hand-build the `Field { source: Sampled, lambda: SampledField }` wrapper;
+// what THIS file adds is that `analysis.rs` now PRODUCES that exact shape, and
+// the section-(b) construction tests assert it directly (`source` plus
+// `lambda.as_ref() == &expected_inner`). The von Mises pair above is kept as
+// the one end-to-end seam check, and the all-NaN test below still drives all
+// four kinds through `max`/`min`/`argmax`/`argmin`.
 
 /// `argmax`/`argmin` of `von_mises` return DOMAIN COORDINATES, not values.
 ///
@@ -1461,7 +1381,8 @@ fn analysis_reductions_over_all_nan_sampled_field_return_undef() {
 /// dimension plumbed through `sample_field_at` (the wrapper's own codomain
 /// cannot recover it for `safety_factor`, whose codomain is dimensionless)
 /// plus a stride-3 variant for `principal_stresses`, i.e. edits to `lib.rs` and
-/// `sampled.rs` that fall well outside this task's assigned file set.
+/// `sampled.rs` that fall well outside this task's assigned file set. Task
+/// #7131 carries that work.
 ///
 /// This is NOT a regression from task 7129: before the fix
 /// `von_mises(sampled)` was itself `Undef`, so sampling it was `Undef` too.

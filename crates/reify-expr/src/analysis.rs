@@ -50,7 +50,9 @@
 //!   `sampled_backed_analysis_wrapper_is_constructed_but_pointwise_sample_still_undef`
 //!   in `tests/field_analysis_tests.rs`. This is not a regression from
 //!   admitting the Sampled backing: before it, the wrapper was itself `Undef`,
-//!   so sampling it was `Undef` too.
+//!   so sampling it was `Undef` too. Closing it needs the tensor element
+//!   dimension plumbed through `sample_field_at` plus a stride-3 variant for
+//!   `principal_stresses` — out of scope here, and carried by task #7131.
 
 use std::sync::Arc;
 
@@ -119,9 +121,15 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
 /// `field_reductions::project_sampled_tensor_windows`
 /// (`crates/reify-expr/src/field_reductions.rs`), when the wrapper is reduced.
 ///
-/// NOTE: Checks 1–2 duplicate the logic in `calculus::validate_differentiable_field`.
-/// A shared base validator would eliminate this duplication, but `calculus.rs` is
-/// outside the scope of this task's module locks. See reviewer suggestion #2.
+/// NOTE: check 1 duplicates `calculus::validate_differentiable_field`; check 2
+/// deliberately DIVERGES from it, so only check 1 is shared logic that a future
+/// common base validator could hoist. `calculus.rs` still hard-rejects every
+/// non-`Analytical | Composed` source inside its validator and handles the
+/// `(Sampled, Value::SampledField)` pair EARLIER, as an eager lowering in
+/// `compute_gradient` / `compute_divergence` / `compute_curl` /
+/// `compute_laplacian` (a Sampled source with any other lambda slot falls
+/// through to the validator and is still rejected). This wrapper instead admits
+/// the pair here and stays LAZY — nothing is projected at construction time.
 fn validate_tensor_field<'a>(
     field_val: &'a Value,
     op: &str,
