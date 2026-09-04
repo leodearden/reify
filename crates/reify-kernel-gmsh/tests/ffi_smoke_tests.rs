@@ -295,10 +295,32 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
 
     build_geo_unit_box();
 
+    // Negative control, and pins logger_get's documented "never started"
+    // edge case (see its doc comment in ffi.rs): before logger_start, the
+    // capture buffer is empty. This also proves the captured lines below
+    // come from the capture window opened below, not some other ambient
+    // buffer.
+    let pre_start_log = ffi::logger_get().expect("ffi::logger_get (pre-start) failed");
+    assert!(
+        pre_start_log.is_empty(),
+        "expected logger_get to return an empty Vec before logger_start, got {} lines",
+        pre_start_log.len(),
+    );
+
     ffi::logger_start().expect("ffi::logger_start failed");
     ffi::mesh_generate(3).expect("ffi::mesh_generate(3) failed");
     let log = ffi::logger_get().expect("ffi::logger_get failed");
     ffi::logger_stop().expect("ffi::logger_stop failed");
+
+    // Pins logger_get's documented "after logger_stop" edge case: stopping
+    // the logger drains the buffer, so a subsequent read returns an empty
+    // Vec (not an error) rather than replaying what `log` already captured.
+    let post_stop_log = ffi::logger_get().expect("ffi::logger_get (post-stop) failed");
+    assert!(
+        post_stop_log.is_empty(),
+        "expected logger_get to return an empty Vec after logger_stop, got {} lines",
+        post_stop_log.len(),
+    );
 
     assert!(
         !log.is_empty(),
@@ -314,6 +336,13 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
         "expected at least one captured line containing \"Meshing\", got: {log:?}",
     );
 
+    // MANDATORY teardown before the guard drops: General.Terminal is a
+    // process-global gmsh option (see the census test below's identical
+    // Mesh.ElementOrder teardown for the same hazard) — restore gmsh's own
+    // default so a later test does not silently inherit silenced
+    // stdout/stderr from this one, regardless of thread-scheduling order.
+    ffi::option_set_number("General.Terminal", 1.0)
+        .expect("ffi::option_set_number(General.Terminal=1) failed (teardown)");
     ffi::clear().expect("ffi::clear failed (cleanup)");
 }
 
@@ -345,6 +374,21 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
 /// census): measured `[1, 2, 4, 15]` at P1 and `[8, 9, 11, 15]` at P2 —
 /// that pins gmsh's whole-mesh B-rep decomposition, which is far more
 /// brittle than the dim-3 census this test actually needs.
+///
+/// The P1 leg additionally asserts the entity-scoped variant
+/// `get_element_types(3, volume)` against the box's own volume tag (not
+/// just the dim-scoped `tag=-1` form used elsewhere in this file), and the
+/// dim-2 census `get_element_types(2, -1)` — MEASURED `[2]` (3-node
+/// triangle) on the same box — so both `tag` and `dim` are each exercised
+/// with a non-default value at least once.
+///
+/// Also sets `General.Terminal = 0.0` up front (mirroring the
+/// logger-capture test above, which restores it to `1.0` in its own
+/// teardown): `General.Terminal` is a process-global gmsh option, so this
+/// test's own gmsh meshing chatter must not depend on whether the scheduler
+/// happens to run it before or after that test. The teardown below restores
+/// `1.0` for the same order-independence reason `Mesh.ElementOrder` is
+/// restored.
 #[test]
 fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
     let _guard = init::GMSH_LOCK
@@ -353,12 +397,20 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
 
     init::ensure_initialized();
 
+    // Silence gmsh's own stdout/stderr chatter regardless of test
+    // execution order — General.Terminal is a process-global gmsh option
+    // (see the logger-capture test above) that measurably survives
+    // gmshClear(), so setting it once here covers both legs below without
+    // needing to repeat the call.
+    ffi::option_set_number("General.Terminal", 0.0)
+        .expect("ffi::option_set_number(General.Terminal=0) failed");
+
     // P1 leg.
     ffi::clear().expect("ffi::clear failed (P1 setup)");
     ffi::model_add("census_p1").expect("ffi::model_add failed (P1)");
     ffi::option_set_number("Mesh.ElementOrder", 1.0)
         .expect("ffi::option_set_number(Mesh.ElementOrder=1) failed");
-    build_geo_unit_box();
+    let volume = build_geo_unit_box();
     ffi::mesh_generate(3).expect("ffi::mesh_generate(3) failed (P1)");
     let p1_types =
         ffi::get_element_types(3, -1).expect("ffi::get_element_types(3,-1) failed (P1)");
@@ -366,6 +418,25 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
         p1_types,
         vec![4],
         "P1 dim-3 element-type census must be exactly [4] (4-node tet), got {p1_types:?}",
+    );
+    // Entity-scoped variant (tag = the box's own volume, not -1): exercises
+    // the `tag >= 0` branch of gmshc.h's documented scoping semantics,
+    // which nothing else in this suite calls with a real positive tag.
+    let p1_types_scoped = ffi::get_element_types(3, volume)
+        .expect("ffi::get_element_types(3, volume) failed (P1)");
+    assert_eq!(
+        p1_types_scoped,
+        vec![4],
+        "P1 entity-scoped element-type census must be exactly [4], got {p1_types_scoped:?}",
+    );
+    // dim-2 census: covers the doc-claimed measured [2] (3-node triangle)
+    // on the same box, exercising a `dim` value other than 3.
+    let p1_dim2_types =
+        ffi::get_element_types(2, -1).expect("ffi::get_element_types(2,-1) failed (P1)");
+    assert_eq!(
+        p1_dim2_types,
+        vec![2],
+        "P1 dim-2 element-type census must be exactly [2] (3-node triangle), got {p1_dim2_types:?}",
     );
 
     // P2 leg.
@@ -388,5 +459,10 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
     // inherit order 2.
     ffi::option_set_number("Mesh.ElementOrder", 1.0)
         .expect("ffi::option_set_number(Mesh.ElementOrder=1) failed (teardown)");
+    // Likewise General.Terminal (set above): restore gmsh's own default so
+    // a later test does not silently inherit silenced stdout/stderr from
+    // this one.
+    ffi::option_set_number("General.Terminal", 1.0)
+        .expect("ffi::option_set_number(General.Terminal=1) failed (teardown)");
     ffi::clear().expect("ffi::clear failed (teardown)");
 }
