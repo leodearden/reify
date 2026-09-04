@@ -10,8 +10,8 @@
 #   2. Install gui/sidecar/ npm deps (tsup needs typescript at runtime).
 #   3. Build the sidecar (idempotent; ~20ms tsup bundle).
 #   4. Install gui/ npm deps (vite needs them).
-#   5. Start the vite dev server in its own PROCESS GROUP in the background and
-#      wait for :${REIFY_VITE_PORT:-1420}.
+#   5. Start the vite dev server in its own PROCESS GROUP, with stdin detached
+#      from the terminal, and wait for :${REIFY_VITE_PORT:-1420}.
 #   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
 #   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
 #      renderer default.
@@ -36,6 +36,13 @@
 #                  §2b). Without it, WebKitGTK aborts on an NVIDIA host with
 #                  "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
 #                  Export 0 to restore the DMABUF path where it works.
+#
+# vite stdin       The dev server is spawned with stdin redirected from
+#                  /dev/null, so vite's interactive CLI shortcuts (r/u/o/q) are
+#                  unavailable BY DESIGN. Without the redirect, job control
+#                  would hand the backgrounded vite this script's controlling
+#                  terminal and the kernel could stop it with SIGTTIN/SIGTTOU
+#                  — see §4.
 #
 # REIFY_GUI_SKIP_PREFLIGHT
 #                  Set to 1 to skip the display and vite-port preflights. They
@@ -177,6 +184,24 @@ echo "==> Installing gui dependencies..."
 # it, `npm run dev` forks an intermediate `sh -c` which forks the node/vite
 # process that actually holds the port, and that GRANDCHILD outlives every
 # signal cleanup() can address (see the note there).
+#
+# The `</dev/null` on the spawn below is LOAD-BEARING — it must not later be
+# deleted as cosmetic. Bash gives an asynchronous command /dev/null stdin only
+# while job control is OFF, so the `set -m` above would otherwise hand the
+# backgrounded vite our CONTROLLING TERMINAL while leaving it in a BACKGROUND
+# process group. vite 6 gates its CLI shortcuts on `process.stdin.isTTY`
+# (`if (!server.httpServer || !process.stdin.isTTY || process.env.CI) return;`)
+# and then builds a readline over stdin, so the dev server would READ that tty:
+# any keystroke stops it with SIGTTIN, and its raw-mode tcsetattr stops it with
+# SIGTTOU even with no input at all. A STOPPED vite freezes HMR and the dev
+# server while `kill -0 "$VITE_PID"` still SUCCEEDS, so §5's vite-death branch
+# never fires and we wait 30s on a frozen server; in the `set -m`-unavailable
+# fallback a stopped vite also ignores cleanup()'s plain `kill`/`pkill -P`
+# TERM, leaving the port squatted — the exact failure the process group above
+# set out to fix. The redirect additionally makes isTTY false, so vite skips
+# bindCLIShortcuts entirely and both stop paths close at the source. Pinned by
+# tests/infra/test_run_gui_scripts.sh Test 31, which drives the launcher under
+# a pty (the suite has no tty of its own, so nothing else can see this). #7254
 echo "==> Starting vite dev server on :$REIFY_VITE_PORT..."
 # Save the caller's monitor-mode state so we restore exactly what we found.
 _had_monitor=0
@@ -191,7 +216,7 @@ if [ "$VITE_PGROUP" -eq 0 ]; then
     echo "Warning: 'set -m' unavailable; vite teardown degraded to direct children only — a vite grandchild may survive and keep :$REIFY_VITE_PORT bound" >&2
 fi
 pushd gui >/dev/null
-npm run dev -- --port "$REIFY_VITE_PORT" &
+npm run dev -- --port "$REIFY_VITE_PORT" </dev/null &
 VITE_PID=$!
 popd >/dev/null
 if [ "$_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
