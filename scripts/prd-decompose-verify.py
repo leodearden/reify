@@ -292,6 +292,45 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
     return rec.get("exit_code") is not None
 
 
+# stderr signatures that mean "the probe ran but its target file was not there".
+# Both spellings occur: Rust's io::Error renders ENOENT as "(os error 2)", while
+# Python/CLI wrappers render the strerror text.  Matched case-insensitively.
+_FIXTURE_ABSENT_SIGNATURES = ("no such file or directory", "os error 2")
+
+
+def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
+    """True iff the record's captured stderr says the probe target did not exist.
+
+    Detection is STDERR-SIGNATURE based, not filesystem based, deliberately.
+    Re-stat-ing the fixture here would be a time-of-check/time-of-run split: the
+    synthesize step runs after the probes, potentially in a different working
+    directory, a different worktree, or after the leaf's own deliverable has
+    since been written.  A filesystem answer at synthesize time is therefore an
+    answer to a different question than "could this probe find its target when
+    it ran".  The captured stderr IS the record of what happened at run time,
+    and PRD §6 decision 4 exists precisely so this is answerable from the
+    record alone.
+
+    Carve-out for α's binary-not-found sentinel: a missing `reify` binary makes
+    the OS emit the SAME ENOENT text (α wraps it as
+    `f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}"`), but nothing was probed at all, so
+    it is a real harness failure that must keep blocking.  The sentinel is read
+    from α rather than re-declared as a literal so the two cannot drift.
+
+    Args:
+        rec: An α --json result record.
+
+    Returns:
+        True when the stderr carries a fixture-absent signature and is not α's
+        binary-not-found sentinel.
+    """
+    stderr = str(rec.get("stderr", ""))
+    if pcc._BINARY_NOT_FOUND_SENTINEL in stderr:
+        return False
+    lowered = stderr.lower()
+    return any(sig in lowered for sig in _FIXTURE_ABSENT_SIGNATURES)
+
+
 def classify_record(rec: Dict[str, Any]) -> str:
     """Classify a result record into one of the CAT_* categories.
 
@@ -307,18 +346,25 @@ def classify_record(rec: Dict[str, Any]) -> str:
                           being tabulated as falsifications.
       2. MALFORMED      — a blocking verdict with no executed-probe evidence.
                           A harness defect, not a premise falsification.
-      3. BLOCKING       — an evidence-backed falsification.
+      3. FIXTURE_ABSENT — the probe ran but its target file did not exist.
+                          Ordered AFTER malformed so an evidence-free record is
+                          never reclassified on the strength of a stderr string
+                          no process produced.
+      4. BLOCKING       — an evidence-backed falsification.
 
     Args:
         rec: An α --json result record.
 
     Returns:
-        One of CAT_NON_BLOCKING / CAT_MALFORMED / CAT_BLOCKING.
+        One of CAT_NON_BLOCKING / CAT_MALFORMED / CAT_FIXTURE_ABSENT /
+        CAT_BLOCKING.
     """
     if rec.get("verdict", "") not in _BLOCKING_VERDICTS:
         return CAT_NON_BLOCKING
     if not has_probe_evidence(rec):
         return CAT_MALFORMED
+    if fixture_absent_evidence(rec):
+        return CAT_FIXTURE_ABSENT
     return CAT_BLOCKING
 
 
@@ -381,6 +427,16 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         set `blocks`.  Without this, one real falsification was buried among N
         vacuous ones and a human reading the report could not tell them apart.
 
+    Fixture-absent carve-out (task #7257 ARM 1):
+        A probe that ran but could not find its target file has falsified
+        nothing — during decompose the fixture is very often the leaf's own
+        deliverable.  Such records are routed to `fixture_absent`, reported
+        under their own label, and do NOT set `blocks`.  Detection is
+        stderr-signature based rather than filesystem based; see
+        fixture_absent_evidence for the time-of-check/time-of-run rationale and
+        for the binary-not-found carve-out that keeps a missing `reify` binary
+        blocking.
+
     Args:
         role_results: dict with "prover" and "adversary" keys, each mapping to
                       a list of α --json result records.  Both keys are optional
@@ -406,6 +462,7 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
     fixture_absent: List[str] = []
     report_parts: List[str] = []
     malformed_parts: List[str] = []
+    fixture_absent_parts: List[str] = []
     executed = 0
 
     for rec in all_records:
@@ -440,6 +497,18 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
             malformed_parts.append("\n".join(parts))
             continue
 
+        if category == CAT_FIXTURE_ABSENT:
+            fixture_absent.append(capability)
+            parts = [
+                f"[{verdict}] {capability} (role: {role})",
+                f"  command:   {cmd_str}",
+                f"  exit_code: {exit_code}",
+            ]
+            if stderr:
+                parts.append(f"  stderr:    {stderr}")
+            fixture_absent_parts.append("\n".join(parts))
+            continue
+
         blocking.append(capability)
 
         # Build evidence block for this blocking probe.
@@ -464,6 +533,12 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         sections.append(
             "MALFORMED (no executed-probe evidence — harness defect, not a "
             "falsification):\n\n" + "\n\n".join(malformed_parts)
+        )
+    if fixture_absent_parts:
+        sections.append(
+            "FIXTURE ABSENT (probe could not run — the fixture is the leaf's own "
+            "deliverable; not a falsification):\n\n"
+            + "\n\n".join(fixture_absent_parts)
         )
     report = "\n\n".join(sections) if sections else ""
 
