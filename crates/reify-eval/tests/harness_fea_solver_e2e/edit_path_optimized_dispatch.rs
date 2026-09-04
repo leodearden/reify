@@ -45,16 +45,27 @@
 //!
 //! They use a synthetic O(1) `@optimized("test::edit_path_half_span")`
 //! trampoline rather than reusing `solve_elastic_static` as that sibling
-//! does. MEASURED,
-//! not assumed: a scratch prototype of the FEA form on this fixture family
-//! cost 318.75 s (`edit_source`) + 304.89 s (`edit_param`) = 623.6 s, versus
-//! 3.60 ms + 2.91 ms for the synthetic form, because
+//! does. MEASURED, not assumed: a scratch prototype of the FEA form on this
+//! fixture family cost 318.75 s (`edit_source`) + 304.89 s (`edit_param`) =
+//! 623.6 s, versus 3.60 ms + 2.91 ms for the synthetic form, because
 //! `OptimizedComputeDispatcher::dispatch` does no memoization — every
-//! Nelder-Mead trial point in the cost loop re-runs the full FEA solve. The
-//! FEA form would add +127% to this harness family's stated ~490 s cost on
-//! every merge gate, permanently. It also converges non-uniquely (thickness
-//! 1.851e-4 m on one leg of the fixture vs. 7.418e-4 m on the other), so it
-//! could not carry a calibrated assertion either. The contract under test is
+//! Nelder-Mead trial point in the cost loop re-runs the full FEA solve.
+//!
+//! That price decides the LANE, which is the whole point of this file. A
+//! 623.6 s pair could only ever have been paid on the asynchronous offline
+//! heavy lane (`verify.sh:751`) — nothing at that cost sits on a gate. The
+//! synthetic form instead costs, end-to-end per test, 0.542 s / 1.037 s /
+//! 1.554 s (`edit_param`) and 0.566 s / 1.200 s / 1.864 s (`edit_source`)
+//! across three runs on a contended 32-core host (2026-09-04, task #6630).
+//! The spread is host contention, not variance in the work; at every point in
+//! it these sit under the enclosing 233-test binary's ~2.25 s per-test mean,
+//! i.e. cheaper than the average test they run beside. That is what makes
+//! these two guards affordable ON the task/merge gate, and is precisely why
+//! task #6630 re-homed them to this stem.
+//!
+//! The FEA form also converges non-uniquely (thickness 1.851e-4 m on one leg
+//! of the fixture vs. 7.418e-4 m on the other), so it could not carry a
+//! calibrated assertion either. The contract under test is
 //! the target-agnostic `Some(&dispatcher)` argument — `OptimizedComputeDispatcher`
 //! is literally `fns: registry.fns.clone()` — so a synthetic target pins the
 //! same wiring the FEA path would.
@@ -210,7 +221,8 @@ fn edit_path_half_span_fn(
 /// Shared engine constructor for the edit-path regression tests: the same
 /// `Engine::new` + `with_solver` + `register_production_compute_fns`
 /// discipline as `solve_elastic_static_dispatches_real_result_inside_minimize_where_loop`
-/// above (INV-FEA-1 single-bundler discipline — see that test's comment for
+/// in the sibling `fea_in_the_loop_producer` submodule (INV-FEA-1
+/// single-bundler discipline — see that test's comment for
 /// why `register_production_compute_fns` is called even though this fixture
 /// needs none of its legs), plus registration of the synthetic
 /// `test::edit_path_half_span` target. `scripts/check-compute-trampoline-registration.sh`
