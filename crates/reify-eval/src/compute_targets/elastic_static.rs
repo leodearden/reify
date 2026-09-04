@@ -3347,6 +3347,272 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         Ok(())
     }
 }
+// ── RealizedAdaptiveProblem (task 4909) ──────────────────────────────────────
+
+/// One characteristic size per element of `(coords, tets)`, in element order:
+/// `(6·V)^(1/3)` of each tet's [`tet_volume_p1`].
+///
+/// `6·V` undoes the canonical tet-volume formula `V = |det J| / 6`, recovering
+/// a length on the same scale as the mesh's actual element sizes.
+/// [`refine_marked_elements`]'s `current_sizes` argument wants a
+/// characteristic *size* per element, not a volume.
+///
+/// This is the SINGLE SOURCE of the convention, deliberately identical to
+/// `characteristic_size_from_volume` / `current_sizes_from_nodes_conns` in
+/// `reify-solver-elastic`'s `tests/aposteriori_validation.rs` harness. It is
+/// used BOTH to seed `current_sizes` at construction and to recompute it after
+/// every remesh (step-14): the same definition must be used both times or
+/// `current_sizes` stops being comparable across a refine, and the size field
+/// handed to gmsh silently changes meaning.
+// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
+// target from step-16, when the trampoline's adaptive branch selects this lane.
+// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
+// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
+// step's wiring references it.
+#[allow(dead_code)]
+fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vec<f64> {
+    tets.iter()
+        .map(|conn| {
+            let phys: [[f64; 3]; 4] =
+                [coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]]];
+            (6.0 * tet_volume_p1(&phys)).cbrt()
+        })
+        .collect()
+}
+
+/// Median of `values`, or `None` when empty. Used to seed the remesher's
+/// baseline `mesh_size` from the realized mesh's own element sizes.
+///
+/// Median rather than mean: a gmsh tet mesh has a long right tail of
+/// sliver-adjacent elements, and a mean would be dragged by it into asking
+/// for a finer baseline than the mesh actually is.
+// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
+// target from step-16, when the trampoline's adaptive branch selects this lane.
+// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
+// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
+// step's wiring references it.
+#[allow(dead_code)]
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(sorted[sorted.len() / 2])
+}
+
+/// The **gmsh-realized** [`AdaptiveProblem`]: a-posteriori refinement that
+/// genuinely CONSUMES the Dörfler-marked element set, by remeshing the
+/// realized volume under a mark-driven size field.
+///
+/// # Sibling of, not replacement for, [`CantileverAdaptiveProblem`]
+///
+/// Task 4902's uniform lane stays exactly as it is and remains the fallback.
+/// The two differ in every axis that matters — mesh source (realized
+/// `VolumeMesh` vs synthetic grid), refine mechanism (gmsh size-field remesh
+/// vs per-axis grid doubling), error type ([`RefineError`] vs `Infallible`),
+/// and BC model (coordinate re-derivation per remesh vs stable node indices)
+/// — so folding them behind one struct would mean a runtime enum in every
+/// method and would put 4902's already-tested fallback behaviour at risk on a
+/// path that must stay a safe harbour.
+///
+/// # Why `surface` is held FIXED for the whole loop
+///
+/// `refine_marked_elements` always remeshes the volume FROM the supplied
+/// surface, so every mesh the loop ever holds is a child of the ONE boundary
+/// extracted at construction. The "the mesh being refined must have come from
+/// that same surface" contract then holds transitively for every iteration.
+/// Re-extracting the boundary from each refined mesh would let the surface
+/// drift (each remesh retriangulates it), progressively decoupling the size
+/// field from the geometry for no benefit, and would pay an extra O(n)
+/// extraction per iteration.
+///
+/// # Why BCs must stay coordinate-selected
+///
+/// A remesh preserves NO node index. `solve_cantilever_fea`'s realized arm
+/// re-derives the AABB grid and the x_min/x_max BC node sets from coordinates
+/// on every call, which is exactly what a topology-changing remesh needs — so
+/// this problem passes `bc_override: None` unconditionally. A
+/// selector-resolved (task 4092) `bc_override` is a Vec of node INDICES
+/// resolved against the PRE-refine mesh; carrying it into iteration 2 would
+/// apply clamps and loads to arbitrary unrelated nodes, a wrong answer with no
+/// diagnostic. The wiring site (step-16) therefore refuses this lane outright
+/// when a `bc_override` is present.
+///
+/// # Inherited costs
+///
+/// Each `refine` is a FULL remesh from surface, not an incremental
+/// subdivision; and `project_volume_to_surface_vertices` is O(n_surf × n_vol)
+/// (its own comment notes a spatial index would be needed at production
+/// scale). Both are properties of the landed `reify-solver-elastic` primitive,
+/// not of this wiring, and are surfaced to callers in the post-loop Info
+/// diagnostic.
+///
+/// Confined to isotropic materials for the same reason as
+/// [`CantileverAdaptiveProblem`]: `compute_zz_indicator` asserts P1 4-node
+/// connectivity and takes `&IsotropicElastic`.
+// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
+// target from step-16, when the trampoline's adaptive branch selects this lane.
+// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
+// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
+// step's wiring references it.
+#[allow(dead_code)]
+pub(crate) struct RealizedAdaptiveProblem {
+    material: IsotropicElastic,
+    /// Current realized volume mesh (P1 tets). Replaced WHOLESALE by `refine`.
+    volume_mesh: reify_ir::VolumeMesh,
+    /// The closed boundary `volume_mesh` was extracted from, held FIXED for
+    /// the whole loop and forwarded unchanged to `refine_marked_elements` on
+    /// every iteration. See the struct doc.
+    surface: reify_ir::Mesh,
+    /// One characteristic size per element of `volume_mesh`, in element order;
+    /// recomputed from the NEW mesh after every remesh.
+    current_sizes: Vec<f64>,
+    meshing_options: reify_solver_elastic::MeshingOptions,
+    tip_force: [f64; 3],
+    pressures: Vec<PressureSpec>,
+    body_force: [f64; 3],
+    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
+    /// — populated on EVERY call, so `aposteriori_adaptive_fields` can thread
+    /// a populated value regardless of the terminal `ConvergenceStatus`.
+    /// Mirrors [`CantileverAdaptiveProblem`]'s field of the same name.
+    pub(crate) last_global_indicator: f64,
+    /// The most recent `solve_and_estimate()`'s DOF count. Surfaced in the
+    /// post-loop diagnostic so a caller can see the achieved mesh cost.
+    pub(crate) last_n_dofs: usize,
+}
+
+// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
+// target from step-16, when the trampoline's adaptive branch selects this lane.
+// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
+// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
+// step's wiring references it.
+#[allow(dead_code)]
+impl RealizedAdaptiveProblem {
+    /// Seed a problem from an initial realized mesh and its extracted
+    /// boundary.
+    ///
+    /// `current_sizes` is computed fresh from each element's volume, so it is
+    /// correct from the very first solve — not just after the first `refine`.
+    /// `meshing_options.mesh_size` is seeded to the MEDIAN characteristic size
+    /// of that initial mesh: the remesher's baseline should be the mesh it is
+    /// starting from, so that the mark-driven per-element sizes are what
+    /// actually differentiate the refined region.
+    ///
+    /// `deterministic: true` is load-bearing, not decorative — it forces
+    /// `General.NumThreads = 1` in the remesher, which is what makes the
+    /// loop's per-iteration output bit-stable.
+    ///
+    /// Returns `None` when `volume_mesh` is not a widenable P1 tet mesh (the
+    /// same `volume_mesh_to_solver_mesh` gate the solve itself runs), so the
+    /// wiring site can fall back rather than construct a problem that would
+    /// fail on its first solve.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        material: IsotropicElastic,
+        volume_mesh: reify_ir::VolumeMesh,
+        surface: reify_ir::Mesh,
+        mut meshing_options: reify_solver_elastic::MeshingOptions,
+        tip_force: [f64; 3],
+        pressures: Vec<PressureSpec>,
+        body_force: [f64; 3],
+    ) -> Self {
+        let current_sizes = volume_mesh_to_solver_mesh(&volume_mesh)
+            .map(|(coords, tets)| characteristic_sizes_from_solver_mesh(&coords, &tets))
+            .unwrap_or_default();
+        if meshing_options.mesh_size.is_none() {
+            meshing_options.mesh_size = median(&current_sizes);
+        }
+        meshing_options.deterministic = true;
+        Self {
+            material,
+            volume_mesh,
+            surface,
+            current_sizes,
+            meshing_options,
+            tip_force,
+            pressures,
+            body_force,
+            last_global_indicator: 0.0,
+            last_n_dofs: 0,
+        }
+    }
+
+    /// Solve on the CURRENT realized mesh and estimate the Z-Z error.
+    ///
+    /// Never touches `surface` — only `refine` does — so this runs in a
+    /// gmsh-free build exactly as it does in a gmsh build.
+    pub(crate) fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+        // REUSE: `volume_mesh_to_solver_mesh` already performs both the P1
+        // gate AND the orphan-vertex compaction that real gmsh output demands
+        // (an element-unreferenced node gets no stiffness contribution,
+        // inflating n_dofs and panicking in apply_dirichlet_row_elimination).
+        let (coords, tet_connectivity) = match volume_mesh_to_solver_mesh(&self.volume_mesh) {
+            Some(mesh) => mesh,
+            // `new` already rejected a non-widenable seed, and `refine` rejects
+            // a non-widenable remesh result, so this arm is unreachable in
+            // practice. Degrade honestly rather than panicking mid-loop.
+            None => {
+                self.last_global_indicator = 0.0;
+                self.last_n_dofs = 0;
+                return AdaptiveEstimate {
+                    global_indicator: 0.0,
+                    per_element: Vec::new(),
+                    n_dofs: 0,
+                };
+            }
+        };
+
+        let model = MaterialModel::Isotropic(self.material);
+        let (fea, _fresh_warm) = solve_cantilever_fea(
+            &model,
+            // Placeholder dims: on the `provided_mesh` (realized) path these
+            // are entirely unused — nx/ny/nz come from the mesh AABB and the
+            // BC node sets from coordinates; `length`/`width`/`height` reach
+            // only the `!realized` synthetic-box and box-face-pressure
+            // branches.
+            1.0,
+            1.0,
+            1.0,
+            Some((coords, tet_connectivity)),
+            self.tip_force,
+            // No warm-state carryover: a remesh invalidates it outright (the
+            // DOF count changes), so there is nothing to reuse.
+            None,
+            &self.pressures,
+            self.body_force,
+            // Bit-stable per-iteration solves — the loop's stability invariant.
+            true,
+            None,
+            None,
+            // Coordinate BC selection, re-derived per solve. See the struct doc:
+            // node indices do not survive a remesh, so an index-based override
+            // cannot be carried across an iteration.
+            None,
+            // Synthetic-grid override is meaningless on the realized path.
+            None,
+        );
+
+        let elements = isotropic_stress_elements(
+            &fea.coords,
+            &fea.tet_connectivity,
+            &fea.u,
+            &self.material,
+        );
+        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
+
+        let n_dofs = 3 * fea.coords.len();
+        self.last_global_indicator = zz.global_relative_energy_error;
+        self.last_n_dofs = n_dofs;
+
+        AdaptiveEstimate {
+            global_indicator: zz.global_relative_energy_error,
+            per_element: zz.per_element,
+            n_dofs,
+        }
+    }
+}
 
 /// Compute the full 3×3 Cauchy stress tensor for a P1 tet with a given
 /// 6×6 global D matrix (anisotropic / orthotropic material path).
