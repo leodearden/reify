@@ -1251,36 +1251,161 @@ pub fn solve_elastic_static_trampoline(
                  adaptively-refined mesh; only convergence_status/global_relative_energy_error \
                  reflect the refinement loop's outcome (v1 scope)",
             ));
-            let mut problem = CantileverAdaptiveProblem::new(
-                *iso,
-                length,
-                width,
-                height,
-                tip_force,
-                pressures.clone(),
-                body_force,
-                bc_override.clone(),
-            );
             let budget = RefinementBudget {
                 target_accuracy: adaptive_params.target_accuracy,
                 max_refinement_iterations: adaptive_params.max_refinement_iterations,
                 max_dofs: adaptive_params.max_dofs,
             };
-            let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                .expect("CantileverAdaptiveProblem::refine is Infallible");
-            // Perf-cost visibility (reviewer_comprehensive/performance, task
-            // 4902 amendment): `refine` uniformly doubles all three grid axes
-            // per iteration (~8x DOF growth), so an `adaptive: true` request
-            // can reach a mesh far larger than the single-shot solve above
-            // with no caller-visible signal beyond this diagnostic —
-            // `max_dofs`/`max_refinement_iterations` bound the growth, but
-            // the achieved cost was otherwise only discoverable by
-            // instrumenting the solve.
-            let (nx, ny, nz) = problem.grid;
-            route_diagnostics.push(Diagnostic::info(format!(
-                "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
-                problem.last_n_dofs
-            )));
+
+            // ── Lane selection (task 4909) ────────────────────────────────
+            //
+            // The gmsh-realized LOCALIZED lane genuinely consumes the Dörfler
+            // marks (a gmsh size-field remesh); 4902's UNIFORM lane ignores
+            // them and doubles a synthetic grid. Take the localized lane only
+            // when every precondition holds:
+            //
+            //  * a realized `VolumeMesh` is present — the localized lane has
+            //    no synthetic mesh to fall back on, and the boundary must be
+            //    extracted from the mesh gmsh actually produced (so it is
+            //    read from the handle, NOT rebuilt from the widened
+            //    `SolverMesh`, which has already been orphan-compacted);
+            //  * libgmsh is linked in THIS build — a runtime const, never
+            //    `cfg(has_gmsh)`, because a cfg emitted by the gmsh crate's
+            //    build.rs does not propagate to dependents and would compile
+            //    to false on every host;
+            //  * no selector-resolved BC override — `bc_override` is a Vec of
+            //    node INDICES resolved against the PRE-refine mesh, and a
+            //    remesh preserves no index, so carrying it into iteration 2
+            //    would apply clamps and loads to arbitrary unrelated nodes: a
+            //    wrong answer with no diagnostic, strictly worse than an
+            //    honest uniform fallback;
+            //  * the boundary actually extracts.
+            //
+            // A `None` here is not a failure — it means "use the uniform
+            // lane", and the reason is surfaced as a Warning so the caller can
+            // see WHICH precondition failed.
+            let realized_lane_seed: Option<RealizedAdaptiveProblem> =
+                if let Some(vm) = realized_handle.and_then(|h| h.volume_mesh()) {
+                if !reify_solver_elastic::GMSH_AVAILABLE {
+                    route_diagnostics.push(Diagnostic::warning(
+                        "adaptive refinement: a realized volume mesh is present but libgmsh is \
+                         not available in this build, so mark-driven local refinement cannot \
+                         run; falling back to uniform (non-mark-consuming) refinement",
+                    ));
+                    None
+                } else if bc_override.is_some() {
+                    route_diagnostics.push(Diagnostic::warning(
+                        "adaptive refinement: selector-resolved boundary conditions are node \
+                         INDEX sets resolved against the pre-refinement mesh, and a remesh \
+                         preserves no node index; falling back to uniform (non-mark-consuming) \
+                         refinement to avoid applying the constraints to unrelated nodes",
+                    ));
+                    None
+                } else {
+                    match reify_solver_elastic::boundary_surface_mesh(vm) {
+                        Ok(surface) => Some(RealizedAdaptiveProblem::new(
+                            *iso,
+                            vm.clone(),
+                            surface,
+                            reify_solver_elastic::MeshingOptions::default(),
+                            tip_force,
+                            pressures.clone(),
+                            body_force,
+                        )),
+                        Err(e) => {
+                            route_diagnostics.push(Diagnostic::warning(format!(
+                                "adaptive refinement: could not extract a boundary surface from \
+                                 the realized volume mesh ({e}); falling back to uniform \
+                                 (non-mark-consuming) refinement"
+                            )));
+                            None
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+
+            // The UNIFORM lane, verbatim 4902. Reached both when the localized
+            // lane was never entered and when it failed at runtime, so both
+            // paths land on identical, already-tested behaviour rather than
+            // two hand-copied bodies.
+            let run_uniform_lane = || {
+                let mut problem = CantileverAdaptiveProblem::new(
+                    *iso,
+                    length,
+                    width,
+                    height,
+                    tip_force,
+                    pressures.clone(),
+                    body_force,
+                    bc_override.clone(),
+                );
+                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+                    .expect("CantileverAdaptiveProblem::refine is Infallible");
+                // Perf-cost visibility (reviewer_comprehensive/performance,
+                // task 4902 amendment): `refine` uniformly doubles all three
+                // grid axes per iteration (~8x DOF growth), so an
+                // `adaptive: true` request can reach a mesh far larger than
+                // the single-shot solve above with no caller-visible signal
+                // beyond this diagnostic.
+                let (nx, ny, nz) = problem.grid;
+                let diag = Diagnostic::info(format!(
+                    "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
+                    problem.last_n_dofs
+                ));
+                (status, problem.last_global_indicator, diag)
+            };
+
+            let (status, last_global_indicator, lane_diagnostic) = match realized_lane_seed {
+                Some(mut problem) => {
+                    let n_elements_before = problem.element_count();
+                    match run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA) {
+                        Ok(status) => {
+                            let n_elements_after = problem.element_count();
+                            // Lane-specific post-loop diagnostic. Reports the
+                            // pre/post element counts because a CONCENTRATION
+                            // of elements is the observable signature of
+                            // mark-driven local refinement — something the
+                            // uniform fallback structurally cannot report,
+                            // since it never remeshes. Also records the two
+                            // costs inherited from the reify-solver-elastic
+                            // primitive so a caller can see them: each refine
+                            // is a FULL remesh from surface (not an
+                            // incremental subdivision), and the size field's
+                            // surface projection is O(n_surf x n_vol).
+                            let diag = Diagnostic::info(format!(
+                                "adaptive refinement finished at {} DOFs; refinement was \
+                                 LOCALIZED and mark-driven (a gmsh-realized size-field remesh \
+                                 consuming the Dörfler-marked set): elements {n_elements_before} \
+                                 -> {n_elements_after}. Cost note: each refinement iteration is \
+                                 a FULL remesh from the extracted boundary surface, not an \
+                                 incremental subdivision, and the per-element size field is \
+                                 projected onto that surface by an O(n_surf x n_vol) \
+                                 nearest-vertex scan",
+                                problem.last_n_dofs
+                            ));
+                            (status, problem.last_global_indicator, diag)
+                        }
+                        Err(e) => {
+                            // libgmsh IS linked but this remesh failed (an open
+                            // or non-manifold surface, zero classified corner
+                            // entities, ...). An `adaptive: true` request must
+                            // never regress from "an answer with
+                            // uniform-fallback a-posteriori fields" to Failed,
+                            // so re-run on the uniform lane.
+                            route_diagnostics.push(Diagnostic::warning(format!(
+                                "adaptive refinement: the gmsh-realized local refinement failed \
+                                 at runtime ({e}); falling back to uniform \
+                                 (non-mark-consuming) refinement"
+                            )));
+                            run_uniform_lane()
+                        }
+                    }
+                }
+                None => run_uniform_lane(),
+            };
+            route_diagnostics.push(lane_diagnostic);
             // task 4910: build the Pa-valued error_indicator Field from the
             // COARSE seed solve (`fea` above — the SAME mesh that produced
             // displacement/stress), resampled onto the SAME `grid`, so the
@@ -1314,11 +1439,7 @@ pub fn solve_elastic_static_trampoline(
             let error_indicator_value = Value::Option(Some(Box::new(
                 super::sampled_error_indicator_field(error_indicator_sf),
             )));
-            aposteriori_adaptive_fields(
-                &status,
-                problem.last_global_indicator,
-                error_indicator_value,
-            )
+            aposteriori_adaptive_fields(&status, last_global_indicator, error_indicator_value)
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
@@ -3364,12 +3485,6 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
 /// every remesh (step-14): the same definition must be used both times or
 /// `current_sizes` stops being comparable across a refine, and the size field
 /// handed to gmsh silently changes meaning.
-// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
-// target from step-16, when the trampoline's adaptive branch selects this lane.
-// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
-// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
-// step's wiring references it.
-#[allow(dead_code)]
 fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vec<f64> {
     tets.iter()
         .map(|conn| {
@@ -3386,12 +3501,6 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 /// Median rather than mean: a gmsh tet mesh has a long right tail of
 /// sliver-adjacent elements, and a mean would be dragged by it into asking
 /// for a finer baseline than the mesh actually is.
-// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
-// target from step-16, when the trampoline's adaptive branch selects this lane.
-// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
-// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
-// step's wiring references it.
-#[allow(dead_code)]
 fn median(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -3451,12 +3560,6 @@ fn median(values: &[f64]) -> Option<f64> {
 /// Confined to isotropic materials for the same reason as
 /// [`CantileverAdaptiveProblem`]: `compute_zz_indicator` asserts P1 4-node
 /// connectivity and takes `&IsotropicElastic`.
-// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
-// target from step-16, when the trampoline's adaptive branch selects this lane.
-// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
-// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
-// step's wiring references it.
-#[allow(dead_code)]
 pub(crate) struct RealizedAdaptiveProblem {
     material: IsotropicElastic,
     /// Current realized volume mesh (P1 tets). Replaced WHOLESALE by `refine`.
@@ -3482,12 +3585,6 @@ pub(crate) struct RealizedAdaptiveProblem {
     pub(crate) last_n_dofs: usize,
 }
 
-// `allow(dead_code)`: live in the lib-test target from step-11, and in the LIB
-// target from step-16, when the trampoline's adaptive branch selects this lane.
-// Mirrors this file's existing precedent (`make_box_tet_volume_mesh`,
-// `CantileverFeaSolve`): an item is "dead" in the lib target until a later
-// step's wiring references it.
-#[allow(dead_code)]
 impl RealizedAdaptiveProblem {
     /// Seed a problem from an initial realized mesh and its extracted
     /// boundary.
@@ -3538,6 +3635,18 @@ impl RealizedAdaptiveProblem {
         }
     }
 
+    /// Element count of the CURRENT mesh.
+    ///
+    /// Read before and after the loop so the post-loop diagnostic can report
+    /// the CONCENTRATION the refinement achieved — the observable signature of
+    /// mark-driven local refinement, which the uniform fallback structurally
+    /// cannot report because it never remeshes.
+    pub(crate) fn element_count(&self) -> usize {
+        self.volume_mesh
+            .tet_indices()
+            .map(|i| i.len() / self.volume_mesh.nodes_per_element().max(1))
+            .unwrap_or(0)
+    }
 }
 
 impl AdaptiveProblem for RealizedAdaptiveProblem {
