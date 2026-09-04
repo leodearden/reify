@@ -1536,5 +1536,91 @@ console.log(MARK + JSON.stringify(cases));
         self.assertEqual(cases["single_object_leaf"]["warnCalls"], [])
 
 
+# ---------------------------------------------------------------------------
+# task #7257 step-01 (RED): command normalization (ARM 1, item 3)
+# ---------------------------------------------------------------------------
+
+class TestCommandNormalization(unittest.TestCase):
+    """`command` may arrive as a string; rendering it must not explode it.
+
+    Observed on this branch before the fix: a record carrying
+    `"command": "target/release/reify eval f.ri"` (a STRING, not a list) was
+    rendered by synthesize_batch's `" ".join(rec.get("command", []))` as
+    `t a r g e t / r e l e a s e / r e i f y   e v a l   f . r i` — Python
+    joins a string character-by-character.  The captured evidence a human is
+    meant to re-run became unreadable.
+
+    GREEN in task #7257 step-02 (pdv.normalize_command).
+    """
+
+    _STRING_CMD = "target/release/reify eval f.ri"
+    _EXPLODED = "t a r g e t"
+
+    # ── (a) unit tests for normalize_command ─────────────────────────────────
+
+    def test_list_round_trips_as_list_of_str(self):
+        """A list of strings round-trips unchanged."""
+        self.assertEqual(
+            pdv.normalize_command(["reify", "check", "/fixture.ri"]),
+            ["reify", "check", "/fixture.ri"],
+        )
+
+    def test_list_items_are_stringified(self):
+        """Non-str items in a list are coerced to str (evidence stays renderable)."""
+        self.assertEqual(pdv.normalize_command(["reify", 7, None]), ["reify", "7", "None"])
+
+    def test_tuple_becomes_list(self):
+        """A tuple normalizes to a list (JSON round-trips give lists, tests give tuples)."""
+        out = pdv.normalize_command(("reify", "check"))
+        self.assertIsInstance(out, list)
+        self.assertEqual(out, ["reify", "check"])
+
+    def test_string_becomes_single_element_list(self):
+        """A STRING command becomes ONE token, so `" ".join` renders it verbatim."""
+        self.assertEqual(pdv.normalize_command(self._STRING_CMD), [self._STRING_CMD])
+
+    def test_none_becomes_empty_list(self):
+        """None (absent command) normalizes to []."""
+        self.assertEqual(pdv.normalize_command(None), [])
+
+    def test_int_becomes_empty_list(self):
+        """A non-str, non-sequence value carries no command evidence → []."""
+        self.assertEqual(pdv.normalize_command(7), [])
+
+    def test_empty_list_stays_empty(self):
+        """An explicit empty list stays empty (no evidence)."""
+        self.assertEqual(pdv.normalize_command([]), [])
+
+    # ── (b) end-to-end through synthesize_batch ──────────────────────────────
+
+    def _string_command_record(self) -> dict:
+        """A blocking record whose `command` is a STRING rather than a list."""
+        return {
+            "capability": "string-command capability",
+            "probe_kind": "ir",
+            "verdict": "FAIL",
+            "command": self._STRING_CMD,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "assertion did not hold",
+        }
+
+    def test_string_command_renders_verbatim_in_report(self):
+        """The report shows the command exactly as captured."""
+        bv = pdv.synthesize_batch({"prover": [self._string_command_record()], "adversary": []})
+        self.assertIn(
+            self._STRING_CMD, bv.report,
+            f"string command must render verbatim; report was:\n{bv.report}",
+        )
+
+    def test_string_command_is_not_character_exploded(self):
+        """The report must NOT contain the character-spaced explosion."""
+        bv = pdv.synthesize_batch({"prover": [self._string_command_record()], "adversary": []})
+        self.assertNotIn(
+            self._EXPLODED, bv.report,
+            f"string command was exploded character-by-character; report was:\n{bv.report}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
