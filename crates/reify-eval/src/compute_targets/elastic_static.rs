@@ -3538,11 +3538,21 @@ impl RealizedAdaptiveProblem {
         }
     }
 
+}
+
+impl AdaptiveProblem for RealizedAdaptiveProblem {
+    /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
+    /// zero classified corner entities, or libgmsh absent from this build —
+    /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
+    /// distinct, already-modelled variants). The wiring site catches this and
+    /// re-runs on the uniform lane rather than failing the solve.
+    type Error = reify_solver_elastic::RefineError;
+
     /// Solve on the CURRENT realized mesh and estimate the Z-Z error.
     ///
     /// Never touches `surface` — only `refine` does — so this runs in a
     /// gmsh-free build exactly as it does in a gmsh build.
-    pub(crate) fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
         // REUSE: `volume_mesh_to_solver_mesh` already performs both the P1
         // gate AND the orphan-vertex compaction that real gmsh output demands
         // (an element-unreferenced node gets no stiffness contribution,
@@ -3611,6 +3621,62 @@ impl RealizedAdaptiveProblem {
             per_element: zz.per_element,
             n_dofs,
         }
+    }
+
+    /// Consume the Dörfler-marked set by remeshing the volume under a
+    /// mark-driven size field.
+    ///
+    /// This is what 4902's uniform lane could not do: `refine_marked_elements`
+    /// halves each marked element's characteristic size (`dorfler_size_hints`)
+    /// and hands the resulting per-element field to gmsh, which remeshes the
+    /// volume enclosed by `surface`. Refinement is therefore LOCALIZED to the
+    /// marked region rather than applied uniformly.
+    ///
+    /// # Ordering
+    ///
+    /// `current_sizes` is recomputed from the NEW mesh, and `surface` is
+    /// deliberately NOT updated — every iteration remeshes from the same
+    /// boundary, which is what makes the "the mesh being refined came from
+    /// that surface" contract hold transitively across the whole loop (see the
+    /// struct doc). `volume_mesh` is replaced last, so an error leaves the
+    /// problem untouched and the caller can still fall back on a consistent
+    /// state.
+    ///
+    /// # Cost
+    ///
+    /// A FULL remesh from surface, not an incremental subdivision, and
+    /// `project_volume_to_surface_vertices` is O(n_surf × n_vol). Both are
+    /// properties of the `reify-solver-elastic` primitive; the wiring site
+    /// surfaces them to callers in its post-loop diagnostic.
+    fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
+        let refined = reify_solver_elastic::refine_marked_elements(
+            &self.surface,
+            &self.volume_mesh,
+            marked,
+            &self.current_sizes,
+            &self.meshing_options,
+        )?;
+
+        // The remesh succeeded at the FFI level, but the mesh it produced must
+        // also be one this crate can widen and solve on. Reported as
+        // `Gmsh(OperationFailed)` rather than `UnsupportedConnectivity`: the
+        // several causes `volume_mesh_to_solver_mesh` folds into `None`
+        // (non-P1 order, ragged index or vertex buffer, out-of-range index)
+        // cannot be distinguished here, and `UnsupportedConnectivity`'s
+        // Display would assert a specific Hex/Wedge cause we have not
+        // established. The message says exactly what was observed.
+        let (coords, tets) = volume_mesh_to_solver_mesh(&refined).ok_or_else(|| {
+            reify_solver_elastic::RefineError::Gmsh(reify_ir::GeometryError::OperationFailed(
+                "refine_marked_elements returned a VolumeMesh that is not a \
+                 widenable P1 tet mesh (non-P1 order, malformed index/vertex \
+                 buffer, or an out-of-range index)"
+                    .to_string(),
+            ))
+        })?;
+
+        self.current_sizes = characteristic_sizes_from_solver_mesh(&coords, &tets);
+        self.volume_mesh = refined;
+        Ok(())
     }
 }
 
