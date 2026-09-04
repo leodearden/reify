@@ -141,11 +141,32 @@ echo "==> Installing gui dependencies..."
 # EXIT trap's `kill "$VITE_PID"` may signal the subshell while leaving the
 # real npm/vite process alive — vite then keeps :1420 bound and the next dev
 # run fails to start. With pushd/popd, `$!` points directly at npm.
+#
+# We additionally spawn npm in its OWN PROCESS GROUP, via the `set -m` idiom
+# borrowed from lib_proc_reaper.sh's reaper_run_in_pgroup. Under monitor mode
+# bash puts a background job in a fresh group whose PGID equals `$!`, so
+# VITE_PID doubles as the PGID and cleanup() can signal the whole tree. Without
+# it, `npm run dev` forks an intermediate `sh -c` which forks the node/vite
+# process that actually holds the port, and that GRANDCHILD outlives every
+# signal cleanup() can address (see the note there).
 echo "==> Starting vite dev server on :$REIFY_VITE_PORT..."
+# Save the caller's monitor-mode state so we restore exactly what we found.
+_had_monitor=0
+case $- in *m*) _had_monitor=1 ;; esac
+set -m 2>/dev/null || true
+VITE_PGROUP=0
+case $- in *m*) VITE_PGROUP=1 ;; esac
+if [ "$VITE_PGROUP" -eq 0 ]; then
+    # Monitor mode unavailable: npm shares OUR process group, so a group kill
+    # would signal this script too. cleanup() falls back to `pkill -P` in that
+    # case — degraded (the grandchild can survive), so say so out loud.
+    echo "Warning: 'set -m' unavailable; vite teardown degraded to direct children only — a vite grandchild may survive and keep :$REIFY_VITE_PORT bound" >&2
+fi
 pushd gui >/dev/null
 npm run dev -- --port "$REIFY_VITE_PORT" &
 VITE_PID=$!
 popd >/dev/null
+if [ "$_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
 
 # Install cleanup trap to reap BOTH vite and reify-gui on every termination
 # path. This MUST stay active for the whole script — we deliberately do NOT
@@ -157,18 +178,41 @@ popd >/dev/null
 # trap but orphans reify-gui — the window survives, displays "Connection
 # refused" once vite dies, and squats on resources.
 #
-# We reap descendants first via `pkill -P "$VITE_PID"`: npm typically forks
-# vite as a child, and signaling only npm can leave vite holding the port.
-# `pkill -P` is best-effort (may not be on every system); the `|| true` keeps
-# the trap robust under set -e.
+# We reap vite by PROCESS GROUP, not by pid. `npm run dev` forks an
+# intermediate `sh -c` which forks the node/vite process that actually holds the
+# port, so `pkill -P "$VITE_PID"` — which reaches npm's DIRECT children only —
+# leaves that grandchild alive; it then squats on the port and the next dev run
+# fails to start. A process group persists while ANY member lives and its PGID
+# survives re-parenting, so the group kill still reaches the grandchild after
+# npm itself has exited. TERM first, then a short grace, then KILL.
+#
+# The grace is ~2s rather than lib_proc_reaper.sh's 10s default: this is an
+# interactive launcher, and a Ctrl-C that takes ten seconds to return the
+# prompt reads as a hang.
+#
+# `pkill -P "$VITE_PID"` + `kill "$VITE_PID"` are RETAINED as the fallback for
+# the case where `set -m` was unavailable and VITE_PID is therefore not a PGID
+# of our own making — there, a group kill would target our own group, so we must
+# not attempt one.
 GUI_PID=""
 cleanup() {
     if [ -n "$GUI_PID" ]; then
         kill "$GUI_PID" 2>/dev/null || true
         wait "$GUI_PID" 2>/dev/null || true
     fi
-    pkill -P "$VITE_PID" 2>/dev/null || true
-    kill "$VITE_PID" 2>/dev/null || true
+    if [ "${VITE_PGROUP:-0}" -eq 1 ]; then
+        kill -TERM -- -"$VITE_PID" 2>/dev/null || true
+        # Bounded grace: poll so a fast exit returns promptly instead of always
+        # paying the full 2s.
+        for _ in $(seq 1 20); do
+            kill -0 -- -"$VITE_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL -- -"$VITE_PID" 2>/dev/null || true
+    else
+        pkill -P "$VITE_PID" 2>/dev/null || true
+        kill "$VITE_PID" 2>/dev/null || true
+    fi
     wait "$VITE_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
