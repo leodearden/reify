@@ -497,6 +497,45 @@ b2_lib_identity_env_is_a_two_element_array() {
     return 0
 }
 
+# MAP-WIRING: the lib must be REGISTERED as a verify-pipeline artifact, so that
+# an edit to IT selects these guard suites. Modelled on the self-wiring
+# assertions in tests/infra/test_verify_pipeline_guard.sh:1374-1401
+# (_map_selects_this_test) and test_govtest_slice_reaper.sh's Block K, but asked
+# through the guard's own `is-registered` oracle rather than by re-implementing
+# the map parse here — a second parser is a second thing to drift.
+#
+# WHY THIS IS NOT DECORATIVE: column 1 of scripts/verify-pipeline-infra-tests.txt
+# is matched by EXACT STRING EQUALITY, never by glob or directory prefix. Without
+# rows of its own, an edit touching ONLY the lib selects NEITHER guard suite —
+# and the lib is precisely the file a pin bump touches. Measured: several
+# existing libs (lib_portable.sh, lib_proc_reaper.sh, lib_clock_stop.sh) have no
+# row and suffer exactly that gap.
+#
+# Exit 2 is distinguished from exit 1 deliberately: the former is the guard's
+# arity refusal, so a CLI change would otherwise read here as "not registered".
+b2_lib_is_registered() {
+    local guard="$REPO_ROOT/scripts/verify-pipeline-guard.sh" out rc=0
+    if [ ! -f "$guard" ]; then
+        printf '%s\n' "scripts/verify-pipeline-guard.sh not found at $guard"
+        return 1
+    fi
+    out="$(bash "$guard" is-registered scripts/lib_jcodemunch_pin.sh 2>&1)" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1) printf '%s\n' \
+               "scripts/lib_jcodemunch_pin.sh is NOT a registered verify-pipeline artifact:" \
+               "  $out" \
+               "  Add rows to scripts/verify-pipeline-infra-tests.txt mapping the lib to BOTH" \
+               "  guard suites — its column-1 match is exact string equality, so a lib-only edit" \
+               "  otherwise selects neither, leaving the one file a pin bump touches unguarded."
+           return 1 ;;
+        *) printf '%s\n' \
+               "is-registered exited $rc (expected 0 or 1) — its CLI contract may have changed:" \
+               "  $out"
+           return 1 ;;
+    esac
+}
+
 # Sourcing TWICE must be a no-op — the repo's `_REIFY_LIB_*_SH_SOURCED` guard
 # convention (scripts/lib_test_semaphore.sh:66-69). Both consumers source the
 # lib before constructing argv, and a re-source that reset or APPENDED to
@@ -675,6 +714,8 @@ assert "the lib defines JC_IDENTITY_ENV as a 2-element ARRAY, not a string" \
     b2_lib_identity_env_is_a_two_element_array
 assert "sourcing the lib twice is idempotent (the _REIFY_LIB_*_SH_SOURCED guard)" \
     b2_lib_double_source_is_idempotent
+assert "MAP-WIRING: the lib is a registered verify-pipeline artifact (is-registered)" \
+    b2_lib_is_registered
 assert "δ's constructed argv agrees with the lib (scripts/lib_jcodemunch_pin.sh)" \
     b2_pin_agrees "the lib" "$JC_PIN_LIB_SITE" jc_pin_lib
 assert "δ defines none of JC_PIN/JC_PYTHON/JC_IDENTITY_ENV itself (single definition site)" \
