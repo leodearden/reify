@@ -11862,4 +11862,181 @@ mod tests {
             conns_unmarked.len(),
         );
     }
+
+    /// `ElasticOptions` with `adaptive: true`, `shell_force: Off` (forces the
+    /// tet/solid path deterministically) and a budget that performs EXACTLY
+    /// one refine: `target_accuracy` is deliberately unreachable and the
+    /// iteration cap is 1, so the loop does one mark-driven refine and two
+    /// solves. That bounds wallclock while still proving the refine ran.
+    fn adaptive_options() -> Value {
+        let fields: PersistentMap<String, Value> = [
+            (
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            ),
+            ("adaptive".to_string(), Value::Bool(true)),
+            ("target_accuracy".to_string(), Value::Real(1.0e-6)),
+            ("max_refinement_iterations".to_string(), Value::Int(1)),
+            ("max_dofs".to_string(), Value::Int(2_000_000)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Drive the trampoline on the dims layout with `adaptive: true` and the
+    /// given realization inputs, returning `(fields, diagnostics)`.
+    fn run_adaptive_trampoline(
+        realization_inputs: &[RealizationReadHandle],
+    ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            // No `target` on any Load/Support, so `bc_override` stays `None`
+            // and BC selection is coordinate-based - the only model that
+            // survives a remesh.
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            adaptive_options(),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        match outcome {
+            ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
+            },
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
+
+    /// Substring every LOCALIZED (gmsh-realized) post-loop diagnostic carries.
+    /// Settled once here; the step-19 `.ri` end-to-end asserts against the same
+    /// wording.
+    const LOCALIZED_LANE_MARKER: &str = "gmsh-realized";
+    /// Substring the 4902 UNIFORM post-loop diagnostic carries.
+    const UNIFORM_LANE_MARKER: &str = "grid";
+
+    /// step-15 RED (task 4909): the adaptive branch must SELECT the
+    /// gmsh-realized localized lane when a realized mesh is present, and must
+    /// leave 4902's uniform lane byte-preserved when it is not.
+    ///
+    /// Case A (realized handle present) is the new lane. Case B (no realized
+    /// mesh) is the regression guard: 4902's behaviour must be untouched on
+    /// the path that has no realized mesh, which is why the two lanes are
+    /// separate structs rather than one struct with a runtime enum.
+    ///
+    /// Case A's localized assertion is gated on the runtime
+    /// `GMSH_AVAILABLE`; case B is unconditional.
+    ///
+    /// RED: the branch only ever constructs `CantileverAdaptiveProblem`, so no
+    /// localized diagnostic exists and case A sees the uniform one.
+    #[test]
+    fn adaptive_branch_selects_the_gmsh_realized_lane_when_a_realized_mesh_is_present() {
+        // ── Case B: no realized mesh → 4902's uniform lane, unchanged. ──
+        let (fields_b, diags_b) = run_adaptive_trampoline(&[]);
+        assert!(
+            matches!(
+                fields_b.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "the uniform lane must still produce a real adaptive triple, got: {:?}",
+            fields_b.get("global_relative_energy_error"),
+        );
+        assert!(
+            diags_b
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)),
+            "the synthetic path must keep 4902's UNIFORM grid diagnostic, got: {diags_b:?}",
+        );
+        assert!(
+            !diags_b
+                .iter()
+                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER)),
+            "the synthetic path has no realized mesh and must NOT claim the \
+             localized lane, got: {diags_b:?}",
+        );
+
+        // ── Case A: realized mesh present → the gmsh-realized localized lane. ──
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping case A: libgmsh not available in this build");
+            return;
+        }
+        let realized = [vm_read_handle(make_box_tet_volume_mesh(
+            [1.0, 0.1, 0.1],
+            [6, 1, 1],
+        ))];
+        let (fields_a, diags_a) = run_adaptive_trampoline(&realized);
+
+        assert!(
+            matches!(
+                fields_a.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "the realized lane must produce the REAL adaptive triple, not the \
+             non-adaptive defaults, got: {:?}",
+            fields_a.get("global_relative_energy_error"),
+        );
+        assert!(
+            matches!(fields_a.get("error_indicator"), Some(Value::Option(Some(_)))),
+            "the realized lane must produce a real error_indicator field, got: {:?}",
+            fields_a.get("error_indicator"),
+        );
+
+        let localized = diags_a
+            .iter()
+            .find(|d| d.message.contains(LOCALIZED_LANE_MARKER))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an Info diagnostic naming the LOCALIZED gmsh lane, got: {diags_a:?}"
+                )
+            });
+        assert_eq!(
+            localized.severity,
+            reify_core::Severity::Info,
+            "the localized-lane diagnostic must be Info",
+        );
+        assert!(
+            localized.message.contains("mark-driven"),
+            "the localized diagnostic must say the refinement was mark-driven, \
+             got: {}",
+            localized.message,
+        );
+        assert!(
+            localized.message.contains("elements"),
+            "the localized diagnostic must report element counts so a caller \
+             can see the achieved refinement, got: {}",
+            localized.message,
+        );
+        assert!(
+            !diags_a
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)),
+            "the realized lane must NOT also emit the uniform-grid diagnostic, \
+             got: {diags_a:?}",
+        );
+    }
 }
