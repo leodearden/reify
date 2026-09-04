@@ -485,7 +485,10 @@ _rgs_stub_gui_binary() {
     mkdir -p "$(dirname "$1/$2")"
     cat > "$1/$2" <<'GUI_STUB'
 #!/usr/bin/env bash
-printf 'LD_LIBRARY_PATH=%s\n' "${LD_LIBRARY_PATH:-}" > "${_RGS_ENV_DUMP:?_RGS_ENV_DUMP must be set by the test}"
+{
+    printf 'LD_LIBRARY_PATH=%s\n' "${LD_LIBRARY_PATH:-}"
+    printf 'WEBKIT_DISABLE_DMABUF_RENDERER=%s\n' "${WEBKIT_DISABLE_DMABUF_RENDERER:-}"
+} > "${_RGS_ENV_DUMP:?_RGS_ENV_DUMP must be set by the test}"
 exit 0
 GUI_STUB
     chmod +x "$1/$2"
@@ -799,5 +802,82 @@ else
     echo "  SKIP: needs the deps tree (scripts/build-manifold-deps.sh); the text"
     echo "  SKIP: drift-guards above still ran."
 fi
+
+# -- Test 29: behavioral — WEBKIT_DISABLE_DMABUF_RENDERER defaults to 1 -------
+echo ""
+echo "--- Test 29: launchers default WEBKIT_DISABLE_DMABUF_RENDERER=1, caller may override ---"
+
+# On an NVIDIA host, Mesa's EGL cannot create a GBM screen on the NVIDIA GPU and
+# WebKitGTK aborts with `Could not create GBM EGL display: EGL_NOT_INITIALIZED`.
+# gui/test/visual/lib_e2e_smoke.sh §2b already carries the canonical
+# `${WEBKIT_DISABLE_DMABUF_RENDERER:-1}` stanza for exactly this; the launchers
+# do not. The `:-1` form matters as much as the value: a caller who knows DMABUF
+# works on their host must still be able to turn it back on.
+#
+# Unlike Test 28 this is host-independent — no deps-tree gate.
+
+# --- 29a: run-gui-dev.sh ---
+_rgs_mktemp _t29dev_tmpdir
+_t29dev_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t29dev_tmpdir"
+_rgs_stub_npm_serving "$_t29dev_tmpdir"
+_rgs_stub_curl_stateful "$_t29dev_tmpdir"
+_rgs_stub_cargo "$_t29dev_tmpdir"
+_rgs_stub_gui_binary "$_t29dev_tmpdir" target/debug/reify-gui
+
+# _t29_run_dev <extra-env...> — reset the stateful-curl counter and the dump,
+# then run the dev launcher with WEBKIT_DISABLE_DMABUF_RENDERER unset.
+_t29_run_dev() {
+    rm -f "$_t29dev_tmpdir/curl-count" "$_t29dev_tmpdir/env-dump"
+    env -u WEBKIT_DISABLE_DMABUF_RENDERER \
+        DISPLAY=:99 \
+        REIFY_VITE_PORT="$_t29dev_port" \
+        _RGS_CURL_COUNTER="$_t29dev_tmpdir/curl-count" \
+        _RGS_ENV_DUMP="$_t29dev_tmpdir/env-dump" \
+        PATH="$_t29dev_tmpdir/bin:$PATH" \
+        "$@" \
+        bash "$_t29dev_tmpdir/scripts/run-gui-dev.sh" "$_t29dev_tmpdir/test.ri" >/dev/null 2>&1 || true
+}
+
+_t29_run_dev
+_t29dev_default=$(_rgs_env_dump_get "$_t29dev_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
+
+assert "run-gui-dev.sh: launched binary sees WEBKIT_DISABLE_DMABUF_RENDERER=1 by default" \
+    bash -c '[ "$1" = 1 ]' _ "$_t29dev_default"
+
+_t29_run_dev WEBKIT_DISABLE_DMABUF_RENDERER=0
+_t29dev_override=$(_rgs_env_dump_get "$_t29dev_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
+
+assert "run-gui-dev.sh: an explicit WEBKIT_DISABLE_DMABUF_RENDERER=0 is NOT clobbered" \
+    bash -c '[ "$1" = 0 ]' _ "$_t29dev_override"
+
+# --- 29b: run-gui.sh ---
+_rgs_mktemp _t29rel_tmpdir
+_mk_rungui_fixture "$_t29rel_tmpdir"
+_rgs_stub_npm_serving "$_t29rel_tmpdir"
+_rgs_stub_cargo "$_t29rel_tmpdir"
+_rgs_stub_gui_binary "$_t29rel_tmpdir" target/release/reify-gui
+
+_t29_run_rel() {
+    rm -f "$_t29rel_tmpdir/env-dump"
+    env -u WEBKIT_DISABLE_DMABUF_RENDERER \
+        DISPLAY=:99 \
+        _RGS_ENV_DUMP="$_t29rel_tmpdir/env-dump" \
+        PATH="$_t29rel_tmpdir/bin:$PATH" \
+        "$@" \
+        bash "$_t29rel_tmpdir/scripts/run-gui.sh" "$_t29rel_tmpdir/test.ri" >/dev/null 2>&1 || true
+}
+
+_t29_run_rel
+_t29rel_default=$(_rgs_env_dump_get "$_t29rel_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
+
+assert "run-gui.sh: launched binary sees WEBKIT_DISABLE_DMABUF_RENDERER=1 by default" \
+    bash -c '[ "$1" = 1 ]' _ "$_t29rel_default"
+
+_t29_run_rel WEBKIT_DISABLE_DMABUF_RENDERER=0
+_t29rel_override=$(_rgs_env_dump_get "$_t29rel_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
+
+assert "run-gui.sh: an explicit WEBKIT_DISABLE_DMABUF_RENDERER=0 is NOT clobbered" \
+    bash -c '[ "$1" = 0 ]' _ "$_t29rel_override"
 
 test_summary
