@@ -64,23 +64,15 @@
 // OCCT meshes each edge into an INTEGER segment count, so the achieved deviation
 // is a STAIRCASE in #precision — treads punctuated by narrow periodic teeth, not
 // a smooth curve (full mechanism, tread/tooth ratios and periods: PRD §2 above).
-// NEAR THE BOUND, which branch a candidate lands on decides pass/fail,
-// not local slope: 0.49mm and 0.51mm are TREAD points and VIOLATE
-// the 1.000e-3 m bound, while 0.50mm between them passes only
-// because it lands on a TOOTH, not because of a smooth swing between
-// neighbours (exact values: the 8-point sweep in `OCCT_SOURCE_FINE`,
-// crates/reify-eval/tests/representation_within_assertion.rs, above).
-// A retune that happens to land on a tooth passes for the wrong reason and
-// will not survive drift.  FARTHER BELOW THE BOUND the measured points track
-// the staircase's tread branch (same sweep), but a tread is one branch of a
-// periodic staircase, not a guaranteed local ratio — extrapolating it is
-// exactly what makes an unmeasured tooth look safe.  0.3mm is safe because
-// its own achieved/requested ratio, 6.202e-4 / 0.3mm = 2.067x, puts it on
-// the ~2.075x tread branch — the conservative branch — rather than on
-// a tooth whose pass would be phase-dependent; both measured neighbours,
-// 0.25mm and 0.35mm, corroborate by also clearing the bound, though at
-// roughly 8 tooth periods away they don't by themselves establish which
-// branch 0.3mm occupies.
+// NEAR THE BOUND, branch membership decides pass/fail, not local slope or
+// interpolation between neighbours — see the 8-point sweep in
+// `OCCT_SOURCE_FINE`, crates/reify-eval/tests/representation_within_assertion.rs,
+// and PRD §2 above for the branch ratios, their periods, and which measured
+// points land on which branch.  A retune that happens to land on a tooth
+// passes for the wrong reason and will not survive drift.  0.3mm is safe
+// because its own achieved/requested ratio, 6.202e-4 / 0.3mm = 2.067x, puts
+// it on the tread branch — the conservative one — rather than on a tooth
+// whose pass would be phase-dependent.
 //
 // To re-derive any candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
