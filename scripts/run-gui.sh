@@ -15,6 +15,10 @@
 
 set -euo pipefail
 
+# Snapshot the caller's LD_LIBRARY_PATH before §5 rewrites it, so §5 can tell
+# whether it inherited one and only then explain that it prepended the tbb pin.
+_INHERITED_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+
 # -- 1. Validate args ----------------------------------------------------------
 if [ "$#" -lt 1 ]; then
     echo "Usage: scripts/run-gui.sh <file>" >&2
@@ -81,6 +85,21 @@ cargo build -p reify-gui --bin reify-gui --features gui --release
 SNAP_OCCT_LIB="/snap/freecad/current/usr/lib"
 if [ -d "$SNAP_OCCT_LIB" ]; then
     export LD_LIBRARY_PATH="$SNAP_OCCT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+# Pin oneTBB ahead of everything else — INCLUDING whatever LD_LIBRARY_PATH we
+# were handed. Deliberately OUTSIDE the snap conditional above, which never
+# fires on a PPA host. #5192 already puts $TBB_PIN_DIR first in each binary's
+# DT_RUNPATH, but the loader searches LD_LIBRARY_PATH BEFORE DT_RUNPATH, so an
+# inherited /usr/lib path would otherwise bind system libtbb 12.11 over the
+# deps 12.18 and die on a missing symbol. The caller's entries are preserved,
+# never scrubbed or reordered. (#7254)
+TBB_PIN_DIR="/opt/reify-deps/tbb-pin"
+if [ -d "$TBB_PIN_DIR" ]; then
+    export LD_LIBRARY_PATH="$TBB_PIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    if [ -n "$_INHERITED_LD_LIBRARY_PATH" ]; then
+        echo "==> Note: inherited LD_LIBRARY_PATH preserved, but $TBB_PIN_DIR prepended ahead of it (the loader searches LD_LIBRARY_PATH before DT_RUNPATH, so an inherited /usr/lib path would otherwise bind system libtbb 12.11 over the deps 12.18 — see #5192/#7254)"
+    fi
 fi
 
 # -- 6. Launch ----------------------------------------------------------------
