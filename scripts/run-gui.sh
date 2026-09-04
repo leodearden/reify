@@ -94,6 +94,14 @@ fi
 # inherited /usr/lib path would otherwise bind system libtbb 12.11 over the
 # deps 12.18 and die on a missing symbol. The caller's entries are preserved,
 # never scrubbed or reordered. (#7254)
+# Disable WebKit's GBM/DMABuf renderer by default. On systems where the NVIDIA
+# driver exposes DRI fds but the Mesa EGL GBM backend cannot create a screen,
+# WebKitGTK aborts with "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
+# =1 forces the GLX/xlib fallback path. Mirrors gui/test/visual/lib_e2e_smoke.sh
+# §2b. The `:-1` form is deliberate: export WEBKIT_DISABLE_DMABUF_RENDERER=0 to
+# restore the DMABUF path on a host where it works.
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+
 TBB_PIN_DIR="/opt/reify-deps/tbb-pin"
 if [ -d "$TBB_PIN_DIR" ]; then
     export LD_LIBRARY_PATH="$TBB_PIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
