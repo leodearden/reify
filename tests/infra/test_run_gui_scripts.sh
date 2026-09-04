@@ -880,4 +880,103 @@ _t29rel_override=$(_rgs_env_dump_get "$_t29rel_tmpdir/env-dump" WEBKIT_DISABLE_D
 assert "run-gui.sh: an explicit WEBKIT_DISABLE_DMABUF_RENDERER=0 is NOT clobbered" \
     bash -c '[ "$1" = 0 ]' _ "$_t29rel_override"
 
+# -- Test 30: behavioral — a failed launch leaves no orphaned vite descendant -
+echo ""
+echo "--- Test 30: run-gui-dev.sh reaps the whole vite process tree ---"
+
+# `npm run dev` forks an intermediate `sh -c` which forks the node/vite process
+# that actually holds the port. cleanup()'s `pkill -P "$VITE_PID"` reaches npm's
+# DIRECT children only, so that GRANDCHILD survives every termination path —
+# observed twice in the wild squatting on :1420 with cwd <worktree>/gui, which
+# is what makes the next dev run fail to start.
+#
+# The stub below reproduces that exact npm -> sh -> node shape, and the stub
+# reify-gui exits 1 to simulate the symbol-lookup/EGL death at exec.
+
+_rgs_mktemp _t30_tmpdir
+_t30_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t30_tmpdir"
+_rgs_stub_cargo "$_t30_tmpdir"
+
+cat > "$_t30_tmpdir/bin/npm" <<'NPM_STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+    run)
+        shift
+        [ "${1:-}" = dev ] || exit 0
+        printf '%s' "$$" > "${_RGS_NPM_PID:?_RGS_NPM_PID must be set by the test}"
+        # npm -> sh -> node: an intermediate shell that BACKGROUNDS the process
+        # actually holding the port, then waits. The backgrounded sleep is the
+        # grandchild `pkill -P "$VITE_PID"` cannot see.
+        bash -c 'sleep 300 & printf "%s" "$!" > "${_RGS_GRANDCHILD_PID:?}"; wait' &
+        wait
+        exit 0
+        ;;
+    *) exit 0 ;;
+esac
+NPM_STUB
+chmod +x "$_t30_tmpdir/bin/npm"
+
+# Readiness must not race the fixture: report the port free on the preflight
+# probe, then "up" only once the stub vite tree has fully materialised.
+cat > "$_t30_tmpdir/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+_c="${_RGS_CURL_COUNTER:?_RGS_CURL_COUNTER must be set by the test}"
+_n=0
+[ -f "$_c" ] && _n=$(cat "$_c")
+_n=$((_n + 1))
+printf '%s' "$_n" > "$_c"
+[ "$_n" -eq 1 ] && exit 7
+[ -s "${_RGS_GRANDCHILD_PID:?}" ] && exit 0
+exit 7
+CURL_STUB
+chmod +x "$_t30_tmpdir/bin/curl"
+
+# Stub reify-gui: dies at exec, the way a libtbb symbol-lookup or EGL abort does.
+mkdir -p "$_t30_tmpdir/target/debug"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$_t30_tmpdir/target/debug/reify-gui"
+chmod +x "$_t30_tmpdir/target/debug/reify-gui"
+
+_t30_rc=0
+DISPLAY=:99 REIFY_VITE_PORT="$_t30_port" \
+    _RGS_CURL_COUNTER="$_t30_tmpdir/curl-count" \
+    _RGS_NPM_PID="$_t30_tmpdir/vite-npm.pid" \
+    _RGS_GRANDCHILD_PID="$_t30_tmpdir/vite-grandchild.pid" \
+    PATH="$_t30_tmpdir/bin:$PATH" \
+    bash "$_t30_tmpdir/scripts/run-gui-dev.sh" "$_t30_tmpdir/test.ri" >/dev/null 2>&1 || _t30_rc=$?
+
+_t30_npm_pid=$(cat "$_t30_tmpdir/vite-npm.pid" 2>/dev/null || true)
+_t30_gc_pid=$(cat "$_t30_tmpdir/vite-grandchild.pid" 2>/dev/null || true)
+
+# Bounded settle loop — reaping is asynchronous, so poll for up to ~5s rather
+# than sleeping a fixed interval and hoping.
+_t30_alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+for _ in $(seq 1 50); do
+    if ! _t30_alive "$_t30_npm_pid" && ! _t30_alive "$_t30_gc_pid"; then
+        break
+    fi
+    sleep 0.1
+done
+
+_t30_npm_survived=0
+_t30_gc_survived=0
+if _t30_alive "$_t30_npm_pid"; then _t30_npm_survived=1; fi
+if _t30_alive "$_t30_gc_pid"; then _t30_gc_survived=1; fi
+
+# Unconditional backstop: a RED run must never leak a process into the pool.
+if [ -n "$_t30_gc_pid" ]; then kill -9 "$_t30_gc_pid" 2>/dev/null || true; fi
+if [ -n "$_t30_npm_pid" ]; then kill -9 "$_t30_npm_pid" 2>/dev/null || true; fi
+
+assert "run-gui-dev.sh: the failed binary's non-zero rc is propagated" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t30_rc"
+
+assert "run-gui-dev.sh: the stub vite tree was actually built (grandchild pid recorded)" \
+    bash -c '[ -n "$1" ]' _ "$_t30_gc_pid"
+
+assert "run-gui-dev.sh: no orphaned vite GRANDCHILD survives the script" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t30_gc_survived"
+
+assert "run-gui-dev.sh: the npm process itself does not survive the script" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t30_npm_survived"
+
 test_summary
