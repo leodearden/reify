@@ -29,6 +29,13 @@ use reify_ir::{
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── harness (mirrors solve_elastic_static_e2e.rs) ────────────────────────────
+//
+// `cantilever_source` / `extract_field` / `solve_cantilever` are copied from
+// `solve_elastic_static_e2e.rs` rather than shared. That is an accepted
+// trade-off, not a language constraint — a `tests/common/mod.rs` module (as
+// `crates/reify-eval/tests/common/` does) or the `reify-test-support` crate
+// could carry them. Hoisting would mean editing `solve_elastic_static_e2e.rs`,
+// which this task does not own.
 
 /// Load and compile the cantilever smoke fixture.
 fn cantilever_source() -> &'static str {
@@ -181,6 +188,67 @@ fn grid_max_von_mises(sf: &SampledField) -> Option<f64> {
         .max_by(|a, b| a.total_cmp(b))
 }
 
+/// Linear index of the grid-max von Mises window, replicating
+/// `field_reductions::argmax_argmin_index` exactly: skip non-finite windows,
+/// compare with `total_cmp`, and keep the FIRST of equal maxima (a strict
+/// `is_gt()` takes over). `Iterator::max_by` keeps the LAST, which is why
+/// `grid_max_von_mises` above cannot be reused for the index.
+fn grid_argmax_von_mises_index(sf: &SampledField) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, window) in sf.data.chunks_exact(9).enumerate() {
+        let v = reify_stdlib::compute_von_mises_3x3(window);
+        if !v.is_finite() {
+            continue;
+        }
+        match best {
+            None => best = Some((i, v)),
+            Some((_, b)) if v.total_cmp(&b).is_gt() => best = Some((i, v)),
+            _ => {}
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Per-axis SI coords at a row-major linear index, mirroring
+/// `field_reductions::decompose_index`: axis-0 outermost, so the LAST axis
+/// varies fastest (`i_{N-1} = i % s_{N-1}`, then divide out and repeat).
+fn axis_coords_at_index(sf: &SampledField, linear: usize) -> Vec<f64> {
+    let n = sf.axis_grids.len();
+    let mut per_axis = vec![0usize; n];
+    let mut rem = linear;
+    for k in (0..n).rev() {
+        let len = sf.axis_grids[k].len();
+        per_axis[k] = rem % len;
+        rem /= len;
+    }
+    (0..n).map(|k| sf.axis_grids[k][per_axis[k]]).collect()
+}
+
+/// Evaluate `argmax(von_mises(<stress field>))` and return the resulting `Value`.
+///
+/// The reduction's result type is the field's DOMAIN, not its codomain —
+/// argmax answers "where", not "how much".
+fn argmax_von_mises_over_field(field: Value, field_type: Type) -> Value {
+    let domain = match &field_type {
+        Type::Field { domain, .. } => domain.clone(),
+        other => panic!("expected a Type::Field, got: {other:?}"),
+    };
+    let vm_field_type = Type::Field {
+        domain: domain.clone(),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+
+    let vm_expr = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        vm_field_type,
+    );
+    let argmax_expr = make_function_call("argmax", vec![vm_expr], *domain);
+
+    let values = ValueMap::new();
+    eval_expr(&argmax_expr, &EvalContext::simple(&values))
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 /// THE REGRESSION: `max(von_mises(result.stress))` over a real solve must be a
@@ -319,4 +387,104 @@ fn max_von_mises_over_stress_field_does_not_exceed_element_max_von_mises() {
          exceeds the element-max {element_max:e} Pa. Both resamplings between them \
          are convex combinations, so the grid peak can only be ≤ the element max."
     );
+}
+
+/// `argmax(von_mises(result.stress))` — WHERE the peak stress is — over a real
+/// Regular3D stress field.
+///
+/// This exercises coordinate machinery no other test on this path reaches. The
+/// unit-level `argmax` coverage in
+/// `reify-expr/tests/field_analysis_tests.rs` uses a Regular1D grid with a
+/// dimensionless-scalar domain, so `arg_coord_from_index`'s 3-axis
+/// `decompose_index` and `wrap_coord_for_domain`'s `Type::Point` arm are only
+/// driven for an analysis wrapper HERE — over the production shape
+/// (`Regular3D` grid, `Point3<Length>` domain, stamped by
+/// `reify_eval::compute_targets::sampled_stress_field`). Admitting the Sampled
+/// backing is what first makes that path reachable at all, and every guard on
+/// it fails to `Value::Undef` rather than panicking — the exact silent shape
+/// task 7129 exists to close.
+///
+/// The oracle is exact, not approximate: `argmax_argmin_index` selects a
+/// buffer index and `arg_coord_from_index` looks the coord up in
+/// `axis_grids` verbatim, so the expected coords are f64s copied out of the
+/// same grid — no interpolation, no arithmetic.
+#[test]
+fn argmax_von_mises_over_real_stress_field_returns_the_peak_grid_coordinate() {
+    let result = solve_cantilever();
+    let (field, field_type) = stress_field(&result);
+
+    // The production domain: Point3<Length>. `wrap_coord_for_domain` wraps a
+    // coord per axis only for a `Type::Point` domain; anything else is Undef.
+    let Type::Field { domain, .. } = &field_type else {
+        panic!("expected a Type::Field, got: {field_type:?}");
+    };
+    assert_eq!(
+        **domain,
+        Type::point3(Type::length()),
+        "result.stress must carry a Point3<Length> domain — this is the shape \
+         arg_coord_from_index decomposes against"
+    );
+
+    // Oracle, computed before `field` is moved into the reduction.
+    let (expected_coords, bounds_min, bounds_max) = {
+        let sf = backing_sampled_field(&field);
+        assert_eq!(
+            sf.axis_grids.len(),
+            3,
+            "the cantilever stress field must be a 3-axis Regular3D grid"
+        );
+        let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+        assert_eq!(
+            sf.data.len(),
+            grid_count * 9,
+            "stride-9 buffer must hold one 3x3 tensor per grid point"
+        );
+        let index = grid_argmax_von_mises_index(sf)
+            .expect("stress buffer must contain at least one finite window");
+        (
+            axis_coords_at_index(sf, index),
+            sf.bounds_min.clone(),
+            sf.bounds_max.clone(),
+        )
+    };
+
+    let arg = argmax_von_mises_over_field(field, field_type);
+
+    assert_ne!(
+        arg,
+        Value::Undef,
+        "argmax(von_mises(result.stress)) must not be Undef — locating the peak \
+         stress is the user-facing capability admitting the Sampled backing unlocks"
+    );
+    let Value::Point(coords) = &arg else {
+        panic!("argmax over a Point3 domain should return a Value::Point, got: {arg:?}");
+    };
+    assert_eq!(coords.len(), 3, "a Point3 domain yields three coords");
+
+    for (k, coord) in coords.iter().enumerate() {
+        let Value::Scalar {
+            si_value,
+            dimension,
+        } = coord
+        else {
+            panic!("axis {k} coord should be a Value::Scalar, got: {coord:?}");
+        };
+        assert_eq!(
+            *dimension,
+            DimensionVector::LENGTH,
+            "axis {k} coord must carry the domain's LENGTH dimension"
+        );
+        assert!(
+            *si_value >= bounds_min[k] && *si_value <= bounds_max[k],
+            "axis {k} coord {si_value:e} m falls outside the stress grid bounds \
+             [{:e}, {:e}]",
+            bounds_min[k],
+            bounds_max[k]
+        );
+        assert_eq!(
+            *si_value, expected_coords[k],
+            "axis {k}: the reduction must return the grid coord of the peak \
+             window (index-matched to the independent recomputation)"
+        );
+    }
 }
