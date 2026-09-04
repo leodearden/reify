@@ -224,11 +224,26 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 ///    [`std::panic::catch_unwind`] so a solver panic is recorded
 ///    ([`record_panicked`]) and degraded to a structured failure rather than
 ///    unwinding through the engine dispatch.
-/// 4. [`quality_check`] — on [`QualityVerdict::Pass`], [`record_morphed`] and
-///    return the deformed mesh.
+/// 4. [`quality_check`] — on [`QualityVerdict::Pass`], attach the source's
+///    [`BoundaryAssociation`] re-keyed onto the NEW BRep
+///    ([`rekey_boundary_association`]), then [`record_morphed`] and return the
+///    deformed mesh.
 ///
 /// Connectivity is preserved by construction (both solvers deform vertices in
 /// place and clone `tet_indices`).
+///
+/// ## Why the morphed mesh carries a boundary association (task #6637)
+///
+/// `engine_build.rs` stashes a successful morph's output verbatim as the next
+/// tick's `MorphSource.source_mesh`, and
+/// `morph_producer.rs::decide_morph_or_remesh` bails to `Remesh` when
+/// `source_mesh.boundary` is `None`. Both solvers hard-code `boundary: None` —
+/// correctly, since neither has access to a `CorrespondenceMap` — so a
+/// `compose_morph` that returned their output verbatim would let the morph arm
+/// fire on only every OTHER tick. The re-key belongs at this seam because this
+/// is the seam that owns the correspondence. It is fail-closed: an unmapped
+/// handle yields `None`, degrading the next tick to an honest remesh rather
+/// than a silent misprojection.
 ///
 /// The eligibility-reject and quality-reject failure arms return a structured
 /// [`MorphFailure`]; their diagnostic counters (`record_ineligible` /
@@ -275,7 +290,7 @@ pub fn compose_morph(
                 .map_err(|e| SolverErrorPayload::new(format!("elasticity morph failed: {e:?}")))
         }
     });
-    let morphed = match std::panic::catch_unwind(solve) {
+    let mut morphed = match std::panic::catch_unwind(solve) {
         Ok(Ok(mesh)) => mesh,
         Ok(Err(payload)) => return Err(MorphFailure::SolverError(payload)),
         Err(panic) => {
@@ -293,6 +308,13 @@ pub fn compose_morph(
     //    once and return the structured failure so the caller remeshes.
     let verdict = quality_check(&morphed, source_mesh, options);
     if matches!(verdict, QualityVerdict::Pass) {
+        // 5. Carry the source's BoundaryAssociation forward, re-keyed onto the
+        //    NEW BRep. Node indices are preserved by construction (both solvers
+        //    clone tet_indices and deform vertices in place), so only the B-rep
+        //    handles need remapping. Assigning the Option directly IS the
+        //    fail-closed behaviour: an unmapped handle yields None, so the next
+        //    tick honestly remeshes rather than misprojecting.
+        morphed.boundary = boundary::rekey_boundary_association(boundary, &correspondence);
         record_morphed();
         return Ok(morphed);
     }
