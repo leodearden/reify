@@ -3337,16 +3337,16 @@ fn multi_realization_partial_hide_retains_at_entity_granularity() {
 /// The degeneration is induced without OCCT via `MockGeometryKernel`'s
 /// explicit `fail_after_n_dispatches` knob (task #6471,
 /// `rigid_mass_props_session_seeded_then_failing`): handles 1 and 2 are
-/// seeded to succeed, and every query for a handle dispatched afterward
-/// fails explicitly — exactly the shape of a failing kernel query or
-/// degenerate geometry in production, and encoded in the delta exactly as a
-/// hash-exempt gap is.
+/// seeded to succeed, and every query for a handle past id 2 — i.e. anything
+/// a later dispatch allocates — fails explicitly. That is exactly the shape
+/// of a failing kernel query or degenerate geometry in production, and is
+/// encoded in the delta exactly as a hash-exempt gap is.
 ///
 /// Reviewer suggestion 4 on task #5338: seed-range STARVATION (leaving
 /// handles past a narrow range unseeded and relying on the generic "no mock
 /// result" fallback) coupled this test to the exact number of kernel
 /// dispatches the production path happens to perform. `MockGeometryKernel`
-/// now supports stating "queries past dispatch N fail" directly
+/// now supports stating "queries for handles past N fail" directly
 /// (`fail_after_n_dispatches`, `crates/reify-test-support/src/mocks.rs`,
 /// task #6471), so the failure is guaranteed by construction and the test no
 /// longer needs a downstream precondition block inspecting the mock's

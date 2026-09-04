@@ -961,14 +961,16 @@ pub struct MockGeometryKernel {
     /// same effect by leaving `handle` unseeded and relying on the generic
     /// "no mock result for …" fallback (seed-range starvation).
     typed_query_errors: HashMap<QueryKey, QueryError>,
-    /// When `Some(n)`, every query whose [`primary_handle`] was allocated by
-    /// the `(n+1)`-th or later `execute`/`make_compound` dispatch fails,
-    /// regardless of query type or whether `typed_queries` / `queries` also
-    /// has an entry for that handle. Set via `fail_after_n_dispatches` (task
-    /// #6471) — the coarser sibling of `typed_query_errors`: states "queries
-    /// past dispatch `n` fail" directly, replacing the seed-range-starvation
-    /// mechanism where a test picked a narrow success range and let handles
-    /// past it go unanswered.
+    /// When `Some(n)`, every query whose [`primary_handle`] has an id greater
+    /// than `n` fails, regardless of query type or whether `typed_queries` /
+    /// `queries` also has an entry for that handle. Set via
+    /// `fail_after_n_dispatches` (task #6471) — the coarser sibling of
+    /// `typed_query_errors`: states "queries past handle `n` fail" directly,
+    /// replacing the seed-range-starvation mechanism where a test picked a
+    /// narrow success range and let handles past it go unanswered. The field
+    /// name reflects the intended usage (ids ARE dispatch ordinals for handles
+    /// `execute` / `make_compound` allocated); the gate itself is purely
+    /// `handle.0 > n` — see `fail_after_n_dispatches`'s doc.
     fail_queries_after_dispatch: Option<u64>,
     /// Per-parent edge-extraction results; `Ok(vec)` or `Err(e)`.
     extracted_edges: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
@@ -1240,16 +1242,27 @@ impl MockGeometryKernel {
         self
     }
 
-    /// Configure the mock to FAIL every query whose [`primary_handle`] was
-    /// allocated by the `(n+1)`-th or later `execute`/`make_compound`
-    /// dispatch — i.e. everything past the first `n` dispatches — regardless
-    /// of query type or whether `typed_queries` / `queries` also has a
-    /// (now-shadowed) entry for that handle (task #6471).
+    /// Configure the mock to FAIL every query whose [`primary_handle`] has an
+    /// id GREATER THAN `n`, regardless of query type and regardless of whether
+    /// `typed_queries` / `queries` also has a (now-shadowed) entry for that
+    /// handle (task #6471).
+    ///
+    /// # The gate is a handle-ID threshold, not a dispatch counter
+    /// The dispatch-flavoured NAME describes the INTENDED usage, and holds
+    /// exactly for handles allocated by `execute` / `make_compound`: `next_id`
+    /// starts at 1 and is bumped by nothing else, so for those handles
+    /// "id > n" is precisely "allocated by the `(n+1)`-th or later dispatch".
+    /// The equivalence does NOT hold for a handle a test invents directly
+    /// (e.g. seeding `GeometryHandleId(5)` having dispatched nothing), nor for
+    /// the sub-entity handles handed back by seeded `extract_edges` /
+    /// `extract_faces`, which never allocate via `next_id`. Such handles are
+    /// still failed whenever their id exceeds `n` — they were simply never
+    /// "dispatched", so read the gate mechanically as `handle.0 > n`.
     ///
     /// This is the coarse-grained sibling of `with_volume_error` and friends:
     /// where those target one query type on one handle, this states "the
-    /// kernel goes degenerate from dispatch `n+1` onward" directly, replacing
-    /// the seed-range-starvation idiom of seeding success only up to `n` and
+    /// kernel goes degenerate past handle `n`" directly, replacing the
+    /// seed-range-starvation idiom of seeding success only up to `n` and
     /// relying on the generic "no mock result" fallback to fail everything
     /// past it incidentally.
     pub fn fail_after_n_dispatches(mut self, n: u64) -> Self {
@@ -1872,8 +1885,10 @@ impl GeometryKernel for MockGeometryKernel {
         }
 
         // Coarse-grained `fail_after_n_dispatches` gate (task #6471): fails
-        // every query whose primary handle was allocated past the
-        // configured dispatch count, regardless of query type. Checked
+        // every query whose primary handle has an id past the configured
+        // ceiling, regardless of query type — a handle-ID threshold, which
+        // coincides with a dispatch ordinal only for handles `execute` /
+        // `make_compound` allocated (see the builder's doc). Checked
         // before the `typed_queries` lookup as well as the OwnerBody
         // special-case and the generic fallback, so it uniformly covers all
         // three — in particular a success seeded past the ceiling by
@@ -1885,8 +1900,10 @@ impl GeometryKernel for MockGeometryKernel {
             if handle.0 > ceiling {
                 return Err(QueryError::QueryFailed(format!(
                     "MockGeometryKernel: query for {handle:?} explicitly failed — \
-                     configured via fail_after_n_dispatches({ceiling}) and this \
-                     handle was allocated by a later dispatch"
+                     handle id > {ceiling} (configured via \
+                     fail_after_n_dispatches({ceiling})). Note this gates on \
+                     handle ID, which equals dispatch ordinal only for handles \
+                     allocated by execute/make_compound"
                 )));
             }
         }
@@ -3752,6 +3769,138 @@ mod tests {
             ),
             other => panic!("expected QueryFailed, got {other:?}"),
         }
+    }
+
+    // Task #6471 amendment: `with_centroid_error` / `with_inertia_tensor_error`
+    // shipped alongside the tested `with_volume_error` with no coverage of
+    // their own. `with_inertia_tensor_error` in particular bit-keys on the
+    // density, so a caller whose density is not bits-equal to the queried one
+    // gets a silent HashMap miss instead of the seeded failure — pin that.
+
+    #[test]
+    fn mock_with_centroid_error_fails_that_handle_and_overrides_seeded_success() {
+        let failing = GeometryHandleId(1);
+        let ok = GeometryHandleId(2);
+        let centroid = Value::String("{\"x\":0,\"y\":0,\"z\":0}".to_string());
+
+        let kernel = MockGeometryKernel::new()
+            // Same handle seeded BOTH ways: the error must outrank the success,
+            // matching `typed_query_errors`' documented top precedence.
+            .with_centroid_result(failing, centroid.clone())
+            .with_centroid_error(
+                failing,
+                QueryError::QueryFailed("deliberate centroid failure".to_string()),
+            )
+            .with_centroid_result(ok, centroid.clone());
+
+        let err = kernel
+            .query(&GeometryQuery::Centroid(failing))
+            .expect_err("with_centroid_error must make this handle fail");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(
+                msg, "deliberate centroid failure",
+                "the seeded error must win over the same handle's seeded success"
+            ),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+
+        // Scoping: the seeding is per-handle, not global.
+        let unaffected = kernel
+            .query(&GeometryQuery::Centroid(ok))
+            .expect("handle 2 was never seeded to fail");
+        assert_eq!(unaffected, centroid);
+
+        // Scoping: it is also per-QUERY-TYPE — a Volume query on the failing
+        // handle is untouched by a Centroid error.
+        assert!(
+            kernel.query(&GeometryQuery::Volume(failing)).is_err(),
+            "Volume is unseeded here, so it falls through to the generic \
+             \"no mock result\" miss rather than the centroid error"
+        );
+    }
+
+    #[test]
+    fn mock_with_inertia_tensor_error_hits_only_the_bits_matching_density() {
+        let id = GeometryHandleId(1);
+        let tensor = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+
+        let kernel = MockGeometryKernel::new()
+            // Success seeded at BOTH densities; failure seeded at 7850.0 only.
+            .with_inertia_tensor_result(id, 7850.0, tensor.clone())
+            .with_inertia_tensor_result(id, 2700.0, tensor.clone())
+            .with_inertia_tensor_error(
+                id,
+                7850.0,
+                QueryError::QueryFailed("deliberate inertia failure".to_string()),
+            );
+
+        let err = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 7850.0,
+            })
+            .expect_err("bits-equal density must hit the seeded error");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(msg, "deliberate inertia failure"),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+
+        // A DIFFERENT density is a different key, so it misses the seeded
+        // error entirely and resolves to its own seeded success. This is the
+        // silent-miss failure mode a caller hits when the density they seed
+        // is not the one the query is issued with.
+        let other_density = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 2700.0,
+            })
+            .expect("density 2700.0 was never seeded to fail");
+        assert_eq!(
+            other_density, tensor,
+            "the error is keyed on (handle, density_bits) — 2700.0 must not \
+             inherit 7850.0's failure"
+        );
+    }
+
+    #[test]
+    fn mock_with_inertia_tensor_error_canonicalizes_signed_zero_density() {
+        // Mirrors `mock_with_inertia_tensor_result_canonicalizes_signed_zero_density`:
+        // both directions go through `density_bits`, so ±0.0 share one key.
+        let id = GeometryHandleId(1);
+
+        let kernel = MockGeometryKernel::new().with_inertia_tensor_error(
+            id,
+            -0.0_f64,
+            QueryError::QueryFailed("seeded at -0.0".to_string()),
+        );
+        assert!(
+            kernel
+                .query(&GeometryQuery::InertiaTensor {
+                    handle: id,
+                    density: 0.0_f64,
+                })
+                .is_err(),
+            "insert -0.0 / query +0.0 should hit the same key"
+        );
+
+        let kernel = MockGeometryKernel::new().with_inertia_tensor_error(
+            id,
+            0.0_f64,
+            QueryError::QueryFailed("seeded at +0.0".to_string()),
+        );
+        assert!(
+            kernel
+                .query(&GeometryQuery::InertiaTensor {
+                    handle: id,
+                    density: -0.0_f64,
+                })
+                .is_err(),
+            "insert +0.0 / query -0.0 should hit the same key"
+        );
     }
 
     // step-15: integration test — multi-op workflow with queries + inspection
