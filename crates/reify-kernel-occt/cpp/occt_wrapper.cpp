@@ -754,51 +754,7 @@ rust::String shape_type_name(const OcctShape& shape) {
     });
 }
 
-// --- Boolean operations ---
-
-std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
-    return wrap_occt_call("boolean_fuse", [&]() {
-        BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
-        fuse.Build();
-        if (!fuse.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Fuse failed");
-        }
-        t_boolean_pass_count += 1;
-        auto result = std::make_unique<OcctShape>();
-        result->shape = fuse.Shape();
-        return result;
-    });
-}
-
-std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right) {
-    return wrap_occt_call("boolean_cut", [&]() {
-        BRepAlgoAPI_Cut cut(left.shape, right.shape);
-        cut.Build();
-        if (!cut.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Cut failed");
-        }
-        t_boolean_pass_count += 1;
-        auto result = std::make_unique<OcctShape>();
-        result->shape = cut.Shape();
-        return result;
-    });
-}
-
-std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right) {
-    return wrap_occt_call("boolean_common", [&]() {
-        BRepAlgoAPI_Common common(left.shape, right.shape);
-        common.Build();
-        if (!common.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Common failed");
-        }
-        t_boolean_pass_count += 1;
-        auto result = std::make_unique<OcctShape>();
-        result->shape = common.Shape();
-        return result;
-    });
-}
-
-// --- BRepAlgoAPI_* history (v0.2 persistent-naming-v2, task 2590) ---
+// --- Boolean-result emptiness guard (task 5318) ---
 
 namespace {
 
@@ -830,6 +786,16 @@ bool boolean_result_is_empty(const TopoDS_Shape& s) {
 ///
 /// Per the `ContractViolation` contract above, the message must NOT repeat the
 /// internal op name — `wrap_occt_call` already prefixes it.
+///
+/// Six call sites, all in this file: the plain trio `boolean_fuse` /
+/// `boolean_cut` / `boolean_common` (reached by `OcctKernel::execute`) and the
+/// with-history trio `boolean_fuse_with_history` / `boolean_cut_with_history` /
+/// `boolean_common_with_history` (the production path — `handle.rs` routes
+/// `GeometryOp::Union` / `Difference` / `Intersection` there).
+///
+/// Deliberately NOT applied to `fuse_shape_list`: that is a pure union over an
+/// already-non-empty input list, so its result cannot be empty, and guarding it
+/// would only add a dead branch on the hot pattern-realizer path.
 void reject_empty_boolean_result(const TopoDS_Shape& s, const char* op_display) {
     if (!boolean_result_is_empty(s)) {
         return;
@@ -840,6 +806,62 @@ void reject_empty_boolean_result(const TopoDS_Shape& s, const char* op_display) 
         "the target). Check operand placement and units — an empty result would otherwise "
         "flow silently into downstream ops such as extrude() and yield a zero-volume solid.");
 }
+
+} // anonymous namespace (boolean-result emptiness guard)
+
+// --- Boolean operations ---
+
+std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
+    return wrap_occt_call("boolean_fuse", [&]() {
+        BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
+        fuse.Build();
+        if (!fuse.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Fuse failed");
+        }
+        // Reject before counting a completed boolean pass (task 5318).
+        reject_empty_boolean_result(fuse.Shape(), "union");
+        t_boolean_pass_count += 1;
+        auto result = std::make_unique<OcctShape>();
+        result->shape = fuse.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right) {
+    return wrap_occt_call("boolean_cut", [&]() {
+        BRepAlgoAPI_Cut cut(left.shape, right.shape);
+        cut.Build();
+        if (!cut.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Cut failed");
+        }
+        // Reject before counting a completed boolean pass (task 5318).
+        reject_empty_boolean_result(cut.Shape(), "difference");
+        t_boolean_pass_count += 1;
+        auto result = std::make_unique<OcctShape>();
+        result->shape = cut.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right) {
+    return wrap_occt_call("boolean_common", [&]() {
+        BRepAlgoAPI_Common common(left.shape, right.shape);
+        common.Build();
+        if (!common.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Common failed");
+        }
+        // Reject before counting a completed boolean pass (task 5318).
+        reject_empty_boolean_result(common.Shape(), "intersection");
+        t_boolean_pass_count += 1;
+        auto result = std::make_unique<OcctShape>();
+        result->shape = common.Shape();
+        return result;
+    });
+}
+
+// --- BRepAlgoAPI_* history (v0.2 persistent-naming-v2, task 2590) ---
+
+namespace {
 
 /// Walk `parent_map` (canonical TopExp 1-based order), querying
 /// `op.Modified()/Generated()/IsDeleted()` for each parent sub-shape.
