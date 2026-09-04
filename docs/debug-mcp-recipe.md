@@ -48,6 +48,23 @@ The suite boots reify-gui automatically via `scripts/run-gui-dev.sh`, runs all
 1 (any fail) / 2 (fatal harness error). **Not CI-gated** — needs a live GUI per
 PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 
+> **Concurrency: the e2e smoke needs an unoccupied `:1420`, so two lanes cannot
+> run it at once.** Since #7254 the launcher refuses (exit 1, before any build)
+> when something already answers on the vite port, and neither
+> `gui/test/visual/run.ts` nor `gui/test/visual/lib_e2e_smoke.sh` sets
+> `REIFY_VITE_PORT` — nor could they usefully: reify-gui's `devUrl` is baked to
+> `http://localhost:1420` at compile time (`gui/src-tauri/tauri.conf.json`), so
+> moving vite would leave the GUI loading the *foreign* listener. The refusal is
+> the correct behaviour — previously the second run silently attached to the
+> first lane's vite and asserted against another worktree's build — but the
+> consequence is a real serialisation constraint: **serialise concurrent e2e
+> smokes across lanes, or free `:1420` first** (the error names the listener pid
+> and `ls -l /proc/<pid>/cwd` shows which worktree it serves). Lifting it needs
+> the GUI-side half — a build-time `devUrl` override via `TAURI_CONFIG`, or
+> reading the env var in the Rust shell — as noted in `scripts/run-gui-dev.sh`'s
+> `REIFY_VITE_PORT` comment. `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses the check but
+> restores the silent-wrong-vite behaviour, so it is not a fix.
+
 ---
 
 ## 3. Tool catalogue by group

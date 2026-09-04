@@ -231,6 +231,15 @@ if [ "$VITE_PGROUP" -eq 0 ]; then
     # Monitor mode unavailable: npm shares OUR process group, so a group kill
     # would signal this script too. cleanup() falls back to `pkill -P` in that
     # case — degraded (the grandchild can survive), so say so out loud.
+    #
+    # BELT-AND-BRACES, WITH NO KNOWN TRIGGER — and therefore UNTESTED. `set -m`
+    # has no documented failure mode in bash on Linux, and none was found:
+    # measured here, monitor mode turns on in a plain non-interactive shell,
+    # with stdin piped, and under `setsid` with no controlling terminal. So
+    # nothing in tests/infra/test_run_gui_scripts.sh reaches this branch or the
+    # matching one in cleanup(). Keep it as insurance, but do NOT route new
+    # logic through it believing it is exercised — if you need it to work,
+    # write the test that drives it first.
     echo "Warning: 'set -m' unavailable; vite teardown degraded to direct children only — a vite grandchild may survive and keep :$REIFY_VITE_PORT bound" >&2
 fi
 pushd gui >/dev/null
@@ -264,7 +273,16 @@ if [ "$_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
 # `pkill -P "$VITE_PID"` + `kill "$VITE_PID"` are RETAINED as the fallback for
 # the case where `set -m` was unavailable and VITE_PID is therefore not a PGID
 # of our own making — there, a group kill would target our own group, so we must
-# not attempt one.
+# not attempt one. That branch is belt-and-braces with NO KNOWN TRIGGER and is
+# UNTESTED — see the note at the `set -m` spawn above. Its stated property
+# (`pkill -P` reaches npm's direct children only, so the grandchild can survive)
+# is reasoned from the process shape, not measured, precisely because nothing
+# can drive it.
+#
+# The group-kill path above IS measured: Test 30 drives it, and a three-level
+# npm->sh->node-shaped tree tore down in 7-108ms over three runs here (0-1 poll
+# iterations) — comfortably inside the 2s grace, so the loop below returns
+# almost immediately rather than paying the grace in full.
 GUI_PID=""
 cleanup() {
     if [ -n "$GUI_PID" ]; then
