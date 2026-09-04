@@ -2148,3 +2148,203 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
          geometry or the mesh."
     );
 }
+
+/// `cfg(has_gmsh)`: **task 4909 capstone** — the body-arg adaptive solve takes
+/// the gmsh-realized LOCALIZED lane and genuinely CONSUMES the Dörfler marks.
+///
+/// This is the end-to-end form of "the refine step consumes the marking". Task
+/// 4902 threaded the a-posteriori loop into `solve_elastic_static` with a
+/// MESH-FREE UNIFORM refine step (honestly labelled non-adaptive) because
+/// production reify-eval is gmsh-build-free and the synthetic box had no closed
+/// surface `Mesh` to remesh from. 4870 made a realized tet `VolumeMesh` reach
+/// the trampoline; 4909 reconstructs the boundary from that mesh's free faces
+/// and drives `refine_marked_elements` through it.
+///
+/// Asserts:
+///   (1) no `Severity::Error` diagnostics — a clean realize + adaptive solve;
+///   (2) the LOCALIZED-lane Info diagnostic is present and the 4902 uniform-grid
+///       one is NOT — i.e. the lane selector chose the realized lane;
+///   (3) `convergence_status` is `NotConverged { reason: MaxIterations }` — the
+///       budget is deliberately built so the iteration cap, not the accuracy
+///       target and not `max_dofs`, is what terminates the loop;
+///   (4) `global_relative_energy_error` is finite, > 0 and <= 1.0;
+///   (5) the localized diagnostic's reported POST-refine element count is
+///       strictly greater than its PRE-refine count.
+///
+/// (5) is the load-bearing assertion: a strictly grown element count after a
+/// mark-driven remesh is a concentration the uniform fallback structurally
+/// CANNOT report, because it never remeshes. Parsing it out of the diagnostic
+/// (rather than asserting a magnitude) keeps this a strict inequality on counts
+/// with no numeric tolerance band — the same shape as the always-on landed test
+/// in `reify-solver-elastic`'s `aposteriori_validation.rs`, and deliberately not
+/// the shape of its `#[ignore]`d cross-gmsh-version-unstable sibling.
+#[cfg(has_gmsh)]
+#[test]
+fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
+    use reify_core::{Severity, ValueCellId};
+    use reify_ir::{ExportFormat, Value};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping body_adaptive_solve_runs_the_gmsh_realized_localized_lane: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/fea_body_cantilever_adaptive.ri"
+    ));
+
+    let mut engine = make_occt_engine();
+    // Trampoline + VolumeMesh demand ONLY; NO boundary demand — see the module
+    // doc's #4876-SIGSEGV rationale.
+    register_elastic_static_body_trampoline(&mut engine);
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+
+    // ── (1) no Error diagnostics ──────────────────────────────────────────────
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the adaptive body-arg build, got: {errors:?}"
+    );
+
+    // ── (2) the LOCALIZED lane ran, the uniform one did not ───────────────────
+    let localized = build_result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("gmsh-realized"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the LOCALIZED gmsh-realized lane's Info diagnostic — its \
+                 absence means the lane selector fell back to task 4902's uniform \
+                 lane. diagnostics: {:?}",
+                build_result.diagnostics
+            )
+        });
+    assert_eq!(
+        localized.severity,
+        Severity::Info,
+        "the localized-lane diagnostic must be Info"
+    );
+    assert!(
+        localized.message.contains("mark-driven"),
+        "the localized diagnostic must state the refinement was mark-driven, got: {}",
+        localized.message
+    );
+    assert!(
+        !build_result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("adaptive refinement finished")
+                && d.message.contains("grid")),
+        "the realized lane must NOT also emit task 4902's uniform-grid diagnostic, \
+         got: {:?}",
+        build_result.diagnostics
+    );
+
+    let result_cell = ValueCellId::new("FeaBodyCantileverAdaptive", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| {
+            panic!("cell FeaBodyCantileverAdaptive.result not found in build values")
+        });
+    assert!(
+        matches!(result_val, Value::StructureInstance(_) | Value::Map(_)),
+        "adaptive body-arg result must be a populated ElasticResult, got: {result_val:?} \
+         — a pre-hydration Failed/Undef here means the redispatch did not deliver the \
+         realized mesh to the trampoline"
+    );
+
+    // ── (3) NotConverged { MaxIterations } ────────────────────────────────────
+    let status = extract_field(result_val, "convergence_status")
+        .expect("ElasticResult must carry a convergence_status field");
+    match &status {
+        Value::Enum {
+            variant, payload, ..
+        } => {
+            assert_eq!(
+                variant, "NotConverged",
+                "an unreachable target_accuracy must leave the loop NotConverged, got: {status:?}"
+            );
+            let reason = payload
+                .iter()
+                .find(|(k, _)| k == "reason")
+                .map(|(_, v)| v.clone())
+                .expect("NotConverged must carry a `reason` payload field");
+            assert!(
+                matches!(&reason, Value::Enum { variant, .. } if variant == "MaxIterations"),
+                "the iteration cap (not max_dofs, not a stall) must be what terminated \
+                 the loop, got reason: {reason:?}"
+            );
+        }
+        other => panic!("convergence_status must be a Value::Enum, got {other:?}"),
+    }
+
+    // ── (4) a real global relative energy error ───────────────────────────────
+    let gree = extract_field(result_val, "global_relative_energy_error")
+        .expect("ElasticResult must carry a global_relative_energy_error field");
+    let gree = match &gree {
+        Value::Option(Some(inner)) => match inner.as_ref() {
+            Value::Real(r) => *r,
+            other => panic!("global_relative_energy_error must wrap a Real, got {other:?}"),
+        },
+        other => panic!(
+            "an adaptive solve must populate global_relative_energy_error (the \
+             non-adaptive default is Option(None)), got {other:?}"
+        ),
+    };
+    assert!(
+        gree.is_finite() && gree > 0.0 && gree <= 1.0,
+        "global_relative_energy_error must be finite and in (0, 1], got {gree}"
+    );
+
+    // ── (5) the refine GREW the mesh — the signature of a real remesh ─────────
+    let (before, after) = parse_localized_element_counts(&localized.message);
+    assert!(
+        after > before,
+        "the mark-driven remesh must strictly grow the element count — this is the \
+         end-to-end form of 'the refine step genuinely CONSUMES the marking', and a \
+         concentration the uniform fallback structurally cannot report because it \
+         never remeshes. got: {before} -> {after} (diagnostic: {})",
+        localized.message
+    );
+}
+
+/// Parse the `elements {before} -> {after}` pair out of the localized lane's
+/// Info diagnostic.
+///
+/// The wording is settled once at the emission site in `elastic_static.rs` and
+/// asserted against by both the in-crate unit test and this end-to-end test, so
+/// a change to it breaks loudly in one place rather than silently weakening an
+/// assertion here.
+#[cfg(has_gmsh)]
+fn parse_localized_element_counts(message: &str) -> (usize, usize) {
+    let tail = message
+        .split("elements ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("localized diagnostic must report `elements N -> M`: {message}"));
+    let (before, rest) = tail
+        .split_once(" -> ")
+        .unwrap_or_else(|| panic!("localized diagnostic must report `elements N -> M`: {message}"));
+    let after: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    (
+        before
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("pre-refine element count `{before}` must parse: {e}")),
+        after
+            .parse()
+            .unwrap_or_else(|e| panic!("post-refine element count `{after}` must parse: {e}")),
+    )
+}
