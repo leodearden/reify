@@ -1470,21 +1470,43 @@ enum DeclineCause {
 /// in the right direction: present-in-one-map vs absent-in-the-other compares
 /// unequal, so the helper declines rather than guesses.
 ///
-/// KNOWN LIMITATION — STALENESS (amend #6662 reviewer_comprehensive,
-/// suggestion #5). `Reuse` copies the template-scope value as a ONE-TIME
-/// SNAPSHOT taken during sub elaboration; nothing refreshes it afterwards.
-/// `Engine::redispatch_geometry_consuming_compute_nodes` (engine_build.rs)
-/// re-dispatches a geometry-consuming compute node LATER, inside `build()`,
-/// once its args have hydrated to kernel-backed `GeometryHandle`s — and it
-/// writes only `node_data.output_value_cells[0]`, which is TEMPLATE-scoped
-/// because every `ComputeNode` is lowered at template scope. A reused instance
-/// cell would therefore keep the degraded first-dispatch result while the
-/// template cell got the corrected one: the "invisibly-wrong number" hazard
-/// this doc cites as the reason not to re-dispatch, reached by staleness
-/// instead. It is BELIEVED unreachable — a geometry-typed arg's instance value
-/// carries an instance-scoped realization ref, so the read comparison above
-/// should decline first — but that belief is NOT pinned by any fixture on this
-/// branch, and pinning it needs a kernel-backed handle this crate's tests
+/// STALENESS (amend #6662 reviewer_comprehensive, suggestion #5; narrowed by
+/// round 4 suggestion #1). `Reuse` copies the template-scope value as a
+/// ONE-TIME SNAPSHOT taken during sub elaboration; the copy itself is never
+/// re-run. `Engine::redispatch_geometry_consuming_compute_nodes`
+/// (engine_build.rs) re-dispatches a geometry-consuming compute node LATER,
+/// inside `build()`, once its args have hydrated to kernel-backed
+/// `GeometryHandle`s — and it writes only `node_data.output_value_cells[0]`,
+/// which is TEMPLATE-scoped because every `ComputeNode` is lowered at template
+/// scope. A reused instance cell would therefore keep the degraded
+/// first-dispatch result while the template cell got the corrected one: the
+/// "invisibly-wrong number" hazard this doc cites as the reason not to
+/// re-dispatch, reached by staleness instead.
+///
+/// The mechanism was a MISSING DEPENDENCY EDGE, not the snapshot as such: the
+/// trace committed for a reused cell was the raw
+/// `extract_dependency_trace(expr)`, which records the call's ARG reads and
+/// nothing about the cell the value was copied from, so `dirty.rs`'s
+/// `compute_eval_set` had no edge that could mark the instance cell dirty when
+/// the template cell moved. `elaborate_child_lets_only` — the one reuse site
+/// that commits a trace at all — now pushes `{child_template}.{member}` onto
+/// the committed trace's `reads` on the `Reuse` arm, so the existing dirty
+/// machinery invalidates the instance cell whenever the template cell is
+/// rewritten. The other two reuse sites need no counterpart: phase 1.5's
+/// scratch arm writes only the in-memory `overlay` (phase 2 owns the commit),
+/// and `elaborate_child_params_only` commits `DependencyTrace::default()` for
+/// EVERY param, reused or not — giving a param default an edge no other param
+/// carries would be a separate change to that site's provenance, not part of
+/// closing this hazard.
+///
+/// What remains unpinned is the narrower claim that the geometry case never
+/// reaches the reuse arm in the first place — BELIEVED so because a
+/// geometry-typed arg's instance value carries an instance-scoped realization
+/// ref, so the read comparison above declines first. The discriminator that
+/// belief rests on IS pinned at the helper by
+/// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`
+/// below; what no fixture on this branch reaches is the same path END TO END
+/// through `build()`, which needs a kernel-backed handle this crate's tests
 /// cannot mint. Tracked as ticket `tkt_0RT532KR05N0FNK05FJT69R2CA` (filed from
 /// #6662's amendment pass; not cited as `#NNNN` because the curator assigns the
 /// task id asynchronously and an unresolvable cite would be an orphan).
@@ -2184,6 +2206,12 @@ fn elaborate_child_lets_only<'t>(
             );
         }
 
+        // amend (#6662 reviewer_comprehensive round 4, suggestion #1 —
+        // robustness). Whether this cell's value was COPIED from the template
+        // cell decides whether the committed trace needs the extra read edge
+        // below; captured before the `match` consumes `resolution`.
+        let reused_from_template = matches!(resolution, OptimizedInstanceResolution::Reuse(_));
+
         let val = match resolution {
             OptimizedInstanceResolution::Reuse(v) => v,
             // Unreusable falls through to body-inlining, unchanged from
@@ -2204,12 +2232,43 @@ fn elaborate_child_lets_only<'t>(
         let scoped_id = ValueCellId::new(scoped_entity, member);
 
         // sorted_child_lets and child_let_traces are built from the same key set, so remove() cannot fail.
-        let trace = take_trace(
+        let mut trace = take_trace(
             &mut child_let_traces,
             &child_node_id,
             "sorted_child_lets",
             "child_let_traces",
         );
+
+        // amend (#6662 reviewer_comprehensive round 4, suggestion #1 —
+        // robustness). On the `Reuse` arm the committed value did NOT come from
+        // evaluating `expr`: it was copied verbatim from
+        // `{child_template}.{member}`. The raw `extract_dependency_trace(expr)`
+        // trace records the call's ARG reads and says nothing about the cell the
+        // value actually came from, and `dirty.rs`'s `compute_eval_set` /
+        // `topological_sort` drive incremental re-evaluation off exactly these
+        // traces — so without this edge NOTHING marks the reused instance cell
+        // dirty when the template cell is later rewritten. That is the concrete
+        // mechanism behind the KNOWN LIMITATION — STALENESS note on
+        // `resolve_optimized_instance_cell`: not merely "a snapshot was taken",
+        // but "a snapshot was taken and no dependency edge recorded it".
+        // Recording the edge lets the existing dirty machinery invalidate this
+        // cell whenever the template cell moves (e.g.
+        // `Engine::redispatch_geometry_consuming_compute_nodes`, which writes
+        // only the template-scoped `output_value_cells[0]`).
+        //
+        // Amending the trace HERE is order-safe: `child_let_traces` was already
+        // consumed by `topological_sort` above (the `sorted_child_lets` /
+        // `sorted.len() < nodes.len()` cycle signal is computed before this
+        // loop starts), so the added read cannot perturb instance-scope
+        // evaluation order or the cycle report. The edge is template→instance
+        // and can introduce no cycle: template-scope cells are compiled in the
+        // template's own scope and never read an instance-scoped id.
+        if reused_from_template {
+            let template_cell = ValueCellId::new(&child_template.name, member);
+            if !trace.reads.contains(&template_cell) {
+                trace.reads.push(template_cell);
+            }
+        }
 
         // Same TraceSource::GuardedGroup provenance as the Site 1 commit
         // above.
@@ -2760,6 +2819,154 @@ mod tests {
             OptimizedInstanceResolution::Reuse(v) => assert_eq!(v, Value::Int(777)),
             other => panic!(
                 "with the template cell present and inputs equal this must Reuse, got {:?}",
+                match other {
+                    OptimizedInstanceResolution::Unreusable { reason, .. } => reason,
+                    _ => "NotOptimized".to_string(),
+                }
+            ),
+        }
+    }
+
+    /// amend (#6662 reviewer_comprehensive round 4, suggestion #2 —
+    /// test-coverage).
+    ///
+    /// [`resolve_optimized_instance_cell`]'s STALENESS note argues that the
+    /// geometry-consuming case never reaches the `Reuse` arm, because a
+    /// geometry-typed arg's INSTANCE value carries an instance-scoped
+    /// realization ref and the read comparison therefore declines first. That
+    /// is the load-bearing soundness claim for every geometry-consuming
+    /// `@optimized` target in the stdlib (`fdm::slice`,
+    /// `fdm::as_printed_material_r_fast`), and until now it rested on prose
+    /// alone.
+    ///
+    /// The blocker recorded there ("pinning it needs a kernel-backed handle
+    /// this crate's tests cannot mint") is real only for the END-TO-END path
+    /// through `build()`. The DISCRIMINATOR is fully expressible here:
+    /// `Value::GeometryHandle` equality is `GeometryHandleRef`'s, which compares
+    /// `realization_ref` + `upstream_values_hash` and deliberately EXCLUDES
+    /// `kernel_handle` (reify-ir/src/value.rs, GHR-β §DD), and
+    /// `RealizationNodeId::new(entity, index)` is entity-scoped — so two
+    /// symbolic (`kernel_handle: None`) handles differing only in their ref's
+    /// ENTITY are exactly the instance-vs-template shape the claim depends on.
+    ///
+    /// This test reds if `GeometryHandleRef`'s equality ever widens to include
+    /// `kernel_handle` (the `Reuse` arm would start declining), or if
+    /// realization ids stop being entity-scoped (the `InputsDiffer` arms would
+    /// start reusing — the actual staleness hazard).
+    #[test]
+    fn resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref() {
+        use reify_core::identity::RealizationNodeId;
+
+        let source = r#"
+            @optimized("test::geom_target")
+            fn geom_opt(g : Solid) -> Int {
+                7
+            }
+
+            structure GeomLike {
+                param g : Solid = box(1mm, 1mm, 1mm)
+                let r = geom_opt(g)
+            }
+        "#;
+        let module = reify_test_support::compile_source_with_stdlib(source);
+        let errors = reify_test_support::collect_errors(&module.diagnostics);
+        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == "GeomLike")
+            .expect("GeomLike template");
+        let expr = reify_test_support::get_let_expr_in(&module, "GeomLike", "r");
+
+        // Symbolic handles only — `kernel_handle: None` is the eval-path mint
+        // (task #4652), and is precisely what makes this shape constructible
+        // without a kernel.
+        let handle = |entity: &str, hash: u8| Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new(entity, 0),
+            upstream_values_hash: [hash; 32],
+            kernel_handle: None,
+        };
+
+        // The template-scope map: the arg's own realization is entity-scoped to
+        // the TEMPLATE, and the output cell holds a dispatched value that would
+        // be reused if the gate let it through.
+        let mut global_values = ValueMap::new();
+        global_values.insert(ValueCellId::new("GeomLike", "g"), handle("GeomLike", 1));
+        global_values.insert(ValueCellId::new("GeomLike", "r"), Value::Int(777));
+
+        // (a) INSTANCE-SCOPED realization ref ⇒ decline. `Asm.beam` is the
+        // entity an instantiated `sub beam : GeomLike` realizes under, so its
+        // ref can never equal the template's.
+        let mut instance_values = ValueMap::new();
+        instance_values.insert(ValueCellId::new("GeomLike", "g"), handle("Asm.beam", 1));
+        match resolve_optimized_instance_cell(
+            expr,
+            &module.functions,
+            &OptimizedNameIndex::new(),
+            template,
+            "r",
+            || extract_dependency_trace(expr).reads,
+            &instance_values,
+            &global_values,
+        ) {
+            OptimizedInstanceResolution::Unreusable { cause, reason, .. } => assert_eq!(
+                cause,
+                DeclineCause::InputsDiffer,
+                "a geometry arg whose realization ref is instance-scoped must                  decline as InputsDiffer — this is the comparison the STALENESS                  note's 'should decline first' rests on: {reason}"
+            ),
+            OptimizedInstanceResolution::Reuse(v) => panic!(
+                "REUSED a geometry-consuming @optimized value across scopes ({v:?}) —                  the instance cell would keep the pre-hydration result while                  `redispatch_geometry_consuming_compute_nodes` corrected only the                  template cell"
+            ),
+            OptimizedInstanceResolution::NotOptimized => {
+                panic!("`geom_opt` carries @optimized; the probe must see it")
+            }
+        }
+
+        // (b) Same entity, DIFFERENT upstream hash ⇒ decline too. Pins the
+        // second of `GeometryHandleRef`'s two equality fields, so a widening of
+        // the ref's identity is caught from both sides.
+        let mut same_entity_other_hash = ValueMap::new();
+        same_entity_other_hash.insert(ValueCellId::new("GeomLike", "g"), handle("GeomLike", 2));
+        assert!(
+            matches!(
+                resolve_optimized_instance_cell(
+                    expr,
+                    &module.functions,
+                    &OptimizedNameIndex::new(),
+                    template,
+                    "r",
+                    || extract_dependency_trace(expr).reads,
+                    &same_entity_other_hash,
+                    &global_values,
+                ),
+                OptimizedInstanceResolution::Unreusable {
+                    cause: DeclineCause::InputsDiffer,
+                    ..
+                }
+            ),
+            "a geometry arg with the same realization ref but a different              upstream_values_hash must also decline"
+        );
+
+        // (c) Companion arm: identical refs ⇒ Reuse. Without this the two
+        // declines above would be satisfied by a gate that declines on EVERY
+        // geometry value, which would prove nothing about the discriminator.
+        match resolve_optimized_instance_cell(
+            expr,
+            &module.functions,
+            &OptimizedNameIndex::new(),
+            template,
+            "r",
+            || extract_dependency_trace(expr).reads,
+            &global_values.clone(),
+            &global_values,
+        ) {
+            OptimizedInstanceResolution::Reuse(v) => assert_eq!(
+                v,
+                Value::Int(777),
+                "with value-identical geometry inputs the template's dispatched                  value must be reused verbatim"
+            ),
+            other => panic!(
+                "identical geometry inputs must Reuse, got {:?}",
                 match other {
                     OptimizedInstanceResolution::Unreusable { reason, .. } => reason,
                     _ => "NotOptimized".to_string(),
