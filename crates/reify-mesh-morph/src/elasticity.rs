@@ -610,7 +610,10 @@ mod tests {
     ///   the propagated displacement.
     ///
     /// Adapts the `laplacian_smooth_with_one_iteration_*` cone fixture
-    /// (laplacian.rs:336-397).
+    /// (laplacian.rs's `cone_fixture` helper). The Laplacian quick-pass now
+    /// shares this test's semantics: since task #6637 it too extends the
+    /// boundary DISPLACEMENT field and returns `old + u`, so both solvers
+    /// reproduce a rigid boundary translation exactly.
     #[test]
     fn elasticity_morph_with_rigid_translation_on_cone_propagates_translation_to_interior_node_within_fp_tolerance()
      {

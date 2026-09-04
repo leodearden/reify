@@ -266,6 +266,77 @@ pub fn compute_dirichlet_bcs(
     Ok(result)
 }
 
+// ── rekey_boundary_association ────────────────────────────────────────────────
+
+/// Re-key a [`BoundaryAssociation`] from the OLD B-rep onto the NEW one,
+/// mapping every attachment's handle through `correspondence`.
+///
+/// ## Why node indices survive verbatim
+///
+/// Both morph solvers preserve connectivity by construction — `laplacian_smooth`
+/// and `elasticity_morph` each clone the source `tet_indices` and deform the
+/// vertices in place, so vertex `i` of the morphed mesh is the same mesh node
+/// as vertex `i` of the source. A `BoundaryAssociation` keys on exactly that
+/// node index, so the per-node attachments stay valid across a morph. The only
+/// thing that goes stale is the B-rep entity each attachment *names*: the old
+/// shape's handles do not exist on the new shape. That is what this function
+/// repairs, and it is why the node index is copied through untouched rather
+/// than recomputed.
+///
+/// ## Why this matters (task #6637)
+///
+/// `engine_build.rs` stashes a successful morph's output verbatim as the next
+/// tick's `MorphSource.source_mesh` (`store_volume_mesh` stores the
+/// `VolumeMesh` unchanged), and `morph_producer.rs::decide_morph_or_remesh`
+/// bails to `Remesh` when `source_mesh.boundary` is `None`. Since both solvers
+/// hard-code `boundary: None` on their output — correctly, as neither has
+/// access to a `CorrespondenceMap` — a morph that forwarded nothing would let
+/// the arm fire on only every OTHER tick. Attaching the re-keyed association at
+/// the [`crate::compose_morph`] seam, which does own the correspondence, is
+/// what makes consecutive parameter ticks keep morphing.
+///
+/// ## Failure is fail-closed, and total
+///
+/// Returns `None` on the FIRST attachment whose old handle has no entry in the
+/// matching map. A partially re-keyed association is strictly worse than none:
+/// the surviving old handles would resolve against the new B-rep to whatever
+/// entity happens to share their id, so the next tick's
+/// [`compute_dirichlet_bcs`] would project those nodes onto the wrong entities
+/// silently — no error, just a quietly wrong mesh. `None` degrades that tick to
+/// an honest remesh instead. Dropping the offending node would be equally
+/// wrong: it would silently unpin a boundary node and let the smoother pull it
+/// into the interior.
+///
+/// An EMPTY association re-keys to `Some(empty)`, not `None` — an association
+/// with no nodes is well-formed, and it is a case `compose_morph` can
+/// legitimately hand over.
+pub fn rekey_boundary_association(
+    boundary: &BoundaryAssociation,
+    correspondence: &CorrespondenceMap,
+) -> Option<BoundaryAssociation> {
+    let mut rekeyed = BoundaryAssociation::default();
+
+    for (node_idx, attachment) in boundary.iter() {
+        // Same map-per-kind routing compute_dirichlet_bcs uses; only the
+        // failure shape differs (Option here, structured ProjectionFailure
+        // there, which carries the offending handle for diagnostics).
+        let remapped = match attachment {
+            NodeAttachment::OnFace(old) => {
+                NodeAttachment::OnFace(correspondence.face_to_face.get(&old).copied()?)
+            }
+            NodeAttachment::OnEdge(old) => {
+                NodeAttachment::OnEdge(correspondence.edge_to_edge.get(&old).copied()?)
+            }
+            NodeAttachment::OnVertex(old) => {
+                NodeAttachment::OnVertex(correspondence.vertex_to_vertex.get(&old).copied()?)
+            }
+        };
+        rekeyed.associate(node_idx, remapped);
+    }
+
+    Some(rekeyed)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1011,4 +1082,85 @@ mod tests {
 
     // This test lives in lib.rs tests module (step-31 wires the re-exports).
     // Verified separately when step-32's impl lands.
+
+    // ── Task #6637: re-keying a BoundaryAssociation onto the new BRep ─────────
+    //
+    // Enabler for CONSECUTIVE morphs. `engine_build.rs` stashes the morphed
+    // mesh verbatim as the next tick's `MorphSource.source_mesh`, and
+    // `morph_producer.rs::decide_morph_or_remesh` bails to `Remesh` when
+    // `source_mesh.boundary == None` — so without a forwarded association the
+    // morph arm can only ever fire on every OTHER tick.
+
+    #[test]
+    fn rekey_boundary_association_maps_face_edge_and_vertex_handles_through_the_correspondence_map()
+    {
+        let mut ba = BoundaryAssociation::default();
+        ba.associate(7, NodeAttachment::OnFace(h(10)));
+        ba.associate(3, NodeAttachment::OnEdge(h(30)));
+        ba.associate(5, NodeAttachment::OnVertex(h(50)));
+
+        let mut correspondence = CorrespondenceMap::default();
+        correspondence.face_to_face.insert(h(10), h(20));
+        correspondence.edge_to_edge.insert(h(30), h(40));
+        correspondence.vertex_to_vertex.insert(h(50), h(60));
+
+        let out = rekey_boundary_association(&ba, &correspondence)
+            .expect("a fully-mapped association must re-key");
+
+        assert_eq!(out.len(), ba.len(), "re-keying must not drop or add nodes");
+        // Node INDICES survive verbatim — only the B-rep handles are remapped.
+        assert_eq!(out.get(7), Some(NodeAttachment::OnFace(h(20))));
+        assert_eq!(out.get(3), Some(NodeAttachment::OnEdge(h(40))));
+        assert_eq!(out.get(5), Some(NodeAttachment::OnVertex(h(60))));
+    }
+
+    /// Fail closed. A partially-remapped association would leave some nodes
+    /// naming OLD-BRep handles, and the next tick's `compute_dirichlet_bcs`
+    /// would silently project them onto the wrong entities. Returning `None`
+    /// makes that tick honestly remesh instead.
+    #[test]
+    fn rekey_boundary_association_returns_none_when_any_handle_is_unmapped() {
+        // Maps h(10)/h(30)/h(50); h(11)/h(31)/h(51) are deliberately absent.
+        let correspondence = || {
+            let mut c = CorrespondenceMap::default();
+            c.face_to_face.insert(h(10), h(20));
+            c.edge_to_edge.insert(h(30), h(40));
+            c.vertex_to_vertex.insert(h(50), h(60));
+            c
+        };
+
+        for (label, unmapped) in [
+            ("face", NodeAttachment::OnFace(h(11))),
+            ("edge", NodeAttachment::OnEdge(h(31))),
+            ("vertex", NodeAttachment::OnVertex(h(51))),
+        ] {
+            // Node 0 is fully MAPPED, so the assertion discriminates "returns
+            // None" from "silently drops the offending node and returns the
+            // rest".
+            let mut ba = BoundaryAssociation::default();
+            ba.associate(0, NodeAttachment::OnFace(h(10)));
+            ba.associate(1, unmapped);
+
+            assert_eq!(
+                rekey_boundary_association(&ba, &correspondence()),
+                None,
+                "an unmapped {label} handle must fail closed to None"
+            );
+        }
+    }
+
+    /// An empty association is well-formed, not a failure — and it is a case
+    /// `compose_morph` can legitimately hand over.
+    #[test]
+    fn rekey_boundary_association_of_an_empty_association_is_an_empty_association() {
+        let out = rekey_boundary_association(
+            &BoundaryAssociation::default(),
+            &CorrespondenceMap::default(),
+        );
+        assert_eq!(out, Some(BoundaryAssociation::default()));
+        assert!(
+            out.expect("empty in must give Some(empty)").is_empty(),
+            "empty in → empty out, never None"
+        );
+    }
 }
