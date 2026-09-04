@@ -472,22 +472,19 @@ structure def ModalResult {
 //       PRD §1 example usage, where every caller passes `boundary_conditions:`
 //       and `damping:` explicitly and supplies an excitation
 //       `reference_direction:` (there is no canonical default direction).
-//   (c) A trait-typed default `damping = NoDamping()` stays DEFERRED — but
-//       NOT for the reason originally recorded here. The old wording claimed
-//       the trait-typed-default code-path was "not exercised by any existing
-//       stdlib structure_def" and therefore "uncharted compiler territory";
-//       that premise is now measured FALSE. `MaterialDamping.extra`
+//   (c) A trait-typed default `damping = NoDamping()` stays DEFERRED as a
+//       plain SCOPE FENCE, not as an unknown: the compiler handles the
+//       trait-typed-default path fine. `MaterialDamping.extra`
 //       (`param extra : DampingDescriptor = NoDamping()`, declared above by
-//       task #6878) is exactly that path, and it is the landed precedent: the
-//       default resolves and an explicit override round-trips.
-//       What remains is a plain scope fence, not an unknown. Giving
-//       `ModalOptions.damping` a default changes the construction contract of
-//       every existing caller and every member-count pin, which is an
-//       API-surface change with no signal attached to it in #6878 — so the
-//       stale claim is corrected while the surface is deliberately left
-//       alone. Callers in PRD §1 already pass `damping:` explicitly, so there
-//       is still no API-surface regression. (The Vector3-literal-default
-//       half of the original claim is untouched and still unexercised.)
+//       task #6878) is the landed precedent — its default resolves and an
+//       explicit override round-trips. What holds the fence is the API
+//       surface: giving `ModalOptions.damping` a default changes the
+//       construction contract of every existing caller and every member-count
+//       pin, and no task has yet carried a signal for that change. Callers in
+//       PRD §1 already pass `damping:` explicitly, so nothing regresses by
+//       leaving it defaultless. A `reference_direction` default is separately
+//       deferred: no Vector3-literal default is exercised anywhere in the
+//       stdlib, so that half IS still uncharted.
 //
 // NOTE: the three positivity constraints land in step-18 — declared
 // constraintless here so the step-17 RED test fails before that impl.
