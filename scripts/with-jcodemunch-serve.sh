@@ -262,11 +262,14 @@ fi
 # every consumer's CONSTRUCTED argv against the lib, so a one-sided bump fails
 # the gate instead of drifting silently.
 #
-# THE ONE THING STILL OWNED INDEPENDENTLY: α
-# (`crates/reify-audit/tests/jcodemunch_session_live.rs`) cannot source a shell
-# lib, and today its INTERPRETER is its own — it hardcodes `--python 3.12`
-# against `serve` while δ and β both run 3.13. Only the PIN is cross-checked
-# between them; reconciling the interpreter is #6548.
+# α IS A MIRROR, NOT AN INDEPENDENT OWNER (#6548).
+# `crates/reify-audit/tests/jcodemunch_session_live.rs` cannot source a shell
+# lib, so it carries `const JCODEMUNCH_PIN` and `const JCODEMUNCH_PYTHON`. BOTH
+# are now cross-checked against the lib by
+# tests/infra/test_with_jcodemunch_serve.sh. α used to hardcode `--python 3.12`
+# inline while δ and β ran 3.13, with only the PIN cross-checked; that
+# divergence is closed — the interpreter was measured against `serve` directly
+# on 2026-09-04 and is recorded in the lib.
 #
 # WHY THE LEVER MATTERS HERE SPECIFICALLY: without it jcodemunch answers for
 # `leodearden/reify` (the empty husk) instead of the per-path

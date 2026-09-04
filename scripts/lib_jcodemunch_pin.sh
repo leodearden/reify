@@ -40,6 +40,15 @@
 # argv, α's consts) and tests/infra/test_jcodemunch_index_reify.sh (β's
 # constructed argv). Both are hermetic — no uvx, no PyPI, no network.
 #
+# THE STATE IS NOW UNIFIED, for the interpreter as well as the wheel (#6548).
+# Both values have ONE definition site — this file — and all three production
+# consumers are gate-cross-checked against it: β and δ through their CONSTRUCTED
+# --dry-run argv, α through `const JCODEMUNCH_PIN` and `const JCODEMUNCH_PYTHON`.
+# α previously owned its interpreter independently, hardcoding `--python 3.12`
+# inline while β and δ ran 3.13; that divergence is closed and the const is a
+# MIRROR of JC_PYTHON, not an independent owner. Nothing here is
+# hand-reconciled any more — a one-sided change reds the gate.
+#
 # ── PIN-BUMP CHECKLIST ──────────────────────────────────────────────────────
 #
 # Consolidated here ONCE, from what were near-duplicate copies in β's and δ's
@@ -77,8 +86,15 @@
 #    So RUN `jcodemunch-mcp config --check` against any config.jsonc a bump
 #    introduces. It is the only signal upstream gives here.
 #
-# 5. RE-MEASURE THE INTERPRETER against the new wheel. See JC_PYTHON below for
-#    what "the bare form does not run at all" means on this host.
+# 5. RE-MEASURE THE INTERPRETER against the new wheel, and measure it against
+#    the SUBCOMMAND you care about. See JC_PYTHON below for what "the bare form
+#    does not run at all" means on this host, and for the two standing
+#    measurements (`serve` and `watch`) that authorise the current value.
+#
+# 6. BUMP THE TWO LITERAL GUARD NEEDLES named above in the same change. They do
+#    not read this file by design, so they are what fails when the value HERE
+#    moves -- which is the whole point of them, and the one step a bumper who
+#    only greps for the old value will still get right.
 #
 # All of the above was re-verified first-hand against the PINNED 1.108.54 wheel,
 # not a neighbouring release.
@@ -129,6 +145,25 @@ JC_PIN="jcodemunch-mcp==1.108.54"
 # three full wrapped runs completed over it (readiness ~13 s cold, ~5 s warm).
 # β separately measured 3.13 against the heavier `watch` closure, a superset of
 # what `serve` resolves.
+#
+# AND MEASURED AGAIN 2026-09-04 (task 6929 / #6548), which is what closed the
+# last divergence: α had been carrying 3.12 because 3.12 was what IT had
+# measured against `serve`, while β's 3.13 evidence came from `watch`. Running
+# α's EXACT argv on host leo-MS-7C35 with uvx 0.11.6, changing only the
+# interpreter —
+#
+#   uvx --python 3.13 --from jcodemunch-mcp==1.108.54 jcodemunch-mcp serve \
+#       --transport streamable-http --host 127.0.0.1 --port <ephemeral> --watcher=false
+#
+# — installed 37 packages in 382 ms and answered `initialize` with
+# result.serverInfo.name == "jcodemunch-mcp" after ~38 s on a cold-ish cache. So
+# 3.13 is measured against BOTH subcommands directly, not inferred for either.
+#
+# NOTE for a future bumper who repeats that measurement:
+# `result.serverInfo.version` reports upstream's INTERNAL version string
+# ("1.29.1" at this pin), NOT the PyPI wheel version. Readiness checks assert on
+# serverInfo.NAME for exactly that reason and must not be "tightened" to the
+# version.
 JC_PYTHON="3.13"
 
 # ── The identity lever ───────────────────────────────────────────────────────
