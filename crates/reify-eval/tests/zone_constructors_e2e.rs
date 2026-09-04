@@ -657,11 +657,33 @@ fn zone_profile_structural_lowers_to_four_ops() {
     }
 }
 
-/// OCCT realize-smoke for zone_profile.
+/// OCCT contract pin: `zone_profile` on a CLOSED SOLID is a HARD ERROR.
 ///
-/// zone_profile(box(10mm,10mm,10mm), 1mm) builds an annular shell around the box surface.
-/// Asserts: Volume > 0 AND Volume < box volume = (10mm)³ = 1e-6 m³.
-/// No closed-form volume formula; the realize-smoke validates buildability.
+/// `zone_profile(box(10mm,10mm,10mm), 1mm)` lowers to
+/// `Difference(Thicken(+w/2), Thicken(-w/2))`.  OCCT's
+/// `BRepOffsetAPI_MakeOffsetShape::PerformBySimple` is documented for OPEN
+/// SHELLS; on a closed solid it does not yield a valid solid for the cut, so
+/// that Difference is GENUINELY EMPTY — zero `TopAbs_VERTEX`, zero volume.
+/// The lowering is therefore non-functional on closed solids, not merely
+/// imprecise.
+///
+/// That emptiness used to be SILENT: the empty result was stamped a solid, a
+/// 0.0 volume flowed downstream, and this test tolerated it (asserting only
+/// `v >= 0.0 && v <= box_volume`, both of which 0.0 satisfies).  Task 5318's
+/// empty-boolean-result guard converts exactly that class of silent-empty
+/// result into a diagnostic, so what this test pins is now the ERROR, not a
+/// volume: the engine surfaces a `Severity::Error` naming the empty result,
+/// and the direct `OcctKernel` replay returns
+/// `Err(GeometryError::OperationFailed(..))`.
+///
+/// The underlying geometry defect — zone_profile does not actually build the
+/// annular shell — is tracked by #7287 (replace the PerformBySimple
+/// Thicken+Difference lowering with a MakeThickSolid-based construction).
+/// When #7287 lands, this test should go back to asserting
+/// `0.0 < volume < box_volume` (~6e-7 m³); the `Ok(_)` arm below says so.
+///
+/// Message matching is deliberately loose (substrings, not whole sentences)
+/// so re-wording the diagnostic does not make this test brittle.
 ///
 /// Parallel OcctKernel replay: Box + Thicken(+0.5mm) + Thicken(-0.5mm) + Difference.
 /// OCCT-gated; skips cleanly when OCCT is unavailable.
@@ -690,17 +712,10 @@ fn zone_profile_realize_smoke() {
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    // ── Full-pipeline: Engine + OcctKernelHandle (no Error diag, realize completes) ──
+    // ── Full-pipeline: Engine + OcctKernelHandle — the guard must be VISIBLE ──
     //
-    // NOTE (task 4476 γ-slice): OCCT's `BRepOffsetAPI_MakeOffsetShape::PerformBySimple`
-    // is designed for open shells. When applied to a closed solid (box), it can produce
-    // shapes with degenerate edge topology that `BRepMesh_IncrementalMesh` cannot
-    // triangulate — resulting in an empty mesh (no vertices/indices) without raising
-    // an error. This is a known OCCT limitation for the composition-only γ-slice.
-    // The structural test (zone_profile_structural_lowers_to_four_ops) is the
-    // primary kernel-less RED/GREEN anchor for this constructor. Functional
-    // correctness (volume > 0, volume < solid) is validated by the direct
-    // OcctKernel replay below, which does not depend on tessellation.
+    // The failure has to reach the designer as a diagnostic, not just as a
+    // zero-volume solid; that is the whole point of the 5318 guard.
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
@@ -712,42 +727,29 @@ fn zone_profile_realize_smoke() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
+    let empty_result_error = geom_errors
+        .iter()
+        .find(|d| d.message.contains("empty result"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a Severity::Error diagnostic reporting the empty boolean result; \
+                 if #7287 has landed and zone_profile now builds, restore the \
+                 0.0 < volume < box_volume assertions instead. Diagnostics: {:?}",
+                tess_result.diagnostics
+            )
+        });
     assert!(
-        geom_errors.is_empty(),
-        "unexpected geometry errors in tessellate: {:?}",
-        geom_errors
-    );
-    assert!(
-        !tess_result.meshes.is_empty(),
-        "zone_profile should produce at least 1 mesh result"
-    );
-    // Tessellation produces a result entry, but vertices may be empty due to the
-    // PerformBySimple-on-closed-solid OCCT limitation noted above. We log the
-    // vertex count for diagnostics but do not assert non-empty here.
-    let mesh = &tess_result.meshes[0].mesh;
-    eprintln!(
-        "zone_profile tessellation: {} vertices, {} indices \
-         (empty is expected for OCCT PerformBySimple-on-box; see task 4476 note)",
-        mesh.vertices.len(),
-        mesh.indices.len()
+        empty_result_error.message.contains("difference"),
+        "the diagnostic should name the user-level operation ('difference'), got: {}",
+        empty_result_error.message
     );
 
-    // ── Direct OcctKernel replay — diagnostic smoke ──
+    // ── Direct OcctKernel replay — the same empty Difference at kernel level ──
     //
-    // NOTE (task 4476 γ-slice / OCCT PerformBySimple limitation):
-    // `BRepOffsetAPI_MakeOffsetShape::PerformBySimple` is documented for open
-    // shells; on a closed solid (box) it does NOT produce a valid solid for
-    // BooleanCut — the resulting Difference has 0 volume.  This means the
-    // Thicken+Difference lowering for zone_profile is not fully functional at
-    // the OCCT level in the composition-only γ-slice.  The δ-slice kernel work
-    // will implement proper MakeThickSolid-based offset-zone construction.
-    //
-    // We replay the ops below as a BUILD-SMOKE (all three execute() calls must
-    // succeed without error — i.e., the compile-to-kernel pipeline is wired
-    // correctly), but we do NOT assert on the volume value since PerformBySimple
-    // on a box + BooleanCut returns 0.
+    // Box + both Thickens still succeed, so this also keeps pinning that the
+    // compile-to-kernel lowering is wired correctly; only the final cut is
+    // empty.
     let box_side = 0.010_f64; // 10mm in metres
-    let box_volume = box_side.powi(3); // 1e-6 m³
 
     let mut kernel = reify_kernel_occt::OcctKernel::new();
     let box_h = kernel
@@ -769,36 +771,30 @@ fn zone_profile_realize_smoke() {
             offset: Value::Real(-0.0005), // -w/2 = -1mm/2 = -0.5mm
         })
         .expect("inner Thicken execute should succeed");
-    let profile_h = kernel
-        .execute(&GeometryOp::Difference {
-            left: outer_h.id,
-            right: inner_h.id,
-        })
-        .expect("Difference execute should succeed");
-    // Volume diagnostic: expected ~6e-7 m³ once PerformBySimple is replaced by
-    // MakeThickSolid in the δ-slice.  Currently returns 0 due to the OCCT
-    // limitation above — logged but not asserted.
-    let vol = kernel
-        .query(&GeometryQuery::Volume(profile_h.id))
-        .expect("Volume query should succeed");
-    let v = vol.as_f64().expect("volume should be numeric");
-    eprintln!(
-        "zone_profile direct-replay volume = {:.3e} m³ (expected ~6e-7 once δ fixes \
-         PerformBySimple; currently {} of box_volume={:.3e})",
-        v,
-        if v > 0.0 { "within" } else { "OUTSIDE (0)" },
-        box_volume
-    );
-    // Invariant we CAN assert: Difference must be non-negative (never > the box solid).
-    assert!(
-        v >= 0.0,
-        "zone_profile volume must be non-negative, got {}",
-        v
-    );
-    assert!(
-        v <= box_volume,
-        "zone_profile volume ({:.3e} m³) should be ≤ solid box volume ({:.3e} m³)",
-        v,
-        box_volume
-    );
+
+    let profile = kernel.execute(&GeometryOp::Difference {
+        left: outer_h.id,
+        right: inner_h.id,
+    });
+    match profile {
+        Err(reify_ir::GeometryError::OperationFailed(msg)) => {
+            assert!(
+                msg.contains("empty result"),
+                "expected a message naming the result as empty, got: {msg}"
+            );
+            assert!(
+                msg.contains("difference"),
+                "expected a message naming 'difference', got: {msg}"
+            );
+        }
+        Ok(_) => panic!(
+            "zone_profile's Thicken+Difference lowering produced a NON-empty result — \
+             if #7287 has landed, this test should now assert \
+             0.0 < volume < box_volume ({:.3e} m³, expected ~6e-7) instead of this error",
+            box_side.powi(3)
+        ),
+        Err(other) => {
+            panic!("expected OperationFailed for the empty zone_profile Difference, got {other:?}")
+        }
+    }
 }
