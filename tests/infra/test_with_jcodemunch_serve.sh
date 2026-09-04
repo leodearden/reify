@@ -327,10 +327,16 @@ DRY_DEFAULT="$(dry_argv || true)"
 DRY_PORTED="$(dry_argv --port 8917 || true)"
 DRY_PORTED_EQ="$(dry_argv --port=8917 || true)"
 
+# The LITERAL oracle. `--python` used to be asserted PRESENT but with its value
+# unpinned, which left the interpreter with no independent check at all: every
+# other interpreter assertion below reads the lib, so once δ's argv is DERIVED
+# from the lib they would all move together and stay green through a bad bump.
+# The literal "3.13" here is what fails when the value in the LIB itself moves —
+# the same role "jcodemunch-mcp==1.108.54" already plays for the wheel.
 b2_pin_and_shape() {
     argv_has_in_order "$DRY_DEFAULT" \
         "env" "JCODEMUNCH_GIT_ROOT_IDENTITY=0" \
-        "--python" \
+        "--python" "3.13" \
         "--from" "jcodemunch-mcp==1.108.54" \
         "jcodemunch-mcp" \
         "serve" \
@@ -674,6 +680,70 @@ b2_delta_sources_the_lib() {
     return 0
 }
 
+# -- THE INTERPRETER INVENTORY, MIRRORING THE PIN'S (#6548) ------------------
+#
+# `--from jcodemunch-mcp==…` is only HALF a pin: it fixes the package and leaves
+# the INTERPRETER floating, and uvx defaults to the newest interpreter uv
+# manages. So the interpreter gets the same one-definition-site treatment as the
+# wheel version — scripts/lib_jcodemunch_pin.sh's JC_PYTHON — and the same
+# cross-check against every consumer.
+#
+# WHY δ AND α HAVE TO AGREE: a serve and an indexer resolving the SAME pinned
+# wheel under DIFFERENT interpreters is a hand-maintained drift surface. The
+# resolution genuinely differs — a transitive dep can publish a wheel for one
+# interpreter and not the other, which is exactly how the unpinned form fails on
+# this host — and nothing at the call site reports the divergence.
+#
+# Same extractor discipline as the pin above: ONE awk with an `exit` and no
+# pipeline, emitting nothing when it does not match, with the comparator
+# treating "nothing" as FAILURE rather than as agreement.
+jc_python_lib() {
+    [ -f "$JC_PIN_LIB_SITE" ] || return 0
+    awk '/^JC_PYTHON=/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_LIB_SITE"
+}
+
+# δ's value comes out of the CONSTRUCTED argv, positionally — the token FOLLOWING
+# `--python` — so what is compared is the interpreter that would really be
+# spawned, including the sourcing plumbing that delivers it.
+jc_python_delta() {
+    awk '{ for (i = 1; i <= NF; i++) if ($i == "--python") { print $(i + 1); exit } }' <<< "$DRY_DEFAULT"
+}
+
+# α mirrors the value in a NAMED const rather than a bare literal inside its
+# argv array, so this extractor is the same shape as jc_pin_alpha above. Keying
+# on `"--python"` and consuming the next line's string instead would be brittle
+# against reflow, argument reordering or a trailing comment.
+jc_python_alpha() {
+    [ -f "$JC_PIN_ALPHA_FILE" ] || return 0
+    awk '/const JCODEMUNCH_PYTHON/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_ALPHA_FILE"
+}
+
+# b2_python_agrees <label> <file> <extractor-fn>. The LIB is the baseline, since
+# it is the definition site. An EMPTY extraction is a FAILURE and never
+# agreement: a renamed const or a reshaped literal must fail loudly rather than
+# compare "" against "" and report that every site agrees.
+b2_python_agrees() {
+    local label="$1" file="$2" fn="$3" mine theirs
+    mine="$(jc_python_lib)"
+    require_nonempty "the interpreter the lib defines (JC_PYTHON)" "$mine" || return 1
+    if [ ! -f "$file" ]; then
+        printf '%s\n' "$label's interpreter site is GONE: $file does not exist." \
+            "  The consumer inventory in scripts/lib_jcodemunch_pin.sh is stale — update it and this guard together."
+        return 1
+    fi
+    theirs="$("$fn")"
+    require_nonempty "the interpreter extracted from $label ($file)" "$theirs" || return 1
+    [ "$mine" = "$theirs" ] && return 0
+    printf '%s\n' "jcodemunch INTERPRETER DRIFT: the lib pins [$mine] but $label uses [$theirs]." \
+        "  $file" \
+        "  A serve and an indexer running the SAME pinned wheel under DIFFERENT interpreters is a" \
+        "  hand-maintained drift surface: resolution can succeed for one and fail for the other" \
+        "  (a transitive dep may publish a wheel for only one), and nothing at the call site says so." \
+        "  scripts/lib_jcodemunch_pin.sh is the ONE definition site; α mirrors it in a const only" \
+        "  because a Rust test cannot source a shell lib."
+    return 1
+}
+
 b2_dry_run_exits_zero() { "$JC_SERVE" --dry-run >/dev/null 2>&1; }
 
 # --dry-run must SPAWN NOTHING. Checked on the port it would have used, so a
@@ -702,7 +772,7 @@ b2_dry_run_skips_wrapped_command() {
     return 0
 }
 
-assert "the dry-run argv carries the identity lever, pin, transport and port in order" b2_pin_and_shape
+assert "the dry-run argv carries the identity lever, interpreter, pin, transport and port in order" b2_pin_and_shape
 assert "the dry-run argv contains neither --paths-from nor the watch/index subcommands" b2_bans
 assert "--port 8917 moves the port in the argv (and drops the 8901 default)" b2_port_moves
 assert "the --port=N spelling moves the port too" b2_port_eq_form
@@ -724,6 +794,10 @@ assert "δ sources scripts/lib_jcodemunch_pin.sh behind an existence guard" \
     b2_delta_sources_the_lib
 assert "δ's pin agrees with α's (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
     b2_pin_agrees "α" "$JC_PIN_ALPHA_FILE" jc_pin_alpha
+assert "δ's constructed argv uses the interpreter the lib pins (JC_PYTHON)" \
+    b2_python_agrees "δ's constructed argv" "$JC_SERVE" jc_python_delta
+assert "α's interpreter agrees with the lib (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
+    b2_python_agrees "α" "$JC_PIN_ALPHA_FILE" jc_python_alpha
 assert "--dry-run exits 0" b2_dry_run_exits_zero
 assert "--dry-run spawns nothing (its port is still free afterwards)" b2_dry_run_spawns_nothing
 assert "--dry-run does not run the wrapped command" b2_dry_run_skips_wrapped_command
