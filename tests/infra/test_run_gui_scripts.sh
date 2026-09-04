@@ -15,6 +15,9 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 
+# Shared launch-environment helpers sourced by BOTH launchers (#7254).
+LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
+
 echo "=== run-gui.sh launcher tests ==="
 
 # -- Test 1: file exists + is executable -------------------------------------
@@ -330,6 +333,12 @@ assert "run-gui-dev.sh non-existent .ri error message mentions 'not found'" \
 # REPO_ROOT=$tmpdir, so the stubbed gui/, bin/ and target/ trees below are the
 # ones the script actually sees.
 #
+# scripts/lib_gui_launch.sh is copied alongside it for the same reason: both
+# launchers `source "$SCRIPT_DIR/lib_gui_launch.sh"`, so it must exist NEXT TO
+# the copy. Copying (rather than symlinking to the real one) keeps the fixture
+# self-contained and makes the source path resolve exactly as it does in a
+# real checkout.
+#
 # WHY a cumulative array instead of a per-test `trap ... EXIT`: bash keeps ONE
 # EXIT trap per shell, so a second `trap 'rm -rf "$dir"' EXIT` silently
 # REPLACES the first and leaks the earlier tmpdir. Each fixture registers
@@ -382,6 +391,7 @@ _mk_rungui_dev_fixture() {
     mkdir -p "$dir/scripts" "$dir/gui/sidecar" "$dir/bin"
     cp "$RUN_GUI_DEV" "$dir/scripts/run-gui-dev.sh"
     chmod +x "$dir/scripts/run-gui-dev.sh"
+    cp "$LIB_GUI_LAUNCH" "$dir/scripts/lib_gui_launch.sh"
 
     # Stub: build-sidecar.sh — no-op so the script reaches the vite spawn.
     cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
@@ -402,6 +412,7 @@ _mk_rungui_fixture() {
     mkdir -p "$dir/scripts" "$dir/gui/sidecar" "$dir/bin"
     cp "$RUN_GUI" "$dir/scripts/run-gui.sh"
     chmod +x "$dir/scripts/run-gui.sh"
+    cp "$LIB_GUI_LAUNCH" "$dir/scripts/lib_gui_launch.sh"
 
     cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
 #!/usr/bin/env bash

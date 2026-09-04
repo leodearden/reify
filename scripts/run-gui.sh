@@ -13,7 +13,9 @@
 #      WebKit renderer default.
 #   6. exec target/release/reify-gui <file.ri>.
 #
-# Environment contract (full version in scripts/run-gui-dev.sh's header):
+# Environment contract (full version in scripts/run-gui-dev.sh's header; the
+# mechanism for all three is scripts/lib_gui_launch.sh, sourced by BOTH
+# launchers so they cannot drift apart on it):
 #   LD_LIBRARY_PATH   an inherited value is PRESERVED, but
 #                     /opt/reify-deps/tbb-pin is prepended ahead of it — the
 #                     loader searches LD_LIBRARY_PATH before DT_RUNPATH, so a
@@ -29,9 +31,14 @@
 
 set -euo pipefail
 
-# Snapshot the caller's LD_LIBRARY_PATH before §5 rewrites it, so §5 can tell
-# whether it inherited one and only then explain that it prepended the tbb pin.
-_INHERITED_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+# Resolve this script's directory up-front so the shared launch helpers can be
+# sourced BEFORE anything touches LD_LIBRARY_PATH — lib_gui_launch.sh snapshots
+# the caller's value at source time, and a late source would report "nothing
+# inherited" for a value this script had set itself. REPO_ROOT is derived from
+# SCRIPT_DIR below, after argument validation.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib_gui_launch.sh
+source "$SCRIPT_DIR/lib_gui_launch.sh"
 
 # -- 1. Validate args ----------------------------------------------------------
 if [ "$#" -lt 1 ]; then
@@ -57,7 +64,6 @@ esac
 [ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
 
 # Resolve repo root from this script's path so the script works from any cwd.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -68,14 +74,11 @@ cd "$REPO_ROOT"
 #
 # Set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass (break-glass).
 if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
-    # Display. reify-gui is a GTK/WebKit app; with no X11 or Wayland display it
-    # cannot open a window at all, and the failure otherwise surfaces only
-    # AFTER the release build as an opaque GTK abort. We deliberately do NOT
-    # probe EGL — see the matching note in scripts/run-gui-dev.sh §1b.
-    if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-        echo "Error: no display: DISPLAY and WAYLAND_DISPLAY are both unset — reify-gui needs an X11/Wayland display; export DISPLAY=:0 (or set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass)" >&2
-        exit 1
-    fi
+    # Display — shared with scripts/run-gui-dev.sh, so the check and its
+    # message live in scripts/lib_gui_launch.sh (including the note on why we
+    # do NOT probe EGL). It prints its own error and returns 1; the exit is
+    # ours.
+    gui_launch_preflight_display || exit 1
 fi
 
 # -- 2. Build the sidecar (fast, idempotent) -----------------------------------
@@ -101,28 +104,14 @@ if [ -d "$SNAP_OCCT_LIB" ]; then
     export LD_LIBRARY_PATH="$SNAP_OCCT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-# Pin oneTBB ahead of everything else — INCLUDING whatever LD_LIBRARY_PATH we
-# were handed. Deliberately OUTSIDE the snap conditional above, which never
-# fires on a PPA host. #5192 already puts $TBB_PIN_DIR first in each binary's
-# DT_RUNPATH, but the loader searches LD_LIBRARY_PATH BEFORE DT_RUNPATH, so an
-# inherited /usr/lib path would otherwise bind system libtbb 12.11 over the
-# deps 12.18 and die on a missing symbol. The caller's entries are preserved,
-# never scrubbed or reordered. (#7254)
-# Disable WebKit's GBM/DMABuf renderer by default. On systems where the NVIDIA
-# driver exposes DRI fds but the Mesa EGL GBM backend cannot create a screen,
-# WebKitGTK aborts with "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
-# =1 forces the GLX/xlib fallback path. Mirrors gui/test/visual/lib_e2e_smoke.sh
-# §2b. The `:-1` form is deliberate: export WEBKIT_DISABLE_DMABUF_RENDERER=0 to
-# restore the DMABUF path on a host where it works.
-export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
-
-TBB_PIN_DIR="/opt/reify-deps/tbb-pin"
-if [ -d "$TBB_PIN_DIR" ]; then
-    export LD_LIBRARY_PATH="$TBB_PIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    if [ -n "$_INHERITED_LD_LIBRARY_PATH" ]; then
-        echo "==> Note: inherited LD_LIBRARY_PATH preserved, but $TBB_PIN_DIR prepended ahead of it (the loader searches LD_LIBRARY_PATH before DT_RUNPATH, so an inherited /usr/lib path would otherwise bind system libtbb 12.11 over the deps 12.18 — see #5192/#7254)"
-    fi
-fi
+# The oneTBB LD_LIBRARY_PATH pin + the WebKit renderer default, shared with
+# scripts/run-gui-dev.sh — see scripts/lib_gui_launch.sh for both rationales.
+#
+# MUST come after the snap prepend above: gui_launch_env_pin PREPENDS the pin
+# dir, so anything that edits LD_LIBRARY_PATH afterwards would land ahead of it
+# and defeat #5192's pin. It is deliberately not nested in the snap conditional
+# either — the snap dir does not exist on a PPA host.
+gui_launch_env_pin
 
 # -- 6. Launch ----------------------------------------------------------------
 echo "==> Launching target/release/reify-gui $FILE"
