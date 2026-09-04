@@ -515,28 +515,36 @@ b2_lib_double_source_is_idempotent() {
     return 1
 }
 
-# -- THE FOUR-SITE PIN INVENTORY, ASSERTED RATHER THAN MERELY DOCUMENTED ------
+# -- THE PIN INVENTORY, POST-HOIST: ONE DEFINITION SITE, FOUR CONSUMERS -------
 #
-# The wheel version is COPIED across four sites and, until these assertions,
-# nothing in the repo checked that the copies agree:
-#   * δ  scripts/with-jcodemunch-serve.sh          — read here out of the
-#        CONSTRUCTED argv, not out of the source line, so the value under test
-#        is the one that would really be spawned;
-#   * β  scripts/jcodemunch-index-reify.sh:394     — the indexer side;
-#   * α  crates/reify-audit/tests/jcodemunch_session_live.rs:76;
-#   * the literal needle in b2_pin_and_shape above, which is what fails if δ
-#        alone moves.
+# The wheel version USED to be copied across four independent sites with
+# nothing in the repo checking that the copies agree. It now has exactly ONE
+# definition site — scripts/lib_jcodemunch_pin.sh, guarded above — and the
+# consumers are cross-checked against it here:
+#   * δ  scripts/with-jcodemunch-serve.sh          — read out of the CONSTRUCTED
+#        argv, not out of a source line, so the value under test is the one
+#        that would really be spawned, INCLUDING the sourcing plumbing;
+#   * β  scripts/jcodemunch-index-reify.sh         — cross-checked the same way,
+#        against its own --dry-run argv, in tests/infra/test_jcodemunch_index_reify.sh
+#        (each suite owns its own SUT's argv harness; centralising would make
+#        this `pool`-classified suite execute a second SUT);
+#   * α  crates/reify-audit/tests/jcodemunch_session_live.rs — a Rust test that
+#        cannot source a shell lib, so it MIRRORS the value in a const and is
+#        compared against δ's argv below;
+#   * the LITERAL needle in b2_pin_and_shape above, and its sibling in β's
+#        suite. Those two deliberately do NOT read the lib: δ's and β's argv
+#        are now DERIVED from it, so a guard that took its expectation from the
+#        lib would compare the lib to itself — tautologically green. The
+#        literal needles are the only assertions that fail when the value in
+#        the LIB moves, which is exactly what a pin bump is.
 # A serve running an OLDER wheel than the indexer that WROTE the index it is
 # being asked to query is precisely the drift the inventory exists to prevent,
 # and it is silent at the call site: the session opens, the query answers, and
 # the answer is merely wrong.
 #
 # HERMETIC AND ~5 ms: pure file read + string compare, no uvx, no PyPI, no
-# network. It does not FIX the duplication — hoisting the triple into one
-# sourced scripts/lib_jcodemunch_pin.sh needs locks on β and α that δ does not
-# hold, and is tracked as #6454 — but it makes a one-sided bump fail the gate
-# instead of shipping.
-JC_PIN_BETA_FILE="$REPO_ROOT/scripts/jcodemunch-index-reify.sh"
+# network.
+JC_PIN_LIB_SITE="$JC_PIN_LIB_FILE"
 JC_PIN_ALPHA_FILE="$REPO_ROOT/crates/reify-audit/tests/jcodemunch_session_live.rs"
 
 # Each extractor is ONE awk with an `exit` and no pipeline — a `… | head -n1`
@@ -548,9 +556,9 @@ JC_PIN_ALPHA_FILE="$REPO_ROOT/crates/reify-audit/tests/jcodemunch_session_live.r
 jc_pin_delta() {
     awk '/jcodemunch-mcp==/ { sub(/^.*jcodemunch-mcp==/, ""); sub(/[^0-9.].*$/, ""); print; exit }' <<< "$DRY_DEFAULT"
 }
-jc_pin_beta() {
-    [ -f "$JC_PIN_BETA_FILE" ] || return 0
-    awk '/^JC_PIN=/ { sub(/^.*jcodemunch-mcp==/, ""); sub(/[^0-9.].*$/, ""); print; exit }' "$JC_PIN_BETA_FILE"
+jc_pin_lib() {
+    [ -f "$JC_PIN_LIB_SITE" ] || return 0
+    awk '/^JC_PIN=/ { sub(/^.*jcodemunch-mcp==/, ""); sub(/[^0-9.].*$/, ""); print; exit }' "$JC_PIN_LIB_SITE"
 }
 jc_pin_alpha() {
     [ -f "$JC_PIN_ALPHA_FILE" ] || return 0
@@ -573,8 +581,58 @@ b2_pin_agrees() {
     printf '%s\n' "jcodemunch pin DRIFT: δ constructs [$mine] but $label pins [$theirs]." \
         "  $file" \
         "  A serve on a different wheel than the indexer that wrote the index is SILENT at the call site." \
-        "  Bump every site in the inventory comment at scripts/with-jcodemunch-serve.sh (see #6454)."
+        "  Bump scripts/lib_jcodemunch_pin.sh — the ONE definition site — plus α's const and the" \
+        "  two literal guard needles its PIN-BUMP CHECKLIST names."
     return 1
+}
+
+# -- SINGLE DEFINITION: δ MUST NOT CARRY ITS OWN COPY OF THE TRIPLE ----------
+#
+# THE LOAD-BEARING HALF OF THE HOIST, and the reason the agreement assertion
+# above is not sufficient on its own. Every copy of the triple AGREES today, so
+# "δ's constructed argv matches the lib" is green whether or not δ sources the
+# lib at all — it was green the moment the lib was created and before δ was
+# touched. What actually needs pinning is that the lib is the SOLE definition
+# site AND that its value reaches the argv. These two checkers are the first
+# half; b2_pin_agrees above is the second. Neither alone is sufficient.
+b2_delta_defines_no_triple() {
+    local v hit rc=0
+    for v in JC_PIN JC_PYTHON JC_IDENTITY_ENV; do
+        hit="$(grep -n "^$v=" "$JC_SERVE" || true)"
+        if [ -n "$hit" ]; then
+            printf '%s\n' "δ still defines $v itself:" "  $hit"
+            rc=1
+        fi
+    done
+    if [ "$rc" -ne 0 ]; then
+        printf '%s\n' \
+            "  The triple has ONE definition site — scripts/lib_jcodemunch_pin.sh (#6454)." \
+            "  δ must SOURCE it, never re-declare it: a local copy is exactly the drift this guard exists to stop."
+    fi
+    return "$rc"
+}
+
+# The guarded-source shape, not merely a `source`: scripts/verify.sh:347-352 is
+# the repo's canonical spelling, and the `[ ! -f … ]` half is what turns a
+# missing or renamed lib into a named error instead of an unbound-variable
+# failure deep inside argv construction, where it would read as a δ bug.
+b2_delta_sources_the_lib() {
+    local src_line guard_line
+    src_line="$(grep -n '^[[:space:]]*source .*lib_jcodemunch_pin\.sh' "$JC_SERVE" || true)"
+    if [ -z "$src_line" ]; then
+        printf '%s\n' "δ never sources scripts/lib_jcodemunch_pin.sh" \
+            "  Expected the canonical guarded-source shape (cf. scripts/verify.sh:347-352)."
+        return 1
+    fi
+    guard_line="$(grep -n '\[ ! -f .*lib_jcodemunch_pin\.sh' "$JC_SERVE" || true)"
+    if [ -z "$guard_line" ]; then
+        printf '%s\n' "δ sources the lib but carries no '[ ! -f … ]' existence guard:" \
+            "  $src_line" \
+            "  Without it a missing lib fails as an unbound variable during argv construction," \
+            "  not as an error naming the file (cf. scripts/verify.sh:347-352)."
+        return 1
+    fi
+    return 0
 }
 
 b2_dry_run_exits_zero() { "$JC_SERVE" --dry-run >/dev/null 2>&1; }
@@ -617,8 +675,12 @@ assert "the lib defines JC_IDENTITY_ENV as a 2-element ARRAY, not a string" \
     b2_lib_identity_env_is_a_two_element_array
 assert "sourcing the lib twice is idempotent (the _REIFY_LIB_*_SH_SOURCED guard)" \
     b2_lib_double_source_is_idempotent
-assert "δ's pin agrees with β's (scripts/jcodemunch-index-reify.sh)" \
-    b2_pin_agrees "β" "$JC_PIN_BETA_FILE" jc_pin_beta
+assert "δ's constructed argv agrees with the lib (scripts/lib_jcodemunch_pin.sh)" \
+    b2_pin_agrees "the lib" "$JC_PIN_LIB_SITE" jc_pin_lib
+assert "δ defines none of JC_PIN/JC_PYTHON/JC_IDENTITY_ENV itself (single definition site)" \
+    b2_delta_defines_no_triple
+assert "δ sources scripts/lib_jcodemunch_pin.sh behind an existence guard" \
+    b2_delta_sources_the_lib
 assert "δ's pin agrees with α's (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
     b2_pin_agrees "α" "$JC_PIN_ALPHA_FILE" jc_pin_alpha
 assert "--dry-run exits 0" b2_dry_run_exits_zero
