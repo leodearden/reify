@@ -23,6 +23,7 @@
 //! routes that to [`RefineError::GmshUnavailable`] so callers can distinguish
 //! "no libgmsh in this build" from "libgmsh failed at runtime".
 
+use std::collections::HashMap;
 use std::fmt;
 
 use reify_kernel_gmsh::MeshingOptions;
@@ -403,6 +404,19 @@ fn outward_tet_faces(volume_mesh: &VolumeMesh, a: u32, b: u32, c: u32, d: u32) -
     faces
 }
 
+/// Orientation-free identity of a triangular face: its three vertex indices,
+/// ascending.
+///
+/// Two tets sharing a face necessarily wind it in OPPOSITE directions (each
+/// wants its own outward normal), so a winding-sensitive key would never
+/// match them and every face would look free. Sorting collapses both windings
+/// onto one key.
+fn sorted_face_key(face: [u32; 3]) -> [u32; 3] {
+    let mut key = face;
+    key.sort_unstable();
+    key
+}
+
 /// Reconstruct the boundary surface of a tet [`VolumeMesh`] as an
 /// outward-wound triangle [`Mesh`].
 ///
@@ -439,15 +453,63 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
         .tet_indices()
         .ok_or(RefineError::UnsupportedConnectivity)?;
 
-    let mut indices = Vec::new();
+    // Pass 1 — enumerate every element face in element order, keeping its
+    // outward winding, and tally each face's orientation-free key. Two tets
+    // sharing a face necessarily wind it oppositely, so the key must be
+    // orientation-free for the tally to see them as the same face.
+    let mut faces: Vec<[u32; 3]> = Vec::with_capacity(tet_indices.len());
+    let mut face_counts: HashMap<[u32; 3], u32> = HashMap::new();
     for tet in tet_indices.chunks_exact(4) {
         for face in outward_tet_faces(volume_mesh, tet[0], tet[1], tet[2], tet[3]) {
-            indices.extend_from_slice(&face);
+            *face_counts.entry(sorted_face_key(face)).or_insert(0) += 1;
+            faces.push(face);
+        }
+    }
+
+    // Pass 2 — keep exactly the FREE faces (seen once). A face seen twice
+    // separates two elements and is interior.
+    //
+    // The filter walks `faces` (element order), NOT the map, so the emitted
+    // face order is a deterministic function of the input mesh and never of
+    // `HashMap` iteration order. Determinism here is load-bearing: the
+    // adaptive loop's bit-stability invariant (`deterministic: true` in
+    // `MeshingOptions`) extends to the surface it remeshes from.
+    let kept: Vec<[u32; 3]> = faces
+        .into_iter()
+        .filter(|face| face_counts[&sorted_face_key(*face)] == 1)
+        .collect();
+
+    // Pass 3 — compact. A vertex referenced only by dropped (interior) faces
+    // must not survive: gmsh's `classify_surfaces` would see a stray point
+    // with no incident triangle, and it would break the "surface vertices are
+    // a subset of volume vertices" property the size transfer relies on.
+    // Surviving vertices are pushed in ascending ORIGINAL index order, so the
+    // remap is stable across runs.
+    let vertex_count = volume_mesh.vertices.len() / 3;
+    let mut referenced = vec![false; vertex_count];
+    for face in &kept {
+        for &v in face {
+            referenced[v as usize] = true;
+        }
+    }
+    let mut remap = vec![u32::MAX; vertex_count];
+    let mut vertices: Vec<f32> = Vec::new();
+    for (old, &is_referenced) in referenced.iter().enumerate() {
+        if is_referenced {
+            remap[old] = (vertices.len() / 3) as u32;
+            vertices.extend_from_slice(&volume_mesh.vertices[old * 3..old * 3 + 3]);
+        }
+    }
+
+    let mut indices: Vec<u32> = Vec::with_capacity(kept.len() * 3);
+    for face in &kept {
+        for &v in face {
+            indices.push(remap[v as usize]);
         }
     }
 
     Ok(Mesh {
-        vertices: volume_mesh.vertices.clone(),
+        vertices,
         indices,
         normals: None,
     })
