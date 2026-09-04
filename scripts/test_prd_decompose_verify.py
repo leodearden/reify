@@ -1133,7 +1133,11 @@ globalThis.agent = async (prompt, opts = {{}}) => {{
         return {{ prover: [], adversary: [] }};
     }}
     if (phase === "synthesize") {{
-        return {{ blocks: false, blocking: [], report: "" }};
+        // Full BatchVerdict shape (task #7257): an evidence-free {{blocks:false}}
+        // would now be dispositioned NOT_VERIFIED, so the mock must report a
+        // real executed probe for these contract tests to drive a VERIFIED leaf.
+        return {{ blocks: false, blocking: [], report: "",
+                 malformed: [], fixture_absent: [], executed: 1, total: 1 }};
     }}
     // fallback
     return {{}};
@@ -2458,6 +2462,171 @@ class TestMjsUnenumeratedLeaf(unittest.TestCase, _MjsScenarioMixin):
             '[{ signal: "normally verified leaf" }]', self.VERIFIED_RESPONSES)
         self.assertIn("synthesize", phases,
                       f"the normal path must still synthesize; phases {phases!r}")
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-13 (RED): the batch return must surface the probed count
+# ---------------------------------------------------------------------------
+
+class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
+    """A session must be able to answer "how many leaves were actually probed?"
+    from the workflow's return value, without opening journal.jsonl.
+
+    Today the aggregate carries only blocks / leaf_verdicts / summary, so a
+    batch in which NO leaf was ever probed is reported as
+    "γ PASS — all N leaf(ves) verified" — the ARM 2 failure.  A third
+    disposition is needed between BLOCKS and PASS: INCOMPLETE, meaning nothing
+    was falsified but nothing was verified either.
+
+    GREEN in task #7257 step-14.
+    """
+
+    # ── scenario A: one verified leaf + one zero-premise leaf ────────────────
+
+    _A_LEAVES = '[{ signal: "verified leaf (alpha)" }, { signal: "zero-premise leaf (beta)" }]'
+    _A_RESPONSES = """{
+    enumerate: (prompt) => prompt.includes("zero-premise")
+        ? { premises: [] }
+        : { premises: [{
+              text: "revolute rejects non-axis arg",
+              assertion_kind: "rejection",
+              fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+              match: { exit_code: 1 },
+              capability: "arg-vs-param rejection (mock)",
+          }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "PASS",
+        command: ["reify", "check", "f.ri"], exit_code: 1,
+        stdout: "", stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 1, total: 1 },
+}"""
+
+    # ── scenario B: two normally verified leaves ─────────────────────────────
+
+    _B_LEAVES = '[{ signal: "verified leaf (alpha)" }, { signal: "verified leaf (gamma)" }]'
+
+    # ── scenario C: a leaf that probed nothing because every record was malformed ─
+
+    _C_LEAVES = '[{ signal: "malformed-records leaf (epsilon)" }]'
+    _C_RESPONSES = """{
+    enumerate: { premises: [{
+        text: "revolute rejects non-axis arg",
+        assertion_kind: "rejection",
+        fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+        match: { exit_code: 1 },
+        capability: "arg-vs-param rejection (mock)",
+    }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "FAIL",
+        command: [], exit_code: -1, stdout: "", stderr: "",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [],
+                  report: "MALFORMED (no executed-probe evidence ...)",
+                  malformed: ["arg-vs-param rejection (mock)"],
+                  fixture_absent: [], executed: 0, total: 1 },
+}"""
+
+    def _assert_consumer_contract(self, verdict):
+        """The pre-existing keys β/D4 consume must survive every change."""
+        for key in ("blocks", "leaf_verdicts", "summary"):
+            self.assertIn(key, verdict,
+                          f"consumer-contract key {key!r} missing; got {sorted(verdict)}")
+        self.assertIsInstance(verdict["blocks"], bool)
+        self.assertIsInstance(verdict["leaf_verdicts"], list)
+        self.assertIsInstance(verdict["summary"], str)
+
+    # ── (A) a mixed batch is INCOMPLETE, not PASS ────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_reports_probed_counts(self):
+        """One of two leaves was probed — the return must say exactly that."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertEqual(verdict.get("leaves_total"), 2)
+        self.assertEqual(verdict.get("leaves_probed"), 1)
+        self.assertEqual(verdict.get("leaves_unenumerated"), 1)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_names_the_unprobed_leaf(self):
+        """The never-probed leaf is nameable straight off the return value."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        self.assertEqual(verdict.get("unenumerated_leaves"),
+                         ["zero-premise leaf (beta)"])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_disposition_is_incomplete_and_does_not_block(self):
+        """INCOMPLETE is the third outcome: nothing falsified, nothing verified."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        self.assertEqual(verdict.get("disposition"), "INCOMPLETE")
+        self.assertFalse(verdict["blocks"],
+                         "an incomplete batch has falsified nothing — it must not block")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_summary_states_the_probed_count(self):
+        """The one-line summary carries the count a reader actually needs."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        summary = verdict["summary"]
+        self.assertIn("1 of 2", summary, f"summary must state 1 of 2; got {summary!r}")
+        self.assertIn("zero-premise leaf (beta)", summary,
+                      f"summary must name the never-probed leaf; got {summary!r}")
+        self.assertNotIn("PASS", summary, f"INCOMPLETE must not read PASS; got {summary!r}")
+
+    # ── (B) an all-verified batch still passes, and says on what basis ───────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_all_verified_batch_disposition_is_pass(self):
+        """The happy path is unchanged in outcome — regression guard."""
+        verdict, _ = self._run_scenario(self._B_LEAVES, self.VERIFIED_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertEqual(verdict.get("disposition"), "PASS")
+        self.assertFalse(verdict["blocks"])
+        self.assertEqual(verdict.get("leaves_probed"), verdict.get("leaves_total"))
+        self.assertEqual(verdict.get("leaves_total"), 2)
+        self.assertEqual(verdict.get("leaves_unenumerated"), 0)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_all_verified_summary_reports_the_probed_count(self):
+        """Even a pass states its basis, so 'verified' is never taken on trust."""
+        verdict, _ = self._run_scenario(self._B_LEAVES, self.VERIFIED_RESPONSES)
+        summary = verdict["summary"]
+        self.assertIn("PASS", summary, f"an all-verified batch passes; got {summary!r}")
+        self.assertIn("2 probed", summary,
+                      f"summary must state the probed count; got {summary!r}")
+
+    # ── (C) a leaf that executed nothing is NOT_VERIFIED, batch INCOMPLETE ───
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_leaf_with_no_executed_records_is_not_verified(self):
+        """executed === 0 with malformed records ⇒ that leaf verified nothing."""
+        verdict, _ = self._run_scenario(self._C_LEAVES, self._C_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        leaf = verdict["leaf_verdicts"][0]
+        self.assertEqual(leaf.get("disposition"), "NOT_VERIFIED",
+                         f"leaf that executed no probe must be NOT_VERIFIED; got {leaf!r}")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_malformed_records_are_counted_at_batch_level(self):
+        """The harness-defect count is visible without walking leaf_verdicts."""
+        verdict, _ = self._run_scenario(self._C_LEAVES, self._C_RESPONSES)
+        self.assertEqual(verdict.get("malformed_records"), 1)
+        self.assertEqual(verdict.get("fixture_absent_records"), 0)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_not_verified_leaf_makes_the_batch_incomplete_without_blocking(self):
+        """A harness defect is neither a pass nor a falsification."""
+        verdict, _ = self._run_scenario(self._C_LEAVES, self._C_RESPONSES)
+        self.assertEqual(verdict.get("disposition"), "INCOMPLETE")
+        self.assertFalse(verdict["blocks"],
+                         "a malformed record is a harness defect, not a falsification")
+        self.assertEqual(verdict.get("leaves_not_verified"), 1)
+        self.assertEqual(verdict.get("not_verified_leaves"),
+                         ["malformed-records leaf (epsilon)"])
 
 
 if __name__ == "__main__":
