@@ -368,6 +368,153 @@ b2_port_eq_form() {
     argv_lacks "$DRY_PORTED_EQ" "8901"
 }
 
+# -- THE LIB CONTRACT: scripts/lib_jcodemunch_pin.sh (#6454) ------------------
+#
+# The invocation triple — wheel pin, interpreter, identity lever — has ONE
+# definition site, `scripts/lib_jcodemunch_pin.sh`, which both β
+# (scripts/jcodemunch-index-reify.sh) and δ (this suite's SUT) source. This
+# block guards the LIB'S OWN CONTRACT, separately from the agreement assertions
+# below that consume it: a lib that failed to define one of the three, defined
+# JC_IDENTITY_ENV as a STRING rather than an array, or wrote anything to stdout
+# at load would break both consumers in ways the agreement checks alone would
+# misreport as an unrelated pin drift.
+#
+# STDOUT SILENCE IS LOAD-BEARING, not tidiness. The lib is sourced INTO two
+# scripts whose `--dry-run` output IS their contract — the argv assertions above
+# and β's Test 9 both parse it — so one stray `echo` at load time corrupts the
+# very thing this suite reads.
+#
+# EVERY PROBE RUNS IN A CHILD BASH under `set -euo pipefail`, never by sourcing
+# into this shell. Two reasons, both load-bearing: a lib that (wrongly) carried
+# `set -e` or an `exit` would otherwise take the whole suite down instead of
+# failing one assertion, and nothing the lib defines can leak into the
+# assertions that follow and quietly satisfy them.
+JC_PIN_LIB_FILE="$REPO_ROOT/scripts/lib_jcodemunch_pin.sh"
+
+# jc_lib_emit <expr> — print ONE expression evaluated in a child bash that has
+# sourced the lib. Under `set -u` an UNDEFINED name exits non-zero and prints
+# nothing, so a missing definition surfaces as an empty extraction, which
+# require_nonempty then refuses rather than comparing "" against "".
+jc_lib_emit() {
+    local expr="$1"
+    bash -euo pipefail -c "source \"\$1\"; printf '%s\n' \"$expr\"" _ "$JC_PIN_LIB_FILE"
+}
+
+# jc_lib_triple — the whole triple plus the array's LENGTH as one line, used by
+# the idempotence check below. The length is carried because a re-source that
+# APPENDED to JC_IDENTITY_ENV would leave "${JC_IDENTITY_ENV[*]}" looking merely
+# doubled in a way a careless string compare could still call "equal enough".
+jc_lib_triple() {
+    bash -euo pipefail -c \
+        'source "$1"; printf "%s|%s|%s|%s\n" "$JC_PIN" "$JC_PYTHON" "${JC_IDENTITY_ENV[*]}" "${#JC_IDENTITY_ENV[@]}"' \
+        _ "$JC_PIN_LIB_FILE"
+}
+
+jc_lib_triple_twice() {
+    bash -euo pipefail -c \
+        'source "$1"; source "$1"; printf "%s|%s|%s|%s\n" "$JC_PIN" "$JC_PYTHON" "${JC_IDENTITY_ENV[*]}" "${#JC_IDENTITY_ENV[@]}"' \
+        _ "$JC_PIN_LIB_FILE"
+}
+
+b2_lib_exists() { [ -f "$JC_PIN_LIB_FILE" ] && [ -r "$JC_PIN_LIB_FILE" ]; }
+
+b2_lib_sources_silently() {
+    local out rc=0
+    if [ ! -f "$JC_PIN_LIB_FILE" ]; then
+        printf '%s\n' "the lib does not exist: $JC_PIN_LIB_FILE"
+        return 1
+    fi
+    out="$(bash -euo pipefail -c 'source "$1"' _ "$JC_PIN_LIB_FILE")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf '%s\n' "sourcing the lib under 'set -euo pipefail' exited $rc (it must be inert at load)"
+        return 1
+    fi
+    if [ -n "$out" ]; then
+        printf '%s\n' "the lib wrote to STDOUT at load time: [$out]" \
+            "  Both consumers print their CONSTRUCTED argv on stdout under --dry-run; a lib that speaks there corrupts it."
+        return 1
+    fi
+    return 0
+}
+
+# The two `case` arms per value pin the SHAPE and the ALPHABET separately: a
+# glob's `*` alone would let `1.2.3rc1` — or a whole extra shell word — through.
+b2_lib_pin_shape() {
+    local v ver
+    v="$(jc_lib_emit '${JC_PIN}')" || true
+    require_nonempty "JC_PIN as defined by the lib" "$v" || return 1
+    case "$v" in
+        jcodemunch-mcp==*) ;;
+        *) printf '%s\n' "the lib's JC_PIN is not a 'jcodemunch-mcp==' requirement: [$v]"; return 1 ;;
+    esac
+    ver="${v#jcodemunch-mcp==}"
+    case "$ver" in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *) printf '%s\n' "the lib's JC_PIN version is not <n>.<n>.<n>: [$ver]"; return 1 ;;
+    esac
+    case "$ver" in
+        *[!0-9.]*) printf '%s\n' "the lib's JC_PIN version carries a non-[0-9.] character: [$ver]"; return 1 ;;
+    esac
+    return 0
+}
+
+b2_lib_python_shape() {
+    local v
+    v="$(jc_lib_emit '${JC_PYTHON}')" || true
+    require_nonempty "JC_PYTHON as defined by the lib" "$v" || return 1
+    case "$v" in
+        [0-9]*.[0-9]*) ;;
+        *) printf '%s\n' "the lib's JC_PYTHON is not <major>.<minor>: [$v]"; return 1 ;;
+    esac
+    case "$v" in
+        *.*.*) printf '%s\n' "the lib's JC_PYTHON carries more than two fields: [$v]"; return 1 ;;
+    esac
+    case "$v" in
+        *[!0-9.]*) printf '%s\n' "the lib's JC_PYTHON carries a non-[0-9.] character: [$v]"; return 1 ;;
+    esac
+    return 0
+}
+
+# JC_IDENTITY_ENV must be an ARRAY, not a string. Both consumers splice it as
+# "${JC_IDENTITY_ENV[@]}" straight into the spawned argv, so a string-valued
+# copy would word-split differently at the call site — and `${#x[@]}` over a
+# plain string is 1, which is exactly the discriminator asserted here.
+b2_lib_identity_env_is_a_two_element_array() {
+    local joined n
+    joined="$(jc_lib_emit '${JC_IDENTITY_ENV[*]}')" || true
+    require_nonempty "JC_IDENTITY_ENV as defined by the lib" "$joined" || return 1
+    if [ "$joined" != "env JCODEMUNCH_GIT_ROOT_IDENTITY=0" ]; then
+        printf '%s\n' "the lib's JC_IDENTITY_ENV expands to [$joined]" \
+            "  expected [env JCODEMUNCH_GIT_ROOT_IDENTITY=0]"
+        return 1
+    fi
+    n="$(jc_lib_emit '${#JC_IDENTITY_ENV[@]}')" || true
+    if [ "$n" != "2" ]; then
+        printf '%s\n' "the lib's JC_IDENTITY_ENV has ${n:-<none>} element(s), expected 2 (a STRING copy reports 1)" \
+            "  Both consumers splice it as \"\${JC_IDENTITY_ENV[@]}\" into the spawned argv."
+        return 1
+    fi
+    return 0
+}
+
+# Sourcing TWICE must be a no-op — the repo's `_REIFY_LIB_*_SH_SOURCED` guard
+# convention (scripts/lib_test_semaphore.sh:66-69). Both consumers source the
+# lib before constructing argv, and a re-source that reset or APPENDED to
+# JC_IDENTITY_ENV would silently double the `env` prefix in the spawned command.
+b2_lib_double_source_is_idempotent() {
+    local once twice
+    once="$(jc_lib_triple)" || true
+    twice="$(jc_lib_triple_twice)" || true
+    require_nonempty "the lib's triple after ONE source" "$once" || return 1
+    require_nonempty "the lib's triple after TWO sources" "$twice" || return 1
+    [ "$once" = "$twice" ] && return 0
+    printf '%s\n' "sourcing scripts/lib_jcodemunch_pin.sh twice is NOT idempotent:" \
+        "  once:  $once" \
+        "  twice: $twice" \
+        "  Add the repo's _REIFY_LIB_JCODEMUNCH_PIN_SH_SOURCED guard (cf. scripts/lib_test_semaphore.sh:66-69)."
+    return 1
+}
+
 # -- THE FOUR-SITE PIN INVENTORY, ASSERTED RATHER THAN MERELY DOCUMENTED ------
 #
 # The wheel version is COPIED across four sites and, until these assertions,
@@ -462,6 +609,14 @@ assert "the dry-run argv carries the identity lever, pin, transport and port in 
 assert "the dry-run argv contains neither --paths-from nor the watch/index subcommands" b2_bans
 assert "--port 8917 moves the port in the argv (and drops the 8901 default)" b2_port_moves
 assert "the --port=N spelling moves the port too" b2_port_eq_form
+assert "scripts/lib_jcodemunch_pin.sh exists and is readable" b2_lib_exists
+assert "the lib sources clean under set -euo pipefail and says nothing on stdout" b2_lib_sources_silently
+assert "the lib defines JC_PIN as jcodemunch-mcp==<n>.<n>.<n>" b2_lib_pin_shape
+assert "the lib defines JC_PYTHON as <major>.<minor>" b2_lib_python_shape
+assert "the lib defines JC_IDENTITY_ENV as a 2-element ARRAY, not a string" \
+    b2_lib_identity_env_is_a_two_element_array
+assert "sourcing the lib twice is idempotent (the _REIFY_LIB_*_SH_SOURCED guard)" \
+    b2_lib_double_source_is_idempotent
 assert "δ's pin agrees with β's (scripts/jcodemunch-index-reify.sh)" \
     b2_pin_agrees "β" "$JC_PIN_BETA_FILE" jc_pin_beta
 assert "δ's pin agrees with α's (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
