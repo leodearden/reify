@@ -310,7 +310,16 @@ assert "PG-RENAME-b: renaming an uncoupled fixture stays RUN_RUST=0 RUN_GUI=0 RU
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PG-DRIFT: every *.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
-_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -o -E 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri' -- '*.rs' | sort -u || true)"
+# The fixture-LEAF pattern, named like its sibling _PG_DIR_PAT below so the two
+# halves read as one convention.
+_PG_FIX_PAT='tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri'
+# The SINGLE derivation that both the real-repo run below and the synthetic
+# self-tests go through: full matched LINES in, sorted-unique fixture paths out.
+# `-o` lives here rather than on `git grep` so the helper still sees whole
+# lines — the self-tests therefore exercise the production pipeline instead of
+# restating it.
+_pg_derive() { grep -o -E "$_PG_FIX_PAT" | sort -u; }
+_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' | _pg_derive || true)"
 # Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
 # must fail loudly here instead of vacuously passing an empty loop.
 assert "PG-DRIFT: derived coupled-fixture set is NON-EMPTY (guard is not vacuous)" \
