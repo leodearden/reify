@@ -43,6 +43,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# -- 1b. Preflight: refuse to run into a known-bad launch ----------------------
+# Deliberately before every expensive step (npm install, the frontend build, and
+# a cargo --release build that can take minutes) — this is a failure the user
+# would otherwise only see after that wait.
+#
+# Set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass (break-glass).
+if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
+    # Display. reify-gui is a GTK/WebKit app; with no X11 or Wayland display it
+    # cannot open a window at all, and the failure otherwise surfaces only
+    # AFTER the release build as an opaque GTK abort. We deliberately do NOT
+    # probe EGL — see the matching note in scripts/run-gui-dev.sh §1b.
+    if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+        echo "Error: no display: DISPLAY and WAYLAND_DISPLAY are both unset — reify-gui needs an X11/Wayland display; export DISPLAY=:0 (or set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass)" >&2
+        exit 1
+    fi
+fi
+
 # -- 2. Build the sidecar (fast, idempotent) -----------------------------------
 echo "==> Building sidecar..."
 bash gui/sidecar/build-sidecar.sh

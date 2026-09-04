@@ -71,6 +71,20 @@ export REIFY_DEBUG_PORT
 #
 # Set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass the whole block (break-glass).
 if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
+    # Display. reify-gui is a GTK/WebKit app; with no X11 or Wayland display it
+    # cannot open a window at all, and the failure otherwise surfaces only
+    # AFTER the cargo build as an opaque GTK abort.
+    #
+    # We deliberately do NOT probe EGL here: `eglinfo` (mesa-utils) is not in
+    # scripts/setup-dev.sh's package set, so it cannot be hard-required, and
+    # §7's WEBKIT_DISABLE_DMABUF_RENDERER=1 default already neutralises the
+    # NVIDIA+Mesa GBM failure an EGL probe would flag — the probe would be both
+    # undependable and a false alarm.
+    if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+        echo "Error: no display: DISPLAY and WAYLAND_DISPLAY are both unset — reify-gui needs an X11/Wayland display; export DISPLAY=:0 (or set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass)" >&2
+        exit 1
+    fi
+
     # Vite port occupancy. §5's readiness loop calls curl BEFORE checking
     # `kill -0 "$VITE_PID"`, so a FOREIGN listener on this port makes curl
     # succeed on iteration 1 — while the vite we spawn has already exited on
