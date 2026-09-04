@@ -23,12 +23,20 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
-fn make_loaded_session() -> EngineSession {
+/// [`make_session`] with `source` loaded under the module name `bracket`.
+///
+/// The `&str`-parameterized form of [`make_loaded_session`], which is what the ~20
+/// neighbouring tests call; both bodies are this one.
+fn make_loaded_session_from(source: &str) -> EngineSession {
     let mut session = make_session();
     session
-        .load_from_source(bracket_source(), "bracket")
+        .load_from_source(source, "bracket")
         .expect("initial load");
     session
+}
+
+fn make_loaded_session() -> EngineSession {
+    make_loaded_session_from(bracket_source())
 }
 
 /// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
@@ -498,18 +506,11 @@ fn end_to_end_export_via_impl() {
 /// that delegation rather than assert it — it would go red if a future refactor gave
 /// `export_impl` its own build path, which is exactly the multi-site drift task 6170
 /// was chartered to eliminate.
-///
-/// `make_loaded_session`'s construction is duplicated inline with the bounded source
-/// rather than parameterizing that shared helper, which many neighbouring tests use.
 #[test]
 fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
     use crate::commands::export_impl;
 
-    let mut session = make_session();
-    session
-        .load_from_source(&bounded_bracket_source(), "bracket")
-        .expect("the bounded bracket fixture should compile and load");
-    let engine = Mutex::new(session);
+    let engine = Mutex::new(make_loaded_session_from(&bounded_bracket_source()));
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("e2e_bounded.step");
@@ -519,10 +520,11 @@ fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
          RepresentationWithin bound",
     );
     assert!(
-        err.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
         "the message reaching the frontend must LEAD with the stable E_* token — it is \
          returned verbatim, not wrapped in a \"Build error:\" prefix that would push the \
-         token off the front; got: {err}"
+         token off the front. `starts_with`, not `contains`, so that wrapping is what \
+         goes red; got: {err}"
     );
     assert!(
         !path.exists(),
@@ -549,10 +551,7 @@ fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representatio
     use crate::mcp_context::TauriToolContext;
     use reify_mcp::{ReifyToolContext, ToolError};
 
-    let mut session = make_session();
-    session
-        .load_from_source(&bounded_bracket_source(), "bracket")
-        .expect("the bounded bracket fixture should compile and load");
+    let session = make_loaded_session_from(&bounded_bracket_source());
     let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
 
     let dir = tempfile::tempdir().unwrap();
@@ -563,9 +562,11 @@ fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representatio
         .expect_err("the MCP export tool must surface the η refusal, not report success");
     match err {
         ToolError::EngineError(msg) => assert!(
-            msg.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-            "the refusal must reach the MCP client as an EngineError carrying the stable \
-             E_* token verbatim; got: {msg}"
+            msg.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal must reach the MCP client as an EngineError LEADING with the \
+             stable E_* token — `map_err(ToolError::EngineError)` moves the engine's \
+             message verbatim, so `starts_with` is what a wrapping regression trips on; \
+             got: {msg}"
         ),
         other => panic!(
             "a refused export must map to ToolError::EngineError (the engine's own \

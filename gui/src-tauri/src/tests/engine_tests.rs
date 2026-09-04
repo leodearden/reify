@@ -1525,6 +1525,20 @@ fn get_source_location_returns_source_location_info() {
     assert_eq!(loc.file_path, "bracket.ri");
 }
 
+/// The GUI export happy path — and, since task 6190, the C2 negative that bounds the
+/// η refusal's blast radius (PRD C2 / §3.1(f)).
+///
+/// Plain `bracket_source()` declares no `RepresentationWithin`, so the shared helper
+/// returns `None` and the export must proceed byte-for-byte as it did before the gate
+/// landed. PRD §4.6's closing rationale — "a module with no `RepresentationWithin`
+/// never enters any of this — the required negative signal" — is what makes that
+/// `None` case load-bearing: an over-broad gate would break every existing GUI export
+/// and none of the η positives below would catch it. The CLI surface pins the same
+/// property as `build_dash_o_still_exports_a_module_without_a_bound`
+/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:589`).
+///
+/// The payload equality (rather than `!is_empty()`) is what also catches a regression
+/// that silently emptied the artifact instead of refusing it.
 #[test]
 fn export_end_to_end() {
     let checker = SimpleConstraintChecker;
@@ -1541,8 +1555,12 @@ fn export_end_to_end() {
     let result = session.export(ExportFormat::Step, &path);
     assert!(result.is_ok(), "export should succeed: {:?}", result.err());
 
-    let data = std::fs::read(&path).expect("exported file should be readable");
-    assert!(!data.is_empty(), "exported file should not be empty");
+    assert_eq!(
+        std::fs::read(&path).expect("exported file should be readable"),
+        b"MOCK_EXPORT_DATA",
+        "an UNBOUNDED design must still export the mock kernel's payload byte-for-byte \
+         — the η refusal must not fire for a design that declares no bound"
+    );
 }
 
 // --- eta export refusal: the GUI surface (task 6190) ---
@@ -1553,6 +1571,9 @@ fn export_end_to_end() {
 // through `commands::export_impl` (the Tauri command) and through
 // `TauriToolContext::export` (the MCP debug surface), so a future refactor that gave
 // either its own build path goes red rather than silently reopening the bypass.
+//
+// The C2 negative bounding this gate's blast radius is `export_end_to_end` directly
+// above — the unbounded happy path, which the gate must leave untouched.
 
 /// [`bracket_source`] plus a non-circular checker structure declaring the bound.
 ///
@@ -1615,9 +1636,13 @@ fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
          (PRD §1.1: refused, not written-and-reported-successful)",
     );
     assert!(
-        err.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-        "the refusal must carry the stable E_* token the CLI surface also emits, so \
-         both surfaces can be pinned against the same exported const; got: {err}"
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must LEAD with the stable E_* token the CLI surface also emits, so \
+         both surfaces can be pinned against the same exported const. `starts_with`, not \
+         `contains`: the message is returned VERBATIM, so a future refactor routing the \
+         refusal through the `\"Build error: {{}}\"` arm — which would push the token off \
+         the front of a string both GUI callers surface unmodified — has to go red here; \
+         got: {err}"
     );
     assert!(
         !path.exists(),
@@ -1660,8 +1685,8 @@ fn export_refusal_does_not_overwrite_an_existing_file() {
         .export(ExportFormat::Step, &target)
         .expect_err("a bounded design must be refused at the GUI export boundary");
     assert!(
-        err.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-        "the refusal must carry the stable E_* token; got: {err}"
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must LEAD with the stable E_* token (returned verbatim); got: {err}"
     );
     assert_eq!(
         std::fs::read(&target).expect("the export target must still exist"),
@@ -1672,48 +1697,10 @@ fn export_refusal_does_not_overwrite_an_existing_file() {
     );
 }
 
-/// The C2 negative that bounds the η refusal's blast radius (PRD C2 / §3.1(f)).
-///
-/// Mirrors `build_dash_o_still_exports_a_module_without_a_bound`
-/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:589`), which the
-/// CLI's own η work landed for the same reason. It is DELIBERATELY green both before
-/// and after the gate, and that is exactly its job: PRD §4.6's closing rationale —
-/// "a module with no `RepresentationWithin` never enters any of this — the required
-/// negative signal" — makes the shared helper's `None` case the load-bearing one, and
-/// an over-broad gate that refused unbounded designs would break every existing GUI
-/// export.
-///
-/// The payload equality (not merely `!is_empty()`) is what also catches a regression
-/// that silently emptied the artifact instead of refusing it.
-#[test]
-fn export_still_succeeds_for_a_module_without_a_representation_bound() {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    // Plain `bracket_source()` — NO checker structure, so no declared bound. This is
-    // `bounded_bracket_source()` minus its one appended `RepresentationWithin`.
-    session
-        .load_from_source(bracket_source(), "bracket")
-        .expect("initial load");
-
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bracket.step");
-
-    let result = session.export(ExportFormat::Step, &path);
-    assert!(
-        result.is_ok(),
-        "an UNBOUNDED design must still export exactly as before — the η refusal must \
-         not fire for a design that declares no bound: {:?}",
-        result.err()
-    );
-    assert!(path.exists(), "an unbounded design must still write its target");
-    assert_eq!(
-        std::fs::read(&path).expect("exported file should be readable"),
-        b"MOCK_EXPORT_DATA",
-        "the unbounded export must still carry the mock kernel's payload byte-for-byte"
-    );
-}
+// The C2 negative for this cluster is `export_end_to_end` above: the unbounded happy
+// path, strengthened to assert the payload byte-for-byte. It is not restated here as a
+// second test — a verbatim twin of that body would have to be kept in step with it, and
+// the export-success contract is the thing both would be pinning.
 
 // --- Source-map consistency after load/update ---
 

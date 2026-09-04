@@ -3327,23 +3327,14 @@ impl EngineSession {
         let (compiled_opt, engine) = self.core.split_compiled_and_engine_mut();
         let compiled = compiled_opt.ok_or_else(|| "No module loaded".to_string())?;
 
-        // η export refusal. Cross-surface call-site inventory and rationale:
-        // PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md, C-SURFACE (2).
-        //
-        // The non-obvious LOCAL fact — the one a reader of this function cannot
-        // recover from what is on screen — is why this must precede `engine.build`
-        // rather than ride the `diag.severity == Severity::Error` loop just below it:
-        // `Engine::build` never emits this diagnostic, so a gate down there would catch
-        // NOTHING, and `std::fs::write` runs inside the `Some(data)` arm, so only a gate
-        // sited HERE gates the write at all.
-        //
-        // Gating on `Some(_)` alone — never re-testing `diag.severity` — is deliberate:
-        // returning `Err` IS the refusal on this surface, so deriving it from severity
-        // would let a severity change silently reopen the bypass this gate closes. The
-        // remaining contract (message returned verbatim so it still leads with the
-        // stable `E_REPR_BOUND_UNENFORCED_ON_EXPORT` token; nothing written at the
-        // target) is pinned by the η tests in `tests/{engine,commands}_tests.rs`, not
-        // restated here.
+        // η export refusal — PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md,
+        // C-SURFACE (2). Must precede `engine.build`: that path never emits this
+        // diagnostic, so the `diag.severity == Severity::Error` loop below would catch
+        // NOTHING, and `std::fs::write` runs inside the `Some(data)` arm — only a gate
+        // sited here gates the write at all. Gating on `Some(_)` rather than
+        // `diag.severity` is deliberate: returning `Err` IS the refusal on this surface.
+        // The message is the shared helper's, returned verbatim; the η tests in
+        // `tests/{engine,commands}_tests.rs` pin that and the no-write contract.
         if let Some(diag) = unenforced_representation_bound_diagnostic(compiled) {
             return Err(diag.message);
         }
