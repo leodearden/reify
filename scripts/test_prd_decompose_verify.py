@@ -1795,5 +1795,140 @@ class TestEvidenceGate(unittest.TestCase):
         self.assertIn("MALFORMED", bv.report)
 
 
+# ---------------------------------------------------------------------------
+# task #7257 step-05 (RED): fixture-absent ≠ falsification (ARM 1, item 4)
+# ---------------------------------------------------------------------------
+
+class TestFixtureAbsent(unittest.TestCase):
+    """A probe that could not find its fixture has falsified nothing.
+
+    During decompose, the .ri fixture a premise probes is very often the leaf's
+    own deliverable — it does not exist yet, by construction.  Scoring the
+    resulting ENOENT as a premise falsification reports a design defect where
+    there is only a missing file, which is what the observed pi report did.
+
+    GREEN in task #7257 step-06 (fixture_absent_evidence).
+    """
+
+    def _result(self, capability: str, verdict: str = "FAIL",
+                stderr: str = "", exit_code: int = 1) -> dict:
+        """An EXECUTED α result record (real command, real exit code)."""
+        return {
+            "capability": capability,
+            "probe_kind": "ir",
+            "verdict": verdict,
+            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "exit_code": exit_code,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    # ── (1) the verbatim stderr from the observed run ────────────────────────
+
+    def test_observed_enoent_stderr_is_not_a_falsification(self):
+        """'Error: No such file or directory (os error 2)' → fixture-absent."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertNotIn("fixture-absent cap", bv.blocking)
+        self.assertFalse(bv.blocks)
+        self.assertIn("fixture-absent cap", bv.fixture_absent)
+
+    # ── (2) both signature forms, case-insensitively ─────────────────────────
+
+    def test_bare_no_such_file_signature(self):
+        """A bare 'No such file or directory' is enough."""
+        rec = self._result("bare-enoent cap", stderr="No such file or directory")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("bare-enoent cap", bv.fixture_absent)
+        self.assertFalse(bv.blocks)
+
+    def test_signature_match_is_case_insensitive(self):
+        """Lower-cased diagnostics match too — the signature is normalized."""
+        rec = self._result("lowercase-enoent cap", stderr="no such file or directory")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("lowercase-enoent cap", bv.fixture_absent)
+        self.assertFalse(bv.blocks)
+
+    # ── (3) the Rust io::Error rendering on its own ──────────────────────────
+
+    def test_bare_os_error_2_signature(self):
+        """Rust renders ENOENT as 'os error 2'; that alone classifies fixture-absent."""
+        rec = self._result("os-error-2 cap", stderr="failed to open input: os error 2")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("os-error-2 cap", bv.fixture_absent)
+        self.assertFalse(bv.blocks)
+
+    # ── (4)(5) the over-reach guards ─────────────────────────────────────────
+
+    def test_unrelated_diagnostic_still_blocks(self):
+        """A genuine falsification with an unrelated stderr is untouched."""
+        rec = self._result("real fail cap", stderr="type mismatch: expected axis")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("real fail cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_empty_stderr_still_blocks(self):
+        """An executed FAIL with no stderr at all is still a falsification."""
+        rec = self._result("silent fail cap", stderr="")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("silent fail cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+    # ── (6) missing BINARY is not a missing fixture ──────────────────────────
+
+    def test_binary_not_found_sentinel_still_blocks(self):
+        """α's binary-not-found sentinel emits the SAME ENOENT text but must block.
+
+        A missing `reify` binary is a real harness failure: nothing was probed
+        and the batch cannot be trusted.  The fixture-absent carve-out must not
+        swallow it just because the OS worded both errors the same way.
+        """
+        stderr = (f"{pcc._BINARY_NOT_FOUND_SENTINEL}: [Errno 2] "
+                  "No such file or directory: 'target/release/reify'")
+        rec = self._result("missing binary cap", verdict="HARNESS_ERROR",
+                           stderr=stderr, exit_code=127)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks, "a missing binary must still block")
+        self.assertIn("missing binary cap", bv.blocking)
+        self.assertNotIn("missing binary cap", bv.fixture_absent)
+
+    # ── (7) counters and report placement ────────────────────────────────────
+
+    def test_fixture_absent_record_counts_as_executed(self):
+        """The probe DID run — it just could not find its fixture."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.executed, 1)
+        self.assertEqual(bv.total, 1)
+
+    def test_fixture_absent_is_named_in_its_own_report_section(self):
+        """The capability stays visible, under a fixture-absent label."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("fixture-absent cap", bv.report)
+        self.assertIn("FIXTURE ABSENT", bv.report)
+
+    def test_fixture_absent_is_not_counted_as_malformed(self):
+        """The two categories are distinct: one ran without a target, one never ran."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.malformed, [])
+
+    def test_passing_record_with_enoent_stderr_is_untouched(self):
+        """The carve-out applies to blocking verdicts only."""
+        rec = self._result("passing cap", verdict="PASS",
+                           stderr="No such file or directory", exit_code=0)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.fixture_absent, [])
+        self.assertEqual(bv.blocking, [])
+        self.assertFalse(bv.blocks)
+
+
 if __name__ == "__main__":
     unittest.main()
