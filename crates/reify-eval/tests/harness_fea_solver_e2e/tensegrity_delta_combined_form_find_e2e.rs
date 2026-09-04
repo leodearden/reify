@@ -28,25 +28,15 @@
 //!     call triggers a compile-time arity error.
 //!   - (c) passes (existing backward-compat behavior is already correct).
 
-use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_core::{Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, Value};
+use reify_test_support::tensegrity_fixtures::{
+    triplex_caps, triplex_group_ids, triplex_seeds, triplex_tensegrity,
+};
 use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
 
 // ── helper types ──────────────────────────────────────────────────────────────
-
-/// A Length-typed coordinate Scalar (SI metres) — how `point3(..m, ..)` lowers.
-fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
-}
-
-/// A 3-component `Value::Point` node.
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
-}
 
 /// Extract an f64 from a Length Scalar (or bare Real) coordinate component.
 fn coord_f64(v: &Value) -> f64 {
@@ -64,98 +54,6 @@ fn force_val(v: &Value) -> f64 {
         Value::Real(r) => *r,
         other => panic!("expected a Scalar/Real force, got {other:?}"),
     }
-}
-
-// ── triplex prism with surfaces ───────────────────────────────────────────────
-
-/// The canonical symmetric T-prism nodes (circumradius R=1, height=1, twist≈30°).
-/// Top triangle z=+1: nodes 0,1,2 at azimuths 0°,120°,240°.
-/// Bottom triangle z=−1: nodes 3,4,5 at azimuths 30°,150°,270° (≈+30° twist).
-///
-/// We use the same geometry as `canonical_prism()` in the kernel tests so the
-/// combined solve starts from a near-symmetric geometry.
-fn triplex_nodes() -> Vec<Value> {
-    use std::f64::consts::PI;
-    let deg = PI / 180.0;
-    let top = |i: usize| {
-        let a = 120.0 * (i as f64) * deg;
-        node(a.cos(), a.sin(), 1.0)
-    };
-    let bot = |i: usize| {
-        let a = (120.0 * (i as f64) + 30.0) * deg;
-        node(a.cos(), a.sin(), -1.0)
-    };
-    vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
-}
-
-/// Build the triplex Tensegrity Value WITH the `surfaces` field:
-///   struts:   [[0,4],[1,5],[2,3]]
-///   cables:   [[0,1],[1,2],[2,0],[3,4],[4,5],[5,3],[0,3],[1,4],[2,5]]
-///   surfaces: [[0,1,2],[3,4,5]]   (top-cap + bottom-cap membrane)
-fn triplex_tensegrity_with_surfaces() -> Value {
-    let nodes = Value::List(triplex_nodes());
-    let struts = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(4)]),
-        Value::List(vec![Value::Int(1), Value::Int(5)]),
-        Value::List(vec![Value::Int(2), Value::Int(3)]),
-    ]);
-    let cables = Value::List(vec![
-        // top ring
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
-        Value::List(vec![Value::Int(2), Value::Int(0)]),
-        // bottom ring
-        Value::List(vec![Value::Int(3), Value::Int(4)]),
-        Value::List(vec![Value::Int(4), Value::Int(5)]),
-        Value::List(vec![Value::Int(5), Value::Int(3)]),
-        // verticals
-        Value::List(vec![Value::Int(0), Value::Int(3)]),
-        Value::List(vec![Value::Int(1), Value::Int(4)]),
-        Value::List(vec![Value::Int(2), Value::Int(5)]),
-    ]);
-    let surfaces = Value::List(vec![
-        // top cap: nodes 0,1,2
-        Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]),
-        // bottom cap: nodes 3,4,5
-        Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
-    ]);
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), nodes),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-        ("surfaces".to_string(), surfaces),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
-}
-
-/// Struts-then-cables group_ids: struts→0, six horizontals→1, three verticals→2.
-fn triplex_group_ids() -> Value {
-    Value::List(vec![
-        Value::Int(0),
-        Value::Int(0),
-        Value::Int(0), // struts
-        Value::Int(1),
-        Value::Int(1),
-        Value::Int(1), // top horizontals
-        Value::Int(1),
-        Value::Int(1),
-        Value::Int(1), // bottom horizontals
-        Value::Int(2),
-        Value::Int(2),
-        Value::Int(2), // verticals
-    ])
-}
-
-/// Seed ratios: struts compressive (−1), horizontals/verticals tensile (+1).
-fn triplex_seeds() -> Value {
-    Value::List(vec![Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)])
 }
 
 /// Surface stresses: one uniform σ=0.2 per triangle (top and bottom caps).
@@ -208,7 +106,7 @@ fn surface_stress_echoes(fields: &PersistentMap<String, Value>) -> Vec<f64> {
 fn trampoline_combined_prism_membrane_has_nonempty_surface_stresses() {
     const SIGMA: f64 = 0.2;
     let value_inputs = vec![
-        triplex_tensegrity_with_surfaces(),
+        triplex_tensegrity(1.0, -1.0, Some(triplex_caps())),
         triplex_group_ids(),
         triplex_seeds(),
         Value::Int(1), // reference_group = horizontals
@@ -492,39 +390,10 @@ structure def LineOnlyPrism {
 /// (the 4-arg path is already green from task 3795).
 #[test]
 fn trampoline_four_arg_backward_compat_has_empty_surface_stresses() {
-    // The triplex WITHOUT a surfaces field — the 4-arg line-only case.
-    // We simply omit surfaces from the structure and send only 4 value_inputs.
-    let nodes = Value::List(triplex_nodes());
-    let struts = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(4)]),
-        Value::List(vec![Value::Int(1), Value::Int(5)]),
-        Value::List(vec![Value::Int(2), Value::Int(3)]),
-    ]);
-    let cables = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
-        Value::List(vec![Value::Int(2), Value::Int(0)]),
-        Value::List(vec![Value::Int(3), Value::Int(4)]),
-        Value::List(vec![Value::Int(4), Value::Int(5)]),
-        Value::List(vec![Value::Int(5), Value::Int(3)]),
-        Value::List(vec![Value::Int(0), Value::Int(3)]),
-        Value::List(vec![Value::Int(1), Value::Int(4)]),
-        Value::List(vec![Value::Int(2), Value::Int(5)]),
-    ]);
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), nodes),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-        // no surfaces field → line-only path
-    ]
-    .into_iter()
-    .collect();
-    let tensegrity = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }));
+    // The triplex WITHOUT a surfaces field — the 4-arg line-only case. `None`
+    // OMITS the key rather than writing an empty list, which is what puts this
+    // structure on the line-only path.
+    let tensegrity = triplex_tensegrity(1.0, -1.0, None);
 
     let value_inputs = vec![
         tensegrity,
