@@ -1455,57 +1455,68 @@ assert "3b: missing dir emitted as a structured FAIL line (reason=missing-tests-
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate dir=.*does-not-exist reason=missing-tests-dir' "$_s3b_out"
 
 # ===========================================================================
-# Section 3c: rule (a)'s override exemption, pinned NON-VACUOUSLY — an
-# over-cap OVERRIDE stem contributes ZERO violations in the SAME scan where an
+# Section 3c: rule (a)'s "uncapped by design" claim, pinned NON-VACUOUSLY for
+# BOTH halves — an over-cap OVERRIDE stem AND an over-cap GRANDFATHERED
+# standalone each contribute ZERO violations in the SAME scan where an
 # over-cap harness DOES fire (task #7004). rule (a)'s cap governs
-# harness_<subsystem>.rs compile units ONLY; an override binary (I1) is exempt
-# BY DESIGN — never a merge product, never a sanctioned cap-overflow
-# destination (the clause beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh,
-# task #6461/#7004).
+# harness_<subsystem>.rs compile units ONLY; neither an override binary (I1)
+# nor a grandfathered baseline row (rule b) is a merge product or a sanctioned
+# cap-overflow destination (the clause beside `_HL_OVERRIDE_STEMS` in
+# harness-layout-lib.sh, task #6461/#7004).
 #
-# WHY THIS SECTION EXISTS. Section 3's own override fixture (tensegrity_t0a.rs
-# above) is a ONE-LINE file — vacuous against a 20000 cap, since a 1-line file
-# passes whether or not rule (a) applies to override stems at all. Without a
-# fixture that puts an override stem OVER the cap, silently extending rule (a)
-# to the 7 stems would leave every assertion in this suite green. Section 3c
+# WHY THIS SECTION EXISTS. Section 3's own override and grandfathered fixtures
+# (tensegrity_t0a.rs and grand.rs above) are each a ONE-LINE file — vacuous
+# against a 20000 cap, since a 1-line file passes whether or not rule (a)
+# applies to either set at all. Without a fixture that puts BOTH an override
+# stem AND a grandfathered row OVER the cap, silently widening rule (a) to
+# either one would leave every assertion in this suite green. Section 3c
 # closes that gap: it proves the cap machinery is live in this exact scan (the
-# harness_over.rs assertion below), then proves the over-cap override is
-# silent anyway — so the silence is attributable to the exemption, not to a
-# dead scan or an under-sized fixture.
+# harness_over.rs assertion below), then proves the over-cap override AND the
+# over-cap grandfathered standalone are both silent anyway — so the silence is
+# attributable to the exemptions, not to a dead scan or an under-sized
+# fixture.
 # ===========================================================================
 echo ""
-echo "--- Section 3c: an over-cap override stem is exempt from the kLOC cap (non-vacuous) ---"
+echo "--- Section 3c: an over-cap override stem AND an over-cap grandfathered standalone are exempt from the kLOC cap (non-vacuous) ---"
 
 _s3c_dir="$(mktemp -d)"; _TMPDIRS+=("$_s3c_dir")
 _s3c_baseline="$(mktemp)"; _TMPDIRS+=("$_s3c_baseline")
-: > "$_s3c_baseline"   # empty: rule (b) grandfathering cannot account for the
-                       # override's silence below — only the I1 stem allow-list can.
+# Sole row is grand.rs's OWN grandfather entry (written below) — the override
+# stem's row is deliberately absent, so rule (b) grandfathering cannot
+# account for the override's silence: only the I1 stem allow-list can.
+printf 'crates/synthcrate/tests/grand.rs\n' > "$_s3c_baseline"
 
 # An over-cap harness root in the SAME dir/scan, so the cap machinery is
-# demonstrably live at this size (non-vacuity witness for the override's
-# silence below — not a restatement of Section 1's own pin).
+# demonstrably live at this size (non-vacuity witness shared by both
+# exemptions checked below — not a restatement of Section 1's own pin).
 awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/harness_over.rs"
 # An over-cap OVERRIDE stem. A different stem from Section 3's
 # tensegrity_t0a.rs, so the two sections do not co-vary on one stem.
 awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/analytical_validation.rs"
+# An over-cap GRANDFATHERED standalone (rule (b), not I1) — the other half of
+# rule (a)'s "uncapped by design" claim: a baseline row never reaches rule
+# (a)'s cap arm either, since that arm gates on `harness_*.rs)` alone.
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/grand.rs"
 
 _s3c_out="$(mktemp)"; _TMPDIRS+=("$_s3c_out")
 _s3c_rc=0
 harness_layout_violations synthcrate "$_s3c_dir" "$_s3c_baseline" 20000 \
     > "$_s3c_out" 2>/dev/null || _s3c_rc=$?
 
-assert "3c: the crate's only violation is the over-cap harness (returns 1)" \
+assert "3c: the scan fires (returns 1) — a violation was detected in this dir" \
     test "$_s3c_rc" -eq 1
 assert "3c: NON-VACUITY — the over-cap harness DOES fire (cap machinery is live at this size)" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_over\.rs reason=exceeds-cap lines=21000 cap=20000' "$_s3c_out"
 assert "3c: the over-cap override stem emits NO line naming it at all (exempt, not merely under threshold)" \
     bash -c '! grep -qE "analytical_validation" "$1"' _ "$_s3c_out"
+assert "3c: the over-cap grandfathered standalone emits NO line naming it at all (exempt, not merely under threshold)" \
+    bash -c '! grep -qE "grand\.rs" "$1"' _ "$_s3c_out"
 
 # `|| true`: grep -c exits 1 on zero matches, which would otherwise abort this
 # script under `set -e` before the assert below gets to judge pass/fail (the
-# run_harness_layout_scan / Section 4 idiom, line ~424 / ~1458).
+# `run_harness_layout_scan` / Section 4 `_s4_summary_count` idiom).
 _s3c_fail_count="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s3c_out" || true)"
-assert "3c: EXACTLY ONE FAIL line total — the override contributed zero violations, not a differently-worded one" \
+assert "3c: EXACTLY ONE FAIL line total — both the override and the grandfathered standalone contributed zero violations" \
     test "$_s3c_fail_count" -eq 1
 
 # ===========================================================================
