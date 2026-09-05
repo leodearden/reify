@@ -342,6 +342,21 @@ scripts/with-jcodemunch-serve.sh    tests/infra/test_with_jcodemunch_serve.sh
 scripts/lib_jcodemunch_pin.sh    tests/infra/test_with_jcodemunch_serve.sh
 scripts/lib_jcodemunch_pin.sh    tests/infra/test_jcodemunch_index_reify.sh
 
+# Task 6548 (α): the live-session test is the third consumer of the triple, and
+# the ONLY one that cannot source the lib — a Rust test mirrors JC_PIN/JC_PYTHON
+# in two consts (JCODEMUNCH_PIN, JCODEMUNCH_PYTHON) instead. The agreement is
+# gate-checked by test_with_jcodemunch_serve.sh, whose jc_pin_alpha /
+# jc_python_alpha extractors read those two consts BY NAME out of this file.
+#
+# Without this row an α-ONLY edit — reverting the interpreter to 3.12, or
+# renaming either const, which makes both extractors return empty — selects
+# NEITHER guard suite at task scope (column 1 is exact string equality, never a
+# glob or a directory prefix), and is caught only once the diff reaches merge
+# scope where all infra tests run. β and δ self-check because their own suites
+# are already selected by their own rows; α is the one consumer that cannot,
+# which is precisely why it needs the row.
+crates/reify-audit/tests/jcodemunch_session_live.rs    tests/infra/test_with_jcodemunch_serve.sh
+
 # Task 6320: the merge-worker trivial-pass oracle and its static manifest had
 # NO row here at all, so a guard-only or manifest-only task-scope verify
 # selected ZERO infra poles (select_infra_tests() matches artifact paths
