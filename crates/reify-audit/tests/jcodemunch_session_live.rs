@@ -68,50 +68,30 @@ use std::time::{Duration, Instant};
 use reify_audit::jcodemunch_client::JcodemunchClient;
 use serde_json::{json, Value};
 
-/// The jcodemunch-mcp release this test pins.
-///
-/// 1.108.27 (the version some older notes cite) is no longer on PyPI — only
-/// its git tag survives — so `uvx --from jcodemunch-mcp==1.108.27` cannot
-/// resolve. 1.108.54 is on PyPI and matches the watcher pin.
+/// A MIRROR of `JC_PIN` in `scripts/lib_jcodemunch_pin.sh` (bare version, since
+/// this test builds its own `jcodemunch-mcp==…` requirement string), on the same
+/// terms as [`JCODEMUNCH_PYTHON`] below: the lib is the single definition site,
+/// `tests/infra/test_with_jcodemunch_serve.sh` cross-checks the two on the gate
+/// via `jc_pin_alpha`, and the lib carries the pin-bump rationale and checklist.
 const JCODEMUNCH_PIN: &str = "1.108.54";
 
-/// The Python interpreter this test pins, reconciled with the shell side.
+/// A MIRROR of `JC_PYTHON` in `scripts/lib_jcodemunch_pin.sh`, which is the
+/// single definition site for the pin, the interpreter and the identity lever.
+/// A Rust test cannot source a shell lib, so it mirrors the value in a const and
+/// `tests/infra/test_with_jcodemunch_serve.sh` cross-checks the two on the gate
+/// (`jc_python_alpha` reads this const BY NAME — renaming it reds that guard).
+/// Bump the lib, never this const alone.
 ///
-/// `--from jcodemunch-mcp==…` is only HALF a pin: it fixes the package and
-/// leaves the interpreter floating, and `uvx` defaults to the newest
-/// interpreter `uv` manages — on this host cpython-3.14.0+freethreaded, for
-/// which a transitive dep of the pinned wheel publishes no compatible wheel, so
-/// the bare form does not run at all.
+/// The lib carries WHY: why the interpreter is pinned at all, the measurements
+/// that authorise this value, and the PIN-BUMP CHECKLIST. Do not restate them
+/// here — this comment is not cross-checked against the lib, so a second copy of
+/// a measurement record is a drift surface with no guard over it.
 ///
-/// THIS CONST IS NO LONGER INDEPENDENTLY OWNED. `scripts/lib_jcodemunch_pin.sh`
-/// is the single definition site for the pin, the interpreter and the identity
-/// lever; a Rust test cannot source a shell lib, so this mirrors JC_PYTHON and
-/// `tests/infra/test_with_jcodemunch_serve.sh` cross-checks the two on the gate.
-/// Bump both together, or that guard reds.
-///
-/// WHY 3.13 RATHER THAN THE 3.12 THIS TEST USED TO CARRY. The two siblings had
-/// measured different values against DIFFERENT subcommands: this test measured
-/// 3.12 against `serve`, while `scripts/jcodemunch-index-reify.sh` measured 3.13
-/// against the heavier `watch` closure (a superset of what `serve` resolves).
-/// That left a gap nobody had closed by direct measurement. MEASURED 2026-09-04
-/// on host leo-MS-7C35 with uvx 0.11.6, running THIS test's exact argv with only
-/// the interpreter changed:
-///
-/// ```text
-/// uvx --python 3.13 --from jcodemunch-mcp==1.108.54 jcodemunch-mcp serve \
-///     --transport streamable-http --host 127.0.0.1 --port <ephemeral> --watcher=false
-/// ```
-///
-/// uvx installed 37 packages in 382 ms and the serve answered `initialize` with
-/// `result.serverInfo.name == "jcodemunch-mcp"` after ~38 s on a cold-ish cache.
-/// So 3.13 serves, measured against `serve` directly rather than inferred from
-/// the `watch` closure.
-///
-/// ONE TRAP THAT MEASUREMENT SURFACED, recorded because a future bumper will hit
-/// it: `result.serverInfo.version` reported "1.29.1" — upstream's INTERNAL
-/// server version string, NOT the PyPI wheel version 1.108.54. That is exactly
-/// why [`Serve::await_ready`] asserts on `serverInfo.name` and must never be
-/// "tightened" to assert the version: it would compare the wheel pin against a
+/// The one α-LOCAL consequence, recorded here because it is about THIS file's
+/// readiness check: the serve reports `result.serverInfo.version` as upstream's
+/// INTERNAL version string, NOT the PyPI wheel version — which is why
+/// [`Serve::await_ready`] asserts on `serverInfo.name` and must never be
+/// "tightened" to assert the version. It would compare the wheel pin against a
 /// number that has nothing to do with it.
 const JCODEMUNCH_PYTHON: &str = "3.13";
 
