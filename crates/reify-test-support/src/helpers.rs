@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use reify_compiler::TopologyTemplate;
-use reify_core::{Diagnostic, DiagnosticLabel, ModulePath, Severity};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, Severity};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
 #[cfg(feature = "eval-helpers")]
@@ -637,6 +637,67 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
         diagnostics.is_empty(),
         "{context}: expected no diagnostics at all, got: {:?}",
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Assert that some `Severity::Error` diagnostic carries `code`.
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which fixture or phase was being checked.
+///
+/// # Why assert on a code rather than on a count
+///
+/// Prefer this over a bare "at least one error" check, and prefer
+/// [`assert_error_code_absent`] over a bare [`assert_no_error_diagnostics`],
+/// whenever a *specific* diagnostic is the thing under test. A bare non-empty
+/// check is satisfied by *any* error, so an unrelated future diagnostic on an
+/// unrelated line keeps the test green while the guard it was written to
+/// protect rots away silently.
+///
+/// This is not only the stronger pin, it is sometimes the only expressible
+/// one. The trait-conformance fixtures in
+/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`
+/// must supply a struct-typed param via a struct-literal default, which emits
+/// an unavoidable unrelated `unknown variant` error; no count-based assertion
+/// can be written against them at all, whereas a code-keyed one is immune.
+///
+/// Severity is filtered FIRST: a Warning carrying `code` does not satisfy this.
+///
+/// # Panics
+/// Panics if no Error-severity diagnostic carries `code`. The panic message
+/// includes `context` and the errors that *were* observed.
+#[track_caller]
+pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
+    let errors = collect_errors(diagnostics);
+    assert!(
+        errors.iter().any(|d| d.code == Some(code)),
+        "{context}: expected an Error-severity diagnostic with \
+         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}"
+    );
+}
+
+/// Assert that no `Severity::Error` diagnostic carries `code`.
+///
+/// The absence-of-*code* counterpart to [`assert_no_error_diagnostics`]'s
+/// absence-of-*errors*. Use this when the fixture legitimately emits unrelated
+/// errors that a blanket "no errors" assertion would trip over, but the
+/// specific diagnostic under test must still be absent. See
+/// [`assert_error_code_present`] for why code-keyed assertions are preferred.
+///
+/// Unrelated error codes — and codeless (`code: None`) errors — do not
+/// falsify this.
+///
+/// # Panics
+/// Panics if any Error-severity diagnostic carries `code`. The panic message
+/// includes `context` and the offending diagnostics.
+#[track_caller]
+pub fn assert_error_code_absent(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
+    let errors = collect_errors(diagnostics);
+    let matching: Vec<_> = errors.iter().filter(|d| d.code == Some(code)).collect();
+    assert!(
+        matching.is_empty(),
+        "{context}: expected no Error-severity diagnostic with \
+         DiagnosticCode::{code:?}, but found: {matching:?}"
     );
 }
 
