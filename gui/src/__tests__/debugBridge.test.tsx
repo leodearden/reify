@@ -33,7 +33,12 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toPng } from 'html-to-image';
-import { initDebugBridge, SET_FEA_CHANNEL_ERRORS, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
+import {
+  initDebugBridge,
+  SET_FEA_CHANNEL_ERRORS,
+  RESOLVE_BY_TESTID_ERRORS,
+  TYPE_GUARDED_RESOLVER_TOOLS,
+} from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
@@ -5207,46 +5212,40 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * that resolves an element from a caller-supplied value rejects a wrong-typed
    * param at its OWN boundary, BEFORE resolution — so `{"testId": 3}` can never
    * coerce to `"3"` and be answered with a claim about the DOM. Most of them
-   * resolve by `testId`; `open_menu` resolves by `name` and the tree-node tools
-   * by `path`, and the rule binds those identically.
+   * resolve by `testId`; `open_menu` resolves by `name`, the tree-node tools by
+   * `path`, and the four whole-selector tools by `selector`, and the rule binds
+   * those identically.
    *
    * These are a separate table from `ESCAPE_SITES` because they are a different
    * SHAPE of duplication. The escape is one shared helper, so the table above is
    * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
-   * row. The guards are NINE independent hand-written copies, so a row here that
-   * covered only one of them would leave the other eight free to regress with
+   * row. The guards are ELEVEN independent hand-written copies, so a row here
+   * that covered only one of them would leave the other ten free to regress with
    * the suite green — which is what #6178 measured for the five guards it
-   * rewrote, and its review measured again for the ninth.
+   * rewrote, and its review measured again for the ninth and for the two
+   * whole-selector copies.
    *
-   * The unit is therefore the guard COPY, not the tool name: nine copies, TEN
-   * rows, dispatching NINE of the ten tool names THE BOUNDARY RULE enumerates.
-   * All three counts differ, and none of the three is a typo. Rows (10) exceed
-   * copies (9) because `driveTreeNode` carries TWO rows off its single copy —
-   * it interpolates two different testid prefixes (`chevron-` and
-   * `constraint-row-`). Dispatched names (9) fall short of enumerated names
-   * (10) because `collapse_tree_node` is dispatched by NO row: it shares
-   * `expand_tree_node`'s copy, so it is covered transitively, through the very
-   * function the two tree rows already drive. Maintenance rule: a new tool
-   * needs its own row unless it demonstrably shares an existing copy — in which
-   * case name the sharer here, so the arithmetic stays checkable against THE
-   * BOUNDARY RULE's enumeration in bridge.ts: 10 names → 9 copies → 10 rows,
-   * 9 of the names dispatched.
+   * The unit is therefore the guard COPY, not the tool name. Rows exceed
+   * copies because `driveTreeNode` carries TWO rows off its single copy — it
+   * interpolates two different testid prefixes (`chevron-` and
+   * `constraint-row-`) — and dispatched names fall short of enumerated names
+   * because a tool sharing another's copy is covered transitively, through the
+   * very function the sharer's row already drives. `GUARD_COPY_SHARERS` below
+   * declares each such tool against the row it rides on, and the referential-
+   * integrity case checks the whole correspondence against
+   * `TYPE_GUARDED_RESOLVER_TOOLS`, so these counts are ASSERTED rather than
+   * counted by hand here. Maintenance rule: a new tool needs its own row
+   * unless it demonstrably shares an existing copy — in which case add it to
+   * `GUARD_COPY_SHARERS` naming the sharer.
    *
-   * Each row mounts a DECOY carrying the coerced value as its literal testid,
-   * so a reverted guard does not merely misword an error — it finds and DRIVES a
-   * real element, and reports success. Measured, with the five guards #6178
-   * rewrote reverted to their pre-task `!testId` form: `dom_query` answers
-   * `{exists: true, visible: false, …}` (a false OBSERVATION about the DOM in
-   * reply to a malformed REQUEST), `click_element` and `focus_element` answer
-   * `{ok: true}` having clicked/focused the decoy, `scroll` answers
-   * `{ok: true, scrollTop: 40}` having really scrolled it, and `open_menu`
-   * answers `{ok: true, open: 3}`. The WORST entry is `expand_tree_node`, still
-   * unguarded when the review measured it: it answers
-   * `{ok: true, path: 3, expanded: false}` having really CLICKED the decoy — it
-   * both drives a real element and reports success, where `open_menu` merely
-   * reported success. Without a decoy every one of those would be the far
-   * milder `element with data-testid="3" not found`, so the decoy is what
-   * raises the stakes from wrong-diagnostic to wrong-element-driven.
+   * Each row mounts a DECOY that the coerced value really resolves to, so a
+   * reverted guard does not merely misword an error — it finds a real element,
+   * drives or reports on it, and answers success. That is what raises the
+   * stakes from wrong-diagnostic to wrong-element-driven: without the decoy
+   * every one of these would degrade to the far milder
+   * `element with data-testid="3" not found`. The exact payloads a reverted
+   * guard returns are deliberately not quoted here — they are response shapes
+   * that will change, and no assertion reproduces them.
    *
    * Three rows — `element_screenshot`, `wait_for_selector` and `wait_for`'s
    * selector arm — guarded the type BEFORE #6178 and are unchanged by it. They
@@ -5265,7 +5264,11 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    */
   type BoundaryGuardSite = {
     label: string;
-    /** The testid the decoy carries — what the coerced value would look up. */
+    /**
+     * The testid the decoy carries — what the coerced value would look up,
+     * either directly (the interpolating rows) or through the selector the
+     * whole-selector rows build from it.
+     */
     decoyTestId: string;
     dispatch: () => [string, Record<string, unknown>];
     expected: unknown;
@@ -5278,6 +5281,9 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
      */
     setup?: () => void;
   };
+
+  /** The decoy the whole-selector rows target, shared by the row and its payload. */
+  const SELECTOR_DECOY_TESTID = 'boundary-selector-decoy';
 
   const BOUNDARY_GUARD_SITES: BoundaryGuardSite[] = [
     {
@@ -5385,9 +5391,73 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
         setup: () => TREE_PANELS[kind].install(() => new Set<string>()),
       }),
     ),
+    // The WHOLE-SELECTOR family — the tenth and eleventh guard copies, and the
+    // only ones whose param is not interpolated INTO a selector but IS the
+    // selector, so they carry a type guard and no escape (there is nothing to
+    // escape: the metacharacters are the caller's syntax). `resolveElement` is
+    // one copy serving query_selector, get_layout_metrics and
+    // get_computed_style; `query_selector_all` keeps its own inline copy. Two
+    // rows, four tool names — get_layout_metrics and get_computed_style share
+    // query_selector's copy exactly as collapse_tree_node shares
+    // expand_tree_node's.
+    //
+    // The decoy is reached here BY a selector targeting its testid rather than
+    // by testid interpolation, which is what makes a one-element ARRAY the
+    // sharpest payload: it stringifies to exactly its element, so a reverted
+    // guard does not throw — it matches the decoy and answers a malformed
+    // REQUEST with a true-looking OBSERVATION (`{exists: true, …}` /
+    // `{count: 1, …}`). A number would merely produce an opaque CSS-parser
+    // error, which is a wrong-diagnostic failure, not a wrong-answer one.
+    ...(['query_selector', 'query_selector_all'] as const).map(
+      (tool): BoundaryGuardSite => ({
+        label: tool,
+        decoyTestId: SELECTOR_DECOY_TESTID,
+        dispatch: () => [tool, { selector: [`[data-testid="${SELECTOR_DECOY_TESTID}"]`] }],
+        expected: { error: 'selector is required' },
+      }),
+    ),
   ];
 
+  /**
+   * The enumerated tools that dispatch through NO row of their own because they
+   * share another tool's single guard copy, each mapped to the tool whose row
+   * covers it. Every entry is a claim about bridge.ts — that ONE function, and
+   * therefore one guard, serves both names — so the case below also checks that
+   * the named sharer is itself dispatched by a row, which is what makes the
+   * transitive coverage real rather than asserted.
+   */
+  const GUARD_COPY_SHARERS: Record<string, string> = {
+    // Both tree tools are served by the single `driveTreeNode`.
+    collapse_tree_node: 'expand_tree_node',
+    // All three whole-selector observers are served by the single
+    // `resolveElement`; `query_selector_all` is NOT here — it keeps its own copy.
+    get_layout_metrics: 'query_selector',
+    get_computed_style: 'query_selector',
+  };
+
   describe('boundary guards above the escape', () => {
+    // The referential-integrity check over the two tables. THE BOUNDARY RULE is
+    // a UNIVERSAL, and the rows below only ever pin the tools someone remembered
+    // to add: without this case a new resolver tool could ship unguarded and
+    // leave both bridge.ts's comment and this table stale with the suite green —
+    // the same revert-it-alone failure the per-copy rows exist to close, one
+    // level up. It fails in BOTH directions: an enumerated tool with neither a
+    // row nor a `GUARD_COPY_SHARERS` entry, and a row (or sharer) for a tool
+    // that is not enumerated.
+    it('every tool THE BOUNDARY RULE enumerates is dispatched by a row or shares a named row copy', () => {
+      const dispatched = BOUNDARY_GUARD_SITES.map((site) => site.dispatch()[0]);
+
+      for (const [sharer, sharedWith] of Object.entries(GUARD_COPY_SHARERS)) {
+        // The row it rides on must exist, or the coverage claim is vacuous.
+        expect(dispatched, `${sharer} claims to share ${sharedWith}'s guard copy`).toContain(
+          sharedWith,
+        );
+      }
+
+      const covered = [...new Set([...dispatched, ...Object.keys(GUARD_COPY_SHARERS)])].sort();
+      expect(covered).toEqual([...TYPE_GUARDED_RESOLVER_TOOLS].sort());
+    });
+
     for (const site of BOUNDARY_GUARD_SITES) {
       it(`${site.label}: a JSON-supplied non-string is rejected at the boundary, never coerced into a DOM lookup`, async () => {
         const stores = makeStores();

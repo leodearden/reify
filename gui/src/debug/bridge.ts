@@ -69,22 +69,46 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // never be the answer to a WRONG-TYPED request: `{"testId": 3}` would otherwise
 // coerce to `"3"` and come back as `element with data-testid="3" not found`,
 // sending a harness author hunting in the DOM instead of fixing the payload.
-// Every tool that resolves by a caller-supplied value therefore rejects a
-// non-string at its OWN boundary, BEFORE resolution, reusing that tool's
-// existing required-param wording rather than adding a seventh error constant.
-// The canonical enumeration is TEN tool names served by NINE guard copies:
-// dom_query, click_element, focus_element, scroll, element_screenshot,
-// wait_for_selector and wait_for's selector arm each guard `testId`; open_menu
-// guards `name`; and expand_tree_node and collapse_tree_node SHARE one guard,
-// on `path`, because both are served by the single `driveTreeNode` function.
-// EIGHT of the nine spell the guard `typeof … !== 'string' || … === ''` — six
-// on `testId`, one on `name`, one on `path`; the ninth, element_screenshot's
-// `!testId || typeof testId !== 'string'`, is the same predicate written the
-// other way round, kept as it stood. `open_menu`'s `name` and `driveTreeNode`'s
-// `path` are the two guards on a param not called `testId`. (Grep
-// `typeof .* !== 'string'` in this file and you will also hit wait_for's
+// Every tool that resolves an element from a caller-supplied value therefore
+// rejects a non-string at its OWN boundary, BEFORE resolution, reusing that
+// tool's existing required-param wording rather than adding a seventh error
+// constant. The rule is a universal over that family, and the family has TWO
+// arms — the distinction is about the ESCAPE, never about the guard:
+//
+//  * INTERPOLATED value — the value is spliced into a selector this file
+//    builds, so it is both type-guarded here and escaped by `escapeAttrValue`.
+//  * WHOLE selector — the value IS the selector (`params.selector`), so it is
+//    type-guarded and NOT escaped: its metacharacters are the caller's own
+//    syntax, and escaping them would break every legitimate request. The guard
+//    still binds, because querySelector takes a WebIDL DOMString and coerces:
+//    `{"selector": ["div"]}` stringifies to `div`, matches a real element, and
+//    would answer a malformed REQUEST with a true-looking OBSERVATION.
+//
+// The canonical enumeration is the exported `TYPE_GUARDED_RESOLVER_TOOLS`
+// below — FOURTEEN tool names, served by ELEVEN guard copies. It lives there
+// as a VALUE, not here as prose, so that a tool added without a guard fails a
+// test instead of merely making a comment stale; see its docblock. What the
+// flat list cannot express, and what this comment therefore carries, is the
+// COPY structure:
+//
+//  * six copies on `testId`, one per tool — dom_query, click_element,
+//    focus_element, scroll, wait_for_selector, and wait_for's selector arm
+//    (which guards the NESTED `predicate.testId`, hence its own wording);
+//  * element_screenshot's own `testId` copy, spelled the other way round as
+//    `!testId || typeof testId !== 'string'` and kept as it stood — the other
+//    ten all spell it `typeof … !== 'string' || … === ''`;
+//  * open_menu's copy, on `name`;
+//  * `driveTreeNode`'s single copy, on `path`, SHARED by expand_tree_node and
+//    collapse_tree_node — one function serves both;
+//  * `resolveElement`'s single copy, on the whole-selector `selector`, SHARED
+//    by query_selector, get_layout_metrics and get_computed_style;
+//  * query_selector_all's own inline copy of that same `selector` guard — it
+//    needs the whole NodeList, so it never routes through `resolveElement`.
+//
+// (Grep `typeof .* !== 'string'` in this file and you will also hit wait_for's
 // `predicate.path is required for store kind` — that one is NOT in this list:
-// a store path is a dotted store address, never interpolated into a selector.)
+// a store path is a dotted store address, resolving a STORE value rather than
+// an element, and is never interpolated into a selector nor used as one.)
 // Those guards are also what makes `resolveByTestId(testId: string, …)` honest:
 // the call sites used to reach it through a `params.testId as string` cast that
 // the JSON payload could falsify. `escapeAttrValue`'s `String()` coercion sits
@@ -94,17 +118,51 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // The guards are INDEPENDENT COPIES, not one shared helper, so each needs its
 // own coverage or it can be reverted alone with the suite green. That makes the
 // unit of coverage the guard COPY, not the tool name: the `boundary guards above
-// the escape` block of debugBridge.test.tsx carries one row per copy — ten rows
-// for nine copies, since driveTreeNode's single copy interpolates two different
-// testid prefixes and so earns a row each. A new tool joining this list needs
-// its own row unless it demonstrably SHARES an existing copy, as
-// collapse_tree_node shares expand_tree_node's — in which case name the sharer.
+// the escape` block of debugBridge.test.tsx carries one row per copy — twelve
+// rows for eleven copies, since driveTreeNode's single copy interpolates two
+// different testid prefixes and so earns a row each. A new tool joining this
+// list needs its own row unless it demonstrably SHARES an existing copy, as
+// collapse_tree_node shares expand_tree_node's and get_layout_metrics /
+// get_computed_style share query_selector's — in which case name the sharer.
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
     `element with data-testid="${testId}" not found for viewport '${id}'`,
   viewportIdNotString: 'viewportId must be a string',
 } as const;
+
+/**
+ * THE BOUNDARY RULE's enumeration, as a VALUE rather than as prose.
+ *
+ * The rule above is a universal, and a universal stated only in a comment
+ * cannot be checked: adding an unguarded tool would leave both the comment and
+ * the test table silently stale with the suite green — the same
+ * revert-it-alone failure the per-copy rows exist to close, moved up one level.
+ * `every enumerated tool is dispatched by a row or shares a named row's copy`
+ * in debugBridge.test.tsx's `boundary guards above the escape` block reads this
+ * list and fails on either drift direction, so the list is the single source
+ * and the comments point at it instead of restating it.
+ *
+ * Order follows the rule's own prose: the seven `testId` tools, `open_menu`'s
+ * `name`, the two tree tools' shared `path`, then the four whole-selector
+ * tools. NOT a dispatch table — nothing reads it at runtime.
+ */
+export const TYPE_GUARDED_RESOLVER_TOOLS = [
+  'dom_query',
+  'click_element',
+  'focus_element',
+  'scroll',
+  'element_screenshot',
+  'wait_for_selector',
+  'wait_for',
+  'open_menu',
+  'expand_tree_node',
+  'collapse_tree_node',
+  'query_selector',
+  'query_selector_all',
+  'get_layout_metrics',
+  'get_computed_style',
+] as const;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
@@ -567,9 +625,17 @@ function buildSelectorPredicate(opts: {
 
 // Validates selector param, queries the DOM, and returns either an error, the
 // matched element, or null (no match). Handlers map null → {exists:false}.
+//
+// The `typeof` half is THE BOUNDARY RULE's WHOLE-SELECTOR arm (see
+// `RESOLVE_BY_TESTID_ERRORS`): querySelector takes a WebIDL DOMString and
+// coerces, so `{"selector": ["div"]}` would otherwise stringify to `div`, match
+// a real element, and answer a malformed REQUEST with a true-looking
+// OBSERVATION about the DOM — the same failure `{"testId": 3}` produces one
+// layer down. This is ONE guard copy serving three tools: query_selector,
+// get_layout_metrics and get_computed_style.
 function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
-  const selector = params.selector as string;
-  if (!selector) return { error: 'selector is required' };
+  const selector = params.selector;
+  if (typeof selector !== 'string' || selector === '') return { error: 'selector is required' };
   try {
     return { el: document.querySelector(selector) };
   } catch (e) {
@@ -945,8 +1011,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     query_selector_all: (params) => {
-      const selector = params.selector as string;
-      if (!selector) return { error: 'selector is required' };
+      // Its own copy of `resolveElement`'s guard — this tool needs the whole
+      // NodeList, so it never routes through that helper. See THE BOUNDARY RULE.
+      const selector = params.selector;
+      if (typeof selector !== 'string' || selector === '') return { error: 'selector is required' };
       let nodes: NodeListOf<Element>;
       try {
         nodes = document.querySelectorAll(selector);
