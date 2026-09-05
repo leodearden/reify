@@ -764,6 +764,73 @@ mod tests {
         Some(names)
     }
 
+    /// RED premise (task 7017 step 1): `parse_exclude_crates_declaration`
+    /// takes `source.find(marker)` — the FIRST literal occurrence of
+    /// `EXCLUDE_CRATES = {` anywhere in the source, comment or not — with no
+    /// awareness of shell/Python `#` comments. A full-line comment that
+    /// illustrates the declaration in assignment form (plausible directly
+    /// above the real one — task 6027 already added 9 comment lines right
+    /// above it) would bind instead of the real declaration. Because such an
+    /// illustration would almost certainly carry IDENTICAL contents,
+    /// `exclude_crates_const_matches_audit_script_declaration` would keep
+    /// passing while silently pinning a comment against the Rust const,
+    /// permanently masking any real drift in the actual declaration.
+    ///
+    /// Exercises BOTH a column-0 comment and an INDENTED one, to pin the rule
+    /// as "first non-whitespace character is `#`", not "line starts with
+    /// `#`".
+    ///
+    /// Measured RED: today this returns
+    /// `Some(["decoy-from-a-column-zero-comment"])`.
+    ///
+    /// Pure string-in/value-out — no filesystem, git, or subprocess — so
+    /// this deliberately omits this module's
+    /// `Command::new("git")...is_err() { return }` graceful-skip preamble;
+    /// don't add one here by pattern-matching the neighbours above.
+    #[test]
+    fn parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow() {
+        let source = "#!/usr/bin/env bash\n# Illustration of what this parser looks for:\n#     EXCLUDE_CRATES = {\"decoy-from-a-column-zero-comment\"}\n    # EXCLUDE_CRATES = {\"decoy-from-an-indented-comment\"}\nEXCLUDE_CRATES = {\"reify-test-support\", \"another-real-crate\"}\n";
+
+        let result = parse_exclude_crates_declaration(source);
+        assert_eq!(
+            result,
+            Some(vec![
+                "reify-test-support".to_string(),
+                "another-real-crate".to_string(),
+            ]),
+            "expected the parser to skip both the column-0 and indented \
+             commented-out shadows and bind the real declaration below them; \
+             today it returns Some([\"decoy-from-a-column-zero-comment\"]) \
+             instead — got: {result:?}"
+        );
+    }
+
+    /// RED premise (task 7017 step 1): companion to
+    /// [`parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow`]
+    /// — the other observable face of the same behaviour. When the ONLY
+    /// occurrence of the marker in the source is inside a full-line comment
+    /// and no real declaration exists anywhere, the parser must report "not
+    /// found" (`None`) so the caller's existing path-naming not-found panic
+    /// fires, rather than silently returning the comment's contents as if
+    /// they were a real declaration.
+    ///
+    /// Measured RED: today this returns `Some(["only-in-a-comment"])`.
+    ///
+    /// Pure string-in/value-out — no filesystem, git, or subprocess — so
+    /// this deliberately omits this module's graceful-skip preamble; don't
+    /// add one here by pattern-matching the neighbours above.
+    #[test]
+    fn parse_exclude_crates_declaration_is_not_found_when_only_a_comment_declares_it() {
+        let source = "# EXCLUDE_CRATES = {\"only-in-a-comment\"}\n";
+
+        let result = parse_exclude_crates_declaration(source);
+        assert_eq!(
+            result, None,
+            "expected None because the only occurrence of the marker is inside \
+             a full-line comment and no real declaration exists — got: {result:?}"
+        );
+    }
+
     /// Pins `orphan_audit.rs`'s `EXCLUDE_CRATES` const against
     /// `scripts/audit-orphan-producers.sh`'s own `EXCLUDE_CRATES = {...}`
     /// declaration (the source of truth for SET MEMBERSHIP) — the
