@@ -22,8 +22,11 @@ static LSP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// see esc-1672-40) does not cascade into a `PoisonError` panic in subsequent
 /// tests. The lock guards `()` (unit type), so there is no inconsistent state
 /// to worry about; silent recovery is strictly better than propagating the
-/// poison. This pattern is used at 14+ other sites in the codebase
-/// (priority_promotion.rs, concurrent.rs, concurrent_eval.rs, diff.rs, mocks.rs).
+/// poison. This pattern is used at several other sites in the codebase,
+/// e.g. `priority_promotion.rs` and `mocks.rs`. It was also used by
+/// `reify-runtime/src/concurrent.rs` and
+/// `reify-runtime/src/concurrent_eval.rs`, both deleted in c1b8dba3f7
+/// (task 5065, task ο step-2); neither file exists any more.
 fn acquire_lsp_test_lock() -> std::sync::MutexGuard<'static, ()> {
     LSP_TEST_LOCK
         .get_or_init(|| Mutex::new(()))
