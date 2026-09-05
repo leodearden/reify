@@ -860,6 +860,13 @@ fn arg_type_mismatch_count(module: &reify_compiler::CompiledModule) -> usize {
 
 /// Assert the `ConstraintArgTypeMismatch` count for `source`, with a message
 /// naming `what` and dumping the diagnostics on failure.
+///
+/// When `expected == 0` the module is ALSO asserted to compile with zero
+/// Error-severity diagnostics. Without that second half every accept-side guard
+/// here is VACUOUS: a constraint def that failed to compile, a `Zq.Close` that
+/// failed to resolve, a parse error, or a spurious def-site `unknown type` each
+/// yield zero mismatch diagnostics too, so a bare count of 0 cannot tell
+/// "accepted" from "never checked". With it, 0 means compiled, checked, passed.
 fn assert_arg_type_mismatches(source: &str, expected: usize, what: &str) {
     let module = compile_source(source);
     let got = arg_type_mismatch_count(&module);
@@ -868,6 +875,17 @@ fn assert_arg_type_mismatches(source: &str, expected: usize, what: &str) {
         "expected {} ConstraintArgTypeMismatch diagnostic(s) for {}, got {}; diagnostics: {:?}",
         expected, what, got, module.diagnostics
     );
+    if expected == 0 {
+        let errors = error_diags(&module.diagnostics);
+        assert!(
+            errors.is_empty(),
+            "expected {} to compile CLEAN, but got error diagnostic(s): {:?}. \
+             A zero mismatch count is only meaningful if the arg was actually \
+             reached and checked",
+            what,
+            errors
+        );
+    }
 }
 
 /// Before task 6416 an enum-typed param carried `ty: None`, so
@@ -1012,6 +1030,62 @@ structure S {
 "#,
         0,
         "an enum-typed structure param forwarded to an Enum(Zq) param",
+    );
+}
+
+// ── Task 6416: the arg type check on the OPTION-WRAPPED enum param ──────────
+//
+// `param g : Option<Zq>` is the third spelling the `EnumNameScope` install newly
+// resolves (`constraint_def_compile_tests.rs` pins the def-side
+// `Some(Option(Enum("Zq")))`), and the only one that was user-visibly BROKEN
+// before rather than merely under-typed. Resolving it activates #4546's arg
+// check on a shape that had none, so the two cases below pin the consequence
+// users actually see.
+
+/// The `some(..)` spelling must be accepted for an `Option<Zq>` param.
+#[test]
+fn some_wrapped_enum_arg_for_option_typed_param_is_accepted() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+structure S {
+    constraint K(g: some(Zq.Close))
+}
+"#,
+        0,
+        "a some(Zq.Close) arg passed to an Option<Enum(Zq)> param",
+    );
+}
+
+/// A BARE variant passed to an `Option<Zq>` param must be rejected: there is no
+/// `T -> Option<T>` widening in `type_compatible` (`type_compat.rs`), so the
+/// `some(..)` wrapper is required — the same rule struct params already follow.
+///
+/// This direction is deliberate, not incidental, and is pinned so a future
+/// widening (or a regression back to `ty: None`, which would skip the check and
+/// silently accept) cannot land unnoticed. Before task 6416 this source emitted
+/// a spurious def-site `unknown type 'Option'` and zero mismatches.
+#[test]
+fn bare_enum_arg_for_option_typed_param_is_rejected() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+structure S {
+    constraint K(g: Zq.Close)
+}
+"#,
+        1,
+        "a bare Zq.Close variant passed to an Option<Enum(Zq)> param",
     );
 }
 
