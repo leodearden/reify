@@ -727,19 +727,75 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
-/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+/// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
 ///
 /// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
 /// `param`s alike — since lookup keys on the cell's member name, not its kind. A
 /// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
+/// Reach for this when you're already holding a `&TopologyTemplate` directly — e.g. from
+/// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
+/// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
+/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). This is the
+/// lowest-level helper in the family: [`get_let_expr_in`] resolves a named template from a
+/// module and then delegates to this function.
+///
+/// **Ambiguity hazard:** matches on `id.member` alone; `id.entity` is not
+/// considered. A template holding two value cells with the same member name
+/// under different entities (e.g. two composed sub-entities that both
+/// declare a `width`) resolves to whichever one appears first in
+/// `value_cells` — *silently*, with no panic or other signal that the match
+/// was ambiguous. A caller querying such a template by member name alone can
+/// assert against the wrong cell and never know it. This is deliberate
+/// first-match-wins behavior, pinned by
+/// `test_get_let_expr_in_template_matches_member_ignoring_entity`; if a
+/// specific entity's cell matters, disambiguate before calling, e.g. by
+/// searching `template.value_cells` directly for the desired `id.entity`.
+///
+/// This is not new behavior introduced by this function: it is the exact
+/// walk `get_let_expr_in` performed inline before delegating here (task
+/// #5831), so the ~150 pre-existing `get_let_expr`/`get_let_expr_in` call
+/// sites across reify-compiler and reify-expr (none in this task's
+/// file-lock scope) already depend on first-match-wins today, whether or
+/// not any of them currently hits an ambiguous template. A fail-fast
+/// panic-on-ambiguity variant was raised in review and deliberately
+/// deferred rather than applied here: flipping it would change long-lived
+/// shared test-infrastructure behavior across that whole call-site surface,
+/// which needs its own verification pass, not a same-task amendment — see
+/// the follow-up ticket filed from task #5831.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
+/// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
+pub fn get_let_expr_in_template<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a CompiledExpr {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == cell_name)
+        .unwrap_or_else(|| {
+            panic!("no value cell named '{cell_name}' in template '{}'", template.name)
+        });
+    cell.default_expr.as_ref().unwrap_or_else(|| {
+        panic!("value cell '{cell_name}' in '{}' has no default expr", template.name)
+    })
+}
+
+/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
-/// not be the desired template. `get_let_expr` delegates to this function.
+/// not be the desired template. `get_let_expr` delegates to this function, which resolves
+/// the named template and then delegates to [`get_let_expr_in_template`].
+///
+/// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
-/// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+/// - Panics from [`get_let_expr_in_template`] if the cell or its default expr is absent.
+#[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
@@ -750,31 +806,21 @@ pub fn get_let_expr_in<'a>(
         .iter()
         .find(|t| t.name == template_name)
         .unwrap_or_else(|| panic!("no template named '{template_name}'"));
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{template_name}'")
-        });
-    cell.default_expr.as_ref().unwrap_or_else(|| {
-        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    get_let_expr_in_template(template, cell_name)
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from the first template.
-///
-/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
-/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
-/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
 /// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
 /// templates and you need to target a specific one.
 ///
+/// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
+///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
 /// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+#[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
     name: &str,
@@ -1706,6 +1752,76 @@ mod tests {
     fn test_assert_no_diagnostics_panics_on_any_diagnostic() {
         let diags = vec![Diagnostic::info("informational note")];
         super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    // ── get_let_expr_in_template ────────────────────────────────────────────
+
+    /// get_let_expr_in_template should return the default_expr of the named
+    /// cell directly from a template the caller already holds (no module or
+    /// template-name resolution step).
+    /// The fixture uses a real-form literal (`1.5`) because the assertion is on
+    /// `result_type`: `classify_number_literal` (reify-ast/src/decl.rs) maps any
+    /// real-form token — one containing `.`, `e`, or `E`, whole-number or not —
+    /// to `Real`, and only integer-form tokens (`1`) reach the `Int` branch. So
+    /// `1.0` would work here too; `1` would not.
+    #[test]
+    fn test_get_let_expr_in_template_finds_cell() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        let expr = super::get_let_expr_in_template(&template, "v");
+        assert_eq!(
+            expr.result_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// The two panic branches of `get_let_expr_in_template` ("no value cell
+    /// named" / "has no default expr") are intentionally NOT re-tested here.
+    /// `get_let_expr_in` delegates to `get_let_expr_in_template`, and
+    /// `test_get_let_expr_in_panics_on_missing_cell` /
+    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
+    /// exercise both branches through that delegation — duplicating them at
+    /// this layer would add coverage of the new entry point only, not of new
+    /// behavior (task #5831 review).
+    ///
+    /// What IS specific to this layer: `get_let_expr_in_template` matches on
+    /// `id.member` alone, so a template with two cells sharing a member name
+    /// under different entities is ambiguous. This test pins that the first
+    /// match in `value_cells` order wins, per the doc comment above the
+    /// function.
+    #[test]
+    fn test_get_let_expr_in_template_matches_member_ignoring_entity() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build();
+
+        let expr = super::get_let_expr_in_template(&template, "x");
+        assert_eq!(
+            expr.result_type,
+            Type::dimensionless_scalar(),
+            "get_let_expr_in_template matches by member name alone (ignoring id.entity); \
+             expected the FIRST cell named 'x' (entity 'First', dimensionless_scalar), \
+             got result_type {:?}",
+            expr.result_type
+        );
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
