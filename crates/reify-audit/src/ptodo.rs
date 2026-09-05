@@ -242,60 +242,46 @@ const PRD_RELATIVE_MAX_ID: u32 = 99;
 ///
 /// The following properties are load-bearing; each is stated in the code below
 /// and pinned by a test. Deliberately uncounted — a count in the prose drifts
-/// the moment a bullet is added. The live-corpus measurements behind them live
-/// in **PRD §8.2 and §16 Row 2**, which own that methodology:
+/// the moment a bullet is added. Corpus measurements, the enumerated
+/// alternatives and the adoption ruling are owned by **PRD §8.2 / §16 Row 2**;
+/// only the decisions a reader must not silently break are restated here:
 ///
 /// - **The `id <= 99` bound is UNIFORM across all three families**, applied
-///   once as an early return rather than per family.  It is a property of the
+///   once as an early return rather than per family. It is a property of the
 ///   PRD-relative REGISTER — a document-local index is small — not of the
-///   `task` noun, so a fourth family added later inherits it instead of having
-///   to remember it.  It keys on DIGIT COUNT, not on a `PRD` left-context
-///   window, because a window measurably fails in BOTH directions (a long path
-///   pushes `PRD` out of range; a symmetric window kills the genuine
-///   `task #333 per PRD §Slice B`).  Pinned by `prd_relative_cite_negatives`,
+///   `task` noun, so a fourth family added later inherits it. It keys on DIGIT
+///   COUNT, not on a `PRD` left-context window, because a window measurably
+///   fails in BOTH directions. Pinned by `prd_relative_cite_negatives`,
 ///   including the 99/100 boundary itself.
 /// - **The bound DOES overlap the real id space; that loss is accepted, and the
-///   premise making it acceptable is CHECKED rather than dated.**  Every
-///   master-tag id inside the bound is terminal, so a `task #42` cite in the
-///   covered register can only ever have been an `orphaned` finding against a
-///   dead id, never a live-task one — and the range is CLOSED, because
-///   allocation runs monotonically upward from 1 and the live head is far past
-///   the bound, so no future task can land inside it.  The first half is a
-///   claim about DB STATE, not a property of this code, so it is re-established
-///   on demand by `prd_relative_bound_covers_only_terminal_task_ids` (needs the
-///   real task DB; graceful-skips without it) instead of being trusted from a
-///   dated comment: reopen an id inside the bound and
-///   that test fails loudly, where this recogniser would silently ERASE a live
-///   cite.  Making the bound itself resolution-aware would drag a DB lookup
-///   into a pure recogniser that the β liveness lane already owns; the bounded,
-///   checked loss is the cheaper trade.  Corpus counts: PRD §8.2 / §16 Row 2.
+///   premise making it acceptable is CHECKED rather than dated.** Every
+///   master-tag id inside the bound is terminal, and the range is CLOSED (ids
+///   are allocated monotonically upward and the head is far past the bound), so
+///   a covered `task #42` cite could only ever have been an `orphaned` finding.
+///   That first half is a claim about DB STATE, not about this code, so
+///   `prd_relative_bound_covers_only_terminal_task_ids` re-establishes it
+///   against the real DB instead of trusting a dated comment.
 /// - **An UNBOUNDED family is fail-DANGEROUS in the one direction §6.6's
-///   ratchet cannot see.**  A real task id in family-2 register
-///   (`invariant #5238`, `done`) is either DOWNGRADED from a High `orphaned`
-///   finding to the Medium advisory `malformed-cite`, or ERASED outright in the
-///   cite-anchored δ-B lane — purely on which noun precedes the `#`.  The
-///   ratchet asserts only `live ⊆ baseline`, which catches a GAINED finding and
-///   never a LOST one, so nothing downstream would report it.  Pinned by
+///   ratchet cannot see.** A real task id in family-2 register
+///   (`invariant #5238`, `done`) is either DOWNGRADED to the Medium advisory
+///   `malformed-cite` or ERASED outright in the cite-anchored δ-B lane, purely
+///   on which noun precedes the `#` — and `live ⊆ baseline` catches a GAINED
+///   finding, never a LOST one. Pinned by
 ///   `prd_relative_families_are_digit_bounded_end_to_end`.
-/// - **Classification is per-`#N`-OCCURRENCE, never per-line.**  Live lines
+/// - **Classification is per-`#N`-OCCURRENCE, never per-line.** Live lines
 ///   carry both idioms at once, so a per-line verdict would either drop a real
-///   cite or resurrect a PRD-relative one.  Pinned by
+///   cite or resurrect a PRD-relative one. Pinned by
 ///   `prd_relative_cite_is_per_occurrence_not_per_line`.
 ///
-/// Widening the family list is deliberately gated: §14/§16's methodology is
-/// that every widening arrives with a fresh live-corpus enumeration, a
-/// hand-inspected FP count and a dated §16 row.  The non-PRD `#N` registers
-/// considered and left out (`edge #N`, `suggestion #N`, `Gap #N`, `site #N`)
-/// are listed with their measured exposure in PRD §8.2.
+/// Widening the family list is gated by §14/§16's methodology: a fresh
+/// live-corpus enumeration, a hand-inspected FP count and a dated §16 row.
 ///
 /// The G-allow owner-cite lane's own narrower `PRD `-immediately-left check
 /// ([`is_g_allow_cite_exempt`] rule (c)) is deliberately NOT refactored to
-/// delegate here: it belongs to a different lane with its own
-/// `g-allow-orphaned` baseline exposure, and widening it would silently change
-/// which owner cites are exempt.  The two grammars are genuinely decoupled —
-/// [`extract_g_allow_owner_cites`] runs an independent scan and never calls
-/// [`extract_cites`] — so the duplication is contained and is pinned by the
-/// pre-existing `extract_g_allow_owner_cites_*` tests staying green.
+/// delegate here: it is a decoupled lane with its own `g-allow-orphaned`
+/// baseline exposure, and [`extract_g_allow_owner_cites`] never calls
+/// [`extract_cites`], so widening it would silently change which owner cites
+/// are exempt. Pinned by the `extract_g_allow_owner_cites_*` tests.
 fn prd_relative_cite_family(bytes: &[u8], cite_start: usize, id: u32) -> Option<PrdCiteFamily> {
     // The shared digit bound, applied ONCE for all three families — see the
     // "UNIFORM" and "fail-DANGEROUS" paragraphs above.  Placed here rather than
@@ -494,66 +480,44 @@ fn is_greek(c: char) -> bool {
 /// sitting in PRD-relative left-context ([`PrdCiteFamily::TaskCite`]). Banned
 /// from day one; δ migrates valid cites to canonical `#NNNN`.
 ///
-/// The `#N` register is the second half of the §8.2 grammar fix and DELEGATES
-/// to [`prd_relative_cite_family`] rather than re-spelling its families, so the
-/// two halves — "this `#N` is not a canonical cite" (`has_canonical_cite` /
-/// `extract_cites`) and "this `#N` is a banned citation form" (here) — cannot
-/// drift apart. Without it, a marker line whose only cite is `task #N` loses
-/// its canonical anchor and collapses into `untracked`, which §8.4 rates High
-/// (hard gate) where a malformed cite is Medium (advisory) — over-reporting an
-/// author who cited imprecisely as untracked debt. CLAUDE.md's TODO-citation
-/// convention already mandates the `malformed-cite` disposition for
-/// PRD-relative indices; this closes the `#N` spelling of it.
+/// The `#N` register DELEGATES to [`prd_relative_cite_family`] rather than
+/// re-spelling its families, so this half of the §8.2 grammar cannot drift from
+/// the [`has_canonical_cite`] / [`extract_cites`] half. Without it, a marker
+/// line whose only cite is `task #N` loses its anchor and collapses into
+/// `untracked`, which §8.4 rates High (hard gate) where a malformed cite is
+/// Medium (advisory) — over-reporting an author who cited imprecisely.
 ///
 /// **The delegation is deliberately NARROWER than `has_canonical_cite`'s**: it
 /// accepts only [`PrdCiteFamily::TaskCite`], never [`PrdCiteFamily::Reference`].
-/// The asymmetry is the point — a `§7#5` / `invariant #2` mention makes the
-/// `#N` unusable as an anchor (so canonical-cite recognition must reject it)
-/// without being a citation attempt (so it must not soften the verdict). A
-/// marker that never cited anything is `untracked` at High whether or not its
-/// prose happens to name a PRD row; see [`PrdCiteFamily`] for why the
-/// alternative is fail-dangerous.
+/// A `§7#5` / `invariant #2` mention makes the `#N` unusable as an anchor (so
+/// canonical-cite recognition must reject it) without being a citation attempt
+/// (so it must not soften the verdict).
 ///
-/// **The `#N` pass is SELF-SUFFICIENT, not precondition-dependent.** It fires
-/// only when the line ALSO carries no canonical cite, so calling this fn on a
-/// line that is properly tracked (`// TODO: see #4553; supersedes PRD task #10`)
-/// can never demote it to the Medium advisory. Arm (3) happens to pre-check
-/// [`has_canonical_cite`], but nothing encodes that, and a caller added later —
-/// or a reorder of arm (5)'s if/else-if chain — must not be able to break the
-/// verdict from the outside.
+/// **The `#N` pass is SELF-SUFFICIENT, not precondition-dependent** — see the
+/// comment on its second conjunct below.
 ///
-/// The `#N` register is scanned in a SEPARATE pass, via the shared
-/// [`cite_occurrences`] iterator, rather than being fused into the `char` loop
-/// below: the Greek arm needs `char` indices (Greek letters are multi-byte)
-/// while [`prd_relative_cite`] takes a byte offset, and fusing the two would
-/// require maintaining both cursors in lock-step for no gain. Both passes are
-/// O(n) over a single line.
+/// The `#N` register is scanned in a SEPARATE pass from the `char` loop: the
+/// Greek arm needs `char` indices (Greek letters are multi-byte) while
+/// [`prd_relative_cite`] takes a byte offset. Both passes are O(n) per line.
 ///
 /// `is_g_allow_cite_exempt` rule (c) and [`extract_g_allow_owner_cites`] are
-/// deliberately NOT refactored to delegate here — the G-allow owner-cite lane
-/// has its own narrower `"PRD "`-immediately-left rule and its own
-/// `g-allow-orphaned` baseline exposure, so widening it would perturb a
-/// decoupled lane. The pre-existing `extract_g_allow_owner_cites_*` tests
-/// staying green is the proof of that decoupling.
+/// deliberately NOT refactored to delegate here — see
+/// [`prd_relative_cite_family`]'s rustdoc for why that lane stays decoupled.
 fn has_malformed_cite(line: &str) -> bool {
     // Pass 1 (§8.2 `task(s) #N` register): the shared [`cite_occurrences`]
     // scan, with the verdict INVERTED relative to `has_canonical_cite` — the
     // line is malformed when ANY occurrence lands in `task(s)` left-context
     // AND no occurrence on the line is a genuine cite.
     //
-    // The second conjunct is what makes this pass SELF-SUFFICIENT. "Any" alone
-    // is sound only under a caller-side precondition — arm (3) consults this fn
-    // only after `has_canonical_cite` already returned false — and a
-    // precondition stated in prose is one an added caller, or a reorder of arm
-    // (5)'s if/else-if chain, breaks silently. On a line carrying both idioms
-    // (`// TODO: see #4553; supersedes PRD task #10`) the unguarded form would
-    // DEMOTE a properly-tracked marker to the Medium advisory `malformed-cite`,
-    // which is the LOST/downgraded direction §6.6's `live ⊆ baseline` ratchet is
-    // blind to. A `debug_assert!` was rejected as the alternative: this fn is
-    // legitimately called on canonically-cited lines by `malformed_cite_*`,
-    // which assert it returns false, so the precondition is not universal.
-    // Short-circuit order keeps the extra scan off the hot path — it runs only
-    // on a line that carries a `task(s) #N` occurrence at all. Pinned by
+    // The second conjunct is what makes this pass SELF-SUFFICIENT rather than
+    // dependent on a caller-side precondition. Arm (3) happens to consult this
+    // fn only after `has_canonical_cite` returned false, but nothing encodes
+    // that, and on a line carrying both idioms (`// TODO: see #4553; supersedes
+    // PRD task #10`) the unguarded form would DEMOTE a properly-tracked marker
+    // to the Medium advisory — the LOST direction §6.6's subset ratchet is blind
+    // to. A `debug_assert!` cannot express it: `malformed_cite_*` legitimately
+    // calls this fn on canonically-cited lines. Short-circuit order keeps the
+    // extra scan off the hot path. Pinned by
     // `malformed_cite_prd_relative_is_self_sufficient`.
     //
     // `Reference` occurrences are deliberately NOT accepted here — see this
@@ -1322,65 +1286,44 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
         {
             // (7) lane δ-B (.rs only): an ordinary FULL-LINE comment — no
             // TODO-family marker, no attribute — that both DEFERS work and
-            // NAMES the task it is deferred to. The live deliverable is
-            // `crates/reify-core/src/diagnostics.rs`'s `HexWedgeMeshOutcome`
-            // rustdoc, "blocked on VolumeMesh realization (task #2947)", whose
-            // cite is `cancelled`: a promise pinned to a task that will never
-            // arrive, invisible to every other arm. Population enumeration, FP
+            // NAMES the task it is deferred to. Population enumeration, FP
             // measurements and the adoption ruling: PRD §16 Row 2.
             //
-            // Five load-bearing choices:
+            // Four choices a reader must not silently undo:
             //
-            // (i) APPENDED LAST, after the phantom arm (6), so every earlier arm
-            // keeps every line it owned. The `else if` chain is what guarantees
-            // at-most-one entry per line, which the `fingerprint` / §6.6
-            // baseline machinery assumes.
+            // (i) APPENDED LAST, after arm (6), so every earlier arm keeps
+            // every line it owned. The `else if` chain is what guarantees
+            // at-most-one entry per line, which `fingerprint` and the §6.6
+            // baseline machinery assume.
             //
-            // (ii) CITE-ANCHORED, hence NO structural kind. δ-A has an attribute
-            // to anchor on and can afford to report the uncited case as
-            // `Untracked`; δ-B has only the comment, so the cite IS the anchor —
-            // which is what stops the lane firing on every prose comment
-            // containing "pending". It therefore emits only `Cited` and reaches
-            // ONLY the unchanged β liveness lane, leaving §8.3's taxonomy,
-            // `VALID_KINDS` and the §8.4 severity map untouched.
+            // (ii) CITE-ANCHORED, hence NO structural kind. δ-A has an
+            // attribute to anchor on and can report the uncited case as
+            // `Untracked`; δ-B has only the comment, so the cite IS the anchor
+            // — which is what stops the lane firing on every prose comment
+            // containing "pending". It emits only `Cited` and reaches ONLY the
+            // unchanged β liveness lane, leaving §8.3's taxonomy, `VALID_KINDS`
+            // and the §8.4 severity map untouched.
             //
-            // (iii) Both predicates match the WHOLE line, not a stripped comment
-            // body. Safe here — unlike δ-A, which matches prose against the
-            // extracted rationale so the attribute's own `dead_code` token
-            // cannot be misread as prose — because on a δ-B line the entire line
-            // IS comment text.
-            //
-            // (iv) The `g_allow_marker_body` guard delegates the ENTIRE
-            // `// G-allow:` register to its owner lane, which runs an
-            // independent `scan_g_allow_markers` →
-            // `resolve_g_allow_owner_liveness` pass with its own
-            // `g-allow-orphaned` kind; without it such a line emits TWO findings
-            // under two kinds once its owner cite goes terminal (live today at
-            // `crates/reify-ir/src/value.rs`, two sites citing #5235).
-            //
-            // The guard deliberately also covers the case that lane does NOT
-            // report: a G-allow line whose cites are ALL provenance-exempt
-            // (rules (a)/(b)/(c)) has no owner, so neither lane claims it. That
-            // is two rules composing, not a hole — on such a line the owner-cite
-            // grammar IS the cite grammar, and `extract_cites` is blind to its
+            // (iii) The `g_allow_marker_body` guard delegates the ENTIRE
+            // `// G-allow:` register to its owner lane, which has its own
+            // `g-allow-orphaned` kind; without it such a line emits TWO
+            // findings under two kinds once its owner cite goes terminal. The
+            // guard deliberately also covers the case that lane does NOT report
+            // — a G-allow line whose cites are ALL provenance-exempt has no
+            // owner, so neither lane claims it. That is two rules composing,
+            // not a hole: `extract_cites` is blind to the sibling grammar's
             // exemptions, so admitting the line would anchor δ-B on exactly the
-            // cites the sibling grammar classified as provenance (`#N (done)`,
-            // `re-homed from cancelled #N`, `PRD #N`) and resurrect the
-            // population that grammar exists to suppress — in the fail-dangerous
-            // direction, since an FP here is a High `orphaned` hard-gate
-            // finding. The narrower guard would also buy no recall — live count
-            // for that shape, and the predicate that measures it: PRD §16 Row 2.
-            // Pinned by `scan_file_delta_b_negative_g_allow_owner_less`.
+            // cites that grammar classified as provenance (`#N (done)`,
+            // `re-homed from cancelled #N`, `PRD #N`), in the fail-dangerous
+            // direction. Pinned by
+            // `scan_file_delta_b_negative_g_allow_owner_less`.
             //
-            // (v) FULL-LINE comments only (`trim_start().starts_with("//")`): a
-            // trailing comment after code (`let x = f(); // deferred to #1234`)
-            // is out of scope. Decided, not overlooked — it is what makes the
-            // whole-line predicates in (iii) sound, and the live exposure it
-            // forgoes is a single line whose "code" is the `#[allow(dead_code)]`
-            // attribute arm (5) already owns (count and predicate: PRD §16
-            // Row 2). δ-A reads a trailing comment because its anchor is an
-            // attribute, which cannot appear mid-expression. Pinned by
-            // `scan_file_delta_b_negative_trailing_comment`.
+            // (iv) FULL-LINE comments only (`trim_start().starts_with("//")`):
+            // a trailing comment after code is out of scope. Decided, not
+            // overlooked — it is what makes the whole-line predicates sound
+            // (on a δ-B line the entire line IS comment text), and the live
+            // exposure it forgoes is a single line arm (5) already owns. Pinned
+            // by `scan_file_delta_b_negative_trailing_comment`.
             //
             // FP control is entirely inherited, not new: `has_deferral_prose`'s
             // guards kill the identifier class (`mark_pending_with_cause`) and
@@ -2724,12 +2667,10 @@ mod tests {
             // family-2 register: `git grep -nE '(invariants?|rows?|boundary)
             // #[0-9]{3,}'` over ALL tracked files returns exactly this hit, and
             // #5238 is `done` — terminal — and owns that very file.  An
-            // unbounded family does not merely mute such a cite: on a marker
-            // line it DOWNGRADES a High `orphaned` hard-gate finding to the
-            // Medium advisory `malformed-cite`, and in the cite-anchored δ-B
-            // lane it ERASES the candidate outright.  §6.6's ratchet cannot see
-            // either — `live ⊆ baseline` catches a GAINED finding, never a LOST
-            // one — so the bound has to be pinned here.
+            // unbounded family does not merely mute such a cite: it DOWNGRADES
+            // a High `orphaned` finding on a marker line and ERASES the
+            // candidate outright on a δ-B one, both invisible to §6.6 — so the
+            // bound has to be pinned here.
             // crates/reify-eval/tests/engine_eval_commit_migration.rs
             ("/// This is the invariant #5238 nearly lost: both let evaluators used to emit", 5238),
             // Synthetic four-digit forms for every family that carried no
@@ -2964,9 +2905,9 @@ mod tests {
     ///
     /// Pinned end to end rather than only on `has_malformed_cite`, because what
     /// a wider pass-1 predicate actually costs is a SEVERITY, and severity is
-    /// invisible at the recogniser. §6.6's ratchet asserts `live ⊆ baseline`,
-    /// which catches a GAINED finding and is blind to a DEMOTED one, so nothing
-    /// downstream would report the regression.
+    /// invisible at the recogniser — see
+    /// `malformed_cite_prd_relative_is_self_sufficient` for why the §6.6 ratchet
+    /// would not report that regression.
     ///
     /// Vacuous on the live corpus today (no marker-lane line carries a 1–2-digit
     /// `#N` in either register), which is why it is pinned hermetically here.
