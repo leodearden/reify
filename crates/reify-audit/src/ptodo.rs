@@ -240,10 +240,10 @@ const PRD_RELATIVE_MAX_ID: u32 = 99;
 ///    [`PrdCiteFamily::TaskCite`]; the other two report
 ///    [`PrdCiteFamily::Reference`].
 ///
-/// Three properties are load-bearing; each is stated in the code below and
-/// pinned by a test, and the live-corpus measurements behind them (per-family
-/// histograms, the digit-split enumeration, the re-sweep predicates) live in
-/// **PRD §8.2 and §16 Row 2**, which own that methodology:
+/// The following properties are load-bearing; each is stated in the code below
+/// and pinned by a test. Deliberately uncounted — a count in the prose drifts
+/// the moment a bullet is added. The live-corpus measurements behind them live
+/// in **PRD §8.2 and §16 Row 2**, which own that methodology:
 ///
 /// - **The `id <= 99` bound is UNIFORM across all three families**, applied
 ///   once as an early return rather than per family.  It is a property of the
@@ -262,8 +262,8 @@ const PRD_RELATIVE_MAX_ID: u32 = 99;
 ///   allocation runs monotonically upward from 1 and the live head is far past
 ///   the bound, so no future task can land inside it.  The first half is a
 ///   claim about DB STATE, not a property of this code, so it is re-established
-///   on demand by `prd_relative_bound_covers_only_terminal_task_ids` (on-demand,
-///   `#[ignore]`d, needs the real task DB) instead of being trusted from a
+///   on demand by `prd_relative_bound_covers_only_terminal_task_ids` (needs the
+///   real task DB; graceful-skips without it) instead of being trusted from a
 ///   dated comment: reopen an id inside the bound and
 ///   that test fails loudly, where this recogniser would silently ERASE a live
 ///   cite.  Making the bound itself resolution-aware would drag a DB lookup
@@ -1242,7 +1242,12 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
                 // canonical cite → tracked; β resolves the on-line cites. No
                 // above-line lookback here (that is a stub-macro convention),
                 // so an unrelated cite on the prior line cannot mask this one.
-                out.push((line_no, LineClass::Cited(extract_cites(line)), line.trim().to_string()));
+                // Deduped like arm (4): `resolve_liveness_keyed` emits one
+                // finding per id, so a line naming the same id twice would
+                // otherwise report it twice.
+                let mut ids = extract_cites(line);
+                dedup_in_place(&mut ids);
+                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
             } else if has_malformed_cite(line) {
                 out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
@@ -1382,7 +1387,9 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // §8.2's `prd_relative_cite` kills the PRD-relative class
             // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
             // 48% false-positive rate; those two guards are what changed.
-            out.push((line_no, LineClass::Cited(extract_cites(line)), line.trim().to_string()));
+            let mut ids = extract_cites(line);
+            dedup_in_place(&mut ids);
+            out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
         }
 
         prev = Some(line);
@@ -3512,6 +3519,32 @@ mod tests {
         assert_eq!(classify_file(line, false), vec![]);
     }
 
+    /// A repeated cite id on one line yields ONE id, not two. `resolve_liveness`
+    /// emits a finding per id, so without the dedup a single δ-B line naming the
+    /// same terminal task twice reports two byte-identical `orphaned` rows.
+    /// Pinned for arm (3) as well: δ-B widens the population from marker lines
+    /// to all prose comments, where repeating an id in one sentence is natural.
+    #[test]
+    fn scan_file_dedups_repeated_cite_on_one_line() {
+        let delta_b = "/// blocked on #2947; #2947 tracks the dispatcher";
+        assert_eq!(
+            scan_file(delta_b, true),
+            vec![(1, LineClass::Cited(vec![2947]), delta_b.to_string())]
+        );
+        let marker = "// TODO(#2947): see #2947 for the dispatcher";
+        assert_eq!(
+            scan_file(marker, true),
+            vec![(1, LineClass::Cited(vec![2947]), marker.to_string())]
+        );
+        // Distinct ids still come through in source order — the dedup drops
+        // repeats, never collapses the multi-cite case.
+        let two = "/// blocked on #2947 and #4092; #2947 first";
+        assert_eq!(
+            scan_file(two, true),
+            vec![(1, LineClass::Cited(vec![2947, 4092]), two.to_string())]
+        );
+    }
+
     /// δ-B emits NO structural kind, ever — the whole lane is invisible to α
     /// and reaches only the unchanged β liveness lane. Pinned as its own
     /// assertion because it is the property that keeps §8.3's taxonomy (and
@@ -3565,8 +3598,8 @@ mod tests {
         );
     }
 
-    /// §8.2 PREMISE CHECK for [`PRD_RELATIVE_MAX_ID`] — on-demand, `#[ignore]`d,
-    /// requires the real task DB.
+    /// §8.2 PREMISE CHECK for [`PRD_RELATIVE_MAX_ID`] — runs wherever the real
+    /// task DB is reachable, graceful-skips where it is not.
     ///
     /// The bound suppresses EVERY `#N` with `N <= PRD_RELATIVE_MAX_ID` in a
     /// PRD-relative register, without demanding a `PRD` token or any other
@@ -3591,20 +3624,17 @@ mod tests {
     /// exists ONLY under a non-master tag is invisible to the lane too (it
     /// resolves to `unknown-id`, Medium), so it is deliberately out of scope.
     ///
-    /// Graceful-skip when the DB is unavailable — a task worktree's
-    /// `.taskmaster/` is untracked, so the default path is usually absent:
-    ///
-    /// ```text
-    /// REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \
-    ///   cargo test -p reify-audit --lib -- --ignored prd_relative_bound
-    /// ```
+    /// NOT `#[ignore]`d: the skip is already handled by the body, which returns
+    /// early when the DB is absent or unopenable and fails loudly on a vacuous
+    /// (empty-result) one. `#[ignore]` on top of that would only mean the check
+    /// runs when someone remembers to type `--ignored` — so it runs for free in
+    /// a checkout carrying `.taskmaster/` (where the β liveness lane reads the
+    /// same DB) and is a no-op in a task worktree, where `.taskmaster/` is
+    /// untracked. Point it elsewhere with `REIFY_PTODO_TASKS_DB`.
     ///
     /// On failure the fix is NOT to widen this test: either re-terminate the id,
     /// or narrow [`PRD_RELATIVE_MAX_ID`] / make the register demand a `PRD`
     /// token, and re-measure per PRD §16 Row 2.
-    #[ignore = "on-demand premise check; run via --ignored. Needs the real \
-        tasks.db (REIFY_PTODO_TASKS_DB, or a checkout with .taskmaster/). \
-        Graceful-skip when it is unavailable."]
     #[test]
     fn prd_relative_bound_covers_only_terminal_task_ids() {
         // `CARGO_MANIFEST_DIR` is <repo>/crates/reify-audit; the DB path itself
