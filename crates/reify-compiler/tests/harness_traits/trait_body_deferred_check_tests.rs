@@ -60,7 +60,8 @@
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{
-    assert_error_code_present, assert_no_error_diagnostics, compile_source_with_stdlib,
+    assert_error_code_absent, assert_error_code_present, assert_no_error_diagnostics,
+    compile_source_with_stdlib,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -157,5 +158,157 @@ structure def Conformer : Probe {
     assert_no_error_diagnostics(
         &module.diagnostics,
         "conformed trait body with a dimensionally-consistent constraint",
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AXIS 2 — UNDEFINED MEMBER FIELD (task 6143 step-5)
+//
+// The half task 6143 flagged as "the more serious" one: a trait body that
+// names a field the struct does not have. Measured answer — conformance DOES
+// catch it (`StructureMemberNotFound`), so no follow-up task was warranted.
+// These pins are what keep that true.
+//
+// Every fixture here uses a USER-DEFINED `Bearer`, deliberately not the stdlib
+// `Material` — `param material : Material = Steel` emits an unrelated
+// `UnresolvedName` (measured), which buys nothing over the `unknown variant`
+// noise it would replace.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A trait body referencing a member field that does not exist on the struct
+/// emits ZERO error diagnostics when NO structure conforms to the trait.
+///
+/// Same carve-out as [`trait_body_without_conformer_is_not_dimension_checked`],
+/// on the member-resolution axis rather than the dimension axis.
+///
+/// Measured on main @ 6927f3c0db: 0 errors. Its non-vacuity guard is
+/// [`conformed_trait_body_undefined_member_errors`] below.
+#[test]
+fn trait_body_without_conformer_ignores_undefined_member() {
+    let source = r#"
+structure Bearer {
+    param density : Density = 1kg/m^3
+}
+
+trait Probe {
+    param bearer : Bearer
+    constraint bearer.no_such_field > 0
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "trait body with no conformer (undefined member deferred to conformance)",
+    );
+}
+
+/// NON-VACUITY GUARD for [`trait_body_without_conformer_ignores_undefined_member`].
+///
+/// The SAME trait body, plus a conforming structure, DOES emit
+/// `DiagnosticCode::StructureMemberNotFound`.
+///
+/// Measured on main @ 6927f3c0db: present, message
+/// "structure 'Bearer' has no member 'no_such_field'".
+///
+/// MUST assert by code, not by error count: this fixture also carries an
+/// unrelated `unknown variant 'Bearer': no enum in scope declares it` error
+/// (code `None`) emitted by the struct-literal param default. That noise is
+/// pre-existing behaviour outside this task's scope — see the module doc.
+#[test]
+fn conformed_trait_body_undefined_member_errors() {
+    let source = r#"
+structure Bearer {
+    param density : Density = 1kg/m^3
+}
+
+trait Probe {
+    param bearer : Bearer
+    constraint bearer.no_such_field > 0
+}
+
+structure def Conformer : Probe {
+    param bearer : Bearer = Bearer { density: 1kg/m^3 }
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::StructureMemberNotFound,
+        "conformed trait body referencing an undefined member field",
+    );
+}
+
+/// Proves [`conformed_trait_body_undefined_member_errors`] fires on the
+/// UNDEFINED FIELD specifically, not merely on the conformer: the same
+/// conformer with a constraint over an EXISTING member emits no
+/// `StructureMemberNotFound`.
+///
+/// Asserts absence-of-CODE rather than absence-of-errors, so the unrelated
+/// `unknown variant` noise described above cannot falsify it.
+#[test]
+fn conformed_trait_body_existing_member_has_no_member_not_found() {
+    let source = r#"
+structure Bearer {
+    param density : Density = 1kg/m^3
+}
+
+trait Probe {
+    param bearer : Bearer
+    constraint bearer.density > 0kg/m^3
+}
+
+structure def Conformer : Probe {
+    param bearer : Bearer = Bearer { density: 1kg/m^3 }
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+
+    assert_error_code_absent(
+        &module.diagnostics,
+        DiagnosticCode::StructureMemberNotFound,
+        "conformed trait body referencing an EXISTING member field",
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AXIS 3 — WRONG `let` TYPE ANNOTATION (task 6143 step-5)
+//
+// The third row task 6143 listed as unmeasured. Completes the answer: this
+// axis is caught at conformance too, so all three deferred checks are live.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A conformed trait body whose `let` declares a type the expression cannot
+/// produce emits `DiagnosticCode::TypeMismatchForTraitMember`.
+///
+/// Measured on main @ 6927f3c0db: present, message "annotation expects
+/// Scalar[m], expression evaluates to Scalar[kg·m^-3]".
+#[test]
+fn conformed_trait_body_wrong_let_annotation_errors() {
+    let source = r#"
+structure Bearer {
+    param density : Density = 1kg/m^3
+}
+
+trait Probe {
+    param bearer : Bearer
+    let bad : Length = bearer.density
+}
+
+structure def Conformer : Probe {
+    param bearer : Bearer = Bearer { density: 1kg/m^3 }
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::TypeMismatchForTraitMember,
+        "conformed trait body with a wrong `let` type annotation",
     );
 }
