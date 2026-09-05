@@ -159,6 +159,84 @@ mod tests {
         assert_eq!(rayleigh_damping_ratio(1.0, 1.0, 0.0), 0.0);
     }
 
+    // ── total_damping_ratio: ζ = ζ_material + (α + β·ω²)/(2ω), shared ω-floor ─
+    //
+    // WHY the material half is floored too (task #6878; a later reader must not
+    // "restore" the degenerate identity below the floor). `rayleigh_damping_ratio`
+    // floors because ζ = (α + β·ω²)/(2ω) → ∞ is non-physical: a rigid-body mode
+    // carries no modal damping. The SAME physics governs the modal-strain-energy
+    // half. A rigid-body mode stores no strain energy, so Σ_e SE_e = 0 and the
+    // energy ratio (Σ_e η_e·SE_e)/(Σ_e SE_e) is 0/0 — UNDEFINED, not 1. The
+    // degenerate identity ζ = η/2 (PRD C5) is derived from a ratio that is 1
+    // "by construction" only when the denominator is nonzero, so it does not
+    // reach the rigid-body case and η/2 is NOT the correct answer there.
+
+    /// THE DEFECT this helper exists to close: a rigid-body mode (ω = 0) under a
+    /// bare `MaterialDamping()` over `Steel_AISI_1045` (η = 0.0006 ⇒
+    /// ζ_material = 0.0003) must carry NO modal damping. Exact, not toleranced —
+    /// the floor returns `0.0` itself, not something near it.
+    #[test]
+    fn total_damping_ratio_zero_omega_suppresses_material_term() {
+        assert_eq!(total_damping_ratio(0.0003, 0.0, 0.0, 0.0), 0.0);
+    }
+
+    /// ω exactly at the floor is inclusive (`<=`), with BOTH halves nonzero so
+    /// neither can leak through.
+    #[test]
+    fn total_damping_ratio_floor_boundary_is_inclusive() {
+        assert_eq!(total_damping_ratio(0.0003, 0.5, 1e-4, 1e-9), 0.0);
+    }
+
+    /// The floor is on |ω|, mirroring `rayleigh_damping_ratio`'s own `.abs()`.
+    #[test]
+    fn total_damping_ratio_negative_near_zero_omega_guarded() {
+        assert_eq!(total_damping_ratio(0.0003, 0.5, 1e-4, -1e-10), 0.0);
+    }
+
+    /// Just ABOVE the floor the material half is NOT suppressed — the guard is a
+    /// singularity guard, not a blanket zeroing. At ω = 1e-6 the α/2ω term
+    /// dominates, so the total far exceeds ζ_material alone.
+    #[test]
+    fn total_damping_ratio_just_above_floor_is_not_zeroed() {
+        let zeta_material = 0.0003;
+        let got = total_damping_ratio(zeta_material, 0.5, 1e-4, 1e-6);
+        assert!(got > zeta_material, "got {got}, want > {zeta_material}");
+    }
+
+    /// In the physical band the composition is EXACTLY the sum of the two halves
+    /// — bit-for-bit, at the measured fundamental of task #6878's cantilever
+    /// fixture. This is what keeps that task's 1e-9 relative identity pins
+    /// (`ζ = η/2` and `ζ = η/2 + β·ω/2`) provably untouched by the floor.
+    #[test]
+    fn total_damping_ratio_above_floor_is_exactly_the_sum() {
+        let zeta_material = 0.0003;
+        let (alpha, beta) = (0.0, 1e-4);
+        let omega = 2.0 * PI * 444.175_847_658_660_7;
+        assert_eq!(
+            total_damping_ratio(zeta_material, alpha, beta, omega),
+            zeta_material + rayleigh_damping_ratio(alpha, beta, omega)
+        );
+    }
+
+    /// ζ_material = 0 reduces the composition to plain Rayleigh, on BOTH sides of
+    /// the floor. Every pre-existing descriptor (`Absent`/`NoDamping`/`Rayleigh`/
+    /// `Unsupported`) plans to ζ_material = 0, so this is the B4 no-regression
+    /// argument at helper altitude.
+    #[test]
+    fn total_damping_ratio_zero_material_is_plain_rayleigh() {
+        let (alpha, beta) = (2.0, 0.001);
+        let above = 2.0 * PI * 41.3;
+        assert_eq!(
+            total_damping_ratio(0.0, alpha, beta, above),
+            rayleigh_damping_ratio(alpha, beta, above)
+        );
+        let below = 1e-12;
+        assert_eq!(
+            total_damping_ratio(0.0, alpha, beta, below),
+            rayleigh_damping_ratio(alpha, beta, below)
+        );
+    }
+
     // ── mass_normalization_scale: 1/√m for m > 0 ─────────────────────────────
 
     #[test]
