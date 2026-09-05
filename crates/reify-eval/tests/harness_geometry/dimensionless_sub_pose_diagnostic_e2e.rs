@@ -30,6 +30,33 @@
 //! by `Engine::build`) and `surface_subtree` (the tessellation/GUI path) —
 //! delegate to the same `walk_placed_realizations`, so exercising the
 //! tessellation path here covers the STEP export named in the bug report.
+//!
+//! # Reach: `reify check` stays clean BY DESIGN, and this file does not claim otherwise
+//!
+//! Read this before concluding the reported symptom is fully closed. The bug
+//! report says the offending source "passes `reify check` clean". **It still
+//! does.** These tests pin the diagnostic on the placement walk; `reify check`
+//! never runs that walk, so the fix is user-visible under `reify build -o <file>`
+//! and on the GUI tessellation path, not under `reify check`. Measured, on this
+//! branch:
+//!
+//! - `cmd_check` calls `Engine::realize_for_check`, which is
+//!   `build_with_geometry_output(module, Step, /*emit_geometry_output=*/false)`.
+//!   That `false` takes the early `None` arm in the Phase-B export block, BEFORE
+//!   `collect_export_bodies_walk` — so `surface_export_bodies` →
+//!   `walk_placed_realizations` never runs and the classifier is never reached.
+//! - The one walk `cmd_check` does perform, `engine.tessellate_realizations(&compiled)`,
+//!   is invoked for its `achieved_repr_tol` side effect only: its
+//!   `TessellateResult` is dropped, and only `build_result.diagnostics` is merged
+//!   into the reported set. Every diagnostic the walk pushed is discarded there.
+//! - The DSL `output`-statement export path (`build_outputs_with_result`)
+//!   likewise passes `emit_geometry_output=false` and skips the same walk.
+//!
+//! Routing the walk's diagnostics into the check path is a real improvement, but
+//! it changes which passes run on `reify check` and touches `reify-cli` and
+//! `engine_build.rs` — both outside task 6099's locked scope — so it is filed as
+//! follow-up work rather than smuggled in here. Until that lands, do not read a
+//! green `reify check` as evidence that a design has no dimensionless sub-pose.
 
 use reify_core::Severity;
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
@@ -190,6 +217,59 @@ structure Asm {
         "the poisoned descendant `leaf` must not be reported: {}",
         errors[0]
     );
+}
+
+#[test]
+fn shared_template_with_bad_pose_errors_once_per_authoring_mistake() {
+    // BREADTH-wise counterpart to `..._deep_subtree_errors_exactly_once`, which
+    // covers the DEPTH axis. `Asm` carries ONE bad `at` clause and is
+    // instantiated twice under `Top`, so `walk_placed_realizations` walks its
+    // sub list twice and the classifier fires twice with a byte-identical
+    // `(scope, sub_name)` message. Nothing downstream can collapse them —
+    // `cmd_build` prints `result.diagnostics` straight through
+    // `report_eval_output`, and reify-cli's dedup helpers key on
+    // `DiagnosticCode`, which `Diagnostic::error` leaves `None` — so the walk
+    // must not emit the duplicate in the first place.
+    let source = r#"
+structure Widget {
+    let body = box(2mm, 2mm, 2mm)
+}
+structure Asm {
+    sub bad : Widget at transform3(orient_identity(), vec3(5.0, 0.0, 0.0))
+}
+structure Top {
+    sub left  : Asm at transform3(orient_identity(), vec3(10.0mm, 0.0mm, 0.0mm))
+    sub right : Asm at transform3(orient_identity(), vec3(20.0mm, 0.0mm, 0.0mm))
+}"#;
+    let compiled = compile_clean(source);
+    let (errors, paths) = tessellate_errors(&compiled);
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "one `at` clause is one authoring mistake, however many parents \
+         instantiate the template holding it, got {errors:?}"
+    );
+    let msg = errors[0].to_lowercase();
+    assert!(
+        msg.contains("bad") && msg.contains("asm"),
+        "the surviving diagnostic must still name the sub and its enclosing \
+         structure: {}",
+        errors[0]
+    );
+
+    // Dedup is a diagnostics-only change: both instantiations must still
+    // surface, exactly as `posed_subtree_still_surfaces_after_diagnostic` pins
+    // for the single-parent case.
+    for expected in [
+        "Top.left.bad#realization[0]",
+        "Top.right.bad#realization[0]",
+    ] {
+        assert!(
+            paths.iter().any(|p| p == expected),
+            "`{expected}` must still surface; got {paths:?}"
+        );
+    }
 }
 
 #[test]

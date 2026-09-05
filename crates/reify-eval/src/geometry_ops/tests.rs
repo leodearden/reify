@@ -23577,6 +23577,197 @@
         );
     }
 
+    // ── task 6099 amendment: coupling guards for the classifier's inputs ─────
+
+    #[test]
+    fn compose_pose_pair_equals_two_element_chain() {
+        // The walk composes through `compose_pose_pair` (borrowing) rather than
+        // `compose_pose_chain` (cloning both operands into an array literal).
+        // The two MUST agree, or the classifier would be reasoning about a
+        // different composition than the one the placement decomposition sees.
+        // Covers both the success and the `Undef` arm.
+        let parent = transform_of([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]);
+        let ok = transform_of([0.5, 0.5, 0.5, 0.5], [0.0, 0.02, 0.0]);
+        let bad = dimensionless_transform_of([1.0, 0.0, 0.0, 0.0], [5.0, 0.0, 0.0]);
+
+        for (label, child) in [("length pose", &ok), ("dimensionless pose", &bad)] {
+            assert_eq!(
+                compose_pose_pair(&parent, child),
+                compose_pose_chain(&[parent.clone(), child.clone()]),
+                "{label}: compose_pose_pair must equal the two-element chain"
+            );
+        }
+        // And the second row really is the failure arm, so the equality above is
+        // not vacuously comparing two successes.
+        assert_eq!(
+            compose_pose_pair(&parent, &bad),
+            reify_ir::Value::Undef,
+            "the dimensionless row must be the Undef arm"
+        );
+    }
+
+    #[test]
+    fn pose_diagnostic_push_is_deduplicated() {
+        // BREADTH-wise dedup: one shared template reached through N containment
+        // paths is walked N times, so the same `(scope, sub_name)` message would
+        // otherwise be pushed N times for ONE authoring mistake. Nothing
+        // downstream can collapse them (`Diagnostic::error` leaves `code: None`,
+        // which is what reify-cli's dedup helpers key on).
+        let mut diagnostics = vec![Diagnostic::error("an unrelated pre-existing error")];
+
+        let one = || Diagnostic::error("sub `bad` in structure `Asm`: its `at` pose ...");
+        push_pose_diagnostic_deduped(&mut diagnostics, one());
+        push_pose_diagnostic_deduped(&mut diagnostics, one());
+        push_pose_diagnostic_deduped(&mut diagnostics, one());
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "three identical pushes must collapse to one, leaving the unrelated \
+             diagnostic untouched: {diagnostics:?}"
+        );
+
+        // A DIFFERENT sub is a different authoring mistake and must still report.
+        push_pose_diagnostic_deduped(
+            &mut diagnostics,
+            Diagnostic::error("sub `other` in structure `Asm`: its `at` pose ..."),
+        );
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "a distinct message must not be swallowed by the dedup: {diagnostics:?}"
+        );
+
+        // Same text at a different severity is a different diagnostic.
+        let mut warn = Diagnostic::error("same text");
+        warn.severity = reify_core::Severity::Warning;
+        push_pose_diagnostic_deduped(&mut diagnostics, warn);
+        push_pose_diagnostic_deduped(&mut diagnostics, Diagnostic::error("same text"));
+        assert_eq!(
+            diagnostics.len(),
+            5,
+            "dedup keys on (severity, message), not message alone: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn pose_translation_dimension_agrees_with_stdlib_composition_gate() {
+        // CROSS-CRATE DRIFT GUARD.
+        //
+        // `pose_translation_dimension` re-states, in reify-eval, the
+        // dimension-agreement rule that `reify_stdlib`'s `decompose_xyz3` +
+        // `compose_transforms` dimension gate actually apply. The classifier's
+        // "clean two-dimension mismatch" arm is only correct while the two
+        // notions coincide: if stdlib later accepts a `Point` translation, or
+        // coerces per-component dimensions, this helper starts returning `None`
+        // (or a stale dimension) for poses that DID hit the gate, and every real
+        // mismatch silently degrades to the generic message.
+        //
+        // Every row asserts BOTH sides — what the helper says, and what the real
+        // composition does — so a change on either side of the crate boundary
+        // reds here instead of quietly downgrading a diagnostic. It is the
+        // in-crate stand-in for the narrow stdlib accessor this helper should
+        // eventually call (reify-stdlib is outside this task's scope).
+        let mixed = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.005),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ])),
+        };
+        let length = transform_of([1.0, 0.0, 0.0, 0.0], [0.005, 0.0, 0.0]);
+        let dimensionless = dimensionless_transform_of([1.0, 0.0, 0.0, 0.0], [5.0, 0.0, 0.0]);
+
+        // Probes the RAW pairwise builtin, not `compose_pose_pair`: the latter
+        // folds from a LENGTH identity seed, which would mask the gate's actual
+        // rule on any row whose first operand is not LENGTH (see the seed
+        // assertions below).
+        //
+        // (label, a, b, both sides yield a dimension?, composition succeeds?)
+        let rows: [(&str, &reify_ir::Value, &reify_ir::Value, bool, bool); 5] = [
+            ("length ∘ length", &length, &length, true, true),
+            // Load-bearing: the stdlib gate compares the two translations'
+            // dimensions for AGREEMENT (`t1_dim != t2_dim`) — it does not
+            // require LENGTH — which is exactly the assumption
+            // `pose_translation_dimension` encodes. If stdlib ever hard-codes
+            // LENGTH here, this row flips and the drift is caught.
+            (
+                "dimensionless ∘ dimensionless",
+                &dimensionless,
+                &dimensionless,
+                true,
+                true,
+            ),
+            (
+                "length ∘ dimensionless",
+                &length,
+                &dimensionless,
+                true,
+                false,
+            ),
+            (
+                "dimensionless ∘ length",
+                &dimensionless,
+                &length,
+                true,
+                false,
+            ),
+            // Helper returns `None` here, and the composition is rejected by
+            // `decompose_xyz3` BEFORE the dimension gate is ever reached — so
+            // "no single dimension" must never be read as "gate accepted it".
+            ("mixed ∘ length", &mixed, &length, false, false),
+        ];
+
+        for (label, a, b, both_dimensioned, composes) in rows {
+            let da = pose_translation_dimension(a);
+            let db = pose_translation_dimension(b);
+            assert_eq!(
+                da.is_some() && db.is_some(),
+                both_dimensioned,
+                "{label}: pose_translation_dimension agreement on both operands"
+            );
+            let composed = reify_stdlib::eval_builtin("transform_compose", &[a.clone(), b.clone()]);
+            assert_eq!(
+                composed != reify_ir::Value::Undef,
+                composes,
+                "{label}: stdlib composition outcome changed"
+            );
+            if let (Some(da), Some(db)) = (da, db) {
+                assert_eq!(
+                    da == db,
+                    composes,
+                    "{label}: the helper's dimensions-agree verdict must match \
+                     whether the stdlib gate actually accepted the pair — if it \
+                     stops matching, the classifier's clean-mismatch arm is \
+                     diagnosing a gate that no longer works that way"
+                );
+            }
+        }
+
+        // The LENGTH identity seed is itself load-bearing, and is why the
+        // headline bug is catchable AT ALL at the top of the walk: a root's
+        // `composed_world` is the seed, so a dimensionless sub-pose composed
+        // against it mismatches immediately. Measured here rather than assumed —
+        // the raw pairwise row above shows the same pair composing FINE when the
+        // seed is not in play.
+        assert_eq!(
+            compose_pose_pair(&dimensionless, &dimensionless),
+            reify_ir::Value::Undef,
+            "the LENGTH identity seed must reject a dimensionless chain even \
+             though the pair agrees with itself"
+        );
+        assert_ne!(
+            compose_pose_pair(&length, &length),
+            reify_ir::Value::Undef,
+            "an all-LENGTH chain must still compose through the seed"
+        );
+    }
+
     // ── decoded value-form LENGTH gate (units-length δ, task 5745) ────────────
     //
     // `accept_length_point3` is the THIRD route into β's Contract C chokepoint,

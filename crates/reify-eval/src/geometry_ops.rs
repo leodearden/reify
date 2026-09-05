@@ -11669,9 +11669,10 @@ pub(crate) fn eval_sub_pose(
 /// The identity child→parent [`reify_ir::Value::Transform`] — `Orientation(1,0,0,0)`
 /// + zero-LENGTH `Vector` translation.
 ///
-/// Shared by [`eval_sub_pose`]'s `None` arm (a sub with no `at` clause) and
-/// [`eval_auto_sub_pose`]'s fallback (an `at auto` sub with no solved Frame). Same
-/// shape as `compose_pose_chain(&[])` but allocation-only (no builtin dispatch).
+/// Shared by [`eval_sub_pose`]'s `None` arm (a sub with no `at` clause),
+/// [`eval_auto_sub_pose`]'s fallback (an `at auto` sub with no solved Frame), and
+/// [`fold_pose_chain`]'s seed — so `compose_pose_chain(&[])` returns exactly this
+/// value rather than a second hand-written copy of it (task 6099 amendment).
 fn identity_pose_transform() -> reify_ir::Value {
     reify_ir::Value::Transform {
         rotation: Box::new(reify_ir::Value::Orientation {
@@ -11897,20 +11898,38 @@ pub(crate) fn decode_orientation_to_axis_angle(
 /// stdlib builtin rather than hand-rolling quaternion math; `reify-eval` already
 /// depends on `reify-stdlib`.
 pub(crate) fn compose_pose_chain(poses: &[reify_ir::Value]) -> reify_ir::Value {
-    let identity = reify_ir::Value::Transform {
-        rotation: Box::new(reify_ir::Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }),
-        translation: Box::new(reify_ir::Value::Vector(vec![
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-        ])),
-    };
-    poses.iter().fold(identity, |acc, next| {
+    fold_pose_chain(poses.iter())
+}
+
+/// Compose exactly two poses — `parent ∘ child` — without cloning either operand.
+///
+/// Identical in result to `compose_pose_chain(&[parent.clone(), child.clone()])`
+/// BY CONSTRUCTION: both delegate to the same [`fold_pose_chain`] seeded with the
+/// same identity, and that equivalence is pinned by
+/// `compose_pose_pair_equals_two_element_chain`.
+///
+/// Exists because `compose_pose_chain` takes `&[reify_ir::Value]`, so building a
+/// two-element array literal for it MOVES its elements — forcing the caller to
+/// clone both operands on top of the clone `eval_builtin`'s owned-`&[Value]`
+/// signature already requires internally. The placement walk composes exactly two
+/// poses per sub and needs `sub_pose` to stay alive for
+/// [`diagnose_pose_composition_failure`], so it pays that cost on every sub of
+/// every walk; borrowing halves it.
+pub(crate) fn compose_pose_pair(
+    parent: &reify_ir::Value,
+    child: &reify_ir::Value,
+) -> reify_ir::Value {
+    fold_pose_chain([parent, child].into_iter())
+}
+
+/// The shared left-fold behind [`compose_pose_chain`] and [`compose_pose_pair`].
+///
+/// Kept as ONE body so the two entry points cannot drift: a change to the seed or
+/// to the builtin dispatched here lands in both. The `next.clone()` is forced by
+/// `reify_stdlib::eval_builtin`'s `&[Value]` (owned) argument slice and is the
+/// only clone either entry point performs.
+fn fold_pose_chain<'a>(poses: impl Iterator<Item = &'a reify_ir::Value>) -> reify_ir::Value {
+    poses.fold(identity_pose_transform(), |acc, next| {
         reify_stdlib::eval_builtin("transform_compose", &[acc, next.clone()])
     })
 }
@@ -11993,6 +12012,18 @@ fn pose_translation_dimension(v: &reify_ir::Value) -> Option<reify_core::Dimensi
 ///   really was a two-dimension mismatch, and a generically-worded message
 ///   otherwise.
 ///
+/// The result is deliberately keyed on `(sub_name, scope)` only, so it is stable
+/// across containment paths; the call site routes it through
+/// [`push_pose_diagnostic_deduped`] so a template reached through N paths still
+/// reports one authoring mistake once. The returned diagnostic carries no
+/// [`reify_core::DiagnosticCode`] and no span label: minting a code for it means
+/// adding a variant to `reify-core`, and anchoring a label means threading the
+/// `at` clause's span into `walk_placed_realizations`, both of which are outside
+/// task 6099's locked scope and are filed as follow-up work. Until then,
+/// downstream consumers must match on the message text, and reify-cli's
+/// code-keyed dedup helpers cannot see these diagnostics — which is exactly why
+/// the dedup has to happen here.
+///
 /// **Invariant.** There is NO path from an `Undef` `child_world` back to `None`
 /// once both guards have been cleared. That is what makes "a failed pose is
 /// never silently swallowed into an identity fallback" structurally true rather
@@ -12070,6 +12101,42 @@ pub(crate) fn diagnose_pose_composition_failure(
          `vec3(5.0mm, 0.0mm, 0.0mm)`) and that its rotation is a non-degenerate \
          quaternion."
     )))
+}
+
+/// Push a [`diagnose_pose_composition_failure`] diagnostic onto `diagnostics`,
+/// unless an identical one is already there.
+///
+/// # Why this is needed on top of the origination guards
+///
+/// Those guards are DEPTH-wise: they stop one bad pose from re-reporting at every
+/// level of the subtree it poisons. This is the BREADTH-wise counterpart. The
+/// classifier's message is keyed on `(sub_name, scope)` — the two names the author
+/// needs in order to find the offending `at` clause — and the call site sits inside
+/// `walk_placed_realizations`' `for sub in &template.sub_components` loop. A
+/// template instantiated under N parents (or reached through N containment paths,
+/// as in `sub_placement_surfacing.rs`'s
+/// `shared_child_surfaces_under_each_parent_from_one_handle`) is therefore walked N
+/// times, and one authoring mistake yields N byte-identical errors.
+///
+/// Nothing downstream can collapse them: `cmd_build` prints `result.diagnostics`
+/// straight through `report_eval_output`, and reify-cli's `merge_build_diagnostics`
+/// dedup helpers key on `DiagnosticCode`, which `Diagnostic::error` leaves `None`.
+/// So the walk must not emit the duplicates in the first place.
+///
+/// Compares `(severity, message)` rather than identity: `Diagnostic` derives no
+/// `PartialEq`, and those two fields are exactly what a reader would see twice.
+/// The scan is `O(len)` but runs ONLY on the failure path, which is by definition
+/// a build that is about to fail. Pinned by
+/// `pose_diagnostic_push_is_deduplicated` and the e2e
+/// `shared_template_with_bad_pose_errors_once_per_authoring_mistake`.
+fn push_pose_diagnostic_deduped(diagnostics: &mut Vec<Diagnostic>, d: Diagnostic) {
+    if diagnostics
+        .iter()
+        .any(|prev| prev.severity == d.severity && prev.message == d.message)
+    {
+        return;
+    }
+    diagnostics.push(d);
 }
 
 /// Indices into `module.templates` of the *root* templates for surfacing: those
@@ -12356,9 +12423,14 @@ pub(crate) fn walk_placed_realizations<V>(
         } else {
             eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics)
         };
-        // `compose_pose_chain` consumes its slice, so clone `sub_pose` into it and
-        // keep the original alive for the classifier below (task 6099).
-        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose.clone()]);
+        // Composed through `compose_pose_pair`, not `compose_pose_chain`: the
+        // latter takes `&[reify_ir::Value]`, and the two-element array literal
+        // needed to call it MOVES its elements — so both operands would have to
+        // be cloned at this call site, on top of the clone `eval_builtin`'s
+        // owned-args signature already forces inside the fold. `sub_pose` must
+        // survive the call for the classifier below, and this is the per-sub
+        // walk, so the borrow-taking pair form is the right one here (task 6099).
+        let child_world = compose_pose_pair(composed_world, &sub_pose);
         // A failed composition collapses to `Value::Undef`, which the placement
         // decomposition below cannot distinguish from a genuine identity pose —
         // so without this the whole child subtree is SILENTLY placed at the
@@ -12373,7 +12445,10 @@ pub(crate) fn walk_placed_realizations<V>(
             &template.name,
             &sub.name,
         ) {
-            diagnostics.push(d);
+            // Deduped, not pushed raw: this loop runs once per containment path
+            // to `template`, so a shared template's single bad `at` clause would
+            // otherwise emit one byte-identical error per instantiating parent.
+            push_pose_diagnostic_deduped(diagnostics, d);
         }
 
         // task-4147: for constructor-arg subs, re-realize the child's handles
