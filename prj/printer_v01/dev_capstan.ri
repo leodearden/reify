@@ -269,6 +269,13 @@ pub structure CapstanDrive {
     // relation in the file and it can only live here: `stroke` can't be passed
     // through the `sub` (override drop, task 4147), so it is a hand-set param on
     // Fairlead and the assembly asserts it stays consistent.
-    // `>=` and not `==`: the stroke is the band rounded up to a whole turn.
+    //
+    // TWO-SIDED on purpose, because `stroke` is a hand-set number: the lower
+    // bound alone is satisfied by any stroke at all above the band (200mm would
+    // pass), so on its own it pins coverage but not the design intent. The
+    // stroke IS the band rounded up to a whole turn, ceil(active_turns)·lead,
+    // and ceil(x)·lead < x·lead + lead holds for every x — so the pair says
+    // "covers the band, with less than one whole turn of margin".
     constraint shuttle.stroke >= capstan.band
+    constraint shuttle.stroke < capstan.band + capstan.lead
 }
