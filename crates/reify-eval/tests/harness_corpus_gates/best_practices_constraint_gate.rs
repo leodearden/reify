@@ -316,8 +316,8 @@ fn audit_reports_stale_expected_indeterminate() {
 
 /// Absolute path to `examples/best_practices/`, resolved at compile time from
 /// this crate's manifest directory (two levels up) — matches
-/// `examples_smoke.rs:13`'s `EXAMPLES_DIR` and both sibling gates'
-/// `corpus_files`.
+/// `harness_compilation_surface/examples_smoke.rs`'s `EXAMPLES_DIR` and both
+/// sibling gates' `corpus_files`.
 const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
 
 /// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
@@ -325,7 +325,8 @@ const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/be
 ///
 /// Deliberately a FLAT (non-recursive) read — this fn's flatness is
 /// load-bearing, not incidental: the corpus is a single flat drawer of idiom
-/// exemplars by design (`examples_smoke.rs::corpus_ri_files()`, line 636's
+/// exemplars by design
+/// (`harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`'s doc
 /// comment), and a nested subdirectory appearing here is a structural change
 /// that should be reviewed rather than silently absorbed by switching this to
 /// a recursive walk.
@@ -485,12 +486,15 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
 
 /// Guards a not-yet-existing `EXPECTED_INDETERMINATE`: every entry names a
 /// file that actually exists in `corpus_files()` (mirrors
-/// `examples_smoke.rs::skip_set_entries_exist_under_examples_dir`, line 248 —
+/// `harness_compilation_surface/examples_smoke.rs::skip_set_entries_exist_under_examples_dir` —
 /// an entry left behind after its exemplar is renamed or deleted must fail
 /// loudly instead of silently never matching), no duplicate `(file, index)`
 /// pairs, and every entry's reason string is non-empty — the
 /// auditable-justification contract `SKIP_SET`'s `(&str, &str)` tuple shape
-/// encodes (`examples_smoke.rs:20-22`).
+/// encodes (`harness_compilation_surface/examples_smoke.rs`'s `SKIP_SET` doc
+/// comment: "The reason is mandatory — the `(&str, &str)` tuple shape forces
+/// every entry to carry a one-line human-readable justification, making
+/// skips auditable at review time.").
 #[test]
 fn expected_indeterminate_entries_are_well_formed() {
     let files = corpus_files();
