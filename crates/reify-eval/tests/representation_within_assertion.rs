@@ -1482,14 +1482,18 @@ structure SphereCheck {
 
 /// Fine-precision variant: `#precision(0.3mm)` — sampled deviation 6.202e-4 m,
 /// below the `1mm` (1e-3 m) bound (1.61x inside) → used by BT7 to verify
-/// `Satisfied`.
+/// `Satisfied`. That value and its margin are OWNED by
+/// `crates/reify-cli/tests/fixtures/dfm_with_repr_within.ri`'s "#precision and
+/// the RepresentationWithin margin" header note (a separate fixture over the
+/// identical geometry) — retune there first, then mirror the result into this
+/// constant and BT7's ceiling assertion below.
 ///
-/// **Single source of truth for these numbers.** The other sites that depend on
-/// them — `crates/reify-cli/tests/fixtures/representation_within_satisfied.ri`
-/// and its gate `crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs` —
-/// point here rather than restating the digits, so retuning this constant cannot
-/// leave a stale copy behind. BT7's pre-condition below is the only
-/// machine-checked copy.
+/// **Single source of truth for the 8-point neighbourhood grid below.**
+/// `crates/reify-cli/tests/fixtures/representation_within_satisfied.ri` and its
+/// gate `crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs` depend on
+/// this constant's Satisfied verdict and point here rather than restating
+/// digits. BT7's pre-condition below is the only machine-checked copy of this
+/// constant's own reading.
 ///
 /// Measured achieved facet-chord deviation on the 1 m sphere, by requested
 /// deflection (each value reproduced on a second independent run):
@@ -1549,13 +1553,15 @@ structure SphereCheck {
 /// 0.48mm clears the bound by only 0.12%, and 0.50mm was rejected because it
 /// clears only by landing on a tooth, with envelope violations on both sides.
 ///
-/// If BT7's `achieved` ever reads below 4e-4 m, that is this same
-/// tooth-landing risk manifesting at 0.3mm: NOT a failure — BT7 asserts only
-/// the 8e-4 m ceiling, so this is not test-visible on its own — but
-/// re-measure this sweep before trusting it, and if it is a tooth, RETUNE
-/// #precision back onto the envelope rather than merely re-measuring in
-/// place — a value sitting on a tooth is one retune away from the envelope,
-/// which near the bound violates.
+/// Nothing in this suite currently signals a tooth landing at 0.3mm — BT7
+/// asserts only the 8e-4 m ceiling, which a tooth reading (~4.7e-4 m) still
+/// clears, so the test stays green either way (see BT7's low-side comment
+/// below for why that gap is deliberate). When you next re-derive this sweep
+/// by hand (recipe: `dfm_with_repr_within.ri`'s header note) and `achieved`
+/// reads below 4e-4 m, that IS this same tooth-landing risk manifesting at
+/// 0.3mm: RETUNE #precision back onto the envelope rather than accept the
+/// reading in place — a value sitting on a tooth is one retune away from the
+/// envelope, which near the bound violates.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
@@ -1661,20 +1667,17 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // eroding the 1.61x margin fails here loudly — naming the measured value —
     // instead of silently flipping to a mysterious `Violated`.
     //
-    // The low side is intentionally unguarded — no assertion and, as of this
-    // revision, no diagnostic either. A build that meshes FINER than when
-    // this was tuned still yields the correct verdict, so failing the gate on
-    // it would turn a fully-correct environment red for no contractual
-    // reason (an earlier revision asserted a two-sided [4e-4, 8e-4] band and
-    // did exactly that). A later revision replaced that assert with an
-    // `eprintln!` here instead, but that fires inside a still-PASSING test,
-    // so it is visible solely under `cargo test -- --nocapture` — the repo's
-    // cargo output-condensation wrapper (CLAUDE.md) collapses a normal run to
-    // `PASS: N | FAIL: M | SKIP: K` and hides it entirely. A dead signal
-    // reads as coverage that isn't there, so it was removed rather than kept
-    // as decoration. The tooth-landing interpretation and retune guidance
-    // live on `OCCT_SOURCE_FINE`'s doc comment above, where a reader
-    // actually retuning #precision will see them.
+    // The low side is intentionally unguarded — no assertion, no diagnostic.
+    // A build that meshes FINER than when this was tuned still yields the
+    // correct verdict, so failing the gate on it would turn a fully-correct
+    // environment red for no contractual reason — a two-sided band would do
+    // exactly that. An `eprintln!` was considered instead of a hard assert,
+    // but it would fire inside a still-PASSING test: visible solely under
+    // `cargo test -- --nocapture`, which the repo's cargo output-condensation
+    // wrapper (CLAUDE.md) collapses away by default. A dead signal reads as
+    // coverage that isn't there, so none is kept here; the tooth-landing
+    // interpretation and manual re-derivation guidance live on
+    // `OCCT_SOURCE_FINE`'s doc comment above.
     assert!(
         achieved < 8e-4,
         "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must stay under \
