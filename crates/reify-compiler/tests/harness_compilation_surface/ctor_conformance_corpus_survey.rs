@@ -42,8 +42,10 @@
 //! enumeration, span→line, D9 classification, the markdown renderer, the stamp
 //! guard — has no remaining product, yet stays compiled and run on every merge
 //! gate. That is a real standing cost in a compile unit whose own header cites
-//! `docs/prds/merge-gate-compile-cost.md`: it takes this unit to ~14.4k lines
-//! against the 20,000 `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`.
+//! `docs/prds/merge-gate-compile-cost.md`: it takes this unit to 14,629 lines
+//! against the 20,000 `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`
+//! (raw `wc -l` summed over the root and its `#[path]` members, which is how
+//! rule (a) there measures — re-measured on this branch, not carried over).
 //!
 //! Retirement is therefore a THREE-FILE deletion, and all three must go
 //! together:
