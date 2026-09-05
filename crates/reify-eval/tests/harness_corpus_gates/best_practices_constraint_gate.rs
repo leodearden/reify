@@ -46,8 +46,12 @@
 //! 24 `#[test]` fns to stay under the verify pipeline's heartbeat-idle
 //! backstop, this gate runs as a single test. `examples/best_practices/` is
 //! ~7 files, and the full in-process sweep measures ~0.3s — far short of the
-//! backstop, so sharding would be dead weight (`examples_smoke.rs` is
-//! likewise un-sharded on purpose, for the same reason).
+//! backstop, so sharding would be dead weight
+//! (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+//! is likewise un-sharded on purpose, for the same reason). Later mentions of
+//! `examples_smoke.rs` elsewhere in this file are deliberately left bare —
+//! this is the one full-path citation, and repeating it every time would add
+//! noise, not information.
 
 use reify_core::ConstraintNodeId;
 use reify_ir::Satisfaction;
