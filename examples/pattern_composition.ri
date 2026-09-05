@@ -19,10 +19,16 @@
 //   - `linear_pattern` / `linear_pattern_2d` SPACING slots are ALSO checked at
 //     COMPILE time since task 5652 — a bare number there is a hard
 //     ArgTypeMismatch at `reify check`.
-//   - `arbitrary_pattern` offsets (used by PatternComposed below) and
-//     `circular_pattern` / `mirror` origins have NO compile-time slot; task 5652
-//     deliberately deferred them (deferral tracked as #5662), so
-//     a bare number there is caught only by the EVAL-layer gate.
+//   - `circular_pattern` / `mirror` ORIGIN triples (`ox`/`oy`/`oz`) gained a
+//     compile-time slot too, in task 5662 — but ONLY at the scalar arities
+//     `circular_pattern(…, 9 args)` and `mirror(…, 7 args)`. The decoded-VALUE
+//     forms `mirror(g, plane_xy(0mm))` and `circular_pattern(g, axis_z(…), n, a)`
+//     stay slot-free by construction, because a composite `Value` never passes
+//     through a positional argument index for the slot table to key on; a bare
+//     number inside one of those producers is caught only at EVAL.
+//   - `arbitrary_pattern` offsets (used by PatternComposed below) still have NO
+//     compile-time slot at all, so a bare number there is caught only by the
+//     EVAL-layer gate.
 // The compile check COMPLEMENTS the eval gate, it never replaces it — a
 // dynamically-typed operand is skipped at compile time by design and still
 // relies on eval. Both layers are load-bearing (crates/reify-compiler/src/

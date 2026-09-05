@@ -1015,3 +1015,155 @@ fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
         compiled.diagnostics
     );
 }
+
+// ── Task 5662: mirror / circular_pattern ORIGIN triples, end to end ──────────
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md`, the pattern-origin row
+// task 5652 deferred and this task closes. Same straddle shape as the `revolve`
+// and `rotate_around` rows above: the origin is a point in space (gated), the
+// direction components beside it are dimensionless unit vectors (never gated).
+
+/// SIGNAL — a bare 7-arg `mirror` plane ORIGIN is rejected, naming `ox`/`oy`/`oz`.
+///
+/// Three errors, not six: the plane NORMAL `1, 0, 0` in this same call is a
+/// dimensionless unit vector and must stay silent.
+#[test]
+fn mirror_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "mirror: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "mirror: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "mirror: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the plane ORIGIN is gated — the plane normal must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare 9-arg `circular_pattern` axis ORIGIN is rejected, naming
+/// `ox`/`oy`/`oz`.
+///
+/// Three errors, not seven: the axis DIRECTION `0, 0, 1`, the Int `count` and
+/// the `60deg` angle in this same call must all stay silent. The angle belongs
+/// to `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
+/// decree, so its silence here is a scope boundary, not an oversight.
+#[test]
+fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled =
+        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "circular_pattern: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the axis ORIGIN is gated — the direction, the count and the angle \
+         must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — dimensioned scalar origins on both builtins produce NO
+/// `ArgTypeMismatch`.
+///
+/// A no-error guard that holds both BEFORE and after the slots land (this
+/// file's Case-2/4/5 convention): before, because there is no slot to fire;
+/// after, because the argument is correct. Its job is to prove the new arms
+/// reject the bare form specifically, not the shape of the call.
+#[test]
+fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let m = mirror(b, 0mm, 0mm, 0mm, 1, 0, 0)\n\
+         \x20   let p = circular_pattern(b, 12mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "dimensioned origin components must not trip any slot.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — the task-5745 decoded-VALUE forms produce NO
+/// `ArgTypeMismatch`, because their arities expose no slots at all.
+///
+/// Also a no-error guard holding both before and after — but the one that
+/// matters most, because index 1 EXISTS in both of these calls, holding a
+/// `Plane` / an `Axis`. It is the arity guard on each arm, not the
+/// `compiled_args.get(index)` bounds check, that keeps them quiet; an
+/// arity-agnostic `ox@1 LENGTH` slot would demand a Length of a Plane here, on
+/// correct code.
+#[test]
+fn pattern_value_forms_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let m = mirror(b, plane_xy(0mm))\n\
+         \x20   let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 60deg)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "the decoded-value forms expose no slots, so no ArgTypeMismatch may \
+         fire.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// MEASURED DIVERGENCE — `circular_pattern`'s compile slot names the SURFACE
+/// builtin, while the eval layer names the LOWERED KIND; `mirror` does not
+/// diverge at all.
+///
+/// The twin of `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind`,
+/// and the second instance of that class. `circular_pattern` lowers to
+/// `PatternKind::Circular`, whose `Display` — the eval layer's `kind_label` — is
+/// `"circular"` (`crates/reify-compiler/src/types.rs:1748`), so eval says
+/// `circular:` where this layer says `circular_pattern:`. `PatternKind::Mirror`
+/// displays as `"mirror"` (types.rs:1749), so for `mirror` the two layers agree
+/// byte-for-byte and decision D9's "byte-identical" wording holds unmodified.
+///
+/// Both halves are pinned — the divergence AND its absence — because a reader
+/// who saw only the divergence might "fix" it in the wrong direction, by
+/// teaching the compile layer to report the lowered kind for both.
+#[test]
+fn circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind() {
+    let compiled =
+        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for message in &messages {
+        assert!(
+            message.starts_with("circular_pattern: "),
+            "the compile slot must name the SURFACE call `circular_pattern`, not \
+             the lowered `circular` kind the eval layer reports; got {message:?}"
+        );
+    }
+    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
+
+    // The negative half: `mirror` is NOT an alias, so no prefix divergence.
+    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for message in &messages {
+        assert!(
+            message.starts_with("mirror: "),
+            "`PatternKind::Mirror` displays as \"mirror\", so the compile and eval \
+             layers must agree byte-for-byte here; got {message:?}"
+        );
+    }
+    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
+}

@@ -35,6 +35,10 @@
 //!   slot. It hosts here only because the mechanism is generic (name-keyed),
 //!   which avoids standing up a parallel checker for one slot.
 //! - Pattern SPACING (task 5652) — `linear_pattern` / `linear_pattern_2d`.
+//! - Pattern ORIGIN triples (task 5662) — `mirror`'s 7-arg and
+//!   `circular_pattern`'s 9-arg scalar forms, `ox`/`oy`/`oz`. The row task 5652
+//!   deferred; it mirrors the `pattern` rows of `arg_acceptance.rs`' family
+//!   table (mirror plane, task 5214; circular axis, task 5350).
 //! - The Contract C LENGTH families of PRD
 //!   `docs/prds/v0_6/units-length-gate-completion.md` leaf η (task 5750):
 //!   PRIMITIVE and PROFILE producers, MODIFY, SWEEP, and the TRANSFORM row
@@ -56,8 +60,11 @@
 //!   `extrude_infinite`'s `dx`/`dy`/`dz`) is dimensionless and legitimately
 //!   bare in correct `.ri`, so a slot there would reject valid code. Stated
 //!   binding at `crates/reify-eval/src/arg_acceptance.rs`'s "unit-vector
-//!   DIRECTIONS" paragraph. The three builtins whose arguments STRADDLE this
-//!   line carry the split on their own arm.
+//!   DIRECTIONS" paragraph. The builtins whose arguments STRADDLE this line
+//!   carry the split on their own arm — deliberately UNCOUNTED here, because a
+//!   tally stated away from the arms is exactly the second copy nothing
+//!   machine-checks that this section opens by warning against. It read
+//!   "three" until task 5662 added the fourth and fifth.
 //! - **COUNTS, face INDICES and dimensionless RATIOS are never slots.** A
 //!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
 //!   error, not a dimension one, and a LENGTH slot on a ratio would reject
@@ -83,17 +90,6 @@
 //! - **Names with no dimensioned-scalar argument have no arm at all**
 //!   (`split`, `face`, `edge`, `solid_body`, `volume`, `edges`, `faces`, …).
 //!
-//! One position is eligible under every rule above and still absent, on a
-//! recorded decision rather than by omission:
-//!
-//! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
-//!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED
-//!   by task 5652: LENGTH slots there turn at least six existing valid-today
-//!   call sites into hard compile errors, spanning `reify-eval` tests and
-//!   `examples/` — a separable breaking-surface migration outside 5652's
-//!   scope. TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call
-//!   sites.
-//!
 //! # Contract C positions this table deliberately does NOT cover (task 5750)
 //!
 //! Task 5750 (units-length η) closed the four families its PRD leaf names —
@@ -102,9 +98,11 @@
 //! left to be rediscovered, and each entry states WHY, so a reader can tell a
 //! decision from an oversight. These are PROSE, not `TODO`s, on purpose: under
 //! the repo's PTODO grammar a `TODO` must cite a live non-terminal task, and
-//! only the `mirror`/`circular_pattern` row above has one (`#5662`). Task 5752
-//! (leaf ι, the Contract C closure guard) is the backstop that will surface any
-//! of these if they are ever forgotten.
+//! NONE of these has one. (The `mirror`/`circular_pattern` row was the last
+//! that did; task 5662 landed those slots, so that row moved UP into the
+//! COVERED list above and its `TODO` retired with it — this table now carries
+//! no live `TODO` at all.) Task 5752 (leaf ι, the Contract C closure guard) is the
+//! backstop that will surface any of these if they are ever forgotten.
 //!
 //! - The task-5623 CURVE row — `line_segment`'s endpoints `x1`…`z2`, `arc`'s
 //!   centre `cx`/`cy`/`cz` plus its `radius`, and `helix`'s
@@ -519,6 +517,108 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 },
             },
         ],
+
+        // ── Pattern CSG producers: the ORIGIN triple is a Length (task 5662) ──
+        //
+        // The pattern-origin row task 5652 deferred (it turned six then-valid
+        // call sites into hard compile errors, a separable breaking-surface
+        // migration) and this task closes. These mirror, at the compile layer,
+        // the `pattern` rows of `crates/reify-eval/src/arg_acceptance.rs`'s
+        // family table: the mirror-plane origin (task 5214) and the
+        // circular-pattern axis origin (task 5350). Arg names are COPIED from
+        // `geometry.rs`'s lowering sites — the `("ox".to_string(), …)` triples
+        // in its n==7 and n==9 arms — never invented, so the two layers word one
+        // authoring mistake identically (PRD decision D9).
+        //
+        // mirror(target, ox, oy, oz, nx, ny, nz)          — 7-arg scalar form
+        // mirror(target, plane)                           — 2-arg value form
+        //   args1-3: the mirror-plane ORIGIN → LENGTH ("Length"). A point in
+        //            space, so a bare `10` is silently read as 10 SI METRES —
+        //            1000× a plausible 10 mm offset.
+        //   args4-6: the plane NORMAL `nx`/`ny`/`nz` — a DIMENSIONLESS unit
+        //            vector, deliberately UNSLOTTED. Legitimately bare in
+        //            correct `.ri` (a normal's scale is irrelevant to the plane
+        //            it defines), so a LENGTH slot would reject valid code.
+        //            This is the FOURTH builtin whose args STRADDLE the
+        //            ORIGIN-vs-DIRECTION boundary, after `half_space`,
+        //            `revolve` and `rotate_around` — the split is stated binding
+        //            at `arg_acceptance.rs`' "unit-vector DIRECTIONS" paragraph.
+        //            Pinned by `mirror_slots_the_origin_but_never_the_normal`.
+        //
+        // The `arg_count == 7` guard is SEMANTICALLY LOAD-BEARING, not
+        // forward-compat: index 1 is `ox` at arity 7 but `plane` at arity 2, so
+        // an arity-agnostic slot would demand a Length of a Plane on correct
+        // code — the same class of false positive the `linear_pattern_2d` and
+        // `fillet` guards exist to prevent. Note this is NOT justified by "the
+        // eval layer covers the value form": that hole was task 5745's and is
+        // separately closed. The justification is that index 1 denotes a
+        // DIFFERENT PARAMETER in each overload.
+        "mirror" if arg_count == 7 => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+        ] },
+
+        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)  — 9-arg
+        // circular_pattern(target, axis, count, angle)                    — 4-arg
+        //   args1-3: the rotation-axis ORIGIN → LENGTH ("Length").
+        //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
+        //            vector, UNSLOTTED for the same reason as `mirror`'s normal.
+        //            The FIFTH and widest straddle case.
+        //   arg7:    `count` — an Int. A wrong count is an arity/semantic error,
+        //            not a dimension error.
+        //   arg8:    `angle` — owned by
+        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
+        //            binding seam decree; gating it here would be a scope
+        //            violation.
+        //   Pinned by
+        //   `circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle`.
+        //
+        // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
+        // arity 4.
+        //
+        // MEASURED PREFIX DIVERGENCE. This layer is keyed on the CALL, so it
+        // reports the SURFACE name `circular_pattern:`, while the eval layer
+        // renders its `{builtin}` from `PatternKind::Circular`'s `Display` — its
+        // `kind_label` — which is `"circular"` (`types.rs:1748`). That is the
+        // same class as the `box_centered`-vs-`box` divergence already recorded
+        // under `check_builtin_arg_types`' "# Message format", and it holds this
+        // way deliberately: reporting the name the author actually typed beats
+        // reporting a lowering detail they never wrote. `mirror` does NOT
+        // diverge — `PatternKind::Mirror` displays as `"mirror"`
+        // (`types.rs:1749`) — so the two layers agree byte-for-byte there. Both
+        // halves are pinned by
+        // `circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind`
+        // in `tests/builtin_arg_signature_tests.rs`.
+        //
+        // These two arms make `reify check` a REAL gate for these positions, not
+        // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
+        // compile `Severity::Error` and short-circuits BEFORE constraint checking
+        // and before `build()`. Pinned at the CLI seam by
+        // `check_rejects_bare_scalar_mirror_origin_before_reaching_build`.
+        //
+        // STRUCTURAL EXCLUSION OF THE DECODED-VALUE ROUTE — the AUTHORITATIVE
+        // statement, kept here beside the code it describes per this module's
+        // own header rule. Four other sites need it and POINT here rather than
+        // restate it: `reify-cli/tests/fixtures/mirror_bare_origin{,_purpose}.ri`,
+        // `cli_check.rs`' two build-diagnostic tests, and
+        // `reify-eval/tests/mirror_circular_value_forms_e2e.rs`.
+        //
+        // A bare origin reaching `mirror` / `circular_pattern` through the value
+        // form — `mirror(g, plane_yz(0))`, `circular_pattern(g, axis_z(…), n, a)`
+        // — arrives already assembled into a composite `Value` by a stdlib
+        // producer, so it never passes through a positional argument index for
+        // this name-and-arity-keyed table to key on. NO arm can gate it: the
+        // exclusion is structural, not a gap someone forgot to fill, so it stays
+        // a BUILD-only diagnostic for as long as the table stays index-keyed.
+        // That is why task 5748's two CLI fixtures had to move onto that route
+        // when these arms landed — the short-circuit above would otherwise have
+        // destroyed every assertion they carry.
+        "circular_pattern" if arg_count == 9 => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+        ] },
 
         // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
         //
@@ -1103,6 +1203,16 @@ mod tests {
     ///   Same story again: both are registered in `GEOMETRY_FUNCTION_NAMES`,
     ///   neither is a topology selector, and neither may be moved into the
     ///   selector slice.
+    ///
+    /// - The task-5662 PATTERN ORIGIN producers — `mirror` and
+    ///   `circular_pattern`. Same story a third time: both are CSG producers
+    ///   registered in `GEOMETRY_FUNCTION_NAMES`, neither is a topology
+    ///   selector, and neither may be moved into
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset assertion —
+    ///   doing so would route every `mirror(...)` call through the selector arm
+    ///   at `expr.rs:3243`, whose
+    ///   `topology_selector_result_type(name).expect(...)` has no entry for
+    ///   them and would panic.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
@@ -1142,6 +1252,9 @@ mod tests {
         // Task 5750 — transforms.
         "translate",
         "rotate_around",
+        // Task 5662 — pattern origin triples.
+        "mirror",
+        "circular_pattern",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -1995,7 +2108,15 @@ mod tests {
         // list: adding them to GEOMETRY_TOPOLOGY_SELECTOR_NAMES would satisfy the
         // subset assertion above while actively breaking dispatch — see
         // NON_SELECTOR_ARG_SLOT_KEYS for the mechanism.
-        for &name in &["linear_pattern", "linear_pattern_2d"] {
+        for &name in &[
+            "linear_pattern",
+            "linear_pattern_2d",
+            // Task 5662 — same mechanism, and the one where a mis-move would
+            // panic rather than merely misreport: `expr.rs`' selector arm calls
+            // `topology_selector_result_type(name).expect(...)`.
+            "mirror",
+            "circular_pattern",
+        ] {
             assert!(
                 !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
                 "{:?} must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES — it is a CSG \
@@ -2729,6 +2850,345 @@ mod tests {
             diags.len(),
             2,
             "both spacings bare → one diagnostic each, got: {:?}",
+            diags
+        );
+    }
+
+    // ── mirror / circular_pattern ORIGIN LENGTH slots (task 5662) ────────────
+
+    /// Build a 7-arg `mirror(target, ox, oy, oz, nx, ny, nz)` arg list with the
+    /// given origin-component type. The normal components 4-6 are deliberately
+    /// unslotted — see the `mirror` arm of [`builtin_arg_slots`].
+    fn mirror_args(origin: Type) -> Vec<CompiledExpr> {
+        vec![
+            arg_expr(Type::Geometry),               // 0 target
+            arg_expr(origin.clone()),               // 1 ox
+            arg_expr(origin.clone()),               // 2 oy
+            arg_expr(origin),                       // 3 oz
+            arg_expr(Type::dimensionless_scalar()), // 4 nx
+            arg_expr(Type::dimensionless_scalar()), // 5 ny
+            arg_expr(Type::dimensionless_scalar()), // 6 nz
+        ]
+    }
+
+    /// Build a 9-arg
+    /// `circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)` arg list
+    /// with the given origin-component type.
+    fn circular_pattern_args(origin: Type) -> Vec<CompiledExpr> {
+        vec![
+            arg_expr(Type::Geometry),               // 0 target
+            arg_expr(origin.clone()),               // 1 ox
+            arg_expr(origin.clone()),               // 2 oy
+            arg_expr(origin),                       // 3 oz
+            arg_expr(Type::dimensionless_scalar()), // 4 ax
+            arg_expr(Type::dimensionless_scalar()), // 5 ay
+            arg_expr(Type::dimensionless_scalar()), // 6 az
+            arg_expr(Type::Int),                    // 7 count
+            arg_expr(Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            }), // 8 angle
+        ]
+    }
+
+    /// mirror @ arity 7 → ox@1 / oy@2 / oz@3 (LENGTH); every other arity → empty.
+    ///
+    /// Arity 2 gets its own assertion because it is the CONCRETE false positive
+    /// the guard prevents, not a hypothetical: `mirror(target, plane)` holds a
+    /// `Plane` at index 1, so an arity-agnostic `ox@1 LENGTH` slot would demand
+    /// a Length of a Plane on correct code.
+    #[test]
+    fn mirror_origin_slots_are_arity_7_only() {
+        assert_eq!(
+            builtin_arg_slots("mirror", 7),
+            vec![
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+            ],
+            "mirror(target, ox, oy, oz, nx, ny, nz) — args 1-3 are the mirror-plane \
+             ORIGIN and must be LENGTH"
+        );
+        assert!(
+            builtin_arg_slots("mirror", 2).is_empty(),
+            "at arity 2 (`mirror(target, plane)`, the task-5745 decoded-value form) \
+             index 1 is `plane`, a Plane — an ox@1 LENGTH slot would emit a FALSE \
+             ArgTypeMismatch on valid code, so arity 2 must expose NO slots"
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 7) {
+            assert!(
+                builtin_arg_slots("mirror", arity).is_empty(),
+                "mirror at arity {arity} is not the 7-arg scalar form, so it must \
+                 expose NO slots — index 1 does not denote `ox` there"
+            );
+        }
+    }
+
+    /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH); every other
+    /// arity → empty.
+    ///
+    /// Arity 4 gets its own assertion for the same reason arity 2 does on
+    /// `mirror`: `circular_pattern(target, axis, count, angle)` holds an `Axis`
+    /// at index 1.
+    #[test]
+    fn circular_pattern_origin_slots_are_arity_9_only() {
+        assert_eq!(
+            builtin_arg_slots("circular_pattern", 9),
+            vec![
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+            ],
+            "circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — \
+             args 1-3 are the rotation-axis ORIGIN and must be LENGTH"
+        );
+        assert!(
+            builtin_arg_slots("circular_pattern", 4).is_empty(),
+            "at arity 4 (`circular_pattern(target, axis, count, angle)`, the \
+             task-5745 decoded-value form) index 1 is `axis`, an Axis — an ox@1 \
+             LENGTH slot would emit a FALSE ArgTypeMismatch on valid code, so \
+             arity 4 must expose NO slots"
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 9) {
+            assert!(
+                builtin_arg_slots("circular_pattern", arity).is_empty(),
+                "circular_pattern at arity {arity} is not the 9-arg scalar form, so \
+                 it must expose NO slots — index 1 does not denote `ox` there"
+            );
+        }
+    }
+
+    /// The STRADDLE case, fourth of five: `mirror`'s 7-arg form mixes a gated
+    /// plane ORIGIN with an un-gated plane NORMAL in one argument list.
+    ///
+    /// Stated POSITIVELY as a decision rather than left to be inferred from an
+    /// absence, exactly as `half_space_slots_the_point_but_never_the_normal`
+    /// does: `nx`/`ny`/`nz` are a dimensionless unit vector whose components are
+    /// legitimately bare in correct `.ri` (a normal's scale is irrelevant to the
+    /// plane it defines), so slotting 4-6 would reject valid code.
+    #[test]
+    fn mirror_slots_the_origin_but_never_the_normal() {
+        let slotted: Vec<usize> = builtin_arg_slots("mirror", 7)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        assert_eq!(
+            slotted,
+            vec![1, 2, 3],
+            "mirror's slotted index set at arity 7 must be exactly the ORIGIN \
+             triple {{1,2,3}}; got {slotted:?}"
+        );
+        for normal_index in [4usize, 5, 6] {
+            assert!(
+                !slotted.contains(&normal_index),
+                "mirror arg{normal_index} is a plane-NORMAL component — a \
+                 dimensionless unit vector — and must stay slot-free; got slots at \
+                 {slotted:?}"
+            );
+        }
+    }
+
+    /// The STRADDLE case, fifth of five, and the widest: `circular_pattern`'s
+    /// 9-arg form carries a gated ORIGIN, an un-gated axis DIRECTION, an Int
+    /// `count` and an `angle` this leaf may not touch.
+    ///
+    /// Modelled on `revolve_slots_the_origin_but_never_the_axis_or_the_angle`:
+    ///
+    /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
+    ///   SI metres, so they are slotted;
+    /// * `ax`/`ay`/`az` are a unit vector, legitimately bare;
+    /// * `count` is an Int — a wrong count is an arity/semantic error, not a
+    ///   dimension error;
+    /// * `angle` belongs to `docs/prds/v0_6/angle-units-surface-convergence.md`
+    ///   by binding seam decree. Gating it HERE would be a scope violation.
+    #[test]
+    fn circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle() {
+        let slotted: Vec<usize> = builtin_arg_slots("circular_pattern", 9)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        assert_eq!(
+            slotted,
+            vec![1, 2, 3],
+            "circular_pattern's slotted index set at arity 9 must be exactly the \
+             ORIGIN triple {{1,2,3}}; got {slotted:?}"
+        );
+        for excluded in [4usize, 5, 6, 7, 8] {
+            assert!(
+                !slotted.contains(&excluded),
+                "circular_pattern arg{excluded} is an axis DIRECTION component, the \
+                 Int `count`, or the ANGLE — none of which this leaf may gate; got \
+                 slots at {slotted:?}"
+            );
+        }
+    }
+
+    /// CORRECT: a dimensioned `Length` origin → 0 diagnostics, both builtins.
+    #[test]
+    fn pattern_origin_length_components_give_no_error() {
+        for (name, args) in [
+            ("mirror", mirror_args(Type::length())),
+            ("circular_pattern", circular_pattern_args(Type::length())),
+        ] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+            assert!(
+                diags.is_empty(),
+                "{name}: a dimensioned Length origin must pass, got: {:?}",
+                diags
+            );
+        }
+    }
+
+    /// MISMATCH: a bare `Int` origin (`0`) → exactly 3 ArgTypeMismatch Errors,
+    /// ONE PER COMPONENT, each naming the builtin, its own component, the
+    /// expected `Length` and the migration hint.
+    ///
+    /// Three, not one: each component is an independent slot, so a copy-paste
+    /// slip that duplicated a single name across all three would still yield
+    /// three diagnostics — hence the per-component name assertion below.
+    #[test]
+    fn pattern_bare_int_origin_gives_three_errors_naming_each_component() {
+        for (name, args) in [
+            ("mirror", mirror_args(Type::Int)),
+            ("circular_pattern", circular_pattern_args(Type::Int)),
+        ] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+            assert_eq!(
+                diags.len(),
+                3,
+                "{name}: a bare origin triple must produce one diagnostic per \
+                 component, got: {:?}",
+                diags
+            );
+            for (diag, component) in diags.iter().zip(["ox", "oy", "oz"]) {
+                assert_eq!(diag.severity, Severity::Error, "{name}/{component}");
+                assert_eq!(
+                    diag.code,
+                    Some(DiagnosticCode::ArgTypeMismatch),
+                    "{name}/{component}"
+                );
+                for needle in [
+                    name,
+                    component,
+                    "expects Length",
+                    "pass a dimensioned length such as `5mm`",
+                ] {
+                    assert!(
+                        diag.message.contains(needle),
+                        "{name}/{component}: message must contain {needle:?}: {}",
+                        diag.message
+                    );
+                }
+            }
+        }
+    }
+
+    /// MISMATCH: a DIMENSIONED but WRONG-dimension origin (`0deg`) names the
+    /// expected `Length` AND the offending unit.
+    ///
+    /// Distinct from the bare-`Int` case at the CODE level, not just the source
+    /// level: a bare Int lands in `check_builtin_arg_types`' catch-all `other =>`
+    /// arm, whereas a wrong-dimension scalar goes through the
+    /// `Type::Scalar { dimension } != expected_dim` arm. Without this case that
+    /// arm is unexercised for both new slots.
+    #[test]
+    fn pattern_wrong_dimension_origin_names_length_and_actual_unit() {
+        let angle = Type::Scalar {
+            dimension: DimensionVector::ANGLE,
+        };
+        for (name, args) in [
+            ("mirror", mirror_args(angle.clone())),
+            ("circular_pattern", circular_pattern_args(angle.clone())),
+        ] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+            assert_eq!(
+                diags.len(),
+                3,
+                "{name}: expected 3 diagnostics, got: {:?}",
+                diags
+            );
+            for diag in &diags {
+                assert_eq!(diag.severity, Severity::Error);
+                assert_eq!(diag.code, Some(DiagnosticCode::ArgTypeMismatch));
+                for needle in ["expects Length", "got Scalar[rad]"] {
+                    assert!(
+                        diag.message.contains(needle),
+                        "{name}: message must contain {needle:?} so the user can see \
+                         WHICH unit was wrong, not merely that one was: {}",
+                        diag.message
+                    );
+                }
+            }
+        }
+    }
+
+    /// GRADUALISM: an unresolved `TypeParam` / poison `Error` origin → 0
+    /// diagnostics, both builtins. The executable proof of the two-layer
+    /// relationship stated in this module's "Relationship to the eval-layer
+    /// units gate" section.
+    #[test]
+    fn pattern_unresolved_origin_passes_silently() {
+        for ty in [Type::TypeParam("T".to_string()), Type::Error] {
+            for (name, args) in [
+                ("mirror", mirror_args(ty.clone())),
+                ("circular_pattern", circular_pattern_args(ty.clone())),
+            ] {
+                let mut diags = Vec::new();
+                check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+                assert!(
+                    diags.is_empty(),
+                    "{name}: a {ty} origin must pass silently (gradualism) — the \
+                     eval-layer gate stays the backstop; got: {:?}",
+                    diags
+                );
+            }
+        }
+    }
+
+    /// The ARITY GUARD, not the `compiled_args.get(index)` bounds check, is what
+    /// keeps the two decoded-VALUE forms quiet.
+    ///
+    /// This is the distinction that matters, and it is why the guard is
+    /// semantically load-bearing rather than mere forward-compat: both value
+    /// forms DO have an index 1, holding a `Plane` / an `Axis`. A definitely-
+    /// wrong type there produces nothing only because the arm never matches.
+    #[test]
+    fn pattern_value_form_arities_give_no_diagnostics() {
+        // mirror(target, plane) — the task-5745 decoded-value form.
+        let mirror_value_form = vec![
+            arg_expr(Type::Geometry), // 0 target
+            arg_expr(Type::Int),      // 1 plane — definitely wrong, NOT checked here
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("mirror", &mirror_value_form, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "a 2-arg mirror exposes no slots even though index 1 EXISTS, got: {:?}",
+            diags
+        );
+
+        // circular_pattern(target, axis, count, angle).
+        let circular_value_form = vec![
+            arg_expr(Type::Geometry), // 0 target
+            arg_expr(Type::Int),      // 1 axis — definitely wrong, NOT checked here
+            arg_expr(Type::Int),      // 2 count
+            arg_expr(Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            }), // 3 angle
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "circular_pattern",
+            &circular_value_form,
+            dummy_span(),
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "a 4-arg circular_pattern exposes no slots even though index 1 EXISTS, \
+             got: {:?}",
             diags
         );
     }
