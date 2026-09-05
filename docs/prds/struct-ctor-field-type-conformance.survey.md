@@ -1,10 +1,10 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `1a40869c95ac506fc6c80939efb3c994201dde64`
+**Base commit:** `f36afd54efbc8737bd1647df11f4fc0245625911`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
 **Sites:** 18
-**Corpus:** 677 tracked `.ri`; 672 surveyed, 5 not surveyed, 72 partial
+**Corpus:** 686 tracked `.ri`; 681 surveyed, 5 not surveyed, 73 partial
 
 This is a point-in-time **snapshot**, not a freshness-gated golden file. γ will
 legitimately invalidate it — that is the point. Its job is to enumerate and size,
@@ -87,8 +87,8 @@ limitation 3 below before treating a row here as actionable.
 
 | site | def | def source | field | expected | found | code | severity | hint (advisory) | message |
 |---|---|---|---|---|---|---|---|---|---|
-| `examples/trajectory/printer_print_envelope.ri:172` | TOTSShaper | ctor call-site anchor | acceleration_limit | Scalar[m·s^-2] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'; pass a dimensioned Acceleration literal such as `1m/s^2` |
-| `examples/trajectory/printer_print_envelope.ri:172` | TOTSShaper | ctor call-site anchor | velocity_limit | Scalar[m·s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires type 'Scalar[m·s^-1]'; pass a dimensioned Velocity literal such as `1m/s` |
+| `examples/trajectory/printer_print_envelope.ri:179` | TOTSShaper | ctor call-site anchor | acceleration_limit | Scalar[m·s^-2] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'; pass a dimensioned Acceleration literal such as `1m/s^2` |
+| `examples/trajectory/printer_print_envelope.ri:179` | TOTSShaper | ctor call-site anchor | velocity_limit | Scalar[m·s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires type 'Scalar[m·s^-1]'; pass a dimensioned Velocity literal such as `1m/s` |
 | `tests/prd-gate/fixtures/dcr_material_dimension_silent.ri:24` | Material | ctor call-site anchor | youngs_modulus | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'youngs_modulus' has type 'Scalar[m]' but param 'youngs_modulus' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
 | `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:28` | MassProperties | ctor call-site anchor | mass | Scalar[kg] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'mass' has type 'Scalar[m]' but param 'mass' requires type 'Scalar[kg]'; pass a dimensioned Mass literal such as `1kg` |
 | `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:29` | ZVShaper | ctor call-site anchor | target_frequency | Scalar[s^-1] | Scalar[rad·s^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'target_frequency' has type 'Scalar[rad·s^-1]' but param 'target_frequency' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
@@ -130,7 +130,7 @@ with a real cost. **Triage manually before touching.**
 
 ## Coverage and limitations
 
-Of 677 tracked `.ri` members, **672 were surveyed** and **5 were not**. A further **72** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
+Of 686 tracked `.ri` members, **681 were surveyed** and **5 were not**. A further **73** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
 
 ### Not surveyed (contributed no sites)
 
@@ -178,6 +178,7 @@ Of 677 tracked `.ri` members, **672 were surveyed** and **5 were not**. A furthe
 | `examples/module_visibility/consumer.ri` | `compile-error` |
 | `examples/multi_aspect_objective_mixed.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/adt_relation_verbs.ri` | `compile-error` |
+| `tests/prd-gate/fixtures/adv_beta_undef_arith_control.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/collection_sub_at_placement_rejected.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/compiler_type_hygiene_integration_gate.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri` | `compile-error` |
