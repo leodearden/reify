@@ -115,8 +115,8 @@
 //! the file only on machines that happen to have a kernel.
 
 use reify_core::{
-    ConstraintNodeId, DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan,
-    ValueCellId,
+    ConstraintNodeId, Diagnostic, DiagnosticCode, DimensionVector, ModulePath, Severity,
+    SourceSpan, ValueCellId,
 };
 use reify_eval::{CheckResult, ConstraintCheckEntry, TessellateResult};
 use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value, ValueMap};
@@ -344,21 +344,13 @@ fn compile_dev_capstan() -> reify_compiler::CompiledModule {
     compiled
 }
 
-/// How the geometry-consumer resolution error the kernel-free surface raises by
-/// construction names its builtin — see [`check_dev_capstan`].
+/// The geometry-consumer builtin whose unresolvability on the kernel-free
+/// surface [`check_dev_capstan`] tolerates.
 ///
-/// Deliberately the backticked IDENTIFIER alone, not a sentence prefix. The
-/// emission (`detect_unresolved_geometry_consumers`,
-/// `crates/reify-eval/src/engine_eval.rs`) interpolates the consumer's name into
-/// prose that this module does not own, so pinning that prose makes a pure
-/// rewording reroute both real diagnostics into `rest`, where the `unexpected`
-/// assertion fires first and reports them under "a cell of the design stopped
-/// evaluating" — loud, but a false diagnosis, which is the failure mode this
-/// module works everywhere else to avoid. The structured half of the match
-/// (`DiagnosticCode::EvalUnresolved`) carries the "is this a resolution
-/// failure?" claim; this string only has to say WHICH builtin, and it stays
-/// sharp because every other name in the geometry-consumer family (`area`,
-/// `length`, `centroid`, …) is a different backticked token.
+/// MESSAGE TEXT ONLY — nothing matches on it. The partition there is made on
+/// `DiagnosticCode::EvalUnresolved` plus the label span's resolved cell
+/// identity, both structured, so a rewording of the emission's prose (which
+/// this module does not own) cannot reroute a diagnostic.
 const VOLUME_BUILTIN_MENTION: &str = "`volume`";
 
 /// Which cells the design file must produce those for, as `<entity>.<cell>`
@@ -385,8 +377,10 @@ const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.bod
 /// a *known-exception* list rather than the empty set: the file's
 /// `blank_volume` / `body_volume` cells call `volume()`, a geometry-consumer
 /// builtin only resolvable on the build()/tessellate() path, so this surface
-/// reports one `EvalUnresolved` error naming `volume` per cell in
-/// [`VOLUME_UNRESOLVED_CELLS`] by construction. Those are the OCCT fixture's
+/// reports one `EvalUnresolved` error per cell in [`VOLUME_UNRESOLVED_CELLS`]
+/// by construction. The exception is recognised by CELL IDENTITY (the
+/// diagnostic's label span, resolved through the compiled module's value
+/// cells), never by the emission's message text. Those are the OCCT fixture's
 /// business. `DiagnosticCode::ConstraintViolated` is routed out too — a
 /// violated constraint is a DESIGN failure, not an evaluation one, and the
 /// satisfaction gates own it (mechanism: [`Strictness`]). Every other Error is a
@@ -410,13 +404,34 @@ fn check_dev_capstan() -> CheckResult {
     let result = engine.check(compiled);
 
     {
+        // WHICH cell a diagnostic is about, structurally. The emission carries the
+        // offending cell's `span` as its label
+        // (`crates/reify-eval/src/engine_eval.rs`), so the identity is recovered by
+        // mapping that span back through the compiled module's value cells — the
+        // same compilation `result` came from, which is what
+        // [`dev_capstan_compiled`] guarantees. Nothing here reads the message: the
+        // prose is another crate's, and a rewording of it must not move a
+        // diagnostic between the two arms below.
+        let cell_by_span: HashMap<SourceSpan, &ValueCellId> = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.value_cells.iter())
+            .map(|cell| (cell.span, &cell.id))
+            .collect();
+        let labelled_cell = |d: &Diagnostic| -> Option<String> {
+            let label = d.labels.first()?;
+            let id = cell_by_span.get(&label.span)?;
+            Some(format!("{}.{}", id.entity, id.member))
+        };
+
         let (volume_errors, rest): (Vec<_>, Vec<_>) = result
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
             .partition(|d| {
                 d.code == Some(DiagnosticCode::EvalUnresolved)
-                    && d.message.contains(VOLUME_BUILTIN_MENTION)
+                    && labelled_cell(d)
+                        .is_some_and(|cell| VOLUME_UNRESOLVED_CELLS.contains(&cell.as_str()))
             });
         // The OTHER Error a healthy design file can raise here is a constraint
         // VIOLATION, co-emitted alongside the typed result. It is routed out and
@@ -430,34 +445,24 @@ fn check_dev_capstan() -> CheckResult {
         assert!(
             unexpected.is_empty(),
             "unexpected evaluation errors on the kernel-free surface of \
-             {DEV_CAPSTAN}: only the `volume()` geometry-consumer cells may fail to \
-             resolve here (constraint violations go to the satisfaction gates). \
-             Anything else means a cell of the design stopped evaluating, and this \
-             is the only place that is caught when OCCT is absent: {unexpected:#?}"
+             {DEV_CAPSTAN}: only the cells in `VOLUME_UNRESOLVED_CELLS` — the \
+             {VOLUME_BUILTIN_MENTION}() geometry consumers — may fail to resolve \
+             here (constraint violations go to the satisfaction gates). An \
+             `EvalUnresolved` on any OTHER cell lands here by design: either a \
+             {VOLUME_BUILTIN_MENTION}() cell was added and the exception list needs \
+             moving with it, or a cell of the design stopped evaluating — and this \
+             is the only place the latter is caught when OCCT is absent: \
+             {unexpected:#?}"
         );
-        // WHICH cells raised them, not merely how many. The emission names only
-        // the builtin in its message and carries the offending cell's `span` as
-        // its label (`crates/reify-eval/src/engine_eval.rs`), so the identity is
-        // recovered by mapping that span back through the compiled module's value
-        // cells — the same compilation `result` came from, which is what
-        // [`dev_capstan_compiled`] guarantees.
-        let cell_by_span: HashMap<SourceSpan, &ValueCellId> = compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.value_cells.iter())
-            .map(|cell| (cell.span, &cell.id))
-            .collect();
+        // And every listed cell really did raise one — identities, not a count.
+        // The partition above admits only cells already in the list, so this half
+        // catches a MISSING one; an EXTRA is caught by `unexpected` just above.
+        // A bare `len() == 2` pin would be satisfied by any two of them and could
+        // see neither.
         let mut got: Vec<String> = volume_errors
             .iter()
-            .map(|d| match d.labels.first() {
-                Some(label) => match cell_by_span.get(&label.span) {
-                    Some(id) => format!("{}.{}", id.entity, id.member),
-                    // Not reachable through the emission site above, which labels
-                    // the cell it iterates; report it rather than silently
-                    // dropping the diagnostic out of the comparison.
-                    None => format!("<no value cell at span {:?}>", label.span),
-                },
-                None => "<unlabelled diagnostic>".to_string(),
+            .map(|d| {
+                labelled_cell(d).expect("partitioned on the label resolving to a value cell")
             })
             .collect();
         got.sort();
@@ -468,14 +473,13 @@ fn check_dev_capstan() -> CheckResult {
         want.sort();
         assert_eq!(
             got, want,
-            "the `EvalUnresolved` errors naming {VOLUME_BUILTIN_MENTION} that \
-             {DEV_CAPSTAN} raises on the kernel-free surface must be exactly one \
-             per cell in \
-             `VOLUME_UNRESOLVED_CELLS`. A MISSING entry means that cell was dropped \
-             or renamed — the OCCT fixture's stock-removal gate would then be gating \
-             less than it reads. An EXTRA entry means a `volume()` cell was added and \
-             the list needs moving with it. A SWAP (one dropped, one added) is the \
-             case a bare count could not see at all. Raw diagnostics: \
+            "{DEV_CAPSTAN} must raise exactly one `EvalUnresolved` on the \
+             kernel-free surface per cell in `VOLUME_UNRESOLVED_CELLS`. A MISSING \
+             entry means that cell was dropped or renamed — the OCCT fixture's \
+             stock-removal gate would then be gating less than it reads. (An EXTRA \
+             {VOLUME_BUILTIN_MENTION}() cell does not reach here: it is not in the \
+             list, so it is not in this partition, and the `unexpected` assertion \
+             above reports it. A SWAP trips both halves.) Raw diagnostics: \
              {volume_errors:#?}"
         );
     }
