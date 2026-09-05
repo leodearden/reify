@@ -860,6 +860,58 @@ mod tests {
         );
     }
 
+    /// RED premise (task 7017 step 3): the helper takes the first literal
+    /// marker occurrence and has no uniqueness check, so a second real
+    /// (non-comment) declaration is silently ignored — the same
+    /// silent-wrong-pin hazard step-1/step-2 close for a commented shadow,
+    /// but for a genuine duplicate or conditionally-redefined declaration,
+    /// which comment-stripping alone does not address.
+    ///
+    /// Uses `catch_unwind` + `reify_core::panic_payload_to_string` — the
+    /// idiom already established by `wrong_tree_with_real_scope_panics`
+    /// above — rather than `#[should_panic]`, whose attribute-level
+    /// substring match cannot distinguish WHICH panic fired.
+    ///
+    /// Pure string-in/value-out — no filesystem, git, or subprocess — so
+    /// this deliberately omits this module's graceful-skip preamble.
+    #[test]
+    fn parse_exclude_crates_declaration_panics_on_multiple_declarations() {
+        let source = "EXCLUDE_CRATES = {\"first-declaration\"}\nsome other line\nEXCLUDE_CRATES = {\"second-declaration\"}\n";
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_exclude_crates_declaration(source)
+        }));
+
+        let payload = match result {
+            Ok(value) => panic!(
+                "expected parse_exclude_crates_declaration to panic on two \
+                 non-comment EXCLUDE_CRATES declarations with different \
+                 contents — silently binding the first would permanently pin \
+                 the wrong text against the Rust EXCLUDE_CRATES const while \
+                 the parity assertion kept passing — got: {value:?}"
+            ),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        assert!(
+            message.contains('2'),
+            "panicked, but the message doesn't report the observed count of \
+             2 declarations; got: {message}"
+        );
+        assert!(
+            message.contains("authoritative"),
+            "panicked, but the message doesn't name the ambiguity (which \
+             declaration is authoritative); got: {message}"
+        );
+        assert!(
+            !message.contains("has it moved or been reformatted"),
+            "panicked with the caller's not-found wording instead of a \
+             message unique to the duplicate-declaration condition — a \
+             future refactor must not collapse these two failure modes into \
+             one message; got: {message}"
+        );
+    }
+
     /// Pins `orphan_audit.rs`'s `EXCLUDE_CRATES` const against
     /// `scripts/audit-orphan-producers.sh`'s own `EXCLUDE_CRATES = {...}`
     /// declaration (the source of truth for SET MEMBERSHIP) — the
