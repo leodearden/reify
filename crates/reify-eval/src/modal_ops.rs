@@ -1162,8 +1162,13 @@ pub(crate) struct ModalTrampolineRun {
 /// `Value::StructureInstance` (6 fields, α struct-def; `StructureTypeId(u32::MAX)`
 /// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Scalar<Frequency>(Hz),
 /// shape: List<Vector3<Dimensionless>>, participation_mass: Real, damping_ratio: Real }`,
-/// where `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0
-/// for `NoDamping`). `Mode.shape` is the mass-normalized eigenvector reshaped
+/// where `damping_ratio` is the COMPOSED ratio
+/// `ζ_i = ζ_material + (α + β·ω_i²)/(2·ω_i)` (task #6878): the
+/// modal-strain-energy term contributed by `MaterialDamping` plus the Rayleigh
+/// term, summed through `total_damping_ratio`, which floors the WHOLE value to
+/// `0.0` below `MIN_OMEGA_FOR_DAMPING`. It is 0 for `NoDamping`, and reduces to
+/// the plain Rayleigh ratio for every pre-#6878 descriptor (`ζ_material == 0`).
+/// `Mode.shape` is the mass-normalized eigenvector reshaped
 /// from `phi_full` (length `3·n_nodes`) into `n_nodes` per-node `Vector3`,
 /// `(0,0,0)` at every Dirichlet-constrained node.
 ///
@@ -3080,6 +3085,11 @@ enum DampingKind {
     /// docs/prds/v0_6/damped-modal-bonded-heterogeneous.md §C5):
     /// ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + ζ_extra(ω_i).
     ///
+    /// That closed form is the FLEXIBLE-band value. This variant selects the
+    /// value source; it does not evaluate it, and in particular it does not own
+    /// the near-zero-ω floor — `total_damping_ratio` applies that to both terms
+    /// at once, so a rigid-body mode (Σ_e SE_e = 0, ratio 0/0) reports ζ = 0.
+    ///
     /// `extra` is the classified ADDITIVE companion descriptor, carried rather
     /// than pre-flattened to an `(α, β)` pair: the stdlib types that slot as the
     /// trait `DampingDescriptor`, so it accepts refinements this trampoline does
@@ -3223,11 +3233,17 @@ fn extract_damping(val: &Value) -> (f64, f64) {
 /// ONCE from the options and the material before any expensive work runs.
 ///
 /// Two INDEPENDENT contributions, summed per mode:
-///   `zeta_material` — the modal-strain-energy term, MODE-INDEPENDENT on this
-///                     path (see [`plan_modal_damping`] for why);
-///   `(alpha, beta)` — the Rayleigh coefficients, fed verbatim to the existing
-///                     `rayleigh_damping_ratio(α, β, ω)`, which is mode-dependent
-///                     through ω.
+///   `zeta_material` — the modal-strain-energy term, MODE-INDEPENDENT across the
+///                     FLEXIBLE band on this path (see [`plan_modal_damping`]
+///                     for why);
+///   `(alpha, beta)` — the Rayleigh coefficients, mode-dependent through ω.
+///
+/// The plan carries COEFFICIENTS ONLY; it does not own the near-zero-ω floor.
+/// `total_damping_ratio` does, and it floors BOTH contributions together below
+/// `MIN_OMEGA_FOR_DAMPING` — so `zeta_material` being mode-independent is a
+/// statement about the flexible band, NOT a licence to add it unguarded. A
+/// rigid-body / spurious mode stores no strain energy, making the energy ratio
+/// 0/0 (undefined, not 1), so it reports ζ = 0 rather than η/2.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ModalDampingPlan {
     zeta_material: f64,

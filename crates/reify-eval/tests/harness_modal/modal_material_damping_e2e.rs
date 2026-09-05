@@ -26,10 +26,17 @@
 //! With a SINGLE material every η_e is the same η, so the energy ratio collapses
 //! to 1 **for any mode shape whatsoever** and
 //!
-//! ζ_i = η/2  exactly, for every mode, independent of φ_i.
+//! ζ_i = η/2  exactly, for every FLEXIBLE mode, independent of φ_i.
 //!
 //! That is an algebraic identity (PRD §C5's "degenerate identity"), not a
-//! converged number: it needs no eigensolve accuracy at all. `run_modal_analysis`
+//! converged number: it needs no eigensolve accuracy at all. The derivation
+//! divides by Σ_e SE_e, so it does NOT reach ω ≈ 0: a rigid-body or spurious
+//! mode stores no strain energy, making the ratio 0/0 (undefined, not 1), and
+//! reports ζ = 0 through the shared ω-floor in `total_damping_ratio`. This
+//! fixture is fully constrained and every emitted mode is flexible — the
+//! near-zero band is pinned by
+//! `modal_ops::tests::trampoline_floors_material_damping_for_rigid_body_modes`
+//! and by the `total_damping_ratio_*` unit tests in reify-stdlib. `run_modal_analysis`
 //! reads exactly ONE material, so this fixture is that degenerate case by
 //! construction. η is read from the MODEL (`steel.loss_factor`, its own value
 //! cell) and never transcribed into an assertion.
@@ -398,9 +405,11 @@ fn material_damping_gives_half_the_loss_factor_for_every_mode() {
         );
 
         // THE IDENTITY PIN. Single-material MSE energy ratio ≡ 1 by
-        // construction (PRD §C5), so ζ = η/2 EXACTLY for every mode,
+        // construction (PRD §C5), so ζ = η/2 EXACTLY for every FLEXIBLE mode,
         // independent of mode shape. Both sides are the same single f64
-        // multiply; only fp associativity separates them.
+        // multiply; only fp associativity separates them. The
+        // `assert_physical_band` call above is what makes "flexible" true of
+        // every mode here.
         let e = rel_err(zeta, expected);
         assert!(
             e < 1e-9,
