@@ -55,23 +55,18 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 ///
 /// # Precondition: a live [`EnumNameScope`]
 ///
-/// `_enum_scope` carries no data — it is a witness that the caller has an
-/// [`EnumNameScope`] installed over the ambient `RESOLUTION_ENUM_NAMES` set
-/// (task 6416), which is what lets an enum-typed param resolve at all. The
-/// guard is built ONCE per module by [`phase_constraint_defs`] rather than once
-/// per def, because constructing it clones every name in `ctx.resolution_enums`
-/// (prelude ++ local — 38 enums from stdlib alone) into a fresh `HashSet`; the
-/// set is identical for every def in the module. Taking the witness by
-/// reference makes the requirement a compile-time obligation on the caller
-/// instead of a comment, so a future second call site cannot silently
-/// reintroduce the `ty: None` defect the scope exists to fix.
+/// An enum-typed param resolves only while an [`EnumNameScope`] is installed
+/// over the ambient `RESOLUTION_ENUM_NAMES` set; the sole caller,
+/// [`phase_constraint_defs`], installs one across its whole loop (task 6416).
+/// Without it every such param silently stores `ty: None`, which is the defect
+/// 6416 fixed. Why the scope reaches what it does — and what it does NOT reach
+/// — is argued once, on [`unresolved_alias_body_name`].
 fn compile_constraint_def(
     c: &reify_ast::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[reify_ir::EnumDef],
     trait_names: &HashSet<String>,
     structure_names: &HashSet<String>,
-    _enum_scope: &EnumNameScope,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledConstraintDef {
     // Extract @optimized target from raw syntax annotations BEFORE lowering so the
@@ -95,9 +90,8 @@ fn compile_constraint_def(
     //    (so users see the error early, not at the instantiation site).
     // 2. Store the resolved type on `CompiledConstraintParam.ty` so that
     //    `expand_constraint_inst` can check arg types at instantiation time
-    //    (task 4546 — previously the resolved type was discarded as dead weight,
-    //    per the former comment at lines 77-80, but instantiation-site type
-    //    checking now needs it).
+    //    (task 4546 — the resolved type used to be discarded as dead weight,
+    //    but instantiation-site type checking now needs it).
     // `None` (never `Type::Error`) is stored when the param is unannotated or
     // resolution fails; type resolution failure is already diagnosed below.
 
@@ -123,42 +117,18 @@ fn compile_constraint_def(
             // an error so the user sees the typo at def-compile time rather than silently
             // accepting it and getting a confusing error at the instantiation site.
             //
-            // `enum_defs` is this site's PRIVATE enum namespace, and it is now a
-            // NARROWED backstop rather than the whole story: task 6416 installs an
-            // `EnumNameScope` above (see the params-loop preamble), so the ambient
-            // set the deferred alias arm in
-            // `resolve_type_expr_with_aliases_kinded` consults is NON-empty here.
-            // Three spellings now RESOLVE through that fallback instead of merely
-            // being suppressed — MEASURED on this tree:
-            //   * the bare enum, `param g : Zq`                → Some(Enum("Zq"));
-            //   * a non-parametric enum-bodied alias, `param g : AL`
-            //     (`type AL = Zq`), and the chain `A2 -> A1 -> Zq`
-            //                                                  → Some(Enum("Zq"));
-            //   * an enum NESTED IN A PARAMETERISED BUILTIN, `param g :
-            //     Option<Zq>`                    → Some(Option(Enum("Zq"))).
-            // All three with zero diagnostics. The nested case is the one
-            // `EnumNameScope` was originally built for (see the
-            // `RESOLUTION_ENUM_NAMES` doc comment on `Option<QoIDescriptor>`) and
-            // was the only spelling that was user-visibly BROKEN here before, not
-            // merely under-typed: with the scope uninstalled it emitted a spurious
-            // `unknown type 'Option' in param 'g' of constraint def 'K'` (measured
-            // by reverting the install in-tree). The resolved values are what task
-            // 4546's arg type check in `expand_constraint_inst` consumes; it skips
-            // params whose `ty` is `None`, so populating them is precisely what
-            // made that check stop being inert for enum-typed params.
+            // `enum_defs` is this site's PRIVATE enum namespace, NARROWED by task
+            // 6416: with an `EnumNameScope` now installed by the caller, the bare
+            // (`Zq`), enum-bodied-alias (`AL`) and nested (`Option<Zq>`) spellings
+            // all RESOLVE rather than merely being suppressed here.
             //
-            // What survives here is the PARAMETERISED form, which the ambient
-            // fallback cannot reach: it is gated on `type_args.is_empty()`, while
-            // `resolve_enum_type` ignores type args entirely. So this guard is
-            // still the only thing suppressing a spurious "unknown type" for
-            // `param g : Zq<Int>` and `param g : AL<Int>` — MEASURED: both store
-            // `ty: None` with zero diagnostics today, and deleting the
-            // `resolve_enum_type` conjunct (or the alias hop below) makes them
-            // start erroring. The hop to the name the alias body ultimately spells
-            // (task 6259) is therefore still load-bearing, but its remaining
-            // consumer is exactly the parameterised alias form: with the hop
-            // removed, `param g : AL<Int>` emits "unknown type 'AL'" while the bare
-            // `AL` stays clean via the ambient fallback (measured both ways).
+            // Do NOT delete this conjunct or the alias hop below as newly
+            // redundant. What survives is the PARAMETERISED form — the ambient
+            // fallback is gated on `type_args.is_empty()` while `resolve_enum_type`
+            // ignores type args — so this is still the only thing suppressing a
+            // spurious "unknown type" for `param g : Zq<Int>` and `param g :
+            // AL<Int>`. The full measured argument, for both the reach and the
+            // residue, lives once on `unresolved_alias_body_name`.
             //
             // The enum lookup sits inside the block so the hop can be named; it
             // and the `structure_names` test are both pure predicates, so the
@@ -237,10 +207,14 @@ pub(crate) fn phase_constraint_defs(
 
     // Ambient enum-name set for constraint-def param type resolution (task
     // 6416), mirroring entity.rs's struct-param scope and functions.rs's
-    // fn-param/return scopes. Built here, once for the whole loop, rather than
-    // inside `compile_constraint_def`: the set is the same for every def in the
-    // module, and constructing it clones every name in `ctx.resolution_enums`
-    // (prelude ++ local — 38 enums from stdlib alone). Lazily, on the same
+    // fn-param/return scopes. Held in this binding for the whole loop: it is an
+    // RAII guard, so dropping it early would uninstall the set that
+    // `compile_constraint_def`'s params loop depends on.
+    //
+    // Built here, once for the whole loop, rather than inside
+    // `compile_constraint_def`: the set is the same for every def in the module,
+    // and constructing it clones every name in `ctx.resolution_enums` (prelude
+    // ++ local — 38 enums from stdlib alone). Lazily, on the same
     // first-`Declaration::Constraint` trigger as `structure_names` above, so a
     // module with zero constraint defs still allocates nothing.
     //
@@ -253,7 +227,10 @@ pub(crate) fn phase_constraint_defs(
 
     for decl in &parsed.declarations {
         if let reify_ast::Declaration::Constraint(c) = decl {
-            let scope = enum_scope.get_or_insert_with(|| {
+            // Install on first use; the returned reference is not needed — the
+            // guard acts through the thread-local, and `compile_constraint_def`
+            // documents the precondition it satisfies.
+            enum_scope.get_or_insert_with(|| {
                 EnumNameScope::new(
                     ctx.resolution_enums
                         .iter()
@@ -279,7 +256,6 @@ pub(crate) fn phase_constraint_defs(
                 &ctx.resolution_enums,
                 trait_names,
                 names,
-                scope,
                 &mut ctx.diagnostics,
             );
             ctx.constraint_defs.push(compiled);
