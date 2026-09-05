@@ -1066,8 +1066,12 @@ fn the_reserved_path_segments_are_distinct_and_sit_above_every_structural_child_
     // the reserved region cannot be walked into by counting upwards.
     assert_eq!(CALLEE_MARKER, u16::MAX, "the callee marker is the top of the range");
     assert_eq!(DEPENDENT_MARKER, u16::MAX - 1, "and the dependent marker sits directly below it");
+    // Taken over the reserved SET rather than pairwise: a third marker added
+    // to `branch_signature` belongs in this array, and once it is there this
+    // assertion is what notices that the reserved region grew.
+    const RESERVED: [u16; 2] = [CALLEE_MARKER, DEPENDENT_MARKER];
     assert_eq!(
-        CALLEE_MARKER.min(DEPENDENT_MARKER),
+        RESERVED.iter().copied().min().expect("the reserved set is non-empty"),
         u16::MAX - 1,
         "exactly two values are reserved — a third would silently shrink the index space"
     );
