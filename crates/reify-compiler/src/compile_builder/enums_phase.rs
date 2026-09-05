@@ -359,15 +359,11 @@ pub(crate) fn build_resolution_enums_from_cache(
 /// is deliberately NOT restated here — a second copy would rot the moment the
 /// install site moves, which the absorption note there says #5493 will do.
 ///
-/// One MEASURED consequence of today's placement, worth knowing before editing the
-/// first rule above: `ctx.resolution_enums` is assigned ONLY by
-/// [`build_resolution_enums_from_cache`], which runs AFTER the install site, so it
-/// is EMPTY when this function is called. Sourcing the set from it no longer yields
-/// the over-broad prelude ++ local set the rule warns about — it yields an EMPTY
-/// set, shadowing switches off wholesale, and five `enum_ctor_param_binding_tests`
-/// go red at once. The rule still states the right intent; post-#6394 that mistake
-/// is fail-LOUD rather than fail-subtle, so the single oracle named on it no longer
-/// discriminates it on its own.
+/// Before editing the first rule above: post-#6394 the mistake it warns against
+/// (sourcing the set from `ctx.resolution_enums`) is fail-LOUD, not fail-subtle.
+/// The measurement — which tests go red, and why one of them does NOT — is
+/// recorded once, on the payload-axis guard section of
+/// `enum_ctor_param_binding_tests`, and is deliberately not restated here.
 pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
     let local_structure_names: HashSet<&str> = ctx
         .seen_entity_names

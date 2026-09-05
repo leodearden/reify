@@ -590,6 +590,16 @@ pub fn compile_with_prelude_context_checked_with_config(
     //   STRUCTURE NAMES ARE EVER THREADED INTO THE ALIAS DFS, THIS INSTALL SITE MUST
     //   BE RE-EXAMINED, because the override would silently activate for alias bodies
     //   (a case PRD §5 C1 routes to #6259, not to this task).
+    //   Inert DFS is NOT the same as a shadow-blind alias, and the distinction is
+    //   MEASURED: the user-visible element type of `type Fits = List<Fit>` is decided
+    //   later, at the USE site, where the full structure set IS in scope and the
+    //   override does fire — so alias-position lowering tracks the shadow set exactly
+    //   like a direct `param f: Fit`. Oracle (added by the #6394 review pass, so the
+    //   margin above is a live assertion rather than prose alone):
+    //   `enum_ctor_param_binding_tests::alias_body_naming_shadowed_enum_agrees_with_param_position`.
+    //   That oracle would ideally ALSO be flagged where the editor who threads those
+    //   sets in is actually reading — `aliases_phase.rs` / `resolve_type_alias_expr`
+    //   — but both files are outside task #6394's lock set; left to the follow-up.
     //
     // The set-construction rules (local-only, minus local structure names) live in ONE
     // place — see `enums_phase::build_local_enum_shadow_set`.

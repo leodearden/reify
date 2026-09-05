@@ -46,6 +46,12 @@
 //!   the shadow set. Which over-broadening each one actually catches — they do not
 //!   partition the two membership rules one-for-one — is recorded on that group's
 //!   section comment.
+//! * **Alias-position coherence (green on main AND after, #6394)** —
+//!   [`alias_body_naming_shadowed_enum_agrees_with_param_position`], covering
+//!   `phase_aliases`: the one newly-covered phase whose inertness rests on a
+//!   narrow margin (the alias DFS passing empty structure sets) rather than a
+//!   structural one. It pins that alias-position lowering agrees with direct-param
+//!   lowering on both sides of the local-structure subtraction.
 //!
 //! A failure in the last three groups is a BEHAVIOUR CHANGE, not an unimplemented
 //! feature.
@@ -565,6 +571,113 @@ enum Boxed { B { f: Fit } }
         Type::StructureRef("Fit".to_string()),
         "a same-module `structure def Fit` must still beat a same-module \
          `enum Fit` in a variant payload position; got {f:?}"
+    );
+}
+
+// ── Alias-position coherence (#6394 hoist, `phase_aliases`) ──────────────────
+//
+// Green BEFORE and AFTER the hoist — a conservation guard, not a red pin. It
+// exists because `phase_aliases` is one of the four phases the #6394 hoist
+// newly runs under the live `LocalEnumShadowScope`, and it was the only one of
+// the four whose inertness rests on a NARROW margin rather than a structural
+// one: `resolve_alias_dfs` → `type_resolution::resolve_type_alias_expr` →
+// `resolve_parameterized_builtin_type` does reach the override's host function
+// for every inner type arg of `List`/`Set`/`Option`/`Map`/…, and is inert only
+// because that DFS passes EMPTY structure/trait/type-param sets
+// (`type_resolution.rs:1538-1539`), leaving the override's
+// `matches!(ty, Type::StructureRef(_))` conjunct unreachable. Before this test
+// that margin was prose at the install site and nothing in the suite exercised
+// an alias body naming a shadowed name.
+//
+// MEASURED, and worth stating because it corrects the obvious reading of that
+// margin: alias-position lowering is NOT insensitive to the shadow set. The DFS
+// answer is inert, but the user-visible element type is decided later, at the
+// USE site, where the full structure set is in scope and the override does
+// fire. All four shapes tracked the shadow set exactly:
+//
+//   local `enum Fit` + `type Fits = List<Fit>`      → List(Enum("Fit"))
+//   no local enum, ditto                            → List(StructureRef("Fit"))
+//   local `enum Fit` + local `structure def Fit`    → List(StructureRef("Fit"))
+//   local `structure def ThreadSystem` (prelude enum) → List(StructureRef(…))
+//
+// What the two assertions below discriminate, from counterfactual mutation of
+// `build_local_enum_shadow_set` (mutated in place, re-run), not from reasoning:
+//
+// * shape A catches shadowing switched OFF wholesale — returning an empty set
+//   flips it to `List(StructureRef("Fit"))` (measured). Note this is a SECOND
+//   fail-loud site for the `ctx.resolution_enums` swap described on the
+//   payload-axis group above, on a different axis.
+// * shape B catches the local-structure subtraction being dropped — removing
+//   the `!local_structure_names.contains(…)` filter flips it to
+//   `List(Enum("Fit"))` (measured).
+//
+// Neither shape moved under the OTHER mutation, so the pair is not redundant.
+//
+// Hypothesis (NOT measured — no such build was run): this is also the assertion
+// that would catch the hazard the install-site comment flags in capitals. If
+// real structure names were ever threaded into the alias DFS, the DFS would
+// begin baking a resolved `Fit` into the alias registry at `phase_aliases`
+// time. With the scope installed over `phase_aliases` — today's position — the
+// override fires there too and shape A should stay green; combined with a
+// LATER re-narrowing of the scope back below `phase_aliases`, the DFS would
+// bake `StructureRef("Fit")` and shape A should go red. That pairing is why
+// the guard lives here rather than in the alias suite.
+
+/// Alias-position lowering must agree with direct-param lowering about a
+/// prelude-shadowing local enum, on both sides of the local-structure
+/// subtraction.
+///
+/// Shape A pins that a `type Fits = List<Fit>` body naming a shadowed name
+/// lowers its element to `Type::Enum`, exactly as a bare `param f: Fit` does;
+/// shape B pins that a same-module `structure def Fit` still beats the local
+/// `enum Fit` through the alias. See the section comment for which mutation
+/// each one was measured to catch.
+#[test]
+fn alias_body_naming_shadowed_enum_agrees_with_param_position() {
+    // Shape A — shadowing active through the alias.
+    const SHADOWED: &str = r#"
+module test.alias_shadowed_enum
+
+enum Fit { A }
+
+type Fits = List<Fit>
+
+structure def Box {
+    param xs: Fits = []
+}
+"#;
+    let module = compile_source_with_stdlib(SHADOWED);
+    let xs = param_cell_type(&module, "Box", "xs");
+    assert_eq!(
+        xs,
+        Type::List(Box::new(Type::Enum("Fit".to_string()))),
+        "an alias body naming the shadowing local `enum Fit` must lower its \
+         element to Type::Enum, agreeing with a direct `param f: Fit`; got {xs:?}"
+    );
+
+    // Shape B — the local-structure subtraction, through the same alias.
+    const LOCAL_STRUCTURE: &str = r#"
+module test.alias_local_structure_vs_local_enum
+
+enum Fit { A }
+
+structure def Fit {
+    param x: Length = 1mm
+}
+
+type Fits = List<Fit>
+
+structure def Box {
+    param xs: Fits = []
+}
+"#;
+    let module = compile_source_with_stdlib(LOCAL_STRUCTURE);
+    let xs = param_cell_type(&module, "Box", "xs");
+    assert_eq!(
+        xs,
+        Type::List(Box::new(Type::StructureRef("Fit".to_string()))),
+        "a same-module `structure def Fit` must still beat a same-module \
+         `enum Fit` through an alias body; got {xs:?}"
     );
 }
 
