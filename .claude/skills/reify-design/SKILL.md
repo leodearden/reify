@@ -191,7 +191,7 @@ repeating.
      doesn't yet know the right answer;
    - drop it in `examples/best_practices/`.
 
-4. **Add its INDEX.md row — not optional.** `examples_smoke.rs`'s
+4. **Add its INDEX.md row — not optional.** `harness_compilation_surface/examples_smoke.rs`'s
    `best_practices_index_matches_corpus_directory` fails the build if a corpus
    file has no index entry, or an entry names a missing file. File and row land
    in one commit.
