@@ -1637,18 +1637,12 @@ constraint def K {
 
 // ── Task 6416 / step-5: absolute-value locks on the ENUM-BODIED ALIAS path ───
 //
-// Task 6259 left a parity harness at
-// `tests/harness_langcore/type_alias_compile_tests.rs` covering this same
-// constraint-def-param position, but every one of its assertions compares
-// `alias_ty` against `direct_ty` — pure PARITY, never an absolute value.
-// Reverting task 6416's `EnumNameScope` install collapses BOTH sides to `None`
-// together, so parity still holds and those tests stay GREEN. The tests that
-// most look like they guard this change are provably blind to its revert.
-//
-// The two tests below pin the ABSOLUTE post-fix value instead, which is the
-// only shape that detects the revert. Enum-bodied aliases are part of the
-// population task 6416 newly subjected to instantiation-time type checking, so
-// this is a behavioural contract, not merely extra coverage.
+// The alias spelling is also covered by task 6259's parity harness in
+// `tests/harness_langcore/type_alias_compile_tests.rs`, but only by PARITY
+// (`alias_ty` vs `direct_ty`), which a revert of 6416's `EnumNameScope` install
+// collapses to `None` on both sides — so that harness stays GREEN through the
+// revert, as its own header explains at length. The two tests below pin the
+// ABSOLUTE post-fix value, which is the shape that detects it.
 
 /// A non-parametric alias whose BODY is an enum (`type AL = Zq`) must resolve
 /// through the same ambient `RESOLUTION_ENUM_NAMES` fallback as the direct
