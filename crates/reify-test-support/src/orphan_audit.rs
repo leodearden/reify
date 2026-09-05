@@ -731,18 +731,47 @@ mod tests {
         );
     }
 
+    /// Blanks out full-line comments ahead of parsing: any line whose first
+    /// non-whitespace character is `#` becomes an empty line. One rule
+    /// covers both the shell prologue and the embedded Python heredoc body —
+    /// both use `#` for comments. A comment line is mapped to `""` rather
+    /// than dropped, so the joined view keeps the same number of lines as
+    /// `source` and any future line-number reporting can use unshifted
+    /// offsets.
+    fn strip_full_line_comments(source: &str) -> String {
+        source
+            .lines()
+            .map(|line| if line.trim_start().starts_with('#') { "" } else { line })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Hand-rolled parse of an `EXCLUDE_CRATES = {"a", "b"}`-shaped Python
     /// set-literal declaration. No `regex` dependency exists anywhere in this
     /// workspace (checked before writing this test), so a small manual scan
-    /// is used instead of pulling one in just for this. Returns `None` if no
-    /// `EXCLUDE_CRATES = {` marker is found; otherwise returns whatever names
-    /// it parsed (possibly empty), so the caller can distinguish "declaration
-    /// not found" from "declaration found but parsed empty" and fail loudly
-    /// on the latter rather than matching vacuously.
+    /// is used instead of pulling one in just for this.
+    ///
+    /// Searches a comment-stripped view of `source` (via
+    /// [`strip_full_line_comments`]): a line whose first non-whitespace
+    /// character is `#` is never treated as a declaration, so a comment that
+    /// merely illustrates the declaration in assignment form cannot shadow
+    /// the real one and get silently pinned instead. KNOWN, ACCEPTED
+    /// limitation: only FULL-LINE comments are stripped — a trailing inline
+    /// `#` comment on an otherwise-code line is not, so quoted text after a
+    /// `#` would still be scanned if it fell inside the declaration body.
+    /// That's fine at this altitude: today's real declaration is single-line
+    /// with no trailing comment.
+    ///
+    /// Returns `None` if no `EXCLUDE_CRATES = {` marker is found in the
+    /// stripped view; otherwise returns whatever names it parsed (possibly
+    /// empty), so the caller can distinguish "declaration not found" from
+    /// "declaration found but parsed empty" and fail loudly on the latter
+    /// rather than matching vacuously.
     fn parse_exclude_crates_declaration(source: &str) -> Option<Vec<String>> {
         let marker = "EXCLUDE_CRATES = {";
-        let after_marker = source.find(marker)? + marker.len();
-        let rest = &source[after_marker..];
+        let searchable = strip_full_line_comments(source);
+        let after_marker = searchable.find(marker)? + marker.len();
+        let rest = &searchable[after_marker..];
         let end = rest.find('}')?;
         let body = &rest[..end];
 
