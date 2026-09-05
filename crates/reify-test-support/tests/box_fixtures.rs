@@ -40,7 +40,7 @@ use reify_test_support::helpers::mesh_aabb;
 /// must produce the same number.
 fn enclosed_volume(mesh: &Mesh) -> f64 {
     assert!(
-        mesh.indices.len() % 3 == 0,
+        mesh.indices.len().is_multiple_of(3),
         "enclosed_volume: index buffer is not a whole number of triangles"
     );
     let node = |i: u32| -> [f64; 3] {
