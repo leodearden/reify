@@ -669,15 +669,9 @@ mod tests {
         // own output — it cannot catch a wording change made only on the
         // `engine_eval.rs` side; see [`MassPropertiesPsdDetector`]'s doc
         // comment for that drift-risk trade-off (resolved by task μ, #5062).
-        //
-        // "resolved by" is load-bearing, not stylistic: #5062 is terminal, so
-        // wording this as work still outstanding on a line that cites it is
-        // the shape PTODO lane δ-B claims (comment line + canonical cite +
-        // deferral prose => High `orphaned`, hard gate) and reds the §6.6
-        // ratchet. If natural phrasing is ever worth it, take the sanctioned
-        // §6.8 escape (`ptodo:allow`) rather than re-wording around the
-        // detector; class and rationale: PRD reify-audit-ptodo-detector.md
-        // §16 Row 2, "narrated non-deferral".
+        // #5062 is terminal — re-wording this as outstanding work needs the
+        // §6.8 inline escape (PTODO lane δ-B; §16 Row 2, "narrated
+        // non-deferral").
         let run1_messages: Vec<&str> =
             run1.diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert!(
