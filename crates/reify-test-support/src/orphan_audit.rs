@@ -741,7 +741,13 @@ mod tests {
     fn strip_full_line_comments(source: &str) -> String {
         source
             .lines()
-            .map(|line| if line.trim_start().starts_with('#') { "" } else { line })
+            .map(|line| {
+                if line.trim_start().starts_with('#') {
+                    ""
+                } else {
+                    line
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -755,12 +761,23 @@ mod tests {
     /// [`strip_full_line_comments`]): a line whose first non-whitespace
     /// character is `#` is never treated as a declaration, so a comment that
     /// merely illustrates the declaration in assignment form cannot shadow
-    /// the real one and get silently pinned instead. KNOWN, ACCEPTED
-    /// limitation: only FULL-LINE comments are stripped — a trailing inline
-    /// `#` comment on an otherwise-code line is not, so quoted text after a
-    /// `#` would still be scanned if it fell inside the declaration body.
-    /// That's fine at this altitude: today's real declaration is single-line
-    /// with no trailing comment.
+    /// the real one. Exactly one non-comment `EXCLUDE_CRATES = {` occurrence
+    /// is required: zero returns `None` (the caller reports this — it is the
+    /// only site that knows the script path), and MORE THAN ONE is a hard
+    /// `panic!` rather than silently binding the first. Both guards close the
+    /// same hazard from two directions: an identical-contents shadow — a
+    /// commented illustration, or a genuine duplicate/conditionally-redefined
+    /// declaration — would otherwise leave
+    /// `exclude_crates_const_matches_audit_script_declaration` passing while
+    /// silently pinning the wrong text against the Rust `EXCLUDE_CRATES`
+    /// const, permanently masking real drift. Neither check is redundant;
+    /// neither should be deleted as such.
+    ///
+    /// KNOWN, ACCEPTED limitation: only FULL-LINE comments are stripped — a
+    /// trailing inline `#` comment on an otherwise-code line is not, so
+    /// quoted text after a `#` would still be scanned if it fell inside the
+    /// declaration body. That's fine at this altitude: today's real
+    /// declaration is single-line with no trailing comment.
     ///
     /// Returns `None` if no `EXCLUDE_CRATES = {` marker is found in the
     /// stripped view; otherwise returns whatever names it parsed (possibly
@@ -770,6 +787,23 @@ mod tests {
     fn parse_exclude_crates_declaration(source: &str) -> Option<Vec<String>> {
         let marker = "EXCLUDE_CRATES = {";
         let searchable = strip_full_line_comments(source);
+        let occurrences = searchable.matches(marker).count();
+        if occurrences == 0 {
+            return None;
+        }
+        if occurrences > 1 {
+            panic!(
+                "found {occurrences} occurrences of `{marker}` in the source \
+                 being scanned for an EXCLUDE_CRATES declaration — this \
+                 parser cannot tell which declaration is authoritative, and \
+                 silently binding the first would risk permanently pinning \
+                 the wrong text against the Rust EXCLUDE_CRATES const while \
+                 the parity assertion keeps passing. Remove the duplicate \
+                 declaration, or teach this parser which one is \
+                 authoritative."
+            );
+        }
+
         let after_marker = searchable.find(marker)? + marker.len();
         let rest = &searchable[after_marker..];
         let end = rest.find('}')?;
