@@ -97,9 +97,12 @@
 //! Edit-path (`Engine::edit_param` / `Engine::edit_source`) dispatch coverage
 //! for task #5025 now lives in the sibling submodule
 //! `edit_path_optimized_dispatch` — moved there by task #6630 so it stays on
-//! the task/merge gate, which THIS submodule's heavy atom
-//! (`scripts/heavy-test-filter-lib.sh:99`) excludes. See that file's module
-//! doc for the full rationale.
+//! the task/merge gate, which THIS submodule's heavy atom -- the
+//! `test(/^fea_in_the_loop_producer::/)` disjunct of
+//! `REIFY_HEAVY_NEXTEST_FILTER` in `scripts/heavy-test-filter-lib.sh` --
+//! excludes. See that file's module doc for the invariant, and
+//! `tests/infra/test_heavy_filter_atoms.sh` Assertion G for the mechanism and
+//! the check that enforces it.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::ValueCellId;

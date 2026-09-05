@@ -7,38 +7,34 @@
 //!
 //! # Why this is a separate submodule (task #6630)
 //!
-//! These two guards used to live in the sibling `fea_in_the_loop_producer`
-//! submodule, beside the cold-path producer test they complement. That is
-//! where they belong topically — but it cost them their gate coverage.
+//! INVARIANT: these two guards must live in a stem that no heavy-filterset
+//! atom evicts, so they run on every task and merge gate rather than only on
+//! the asynchronous offline lane. They previously shared
+//! `fea_in_the_loop_producer` with the ~490 s producer test — where they
+//! belong topically — and were swept off the gate along with it; task #6630
+//! re-homed them here.
 //!
-//! The 7th atom of the heavy filterset (`scripts/heavy-test-filter-lib.sh:99`)
-//! is `package(reify-eval) & binary(harness_fea_solver_e2e) &
-//! test(/^fea_in_the_loop_producer::/)`. A test-scoped atom is SUBMODULE-
-//! granular, not test-granular: it evicts EVERY test in that stem off the
-//! task/merge gate (`verify.sh:740`'s `-E "not ($heavy)"`, under
-//! `REIFY_GATE_EXCLUDE_HEAVY=1`) and onto the asynchronous offline lane
-//! (`verify.sh:751`). That is correct for the ~490 s producer the atom was
-//! written for, and wrong for these two ~1.9 s guards, which merely shared its
-//! file. Measured before the move: `cargo nextest list -E "not ($heavy)"`
-//! matched ZERO of them, so a regression in either warm edit path would have
-//! surfaced only asynchronously, long after the change that broke it landed.
-//!
-//! This stem is deliberately OUTSIDE that atom, so the two guards run on every
-//! task and merge gate. `tests/infra/test_heavy_filter_atoms.sh` Assertion G is
-//! the standing guard on that property: re-homing either test into any
-//! heavy-gated stem — or deleting or renaming it — fails there, so the coverage
-//! hole #6630 closed cannot silently re-open.
+//! `tests/infra/test_heavy_filter_atoms.sh` Assertion G is the standing guard
+//! on that invariant, and is also where the MECHANISM behind it is explained
+//! (why a heavy atom evicts at submodule or whole-binary granularity rather
+//! than per test, and what that costs a cheap test sharing a file with an
+//! expensive one). That rationale is deliberately maintained in exactly one
+//! place — the check that enforces it. Read it there rather than restating it
+//! here, so the two cannot drift apart.
 //!
 //! # Edit-path coverage (task #5025)
 //!
 //! The sibling `fea_in_the_loop_producer` submodule carries the FEA
 //! end-to-end proof on the COLD build path (`Engine::eval`). It says nothing
-//! about the two WARM edit-path entry
-//! points, `Engine::edit_param` (`engine_edit.rs:1466` dispatcher
-//! construction / `:1546` `solve_with_dispatch(&problem, Some(&dispatcher))`)
-//! and `Engine::edit_source` (`:3628` / `:3708`, the same pair) — each
-//! builds its OWN `OptimizedComputeDispatcher` and passes it into its OWN
-//! call to the solver, independently of the cold path and of each other.
+//! about the two WARM edit-path entry points, `Engine::edit_param` and
+//! `Engine::edit_source` (both in `crates/reify-eval/src/engine_edit.rs`) —
+//! each builds its OWN
+//! `OptimizedComputeDispatcher::from_registry(&self.compute_registry)` and
+//! passes it into its OWN
+//! `solver.solve_with_dispatch(&problem, Some(&dispatcher))`, independently
+//! of the cold path and of each other. Those two call pairs are cited by
+//! SYMBOL rather than line number throughout this file, for the reason
+//! [`assert_edit_path_thickness_resolved`]'s doc gives.
 //! The two tests below (`edit_source_dispatches_optimized_compute_into_solver_cost_loop`,
 //! `edit_param_dispatches_optimized_compute_into_solver_cost_loop`) each pin
 //! one of those two call sites, so a regression names which site broke.
@@ -53,10 +49,13 @@
 //!
 //! That price decides the LANE, which is the whole point of this file. A
 //! 623.6 s pair could only ever have been paid on the asynchronous offline
-//! heavy lane (`verify.sh:751`) — nothing at that cost sits on a gate. The
-//! synthetic form instead costs, end-to-end per test, 0.542 s / 1.037 s /
-//! 1.554 s (`edit_param`) and 0.566 s / 1.200 s / 1.864 s (`edit_source`)
-//! across three runs on a contended 32-core host (2026-09-04, task #6630).
+//! heavy lane — nothing at that cost sits on a gate. The synthetic form
+//! instead costs, end-to-end per test, best / median / WORST across three
+//! runs on a contended 32-core host (2026-09-04, task #6630): 0.542 s /
+//! 1.037 s / 1.554 s (`edit_param`) and 0.566 s / 1.200 s / 1.864 s
+//! (`edit_source`) — i.e. the ~1.9 s worst case that
+//! `tests/infra/test_heavy_filter_atoms.sh`'s `_GATE_RESIDENT_TESTS` comment
+//! quotes as this pair's gate-affordability justification.
 //! The spread is host contention, not variance in the work; at every point in
 //! it these sit under the enclosing 233-test binary's ~2.25 s per-test mean,
 //! i.e. cheaper than the average test they run beside. That is what makes
@@ -71,8 +70,9 @@
 //! same wiring the FEA path would.
 //!
 //! `Engine::edit_check` is deliberately NOT covered by a third test: it
-//! delegates to `edit_param` first (`engine_edit.rs:4249`) and forwards
-//! `resolved_params` at `:4295`, so it inherits this wiring transitively.
+//! delegates to `edit_param` first, then forwards that call's
+//! `resolved_params` straight into its own returned `EvalResult`, so it
+//! inherits this wiring transitively.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{Severity, ValueCellId};
@@ -105,7 +105,7 @@ structure def EditProbeReading {
 // exists to exercise: `EditProbeReading()` default-constructs a `structure
 // def` whose `level` param has NO default, so it evaluates to `Undef`.
 // Without a registered compute-dispatch hook, `try_compute_dispatch`
-// (crates/reify-expr/src/lib.rs:1990-1992) returns `None` for the call
+// (`try_compute_dispatch` in crates/reify-expr/src/lib.rs) returns `None` for the call
 // below, the call falls through to ordinary body-eval, and the whole
 // expression evaluates to Undef -- mirroring
 // `crates/reify-compiler/stdlib/solver_elastic.ri:734-745`'s
@@ -128,9 +128,10 @@ structure EditPathOptimizedProbe {
 ///
 /// BEFORE deliberately does NOT declare `thickness`. An Auto cell's
 /// `content_hash` is `id_hash.combine(None)` — a pure function of the cell
-/// id — so `edit_source`'s generic carry-over branch (`engine_edit.rs`
-/// L3033-3037) restores a cell's PRIOR value across any edit that does not
-/// rename or remove it. Had `thickness` already existed in BEFORE, that
+/// id — so `edit_source`'s generic carry-over branch (the step of its cell
+/// diff that seeds `values` from every cell whose `content_hash` is unchanged,
+/// itemised in `Engine::edit_source`'s own doc comment) restores a cell's
+/// PRIOR value across any edit that does not rename or remove it. Had `thickness` already existed in BEFORE, that
 /// carry-over would mask the RED signal in `values` on the `edit_source` leg
 /// (see `edit_source_dispatches_optimized_compute_into_solver_cost_loop`
 /// below). Because it is instead a brand-new cell in the AFTER graph, it is
@@ -255,25 +256,29 @@ fn build_edit_path_engine() -> Engine {
 /// `"edit_param"`) and doubles as the symbol cited in the PRIMARY panic
 /// message below (`Engine::{path_label}`) -- deliberately a symbol, not a
 /// source line number, so the message stays accurate across future edits to
-/// `engine_edit.rs`. The call sites are still cited, with line numbers, in
-/// the module doc and in each test's own doc comment, where drift is
-/// cosmetic rather than actively misleading a debugger at panic time.
+/// `engine_edit.rs`. Task #6630 extended that same rule to the DOC comments in
+/// this file: every citation below and in the module doc names a symbol, never
+/// a `:NNNN`. The line numbers this block previously carried had drifted by up
+/// to ~470 lines while still reading as precise, which misdirects exactly the
+/// reader who trusts them — someone stepping through a failure.
 ///
 /// # Why the PRIMARY assertion is on `resolved_params`, not just `values`
 ///
 /// This is the single most likely thing a future reader "simplifies" away
 /// and silently defeats the guard. `edit_param`'s `SolveResult::Infeasible`
-/// arm (engine_edit.rs ~L1593) and `edit_source`'s (~L3751) only do
+/// arm and `edit_source`'s (each the `SolveResult::Infeasible` match arm
+/// beside that path's own `solve_with_dispatch` call) only do
 /// `diagnostics.extend(solver_diags)` -- neither writes anything back nor
-/// resets anything. `values` is cloned wholesale from the prior snapshot
-/// (edit_param L1010-1015); the main eval loop skips auto cells (gated on
+/// resets anything. `values` is seeded entry-by-entry from the prior snapshot
+/// before the edited cell is overwritten, i.e. cloned wholesale as far as
+/// every OTHER cell is concerned; the main eval loop skips auto cells (gated on
 /// `default_expr.is_some()`, and auto cells compile with `default_expr:
 /// None`); and `deactivate_if_not_auto` is explicitly auto-safe. So on RED
 /// the `thickness` cell would still hold whatever value the LAST successful
 /// solve wrote to it -- a `values`-only "is it non-Undef" assertion could
 /// PASS on RED by construction. `resolved_params` is a fresh per-call
 /// `HashMap` written only in the `Solved` arm and plumbed into the returned
-/// `EvalResult` (L2655 for edit_param, L4236 for edit_source), so its
+/// `EvalResult` by each path's own `resolved_params` field initializer, so its
 /// absence is an unambiguous "this call's solve produced nothing". (The
 /// positive `expected_si` equality below is a second, independent
 /// discriminator for the same reason.)
@@ -328,7 +333,8 @@ fn assert_edit_path_thickness_resolved(
     );
     // Tolerance basis (derived, not tuned): `solve_core` only returns
     // `SolveResult::Solved` when `final_max_residual <= FEASIBILITY_THRESHOLD`
-    // (crates/reify-constraints/src/solver.rs:20 = 1e-12, gated at :1989);
+    // (`FEASIBILITY_THRESHOLD` = 1e-12 in crates/reify-constraints/src/solver.rs,
+    // gated in `solve_core_with_sd_tolerance`);
     // the measured absolute error on this exact fixture shape was ~5.5e-16 m.
     // 1e-9 m sits 6 orders above the measured error and 7 orders below the
     // smallest expected-value signal (15mm, the edit_param leg).
@@ -353,8 +359,10 @@ fn assert_edit_path_thickness_resolved(
 
 /// task #5025: `Engine::edit_source` dispatches `@optimized` ComputeNodes
 /// through the real `OptimizedComputeDispatcher` inside the `DimensionalSolver`
-/// cost loop, exactly as the cold `eval()` path does. Pins `engine_edit.rs:3628`
-/// (dispatcher construction) / `:3708` (`solve_with_dispatch(&problem, Some(&dispatcher))`).
+/// cost loop, exactly as the cold `eval()` path does. Pins the
+/// `OptimizedComputeDispatcher::from_registry` construction and the
+/// `solve_with_dispatch(&problem, Some(&dispatcher))` call INSIDE
+/// `Engine::edit_source`.
 ///
 /// See [`assert_edit_path_thickness_resolved`]'s doc for the full RED/GREEN
 /// assertion rationale (why `resolved_params`, not just `values`).
@@ -385,8 +393,8 @@ fn edit_source_dispatches_optimized_compute_into_solver_cost_loop() {
 
 /// task #5025: `Engine::edit_param` dispatches `@optimized` ComputeNodes
 /// through the real `OptimizedComputeDispatcher` inside the `DimensionalSolver`
-/// cost loop. Pins `engine_edit.rs:1466` (dispatcher construction) / `:1546`
-/// (`solve_with_dispatch(&problem, Some(&dispatcher))`) -- the OTHER call
+/// cost loop. Pins the same construction/call pair INSIDE
+/// `Engine::edit_param` -- the OTHER call
 /// site from `edit_source_dispatches_optimized_compute_into_solver_cost_loop`
 /// above; the RED probe for this test cross-checks that the two sites are
 /// independently guarded (removing one leaves the other test green).
