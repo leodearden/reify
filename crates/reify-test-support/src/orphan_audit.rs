@@ -779,6 +779,15 @@ mod tests {
     /// declaration body. That's fine at this altitude: today's real
     /// declaration is single-line with no trailing comment.
     ///
+    /// This limitation has a second, sharper consequence now that the
+    /// uniqueness check exists: a trailing inline comment that happens to
+    /// echo the marker text (e.g. `EXCLUDE_CRATES = {"a"}  # was:
+    /// EXCLUDE_CRATES = {"b","c"}`) would count as a second occurrence and
+    /// hard-`panic!` `exclude_crates_const_matches_audit_script_declaration`
+    /// — a false-alarm merge-gate failure on a purely cosmetic script edit,
+    /// not a silent mis-pin. The panic message names the remediation, so
+    /// this is a fatigue risk, not a correctness gap.
+    ///
     /// Returns `None` if no `EXCLUDE_CRATES = {` marker is found in the
     /// stripped view; otherwise returns whatever names it parsed (possibly
     /// empty), so the caller can distinguish "declaration not found" from
@@ -787,11 +796,12 @@ mod tests {
     fn parse_exclude_crates_declaration(source: &str) -> Option<Vec<String>> {
         let marker = "EXCLUDE_CRATES = {";
         let searchable = strip_full_line_comments(source);
-        let occurrences = searchable.matches(marker).count();
-        if occurrences == 0 {
+        let hits: Vec<_> = searchable.match_indices(marker).collect();
+        if hits.is_empty() {
             return None;
         }
-        if occurrences > 1 {
+        if hits.len() > 1 {
+            let occurrences = hits.len();
             panic!(
                 "found {occurrences} occurrences of `{marker}` in the source \
                  being scanned for an EXCLUDE_CRATES declaration — this \
@@ -804,7 +814,7 @@ mod tests {
             );
         }
 
-        let after_marker = searchable.find(marker)? + marker.len();
+        let after_marker = hits[0].0 + marker.len();
         let rest = &searchable[after_marker..];
         let end = rest.find('}')?;
         let body = &rest[..end];
