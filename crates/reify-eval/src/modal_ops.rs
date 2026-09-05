@@ -7491,6 +7491,99 @@ mod tests {
         }
     }
 
+    /// Solve the shared #6878 CANTILEVER fixture (20 x 50 x 100 mm steel beam,
+    /// `FixedSupport(target: "x_min")`, `n_modes = 3`) built from a `Damped`
+    /// material of loss factor `eta`, under `damping`, returning `(f, ζ)` per mode.
+    ///
+    /// Shared by the step-7 additive-composition twin and the step-15 near-zero-band
+    /// pin's part (d), so the "the floor swallowed no flexible mode" check runs
+    /// against literally the same fixture the B5/B7 identities are asserted on
+    /// rather than a copy that could drift away from it.
+    ///
+    /// The `f > 1.0 Hz` physical-band guard is part of the fixture's contract: this
+    /// beam is fully constrained at x_min, so a 0 Hz mode here would mean the BCs
+    /// silently stopped being realized and would make every ζ identity vacuously
+    /// satisfiable at ζ = 0. The near-zero band is covered by the separate
+    /// UNCONSTRAINED fixture in
+    /// [`trampoline_floors_material_damping_for_rigid_body_modes`], which is a
+    /// different model, not a relaxation of this one.
+    fn solve_damped_cantilever(eta: f64, damping: Value) -> Vec<(f64, f64)> {
+        let value_inputs = vec![
+            damped_material(eta),
+            length_scalar(0.02),
+            length_scalar(0.05),
+            length_scalar(0.1),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                ("damping".to_string(), damping),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected a Completed outcome");
+        };
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "a well-formed damped solve must produce no Error diagnostics; \
+             got {diagnostics:?}",
+        );
+        let Value::StructureInstance(data) = &result else {
+            panic!("expected a ModalResult StructureInstance, got {result:?}")
+        };
+        let Some(Value::List(modes)) = data.fields.get("modes") else {
+            panic!("ModalResult.modes must be a List")
+        };
+        assert!(!modes.is_empty(), "a happy-path solve must return ≥ 1 mode");
+        modes
+            .iter()
+            .enumerate()
+            .map(|(i, mode)| {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("mode {i} must be a Mode StructureInstance")
+                };
+                let f = match m.fields.get("frequency") {
+                    Some(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                    other => {
+                        panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}")
+                    }
+                };
+                let zeta = match m.fields.get("damping_ratio") {
+                    Some(Value::Real(z)) => *z,
+                    other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+                };
+                // Physical-band guard: a 0 Hz rigid mode would make every ζ
+                // identity below vacuously satisfiable at ζ = 0.
+                assert!(
+                    f.is_finite() && f > 1.0,
+                    "mode {i} frequency {f} Hz must be finite and > 1 Hz"
+                );
+                (f, zeta)
+            })
+            .collect()
+    }
+
     /// Task #6878 (PRD leaf β) step-7: the in-crate twin of the three author-
     /// surface arms in
     /// `crates/reify-eval/tests/harness_modal/modal_material_damping_e2e.rs`,
@@ -7524,83 +7617,9 @@ mod tests {
         const ETA: f64 = 0.0006;
         const BETA: f64 = 1e-4;
 
-        /// Solve the shared fixture under `damping`, returning `(f, ζ)` per mode.
-        fn solve(damping: Value) -> Vec<(f64, f64)> {
-            let value_inputs = vec![
-                damped_material(ETA),
-                length_scalar(0.02),
-                length_scalar(0.05),
-                length_scalar(0.1),
-                modal_options(vec![
-                    ("n_modes".to_string(), Value::Int(3)),
-                    (
-                        "boundary_conditions".to_string(),
-                        Value::List(vec![fixed_support("x_min")]),
-                    ),
-                    ("damping".to_string(), damping),
-                    (
-                        "reference_direction".to_string(),
-                        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
-                    ),
-                ]),
-            ];
-            let outcome = solve_modal_analysis_trampoline(
-                &value_inputs,
-                &[],
-                &Value::Undef,
-                None,
-                &CancellationHandle::new(),
-            );
-            let ComputeOutcome::Completed {
-                result,
-                diagnostics,
-                ..
-            } = outcome
-            else {
-                panic!("expected a Completed outcome");
-            };
-            assert!(
-                !diagnostics.iter().any(|d| d.severity == Severity::Error),
-                "a well-formed damped solve must produce no Error diagnostics; \
-                 got {diagnostics:?}",
-            );
-            let Value::StructureInstance(data) = &result else {
-                panic!("expected a ModalResult StructureInstance, got {result:?}")
-            };
-            let Some(Value::List(modes)) = data.fields.get("modes") else {
-                panic!("ModalResult.modes must be a List")
-            };
-            assert!(!modes.is_empty(), "a happy-path solve must return ≥ 1 mode");
-            modes
-                .iter()
-                .enumerate()
-                .map(|(i, mode)| {
-                    let Value::StructureInstance(m) = mode else {
-                        panic!("mode {i} must be a Mode StructureInstance")
-                    };
-                    let f = match m.fields.get("frequency") {
-                        Some(Value::Scalar {
-                            si_value,
-                            dimension,
-                        }) if *dimension == DimensionVector::FREQUENCY => *si_value,
-                        other => {
-                            panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}")
-                        }
-                    };
-                    let zeta = match m.fields.get("damping_ratio") {
-                        Some(Value::Real(z)) => *z,
-                        other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
-                    };
-                    // Physical-band guard: a 0 Hz rigid mode would make every ζ
-                    // identity below vacuously satisfiable at ζ = 0.
-                    assert!(
-                        f.is_finite() && f > 1.0,
-                        "mode {i} frequency {f} Hz must be finite and > 1 Hz"
-                    );
-                    (f, zeta)
-                })
-                .collect()
-        }
+        // The fixture solve is a module-level helper so step-15's part (d)
+        // runs against THIS fixture rather than a copy of it.
+        let solve = |damping: Value| solve_damped_cantilever(ETA, damping);
 
         let rayleigh = || rayleigh_damping(0.0, BETA);
         let none = solve(struct_instance("NoDamping", vec![]));
@@ -7686,6 +7705,232 @@ mod tests {
                 "mode {i}: composition must be ADDITIVE — ζ_both − ζ_mat = \
                  {delta} must equal the standalone ζ_rayl = {z_rayl}. This claim \
                  is independent of either closed form"
+            );
+        }
+    }
+
+    /// Task #6878 (PRD leaf β) step-15: producer-altitude coverage for the
+    /// NEAR-ZERO-ω band under `MaterialDamping` — the arm every other fixture in
+    /// this suite structurally excludes, because both the in-crate step-7 twin
+    /// and its e2e counterpart assert `f > 1.0 Hz` in a physical-band guard.
+    ///
+    /// MEASURED on this machine (42 modes requested and emitted, bare
+    /// `MaterialDamping()` over a `Damped` steel with η = 0.0006 ⇒ η/2 = 3e-4):
+    ///
+    /// ```text
+    ///   modes 0–3   f == 0.0 EXACTLY (the λ ≤ 0 clamp)   → ζ = 0
+    ///   mode  4     f = 9.500896147742872e-4 Hz          → ζ = 3e-4
+    ///   mode  5     f = 1.4744505133453335e-3 Hz         → ζ = 3e-4
+    ///   modes 6–41  f = 1.676e4 … 1.222e5 Hz (flexible)  → ζ = 3e-4
+    ///   6 × W_ModalRigidBodyMode (modes 0–5), no Error
+    /// ```
+    ///
+    /// FOUR modes land at exactly `f == 0.0`, so the reviewer's case is pinned
+    /// here end-to-end and not only at helper altitude — assertion (c) below
+    /// asserts ζ == 0.0 on each of them by index. Their COUNT is deliberately
+    /// not asserted: the sign of a rigid-body eigenvalue is numerical noise and
+    /// not architecture-stable, so only their EXISTENCE and their ζ are pinned.
+    ///
+    /// Modes 4 and 5 are the reason the two near-zero thresholds must not be
+    /// conflated: `is_rigid_body_mode(ω, 1.0)` flags them (ω ≈ 6e-3 / 9e-3 rad/s,
+    /// hence six warnings), but both sit far ABOVE `MIN_OMEGA_FOR_DAMPING = 1e-9`,
+    /// so they correctly receive the full η/2. The floor is a singularity guard,
+    /// not the rigid-body *diagnostic* tolerance.
+    ///
+    /// The expectation is written OUT LONGHAND rather than by calling
+    /// `total_damping_ratio`: routing the assertion through the same helper the
+    /// producer calls would make it a tautology that a producer re-inlining
+    /// `zeta_material + rayleigh_damping_ratio(..)` — the step-8 defect — would
+    /// still pass.
+    ///
+    /// Discrimination CHECKED, not assumed: reverting [`run_modal_analysis`]'s
+    /// per-mode `total_damping_ratio(..)` call to the step-8
+    /// `plan.zeta_material + rayleigh_damping_ratio(..)` form makes this test
+    /// RED at mode 0, so it genuinely pins the floor rather than passing on both
+    /// sides of the fix. (The revert was local and is not committed.)
+    #[test]
+    fn trampoline_floors_material_damping_for_rigid_body_modes() {
+        const ETA: f64 = 0.0006;
+
+        // UNCONSTRAINED (empty BCs) — a free 3-D body admits six rigid-body
+        // modes (ω ≈ 0). Recipe lifted from
+        // `solve_modal_core_flags_rigid_body_modes_when_unconstrained`, which
+        // measures that it exposes them: n_modes ≥ n_free/2 forces the dense
+        // generalized regime, which handles the singular `K_free` without the
+        // shift-invert Cholesky panic.
+        let (length, width, height) = (0.02_f64, 0.05_f64, 0.1_f64);
+        let n_free = 3 * build_beam_mesh(length, width, height).nodes.len();
+
+        let value_inputs = vec![
+            damped_material(ETA),
+            length_scalar(length),
+            length_scalar(width),
+            length_scalar(height),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int((n_free / 2) as i64)),
+                // Empty — the whole point of the fixture.
+                ("boundary_conditions".to_string(), Value::List(vec![])),
+                (
+                    "damping".to_string(),
+                    struct_instance("MaterialDamping", vec![]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected a Completed outcome");
+        };
+
+        // Extend the step-9 silence arm onto this fixture: the material CONFORMS
+        // to `Damped` and the `extra` is the `NoDamping()` default, so the new
+        // floor path must not smuggle in either coded diagnostic. Only
+        // `W_ModalRigidBodyMode` is expected here.
+        for code in [
+            "E_ModalDampingMaterialNotDamped",
+            "W_ModalDampingUnsupportedExtra",
+        ] {
+            assert!(
+                !diagnostics.iter().any(|d| d.message.starts_with(code)),
+                "unconstrained MaterialDamping solve over a conforming material \
+                 must not emit {code}; got {diagnostics:?}"
+            );
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an unconstrained solve is a WARNING condition, not an Error; \
+             got {diagnostics:?}"
+        );
+
+        let Value::StructureInstance(data) = &result else {
+            panic!("expected a ModalResult StructureInstance, got {result:?}")
+        };
+        let Some(Value::List(modes)) = data.fields.get("modes") else {
+            panic!("ModalResult.modes must be a List")
+        };
+        assert!(!modes.is_empty(), "the solve must return ≥ 1 mode");
+
+        let per_mode: Vec<(f64, f64)> = modes
+            .iter()
+            .enumerate()
+            .map(|(i, mode)| {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("mode {i} must be a Mode StructureInstance")
+                };
+                let f = match m.fields.get("frequency") {
+                    Some(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                    other => panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}"),
+                };
+                let zeta = match m.fields.get("damping_ratio") {
+                    Some(Value::Real(z)) => *z,
+                    other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+                };
+                (f, zeta)
+            })
+            .collect();
+
+        // (a) THE INVARIANT, over EVERY emitted mode. Longhand on purpose.
+        let omega_of = |f: f64| 2.0 * std::f64::consts::PI * f;
+        for (i, &(f, zeta)) in per_mode.iter().enumerate() {
+            let omega = omega_of(f);
+            // Bare `MaterialDamping()` ⇒ (α, β) = (0, 0), so the Rayleigh half is
+            // written out with its own zero coefficients rather than dropped —
+            // the shape of the composed formula is part of what is being pinned.
+            let expected = if omega.abs() <= 1e-9 {
+                0.0
+            } else {
+                ETA / 2.0 + (0.0 + 0.0 * omega * omega) / (2.0 * omega)
+            };
+            if expected == 0.0 {
+                assert_eq!(
+                    zeta, 0.0,
+                    "mode {i} (f = {f} Hz, ω = {omega}) is under the ω-floor: it \
+                     stores no strain energy, so the modal-strain-energy ratio is \
+                     0/0 — UNDEFINED, not 1 — and ζ must be exactly 0, not η/2"
+                );
+            } else {
+                assert!(
+                    (zeta - expected).abs() / expected < 1e-9,
+                    "mode {i} (f = {f} Hz) is above the ω-floor: ζ {zeta} must \
+                     equal η/2 = {expected}"
+                );
+            }
+        }
+
+        // (b) NON-VACUITY of the near-zero regime. Without this a future change
+        // that quietly stops returning rigid modes would leave (a) silently
+        // passing over a purely flexible spectrum. 1.0 rad/s is the sibling
+        // test's measured tolerance, sitting in the gap between the rigid modes
+        // and the first flexible one.
+        let rigid_count = per_mode
+            .iter()
+            .filter(|&&(f, _)| is_rigid_body_mode(omega_of(f), 1.0))
+            .count();
+        assert!(
+            rigid_count >= 1,
+            "fixture must expose ≥1 near-zero mode or (a) is vacuous; got {rigid_count}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalRigidBodyMode")),
+            "the fixture must be the under-constrained one it claims to be; \
+             got {diagnostics:?}"
+        );
+
+        // (c) The reviewer's EXACT case, observed at producer altitude: a mode
+        // whose frequency is exactly 0.0 (the `eigenvalue_to_frequency_hz`
+        // λ ≤ 0 clamp) reports ζ = 0, not η/2. Measured: four such modes here.
+        // Their COUNT is numerical noise (the sign of a rigid-body eigenvalue is
+        // not architecture-stable), so only their EXISTENCE and their ζ are
+        // asserted — never how many there are.
+        let exact_zero: Vec<usize> = per_mode
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(f, _))| f == 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !exact_zero.is_empty(),
+            "expected ≥1 mode at exactly f == 0.0 on this fixture (measured: 4); \
+             got {per_mode:?}"
+        );
+        for &i in &exact_zero {
+            assert_eq!(
+                per_mode[i].1,
+                0.0,
+                "mode {i} has f == 0.0 exactly — ζ must be exactly 0.0"
+            );
+        }
+
+        // (d) The PHYSICAL BAND is UNAFFECTED — the floor swallowed no flexible
+        // mode. Same helper, so this runs against literally the step-7 fixture.
+        let cantilever = solve_damped_cantilever(ETA, struct_instance("MaterialDamping", vec![]));
+        assert!(!cantilever.is_empty(), "the cantilever fixture must return modes");
+        for (i, &(f, zeta)) in cantilever.iter().enumerate() {
+            assert!(
+                (zeta - ETA / 2.0).abs() / (ETA / 2.0) < 1e-9,
+                "constrained mode {i} (f = {f} Hz) must still get exactly η/2 = \
+                 {}; got {zeta}",
+                ETA / 2.0
             );
         }
     }
