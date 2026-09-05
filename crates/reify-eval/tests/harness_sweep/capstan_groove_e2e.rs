@@ -74,7 +74,7 @@
 //! two DIFFERENT axial figures, and `Fairlead.stroke` is a third — the band
 //! rounded up to a whole turn. The first test pins the coverage window
 //! `band ≤ stroke ≤ band + lead` over the file's evaluated cells — reading the
-//! instance-scoped spelling the DSL constraint resolves against, and separately
+//! instance-scoped spelling the DSL constraints resolve against, and separately
 //! asserting it agrees with the bare template the rest of this module reads (see
 //! [`sub_entity`]); the second pins that `CapstanDrive` states that relation in
 //! the DSL itself — matched by the datums the compiled constraint actually reads
@@ -149,13 +149,19 @@ const SHUTTLE_SUB: &str = "shuttle";
 /// Entity path of a `CapstanDrive` sub-instance — `CapstanDrive.capstan`,
 /// `CapstanDrive.shuttle`.
 ///
+/// **The module's canonical statement of the two key forms and the override
+/// drop** — other sites link here rather than restate it.
+///
 /// The value map carries BOTH key forms for a contained structure's scalar
 /// cells: the bare template (`Capstan.band`, `Fairlead.stroke`) and the
 /// instance-scoped composition below. They agree today only because parameter
-/// overrides through `sub` are dropped (task 4147 — the design file's own
-/// header records it); the DSL constraint `shuttle.stroke >= capstan.band`
-/// resolves against the INSTANCE, so the gate reads the instance form and
-/// separately asserts the two agree.
+/// overrides through `sub shuttle = Fairlead(…)` are DROPPED — only the `at`
+/// pose comes through (task 4147; the design file's own header records it, and
+/// it is why `Fairlead.stroke` is a hand-set param rather than derived from the
+/// capstan). The file's `CapstanDrive` constraints resolve against the
+/// INSTANCE, so the gates read the instance form and separately assert the two
+/// agree — claim (0) of
+/// `capstan_active_band_is_covered_by_the_fairlead_stroke`.
 fn sub_entity(sub: &str) -> String {
     format!("{CAPSTAN_DRIVE_ENTITY}.{sub}")
 }
@@ -461,9 +467,7 @@ fn check_dev_capstan() -> CheckResult {
         // see neither.
         let mut got: Vec<String> = volume_errors
             .iter()
-            .map(|d| {
-                labelled_cell(d).expect("partitioned on the label resolving to a value cell")
-            })
+            .map(|d| labelled_cell(d).expect("partitioned on the label resolving to a value cell"))
             .collect();
         got.sort();
         let mut want: Vec<String> = VOLUME_UNRESOLVED_CELLS
@@ -532,34 +536,25 @@ fn tessellate_dev_capstan() -> TessellateResult {
 
 /// How strictly [`assert_constraints_ok`] reads a set of constraint results.
 ///
-/// **This is the module's one statement of how a constraint failure reaches the
-/// diagnostics**, and every other site links here rather than re-deriving it —
-/// nothing executable checks a restatement, so copies of it go stale the moment
-/// `reify-constraints` changes a severity or an emission site. This enum is the
-/// natural home because it is the axis that exists *because* of the mechanism.
+/// **This is the module's one statement of why a constraint failure is not a
+/// fixture's business**, and every other site links here rather than re-deriving
+/// it — nothing executable checks a restatement, so copies go stale. This enum
+/// is the natural home because it is the axis that exists *because* of it.
 ///
-/// Alongside the typed `Satisfaction` result, `SimpleConstraintChecker`
-/// (`crates/reify-constraints/src/lib.rs`) co-emits:
+/// How `SimpleConstraintChecker` reports a failure alongside the typed
+/// `Satisfaction` result is that crate's business, not this module's: see
+/// `crates/reify-constraints/src/lib.rs`. The one consequence this module acts
+/// on is that a failure reaches the diagnostics as `ConstraintViolated`
+/// (`Violated`) or as a mere WARNING (`Indeterminate`) — so both fixtures,
+/// [`check_dev_capstan`] and [`tessellate_dev_capstan`], route the former OUT
+/// of their Error filters and neither can see the latter at all.
 ///
-///   * `Violated` → a `Diagnostic::error` (`DiagnosticCode::ConstraintViolated`).
-///     Both fixtures — [`check_dev_capstan`] and [`tessellate_dev_capstan`] —
-///     route that code OUT of their Error filters. A violated constraint is a
-///     DESIGN failure, not a pipeline one; left in, it panics the shared fixture
-///     first, in every test at once, under a message about evaluation or geometry
-///     that is false for that failure, and it shadows the diagnosis
-///     [`assert_constraints_ok`] exists to give (WHICH relation, at what
-///     strictness). Verified by mutation with the routing IN place — shortening
-///     `Fairlead.stroke` to 50 mm, below the 60.35 mm band, fails the four gates
-///     that make a coverage or satisfaction claim, each naming the relation,
-///     while the two pure-geometry OCCT gates
-///     (`capstan_seat_admits_the_rope_radially`,
-///     `capstan_seat_volume_delta_matches_half_pi_r2_l`) stay GREEN. Keeping
-///     those two green is the whole point: without the routing the fixture
-///     panics first and takes them down with it, under a message about geometry
-///     that has nothing to do with the relation that broke;
-///   * `Indeterminate` → a `Diagnostic::warning`
-///     (`DiagnosticCode::ConstraintIndeterminate`), which no `Severity::Error`
-///     filter in this module can see at all.
+/// Routed out because a violated constraint is a DESIGN failure, not a pipeline
+/// one. Left in, it panics the shared fixture first — in every test at once,
+/// including the pure-geometry ones that have nothing to do with the relation
+/// that broke — under a message about evaluation or geometry that is false for
+/// that failure, and it shadows the diagnosis [`assert_constraints_ok`] exists
+/// to give (WHICH relation, at what strictness).
 ///
 /// So NEITHER failure is a fixture's business: the satisfaction gates own both,
 /// and they read `constraint_results` directly rather than the diagnostics — which
@@ -657,10 +652,8 @@ fn assert_constraints_ok<'a>(
 /// taking a `&TessellateResult`) so the kernel-free [`dev_capstan_checked`]
 /// surface reads its cells through the same helper.
 ///
-/// Both structures are `sub`s of the file's `CapstanDrive` assembly, and the map
-/// carries BOTH key forms for their scalar cells — the bare template
-/// (`Fairlead.stroke`, exactly as `Capstan.rope_dia` is) and the instance-scoped
-/// [`sub_entity`] composition (`CapstanDrive.shuttle.stroke`). Which one a
+/// Both structures are `sub`s of the file's `CapstanDrive` assembly, so their
+/// scalar cells are in the map under two key forms ([`sub_entity`]). Which one a
 /// caller wants is a real choice, not a formality: see the (0) claim in
 /// `capstan_active_band_is_covered_by_the_fairlead_stroke`.
 fn entity_cell(
@@ -1056,15 +1049,14 @@ fn capstan_seat_volume_delta_matches_half_pi_r2_l() {
 
 // ── The shuttle stroke covers the band the wrap migrates over ────────────────
 
-/// Relative slack on the two exact band identities below.
+/// Relative slack on "these two reads are the same evaluated cell" — the
+/// template-vs-instance comparison in claim (0) below.
 ///
-/// `band == lead·active_turns` and `groove_len − band == lead·dead_total` are
-/// *algebraic* identities given the file's own definitions (`groove_len = lead ·
-/// (active_turns + dead_total)`), not empirical fits — the only thing separating
-/// the two sides is floating-point association order in the evaluator. So this
-/// is pure fp slack, and it is deliberately ~4 orders below the smallest
-/// physically meaningful drift (a 1 µm move on a 60 mm band is 1.7e-5 relative).
-const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
+/// Pure fp slack, not an empirical fit: the two sides are one cell read under
+/// its two key spellings, bit-identical today. Deliberately ~4 orders below the
+/// smallest physically meaningful drift (a 1 µm move on a 60 mm band is 1.7e-5
+/// relative), so it can only ever absorb representation noise.
+const CELL_SPELLING_REL_TOL: f64 = 1e-12;
 
 /// The drum carries TWO distinct axial figures, and the fairlead shuttle has to
 /// cover the smaller one.
@@ -1082,60 +1074,44 @@ const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
 /// carry a stale "~80 mm over full travel" for the migration. The relation used
 /// to live only in a comment; here it is stated over the file's evaluated cells.
 ///
-/// Five claims, all read back from those cells:
-///   0. the two spellings of each cell agree. The value map carries every
-///      contained structure's scalar cells under BOTH the bare template
+/// Three claims, all read back from those cells:
+///   0. the two spellings of each cell agree — the bare template
 ///      (`Capstan.band`, `Fairlead.stroke`) and the instance-scoped
-///      [`sub_entity`] composition (`CapstanDrive.capstan.band`,
-///      `CapstanDrive.shuttle.stroke`). They CAN diverge in principle — a
-///      `sub` constructor override would rebind the instance while leaving the
-///      template's default in place — and they cannot today only because those
-///      overrides are dropped (task 4147, recorded in the design file's own
-///      header). That is a property of the current evaluator, not of the
-///      design, so it is asserted rather than assumed: it is what makes claims
-///      (1)–(3) below (which read the template form, as the rest of this module
-///      does) and the DSL constraint `shuttle.stroke >= capstan.band` (which
-///      resolves against the INSTANCE) provably statements about the same two
-///      numbers. Should 4147 ever be fixed and an override introduced here,
-///      this claim fails first and points at the fork rather than letting the
-///      two gates silently drift onto different values;
-///   1. `band` really is the ACTIVE migration — `lead · active_turns`. Guards
-///      the definition against a later edit that quietly redefines it as the
-///      total grooved extent;
-///   2. `groove_len − band == lead · dead_total` — the active-band / dead-wrap
-///      decomposition described in `docs/projects/printer_v01.md`
-///      § "Drive: Vectran tendons + capstans", stated over cells:
-///      88.346 mm − 60.346 mm = 28.000 mm = 7 mm × 4. Cited by path and section
-///      rather than quoted: nothing checks a quotation of that paragraph against
-///      the paragraph, so a copy here goes stale the moment it is reworded (it
-///      already did once on this branch), whereas the citation stays true;
-///   3. `band < groove_len` strictly, i.e. the two figures have not collapsed
-///      into one (they cannot while `dead_total > 0`);
+///      [`sub_entity`] composition the DSL constraints resolve against
+///      (`CapstanDrive.capstan.band`, `CapstanDrive.shuttle.stroke`). They can
+///      diverge in principle and cannot today only by evaluator behaviour (see
+///      [`sub_entity`] for why), so it is asserted rather than assumed: it is
+///      what makes the template-form reads elsewhere in this module and the DSL
+///      constraint provably statements about the same two numbers, and should
+///      that behaviour change this claim fails first and points at the fork;
+///   1. `band < groove_len` strictly — the two axial figures have not collapsed
+///      into one (they cannot while `dead_total > 0`). This is the
+///      definition-drift guard: `band` silently redefined as the total grooved
+///      extent lands exactly here;
+///   2. the coverage relation itself: `band <= stroke <= band + lead`, read off
+///      the INSTANCE cells — the same form the DSL constraints resolve against,
+///      so the Rust gate and the design gate check the same numbers.
 ///
-/// **(1) and (2) are DEFINITION-DRIFT guards, not independent verification.**
-/// Each restates a `let` of the design file one line away (`band = lead ·
-/// active_turns`; `groove_len = lead · (active_turns + dead_total)`), so on the
-/// happy path they exercise nothing but the evaluator's multiply and can only
-/// fail if someone rewrites those `let`s — which is the edit worth catching, but
-/// is not the same thing as checking the design. Do not over-trust them. The
-/// substantive claims are (0) — template/instance spellings agree, an evaluator
-/// property that genuinely could change — and (4), the derived coverage window.
-/// (3) is the strictly-independent one of the trio: it survives a `dead_total ==
-/// 0` edit that (2) would still pass.
+/// Deliberately NOT asserted: `band == lead · active_turns` and `groove_len −
+/// band == lead · dead_total`. Both restate a `let` of the design file one line
+/// away, so on the happy path they exercise nothing but the evaluator's
+/// multiply, and the drift they would guard against — `band` redefined as the
+/// grooved extent — is caught strictly and independently by (1), which also
+/// survives a `dead_total == 0` edit that the decomposition identity would
+/// still pass. The active-band / dead-wrap decomposition itself is described in
+/// `docs/projects/printer_v01.md` § "Drive: Vectran tendons + capstans", cited
+/// by path and section rather than quoted (a copy here would go stale the
+/// moment that paragraph is reworded — it already did once on this branch).
 ///
-///   4. the coverage relation itself: `band <= stroke <= band + lead`, read off
-///      the INSTANCE cells — the same form the DSL constraint resolves against,
-///      so the Rust gate and the design gate check the same numbers (claim (0)
-///      is what licenses reading the template form everywhere else).
-///
-/// The upper bound in (4) is derived, not tuned to admit the observed 63 mm: the
+/// The upper bound in (2) is derived, not tuned to admit the observed 63 mm: the
 /// stroke is the band rounded UP to a whole turn, `ceil(active_turns) · lead`,
 /// and `ceil(x) · lead < x · lead + lead` holds identically for every `x`. A
 /// bare lower bound would let the stroke grow without limit and still pass, so
 /// it would not pin the design intent at all. Keeping both bounds derived is
 /// what lets a future `lead` or `d_ratio` edit move this gate with the design
 /// instead of going stale — the same principle as the module's "no geometry
-/// number is hard-coded here".
+/// number is hard-coded here". The design file states the same two-sided window
+/// as a pair of `CapstanDrive` constraints, so `reify check` pins it too.
 #[test]
 fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     // No geometry is read here, so this gate runs on the kernel-free
@@ -1150,7 +1126,7 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
     let stroke = entity_cell(&result.values, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
 
-    // The instance-scoped spellings — what the DSL constraint resolves against.
+    // The instance-scoped spellings — what the DSL constraints resolve against.
     let capstan_inst = sub_entity(CAPSTAN_SUB);
     let shuttle_inst = sub_entity(SHUTTLE_SUB);
     let band_inst = entity_cell(&result.values, &capstan_inst, "band", DimensionVector::LENGTH);
@@ -1159,24 +1135,22 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     // ---- (0) The template and instance spellings are the same number ----
     // Not a formality: an override through `sub capstan = Capstan(...)` would
     // rebind the instance and leave the template default standing, forking the
-    // two. Overrides through `sub` are dropped today (task 4147), so this holds
-    // — but it holds by evaluator behaviour, not by design, and everything
-    // below plus the DSL constraint would otherwise be talking past each other.
-    // `BAND_IDENTITY_REL_TOL` is reused rather than a new tolerance invented:
-    // this is the same evaluated cell read twice, so only fp slack is in play,
-    // and in fact the two are bit-identical today.
+    // two, and everything below plus the DSL constraints would then be talking
+    // past each other. Why it holds today, and why that is behaviour rather
+    // than design: [`sub_entity`]. Only fp slack is in play here — the same
+    // evaluated cell read twice, bit-identical today.
     assert!(
-        (band_inst - band).abs() <= BAND_IDENTITY_REL_TOL * band.abs(),
+        (band_inst - band).abs() <= CELL_SPELLING_REL_TOL * band.abs(),
         "`{CAPSTAN_ENTITY}.band` and `{capstan_inst}.band` must be the same evaluated \
          cell: template {:.9} mm, instance {:.9} mm. A divergence means a `sub` \
          constructor override took effect (task 4147 fixed?), forking the template \
-         form the claims below read from the instance form the file's constraint \
+         form the claims below read from the instance form the file's constraints \
          resolves against — see this test's doc comment.",
         band * 1e3,
         band_inst * 1e3
     );
     assert!(
-        (stroke_inst - stroke).abs() <= BAND_IDENTITY_REL_TOL * stroke.abs(),
+        (stroke_inst - stroke).abs() <= CELL_SPELLING_REL_TOL * stroke.abs(),
         "`{FAIRLEAD_ENTITY}.stroke` and `{shuttle_inst}.stroke` must be the same \
          evaluated cell: template {:.9} mm, instance {:.9} mm. A divergence means a \
          `sub` constructor override took effect (task 4147 fixed?), and the coverage \
@@ -1186,42 +1160,9 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
         stroke_inst * 1e3
     );
 
-    // ---- (1) `band` is the ACTIVE migration, not the total grooved extent ----
-    // DEFINITION-DRIFT GUARD, not an independent check — see the doc comment: this
-    // restates the file's own `let band = lead * active_turns` one line away.
-    let band_expected = lead * active_turns;
-    assert!(
-        (band - band_expected).abs() <= BAND_IDENTITY_REL_TOL * band_expected.abs(),
-        "`{CAPSTAN_ENTITY}.band` must be `lead · active_turns` = {:.6} mm, but reads \
-         {:.6} mm; at ~{:.4} mm it has been redefined as the TOTAL grooved extent \
-         (`groove_len`, which also counts the {dead_total} dead anchor wraps).",
-        band_expected * 1e3,
-        band * 1e3,
-        groove_len * 1e3
-    );
-
-    // ---- (2) The grooved length decomposes into band + dead wraps ----
-    // DEFINITION-DRIFT GUARD like (1) — an algebraic identity given the file's own
-    // `groove_len = lead · (active_turns + dead_total)`, asserted because it is the
-    // statement the project doc makes in prose, not because it verifies anything (1)
-    // does not. The residual is scaled by `groove_len`, deliberately NOT by
-    // `dead_extent`: `dead_total` is the one term here that can legitimately go to
-    // zero (a drum wound with no anchor wraps), and a tolerance scaled by the very
-    // term that can vanish would silently collapse to exact float equality at exactly
-    // that edit. `groove_len` cannot vanish while the drum is grooved at all — the
-    // same choice (1) makes — and at the file's defaults the two scales differ by
-    // ~3×, i.e. this is the same fp slack in practice.
-    let dead_extent = lead * dead_total;
-    assert!(
-        (groove_len - band - dead_extent).abs() <= BAND_IDENTITY_REL_TOL * groove_len.abs(),
-        "the drum's grooved length must decompose into the active band plus the dead \
-         (anchor) wraps: groove_len − band = {:.6} mm, but lead · dead_total = \
-         {:.6} mm.",
-        (groove_len - band) * 1e3,
-        dead_extent * 1e3
-    );
-
-    // ---- (3) The two axial figures have not collapsed into one ----
+    // ---- (1) The two axial figures have not collapsed into one ----
+    // Also the definition-drift guard: `band` redefined as the total grooved
+    // extent lands here, strictly, without restating the file's own `let`.
     assert!(
         band < groove_len,
         "the active band ({:.6} mm) must be strictly shorter than the total \
@@ -1233,7 +1174,7 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
         groove_len * 1e3
     );
 
-    // ---- (4) The shuttle covers the band ----
+    // ---- (2) The shuttle covers the band ----
     // Lower bound: a stroke short of the band leaves the fleet angle to open up
     // at one end of travel — the fairlead stops tracking and starts side-loading.
     // Upper bound: the stroke is the band rounded UP to a whole turn,
@@ -1241,11 +1182,11 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     // x. So the two bounds together say "one whole turn of margin, no more" —
     // neither is the literal 63 mm, which is deliberately absent from this
     // assertion so a lead/d_ratio edit moves the gate with the design.
-    // Read off the INSTANCE cells: `shuttle.stroke >= capstan.band` in the file
-    // resolves against those, so asserting the same spelling here means the two
-    // gates cannot end up pinning different numbers. Claim (0) already proved
-    // they equal the template forms, which is what keeps `lead` (template) a
-    // legitimate term in the upper bound.
+    // Read off the INSTANCE cells: the file's `CapstanDrive` constraints spell
+    // the same window over those, so asserting the same spelling here means the
+    // two gates cannot end up pinning different numbers. Claim (0) already
+    // proved they equal the template forms, which is what keeps `lead`
+    // (template) a legitimate term in the upper bound.
     assert!(
         stroke_inst >= band_inst && stroke_inst <= band_inst + lead,
         "the fairlead shuttle's stroke must cover the capstan's band migration and \
@@ -1397,10 +1338,9 @@ fn capstan_surfaces_only_the_finished_drum() {
 ///      cross-structure — a cell of `capstan` against a cell of `shuttle` — so
 ///      the assembly that owns both `sub`s is the only scope it CAN be stated
 ///      in. Deriving `Fairlead.stroke` from the capstan instead would need a
-///      parameter override through `sub shuttle = Fairlead(…)`, which is
-///      precisely the override drop (task 4147) the design file's own header
-///      records as not working: only `at` poses come through. So the stroke
-///      stays a hand-set param and the assembly asserts it stays honest;
+///      parameter override through `sub shuttle = Fairlead(…)`, which does not
+///      come through (see [`sub_entity`]). So the stroke stays a hand-set param
+///      and the assembly asserts it stays honest;
 ///   2. the checker actually EVALUATED what the template declares — every
 ///      declared constraint's `ConstraintNodeId` appears among the reported
 ///      results. A declared-but-unevaluated relation would leave (3) quantifying
@@ -1470,8 +1410,9 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     assert!(
         states_coverage,
         "`{CAPSTAN_DRIVE_ENTITY}` must carry the shuttle-covers-the-band constraint \
-         — one relating `{}.{}` to `{}.{}` (the file spells it `shuttle.stroke >= \
-         capstan.band`; either order is fine, both datums are not). No declared \
+         — one relating `{}.{}` to `{}.{}` (the file spells the window as a pair, \
+         `shuttle.stroke >= capstan.band` and `shuttle.stroke < capstan.band + \
+         capstan.lead`; either order is fine, both datums are not). No declared \
          constraint reads both. That relation reads a `{CAPSTAN_ENTITY}` cell against \
          a `{FAIRLEAD_ENTITY}` cell, so the assembly owning both `sub`s is the ONLY \
          scope it can live in (why: this test's doc comment). If it was deliberately \
@@ -1506,23 +1447,16 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     );
 
     // ---- (2) …the checker evaluated every constraint the template declares ----
-    // Stated as CONTAINMENT by `ConstraintNodeId`, not as a count. `Engine::check`
-    // collects what it checks through `Engine::collect_active_constraints`
-    // (`crates/reify-eval/src/engine_constraints.rs`), which pushes ALL of
-    // `template.constraints` and, on top of that, the active branch of every
-    // `template.guarded_groups` entry. The reported set is therefore a SUPERSET of
-    // the unguarded ones, and `reported.len() == declared.len()` holds only while
-    // `CapstanDrive` carries no `when`-guarded constraint — which is true today but
-    // is not a property of the design. The project doc describes two capstans (one
-    // per X/Y motor), so a guarded relation here is a plausible next edit; under a
-    // count pin it would red claiming a declared relation never reached the check
-    // surface, the exact INVERSE of what happened (MORE results were reported, not
-    // fewer), sending the reader after a dropped constraint that does not exist.
-    // Containment survives that edit and is also the claim that matters: it is what
-    // makes (3)'s all-`Satisfied` sweep cover every relation the template declares
-    // rather than some subset. NOTE the guard-aware direction — a constraint MOVED
-    // into a guarded group whose guard evaluates `Undef` leaves both sides at once
-    // and is not covered here.
+    // Stated as CONTAINMENT by `ConstraintNodeId`, not as a count: the reported set
+    // can legitimately be a SUPERSET of `template.constraints` (mechanism:
+    // `Engine::collect_active_constraints`, crates/reify-eval/src/engine_constraints.rs).
+    // A count pin would red on a `when`-guarded relation — a plausible next edit,
+    // since the project doc describes two capstans — claiming the exact INVERSE of
+    // what happened, and sending the reader after a dropped constraint that does
+    // not exist. Containment is also the claim that matters: it is what makes (3)'s
+    // all-`Satisfied` sweep cover every relation the template declares rather than
+    // some subset. NOTE the direction — a constraint MOVED into a guarded group
+    // whose guard evaluates `Undef` leaves both sides at once and is not covered here.
     let reported: HashSet<&ConstraintNodeId> = drive_constraints.iter().map(|c| &c.id).collect();
     let unchecked: Vec<&ConstraintNodeId> = drive_template
         .constraints
