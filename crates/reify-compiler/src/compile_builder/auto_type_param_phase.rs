@@ -19,7 +19,7 @@
 //!      `Type::StructureRef(resolved_template_name)` so the downstream
 //!      bound-check sees the resolved candidate — this per-position rewrite
 //!      applies unconditionally, independent of step 3a below,
-//!   3a. separately, monomorph synthesis (cloning `target`, clearing its
+//!      3a. separately, monomorph synthesis (cloning `target`, clearing its
 //!      `type_params`, and substituting `Type::TypeParam` → `Type::StructureRef`
 //!      into the clone's cells/exprs) additionally requires FULL coverage —
 //!      every entry of `target.type_params` must be bound in `sigma`, not just
