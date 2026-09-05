@@ -7,12 +7,15 @@
 
 use std::f64::consts::PI;
 
-/// Angular-frequency floor (rad/s) below which [`rayleigh_damping_ratio`]
-/// reports `0.0` instead of dividing by ω. A genuine flexible mode has
-/// ω ≫ this; only rigid-body / spurious near-zero modes fall under it, where
-/// ζ = (α + β·ω²)/(2ω) → ∞ is non-physical (a rigid-body mode carries no modal
-/// damping). Distinct from the caller-supplied [`is_rigid_body_mode`]
-/// tolerance: this constant only guards the 1/ω singularity.
+/// Angular-frequency floor (rad/s) below which [`total_damping_ratio`] — and so
+/// [`rayleigh_damping_ratio`], which delegates to it — reports `0.0` instead of
+/// dividing by ω. A genuine flexible mode has ω ≫ this; only rigid-body /
+/// spurious near-zero modes fall under it, where ζ = (α + β·ω²)/(2ω) → ∞ is
+/// non-physical (a rigid-body mode carries no modal damping) and the
+/// modal-strain-energy ratio is 0/0. Distinct from the caller-supplied
+/// [`is_rigid_body_mode`] tolerance: this constant only guards the near-zero-ω
+/// degeneracy. Deliberately PRIVATE — [`total_damping_ratio`] is what makes
+/// exporting it unnecessary, so the floor lives in exactly one place.
 const MIN_OMEGA_FOR_DAMPING: f64 = 1e-9;
 
 /// Natural frequency in Hz from a free-vibration eigenvalue `λ = ω²`
@@ -33,8 +36,8 @@ const MIN_OMEGA_FOR_DAMPING: f64 = 1e-9;
 /// `docs/prds/v0_6/angle-dimension-completion.md` D4 (#6184).
 ///
 /// This function is the module's ONLY unit crossing:
-/// [`rayleigh_damping_ratio`] below stays entirely in rad/s and crosses
-/// nothing, so a reader need not check it.
+/// [`rayleigh_damping_ratio`] and [`total_damping_ratio`] below stay entirely in
+/// rad/s and cross nothing, so a reader need not check them.
 pub fn eigenvalue_to_frequency_hz(lambda: f64) -> f64 {
     if lambda > 0.0 {
         lambda.sqrt() / (2.0 * PI)
@@ -53,11 +56,53 @@ pub fn eigenvalue_to_frequency_hz(lambda: f64) -> f64 {
 /// and β is stiffness-proportional. `NoDamping` ⇒ α = β = 0 ⇒ ζ = 0. An ω at
 /// or below [`MIN_OMEGA_FOR_DAMPING`] (rigid-body / spurious mode) returns
 /// `0.0` to avoid the 1/ω singularity.
+///
+/// This is the zero-material special case of [`total_damping_ratio`], which is
+/// the entry point for a descriptor that COMPOSES a modal-strain-energy term
+/// with a Rayleigh companion (`MaterialDamping`, task #6878). Delegating keeps
+/// the floor comparison — and [`MIN_OMEGA_FOR_DAMPING`] itself — in exactly one
+/// branch in this crate.
 pub fn rayleigh_damping_ratio(alpha: f64, beta: f64, omega: f64) -> f64 {
+    total_damping_ratio(0.0, alpha, beta, omega)
+}
+
+/// Composed modal damping ratio ζ for one mode — a mode-independent
+/// modal-strain-energy (MSE) term plus a Rayleigh companion (task #6878, PRD
+/// leaf β of `docs/prds/v0_6/damped-modal-bonded-heterogeneous.md`):
+///
+/// ```text
+/// ζ = ζ_material + (α + β·ω²) / (2·ω)      for |ω| >  MIN_OMEGA_FOR_DAMPING
+/// ζ = 0                                    for |ω| <= MIN_OMEGA_FOR_DAMPING
+/// ```
+///
+/// The floor is shared by BOTH halves, and each half justifies it on its own:
+///
+/// * Rayleigh half — ζ = (α + β·ω²)/(2ω) → ∞ as ω → 0; a rigid-body mode
+///   carries no modal damping.
+/// * MSE half — ζ_material = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e). A rigid-body mode
+///   stores no strain energy, so Σ_e SE_e = 0 and that ratio is 0/0,
+///   **UNDEFINED** rather than 1. The degenerate single-material identity
+///   ζ = η/2 (PRD C5) is derived from a ratio that is 1 "by construction" only
+///   when the denominator is nonzero, so it does not reach the rigid-body case:
+///   η/2 is not the correct answer there, 0 is. A reader must not "restore" the
+///   identity below the floor by hoisting `zeta_material` out of the guard.
+///
+/// Above the floor the result is EXACTLY `zeta_material + rayleigh_damping_ratio(
+/// alpha, beta, omega)` — same two f64 operations in the same order — so an
+/// exactness pin written against the sum stays bit-for-bit valid.
+///
+/// One observable nuance of `rayleigh_damping_ratio` delegating here: for ω < 0
+/// with α = β = 0 the old direct form produced `-0.0` (a `+0.0` numerator over a
+/// negative denominator), whereas `0.0 + (-0.0)` is `+0.0`. Negative ω is
+/// unreachable in this crate (ω = 2π·f with f ≥ 0 by
+/// [`eigenvalue_to_frequency_hz`]'s clamp) and IEEE `-0.0 == 0.0`, so no
+/// assertion can observe the difference — noted so the delegation reads as
+/// deliberate rather than accidental.
+pub fn total_damping_ratio(zeta_material: f64, alpha: f64, beta: f64, omega: f64) -> f64 {
     if omega.abs() <= MIN_OMEGA_FOR_DAMPING {
         0.0
     } else {
-        (alpha + beta * omega * omega) / (2.0 * omega)
+        zeta_material + (alpha + beta * omega * omega) / (2.0 * omega)
     }
 }
 

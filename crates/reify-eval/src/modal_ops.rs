@@ -33,7 +33,7 @@ use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
-    modal_participation_mass, rayleigh_damping_ratio,
+    modal_participation_mass, rayleigh_damping_ratio, total_damping_ratio,
 };
 use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
 use reify_stdlib::modal::transient::{
@@ -1353,15 +1353,27 @@ pub(crate) fn run_modal_analysis(
         .enumerate()
         .map(|(i, &f)| {
             let omega = 2.0 * PI * f;
-            // Task #6878: ADDITIVE composition, ζ_i = ζ_material + ζ_extra(ω_i).
+            // Task #6878: ADDITIVE composition, ζ_i = ζ_material + ζ_extra(ω_i),
+            // through the single helper that owns the near-zero-ω floor.
             //
-            // For `Absent` / `NoDamping` / `Rayleigh` / `Unsupported`,
+            // B4 (no regression) holds BY CONSTRUCTION, not by inspection: for
+            // `Absent` / `NoDamping` / `Rayleigh` / `Unsupported`,
             // `zeta_material` is exactly 0.0 and `(alpha, beta)` are bit-for-bit
-            // what `extract_damping` returned before this task, so this
-            // expression reduces to the landed `rayleigh_damping_ratio(α, β, ω)`
-            // and those results are byte-identical (B4).
+            // what `extract_damping` returned before this task, and
+            // `total_damping_ratio(0.0, α, β, ω)` IS `rayleigh_damping_ratio(α,
+            // β, ω)` — the latter is defined as the former in
+            // `free_vibration.rs`. Those results are therefore byte-identical.
+            //
+            // The floor is SHARED by both halves, which is why the sum is not
+            // written out here: a rigid-body / spurious mode (ω = 0 from
+            // `eigenvalue_to_frequency_hz`'s λ ≤ 0 clamp, emitted alongside
+            // `W_ModalRigidBodyMode` rather than dropped) must report ζ = 0, not
+            // η/2 — it stores no strain energy, so the MSE ratio is 0/0. That
+            // value is not cosmetic: `run_transient_response` reads
+            // `Mode.damping_ratio` back into the modal integrator AND into its
+            // cache key.
             let damping_ratio =
-                plan.zeta_material + rayleigh_damping_ratio(plan.alpha, plan.beta, omega);
+                total_damping_ratio(plan.zeta_material, plan.alpha, plan.beta, omega);
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
             let fields: PersistentMap<String, Value> = [
                 // `Mode.frequency : Frequency` (modal_analysis.ri, task 4548) —
