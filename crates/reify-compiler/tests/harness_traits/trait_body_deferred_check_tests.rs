@@ -1,4 +1,62 @@
-//! Placeholder — module doc and test content are written in task 6143 step-3/step-4/step-5.
+//! Trait-body checking is DEFERRED to conformance — and the vacuity trap that
+//! follows from it (task 6143).
+//!
+//! # The measured rule
+//!
+//! Trait-body member expressions are dimension- and member-checked at
+//! **conformance**, not at trait declaration. A trait compiled with **no**
+//! conforming structure emits **zero** error diagnostics no matter how broken
+//! its body is: a dimension-mismatched constraint, a reference to an undefined
+//! member field, and a wrong `let` type annotation all pass silently.
+//!
+//! # Consequence — the trap
+//!
+//! **Never write an absence-of-diagnostic assertion against a bare trait
+//! body.** It passes regardless of what the code under test does, so it pins
+//! nothing and reports green forever. Any such probe must either declare a
+//! conformer (`structure def C : T { ... }`) or be rewritten as a `structure`.
+//!
+//! The vacuity condition is precisely **"trait body with no conformer"** — NOT
+//! "trait body". A conformed trait body is fully checkable, so a guard that
+//! regressed there would be LOUD, not silent. That narrowness is the whole
+//! reason each pin below is written as a PAIR: the conformed half is what
+//! makes the unconformed half's zero-error result a measurement of *deferral*
+//! rather than of *absence*.
+//!
+//! # Measurement provenance
+//!
+//! Measured on `main` at commit 6927f3c0db via
+//! `reify_test_support::compile_source_with_stdlib`, counting
+//! `Severity::Error` diagnostics. Every fixture below reproduces that
+//! measurement through the same entry point. Conformance was found to catch
+//! all three axes — `DimensionMismatch`, `StructureMemberNotFound` and
+//! `TypeMismatchForTraitMember` — so no follow-up task was warranted for the
+//! undefined-field half; these pins are what keep that true.
+//!
+//! # Fixture hazard for future authors
+//!
+//! These tests assert by diagnostic **code**, never by error count. That is
+//! forced, not stylistic:
+//!
+//! - A struct-literal param default (`param bearer : Bearer = Bearer { .. }`)
+//!   emits an unrelated `unknown variant 'Bearer': no enum in scope declares
+//!   it` error (code `None`). Do not try to eliminate it — it is pre-existing
+//!   behaviour outside task 6143's scope, and the code-keyed assertions are
+//!   immune to it.
+//! - An EMPTY struct literal (`Bearer {}`) is a **parse** error, so it is not
+//!   an escape from the above.
+//! - The stdlib alternative (`param material : Material = Steel`) emits
+//!   `UnresolvedName`, so it is not an escape either.
+//!
+//! So no count-based assertion is even *expressible* on the axis-2 fixtures.
+//! Code-keyed assertion is also the strictly stronger pin in general: an
+//! unrelated future diagnostic keeps a bare non-empty check green while the
+//! guard it protects rots away. See
+//! `reify_test_support::assert_error_code_present`.
+//!
+//! Polymorphic-zero coercion (`mass > 0` acquiring the operand's dimension) is
+//! a *separate* rule that interacts with these fixtures but is not re-derived
+//! here; it belongs to `polymorphic_zero_tests.rs`.
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{
