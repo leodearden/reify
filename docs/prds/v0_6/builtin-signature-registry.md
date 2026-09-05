@@ -8,7 +8,7 @@ Evidence base: the 2026-08-03 measured enumeration (fallback-soundness investiga
 
 A `.ri` author gets **correct static types for every builtin** — and the workspace makes signature drift a compile error, not a latent user-facing lie:
 
-- `let t = frame_to_frame(a, b)` types `Transform3`; passing `t` to `fn f(t: Transform3)` resolves (today: typed `Frame(3)`, false "no matching overload").
+- `let t = frame_to_frame(a, b)` types `Transform3`; passing `t` to `fn f(t: Transform3)` resolves (fixed by #5344's orientation/frame/transform ctor registrations — previously typed `Frame(3)`, false "no matching overload").
 - `floor(2.5mm)` is a compile diagnostic with a fixit hint (today: silently types `Scalar<LENGTH>` and evaluates `Int(0)`); `floor(2.7mm, 0.5mm)` evaluates `2.5mm` (new two-arg form).
 - `orient_to_axis_angle(q).angle` types `Angle` via a nominal structure (today: untyped Map lookup).
 - LSP hover/completion signatures are **rendered from the registry** and cannot disagree with the type checker (today: 35 contradictions).
@@ -84,7 +84,7 @@ No new contested-ownership pair (checked against the overlay's three known pairs
 
 | # | Scenario | Pre (verified today) | Post |
 |---|---|---|---|
-| 1 | `frame_to_frame(a,b)` passed to `fn f(t: Transform3)` | typed Frame(3); false NoMatch error | resolves; hover shows `-> Transform3` |
+| 1 | `frame_to_frame(a,b)` passed to `fn f(t: Transform3)` | fixed by #5344 (was: typed Frame(3); false NoMatch error) | resolves; hover shows `-> Transform3` |
 | 2 | `floor(2.5mm)` | silent `Scalar<LENGTH>`; evals `Int(0)` | compile diagnostic + two-arg hint |
 | 3 | `floor(2.7mm, 0.5mm)`; adversarial: `floor(0.3mm, 0.1mm)`, `floor(1.2mm, 0.1mm)` | (form does not exist) | evals `2.5mm`, typed `Scalar<LENGTH>`; snap yields `0.3mm` / `1.2mm` (2.7/0.5 is exactly representable in f64 and cannot catch the quotient error) |
 | 4 | `sinh(1mm)` / `log10(2mm)` | silent; evals erased-SI Real | compile diagnostic (dimensionless-only) |

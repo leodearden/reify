@@ -7,10 +7,10 @@
 > repo on 2026-08-07 because the originally-cited session scratchpad path no longer exists.
 > This is a dated snapshot, not a maintained document.
 
-> **Corrections (2026-08-07 review).** A follow-up review (the type-decision enshrinement
-> review, ratified 2026-08-07) re-probed this snapshot's load-bearing claims. Four passages
-> below would actively mislead and carry inline `[<date> correction]` markers at the
-> affected spots:
+> **Corrections (2026-08-07 review, extended 2026-08-25 and 2026-09-05).** A follow-up review
+> (the type-decision enshrinement review, ratified 2026-08-07) re-probed this snapshot's
+> load-bearing claims; later spot-checks added corrections 4 and 5. Five passages below would
+> actively mislead and carry inline `[<date> correction]` markers at the affected spots:
 >
 > 1. `complex_mul`/`complex_div`/`complex_pow` were classified FALLBACK-CORRECT by a
 >    Value-kind-only check; `Type::Complex` carries a quantity parameter (ty.rs:199) which
@@ -49,6 +49,16 @@
 >    `fallback` list is flat ladder-fallthrough membership, not a WRONG/CORRECT split, and
 >    `iso_it_tolerance` genuinely still falls through to the ladder — see that file's own
 >    `corrections` key for the parallel note.]
+> 5. [2026-09-05 correction: the Q5 sequencing bullet below citing "Task 5979 (pending low):
+>    register frame_to_frame → Transform(3)" is stale on both counts — task 5979 is
+>    cancelled, and the registration it described already landed via task 5344
+>    (`crates/reify-compiler/src/orientation_signatures.rs`: `frame_to_frame` is a slice
+>    member of `ORIENTATION_TYPED_FN_NAMES` at line 93 and maps to `Type::Transform(3)` at
+>    line 163). `frame_to_frame` is therefore no longer in the FALLBACK-WRONG "frame_to_frame
+>    class" this snapshot's Q1 discussion uses as its running example (§"Precisely when it is
+>    wrong vs imprecise", §"Why the lie matters downstream") — those passages describe the
+>    pre-5344 state measured at `36738b9b92` and are left as written per the same
+>    leave-headline-counts-as-written convention as corrections 1 and 4.]
 
 ---
 
@@ -180,7 +190,7 @@ Judged per Leo's directive (architectural quality, long-term performance/maintai
 
 - **Task 5344 (in-progress NOW, live branch):** registering ~18 orientation/transform/frame constructor names in the exact ladder region. Highest textual-conflict surface. Land it first; it shrinks the wrong set and follows the template.
 - **Task 5436 (pending high, dispatchable):** registers its new `in_frame` explicitly (units.rs arm + signature rows) — the per-family template; canonical arm to copy is `datum_constructor_result_type` (units.rs:644, wired expr.rs:3264). Correction: the frame_to_frame follow-up was filed from esc-5436-2 (recorded on task 5979), not esc-5436-4 [verified from 5979's record; an esc-5436-4 may exist separately — not-checked].
-- **Task 5979 (pending low):** register frame_to_frame → Transform(3). Subsumed by any chosen option — fold in, don't duplicate.
+- **Task 5979 (pending low):** register frame_to_frame → Transform(3). Subsumed by any chosen option — fold in, don't duplicate. *[2026-09-05 correction: task 5979 is cancelled; this registration landed via task 5344 instead. See Corrections at top.]*
 - **Task 5371 (pending low):** IS option O1, framed as a design question, with the closed-world manifest sketched. The fallback closure should land AS PART OF a rewritten 5371 (expand-scope-means-rewrite) or explicitly supersede it.
 - **Task 5380 (pending low):** the known-fallthrough inventory with OPEN design rulings (BoundingBox quantity slot; heterogeneous Map returns for orient_to_axis_angle/transform_log). A hard fallback closure cannot land before these names are ruled or exemption-ledgered.
 - **Task 5068 (deferred BOOKMARK):** the Wave-3 registry slot — activate via /prd to do O3; doing O3 ad hoc outside it orphans the programme's plan.

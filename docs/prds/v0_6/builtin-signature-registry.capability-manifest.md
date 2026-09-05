@@ -19,7 +19,7 @@ PRD: `docs/prds/v0_6/builtin-signature-registry.md`. Binds each leaf's asserted 
 | τ1 | two-arg floor call syntax parses | grammar-fixture — `tests/prd-gate/fixtures/numeric_floor_two_arg_parses.ri` (0 ERROR nodes, D3-verified) | PASS |
 | τ1 | two-arg floor eval semantics | producer: this leaf (new capability — `floor(x/q)·q`; not asserted as existing) | PASS |
 | τ1 | prose deferral to close | wired — `crates/reify-compiler/src/math_signatures.rs:90-92` (uncited deferral comment) | PASS |
-| τ2 | orientation/frame eval arms exist | wired — `crates/reify-stdlib/src/orientation.rs` (`orient_*` arms :10-563), `crates/reify-stdlib/src/geometry.rs:512` (`frame_to_frame`) | PASS |
+| τ2 | orientation/frame eval arms exist | wired — `crates/reify-stdlib/src/orientation.rs` (`orient_*` arms :10-563), `crates/reify-stdlib/src/geometry.rs:605` (`frame_to_frame`) | PASS |
 | τ2 | frame_to_frame mistyping pre-state | fixtures `frame_to_frame_resolves.ri` (check exit 0 silent today), `frame_to_frame_transform3_nomatch.ri` (D3-verified) | PASS |
 | τ2 | member syntax on nominal returns parses | grammar-fixture — `orient_axis_angle_member_parses.ri`, `orient_to_axis_angle_call_resolves.ri` (D3-verified) | PASS |
 | τ2 | orientation ctor registrations upstream | producer: task 5344 (in-progress) — hard `add_dependency` edge wired at decompose | PASS |

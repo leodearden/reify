@@ -135,7 +135,7 @@ tasks:
     (folds 5380)
   capabilities:
   - name: orientation-frame-eval-arms-exist
-    binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms + crates/reify-stdlib/src/geometry.rs:512
+    binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms + crates/reify-stdlib/src/geometry.rs:605
       frame_to_frame
     verdict: PASS
     delivered_check:
