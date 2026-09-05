@@ -19,10 +19,10 @@ PRD: `docs/prds/v0_6/builtin-signature-registry.md`. Binds each leaf's asserted 
 | τ1 | two-arg floor call syntax parses | grammar-fixture — `tests/prd-gate/fixtures/numeric_floor_two_arg_parses.ri` (0 ERROR nodes, D3-verified) | PASS |
 | τ1 | two-arg floor eval semantics | producer: this leaf (new capability — `floor(x/q)·q`; not asserted as existing) | PASS |
 | τ1 | prose deferral to close | wired — `crates/reify-compiler/src/math_signatures.rs:90-92` (uncited deferral comment) | PASS |
-| τ2 | orientation/frame eval arms exist | wired — `crates/reify-stdlib/src/orientation.rs` (`orient_*` arms :10-563), `crates/reify-stdlib/src/geometry.rs:605` (`frame_to_frame`) | PASS |
-| τ2 | frame_to_frame mistyping pre-state | fixtures `frame_to_frame_resolves.ri` (check exit 0 silent today), `frame_to_frame_transform3_nomatch.ri` (D3-verified) | PASS |
+| τ2 | orientation/frame eval arms exist | wired — `crates/reify-stdlib/src/orientation.rs` (the `orient_*` arms of `eval_orientation`), `crates/reify-stdlib/src/geometry.rs:605` (`frame_to_frame` arm of `eval_geometry`) | PASS |
+| τ2 | frame_to_frame mistyping pre-state | **HISTORICAL (pre-#5344), retained for lineage** — fixtures `frame_to_frame_resolves.ri`, `frame_to_frame_transform3_nomatch.ri` (D3-verified 2026-08-04). #5344 landed 2026-08-20 and registered `frame_to_frame → Transform(3)`, so the nomatch fixture no longer observes the false-NoMatch exit≠0 its own header predicates on; do not re-run it as live evidence | PASS |
 | τ2 | member syntax on nominal returns parses | grammar-fixture — `orient_axis_angle_member_parses.ri`, `orient_to_axis_angle_call_resolves.ri` (D3-verified) | PASS |
-| τ2 | orientation ctor registrations upstream | producer: task 5344 (in-progress) — hard `add_dependency` edge wired at decompose | PASS |
+| τ2 | orientation ctor registrations upstream | producer: task 5344 (done — landed 2026-08-20, merge `4307a398b7`) — hard `add_dependency` edge wired at decompose; the producer edge is satisfied | PASS |
 | τ2 | nominal-structure-over-Map precedent | wired — `crates/reify-compiler/src/joint_signatures.rs` `joint_ctor_result_type` (:128) types Map-valued joint builtins as StructureRef | PASS |
 | τ3 | joint family eval arms + compiler table | wired — `crates/reify-stdlib/src/joints.rs:193-719` (`transform_at`, `joint_*`); `joint_signatures.rs:69` (17 names) | PASS |
 | τ4 | FEA/flexure/stackup eval arms | wired — `crates/reify-stdlib/src/fea.rs:47-102`, `flexures/*.rs`, `stackup.rs:17-21`, `dfm.rs:32`, `tolerancing.rs:18-19`, `supports.rs:116-134`, `loads.rs:134`, `tensegrity.rs:22-23` | PASS |

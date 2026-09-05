@@ -2,8 +2,10 @@
 > fallback-soundness investigation; it is the evidence base cited by
 > `docs/prds/v0_6/builtin-signature-registry.md`. Everything below was measured against main
 > `36738b9b92`. Companion raw data: `fallback-soundness-xref-2026-08-03.json` (the two flat name
-> sets the set-diff was taken over — `eval`: 231 names, `fallback`: 121 names — plus a
-> `corrections` array added 2026-08-25; see Corrections below). Moved into the
+> sets the set-diff was taken over — `eval`: 231 names, `fallback`: 121 names — plus its own
+> `corrections` array, added 2026-08-25, which holds ONE entry and is NOT kept in lockstep with
+> the numbered Corrections block below: correction 5 records a `fallback`-membership staleness
+> that has no twin in the JSON yet). Moved into the
 > repo on 2026-08-07 because the originally-cited session scratchpad path no longer exists.
 > This is a dated snapshot, not a maintained document.
 
@@ -51,14 +53,38 @@
 >    `corrections` key for the parallel note.]
 > 5. [2026-09-05 correction: the Q5 sequencing bullet below citing "Task 5979 (pending low):
 >    register frame_to_frame → Transform(3)" is stale on both counts — task 5979 is
->    cancelled, and the registration it described already landed via task 5344
->    (`crates/reify-compiler/src/orientation_signatures.rs`: `frame_to_frame` is a slice
->    member of `ORIENTATION_TYPED_FN_NAMES` at line 93 and maps to `Type::Transform(3)` at
->    line 163). `frame_to_frame` is therefore no longer in the FALLBACK-WRONG "frame_to_frame
->    class" this snapshot's Q1 discussion uses as its running example (§"Precisely when it is
->    wrong vs imprecise", §"Why the lie matters downstream") — those passages describe the
->    pre-5344 state measured at `36738b9b92` and are left as written per the same
->    leave-headline-counts-as-written convention as corrections 1 and 4.]
+>    cancelled, and the registration it described already landed via task 5344 (merged to
+>    main `4307a398b7`, 2026-08-20). Cited by SYMBOL rather than line, deliberately: this
+>    correction exists because line-number cites to the same family had already rotted, so
+>    the anchors below are ones a `grep` re-derives. In
+>    `crates/reify-compiler/src/orientation_signatures.rs`, `"frame_to_frame"` is a member of
+>    the `ORIENTATION_TYPED_FN_NAMES` slice and sits on the `=> Type::Transform(3)` arm of
+>    `orientation_typed_fn_result_type`; the ladder gate is the `is_orientation_typed_fn(name)`
+>    branch in `crates/reify-compiler/src/expr.rs`, which returns
+>    `orientation_typed_fn_result_type(name)` BEFORE the terminal first-arg fallback in that
+>    ladder's final `else` arm. `frame_to_frame` is therefore no longer in the FALLBACK-WRONG
+>    "frame_to_frame class" this snapshot's Q1 discussion uses as its running example
+>    (§"Precisely when it is wrong vs imprecise", §"Why the lie matters downstream") — those
+>    passages describe the pre-5344 state measured at `36738b9b92` and are left as written per
+>    the same leave-headline-counts-as-written convention as corrections 1 and 4.
+>
+>    UNLIKE correction 4, this one DOES invalidate companion-file membership. All 18
+>    `ORIENTATION_TYPED_FN_NAMES` members — `orient_identity`, `orient_quaternion`,
+>    `orient_euler`, `orient_basis`, `orient_look_at`, `orient_axis_angle`, `orient_exp`,
+>    `orient_inverse`, `orient_compose`, `orient_slerp`, `frame3`, `frame3_identity`,
+>    `transform3`, `transform3_identity`, `transform_compose`, `transform_inverse`,
+>    `transform_exp`, `frame_to_frame` — are still listed in
+>    `fallback-soundness-xref-2026-08-03.json`'s flat `fallback` array (verified 2026-09-05:
+>    all 18 present), and none of them reaches the ladder fallthrough any more. That array is
+>    a 2026-08-03 snapshot at `36738b9b92` and stays correct AS HISTORY, but a consumer
+>    treating it as CURRENT seed data — `docs/prds/v0_6/builtin-signature-registry.md` §5
+>    calls the enumeration "equivalent seed data" — must subtract those 18 names. Note the
+>    four EXCLUDED decomposers `orient_log`, `orient_to_euler`, `orient_to_axis_angle`,
+>    `transform_log` are also in that array and are NOT affected: they are deliberately absent
+>    from `ORIENTATION_TYPED_FN_NAMES` and genuinely still fall through. The parallel
+>    `corrections` entry inside that JSON — the twin of the one correction 4 added — is NOT
+>    yet written: the JSON is outside the file scope of the task (7022) that wrote this
+>    correction, so it was left untouched rather than edited out of scope.]
 
 ---
 

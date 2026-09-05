@@ -8,7 +8,7 @@ Evidence base: the 2026-08-03 measured enumeration (fallback-soundness investiga
 
 A `.ri` author gets **correct static types for every builtin** — and the workspace makes signature drift a compile error, not a latent user-facing lie:
 
-- `let t = frame_to_frame(a, b)` types `Transform3`; passing `t` to `fn f(t: Transform3)` resolves (fixed by #5344's orientation/frame/transform ctor registrations — previously typed `Frame(3)`, false "no matching overload").
+- `let t = frame_to_frame(a, b)` types `Transform3`; passing `t` to `fn f(t: Transform3)` resolves (already fixed by #5344's orientation/frame/transform ctor registrations, landed 2026-08-20 — previously typed `Frame(3)`, false "no matching overload"; this PRD absorbs that arm as a registry row rather than re-fixing it).
 - `floor(2.5mm)` is a compile diagnostic with a fixit hint (today: silently types `Scalar<LENGTH>` and evaluates `Int(0)`); `floor(2.7mm, 0.5mm)` evaluates `2.5mm` (new two-arg form).
 - `orient_to_axis_angle(q).angle` types `Angle` via a nominal structure (today: untyped Map lookup).
 - LSP hover/completion signatures are **rendered from the registry** and cannot disagree with the type checker (today: 35 contradictions).
@@ -44,7 +44,7 @@ The terminal first-arg fallback is an M1 fossil (commit `a32a1b2b2e`, "for math 
 
 ## 5. Pre-conditions
 
-All verified 2026-08-04 unless noted: no novel grammar (the two-arg `floor` is ordinary call syntax — G3 N/A for syntax); `registry!` is `macro_rules`-representable (no new proc-macro crate expected; strum precedent for derives, workspace dep present); reify-eval already deps reify-compiler (drift test); reify-compiler dev-deps reify-expr/reify-eval (parity harness placement options open). Task **5344** (orientation/frame ctor registrations, in-progress) must land before the orientation family migration — its arms are absorbed as seed rows. Task **5371** supplies the compile-side manifest; migration converts manifest entries to rows (coordinate, not hard-block: the enumeration `xref.json` is equivalent seed data).
+All verified 2026-08-04 unless noted: no novel grammar (the two-arg `floor` is ordinary call syntax — G3 N/A for syntax); `registry!` is `macro_rules`-representable (no new proc-macro crate expected; strum precedent for derives, workspace dep present); reify-eval already deps reify-compiler (drift test); reify-compiler dev-deps reify-expr/reify-eval (parity harness placement options open). Task **5344** (orientation/frame ctor registrations) **landed 2026-08-20** (merged to main `4307a398b7`); this pre-condition is met, and its arms are absorbed as seed rows by the orientation family migration. Task **5371** supplies the compile-side manifest; migration converts manifest entries to rows (coordinate, not hard-block: the enumeration `xref.json` is equivalent seed data).
 
 ## 6. Cross-PRD relationships (G4)
 
@@ -82,9 +82,9 @@ No new contested-ownership pair (checked against the overlay's three known pairs
 
 ## 8. Boundary-test sketch (two-way)
 
-| # | Scenario | Pre (verified today) | Post |
+| # | Scenario | Pre (as measured 2026-08-04) | Post |
 |---|---|---|---|
-| 1 | `frame_to_frame(a,b)` passed to `fn f(t: Transform3)` | fixed by #5344 (was: typed Frame(3); false NoMatch error) | resolves; hover shows `-> Transform3` |
+| 1 | `frame_to_frame(a,b)` passed to `fn f(t: Transform3)` | typed Frame(3); false NoMatch error **[†]** | resolves; hover shows `-> Transform3` |
 | 2 | `floor(2.5mm)` | silent `Scalar<LENGTH>`; evals `Int(0)` | compile diagnostic + two-arg hint |
 | 3 | `floor(2.7mm, 0.5mm)`; adversarial: `floor(0.3mm, 0.1mm)`, `floor(1.2mm, 0.1mm)` | (form does not exist) | evals `2.5mm`, typed `Scalar<LENGTH>`; snap yields `0.3mm` / `1.2mm` (2.7/0.5 is exactly representable in f64 and cannot catch the quotient error) |
 | 4 | `sinh(1mm)` / `log10(2mm)` | silent; evals erased-SI Real | compile diagnostic (dimensionless-only) |
@@ -97,6 +97,8 @@ No new contested-ownership pair (checked against the overlay's three known pairs
 | 11 | `compose(f,g)` with std.fields in scope | resolves to `.ri` fn | unchanged; out of scope → unresolved-name path (family membership dropped) |
 | 12 | LSP completion signature for any registered name | 35 contradict compiler | string-equal to registry rendering (derived) |
 
+**[†]** Row 1's Pre state no longer holds on `main`. Task **#5344** (landed 2026-08-20, merge `4307a398b7`) registered `frame_to_frame → Type::Transform(3)`, so this boundary already sits in its Post column; the τ-orientation leaf ABSORBS that arm as a seed row rather than fixing it, and the row is retained because the migration must preserve the behaviour, not introduce it. The remaining rows' Pre column is as measured 2026-08-04 and has not been re-probed since — read the whole column as dated evidence, not as live state.
+
 ## 9. Decomposition plan
 
 Spine: α → β → τ* (pipeline, independent where files disjoint) → π/ψ grow per τ → ω → λ. Docs-truth leaves ρ ride the τ that changes each surface. Real IDs at decompose; `metadata.files` tight-or-empty.
@@ -104,7 +106,7 @@ Spine: α → β → τ* (pipeline, independent where files disjoint) → π/ψ 
 - **α — `reify-builtins` crate + `registry!` macro + `BuiltinId` + `lookup` + seed families (parse: 2 names, analysis: 5).** End-to-end for the seeds: compiler arms swapped, stdlib match swapped, negative recipe (row-without-arm build failure) documented. Signal: `parse_length("3mm")` types `Option<Length>` via the registry (CLI check); boundary #6.
 - **β — compiler consumes the registry ahead of unmigrated family arms + `CompiledExpr` carries `BuiltinId`.** Coexistence: registry lookup first, legacy arms until their τ. Investigate content-hash implications of the id field (result_type is currently unhashed). Signal: corpus byte-identical; seed families dispatch by id (assert in a debug test).
 - **τ-numeric** — floor/ceil/round dual-form (new two-arg eval impl) + sinh/cosh/tanh + log10 + mod/remap rows, diagnostics, corpus corrections; cites and closes the `math_signatures.rs:90-92` prose deferral. Extended (ratified 2026-08-07) to also enumerate the already-typed math surface — sin/cos/tan, asin/acos/atan/atan2, exp/log, sqrt/abs/pow/min/max/clamp/lerp/sign, and the vec/matrix constructors already claimed by their own families (coordinate with the τ6/math_signatures subsumption note in task 6004's text rather than double-migrating): without rows for these ~35 names, ω's fallback deletion and I-REG-3 totality are unsatisfiable. Signals: boundaries #2-#4.
-- **τ-orientation/frames** — after #5344 lands; absorbs its arms as rows; `AxisAngle`/`Twist` structures (folds #5380). Signals: #1, #5.
+- **τ-orientation/frames** — #5344 landed 2026-08-20, so this is unblocked; absorbs its arms as rows; `AxisAngle`/`Twist` structures (folds #5380). Signals: #1, #5.
 - **τ-joints**, **τ-fea/flexures/stackup** (result structures per decision 7), **τ-mechanism/trajectory** (stub ledger for `piecewise_polynomial`), **τ-complex/re-im**, **τ-datums/affine/list/field** (drops `compose` per decision 9; boundary #11), **τ-queries/selectors** (`EnginePostProcess` kind; reify-eval maps swap), **τ-relations/markers** (`CompileOnly`), **τ-geometry-ops** (`GeometryOp` kind + bridging test to the reify-ir descriptor table).
 - **π — LSP generation** (decision 8; subsumes 5704/5707/5922 signature halves — port-before-cancel at decompose). Signal: boundary #12.
 - **ψ — parity harness** (I-REG-4), lands with α's seeds, grows per τ. Signal: boundary #9 mutation recipe.

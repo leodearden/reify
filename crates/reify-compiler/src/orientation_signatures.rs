@@ -69,8 +69,10 @@ use reify_core::Type;
 /// # Two traps encoded in this list
 ///
 /// 1. **`frame_to_frame` is a Transform, not a Frame.** Despite the `frame_`
-///    prefix it returns `Value::Transform` (`geometry.rs:605`) — it computes the
-///    rigid motion mapping one frame onto another.
+///    prefix it returns `Value::Transform` — it computes the rigid motion
+///    mapping one frame onto another. Source: the `"frame_to_frame" =>` arm of
+///    `eval_geometry` (`reify-stdlib/src/geometry.rs`, :605 as of 2026-09-05;
+///    grep the arm, not the line — this cite already rotted once from :512).
 /// 2. **The digit is meaningful.** The digit-carrying `transform3` /
 ///    `transform3_identity` CONSTRUCTORS are distinct from the digitless
 ///    `transform_compose` / `transform_inverse` / `transform_exp` OPERATIONS;
@@ -99,7 +101,8 @@ pub const ORIENTATION_TYPED_FN_NAMES: &[&str] = &[
     "transform_compose",
     "transform_inverse",
     "transform_exp",
-    // Trap: `frame_` prefix, but returns Value::Transform (geometry.rs:605).
+    // Trap: `frame_` prefix, but returns Value::Transform — see the
+    // `"frame_to_frame" =>` arm of geometry.rs's `eval_geometry`.
     "frame_to_frame",
 ];
 

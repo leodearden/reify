@@ -135,8 +135,8 @@ tasks:
     (folds 5380)
   capabilities:
   - name: orientation-frame-eval-arms-exist
-    binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms + crates/reify-stdlib/src/geometry.rs:605
-      frame_to_frame
+    binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms of eval_orientation
+      + crates/reify-stdlib/src/geometry.rs:605 frame_to_frame arm of eval_geometry
     verdict: PASS
     delivered_check:
       kind: grep
@@ -145,7 +145,8 @@ tasks:
       - crates/reify-builtins
       expect: present
   - name: orientation-ctor-registrations-upstream
-    binding: producer:task-5344 upstream — hard add_dependency edge wired at decompose
+    binding: producer:task-5344 (done, landed 2026-08-20, merge 4307a398b7) upstream — hard
+      add_dependency edge wired at decompose; producer edge satisfied
     verdict: PASS
     delivered_check:
       kind: manual
