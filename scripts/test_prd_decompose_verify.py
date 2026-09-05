@@ -2042,6 +2042,139 @@ class TestFixtureAbsent(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# task #7257 step-17 (RED): the errno signature must be anchored, not a prefix
+# ---------------------------------------------------------------------------
+
+class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
+    """`os error 2` as a bare substring swallows every errno that STARTS with 2.
+
+    `_FIXTURE_ABSENT_SIGNATURES` matches with `any(sig in lowered ...)`, so the
+    literal `"os error 2"` is a PREFIX test, not an errno test: it fires on
+    ENOTDIR(20), EISDIR(21), EINVAL(22), EMFILE(24), ENOSPC(28) and every
+    3-digit 2XX errno.  Each of those is a genuine, executed falsification that
+    silently stops blocking — the fixture-absent carve-out (which exists so a
+    not-yet-written deliverable is not scored as a design defect) becomes a
+    hole that swallows real findings.  This is the exact failure mode the
+    carve-out was added to avoid, inverted.
+
+    GREEN in task #7257 step-18 (anchored `os error 2(?![0-9])`).
+
+    The class carries BOTH halves deliberately: the hostile errnos that must
+    start blocking again, AND the three genuine ENOENT spellings the suite
+    already depends on, so the fix's blast radius is pinned from both sides.
+    """
+
+    #: (label, stderr) for errnos whose decimal rendering begins with "2" but
+    #: which are NOT ENOENT.  Every one is a real failure that must block.
+    HOSTILE_ERRNOS = (
+        ("ENOTDIR", "Not a directory (os error 20)"),
+        ("EISDIR", "Is a directory (os error 21)"),
+        ("EINVAL", "Invalid argument (os error 22)"),
+        ("EMFILE", "Too many open files (os error 24)"),
+        ("ENOSPC", "No space left on device (os error 28)"),
+    )
+
+    def _result(self, capability: str, verdict: str = "FAIL",
+                stderr: str = "", exit_code: int = 1) -> dict:
+        """An EXECUTED α result record (real command, real exit code).
+
+        Same shape as TestFixtureAbsent._result — the evidence gate must be
+        satisfied so classification reaches the fixture-absent branch at all.
+        """
+        return {
+            "capability": capability,
+            "probe_kind": "ir",
+            "verdict": verdict,
+            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "exit_code": exit_code,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    # ── (1) every 2X errno is a real falsification and must block ────────────
+
+    def test_two_x_errnos_still_block(self):
+        """ENOTDIR/EISDIR/EINVAL/EMFILE/ENOSPC are falsifications, not absences."""
+        for label, stderr in self.HOSTILE_ERRNOS:
+            with self.subTest(errno=label):
+                cap = f"{label} cap"
+                rec = self._result(cap, stderr=stderr)
+                bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+                self.assertTrue(
+                    bv.blocks,
+                    f"{label} ({stderr!r}) is a real failure and must block")
+                self.assertIn(cap, bv.blocking)
+                self.assertNotIn(cap, bv.fixture_absent)
+
+    # ── (2) the 2XX range too ────────────────────────────────────────────────
+
+    def test_three_digit_two_hundred_errno_still_blocks(self):
+        """A 3-digit errno beginning with 2 must not be read as ENOENT either."""
+        rec = self._result("errno-212 cap", stderr="probe aborted (os error 212)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("errno-212 cap", bv.blocking)
+        self.assertNotIn("errno-212 cap", bv.fixture_absent)
+
+    # ── (3) unit-level sweep, so a regression localises to the matcher ───────
+
+    def test_matcher_rejects_non_enoent_errnos_directly(self):
+        """`fixture_absent_evidence` itself is False for every hostile errno.
+
+        Asserted against the predicate rather than through `synthesize_batch`
+        so a future regression points at the signature table, not at the
+        classification pipeline downstream of it.
+        """
+        table = self.HOSTILE_ERRNOS + (("errno-212", "probe aborted (os error 212)"),)
+        for label, stderr in table:
+            with self.subTest(errno=label):
+                rec = self._result(f"{label} cap", stderr=stderr)
+                self.assertFalse(
+                    pdv.fixture_absent_evidence(rec),
+                    f"{stderr!r} is not a fixture-absent signature")
+
+    # ── (4) REGRESSION PRESERVATION: genuine ENOENT still classifies ─────────
+
+    def test_genuine_enoent_spellings_still_classify_fixture_absent(self):
+        """The three spellings the suite already relies on must keep working.
+
+        The anchor must permit a bare trailing `os error 2` at end-of-string
+        (no closing paren) — requiring `)` would break the spelling asserted by
+        TestFixtureAbsent.test_bare_os_error_2_signature.
+        """
+        spellings = (
+            ("paren", "Error: No such file or directory (os error 2)"),
+            ("bare-errno-eos", "failed to open input: os error 2"),
+            ("phrase-only", "No such file or directory"),
+        )
+        for label, stderr in spellings:
+            with self.subTest(spelling=label):
+                cap = f"enoent-{label} cap"
+                rec = self._result(cap, stderr=stderr)
+                self.assertTrue(
+                    pdv.fixture_absent_evidence(rec),
+                    f"{stderr!r} is a genuine ENOENT spelling")
+                bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+                self.assertIn(cap, bv.fixture_absent)
+                self.assertFalse(bv.blocks)
+
+    # ── (5) near-miss guard ──────────────────────────────────────────────────
+
+    def test_no_such_device_blocks(self):
+        """'No such device (os error 19)' matches NEITHER signature.
+
+        Textually adjacent to ENOENT's phrase ("No such ...") and numerically
+        adjacent to the 2X block, so it pins both edges at once.
+        """
+        rec = self._result("enodev cap", stderr="No such device (os error 19)")
+        self.assertFalse(pdv.fixture_absent_evidence(rec))
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("enodev cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+
+# ---------------------------------------------------------------------------
 # task #7257 step-09 (RED): RESULTS_SCHEMA must constrain the record shape
 # ---------------------------------------------------------------------------
 
