@@ -33,6 +33,35 @@
 //! inputs, plus one cheap end-to-end sweep over a 3-file synthetic corpus.
 //! The pipeline is therefore regression-guarded on every gate run at near-zero
 //! cost, without the walk itself ever running there.
+//!
+//! # Retiring this module
+//!
+//! This is a CENSUS, not a permanent gate, and it has a defined end of life.
+//! Its product is one 280-line document with 18 rows, consumed by task #5305
+//! (γ, corpus fix-forward). Once γ has landed, the machinery here — corpus
+//! enumeration, span→line, D9 classification, the markdown renderer, the stamp
+//! guard — has no remaining product, yet stays compiled and run on every merge
+//! gate. That is a real standing cost in a compile unit whose own header cites
+//! `docs/prds/merge-gate-compile-cost.md`: it takes this unit to ~14.4k lines
+//! against the 20,000 `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`.
+//!
+//! Retirement is therefore a THREE-FILE deletion, and all three must go
+//! together:
+//!
+//! 1. this file;
+//! 2. its `#[path] mod ctor_conformance_corpus_survey;` declaration in
+//!    `crates/reify-compiler/tests/harness_compilation_surface.rs`;
+//! 3. the artifact `docs/prds/struct-ctor-field-type-conformance.survey.md`.
+//!
+//! The ONE thing that must survive is [`CTOR_CONFORMANCE_CODES`], which the
+//! sibling `examples_smoke.rs` α corpus gate reads and which outlives this
+//! survey — move it (see its own doc comment, which records where it wants to
+//! land) rather than deleting it with the rest.
+//!
+//! Nothing here fails when the artifact is deleted on its own:
+//! [`committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`] SKIPS on an
+//! absent artifact by design, so a partial retirement degrades to dead weight
+//! rather than a merge-gate red.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -64,8 +93,10 @@ const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 /// operates on a *different* repository rather than erroring — which for this
 /// module would mean enumerating some other tree's `.ri` files into the survey,
 /// or resolving the stamped anchor against the wrong object store. The rule's
-/// one carve-out is a bare `git --version` availability probe; this module has
-/// no such probe, so all three call sites route through here.
+/// one carve-out is a bare `git --version` availability probe — which is
+/// exactly [`git_is_available`] below, and the ONLY spawn in this module that
+/// does not come from here; every repo-targeting call site routes through this
+/// constructor.
 ///
 /// `reify_audit::git_env::command` is the same shape one crate up, and is
 /// deliberately NOT used: `reify-audit` is not a dependency of
@@ -84,6 +115,43 @@ fn git_at_workspace_root(args: &[&str]) -> Command {
     cmd.args(args);
     sanitize(&mut cmd);
     cmd
+}
+
+/// Whether a `git` binary can be spawned at all.
+///
+/// The sanctioned carve-out from the `-C`-constructor rule above: a bare
+/// `git --version` names no repository, so there is nothing for an ambient
+/// `GIT_DIR` to redirect and nothing to sanitize against.
+///
+/// Exists so the GATE-RESIDENT tests can SKIP rather than red when git is
+/// absent. Everything in this module that reads git — the corpus enumeration
+/// and the stamp guard — is a survey concern, not a compiler concern, and
+/// `reify-compiler`'s test suite did not require git on PATH before this module
+/// existed. A survey generator must not be the thing that makes it a hard
+/// requirement. Distinguishing "git said no" (a real finding, still a hard
+/// failure) from "there is no git" (nothing to say) is the whole point: the
+/// panics in [`git_read`] / [`git_succeeds`] / [`scan_tracked_ri_corpus`] stay
+/// exactly as they were for every caller that gets past this probe.
+fn git_is_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("git")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+/// `Some(corpus)` when git can be spawned, `None` when it cannot.
+///
+/// The gate-resident corpus probes below call this and return early on `None`;
+/// the `#[ignore]`d generator calls [`tracked_ri_corpus`] directly, because a
+/// generator that cannot enumerate the corpus must fail loudly rather than
+/// write a falsely-clean artifact.
+fn tracked_ri_corpus_if_git_available() -> Option<&'static [String]> {
+    git_is_available().then(tracked_ri_corpus)
 }
 
 #[test]
@@ -159,8 +227,8 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
 ///
 /// Enumerated ONCE per process, behind the same `OnceLock` that
 /// [`stdlib_structure_defs`] and [`fea_owned_defs`] use: the tracked corpus
-/// cannot change while the test binary runs, and the six gate-resident tests
-/// below plus the generator would otherwise spawn seven separate
+/// cannot change while the test binary runs, and the five gate-resident tests
+/// below plus the generator would otherwise spawn six separate
 /// `git ls-files` subprocesses and re-sort ~676 paths each time.
 fn tracked_ri_corpus() -> &'static [String] {
     static CORPUS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
@@ -202,18 +270,26 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
 }
 
 #[test]
-fn tracked_ri_corpus_is_non_empty_and_covers_the_whole_tracked_tree() {
-    let corpus = tracked_ri_corpus();
+fn tracked_ri_corpus_clears_the_broken_enumeration_floor() {
+    let Some(corpus) = tracked_ri_corpus_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
     // A BROKEN-ENUMERATION floor, deliberately far below the live count (677
     // measured 2026-09-01) rather than just under it. The corpus is expected to
     // churn in BOTH directions: a fixture-consolidation task that legitimately
     // deletes a few dozen `.ri` has nothing to do with this survey and must not
-    // red the merge gate with a message that reads like a defect. What this
-    // test's NAME claims to guard — that the enumeration is non-empty and
-    // reaches the whole tracked tree — is asserted structurally, here and in
-    // `tracked_ri_corpus_reaches_outside_examples`, and those assertions are
-    // immune to corpus size. The live count belongs in the artifact this module
-    // generates, which states it as a measured header field.
+    // red the merge gate with a message that reads like a defect.
+    //
+    // The NAME is scoped to exactly that floor and no further. An earlier name
+    // ("…is_non_empty_and_covers_the_whole_tracked_tree") also claimed the
+    // COVERAGE half, which is asserted in a different test entirely
+    // (`tracked_ri_corpus_reaches_outside_examples`) — so a reader scanning the
+    // test list, or triaging a red, was told this test proved something it did
+    // not. The test name is what shows up in `cargo test` output; coverage
+    // ownership stays with the test that actually asserts it. The live count
+    // belongs in the artifact this module generates, which states it as a
+    // measured header field.
     assert!(
         corpus.len() >= 100,
         "tracked .ri corpus must have >= 100 entries — a floor that catches a BROKEN \
@@ -225,7 +301,10 @@ fn tracked_ri_corpus_is_non_empty_and_covers_the_whole_tracked_tree() {
 
 #[test]
 fn tracked_ri_corpus_entries_all_end_in_dot_ri() {
-    let corpus = tracked_ri_corpus();
+    let Some(corpus) = tracked_ri_corpus_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
     let bad: Vec<&String> = corpus.iter().filter(|p| !p.ends_with(".ri")).collect();
     assert!(
         bad.is_empty(),
@@ -239,7 +318,10 @@ fn tracked_ri_corpus_entries_all_end_in_dot_ri() {
 fn tracked_ri_corpus_is_sorted_and_deduplicated() {
     // Determinism: the artifact must be byte-reproducible, which requires the
     // enumeration itself to be a total order with no repeats.
-    let corpus = tracked_ri_corpus();
+    let Some(corpus) = tracked_ri_corpus_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
     let mut expected = corpus.to_vec();
     expected.sort();
     expected.dedup();
@@ -250,28 +332,34 @@ fn tracked_ri_corpus_is_sorted_and_deduplicated() {
     );
 }
 
-#[test]
-fn tracked_ri_corpus_entries_all_resolve_to_existing_files() {
-    let root = PathBuf::from(WORKSPACE_ROOT);
-    let corpus = tracked_ri_corpus();
-    let missing: Vec<&String> = corpus
-        .iter()
-        .filter(|rel| !root.join(rel).is_file())
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "every corpus entry must resolve to an existing file under the workspace \
-         root, got {} that do not: {:?}",
-        missing.len(),
-        &missing[..missing.len().min(5)]
-    );
-}
+// DELIBERATELY ABSENT: a gate-resident "every corpus entry resolves to an
+// existing file on disk" probe.
+//
+// That is a property of the WORKING TREE, not of anything this module decides.
+// `git ls-files` reports the INDEX, so an engineer who has `rm`'d a tracked
+// `.ri` locally, or is mid-`git mv`, without staging the deletion would get a
+// red `reify-compiler` suite pointing at the survey module with no connection to
+// what they were doing. The three probes that remain
+// (`…_all_end_in_dot_ri`, `…_is_sorted_and_deduplicated`,
+// `…_paths_are_repo_relative_forward_slash`) are pure properties of the
+// enumeration and carry no such coupling.
+//
+// The behaviour that actually matters when a member is missing is that the
+// sweep RECORDS it rather than dying, and that IS gate-resident: see
+// `survey_corpus_records_a_read_error_rather_than_panicking` and
+// `survey_corpus_records_unsurveyable_members_instead_of_dropping_them`. Each
+// unreadable member lands in `SurveyRun::not_surveyed` with reason
+// `read-error`, and the rendered artifact lists it by name — which is the
+// honest disclosure a stale tree deserves, not a merge-gate red.
 
 #[test]
 fn tracked_ri_corpus_reaches_outside_examples() {
     // The landed `discover_ri_files()` walk is rooted at `examples/` and would
     // miss ~399 of the ~660 tracked files. Widening the root IS β.
-    let corpus = tracked_ri_corpus();
+    let Some(corpus) = tracked_ri_corpus_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
     assert!(
         corpus
             .iter()
@@ -304,7 +392,10 @@ fn tracked_ri_corpus_reaches_outside_examples() {
 
 #[test]
 fn tracked_ri_corpus_paths_are_repo_relative_forward_slash() {
-    let corpus = tracked_ri_corpus();
+    let Some(corpus) = tracked_ri_corpus_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
     for p in corpus {
         assert!(
             !p.starts_with('/') && !p.starts_with("./") && !p.contains('\\'),
@@ -581,9 +672,30 @@ fn ctor_type_name_at_returns_none_rather_than_guessing() {
 /// an eighth code to one and not the other would have silently under-counted
 /// this survey (or under-gated the α corpus walk). Both now read this slice, so
 /// that drift is impossible by construction rather than guarded after the fact.
-/// (The *third* copy, in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
-/// genuinely IS a separate test binary and cannot share this without a
-/// support-crate hop; it stays duplicated.)
+///
+/// # Two copies is NOT the floor — it is where this task's lock set stopped
+///
+/// A *third* copy lives in
+/// `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`
+/// (its local `is_ctor_conformance_code`), which is a separate test binary and
+/// so cannot reach this `#[path]` module. That copy is still lock-step by
+/// convention, with no drift guard — the exact failure mode collapsing the
+/// first two removed.
+///
+/// The support-crate hop that would close it ALREADY EXISTS and costs nothing
+/// new: `struct_ctor_field_conformance_tests.rs` already does
+/// `use reify_test_support::{…}`, this module already does
+/// `use reify_test_support::git_env::{…}`, and `reify-test-support` already
+/// carries `reify-core.workspace = true`, so `DiagnosticCode` is in scope
+/// there. The right home is a `ctor_conformance` module in
+/// `reify-test-support` alongside `git_env`, read by all three consumers.
+///
+/// It is not done here because landing it means editing
+/// `crates/reify-test-support/src/lib.rs` and
+/// `struct_ctor_field_conformance_tests.rs`, neither of which is in task
+/// #5304's lock set — a concurrency-footprint expansion, not a technical
+/// obstacle. Filed as follow-up rather than asserted away: do NOT read the
+/// paragraph above as a rationale for why two copies are acceptable.
 pub(super) const CTOR_CONFORMANCE_CODES: &[reify_core::diagnostics::DiagnosticCode] = {
     use reify_core::diagnostics::DiagnosticCode;
     &[
@@ -1567,24 +1679,42 @@ fn is_selector_type(ty: &str) -> bool {
 
 /// The `Type` Display prefixes that introduce a coordinate pose.
 ///
-/// Each is ALWAYS followed by the dimension digit in the real Display impl —
-/// `Frame3`, `Transform3`, `Point3<Length>` (`crates/reify-core/src/ty.rs`).
+/// Each is ALWAYS followed by the dimension digits in the real Display impl,
+/// and then by NOTHING or by `<` — `Frame3`, `Transform3`, `Point3<Length>`
+/// (`crates/reify-core/src/ty.rs`, the three `write!` arms). Those three shapes
+/// are the entire pose surface; [`is_pose_type`] admits exactly them.
 const POSE_TYPE_PREFIXES: &[&str] = &["Frame", "Transform", "Point"];
 
 /// Whether `ty` renders as a coordinate pose rather than a region target.
 ///
-/// The dimension digit is REQUIRED, not decoration. `Type::StructureRef(name)`
-/// Displays as the bare struct name, so a bare-prefix match would classify the
-/// real defs `PointLoad` and `PointCloud` as poses — and `PointLoad` is the one
-/// FEA def PRD §4 D9 singles out by name. That would put a confidently WRONG
-/// remedy string ("a pose locates a datum, it does not name a region target")
-/// on rows inside the do-not-touch partition, which is worse for γ's sizing than
-/// the neutral fallback. Requiring an ASCII digit after the prefix separates the
-/// two exactly.
+/// The dimension is REQUIRED, and so is what comes after it — the remainder
+/// past the prefix must be a dimension and NOTHING ELSE.
+///
+/// Why the predicate is this tight. `Type::StructureRef(name)` Displays as the
+/// bare struct name, so any struct whose name merely STARTS like a pose reaches
+/// this function as a candidate:
+///
+/// * A bare-prefix match would call the real defs `PointLoad` and `PointCloud`
+///   poses — and `PointLoad` is the one FEA def PRD §4 D9 singles out by name.
+/// * A digit-only guard (`rest` starts with an ASCII digit) is not enough
+///   either: `Point3D`, `Point2Ref` and `Frame4Bar` are all perfectly legal
+///   struct names carrying a digit right after the prefix. None exists in the
+///   corpus today, so that was latent rather than live — but a def named
+///   `Point3D` landing later would silently start collecting a pose verdict.
+///
+/// Either miss puts a confidently WRONG remedy string ("a pose locates a datum,
+/// it does not name a region target") on rows inside the do-not-touch
+/// partition, which is worse for γ's sizing than the neutral fallback. Both
+/// boundaries are pinned in
+/// [`selector_type_renderings_match_what_reify_core_actually_displays`].
 fn is_pose_type(ty: &str) -> bool {
     POSE_TYPE_PREFIXES.iter().any(|p| {
-        ty.strip_prefix(p)
-            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        ty.strip_prefix(p).is_some_and(|rest| {
+            let after_dim = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+            // At least one digit consumed, and what follows is either the end of
+            // the string (`Frame3`) or the quantity parameter (`Point3<Length>`).
+            after_dim.len() < rest.len() && (after_dim.is_empty() || after_dim.starts_with('<'))
+        })
     })
 }
 
@@ -1894,7 +2024,22 @@ fn selector_type_renderings_match_what_reify_core_actually_displays() {
     // FEA def (PRD §4 D9 names it), `PointCloud` is a real def in this tree, and
     // both would then carry the D2 "a pose locates a datum" hint — a confidently
     // wrong remedy inside the do-not-touch partition.
-    for not_a_pose in ["PointLoad", "PointCloud", "Framework", "Transformer"] {
+    //
+    // The last three pin the OTHER boundary, one step in from the bare-prefix
+    // one: a digit-only guard admits every one of them. `Point3D`, `Point2Ref`
+    // and `Frame4Bar` are legal struct names that carry a digit immediately
+    // after a pose prefix, and no such def exists in the corpus today — so the
+    // bug would have been latent until one landed, and then silent. A pose's
+    // dimension is followed by end-of-string or `<`, never by more name.
+    for not_a_pose in [
+        "PointLoad",
+        "PointCloud",
+        "Framework",
+        "Transformer",
+        "Point3D",
+        "Point2Ref",
+        "Frame4Bar",
+    ] {
         let rendered = Type::StructureRef(not_a_pose.into()).to_string();
         assert_eq!(
             rendered, not_a_pose,
@@ -3536,10 +3681,42 @@ fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
     // convert every rebase of this branch into a merge-blocking red.
     //
     // Unlike `base_commit()`, nothing here needs a `main` ref to exist.
+    //
+    // SKIP, not fail, when git cannot be spawned: every assertion below is a
+    // question put to git, and "there is no git" is not an answer about the
+    // artifact. See `git_is_available` for why this module must not be what
+    // makes git a hard requirement of the reify-compiler suite.
+    if !git_is_available() {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    }
+
+    // SKIP, not fail, when the artifact is ABSENT.
+    //
+    // This module's header states the artifact is a point-in-time snapshot, not
+    // a freshness-gated golden file, and γ (task #5305) will legitimately
+    // invalidate it. The natural end of life for a consumed census is DELETION —
+    // see "Retiring this module" in the header. Panicking on absence would make
+    // that one-file deletion red the whole `reify-compiler` merge gate with a
+    // message that reads like a compiler defect, and whoever deletes a document
+    // under `docs/prds/` has no reason to look inside a compiler test binary for
+    // the cause.
+    //
+    // What is NOT relaxed: if the file IS present, every assertion below is
+    // hard. An artifact that exists while naming an unresolvable or orphaned
+    // anchor is a real defect, and that is the case this guard was written for.
     let artifact = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
+    if !artifact.is_file() {
+        println!(
+            "skipped: {ARTIFACT_REL} is not present — the survey snapshot has been \
+             retired or not yet generated; nothing to check"
+        );
+        return;
+    }
     let md = std::fs::read_to_string(&artifact).unwrap_or_else(|e| {
+        // Present but unreadable is an I/O failure, not a retirement.
         panic!(
-            "the committed survey must exist at {}: {e}",
+            "cannot read the committed survey at {}: {e}",
             artifact.display()
         )
     });

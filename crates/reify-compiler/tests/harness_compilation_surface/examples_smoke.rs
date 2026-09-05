@@ -667,10 +667,15 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
 /// module — a `#[path]` module of the SAME test binary — as
 /// `CTOR_CONFORMANCE_CODES`, and this gate reads it rather than restating it, so
 /// the α corpus gate and the β survey cannot drift apart (task #5304). It used to
-/// be a hand-written copy kept in sync by convention; the copy in
-/// `struct_ctor_field_conformance_tests.rs` remains duplicated because that one
-/// genuinely IS a separate binary and could not share this without a
-/// support-crate hop.
+/// be a hand-written copy kept in sync by convention.
+///
+/// A third copy remains in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`
+/// — a separate test binary, which this `#[path]` module cannot reach. That is
+/// NOT a floor: the `reify-test-support` hop that would collapse all three
+/// already exists and is already used by both files. It was left for follow-up
+/// only because it needs edits outside #5304's lock set. See
+/// `CTOR_CONFORMANCE_CODES`'s own doc comment for the full rationale and the
+/// intended destination.
 fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
     crate::ctor_conformance_corpus_survey::is_ctor_conformance_code(code)
 }
