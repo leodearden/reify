@@ -48,9 +48,10 @@ const CONTAINS_BOX_PATH: &str = concat!(
 /// Skips cleanly (via early return) when OCCT is not available.
 #[test]
 fn contains_box_evals_expected_booleans() {
-    let Some(result) =
-        compile_and_build_with_occt(CONTAINS_BOX_PATH, "examples/kernel_queries/contains_box.ri")
-    else {
+    let Some(result) = compile_and_build_with_occt(
+        CONTAINS_BOX_PATH,
+        "examples/kernel_queries/contains_box.ri (task 3611 step-8)",
+    ) else {
         return;
     };
 

@@ -41,7 +41,7 @@ const DISTANCE_BOX_POINT_PATH: &str = concat!(
 fn distance_box_point_evals_to_15mm() {
     let Some(result) = compile_and_build_with_occt(
         DISTANCE_BOX_POINT_PATH,
-        "examples/kernel_queries/distance_box_point.ri",
+        "examples/kernel_queries/distance_box_point.ri (task 3610 pre-1)",
     ) else {
         return;
     };

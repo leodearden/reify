@@ -41,7 +41,7 @@ const GEO_EQUIV_SMOKE_PATH: &str = concat!(
 fn geo_equiv_smoke_evals_expected_booleans() {
     let Some(result) = compile_and_build_with_occt(
         GEO_EQUIV_SMOKE_PATH,
-        "examples/kernel_queries/geo_equiv_smoke.ri",
+        "examples/kernel_queries/geo_equiv_smoke.ri (task 3613 step-8)",
     ) else {
         return;
     };
