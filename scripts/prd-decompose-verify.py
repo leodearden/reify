@@ -47,6 +47,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -303,7 +304,17 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
 # stderr signatures that mean "the probe ran but its target file was not there".
 # Both spellings occur: Rust's io::Error renders ENOENT as "(os error 2)", while
 # Python/CLI wrappers render the strerror text.  Matched case-insensitively.
-_FIXTURE_ABSENT_SIGNATURES = ("no such file or directory", "os error 2")
+#
+# The two are deliberately NOT the same kind of pattern.  The strerror text is a
+# complete phrase, so a plain substring test carries no prefix hazard.  The
+# errno rendering does: `"os error 2"` as a bare substring is a PREFIX test, not
+# an errno test, and swallows ENOTDIR(20) / EISDIR(21) / EINVAL(22) /
+# EMFILE(24) / ENOSPC(28) and the whole 2XX range.  The negative lookahead is
+# what makes it mean ENOENT specifically.  It must be a lookahead rather than a
+# required closing paren, because a bare trailing `os error 2` at end-of-string
+# is a spelling that occurs in the wild and must still match.
+_FIXTURE_ABSENT_PHRASE = "no such file or directory"
+_FIXTURE_ABSENT_ERRNO_RE = re.compile(r"os error 2(?![0-9])")
 
 
 def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
@@ -325,6 +336,26 @@ def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
     it is a real harness failure that must keep blocking.  The sentinel is read
     from α rather than re-declared as a literal so the two cannot drift.
 
+    The errno signature is ANCHORED (`os error 2(?![0-9])`).  ENOENT is errno 2,
+    and an unanchored `"os error 2"` substring is a prefix test that also fires
+    on ENOTDIR(20), EISDIR(21), EINVAL(22), EMFILE(24), ENOSPC(28) and every
+    3-digit 2XX errno — each a genuine, executed falsification that would
+    silently stop blocking, inverting the carve-out into a hole that swallows
+    real findings.  The lookahead (rather than a required closing paren) is
+    load-bearing: a bare trailing `os error 2` at end-of-string is a real
+    spelling and must still match.
+
+    KNOWN LIMITATION (semantic half, not fixed here): the strerror PHRASE is
+    still an unanchored substring test against arbitrary captured stderr, so a
+    genuine FAIL whose EXPECTED diagnostic legitimately quotes that text — e.g.
+    a `rejection` premise asserting that reify emits a good error message for an
+    unresolvable import — is mis-routed to FIXTURE_ABSENT and stops blocking.
+    The damage is bounded: a mis-route only ever downgrades BLOCKS to
+    INCOMPLETE, never INCOMPLETE to PASS, because a fixture-absent record does
+    not count as verifying.  The principled fix is for α to tag the record
+    structurally at probe time instead of synthesize inferring intent from
+    prose; filed as follow-up ticket tkt_0RTA2N4QBVAPDQ6AYE45GS0CP7.
+
     Args:
         rec: An α --json result record.
 
@@ -336,7 +367,8 @@ def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
     if pcc._BINARY_NOT_FOUND_SENTINEL in stderr:
         return False
     lowered = stderr.lower()
-    return any(sig in lowered for sig in _FIXTURE_ABSENT_SIGNATURES)
+    return (_FIXTURE_ABSENT_PHRASE in lowered
+            or bool(_FIXTURE_ABSENT_ERRNO_RE.search(lowered)))
 
 
 def classify_record(rec: Dict[str, Any]) -> str:
