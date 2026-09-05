@@ -752,6 +752,18 @@ pub fn run_modify_pipeline(
 /// specific entity's cell matters, disambiguate before calling, e.g. by
 /// searching `template.value_cells` directly for the desired `id.entity`.
 ///
+/// This is not new behavior introduced by this function: it is the exact
+/// walk `get_let_expr_in` performed inline before delegating here (task
+/// #5831), so the ~150 pre-existing `get_let_expr`/`get_let_expr_in` call
+/// sites across reify-compiler and reify-expr (none in this task's
+/// file-lock scope) already depend on first-match-wins today, whether or
+/// not any of them currently hits an ambiguous template. A fail-fast
+/// panic-on-ambiguity variant was raised in review and deliberately
+/// deferred rather than applied here: flipping it would change long-lived
+/// shared test-infrastructure behavior across that whole call-site surface,
+/// which needs its own verification pass, not a same-task amendment — see
+/// the follow-up ticket filed from task #5831.
+///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
@@ -1789,7 +1801,7 @@ mod tests {
                 "x",
                 Type::dimensionless_scalar(),
                 Some(CompiledExpr::literal(
-                    Value::Bool(true),
+                    Value::Real(1.5),
                     Type::dimensionless_scalar(),
                 )),
             )
@@ -1797,7 +1809,7 @@ mod tests {
                 "Second",
                 "x",
                 Type::Int,
-                Some(CompiledExpr::literal(Value::Bool(true), Type::Int)),
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
             )
             .build();
 
