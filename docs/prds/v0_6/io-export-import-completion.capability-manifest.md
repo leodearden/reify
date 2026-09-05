@@ -76,7 +76,7 @@ Verdict: **all bindings PASS** — no FAIL, no blocker.
 | geometry-import eval seam | **NEW** — no B-rep import seam today (only field import `engine_eval.rs:816`); the builtin returns a `KernelHandle` exactly as geometry-constructor builtins do | PASS (new seam, substrate for it exists) |
 | `step_import` as a builtin | `reify-stdlib` `eval_builtin` registry (the geometry-constructor home) | PASS (site exists) |
 | STEPInput surface | declared in α (upstream) | PASS (α upstream) |
-| **G6:** round-trip AABB within 1e-6 m (NOT byte/topology exact) | OCCT read/write precision ≪ 1e-6 m on a bounding box; bound is on AABB (B-rep-stable), **not** exact round-trip — avoids the exactness trap (cf. trajectory-spline esc-3770-1) | PASS (premise achievable) |
+| **G6:** round-trip AABB within 1e-3 mm (NOT byte/topology exact) | OCCT read/write precision ≪ 1e-3 mm on a bounding box; bound is on AABB (B-rep-stable), **not** exact round-trip — avoids the exactness trap (cf. trajectory-spline esc-3770-1) | PASS (premise achievable) |
 | prereq | α upstream | PASS |
 
 ---
