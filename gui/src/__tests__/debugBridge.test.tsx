@@ -42,6 +42,7 @@ import {
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import { cssEscapePolyfill, ESCAPE_ARMS } from './test_utils/cssEscape';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
@@ -4856,65 +4857,13 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
 // [attr="…"] selector, pinned by ONE table (task #6178 review amendment)
 // ---------------------------------------------------------------------------
 
-/**
- * CSSOM's "serialize an identifier" algorithm, standing in for the `CSS.escape`
- * jsdom does not provide (https://drafts.csswg.org/cssom/#serialize-an-identifier).
- *
- * It exists only to STUB the missing global. `escapeAttrValue`'s production arm
- * IS `CSS.escape`, and jsdom exposes no global `CSS` at all (asserted by the
- * first case below rather than assumed), so without a stub the one arm every
- * real webview takes would have zero coverage anywhere in the suite — leaving
- * the hand-rolled `["\\]` fallback, which production never reaches, as the only
- * branch any test discriminated on.
- *
- * Faithful in exactly the way that matters here: it emits the hex escape
- * (`\31 `) and escaped space (`\ `) the real implementation does. Those are
- * IDENTIFIER escapes, and the property under test is that they still survive
- * being placed inside a DOUBLE-QUOTED attribute value.
- */
-function cssEscapePolyfill(value: string): string {
-  const s = String(value);
-  let out = '';
-  for (let i = 0; i < s.length; i += 1) {
-    const c = s.charCodeAt(i);
-    const ch = s.charAt(i);
-    if (c === 0x0000) {
-      out += '\uFFFD';
-    } else if (
-      (c >= 0x0001 && c <= 0x001f) ||
-      c === 0x007f ||
-      (i === 0 && c >= 0x0030 && c <= 0x0039) ||
-      (i === 1 && c >= 0x0030 && c <= 0x0039 && s.charCodeAt(0) === 0x002d)
-    ) {
-      out += `\\${c.toString(16)} `;
-    } else if (i === 0 && c === 0x002d && s.length === 1) {
-      out += `\\${ch}`;
-    } else if (
-      c >= 0x0080 ||
-      c === 0x002d ||
-      c === 0x005f ||
-      (c >= 0x0030 && c <= 0x0039) ||
-      (c >= 0x0041 && c <= 0x005a) ||
-      (c >= 0x0061 && c <= 0x007a)
-    ) {
-      out += ch;
-    } else {
-      out += `\\${ch}`;
-    }
-  }
-  return out;
-}
-
-/**
- * The two arms of `escapeAttrValue`, each forced deterministically rather than
- * inferred from the environment: `vi.stubGlobal('CSS', undefined)` guarantees
- * the fallback arm even if a future jsdom starts shipping a partial `CSS`, and
- * the polyfill stub guarantees the production arm even though jsdom ships none.
- */
-const ESCAPE_ARMS = [
-  { name: 'fallback', install: () => vi.stubGlobal('CSS', undefined) },
-  { name: 'CSS.escape', install: () => vi.stubGlobal('CSS', { escape: cssEscapePolyfill }) },
-] as const;
+// `cssEscapePolyfill` and `ESCAPE_ARMS` are imported from
+// `./test_utils/cssEscape` rather than defined here: the polyfill is CSSOM's
+// serialize-an-identifier algorithm — a general-purpose test utility, and a
+// second inline copy in the next suite that needs the `CSS.escape` arm could
+// disagree with this one while both suites stayed green (task #6178 review
+// amendment). Their rationale — why a stub is needed at all, and why the arms
+// are forced rather than inferred — lives with them, in that file.
 
 /** The values every row feeds its MISS half — each would corrupt a raw selector. */
 const escapeMetacharValues = (prefix: string) => [`${prefix}-"1"`, `${prefix}-\\1`, `${prefix}-1"]`];
