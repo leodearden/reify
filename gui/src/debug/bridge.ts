@@ -329,24 +329,16 @@ function pickFeaChannelSelect(
  * literal selector `[data-testid="undefined"]`, reading downstream as a plain
  * not-found. A compile error is strictly the better failure.
  *
- * `String(v)` is the SECOND layer, and it only ever fires for a caller that
- * defeated the first — an `as string` cast the JSON payload falsifies, which is
- * exactly how the pre-#6178 call sites reached here. For a well-typed caller it
- * is a no-op. It matters because the two arms disagree about a non-string:
- * `CSS.escape` takes a WebIDL DOMString and coerces its argument itself, while
- * the fallback calls `String.prototype.replace`, which THROWS — surfacing as
- * `{error: 'v.replace is not a function'}`, the opaque-internal-message failure
- * this helper exists to prevent, reached through a wrong TYPE rather than a
- * metacharacter, and reached only under the arm no real webview takes. Coercing
- * before the branch makes the arms behave identically instead.
+ * `String(v)` is the SECOND layer: a backstop for a caller that defeats the
+ * first with an `as string` cast the JSON payload falsifies — how every
+ * pre-#6178 call site reached here. Unreachable today, and undiscriminatable by
+ * any test, because every call site now type-guards above it (THE BOUNDARY RULE
+ * on `RESOLVE_BY_TESTID_ERRORS`).
  *
- * NEITHER layer is the validation. Since #6178's review amendment every
- * caller-supplied value that reaches this helper has already passed a `typeof`
- * guard at its OWN tool boundary — see THE BOUNDARY RULE on
- * `RESOLVE_BY_TESTID_ERRORS` — which is what turns a wrong-typed request into
- * that tool's own required-param error (`testId is required`, or `path is
- * required` for the tree-node tools) rather than into any diagnostic about the
- * DOM.
+ * NEITHER layer is the validation: the per-tool boundary guards are, and they
+ * are what turns a wrong-typed request into that tool's own required-param
+ * error (`testId is required`, or `path is required` for the tree-node tools)
+ * rather than into any diagnostic about the DOM.
  */
 function escapeAttrValue(v: string): string {
   const s = String(v);

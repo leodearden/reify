@@ -5199,17 +5199,19 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * Three rows — `element_screenshot`, `wait_for_selector` and `wait_for`'s
    * selector arm — guarded the type BEFORE #6178 and are unchanged by it. They
    * are here because the argument above is about the guards being independent
-   * copies, which is as true of the three this task did not touch as of the five
-   * it rewrote and the ninth its review added.
+   * copies, which is as true of the three this task did not touch as of the
+   * five it rewrote and the three — driveTreeNode's and the two whole-selector
+   * copies — its review added.
    *
    * Run ONCE, not per `ESCAPE_ARMS` arm: the guard returns before
    * `escapeAttrValue` is reached, and `escapeAttrValue` coerces with `String(v)`
    * BEFORE branching, so neither arm can observe a non-string even with the
    * guard deleted. (An older version of this block ran per-arm on the theory
    * that the fallback would throw `v.replace is not a function`; measured, both
-   * arms answer identically, so the doubling was pure duplication. That
-   * TypeError survives only as the motivation for the `String()` coercion, in
-   * `escapeAttrValue`'s docblock.)
+   * arms answer identically, so the doubling was pure duplication — and that
+   * measurement is why `escapeAttrValue`'s docblock justifies its `String()`
+   * coercion in one line, as an unreachable backstop, rather than arguing an
+   * arm asymmetry no test here can observe.)
    */
   type BoundaryGuardSite = {
     label: string;
