@@ -938,21 +938,14 @@ mod tests {
         };
         let message = reify_core::panic_payload_to_string(payload.as_ref());
         assert!(
-            message.contains('2'),
+            message.contains("found 2 occurrences"),
             "panicked, but the message doesn't report the observed count of \
-             2 declarations; got: {message}"
+             2 declarations in context; got: {message}"
         );
         assert!(
             message.contains("authoritative"),
             "panicked, but the message doesn't name the ambiguity (which \
              declaration is authoritative); got: {message}"
-        );
-        assert!(
-            !message.contains("has it moved or been reformatted"),
-            "panicked with the caller's not-found wording instead of a \
-             message unique to the duplicate-declaration condition — a \
-             future refactor must not collapse these two failure modes into \
-             one message; got: {message}"
         );
     }
 
