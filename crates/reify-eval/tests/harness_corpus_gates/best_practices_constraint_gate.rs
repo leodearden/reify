@@ -48,10 +48,7 @@
 //! ~7 files, and the full in-process sweep measures ~0.3s — far short of the
 //! backstop, so sharding would be dead weight
 //! (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
-//! is likewise un-sharded on purpose, for the same reason). Later mentions of
-//! `examples_smoke.rs` elsewhere in this file are deliberately left bare —
-//! this is the one full-path citation, and repeating it every time would add
-//! noise, not information.
+//! is likewise un-sharded on purpose, for the same reason).
 
 use reify_core::ConstraintNodeId;
 use reify_ir::Satisfaction;
@@ -320,8 +317,8 @@ fn audit_reports_stale_expected_indeterminate() {
 
 /// Absolute path to `examples/best_practices/`, resolved at compile time from
 /// this crate's manifest directory (two levels up) — matches
-/// `harness_compilation_surface/examples_smoke.rs`'s `EXAMPLES_DIR` and both
-/// sibling gates' `corpus_files`.
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
+/// `EXAMPLES_DIR` and both sibling gates' `corpus_files`.
 const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
 
 /// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
@@ -330,10 +327,10 @@ const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/be
 /// Deliberately a FLAT (non-recursive) read — this fn's flatness is
 /// load-bearing, not incidental: the corpus is a single flat drawer of idiom
 /// exemplars by design
-/// (`harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`'s doc
-/// comment), and a nested subdirectory appearing here is a structural change
-/// that should be reviewed rather than silently absorbed by switching this to
-/// a recursive walk.
+/// (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`'s
+/// doc comment), and a nested subdirectory appearing here is a structural
+/// change that should be reviewed rather than silently absorbed by switching
+/// this to a recursive walk.
 fn corpus_files() -> Vec<std::path::PathBuf> {
     let dir = std::path::Path::new(CORPUS_DIR);
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
@@ -364,13 +361,13 @@ fn corpus_relative(path: &std::path::Path) -> String {
 /// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
 /// count measured on this branch — a floor that catches a silently-emptied
 /// or mis-resolved directory, the same class of guard as
-/// `harness_compilation_surface/examples_smoke.rs`'s
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
 /// `total >= MIN_DISCOVERED_RI_FILES`), every returned path a `.ri` file
 /// sitting directly inside a `best_practices` directory (FLAT — a nested
 /// subdirectory must NOT be swept, matching
-/// `harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`, whose
-/// comment records that a nested subdirectory here is a structural change
-/// that should be reviewed rather than silently absorbed), sorted
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`,
+/// whose comment records that a nested subdirectory here is a structural
+/// change that should be reviewed rather than silently absorbed), sorted
 /// (deterministic failure output), and containing the known exemplars
 /// `bolt_circle.ri` and `clearance_oracle.ri` by basename (proving path
 /// resolution actually reached the real directory rather than returning an
@@ -490,15 +487,13 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
 
 /// Guards a not-yet-existing `EXPECTED_INDETERMINATE`: every entry names a
 /// file that actually exists in `corpus_files()` (mirrors
-/// `harness_compilation_surface/examples_smoke.rs::skip_set_entries_exist_under_examples_dir` —
-/// an entry left behind after its exemplar is renamed or deleted must fail
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::skip_set_entries_exist_under_examples_dir`
+/// — an entry left behind after its exemplar is renamed or deleted must fail
 /// loudly instead of silently never matching), no duplicate `(file, index)`
 /// pairs, and every entry's reason string is non-empty — the
-/// auditable-justification contract `SKIP_SET`'s `(&str, &str)` tuple shape
-/// encodes (`harness_compilation_surface/examples_smoke.rs`'s `SKIP_SET` doc
-/// comment: "The reason is mandatory — the `(&str, &str)` tuple shape forces
-/// every entry to carry a one-line human-readable justification, making
-/// skips auditable at review time.").
+/// auditable-justification contract that
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
+/// `SKIP_SET` `(&str, &str)` tuple shape encodes.
 #[test]
 fn expected_indeterminate_entries_are_well_formed() {
     let files = corpus_files();
