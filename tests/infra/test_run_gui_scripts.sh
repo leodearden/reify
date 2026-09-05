@@ -574,7 +574,7 @@ chmod +x "$_t25_tmpdir/bin/curl"
 # secondary guard for the same class of failure. The ambient display is
 # scrubbed and then re-pinned for this child process (task 7290) so this test
 # can never again silently depend on whether the verify host has one.
-_t25_out=$(env -u DISPLAY -u WAYLAND_DISPLAY \
+_t25_out=$(env -u DISPLAY -u WAYLAND_DISPLAY DISPLAY=:99 \
     REIFY_VITE_PORT="$_t25_port" PATH="$_t25_tmpdir/bin:$PATH" \
     bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
     && _t25_rc=0 || _t25_rc=$?
