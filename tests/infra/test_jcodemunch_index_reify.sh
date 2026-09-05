@@ -561,6 +561,24 @@ jc_pin_lib() {
     awk '/^JC_PIN=/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_LIB_FILE"
 }
 
+# The interpreter's half of the same extractor pair, same shape and same
+# emptiness contract.
+jc_python_lib() {
+    [ -f "$JC_PIN_LIB_FILE" ] || return 0
+    awk '/^JC_PYTHON=/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_LIB_FILE"
+}
+
+# β's interpreter comes out of the CONSTRUCTED argv POSITIONALLY — the token
+# FOLLOWING `--python` — the same extractor shape the sibling suite uses for δ
+# (tests/infra/test_with_jcodemunch_serve.sh's jc_python_delta). Read through a
+# herestring, never a pipeline: an awk with an `exit` on the read end of a pipe
+# is an early-closing consumer, which is what SIGPIPEs the producer under
+# `set -euo pipefail`.
+jc_python_beta_argv() {
+    local argv; argv="$(dry_run_argv "$1")"
+    awk '{ for (i = 1; i <= NF; i++) if ($i == "--python") { print $(i + 1); exit } }' <<< "$argv"
+}
+
 # b9_argv_agrees_with_lib <root> — β's CONSTRUCTED argv carries exactly the
 # requirement string the lib defines. Read out of the argv rather than out of
 # β's source, so what is tested is what would really be spawned — INCLUDING the
@@ -570,6 +588,34 @@ b9_argv_agrees_with_lib() {
     pin="$(jc_pin_lib)" || true
     require_nonempty "JC_PIN defined by $JC_PIN_LIB_FILE" "$pin" || return 1
     argv_has "$root" "$pin"
+}
+
+# b9_python_agrees_with_lib <root> — the INTERPRETER's counterpart, and NOT a
+# lib-vs-lib tautology: the left-hand side is the lib's JC_PYTHON, the
+# right-hand side comes out of a real SUT run, so it fails the moment the lib's
+# value stops REACHING β's argv. b9_beta_defines_no_triple only proves β does
+# not DEFINE JC_PYTHON; it cannot tell a script that sources the lib and then
+# ignores it from one that uses it. Without this, an INDEXER_CMD rewritten to a
+# bare `--python 3.12` literal passes the whole suite — measured, and exactly
+# the serve-vs-indexer interpreter divergence #6548 exists to close.
+#
+# Compared as WHOLE TOKENS, never as a substring: `argv_has` would report
+# agreement between a lib value of "3.1" and an argv carrying "3.13".
+b9_python_agrees_with_lib() {
+    local root="$1" want got
+    want="$(jc_python_lib)" || true
+    require_nonempty "JC_PYTHON defined by $JC_PIN_LIB_FILE" "$want" || return 1
+    got="$(jc_python_beta_argv "$root")" || true
+    require_nonempty "the interpreter following --python in β's constructed argv" "$got" || return 1
+    [ "$want" = "$got" ] && return 0
+    printf '%s\n' \
+        "jcodemunch INTERPRETER DRIFT: the lib pins [$want] but β's argv spawns [$got]." \
+        "  $JC_INDEX" \
+        "  A serve and an indexer running the SAME pinned wheel under DIFFERENT interpreters is a" \
+        "  hand-maintained drift surface. scripts/lib_jcodemunch_pin.sh is the ONE definition site;" \
+        "  β must reach it through \$JC_PYTHON, never re-litigate the interpreter at the call site." \
+        "  argv: $(dry_run_argv "$root")" >&2
+    return 1
 }
 
 # THE STRUCTURAL HALF, and the load-bearing one. Every copy of the triple
@@ -1163,6 +1209,15 @@ else
     # is the one that fails when the lib's value stops REACHING the argv.
     assert "argv carries exactly the JC_PIN the lib defines (the plumbing delivers)" \
         b9_argv_agrees_with_lib "$ARGV_ROOT"
+
+    # THE INTERPRETER, on the same terms as the pin above. β's `--python` value
+    # was previously asserted NOWHERE in this suite — not even for presence —
+    # so an INDEXER_CMD carrying a bare `--python 3.12` literal left every
+    # assertion here green while the indexer and the serve ran the same pinned
+    # wheel under different interpreters. Read positionally out of the argv,
+    # which is what makes it a plumbing check rather than a lib-vs-lib compare.
+    assert "argv carries exactly the JC_PYTHON the lib defines (interpreter reaches the argv)" \
+        b9_python_agrees_with_lib "$ARGV_ROOT"
 
     # All three flags re-verified on the `watch` subparser at 1.108.54
     # (server.py:6326-6369).
