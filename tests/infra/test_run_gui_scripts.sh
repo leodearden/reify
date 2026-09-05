@@ -23,6 +23,18 @@ RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
 
+# Hermetic display axis (#7290). reify-gui is a GTK/WebKit app and both
+# launchers refuse to build with no display (lib_gui_launch.sh's
+# gui_launch_preflight_display, #7254), so a behavioural test that does not
+# establish a display passes on a developer box and fails on a headless
+# verify host — exactly the split that made Test 25 red only some of the
+# time (esc-7014-1). Pin one here, unconditionally, so a future test that
+# forgets its own DISPLAY=:99 still behaves identically on both.
+# A test that must drive the NO-display gate scrubs it for its CHILD only,
+# via `env -u DISPLAY -u WAYLAND_DISPLAY` (Test 27) — never at suite scope;
+# Test 32 at the end of this file guards that.
+export DISPLAY=:99
+
 echo "=== run-gui.sh launcher tests ==="
 
 # -- Test 1: file exists + is executable -------------------------------------
