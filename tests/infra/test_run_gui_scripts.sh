@@ -1160,4 +1160,22 @@ else
     echo "  SKIP: the text drift-guard above still ran."
 fi
 
+# -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
+echo ""
+echo "--- Test 32: suite-level DISPLAY=:99 pin still holds at end of suite ---"
+
+# Placed LAST deliberately: this asserts the hermetic pin (a suite-level
+# `export DISPLAY=:99`, task 7290) is still exactly `:99` after every
+# preceding test has run. A test that must drive the NO-display gate scrubs
+# the display for its CHILD process only (env -u DISPLAY -u WAYLAND_DISPLAY,
+# as Test 27 does at lines 684 and 721) — never at suite scope with a bare
+# `unset DISPLAY` / `export DISPLAY=`. A suite-scope scrub would silently
+# re-break every later behavioural launcher test on a headless verify host,
+# and nothing else in this suite would notice. Asserting the exact value
+# `:99` (not mere non-emptiness) keeps this guard host-independent: mere
+# non-emptiness would pass vacuously off the host's own ambient DISPLAY and
+# reproduce the very host-dependence this task removes.
+assert "suite: the hermetic DISPLAY pin survives every preceding test" \
+    bash -c '[ "${1:-}" = ":99" ]' _ "${DISPLAY:-}"
+
 test_summary
