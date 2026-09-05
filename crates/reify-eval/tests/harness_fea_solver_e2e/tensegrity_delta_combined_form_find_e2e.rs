@@ -32,7 +32,7 @@ use reify_core::{Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, Value};
 use reify_test_support::tensegrity_fixtures::{
-    triplex_caps, triplex_group_ids, triplex_seeds, triplex_tensegrity,
+    tall_triplex_tensegrity, triplex_caps, triplex_group_ids, triplex_seeds,
 };
 use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
 
@@ -106,7 +106,7 @@ fn surface_stress_echoes(fields: &PersistentMap<String, Value>) -> Vec<f64> {
 fn trampoline_combined_prism_membrane_has_nonempty_surface_stresses() {
     const SIGMA: f64 = 0.2;
     let value_inputs = vec![
-        triplex_tensegrity(1.0, -1.0, Some(triplex_caps())),
+        tall_triplex_tensegrity(Some(triplex_caps())),
         triplex_group_ids(),
         triplex_seeds(),
         Value::Int(1), // reference_group = horizontals
@@ -393,7 +393,7 @@ fn trampoline_four_arg_backward_compat_has_empty_surface_stresses() {
     // The triplex WITHOUT a surfaces field — the 4-arg line-only case. `None`
     // OMITS the key rather than writing an empty list, which is what puts this
     // structure on the line-only path.
-    let tensegrity = triplex_tensegrity(1.0, -1.0, None);
+    let tensegrity = tall_triplex_tensegrity(None);
 
     let value_inputs = vec![
         tensegrity,

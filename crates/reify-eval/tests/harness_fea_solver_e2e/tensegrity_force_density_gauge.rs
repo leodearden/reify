@@ -29,10 +29,10 @@ use reify_ir::{OpaqueState, PersistentMap, Value};
 use reify_test_support::point3;
 // The triplex geometry, its member index space and the `Tensegrity` assembly have
 // ONE definition, in `reify_test_support::tensegrity_fixtures`. This suite uses the
-// `bottom_z = 0.0` instance.
+// unit-height variant, `canonical_triplex_tensegrity`.
 use reify_test_support::tensegrity_fixtures::{
-    TRIPLEX_ANCHORS, TRIPLEX_MEMBERS, TRIPLEX_STRUTS, index_lists, tensegrity, triplex_caps,
-    triplex_tensegrity,
+    TRIPLEX_ANCHORS, TRIPLEX_MEMBERS, TRIPLEX_STRUTS, canonical_triplex_tensegrity, index_lists,
+    tensegrity, triplex_caps,
 };
 
 /// Base force densities in `TRIPLEX_MEMBERS` order; signs honour the hard contract
@@ -44,7 +44,7 @@ const BASE_Q: [f64; 12] = [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 
 /// EMPTY `surfaces` field, which is what this suite has always handed the
 /// anchored line-only solve.
 fn prism_tensegrity() -> Value {
-    triplex_tensegrity(1.0, 0.0, Some(Value::List(vec![])))
+    canonical_triplex_tensegrity(Some(Value::List(vec![])))
 }
 
 /// "Tent" membrane: 4 anchored corners plus one free off-plane interior node,
@@ -114,7 +114,7 @@ fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
 /// fixture of `harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs`.
 fn solve_combined(q: &[f64], sigma: f64) -> PersistentMap<String, Value> {
     let inputs = [
-        triplex_tensegrity(1.0, 0.0, Some(triplex_caps())),
+        canonical_triplex_tensegrity(Some(triplex_caps())),
         reals(q),
         ints(TRIPLEX_ANCHORS),
         reals(&[sigma; 2]),

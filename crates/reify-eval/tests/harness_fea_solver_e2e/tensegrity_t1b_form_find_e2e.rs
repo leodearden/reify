@@ -20,7 +20,7 @@ use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, Value};
 use reify_test_support::tensegrity_fixtures::{
-    triplex_group_ids, triplex_seeds, triplex_tensegrity,
+    canonical_triplex_tensegrity, triplex_group_ids, triplex_seeds,
 };
 use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
@@ -43,7 +43,6 @@ fn force_val(v: &Value) -> f64 {
         other => panic!("expected a Scalar/Real force, got {other:?}"),
     }
 }
-
 
 /// Invoke `solve_form_find_free_trampoline` with the standard no-realization /
 /// no-warm-state args.
@@ -162,7 +161,7 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
 #[test]
 fn trampoline_happy_path_solves_triplex_prism() {
     let value_inputs = vec![
-        triplex_tensegrity(1.0, 0.0, None),
+        canonical_triplex_tensegrity(None),
         triplex_group_ids(),
         triplex_seeds(),
         Value::Int(1), // reference_group
@@ -222,9 +221,9 @@ fn trampoline_all_positive_seeds_is_failed_infeasible() {
     ]);
 
     // Build a Tensegrity where every member is tagged as a cable (positive seeds).
-    // We reuse triplex_tensegrity() but pass all-cable group ids + positive seeds.
+    // We reuse canonical_triplex_tensegrity() but pass all-cable group ids + positive seeds.
     let value_inputs = vec![
-        triplex_tensegrity(1.0, 0.0, None),
+        canonical_triplex_tensegrity(None),
         all_cable_group_ids,
         all_positive_seeds,
         Value::Int(1), // reference_group
@@ -246,7 +245,7 @@ fn trampoline_all_positive_seeds_is_failed_infeasible() {
 #[test]
 fn trampoline_short_value_inputs_is_failed() {
     let value_inputs = vec![
-        triplex_tensegrity(1.0, 0.0, None),
+        canonical_triplex_tensegrity(None),
         triplex_group_ids(),
         // seed_ratios and reference_group omitted → only 2 inputs
     ];
@@ -291,7 +290,7 @@ fn trampoline_cable_group_negative_seed_is_sign_violation() {
     ]);
 
     let value_inputs = vec![
-        triplex_tensegrity(1.0, 0.0, None),
+        canonical_triplex_tensegrity(None),
         triplex_group_ids(), // struts→0, horizontals→1, verticals→2
         sign_violating_seeds,
         Value::Int(1), // reference_group
@@ -347,7 +346,7 @@ fn trampoline_out_of_range_group_id_is_dimension_mismatch() {
     ]);
 
     let value_inputs = vec![
-        triplex_tensegrity(1.0, 0.0, None),
+        canonical_triplex_tensegrity(None),
         bad_group_ids,
         triplex_seeds(), // only 3 groups: 0, 1, 2
         Value::Int(1),   // reference_group
@@ -475,7 +474,7 @@ fn free_trampoline_dimensioned_seed_ratio_is_failed_wrong_unit() {
         }, // ← dimensioned: must not be accepted
     ]);
     let value_inputs = vec![
-        triplex_tensegrity(1.0, 0.0, None),
+        canonical_triplex_tensegrity(None),
         triplex_group_ids(),
         seeds_with_unit,
         Value::Int(1), // reference_group

@@ -1,4 +1,4 @@
-//! THE single definition of the canonical triplex tensegrity fixture.
+//! The single definition of the triplex tensegrity fixture **in `Value` form**.
 //!
 //! The "triplex" is the canonical symmetric triangular T-prism used across the
 //! form-finding suites: 6 nodes on a unit circumradius, 3 crossing struts and 9
@@ -12,13 +12,30 @@
 //! consuming suite at once. That is the whole point — resist re-inlining a
 //! "just this once" local variant in a call site.
 //!
-//! The two axes on which the three copies genuinely differed are preserved as
-//! explicit parameters rather than normalised away, because both are
-//! load-bearing:
+//! REMAINING DRIFT SURFACE — the kernel side, deliberately NOT collapsed here.
+//! `crates/reify-solver-elastic` carries five further copies of this prism's
+//! topology and geometry as raw `Vec<[f64; 3]>` / `Vec<(usize, usize)>` rather
+//! than `Value`, so they are outside the "single definition" this module can
+//! claim: `src/form_find_free.rs` (`triplex_topology` + `canonical_prism`),
+//! `src/prestress_stability.rs` (`canonical_prism`),
+//! `tests/tensegrity_t1b_form_find_free.rs`,
+//! `tests/tensegrity_delta_combined_form_find.rs` and
+//! `tests/tensegrity_t2_stability.rs`. The two `src/` ones sit inside a
+//! `#[cfg(test)] mod tests` and are unreachable from another crate; the three
+//! `tests/` ones ARE reachable — reify-solver-elastic already dev-deps
+//! reify-test-support — and [`triplex_node_coords`] exists as the raw-coordinate
+//! seam they can collapse onto without any dependency change. Recording that
+//! surface here replaces the note the force-density gauge used to carry.
 //!
-//!   * `bottom_z` — the gauge and T1b prisms have their bottom triangle at
-//!     `z = 0.0`; δ's sits at `z = -1.0`, a taller prism that feeds a different
-//!     solve.
+//! The two axes on which the three harness copies genuinely differed are
+//! preserved rather than normalised away, because both are load-bearing:
+//!
+//!   * bottom-triangle height — the gauge and T1b prisms have their bottom
+//!     triangle at `z = 0.0`; δ's sits at `z = -1.0`, a taller prism that feeds
+//!     a different solve. The two live behind the named constructors
+//!     [`canonical_triplex_tensegrity`] and [`tall_triplex_tensegrity`] so the
+//!     geometry choice stays legible at the call site instead of becoming a
+//!     positional float.
 //!   * `surfaces` — see [`tensegrity`]: T1b's structure OMITS the `surfaces`
 //!     field entirely, where the gauge and δ carry it. Absent and present-but-
 //!     empty are different inputs, and at least one test turns on the
@@ -59,33 +76,51 @@ pub const TRIPLEX_STRUTS: usize = 3;
 /// triangle {3, 4, 5} is fixed, the top triangle {0, 1, 2} is free.
 pub const TRIPLEX_ANCHORS: [i64; 3] = [3, 4, 5];
 
-/// The canonical symmetric triplex prism at circumradius 1: top triangle
-/// (nodes 0, 1, 2) at `top_z` and azimuth 120°·i, bottom triangle (nodes 3, 4,
-/// 5) at `bottom_z` and azimuth 120°·i + 30°.
+/// Height of the top triangle. Not a parameter: every fixture this module
+/// replaced put the top ring at `z = +1.0`, and the only axis they disagreed on
+/// is the bottom ring (see [`canonical_triplex_tensegrity`] /
+/// [`tall_triplex_tensegrity`]). Keeping it a constant is what stops the two
+/// heights from becoming a transposable pair of bare `f64` arguments.
+const TRIPLEX_TOP_Z: f64 = 1.0;
+
+/// The canonical symmetric triplex prism at circumradius 1, as RAW coordinates:
+/// top triangle (nodes 0, 1, 2) at [`TRIPLEX_TOP_Z`] and azimuth 120°·i, bottom
+/// triangle (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°.
+///
+/// SEAM, kept `pub` deliberately even though nothing outside this crate calls it
+/// yet: reify-solver-elastic's five `canonical_prism()` copies are exactly this
+/// value in exactly this `Vec<[f64; 3]>` shape (see the module header), and its
+/// three `tests/` copies can collapse onto this function without a dependency
+/// change. [`triplex_nodes`] is the `Value`-form counterpart for consumers that
+/// need dimensioned coordinates.
 ///
 /// `bottom_z` is a parameter, not a constant, because the pre-existing fixtures
 /// genuinely disagreed on it — gauge and T1b use `0.0`, δ uses `-1.0`. Silently
 /// picking one would change the geometry a solve converges from.
-///
-/// Coordinates are built with [`crate::values::point3`], so each node is a
-/// `Value::Point` of three LENGTH-dimensioned SI-metre `Value::Scalar`s.
-pub fn triplex_nodes(top_z: f64, bottom_z: f64) -> Vec<Value> {
+pub fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
     // `.to_radians()` is `self * (PI / 180.0)`; the contract tests below pin
     // that it agrees bit-for-bit with the explicit `* (PI / 180.0)` spelling the
     // superseded T1b/δ copies used, so this collapse is not a numerical change.
     let ring = |i: usize, twist: f64, z: f64| {
         let a = (120.0 * (i as f64) + twist).to_radians();
-        point3(a.cos(), a.sin(), z)
+        [a.cos(), a.sin(), z]
     };
-    let mut nodes: Vec<Value> = (0..3).map(|i| ring(i, 0.0, top_z)).collect();
-    nodes.extend((0..3).map(|i| ring(i, 30.0, bottom_z)));
-    nodes
+    let mut coords: Vec<[f64; 3]> = (0..3).map(|i| ring(i, 0.0, TRIPLEX_TOP_Z)).collect();
+    coords.extend((0..3).map(|i| ring(i, 30.0, bottom_z)));
+    coords
 }
 
-/// The canonical triplex geometry: `triplex_nodes(1.0, 0.0)` — circumradius 1,
-/// height 1, 30° twist. This is the gauge / T1b prism.
-pub fn canonical_triplex_nodes() -> Vec<Value> {
-    triplex_nodes(1.0, 0.0)
+/// [`triplex_node_coords`] lifted into the DSL's `Value` domain via
+/// [`crate::values::point3`], so each node is a `Value::Point` of three
+/// LENGTH-dimensioned SI-metre `Value::Scalar`s.
+///
+/// SEAM, kept `pub` deliberately: today every consuming suite goes through
+/// [`canonical_triplex_tensegrity`] / [`tall_triplex_tensegrity`] and needs only
+/// the assembled structure, but a suite that wants the bare node list — to
+/// perturb it, or to build a non-`Tensegrity` structure over the same geometry —
+/// should reach for this rather than re-deriving the ring math.
+pub fn triplex_nodes(bottom_z: f64) -> Vec<Value> {
+    triplex_node_coords(bottom_z).into_iter().map(|[x, y, z]| point3(x, y, z)).collect()
 }
 
 /// Lower a list of index tuples (`[[j, k], …]` for struts and cables,
@@ -128,24 +163,44 @@ pub fn tensegrity(
     }))
 }
 
-/// The canonical triplex as a `Tensegrity` structure: [`triplex_nodes`] at the
-/// requested heights, with [`TRIPLEX_MEMBERS`] split at [`TRIPLEX_STRUTS`] into
-/// the `struts` and `cables` fields.
+/// The triplex as a `Tensegrity` structure: [`triplex_nodes`] at the requested
+/// bottom height, with [`TRIPLEX_MEMBERS`] split at [`TRIPLEX_STRUTS`] into the
+/// `struts` and `cables` fields.
 ///
-/// Both parameters carry a real difference between the call sites this replaced:
-/// `triplex_tensegrity(1.0, 0.0, ..)` is the gauge / T1b prism,
-/// `triplex_tensegrity(1.0, -1.0, ..)` the taller δ one. See [`tensegrity`] for
-/// what `surfaces: None` means.
-pub fn triplex_tensegrity(top_z: f64, bottom_z: f64, surfaces: Option<Value>) -> Value {
+/// Private on purpose. `bottom_z` has exactly two inhabitants across the repo
+/// and both have a named constructor ([`canonical_triplex_tensegrity`],
+/// [`tall_triplex_tensegrity`]); routing every call site through those keeps the
+/// geometry choice readable and keeps a third variant from being introduced at a
+/// call site instead of here, where the anti-drift property lives.
+fn triplex_tensegrity_at(bottom_z: f64, surfaces: Option<Value>) -> Value {
     let pair = |&(j, k): &(usize, usize)| [j as i64, k as i64];
     let struts: Vec<[i64; 2]> = TRIPLEX_MEMBERS[..TRIPLEX_STRUTS].iter().map(pair).collect();
     let cables: Vec<[i64; 2]> = TRIPLEX_MEMBERS[TRIPLEX_STRUTS..].iter().map(pair).collect();
     tensegrity(
-        triplex_nodes(top_z, bottom_z),
+        triplex_nodes(bottom_z),
         index_lists(&struts),
         index_lists(&cables),
         surfaces,
     )
+}
+
+/// The canonical triplex: circumradius 1, **unit height** (top `z = +1.0`,
+/// bottom `z = 0.0`), 30° twist. This is the force-density gauge and T1b prism.
+///
+/// See [`tensegrity`] for what `surfaces: None` means — it is not the same input
+/// as `Some(Value::List(vec![]))`.
+pub fn canonical_triplex_tensegrity(surfaces: Option<Value>) -> Value {
+    triplex_tensegrity_at(0.0, surfaces)
+}
+
+/// The taller triplex: circumradius 1, **height 2** (top `z = +1.0`, bottom
+/// `z = -1.0`), 30° twist. This is the combined membrane δ prism, and the height
+/// difference is a real one — it changes the geometry the combined solve
+/// converges from, so it is named rather than left as a positional float.
+///
+/// See [`tensegrity`] for what `surfaces: None` means.
+pub fn tall_triplex_tensegrity(surfaces: Option<Value>) -> Value {
+    triplex_tensegrity_at(-1.0, surfaces)
 }
 
 /// Both membrane end caps of the triplex: the top cap over nodes 0, 1, 2 and the
@@ -172,6 +227,12 @@ pub fn triplex_seeds() -> Value {
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
+
+    /// The `bottom_z` of [`canonical_triplex_tensegrity`] / the gauge and T1b
+    /// prism, and of [`tall_triplex_tensegrity`] / the δ prism. Named here so the
+    /// tests below assert against the same two heights the constructors pick.
+    const CANONICAL_BOTTOM_Z: f64 = 0.0;
+    const TALL_BOTTOM_Z: f64 = -1.0;
 
     /// The azimuth formulation used by the two *pre-refactor* inline copies
     /// (`tensegrity_t1b_form_find_e2e.rs` and
@@ -246,34 +307,40 @@ mod tests {
     }
 
     /// The canonical prism: circumradius 1, top ring z = +1.0 at azimuth 120°·i,
-    /// bottom ring z = 0.0 at azimuth 120°·i + 30°. All 18 components pinned.
+    /// bottom ring z = 0.0 at azimuth 120°·i + 30°. All 18 raw components
+    /// pinned, and `triplex_nodes` re-checked to carry exactly those components
+    /// so the raw seam and the `Value` form cannot drift apart.
     #[test]
-    fn canonical_triplex_nodes_pins_the_prism_geometry_bit_for_bit() {
-        let nodes = canonical_triplex_nodes();
-        assert_eq!(nodes.len(), 6, "the canonical triplex has exactly 6 nodes");
+    fn canonical_triplex_geometry_is_pinned_bit_for_bit() {
+        let coords = triplex_node_coords(CANONICAL_BOTTOM_Z);
+        let nodes = triplex_nodes(CANONICAL_BOTTOM_Z);
+        assert_eq!(coords.len(), 6, "the canonical triplex has exactly 6 nodes");
+        assert_eq!(nodes.len(), 6, "the Value form has the same 6 nodes");
 
-        for (i, n) in nodes.iter().take(3).enumerate() {
-            let a = azimuth_rads(120.0 * (i as f64));
-            let got = point_components(n);
-            assert_bits_eq(got[0], a.cos(), &format!("top node {i} x"));
-            assert_bits_eq(got[1], a.sin(), &format!("top node {i} y"));
-            assert_bits_eq(got[2], 1.0, &format!("top node {i} z"));
-        }
+        for i in 0..6 {
+            let (twist, want_z) = if i < 3 { (0.0, 1.0) } else { (30.0, 0.0) };
+            let a = azimuth_rads(120.0 * ((i % 3) as f64) + twist);
+            let ring = if i < 3 { "top" } else { "bottom" };
+            assert_bits_eq(coords[i][0], a.cos(), &format!("{ring} node {i} x"));
+            assert_bits_eq(coords[i][1], a.sin(), &format!("{ring} node {i} y"));
+            assert_bits_eq(coords[i][2], want_z, &format!("{ring} node {i} z"));
 
-        for i in 0..3 {
-            let a = azimuth_rads(120.0 * (i as f64) + 30.0);
-            let got = point_components(&nodes[3 + i]);
-            assert_bits_eq(got[0], a.cos(), &format!("bottom node {i} x"));
-            assert_bits_eq(got[1], a.sin(), &format!("bottom node {i} y"));
-            assert_bits_eq(got[2], 0.0, &format!("bottom node {i} z"));
+            let lifted = point_components(&nodes[i]);
+            for (axis, c) in ["x", "y", "z"].iter().zip(0..3) {
+                assert_bits_eq(
+                    lifted[c],
+                    coords[i][c],
+                    &format!("node {i} {axis}: triplex_nodes must lift triplex_node_coords"),
+                );
+            }
         }
     }
 
     /// Circumradius is 1 for every node. Necessarily an epsilon compare, not a
     /// bit compare: cos²θ + sin²θ is not exactly 1.0 in binary floating point.
     #[test]
-    fn canonical_triplex_nodes_lie_on_the_unit_circumradius() {
-        for (i, n) in canonical_triplex_nodes().iter().enumerate() {
+    fn triplex_nodes_lie_on_the_unit_circumradius() {
+        for (i, n) in triplex_nodes(CANONICAL_BOTTOM_Z).iter().enumerate() {
             let [x, y, _] = point_components(n);
             assert!(
                 (x * x + y * y - 1.0).abs() < 1e-15,
@@ -283,63 +350,22 @@ mod tests {
         }
     }
 
-    /// `canonical_triplex_nodes()` is exactly the `bottom_z = 0.0` instance —
-    /// the gauge / t1b geometry.
-    #[test]
-    fn canonical_triplex_nodes_is_the_bottom_z_zero_instance() {
-        assert_eq!(
-            triplex_nodes(1.0, 0.0),
-            canonical_triplex_nodes(),
-            "canonical_triplex_nodes() must equal triplex_nodes(1.0, 0.0)"
-        );
-    }
-
-    /// delta's variant: same x/y ring, but the bottom triangle sits at z = −1.0,
-    /// a genuinely taller prism than gauge / t1b solve. Parameterising
-    /// `bottom_z` is what keeps that difference explicit instead of silently
+    /// δ's variant: same x/y ring, but the bottom triangle sits at z = −1.0,
+    /// a genuinely taller prism than gauge / t1b solve. Parameterising the
+    /// bottom height is what keeps that difference explicit instead of silently
     /// normalised away by the collapse.
     #[test]
     fn triplex_nodes_parameterises_bottom_z_without_moving_the_rings() {
-        let canonical = canonical_triplex_nodes();
-        let delta = triplex_nodes(1.0, -1.0);
-        assert_eq!(delta.len(), 6, "the delta triplex also has exactly 6 nodes");
+        let canonical = triplex_node_coords(CANONICAL_BOTTOM_Z);
+        let tall = triplex_node_coords(TALL_BOTTOM_Z);
+        assert_eq!(tall.len(), 6, "the tall triplex also has exactly 6 nodes");
 
         for i in 0..6 {
-            let c = point_components(&canonical[i]);
-            let d = point_components(&delta[i]);
-            assert_bits_eq(d[0], c[0], &format!("node {i} x must not move with bottom_z"));
-            assert_bits_eq(d[1], c[1], &format!("node {i} y must not move with bottom_z"));
+            assert_bits_eq(tall[i][0], canonical[i][0], &format!("node {i} x must not move"));
+            assert_bits_eq(tall[i][1], canonical[i][1], &format!("node {i} y must not move"));
+            let (ring, want_z) = if i < 3 { ("top", 1.0) } else { ("bottom", TALL_BOTTOM_Z) };
+            assert_bits_eq(tall[i][2], want_z, &format!("{ring} node {i} z"));
         }
-        for (i, n) in delta.iter().enumerate() {
-            let (ring, want_z) = if i < 3 { ("top", 1.0) } else { ("bottom", -1.0) };
-            assert_bits_eq(point_components(n)[2], want_z, &format!("{ring} node {i} z"));
-        }
-    }
-
-    /// The ONE index space `force_densities` and `member_forces` share:
-    /// struts first, then top / bottom / vertical cable triples.
-    #[test]
-    fn triplex_member_index_space_is_struts_then_cables() {
-        assert_eq!(
-            TRIPLEX_MEMBERS,
-            [
-                (0, 4),
-                (1, 5),
-                (2, 3),
-                (0, 1),
-                (1, 2),
-                (2, 0),
-                (3, 4),
-                (4, 5),
-                (5, 3),
-                (0, 3),
-                (1, 4),
-                (2, 5)
-            ],
-            "member order is load-bearing: force_densities and member_forces are indexed by it"
-        );
-        assert_eq!(TRIPLEX_STRUTS, 3, "the first three members are the struts");
-        assert_eq!(TRIPLEX_ANCHORS, [3i64, 4, 5], "the bottom triangle is the anchored set");
     }
 
     /// Index-tuple lowering, at both widths the fixtures use: 2-wide for
@@ -384,7 +410,7 @@ mod tests {
     #[test]
     fn tensegrity_with_none_surfaces_omits_the_key_entirely() {
         let (struts, cables) = stub_members();
-        let v = tensegrity(canonical_triplex_nodes(), struts, cables, None);
+        let v = tensegrity(triplex_nodes(CANONICAL_BOTTOM_Z), struts, cables, None);
 
         let d = match &v {
             Value::StructureInstance(d) => d,
@@ -411,7 +437,8 @@ mod tests {
     fn tensegrity_with_some_surfaces_inserts_the_key() {
         let (struts, cables) = stub_members();
         let caps = triplex_caps();
-        let v = tensegrity(canonical_triplex_nodes(), struts, cables, Some(caps.clone()));
+        let v =
+            tensegrity(triplex_nodes(CANONICAL_BOTTOM_Z), struts, cables, Some(caps.clone()));
 
         let fields = structure_fields(&v);
         assert_eq!(fields.len(), 4, "nodes/struts/cables/surfaces");
@@ -425,14 +452,8 @@ mod tests {
     /// reachable and distinguishable.
     #[test]
     fn present_but_empty_surfaces_is_distinct_from_absent_surfaces() {
-        let (struts, cables) = stub_members();
-        let empty = tensegrity(
-            canonical_triplex_nodes(),
-            struts.clone(),
-            cables.clone(),
-            Some(Value::List(vec![])),
-        );
-        let absent = tensegrity(canonical_triplex_nodes(), struts, cables, None);
+        let empty = canonical_triplex_tensegrity(Some(Value::List(vec![])));
+        let absent = canonical_triplex_tensegrity(None);
 
         assert_eq!(
             structure_fields(&empty).get("surfaces"),
@@ -452,14 +473,14 @@ mod tests {
     /// The kernel topology, transcribed from the superseded T1b and δ copies:
     /// struts then top ring, bottom ring, verticals — in that exact order.
     #[test]
-    fn triplex_tensegrity_lowers_the_kernel_topology() {
-        let v = triplex_tensegrity(1.0, 0.0, None);
+    fn canonical_triplex_tensegrity_lowers_the_kernel_topology() {
+        let v = canonical_triplex_tensegrity(None);
         let fields = structure_fields(&v);
 
         assert_eq!(
             fields.get("nodes"),
-            Some(&Value::List(canonical_triplex_nodes())),
-            "nodes are the canonical prism at the requested heights"
+            Some(&Value::List(triplex_nodes(CANONICAL_BOTTOM_Z))),
+            "the canonical constructor is the bottom z = 0.0 prism"
         );
         assert_eq!(
             fields.get("struts"),
@@ -490,39 +511,55 @@ mod tests {
         );
     }
 
-    /// δ's instance: taller prism plus both end caps.
+    /// The two named constructors must differ in exactly one way — the bottom
+    /// ring height — and `tall` must be the δ prism. Getting this backwards is
+    /// the mistake the named constructors exist to make unrepresentable, so it
+    /// is asserted rather than assumed.
     #[test]
-    fn triplex_tensegrity_carries_the_requested_geometry_and_surfaces() {
-        let v = triplex_tensegrity(1.0, -1.0, Some(triplex_caps()));
-        let fields = structure_fields(&v);
+    fn tall_and_canonical_constructors_differ_only_in_bottom_height() {
+        let tall = tall_triplex_tensegrity(Some(triplex_caps()));
+        let canonical = canonical_triplex_tensegrity(None);
+        let tall_fields = structure_fields(&tall);
+        let canonical_fields = structure_fields(&canonical);
 
         assert_eq!(
-            fields.get("nodes"),
-            Some(&Value::List(triplex_nodes(1.0, -1.0))),
-            "bottom_z reaches the assembled structure, not just triplex_nodes()"
+            tall_fields.get("nodes"),
+            Some(&Value::List(triplex_nodes(TALL_BOTTOM_Z))),
+            "tall_triplex_tensegrity is the bottom z = -1.0 prism"
         );
-        assert_eq!(fields.get("surfaces"), Some(&triplex_caps()));
-        assert_eq!(fields.len(), 4);
+        assert_ne!(
+            tall_fields.get("nodes"),
+            canonical_fields.get("nodes"),
+            "the two prisms are genuinely different geometry, not an alias"
+        );
+        for key in ["struts", "cables"] {
+            assert_eq!(
+                tall_fields.get(key),
+                canonical_fields.get(key),
+                "`{key}` topology is shared — only the bottom height differs"
+            );
+        }
+        assert_eq!(tall_fields.get("surfaces"), Some(&triplex_caps()));
     }
 
-    /// The gauge's `caps()` and δ's inline `surfaces` literal were the same
-    /// value — top cap over nodes 0,1,2 and bottom cap over nodes 3,4,5.
+    /// The remaining literal goldens, in one place. Each is a value the
+    /// superseded copies agreed on byte-for-byte, so this is the lockstep-edit
+    /// site if the fixture is ever deliberately changed.
     #[test]
-    fn triplex_caps_are_the_two_end_triangles() {
+    fn triplex_fixture_goldens() {
+        assert_eq!(TRIPLEX_STRUTS, 3, "the first three members are the struts");
+        assert_eq!(TRIPLEX_ANCHORS, [3i64, 4, 5], "the bottom triangle is the anchored set");
+        assert_eq!(
+            TRIPLEX_MEMBERS.len(),
+            12,
+            "3 struts + 9 cables; the order itself is pinned by \
+             canonical_triplex_tensegrity_lowers_the_kernel_topology"
+        );
         assert_eq!(
             triplex_caps(),
-            Value::List(vec![
-                Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]),
-                Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
-            ]),
+            index_lists(&[[0, 1, 2], [3, 4, 5]]),
             "top cap over nodes 0,1,2 and bottom cap over nodes 3,4,5"
         );
-    }
-
-    /// Struts to group 0, the six horizontals to group 1, the three verticals to
-    /// group 2 — byte-identical between the superseded T1b and δ copies.
-    #[test]
-    fn triplex_group_ids_follow_the_member_index_space() {
         assert_eq!(
             triplex_group_ids(),
             Value::List(
@@ -530,15 +567,10 @@ mod tests {
             ),
             "3 struts then 6 horizontals then 3 verticals, in TRIPLEX_MEMBERS order"
         );
-    }
-
-    /// Seed ratios: struts compressive (−1), horizontals and verticals tensile (+1).
-    #[test]
-    fn triplex_seeds_are_one_compressive_and_two_tensile() {
         assert_eq!(
             triplex_seeds(),
             Value::List(vec![Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)]),
-            "one seed per group, in group-id order"
+            "one seed per group, in group-id order: compressive, tensile, tensile"
         );
     }
 }
