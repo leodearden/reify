@@ -1554,7 +1554,8 @@ structure SphereCheck {
 /// clears only by landing on a tooth, with envelope violations on both sides.
 ///
 /// Nothing in this suite currently signals a tooth landing at 0.3mm — BT7
-/// asserts only the 8e-4 m ceiling, which a tooth reading (~4.7e-4 m) still
+/// asserts only the 8e-4 m ceiling, which a tooth reading (~2.3e-4 m;
+/// calibration note §1.2 measures 2.423e-4 at 0.318 mm) still
 /// clears, so the test stays green either way (see BT7's low-side comment
 /// below for why that gap is deliberate). When you next re-derive this sweep
 /// by hand (recipe: `dfm_with_repr_within.ri`'s header note) and `achieved`
