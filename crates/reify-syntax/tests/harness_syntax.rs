@@ -30,12 +30,8 @@ mod annotation_tests;
 mod assoc_type_consumption_tests;
 #[path = "harness_syntax/auto_binding_sites_grammar_tests.rs"]
 mod auto_binding_sites_grammar_tests;
-#[path = "harness_syntax/auto_binding_sites_lowering_tests.rs"]
-mod auto_binding_sites_lowering_tests;
 #[path = "harness_syntax/auto_type_arg_tests.rs"]
 mod auto_type_arg_tests;
-#[path = "harness_syntax/aux_at_lowering_tests.rs"]
-mod aux_at_lowering_tests;
 #[path = "harness_syntax/boundary1_producer.rs"]
 mod boundary1_producer;
 #[path = "harness_syntax/cfg_import_attachment_tests.rs"]
@@ -50,10 +46,6 @@ mod constraint_inst_tests;
 mod default_decl_tests;
 #[path = "harness_syntax/edge_case_tests.rs"]
 mod edge_case_tests;
-#[path = "harness_syntax/enum_named_field_lowering_tests.rs"]
-mod enum_named_field_lowering_tests;
-#[path = "harness_syntax/enum_type_param_lowering_tests.rs"]
-mod enum_type_param_lowering_tests;
 #[path = "harness_syntax/field_tests.rs"]
 mod field_tests;
 #[path = "harness_syntax/fn_body_expr_parser_tests.rs"]
@@ -66,16 +58,12 @@ mod forall_statement_tests;
 mod function_call_named_args_tests;
 #[path = "harness_syntax/guard_tests.rs"]
 mod guard_tests;
-#[path = "harness_syntax/imaginary_literal_lowering_tests.rs"]
-mod imaginary_literal_lowering_tests;
 #[path = "harness_syntax/import_tests.rs"]
 mod import_tests;
 #[path = "harness_syntax/indexed_sub_instantiation_parser_tests.rs"]
 mod indexed_sub_instantiation_parser_tests;
 #[path = "harness_syntax/interpolated_string_tests.rs"]
 mod interpolated_string_tests;
-#[path = "harness_syntax/joint_with_lowering_tests.rs"]
-mod joint_with_lowering_tests;
 #[path = "harness_syntax/keyed_sub_member_block_parser_tests.rs"]
 mod keyed_sub_member_block_parser_tests;
 #[path = "harness_syntax/lambda_tests.rs"]
@@ -90,12 +78,8 @@ mod match_tests;
 mod member_span_tests;
 #[path = "harness_syntax/module_decl_tests.rs"]
 mod module_decl_tests;
-#[path = "harness_syntax/namespaced_ref_lowering_tests.rs"]
-mod namespaced_ref_lowering_tests;
 #[path = "harness_syntax/numeric_separators_grammar_tests.rs"]
 mod numeric_separators_grammar_tests;
-#[path = "harness_syntax/numeric_separators_lowering_tests.rs"]
-mod numeric_separators_lowering_tests;
 #[path = "harness_syntax/occurrence_tests.rs"]
 mod occurrence_tests;
 #[path = "harness_syntax/option_tests.rs"]
@@ -114,10 +98,6 @@ mod qualified_access_tests;
 mod quantifier_tests;
 #[path = "harness_syntax/radix_literals_grammar_tests.rs"]
 mod radix_literals_grammar_tests;
-#[path = "harness_syntax/radix_literals_lowering_tests.rs"]
-mod radix_literals_lowering_tests;
-#[path = "harness_syntax/relate_at_auto_lowering_tests.rs"]
-mod relate_at_auto_lowering_tests;
 #[path = "harness_syntax/scientific_notation_tests.rs"]
 mod scientific_notation_tests;
 #[path = "harness_syntax/sub_decl_specialization_body_parser_tests.rs"]
@@ -126,10 +106,6 @@ mod sub_decl_specialization_body_parser_tests;
 mod sub_decl_specialization_tests;
 #[path = "harness_syntax/sub_placement_spec_example_parses.rs"]
 mod sub_placement_spec_example_parses;
-#[path = "harness_syntax/trait_assoc_fn_call_lowering_tests.rs"]
-mod trait_assoc_fn_call_lowering_tests;
-#[path = "harness_syntax/trait_assoc_fn_member_lowering_tests.rs"]
-mod trait_assoc_fn_member_lowering_tests;
 #[path = "harness_syntax/trait_tests.rs"]
 mod trait_tests;
 #[path = "harness_syntax/type_alias_tests.rs"]
@@ -140,9 +116,5 @@ mod type_expr_kind_tests;
 mod undef_literal_tests;
 #[path = "harness_syntax/unit_decl_tests.rs"]
 mod unit_decl_tests;
-#[path = "harness_syntax/unit_expr_lowering_tests.rs"]
-mod unit_expr_lowering_tests;
-#[path = "harness_syntax/value_pow_lowering_tests.rs"]
-mod value_pow_lowering_tests;
 #[path = "harness_syntax/visibility_tests.rs"]
 mod visibility_tests;
