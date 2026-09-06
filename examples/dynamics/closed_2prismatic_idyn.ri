@@ -43,9 +43,8 @@
 // theorem (b ≡ 0, constraint forces do no work on the supplied velocities),
 //     Σ τ_i·q̇_i = τ_open·q̇ = dE/dt   exactly (holds for m_eff = 0 too).
 //
-// At the prescribed instant — q_a = 0.3 m, q_b = 0.5 m (closing free
-// x = q_b − q_a = 0.2 m), consistent rates q̇_a = q̇_b = 0.7,
-// accels q̈_a = q̈_b = 1.5:
+// At the prescribed instant — q_a = 0.3 m, q_b = 0.5 m, consistent rates
+// q̇_a = q̇_b = 0.7, accels q̈_a = q̈_b = 1.5:
 //     dE/dt = (m_a + m_b)·v·(a + 9.81)
 //           = (2 + 3)·0.7·(1.5 + 9.81)
 //           = 5.0·0.7·11.31  =  39.585 W
@@ -81,9 +80,30 @@ structure def Closed2PrismaticIdyn {
 
     // One-sample joint-space trajectory.
     //   values[0..3]  : per-body joint positions, in BODIES order, in metres.
-    //                   m_a@j_a = 0.3, m_b@j_b (spanning) = 0.5, m_c@j_b
-    //                   (closing initial guess) = 0.2. Closure identity holds:
-    //                   spanning(j_b) = j_a + free(j_b) → 0.5 = 0.3 + 0.2. ✓
+    //                   m_a@j_a = 0.3, m_b@j_b = 0.5, m_c@j_b = 0.2.
+    //
+    //   The loop's closure is q_b == q_a (task 7186 defect A). The closing
+    //   joint j_b is composed on ONE side only, so the parent-conflict record
+    //   is path_a = [world, j_b] against path_b = [world, j_a], and the
+    //   residual is transform(j_b) vs transform(j_a) — NOT the pre-7186
+    //   "spanning(j_b) = j_a + free(j_b) → 0.5 = 0.3 + 0.2" identity that
+    //   used to be claimed here, which relied on j_b being appended to path_b
+    //   as well. The prescribed 0.5 ≠ 0.3 therefore does NOT satisfy the
+    //   closure, and no value of the third entry could: both chains resolve
+    //   from DIRECT bindings, so extract_loop_closure_chains reports an empty
+    //   free_b and nothing is solved for. The residual row is projected out
+    //   by reduce_constraint_rank (m_eff = 0 — see the "Analytic energy rate"
+    //   note above and the e2e's module doc), so the KKT system carries no
+    //   live constraint and the 39.585 W power identity is unaffected either
+    //   way. That is exactly why a stale claim here would never be caught by
+    //   a test: it is documentation, not a load-bearing input.
+    //
+    //   values[2] = 0.2 is structurally required — snapshot_for_sample
+    //   rejects a sample whose values length differs from bodies length — but
+    //   it is inert for chain extraction: direct_binding_value scans the
+    //   per-body bindings in BODIES order and returns the FIRST entry keyed on
+    //   j_b, which is m_b's 0.5. Do not read it as a second, independent
+    //   coordinate for j_b.
     //   vels[0..2]    : per spanning-tree DOF (j_a, j_b) generalized velocities.
     //   accels[0..2]  : per spanning-tree DOF generalized accelerations.
     //

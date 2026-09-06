@@ -9,25 +9,42 @@
 //! `mechanism_builder_smoke.rs` / `kinematic_loop_closure_machinery.rs`
 //! (closed-chain mechanism source pattern).
 //!
-//! Closure analysis for the 2-prismatic-X fixture:
-//!   path_a = [world, jB]                   — spanning-tree (jB → world)
-//!   path_b = [world, jA, jB]               — closing edge (jB → jA)
+//! Closure analysis for the 3-prismatic-X fixture:
+//!   path_a = [world, jA, jX]               — spanning-tree (jA → world, jX → jA)
+//!   path_b = [world, jB]                   — closing edge (jX re-anchored onto jB)
 //!   chain_a translation = chain_b translation
-//!   midpoint(jB) = jA_driver + jB_free_in_chain_b
-//!   1.0          = driver + solved_jB        (jB range [0, 2]m → midpoint 1.0)
-//!   ⇒ solved_jB = 1.0 − driver
+//!   jA_driver + midpoint(jX) = jB_free_in_chain_b
+//!   driver    + 0.25         = solved_jB     (jX range [0, 0.5]m → midpoint 0.25)
+//!   ⇒ solved_jB = driver + 0.25
 //!
-//! For driver ∈ [0, 1]m over 11 evenly-spaced steps, solved_jB ∈ [1.0, 0.0]m.
+//! For driver ∈ [0, 1]m over 11 evenly-spaced steps, solved_jB ∈ [0.25, 1.25]m
+//! — inside jB's [0, 2]m range at every step.
 //! The solver-fidelity check is assertion (c): each step's solved value
-//! must equal the closed-form prediction `1.0 − driver` within 1e-6 m.
+//! must equal the closed-form prediction `driver + 0.25` within 1e-6 m.
 //! That is what locks in correctness — and for this 1-D linear residual
 //! it would also pass under a cold solver, since Newton has a unique root
-//! for every step.  The monotonic-decreasing assertion (e) is therefore a
+//! for every step.  The monotonic-increasing assertion (e) is therefore a
 //! continuity *check*, not a continuity *proof*: it pins the trajectory
 //! shape but does not, by itself, distinguish a warm-start path from a
 //! cold-start one.  A non-linear closing residual with an alternate root
 //! per step would be needed to tell them apart end-to-end; that fixture
 //! is out of scope for v0.2 verification.
+//!
+//! **Task 7186 defect A.** The original 2-joint fixture closed jB onto
+//! itself (`body(m2, "solid_c", j_b, j_a)`).  Under the double-counted
+//! chains that put jB on BOTH sides — its chain_a copy resolving to the
+//! range midpoint (1.0 m) while its chain_b copy was the free variable,
+//! i.e. one joint carrying two different values at once, which is where
+//! the old `solved_jB = 1.0 − driver` prediction came from.  With the
+//! closing joint composed exactly once, that fixture has NO free variable
+//! at all (chain_b = [jA], directly bound by the sweep), so the free var
+//! is re-homed here onto a genuine two-deep spanning-tree side.  The
+//! PROPERTY under test — one loop, one free var, warm-start threaded
+//! across steps with a continuous trajectory — is unchanged; only the
+//! side of the loop the free var lives on, and hence the sign of the
+//! trajectory's slope, moved.  This mirrors the same repair already made
+//! to the in-crate twin `reify-stdlib::sweep::tests::
+//! sweep_threads_warm_start_through_closed_chain_steps`.
 //!
 //! Also verifies the open-chain regression in `sweep_api_smoke.rs`: an
 //! open-chain mechanism still produces N snapshots, each with empty
@@ -51,22 +68,35 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("Kinematic.{name} not found in eval result"))
 }
 
-/// Source: 2-prismatic-X closed-chain mechanism driven by sweep over
-/// `j_a` (the spanning-tree-side driver).  The closing edge re-records
-/// `j_b`'s parent from world (m2) to `j_a` (m3), producing exactly one
-/// `loop_closures` entry the snapshot evaluator solves per step.
+/// Source: 3-prismatic-X closed-chain mechanism driven by sweep over
+/// `j_a` (the spanning-tree-side driver).  `j_x` hangs off `j_a`, giving
+/// the spanning-tree side a two-deep walk; `j_b` hangs directly off
+/// world; the closing edge re-anchors the SAME `j_x` onto `j_b`,
+/// producing exactly one `loop_closures` entry the snapshot evaluator
+/// solves per step.
 ///
-/// `j_b`'s range is intentionally wider (0..2m) than `j_a`'s (0..1m) so
-/// the loop-closure solution `solved_jB = 1.0 − driver` lies inside
-/// `j_b`'s range for every driver value the sweep produces.
+/// Free variables come from `chain_b` ONLY —
+/// `loop_closure::extract_loop_closure_chains` resolves every `chain_a`
+/// joint and iterates none of them.  `chain_b = [j_b]`, unbound, so `j_b`
+/// is the single free var; `j_a` is directly bound by the sweep and `j_x`
+/// resolves to its own range midpoint on the tree side.
+///
+/// All three ranges differ so the joint `Value::Map`s are structurally
+/// distinct (identical-range joints alias in `joint_parents` and collapse
+/// the intended 1-loop-closure topology).  `j_b`'s range is intentionally
+/// the widest (0..2m) so the loop-closure solution
+/// `solved_jB = driver + 0.25` lies inside it for every driver value the
+/// sweep produces.
 const CLOSED_CHAIN_SOURCE: &str = r#"
 structure def Kinematic {
     let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
     let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
-    let m2  = body(m1, "solid_b", j_b)
-    let m3  = body(m2, "solid_c", j_b, j_a)
+    let m2  = body(m1, "solid_b", j_x, j_a)
+    let m2b = body(m2, "solid_c", j_b)
+    let m3  = body(m2b, "solid_d", j_x, j_b)
 
     let snaps = sweep(m3, j_a, 0mm .. 1000mm, 11)
 }
@@ -163,14 +193,19 @@ fn sweep_closed_chain_warm_start_e2e() {
     //   (a) Snapshot kind sanity ("snapshot").
     //   (b) `free_values` carrier shape: outer-length 1 (one loop_closures
     //       record), inner-length 1 (one free var jB), leaf is Value::Real.
-    //   (c) Closure residual: solved jB matches `1.0 − driver` within 1e-6m
-    //       (this is the loop-closure path-equality assertion — chain_a
-    //       translation 1.0m must equal chain_b translation `driver+x`).
+    //   (c) Closure residual: solved jB matches `driver + 0.25` within
+    //       1e-6m (this is the loop-closure path-equality assertion —
+    //       chain_a translation `driver + midpoint(jX)` must equal chain_b
+    //       translation `x`).
     //   (d) Body world_transforms reflect the loop-closure-solved bindings:
-    //       body 0 at j_a → driver, body 1 at j_b → solved, body 2 (closing
-    //       edge, walked via joint_parents which keeps jB → world) → solved.
-    //   (e) Monotonic-decreasing trajectory of the free var across steps,
-    //       captured as `solved[i] ≤ solved[i-1]`.  Without warm-start
+    //       body 0 at j_a → driver; body 1 at j_x (parent j_a) → the
+    //       chain_a tip `driver + 0.25`; body 2 at j_b (parent world) →
+    //       solved, the chain_b tip; body 3 (closing edge, walked via
+    //       joint_parents which keeps jX → jA) → the chain_a tip again.
+    //       Bodies 1, 2 and 3 therefore all coincide at the closed loop's
+    //       shared pivot — that coincidence IS the closure.
+    //   (e) Monotonic-increasing trajectory of the free var across steps,
+    //       captured as `solved[i] ≥ solved[i-1]`.  Without warm-start
     //       continuity a cold solve at step k could converge to an
     //       alternate root and break the monotonic invariant.
     let mut prev_solved: Option<f64> = None;
@@ -217,9 +252,10 @@ fn sweep_closed_chain_warm_start_e2e() {
         // (c) Closure residual: chain_a == chain_b within 1e-6 m.  The
         // 11 driver values are evenly spaced over [0, 1]m:
         //   driver = i / 10  for i ∈ 0..=10
-        // and the closure prediction is solved_jB = 1.0 − driver.
+        // and the closure prediction is solved_jB = driver + midpoint(jX)
+        // = driver + 0.25 (jX range [0, 0.5]m, unbound on the tree side).
         let driver = (i as f64) / 10.0;
-        let expected = 1.0 - driver;
+        let expected = driver + 0.25;
         assert!(
             (solved - expected).abs() < 1e-6,
             "snaps[{i}] closure residual: solved jB = {solved} must match prediction {expected} \
@@ -228,15 +264,19 @@ fn sweep_closed_chain_warm_start_e2e() {
         );
 
         // (d) Body world_transforms.  Body 0 (at j_a, parent world) carries
-        // the swept driver value; body 1 (at j_b, parent world) carries the
-        // solver-driven solved_jB; body 2 (closing edge, recorded with
-        // parent j_a but walked via joint_parents which kept j_b → world
-        // from m2's earlier registration) also carries solved_jB —
-        // confirming the FK re-walk consumed the synthesized binding for
-        // the free joint.
+        // the swept driver value; body 1 (at j_x, parent j_a) carries the
+        // chain_a tip driver + midpoint(jX); body 2 (at j_b, parent world)
+        // carries the solver-driven solved_jB, the chain_b tip; body 3
+        // (closing edge, recorded with parent j_b but walked via
+        // joint_parents, which kept j_x → j_a from m2's earlier
+        // registration) carries the chain_a tip again.  Asserting bodies
+        // 1-3 all equal `solved` is the FK-side statement of the closure:
+        // the two paths must meet at the shared pivot, and it confirms the
+        // FK re-walk consumed the synthesized binding for the free joint.
         let [tx0, ty0, tz0] = body_n_translation(snap, 0, &format!("snaps[{i}].body[0]"));
         let [tx1, ty1, tz1] = body_n_translation(snap, 1, &format!("snaps[{i}].body[1]"));
         let [tx2, ty2, tz2] = body_n_translation(snap, 2, &format!("snaps[{i}].body[2]"));
+        let [tx3, ty3, tz3] = body_n_translation(snap, 3, &format!("snaps[{i}].body[3]"));
         assert!(
             (tx0 - driver).abs() < 1e-6,
             "snaps[{i}] body 0 (at j_a) tx must be driver = {driver}, got {tx0}"
@@ -251,7 +291,8 @@ fn sweep_closed_chain_warm_start_e2e() {
         );
         assert!(
             (tx1 - solved).abs() < 1e-6,
-            "snaps[{i}] body 1 (at j_b) tx must be solved jB = {solved}, got {tx1}"
+            "snaps[{i}] body 1 (at j_x, the chain_a tip) tx must equal the \
+             closure value {solved}, got {tx1}"
         );
         assert!(
             ty1.abs() < 1e-6,
@@ -263,7 +304,7 @@ fn sweep_closed_chain_warm_start_e2e() {
         );
         assert!(
             (tx2 - solved).abs() < 1e-6,
-            "snaps[{i}] body 2 (closing edge) tx must be solved jB = {solved}, got {tx2}"
+            "snaps[{i}] body 2 (at j_b) tx must be solved jB = {solved}, got {tx2}"
         );
         assert!(
             ty2.abs() < 1e-6,
@@ -273,18 +314,35 @@ fn sweep_closed_chain_warm_start_e2e() {
             tz2.abs() < 1e-6,
             "snaps[{i}] body 2 tz must be 0, got {tz2}"
         );
+        assert!(
+            (tx3 - solved).abs() < 1e-6,
+            "snaps[{i}] body 3 (closing edge) tx must equal the closure value \
+             {solved}, got {tx3}"
+        );
+        assert!(
+            ty3.abs() < 1e-6,
+            "snaps[{i}] body 3 ty must be 0, got {ty3}"
+        );
+        assert!(
+            tz3.abs() < 1e-6,
+            "snaps[{i}] body 3 tz must be 0, got {tz3}"
+        );
 
-        // (e) Monotonic-decreasing trajectory across steps.  Strict-
-        // decreasing with a 1µm slack absorbs solver wobble.  This is a
-        // shape check: with a 1-D linear residual the root is unique per
-        // step, so even a cold-start solver would converge to the same
-        // value.  The real solver-fidelity check is (c) above — see the
-        // module-doc note explaining what this assertion does and does
-        // not tell us about warm-start vs cold-start.
+        // (e) Monotonic-increasing trajectory across steps.  Strict-
+        // increasing with a 1µm slack absorbs solver wobble.  The slope
+        // flipped sign with the task 7186 defect-A repair: the free var
+        // moved from the closing side to the tree side of the loop, so
+        // solved jB now TRACKS the driver (driver + 0.25) instead of
+        // opposing it (1.0 − driver).  This is a shape check: with a 1-D
+        // linear residual the root is unique per step, so even a
+        // cold-start solver would converge to the same value.  The real
+        // solver-fidelity check is (c) above — see the module-doc note
+        // explaining what this assertion does and does not tell us about
+        // warm-start vs cold-start.
         if let Some(p) = prev_solved {
             assert!(
-                solved < p + 1e-6,
-                "snaps[{i}] monotonicity: solved jB = {solved} must be ≤ previous {p} \
+                solved > p - 1e-6,
+                "snaps[{i}] monotonicity: solved jB = {solved} must be ≥ previous {p} \
                  (warm-start continuity)"
             );
         }

@@ -528,6 +528,13 @@ fn four_bar_singular_compiles_clean() {
 /// one drifts out of lockstep with the other, but keeping them in sync is
 /// currently a manual step.
 ///
+/// That lockstep edit has been exercised once, by task 7186 defect A: fixing
+/// `append_body` to compose the closing joint exactly once removed the second
+/// free joint from the closing side, so BOTH fixtures were re-homed together
+/// onto a genuine two-deep closing-side walk (`path_a = [world, j_x]` against
+/// `path_b = [world, j_a, j_b]`). The body COUNT is deliberately unchanged at
+/// four, so the distinguishing assertion below still bites.
+///
 /// Corpus-wide gates: as a committed `examples/` fixture (unlike the inline
 /// `SINGULAR_SOURCE`), this file is also walked by
 /// `no_stale_undef_invariant_gate.rs::broad_corpus_sweep`,
