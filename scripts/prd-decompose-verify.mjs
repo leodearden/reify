@@ -26,17 +26,22 @@
 // Uses ONLY Workflow-injected globals: agent, parallel, pipeline, log, phase,
 // args, budget, workflow.  Does NOT use tmp_file or shell (not injected).
 //
-// Batch verdict: blocks on any FAIL/UNPROVABLE/HARNESS_ERROR from any leaf that
-// carries executed-probe evidence.  The script returns a summary object with
-// per-leaf verdicts and aggregate blocking status.
+// Batch verdict: blocks on any FAIL/UNPROVABLE from any leaf that carries
+// executed-probe evidence, and on any HARNESS_ERROR whether or not it does (it
+// is the verdict that reports "nothing could be run", so absent evidence is its
+// message).  The script returns a summary object with per-leaf verdicts,
+// aggregate blocking status, and probed-vs-total counters.
 //
 // Two lines of defence against a verdict with no evidence behind it:
 //   1. RESULT_RECORD_SCHEMA (below) — an agent cannot EMIT a record without a
 //      capability, a verdict from the closed vocabulary, an argv-array command
-//      and an integer exit_code.
-//   2. The Python harness (has_probe_evidence / classify_record) — anything
-//      that still arrives evidence-free is reported as MALFORMED rather than
-//      tabulated as a premise falsification (PRD §6 decision 4).
+//      and an integer exit_code.  VERDICT_SCHEMA likewise requires the
+//      executed/total counters, so a Synthesize agent cannot drop them and have
+//      the batch silently read as INCOMPLETE.
+//   2. The Python harness (has_probe_evidence / classify_record) — a
+//      FAIL/UNPROVABLE that still arrives evidence-free is reported as
+//      MALFORMED rather than tabulated as a premise falsification (PRD §6
+//      decision 4).
 //
 // Committed under scripts/ (not .claude/workflows/ which is .gitignored) so
 // β can reference it by a stable path and D4 can re-run it.  .mjs extension
@@ -111,6 +116,26 @@ const RESULT_RECORD_SCHEMA = {
     },
 };
 
+// The record-shape contract in prose, stated ONCE and interpolated into BOTH
+// role prompts.  This is the human-readable form of RESULT_RECORD_SCHEMA above;
+// it was duplicated near-verbatim into the Prover and Adversary prompts and the
+// two copies had ALREADY drifted in their closing paragraph.  Prose that drifts
+// from the schema is prose an agent will follow into a rejected response.
+const RECORD_SHAPE_RULES = `RECORD SHAPE — every result record MUST carry all four of capability, verdict,
+command and exit_code, and:
+  - \`command\` MUST be an ARRAY OF STRINGS (argv tokens, e.g.
+    ["python3", "scripts/prd-capability-check.py", "--json", "/tmp/ps.json"]).
+    Do NOT return a single ready-to-paste shell string — it is not re-runnable
+    as captured evidence and the schema rejects it.
+  - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
+  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
+A FAIL or UNPROVABLE you did not actually RUN is not a falsification — the
+harness discards any such record with no captured command+exit_code as an
+unexecuted promise, so an invented record wins you nothing.  HARNESS_ERROR is
+the ONE exception: it reports that the probe machinery itself could not run, so
+it blocks the batch whether or not it carries evidence.  Use it — never a bare
+FAIL — when a step of your own procedure died.`;
+
 const RESULTS_SCHEMA = {
     type: "object",
     required: ["prover"],
@@ -120,13 +145,27 @@ const RESULTS_SCHEMA = {
     },
 };
 
-// `malformed`, `fixture_absent`, `executed` and `total` are DECLARED but NOT
-// required: the Synthesize agent shells the Python harness and returns its JSON
-// verbatim, so requiring them would hard-fail against any harness build that
-// predates them.  Stage 3 defaults them with `?? []` / `?? 0` instead.
+// `executed` and `total` are REQUIRED.  The earlier reasoning for leaving them
+// optional — "an older harness build might not emit them" — describes a skew
+// that cannot occur: the Synthesize agent shells `python3
+// scripts/prd-decompose-verify.py` out of the SAME checkout as this file, so
+// harness and orchestrator always ship together.  The scenario a loose schema
+// actually admits is an LLM Synthesize agent that drops the fields despite the
+// prompt; `executed ?? 0` then dispositions EVERY leaf NOT_VERIFIED and the
+// batch INCOMPLETE, indistinguishable from genuine incompleteness — a relay bug
+// laundered into a verification result.  The schema is the enforcement point
+// that makes the agent retry instead.
+//
+// `malformed` and `fixture_absent` stay optional: their empty-list default is
+// genuinely benign (an absent list and an empty list mean the same thing), and
+// they carry no disposition weight of their own beyond the counters.
+//
+// Stage 3 keeps its `?? []` / `?? 0` defaults as belt-and-braces for the
+// null-verdict fallback path, which constructs a verdict locally rather than
+// receiving one through this schema.
 const VERDICT_SCHEMA = {
     type: "object",
-    required: ["blocks", "blocking", "report"],
+    required: ["blocks", "blocking", "report", "executed", "total"],
     properties: {
         blocks:         { type: "boolean" },
         blocking:       { type: "array", items: { type: "string" } },
@@ -297,20 +336,13 @@ Steps (use your own shell/file tools):
    Capture the full stdout JSON. Parse the "results" array from it.
 5. Return {prover: [result_records...], adversary: []}.
 
-RECORD SHAPE — every result record MUST carry all four of capability, verdict,
-command and exit_code, and:
-  - \`command\` MUST be an ARRAY OF STRINGS (argv tokens, e.g.
-    ["python3", "scripts/prd-capability-check.py", "--json", "/tmp/ps.json"]).
-    Do NOT return a single ready-to-paste shell string — it is not re-runnable
-    as captured evidence and the schema rejects it.
-  - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
-  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
+${RECORD_SHAPE_RULES}
 Pass through α's captured command/exit_code/stdout/stderr VERBATIM — do not
-reconstruct, re-quote or summarize them.  A blocking verdict with no captured
-command+exit_code is discarded by the harness as an unexecuted promise, so an
-invented record wins you nothing.
+reconstruct, re-quote or summarize them.
 
-If any step fails, return a single HARNESS_ERROR result record:
+If any step fails, return a single HARNESS_ERROR result record (this record is
+EXEMPT from the evidence rule above and DOES block — it is how "I could not run
+anything at all" reaches the caller):
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
    command: [], exit_code: -1, stdout: "", stderr: "<error detail>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
@@ -339,15 +371,8 @@ Instructions:
 4. You can only ADD blocking signals — if you find nothing new, return empty
    adversary list.
 
-RECORD SHAPE — every result record MUST carry all four of capability, verdict,
-command and exit_code, and:
-  - \`command\` MUST be an ARRAY OF STRINGS (argv tokens), never a single
-    ready-to-paste shell string.
-  - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
-  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
-A FAIL you did not actually RUN is not a falsification — the harness discards
-any blocking record with no captured command+exit_code as an unexecuted
-promise.  Report only what you probed, with α's captured output verbatim.
+${RECORD_SHAPE_RULES}
+Report only what you probed, with α's captured output verbatim.
 
 Return JSON: {prover: [], adversary: [result_records...]}`,
                     { label: `adversary:${idx}`, phase: "Adversary", schema: RESULTS_SCHEMA, model: "opus", effort: "xhigh" }
@@ -411,15 +436,25 @@ NOTE: exit code 0 from the harness does NOT mean "verified". Malformed and
 fixture-absent records do not block, so a batch can exit 0 having probed
 nothing. Relay executed/total unchanged so the caller can tell the difference.
 
-If the command fails or stdout is not valid JSON, return:
-  {blocks: true, blocking: ["${leafLabel}"], report: "<error from synthesize>"}`,
+If the command fails or stdout is not valid JSON, return (executed/total are
+REQUIRED by the schema — report 0/0, because nothing was adjudicated):
+  {blocks: true, blocking: ["${leafLabel}"], report: "<error from synthesize>",
+   malformed: [], fixture_absent: [], executed: 0, total: 0}`,
                 { label: `synthesize:${idx}`, phase: "Synthesize", schema: VERDICT_SCHEMA, model: "haiku", effort: "medium" }
             );
 
+            // The agent died or returned nothing: fail closed, and say so in the
+            // counters.  executed/total are 0 BY CONSTRUCTION here — no harness
+            // output was adjudicated — so this leaf must not be counted as
+            // probed even though it blocks.
             const verdict = synthesized || {
                 blocks: true,
                 blocking: [leafLabel],
                 report: `synthesize agent returned null for leaf: ${leafLabel}`,
+                malformed: [],
+                fixture_absent: [],
+                executed: 0,
+                total: 0,
             };
 
             // Per-leaf disposition. `blocks: false` is NOT the same as verified:
@@ -484,11 +519,15 @@ If the command fails or stdout is not valid JSON, return:
     const not_verified_leaves = filtered
         .filter(v => v.disposition === "NOT_VERIFIED")
         .map(v => v.leafLabel);
-    // A leaf counts as probed only when a probe actually executed: BLOCKS and
-    // VERIFIED both required executed evidence, UNENUMERATED and NOT_VERIFIED
-    // did not.
-    const leaves_probed = filtered.filter(
-        v => v.disposition === "VERIFIED" || v.disposition === "BLOCKS").length;
+    // A leaf counts as probed only when a probe actually EXECUTED — read the
+    // counter, never the disposition.  BLOCKS does NOT imply executed evidence:
+    // it is also reached with executed === 0 by the null-synthesize fallback
+    // above, by the agent-side error template (which returns blocks: true after
+    // the harness call failed), and by a HARNESS_ERROR record, which the Python
+    // gate blocks on precisely BECAUSE nothing ran.  Deriving the count from
+    // the disposition overstated coverage on exactly the failure paths a reader
+    // consults this number to check.
+    const leaves_probed = filtered.filter(v => (v.executed ?? 0) > 0).length;
     const leaves_unenumerated = unenumerated_leaves.length;
     const leaves_not_verified = not_verified_leaves.length;
 

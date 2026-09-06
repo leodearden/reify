@@ -17,6 +17,7 @@ Test classes are added incrementally per TDD step:
   TestBoundaryE2e           — step-11 RED / step-12 GREEN
 """
 
+import functools
 import importlib.util
 import io
 import json
@@ -55,6 +56,34 @@ else:
 # ---------------------------------------------------------------------------
 # Repo-root helpers for skip-guards
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Cached `node --input-type=module` runner
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _run_node_module(source: str):
+    """Run a Node ESM harness and return (returncode, stdout, stderr).
+
+    Cached on the source text.  Every .mjs test drives node through a harness
+    string that is a pure function of class constants, so the same few sources
+    were being re-executed once per assertion: the schema extraction (a pair of
+    static object literals) span node ~10 times, and TestMjsBatchDisposition
+    re-ran its identical scenario A four times.  Node start-up dominates this
+    suite's wall clock; the cache removes the duplication without changing what
+    any test asserts.
+
+    Only the RAW output is cached — callers still `json.loads` per call, so no
+    test can mutate a structure another test will read.  Safe because the .mjs
+    under test cannot change mid-run.
+    """
+    proc = subprocess.run(
+        ["node", "--input-type=module"],
+        input=source, capture_output=True, text=True, timeout=60,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
 
 _REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 _REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
@@ -2234,18 +2263,15 @@ console.log(MARK + JSON.stringify(schemas));
 """
 
     def _schemas(self) -> dict:
-        """Run the extraction harness and return {RESULTS_SCHEMA, VERDICT_SCHEMA}."""
-        harness_src = self._harness_source()
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            input=harness_src, capture_output=True, text=True, timeout=30,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"node exited {result.returncode}; stderr: {result.stderr!r}",
-        )
-        lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._MARK)]
-        self.assertTrue(lines, f"no schema marker in stdout; stdout: {result.stdout!r}")
+        """Run the extraction harness and return {RESULTS_SCHEMA, VERDICT_SCHEMA}.
+
+        The node run is cached (see _run_node_module) — the schemas are static
+        literals, so re-spawning node per assertion bought nothing.
+        """
+        rc, out, err = _run_node_module(self._harness_source())
+        self.assertEqual(rc, 0, f"node exited {rc}; stderr: {err!r}")
+        lines = [ln for ln in out.splitlines() if ln.startswith(self._MARK)]
+        self.assertTrue(lines, f"no schema marker in stdout; stdout: {out!r}")
         return json.loads(lines[-1][len(self._MARK):])
 
     def _record_items(self, role: str) -> dict:
@@ -2339,15 +2365,29 @@ console.log(MARK + JSON.stringify(schemas));
                           f"VERDICT_SCHEMA declares no {key!r}; got {sorted(props)}")
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
-    def test_verdict_schema_required_is_unchanged(self):
-        """The new fields are DECLARED, not REQUIRED.
+    def test_verdict_schema_requires_the_executed_counters(self):
+        """`executed`/`total` are REQUIRED; `malformed`/`fixture_absent` are not.
 
-        Requiring them would hard-fail the Synthesize agent against any harness
-        build that predates them, turning a compatible additive change into an
-        outage.  The .mjs defaults them with `?? []` / `?? 0` instead.
+        These were left optional on the reasoning that requiring them would
+        hard-fail against an older harness build — a skew that cannot occur, as
+        the Synthesize agent shells the harness out of the SAME checkout as the
+        .mjs.  What a loose schema DID admit is a Synthesize agent that drops
+        the counters despite the prompt: `executed ?? 0` then dispositions every
+        leaf NOT_VERIFIED and the batch INCOMPLETE, indistinguishable from
+        genuine incompleteness.  The schema is the enforcement point that makes
+        the agent retry instead of laundering a relay bug into a verdict.
+
+        `malformed`/`fixture_absent` stay optional — absent and empty mean the
+        same thing for a list, and neither carries disposition weight of its own.
         """
-        required = self._schemas()["VERDICT_SCHEMA"].get("required", [])
-        self.assertEqual(required, ["blocks", "blocking", "report"])
+        schema = self._schemas()["VERDICT_SCHEMA"]
+        required = schema.get("required", [])
+        self.assertEqual(required,
+                         ["blocks", "blocking", "report", "executed", "total"])
+        self.assertNotIn("malformed", required)
+        self.assertNotIn("fixture_absent", required)
+        self.assertEqual(schema["properties"]["executed"].get("type"), "integer")
+        self.assertEqual(schema["properties"]["total"].get("type"), "integer")
 
 
 # ---------------------------------------------------------------------------
@@ -2459,23 +2499,21 @@ class _MjsScenarioMixin:
 }"""
 
     def _run_scenario(self, leaves_js: str, responses_js: str):
-        """Run the .mjs under the scenario harness; return (verdict, phases)."""
-        harness_src = _mjs_scenario_source(leaves_js, responses_js)
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            input=harness_src, capture_output=True, text=True, timeout=60,
-        )
+        """Run the .mjs under the scenario harness; return (verdict, phases).
+
+        Cached per (leaves_js, responses_js) via _run_node_module: a scenario is
+        deterministic, so a class asserting five things about one scenario runs
+        it once, not five times.
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
         self.assertEqual(
-            result.returncode, 0,
-            f"node exited {result.returncode}; stderr: {result.stderr!r}; "
-            f"stdout: {result.stdout!r}",
-        )
-        res_lines = [ln for ln in result.stdout.splitlines()
+            rc, 0, f"node exited {rc}; stderr: {err!r}; stdout: {out!r}")
+        res_lines = [ln for ln in out.splitlines()
                      if ln.startswith(_MJS_RESULT_MARK)]
-        ph_lines = [ln for ln in result.stdout.splitlines()
+        ph_lines = [ln for ln in out.splitlines()
                     if ln.startswith(_MJS_PHASES_MARK)]
-        self.assertTrue(res_lines, f"no result marker; stdout: {result.stdout!r}")
-        self.assertTrue(ph_lines, f"no phases marker; stdout: {result.stdout!r}")
+        self.assertTrue(res_lines, f"no result marker; stdout: {out!r}")
+        self.assertTrue(ph_lines, f"no phases marker; stdout: {out!r}")
         verdict = json.loads(res_lines[-1][len(_MJS_RESULT_MARK):])
         phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
         return verdict, phases
@@ -2665,6 +2703,32 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
                   fixture_absent: [], executed: 0, total: 1 },
 }"""
 
+    # ── scenario D: the Synthesize agent returns null (agent death) ─────────
+    #
+    # The fail-closed fallback fires: the leaf BLOCKS with no harness output at
+    # all.  Nothing was probed, so `leaves_probed` must stay 0 — deriving it
+    # from the disposition counted this leaf as probed, overstating coverage on
+    # exactly the failure path a reader consults the counter to check.
+
+    _D_LEAVES = '[{ signal: "null-synthesize leaf (zeta)" }]'
+    _D_RESPONSES = """{
+    enumerate: { premises: [{
+        text: "revolute rejects non-axis arg",
+        assertion_kind: "rejection",
+        fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+        match: { exit_code: 1 },
+        capability: "arg-vs-param rejection (mock)",
+    }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "PASS",
+        command: ["reify", "check", "f.ri"], exit_code: 1,
+        stdout: "", stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: null,
+}"""
+
     def _assert_consumer_contract(self, verdict):
         """The pre-existing keys β/D4 consume must survive every change."""
         for key in ("blocks", "leaf_verdicts", "summary"):
@@ -2760,6 +2824,33 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         self.assertEqual(verdict.get("leaves_not_verified"), 1)
         self.assertEqual(verdict.get("not_verified_leaves"),
                          ["malformed-records leaf (epsilon)"])
+
+    # ── (D) a blocking leaf that executed nothing is not a probed leaf ───────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_null_synthesize_leaf_blocks_but_is_not_counted_as_probed(self):
+        """BLOCKS does not imply evidence — leaves_probed reads the counter.
+
+        The null-synthesize fallback blocks the leaf without any harness output,
+        so `executed` is 0 by construction.  Counting it as probed inflated the
+        coverage number precisely when the pipeline was broken.
+        """
+        verdict, _ = self._run_scenario(self._D_LEAVES, self._D_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertTrue(verdict["blocks"], "a dropped synthesize must fail closed")
+        self.assertEqual(verdict.get("disposition"), "BLOCKS")
+        self.assertEqual(verdict.get("leaves_total"), 1)
+        self.assertEqual(verdict.get("leaves_probed"), 0,
+                         "nothing executed for this leaf; it must not count as probed")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_null_synthesize_leaf_reports_zero_executed(self):
+        """The fallback verdict states its own (empty) basis."""
+        verdict, _ = self._run_scenario(self._D_LEAVES, self._D_RESPONSES)
+        leaf = verdict["leaf_verdicts"][0]
+        self.assertEqual(leaf.get("executed"), 0)
+        self.assertEqual(leaf.get("total"), 0)
+        self.assertEqual(leaf.get("blocking"), ["null-synthesize leaf (zeta)"])
 
 
 # ---------------------------------------------------------------------------
@@ -3142,6 +3233,130 @@ class TestEvidenceBlockIsShared(unittest.TestCase):
         self.assertNotIn("stdout:", block)
         self.assertNotIn("stderr:", block)
         self.assertEqual(block.splitlines()[0], "[FAIL] cap (role: prover)")
+
+
+
+# ---------------------------------------------------------------------------
+# task #7257 amendment: the record-shape prose is stated once, not twice
+# ---------------------------------------------------------------------------
+
+class TestMjsRecordShapeRulesAreShared(unittest.TestCase):
+    """Both role prompts carry the SAME record-shape contract, from one source.
+
+    The ~11-line RECORD SHAPE block was duplicated near-verbatim into the Prover
+    and the Adversary prompt, and the copies had already drifted in their
+    closing paragraph.  It is prose describing exactly what RESULT_RECORD_SCHEMA
+    encodes, so a drifted copy asks an agent for a shape the schema then
+    rejects.  Hoisted to a module-level RECORD_SHAPE_RULES and interpolated.
+
+    A hoist that silently failed to interpolate would delete the constraint from
+    the prompts entirely, so this asserts on the RENDERED prompt text, not on
+    the presence of the constant.
+    """
+
+    _MARK = "PROMPTS_RESULT:"
+    _RULE_MARKERS = (
+        "RECORD SHAPE",
+        "MUST be an ARRAY OF STRINGS",
+        "MUST be an INTEGER",
+        "PASS / FAIL / UNPROVABLE / HARNESS_ERROR",
+    )
+
+    def _harness_source(self) -> str:
+        """Capture every prompt the .mjs hands to agent(), keyed by phase."""
+        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        return f"""\
+import {{ readFileSync }} from "node:fs";
+
+const MARK = "{self._MARK}";
+const MJS_PATH = "{mjs_abs}";
+
+globalThis.__PROMPTS = {{}};
+globalThis.agent = async (prompt, opts = {{}}) => {{
+    const phase = (opts.phase || "").toLowerCase();
+    globalThis.__PROMPTS[phase] = prompt;
+    if (phase === "enumerate") return {{ premises: [{{
+        text: "p", assertion_kind: "rejection", fixture: "f.ri",
+        match: {{ exit_code: 1 }}, capability: "c",
+    }}] }};
+    if (phase === "synthesize") return {{
+        blocks: false, blocking: [], report: "",
+        malformed: [], fixture_absent: [], executed: 1, total: 1,
+    }};
+    return {{ prover: [], adversary: [] }};
+}};
+globalThis.pipeline = async (items, ...stages) => {{
+    const results = [];
+    for (const item of items) {{
+        let val = item;
+        for (const stage of stages) val = await stage(val, item, results.length);
+        results.push(val);
+    }}
+    return results;
+}};
+globalThis.parallel = async (thunks) => Promise.all(thunks.map(t => t()));
+globalThis.log = (..._a) => {{}};
+globalThis.phase = (..._a) => {{}};
+globalThis.args = [{{ signal: "prompt-capture leaf" }}];
+globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }};
+globalThis.workflow = async () => {{}};
+
+let src = readFileSync(MJS_PATH, "utf8");
+src = src.replace("export const meta", "const meta");
+const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
+await new AsyncFunction(src)();
+console.log(MARK + JSON.stringify(globalThis.__PROMPTS));
+"""
+
+    def _prompts(self) -> dict:
+        rc, out, err = _run_node_module(self._harness_source())
+        self.assertEqual(rc, 0, f"node exited {rc}; stderr: {err!r}")
+        lines = [ln for ln in out.splitlines() if ln.startswith(self._MARK)]
+        self.assertTrue(lines, f"no prompt marker in stdout; stdout: {out!r}")
+        return json.loads(lines[-1][len(self._MARK):])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs prompt test")
+    def test_both_role_prompts_carry_the_record_shape_rules(self):
+        """Interpolation actually happened — in BOTH prompts."""
+        prompts = self._prompts()
+        for role in ("prove", "adversary"):
+            with self.subTest(role=role):
+                self.assertIn(role, prompts,
+                              f"no {role} prompt captured; got {sorted(prompts)}")
+                for marker in self._RULE_MARKERS:
+                    self.assertIn(marker, prompts[role],
+                                  f"{role} prompt lost {marker!r} — the hoisted "
+                                  f"RECORD_SHAPE_RULES did not interpolate")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs prompt test")
+    def test_the_shared_block_is_byte_identical_across_roles(self):
+        """One source of truth: the shared span must not differ by a character."""
+        prompts = self._prompts()
+        spans = {}
+        for role in ("prove", "adversary"):
+            text = prompts[role]
+            start = text.index("RECORD SHAPE")
+            end = text.index("when a step of your own procedure died.")
+            spans[role] = text[start:end]
+        self.assertEqual(spans["prove"], spans["adversary"],
+                         "the two prompts carry different record-shape prose again")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs prompt test")
+    def test_the_prompts_state_the_harness_error_exemption(self):
+        """The prompt must not contradict the harness.
+
+        The Prover's documented fallback is an evidence-free HARNESS_ERROR, so a
+        blanket "a blocking verdict with no captured output is discarded" made
+        the prompt self-contradictory — and no reader could tell which half was
+        intended.  Both prompts now scope the rule to FAIL/UNPROVABLE and name
+        the exemption.
+        """
+        prompts = self._prompts()
+        for role in ("prove", "adversary"):
+            with self.subTest(role=role):
+                text = prompts[role]
+                self.assertIn("A FAIL or UNPROVABLE you did not actually RUN", text)
+                self.assertIn("HARNESS_ERROR is\nthe ONE exception", text)
 
 
 

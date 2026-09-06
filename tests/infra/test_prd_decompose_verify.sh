@@ -8,7 +8,9 @@
 #   5. CLI smoke: synthesize on a FAIL results fixture exits 1
 #   6. CLI smoke (task #7257): a mixed batch reports a counts header, blocks on
 #      ONLY the evidence-backed record, and renders a string command verbatim
-#   7. (skip-guarded) node --check scripts/prd-decompose-verify.mjs exits 0
+#   7. CLI smoke (task #7257 amendment): the Prover prompt's evidence-free
+#      HARNESS_ERROR fallback still exits 1 — a dead harness is not INCOMPLETE
+#   8. (skip-guarded) node --check scripts/prd-decompose-verify.mjs exits 0
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -181,6 +183,46 @@ else
 fi
 
 rm -f "$_TMP_MIXED" "$_MIXED_OUT"
+
+# ── CLI smoke (task #7257 amendment): a dead harness still blocks ─────────
+# The Prover prompt's documented fallback for "I could not run anything at all"
+# is an evidence-FREE HARNESS_ERROR (command: [], exit_code: -1).  Under a
+# blanket evidence gate it was routed to MALFORMED, stopped blocking, and the
+# batch silently became INCOMPLETE instead of BLOCKS.
+_TMP_HE="$(mktemp /tmp/pdv_smoke_he_XXXXXX.json)"
+cat > "$_TMP_HE" <<'EOJSON'
+{
+    "prover": [
+        {
+            "capability": "leaf label (delta)",
+            "probe_kind": "check",
+            "verdict": "HARNESS_ERROR",
+            "command": [],
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "python3: can't open file 'scripts/prd-capability-check.py': [Errno 2] No such file or directory"
+        }
+    ],
+    "adversary": []
+}
+EOJSON
+
+_HE_OUT="$(mktemp /tmp/pdv_smoke_he_out_XXXXXX.json)"
+if python3 "$REPO_ROOT/scripts/prd-decompose-verify.py" synthesize "$_TMP_HE" \
+        > "$_HE_OUT" 2>/dev/null; then
+    echo "  FAIL: evidence-free HARNESS_ERROR should exit 1 (a dead harness blocks); got 0"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: evidence-free HARNESS_ERROR exits 1 (a dead harness blocks)"
+    PASS=$((PASS + 1))
+fi
+
+# It blocks, and it is neither malformed nor fixture-absent despite the ENOENT.
+assert "HARNESS_ERROR is blocking, not malformed or fixture-absent" \
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if (d["blocking"]==["leaf label (delta)"] and d["malformed"]==[] and d["fixture_absent"]==[] and d["executed"]==0) else 1)' \
+    "$_HE_OUT"
+
+rm -f "$_TMP_HE" "$_HE_OUT"
 
 # ── node --check wrapped form (skip-guarded) ─────────────────────────────
 # The .mjs has a top-level `return` (Workflow harness wraps body in AsyncFunction).
