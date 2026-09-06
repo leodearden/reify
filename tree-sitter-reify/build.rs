@@ -226,8 +226,22 @@ fn main() {
     // Declare every input cargo must watch. Two halves, for two different reasons
     // (`#5629`, esc-5392-1):
     //
-    //   src/parser.c is deliberately NOT watched. This build script WRITES it, so
-    //   watching it would make every run dirty its own watch set — double execution.
+    //   src/parser.c IS watched, since `#6992`. This build script WRITES it, and
+    //   the old exclusion cited the resulting "double execution" — but that cost
+    //   is BOUNDED and CONVERGENT, not a loop: cargo re-runs this script once
+    //   because parser.c is newer than its recorded reference, that run finds
+    //   both shell stamps current and writes nothing, and the run after it is
+    //   clean. One extra `cc::Build::compile` after a grammar change is a build
+    //   you were going to pay for anyway. (Pinned by
+    //   `test_gating_predicates_converge_after_one_regeneration`.)
+    //
+    //   What it buys is the reverse direction, which the exclusion left wide
+    //   open: cargo narrows a build script's watch set to EXACTLY the emitted
+    //   rerun-if-changed list, so an UNWATCHED parser.c could be deleted (the
+    //   `git clean -xfd -e target` every lane acquire runs) or CoW-replaced with
+    //   a copy from a different base, with grammar.js untouched — and cargo had
+    //   no reason to re-run this script at all. The previously-built
+    //   libtree_sitter_reify.a stayed linked and the change was never under test.
     //
     //   src/scanner.c and src/tree_sitter/*.h ARE watched. This build script never
     //   writes them, so the double-execution objection does not apply — and before
@@ -254,9 +268,6 @@ fn main() {
     // declared here or an edit to the predicates never re-runs them.
     println!("cargo:rerun-if-changed=build_support.rs");
     for rel in compilation_inputs() {
-        if rel == "src/parser.c" {
-            continue;
-        }
         println!("cargo:rerun-if-changed={}", rel);
     }
 
@@ -284,6 +295,25 @@ fn main() {
             run_tree_sitter_generate();
             // Verify all 3 output files were created.
             verify_outputs(src_dir);
+            // Re-attest what was just generated (`#6992`, Hole B). Before this,
+            // build.rs could regenerate parser.c and leave
+            // `src/.grammar_hash.stamp` describing the PREVIOUS grammar — so a
+            // later merge or checkout restoring that grammar made the stamp
+            // match again, and it then actively vouched for a parser the current
+            // grammar never produced. Whatever regenerates must re-attest.
+            match sha256_of_path(grammar_path) {
+                Ok(Some(sha)) => write_shell_stamps(src_dir, &sha),
+                // No hasher, or a grammar.js that would not hash: write NO
+                // stamp rather than a wrong one. The outputs stay UNPROVEN, so
+                // the next build regenerates — the safe direction, and the same
+                // call `write_inputs_stamp` makes.
+                _ => eprintln!(
+                    "tree-sitter-reify: could not hash {}; leaving the shell \
+                     stamps unwritten (the outputs stay unproven and the next \
+                     build will regenerate)",
+                    grammar_path.display()
+                ),
+            }
         }
         // Write the OUT_DIR stamp whether we regenerated or bypassed —
         // subsequent build-script invocations will hit the fast path in

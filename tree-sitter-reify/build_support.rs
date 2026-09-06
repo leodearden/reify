@@ -391,3 +391,88 @@ fn shell_stamp_is_current(
     // 4. The outputs on disk must be the ones that were generated.
     outputs_manifest_matches(&src_dir.join(OUTPUTS_STAMP_NAME), src_dir)
 }
+
+/// Write `contents` to `path` atomically: a sibling temp file, then a rename.
+///
+/// The temp name carries this process's pid so two concurrent writers cannot
+/// collide on it, and it is prefixed `.tmp-` so the root `.gitignore` covers a
+/// leftover (a crash between write and rename) rather than leaving the lane
+/// reporting an untracked file. A failed rename removes the temp file.
+///
+/// Atomicity matters because these stamps are read by a DIFFERENT process than
+/// the one writing them (`build.rs` writes, `scripts/tree-sitter-freshness.sh`
+/// and the next build script read): a partially-written manifest is exactly the
+/// truncated shape `outputs_manifest_parse` refuses, and a reader that caught it
+/// mid-write would force a needless regeneration at best.
+#[allow(dead_code)]
+fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let file_name = match path.file_name() {
+        Some(n) => n.to_string_lossy().to_string(),
+        None => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "stamp path has no file name",
+            ));
+        }
+    };
+    let tmp = path.with_file_name(format!(".tmp-{}-{}", std::process::id(), file_name));
+    std::fs::write(&tmp, contents)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Re-attest a freshly generated `src_dir`: write BOTH shell stamps.
+///
+/// `.grammar_hash.stamp` gets the bare 64-hex `grammar_sha` with NO trailing
+/// newline — byte-identical to what `scripts/tree-sitter-generate.sh` emits
+/// (`echo -n "$GRAMMAR_HASH"`), so the three consumers asserting that exact
+/// shape keep passing.
+///
+/// `.generated_outputs.stamp` gets the content manifest, and is written LAST.
+/// The order is load-bearing: a crash between the two leaves a grammar stamp
+/// with no manifest beside it, which every predicate here reads as STALE. The
+/// reverse order would leave a complete manifest beside a grammar stamp
+/// describing the previous grammar — a stamp pair that actively lies.
+///
+/// Never fatal. A stamp that cannot be written leaves the outputs UNPROVEN,
+/// which costs one regeneration on the next build; failing the build instead
+/// would turn a disk hiccup into a hard stop.
+#[allow(dead_code)]
+fn write_shell_stamps(src_dir: &std::path::Path, grammar_sha: &str) {
+    let manifest = match outputs_manifest_for(src_dir) {
+        Ok(Some(m)) => m,
+        // No hasher on this host, or an output that would not hash: write
+        // NEITHER stamp. A grammar stamp with no manifest is merely unproven; a
+        // grammar stamp beside a manifest that is missing entries would be read
+        // as a set mismatch anyway.
+        _ => {
+            eprintln!(
+                "tree-sitter-reify: could not hash the generated outputs in {}; \
+                 writing no shell stamps (they stay unproven and the next build \
+                 will regenerate)",
+                src_dir.display()
+            );
+            return;
+        }
+    };
+    if let Err(e) = write_atomic(&src_dir.join(GRAMMAR_STAMP_NAME), grammar_sha) {
+        eprintln!(
+            "warning: failed to write {}: {}",
+            src_dir.join(GRAMMAR_STAMP_NAME).display(),
+            e
+        );
+        return;
+    }
+    if let Err(e) = write_atomic(&src_dir.join(OUTPUTS_STAMP_NAME), &manifest) {
+        eprintln!(
+            "warning: failed to write {}: {}",
+            src_dir.join(OUTPUTS_STAMP_NAME).display(),
+            e
+        );
+    }
+}

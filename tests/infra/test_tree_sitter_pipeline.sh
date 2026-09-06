@@ -2152,14 +2152,21 @@ test_build_rs_watches_all_compiled_inputs() {
         fi
     done < <(cd "$REPO_ROOT" && git ls-files 'tree-sitter-reify/src/tree_sitter/*.h')
 
-    # NEGATIVE: src/parser.c must stay UNWATCHED. build.rs WRITES it, so watching
-    # it would make every build-script run dirty its own watch set — the double
-    # execution documented in build.rs. Pinned so a future "fix" cannot
-    # reintroduce it while chasing the scanner.c gap.
-    if [[ "$directives" == *"cargo:rerun-if-changed=src/parser.c"* ]]; then
+    # src/parser.c MUST be watched, since task #6992 — the exact inverse of the
+    # pin this block used to carry. build.rs writes it, and the old exclusion
+    # cited "double execution"; that cost is bounded and convergent (one extra
+    # build-script run after a genuine regeneration, which then finds both shell
+    # stamps current and writes nothing). What the exclusion cost was the reverse
+    # direction: cargo narrows the watch set to EXACTLY the emitted list, so an
+    # unwatched parser.c could be deleted by the `git clean -xfd -e target` every
+    # lane acquire runs, or CoW-replaced from a different base, with grammar.js
+    # untouched — and cargo had no reason to re-run the build script at all. The
+    # stale libtree_sitter_reify.a stayed linked and the change was never tested.
+    if [[ "$directives" != *"cargo:rerun-if-changed=src/parser.c"* ]]; then
         echo ""
-        echo "  ASSERTION FAILED: src/parser.c is watched — build.rs writes it, so this"
-        echo "  causes double execution of the build script on every build."
+        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=src/parser.c' in $run_dir/output"
+        echo "  parser.c is compiled into the archive and is a build-script OUTPUT, so a"
+        echo "  deleted or CoW-mismatched copy must be able to re-trigger the build script."
         return 1
     fi
 
