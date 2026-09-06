@@ -3613,7 +3613,7 @@ mod tests {
     /// [`crate::arg_check::check_arg_count_at_least`], and bare custom pushes
     /// such as `geometry.rs`'s `extrude` arm, which carries NO `"wrong number of
     /// arguments"` label at all. The label is therefore NOT universal. The
-    /// message shape `"{name}() expects … got {N}"` IS: it held for all 32
+    /// message shape `"{name}() expects … got {N}"` IS: it held for all 34
     /// observable names across all three emit sites when this ledger was
     /// measured. The trailing `", got {N}"` is matched with `ends_with` and not
     /// `contains`, because `", got 1"` is a prefix of `", got 12"`.
@@ -3626,9 +3626,9 @@ mod tests {
     ///
     /// # Headroom
     ///
-    /// Measured: a 546-call probe module produced 445 arity diagnostics with no
-    /// truncation and no diagnostic cap, so ONE compile suffices for the whole
-    /// sweep.
+    /// Measured: a 660-call probe module (44 slotted names × 15 arities)
+    /// produced 459 arity diagnostics with no truncation and no diagnostic cap,
+    /// so ONE compile suffices for the whole sweep.
     ///
     /// # Memoised
     ///
@@ -3715,7 +3715,7 @@ mod tests {
         }
     }
 
-    /// The PINNED accepted-arity ledger: the 32 slotted names whose lowering
+    /// The PINNED accepted-arity ledger: the 34 slotted names whose lowering
     /// emits an observable arg-count diagnostic, and the arities each accepts.
     ///
     /// Derived by MEASUREMENT (see [`lowering_accepted_arities`]), not by
@@ -3773,6 +3773,21 @@ mod tests {
         ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
         ("rotate_around", AcceptedArities::Exactly(&[8])),
         ("translate", AcceptedArities::Exactly(&[4])),
+        // Pattern ORIGIN triples (task 5662) — the only rows here that are
+        // multi-arity because the name is genuinely OVERLOADED: the scalar form
+        // and the value form. Both are safe under the coupling rule because
+        // their arms carry a load-bearing `if arg_count ==` guard, so no
+        // MULTI_ARITY_AGNOSTIC_SAFE exemption is needed; pinned by
+        // `pattern_origin_family_is_ledgered_and_guarded_not_exempted`.
+        //
+        // PROVENANCE, worth one line: these two rows exist because task 5662
+        // landed two new slotted names on `main` while task 6862 was on a
+        // branch, and `every_slotted_name_is_ledgered_or_recorded_unobservable`
+        // FIRED on them unprompted at the merge. The completeness arm caught an
+        // unrelated task's change — which is the evidence that this guard is
+        // enforceable rather than decorative.
+        ("circular_pattern", AcceptedArities::Exactly(&[4, 9])),
+        ("mirror", AcceptedArities::Exactly(&[2, 7])),
     ];
 
     /// Slotted names whose lowering emits NO observable arg-count diagnostic, so
