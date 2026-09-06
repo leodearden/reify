@@ -508,6 +508,97 @@ ts_generate_grammar_stamp() {
     printf '%s' "$1/tree-sitter-reify/src/.grammar_hash.stamp"
 }
 
+# mk_ts_build_fixture <grammar-variant-file>
+#
+# A STANDALONE cargo crate that runs the REAL build.rs and build_support.rs
+# against a tiny throwaway grammar, so a genuine `cargo build` can be driven end
+# to end without touching the lane's tree or paying 5.8 MB of parser.c
+# compilation. Prints the crate root; registers its own cleanup.
+#
+# The grammar is deliberately NOT reify's. What is under test is build.rs's
+# staleness logic, which is grammar-agnostic — and a two-rule grammar compiles in
+# about a second where reify's takes a minute per build, with four builds here.
+# The real build.rs, the real build_support.rs, the real tree-sitter CLI, real
+# cargo and real mtimes are all in play; only the grammar's SIZE changes.
+#
+# Detached from any parent workspace via an empty [workspace] table, and built
+# --offline against the shared registry (cc is already vendored for the real
+# workspace).
+mk_ts_build_fixture() {
+    local variant="$1" dir
+    dir="$(mktemp -d)" || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    mkdir -p "$dir/src" || return 1
+    cp "$TS_DIR/build.rs" "$dir/build.rs" || return 1
+    cp "$TS_DIR/build_support.rs" "$dir/build_support.rs" || return 1
+    cp "$variant" "$dir/grammar.js" || return 1
+    # build.rs hands src/scanner.c to cc unconditionally. The fixture grammar
+    # declares no externals, so parser.c references no scanner symbols and an
+    # empty translation unit links fine.
+    printf '/* fixture: no external scanner */\n' > "$dir/src/scanner.c" || return 1
+    printf '//! tree-sitter build-pipeline fixture crate.\n' > "$dir/src/lib.rs" || return 1
+    cat > "$dir/Cargo.toml" <<'TOML'
+[package]
+name = "tree-sitter-reify"
+version = "0.0.0"
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+cc = "1"
+
+[workspace]
+TOML
+    printf '%s' "$dir"
+}
+
+# ts_write_grammar_variant <dest> <variant: a|b>
+#
+# Variant B is variant A plus one additive rule, so parser.c(B) differs from
+# parser.c(A) in content — which is the only way "the build restored A, not B"
+# can be asserted at all. Written to a temp path, never over a tracked file.
+ts_write_grammar_variant() {
+    local dest="$1" which="$2"
+    if [ "$which" = "a" ]; then
+        cat > "$dest" <<'JS'
+module.exports = grammar({
+  name: 'fixture',
+  rules: {
+    source_file: $ => repeat($.thing),
+    thing: $ => 'a',
+  }
+});
+JS
+    else
+        cat > "$dest" <<'JS'
+module.exports = grammar({
+  name: 'fixture',
+  rules: {
+    source_file: $ => repeat(choice($.thing, $.other)),
+    thing: $ => 'a',
+    other: $ => 'b',
+  }
+});
+JS
+    fi
+}
+
+# ts_normalize_lane_mtimes <dir>
+#
+# Stamp every non-target/ file under <dir> to 2020-01-01, reproducing what
+# scripts/seed-warm-lane.sh does to a lane (measured in _lane-26: every entry
+# under tree-sitter-reify/src/ reads `Jan  1  2020`).
+#
+# LOAD-BEARING, not decoration. Without it the stale parser.c would carry a
+# mtime of NOW — newer than .grammar_hash.stamp — and build.rs's OLD condition 4
+# would have forced a regeneration, making the cases below pass for the wrong
+# reason. Normalizing is what renders that heuristic inert and leaves content as
+# the only signal.
+ts_normalize_lane_mtimes() {
+    find "$1" -path "$1/target" -prune -o -print0 \
+        | xargs -0 -r touch -d '2020-01-01 00:00:00'
+}
+
 # mk_verify_fixture
 #
 # A throwaway git repo holding a copy of scripts/ and .config/, enough for
@@ -3353,6 +3444,143 @@ STUB
             return 1
         fi
     done
+}
+
+test_build_rs_repairs_a_parser_from_another_grammar() {
+    # THE END-TO-END REPRODUCTION, and the one shape shared logic cannot fake: a
+    # real cargo build, a real stale parser.c, in a warm-lane-shaped tree.
+    #
+    # MEASUREMENT 2's exact sequence. build.rs regenerates by shelling out to
+    # `tree-sitter generate` and never touches src/.grammar_hash.stamp, so
+    # parser.c(B) can end up beside a stamp still reading sha256(A). A merge that
+    # then restores grammar.js == A makes that stamp MATCH again — and it now
+    # actively vouches for a parser the current grammar never produced.
+    require_tree_sitter_cli || return 0
+
+    local va vb
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    vb=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$vb'")
+    ts_write_grammar_variant "$va" a
+    ts_write_grammar_variant "$vb" b
+
+    local fix
+    fix=$(mk_ts_build_fixture "$va") || return 1
+
+    local cargo_out guard_rc=0
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    run_guarded_cargo_check "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+    assert_file_exists "$fix/src/parser.c" || return 1
+
+    local hash_a hash_b
+    hash_a=$(ts_sha256 "$fix/src/parser.c") || { echo "  SKIP: no hasher"; return 0; }
+
+    # Generate from variant B, exactly as a build on the other branch would.
+    cp "$vb" "$fix/grammar.js" || return 1
+    ( cd "$fix" && tree-sitter generate ) >/dev/null 2>&1 || {
+        echo ""; echo "  ASSERTION FAILED: tree-sitter generate failed on variant B"; return 1
+    }
+    hash_b=$(ts_sha256 "$fix/src/parser.c")
+    if [ "$hash_a" = "$hash_b" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the two grammar variants produce identical parser.c,"
+        echo "  so this test could not tell a repaired parser from a stale one."
+        return 1
+    fi
+
+    # The post-merge state: grammar.js back to A, .grammar_hash.stamp back to
+    # sha256(A) — both legitimately consistent — while parser.c is still B, and
+    # nothing attests the outputs.
+    cp "$va" "$fix/grammar.js" || return 1
+    printf '%s' "$(ts_sha256 "$fix/grammar.js")" > "$fix/src/.grammar_hash.stamp" || return 1
+    rm -f "$fix/src/.generated_outputs.stamp"
+
+    # Warm-lane mtimes, then the merge's write to grammar.js — the one thing that
+    # gives cargo a reason to re-run the build script at all.
+    ts_normalize_lane_mtimes "$fix"
+    touch "$fix/grammar.js"
+
+    guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local after
+    after=$(ts_sha256 "$fix/src/parser.c")
+    if [ "$after" = "$hash_b" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build left parser.c as variant B while grammar.js is A."
+        echo "  The .grammar_hash.stamp legitimately matches grammar.js, so only a check on"
+        echo "  the OUTPUTS' bytes can see this — and every mtime here is 2020-01-01, so the"
+        echo "  old 'output newer than stamp' heuristic cannot fire."
+        return 1
+    fi
+    if [ "$after" != "$hash_a" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: parser.c matches neither variant after the build"
+        echo "  expected (variant A): $hash_a"
+        echo "  actual:               $after"
+        return 1
+    fi
+}
+
+test_build_rs_restores_a_deleted_parser_c() {
+    # HOLE E's companion. src/parser.c used to be excluded from the watch set on
+    # a double-execution argument, and cargo narrows a build script's watch set
+    # to EXACTLY the emitted rerun-if-changed list — so a deleted parser.c (the
+    # `git clean -xfd -e target` every lane acquire runs) gave cargo no reason to
+    # re-run the build script. The pre-built libtree_sitter_reify.a stayed linked
+    # and the build reported success over a source file that no longer existed.
+    require_tree_sitter_cli || return 0
+
+    local va
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+
+    local fix
+    fix=$(mk_ts_build_fixture "$va") || return 1
+
+    local cargo_out guard_rc=0
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    run_guarded_cargo_check "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+    assert_file_exists "$fix/src/parser.c" || return 1
+
+    local hash_a
+    hash_a=$(ts_sha256 "$fix/src/parser.c") || { echo "  SKIP: no hasher"; return 0; }
+
+    # grammar.js untouched and still stamped 2020 — nothing about it changed.
+    # Only parser.c is gone.
+    ts_normalize_lane_mtimes "$fix"
+    rm -f "$fix/src/parser.c"
+
+    guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    if [ ! -f "$fix/src/parser.c" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build reported success without restoring src/parser.c."
+        echo "  cargo linked the previously-built archive over a source that no longer exists —"
+        echo "  which is the false GREEN, not a build."
+        return 1
+    fi
+    local after
+    after=$(ts_sha256 "$fix/src/parser.c")
+    if [ "$after" != "$hash_a" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: restored parser.c does not match the grammar on disk"
+        echo "  expected: $hash_a"
+        echo "  actual:   $after"
+        return 1
+    fi
 }
 
 # --- Main ---
