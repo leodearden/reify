@@ -3105,8 +3105,8 @@ enum DampingKind {
     /// trait `DampingDescriptor`, so it accepts refinements this trampoline does
     /// not implement, and flattening would lose the difference between "the
     /// author declared no companion" and "the author declared one we dropped"
-    /// (INV-SF-3, the same lossy-view defect `extract_damping` was split apart
-    /// to fix in #6875).
+    /// (INV-SF-3, the same lossy-view defect #6875 split this classifier out
+    /// of the old `(α, β)`-only read to fix).
     ///
     /// ζ_material is deliberately NOT carried here. This classifier only ever
     /// sees a `ModalOptions` value, and the loss factor η lives on the
@@ -6145,9 +6145,9 @@ mod tests {
     /// TRAIT-typed it accepts any refinement — including one this trampoline
     /// does not implement, and including a nested `MaterialDamping`. Flattening
     /// it at classification time would reproduce exactly the lossy-view defect
-    /// `extract_damping` was split apart to fix in #6875: the producer could no
-    /// longer tell "the author declared no extra damping" from "the author
-    /// declared an extra descriptor we silently dropped". So the nested
+    /// #6875 split this classifier out to fix: the producer could no longer tell
+    /// "the author declared no extra damping" from "the author declared an extra
+    /// descriptor we silently dropped". So the nested
     /// descriptor is CARRIED, and every sub-case below asserts the carried
     /// classification, never just the outer variant.
     ///
