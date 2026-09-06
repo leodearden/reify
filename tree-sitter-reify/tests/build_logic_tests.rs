@@ -2500,7 +2500,11 @@ fn test_shell_stamp_not_current_when_parser_c_is_from_another_grammar() {
     let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
         return;
     };
-    std::fs::write(src_dir.join("parser.c"), b"parser.c generated from grammar B").unwrap();
+    std::fs::write(
+        src_dir.join("parser.c"),
+        b"parser.c generated from grammar B",
+    )
+    .unwrap();
     if !normalize_mtimes_to_2020(dir.path()) {
         return;
     }
