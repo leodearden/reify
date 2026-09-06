@@ -4135,7 +4135,8 @@ pub enum DiagnosticCode {
     ///
     /// Two canonical message forms, both single-sourced from
     /// `engine_compute.rs`'s `NO_TRAMPOLINE_STEM` and built by the constructor
-    /// pair beside it (`soft_no_trampoline_diagnostic` /
+    /// pair beside it (`Engine::soft_no_trampoline_diagnostic`, a method so the
+    /// empty-registry predicate below is spelled exactly once /
     /// `hard_no_trampoline_diagnostic`):
     /// - SOFT: `"@optimized target \"<t>\": no registered compute trampoline (falling back to body-inlining)"`
     /// - HARD: `"@optimized target \"<t>\": no registered compute trampoline"`
