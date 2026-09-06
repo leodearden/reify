@@ -45,8 +45,20 @@ pub fn compute_goto_definition_with_parsed(
     // the definition when the cursor is already on it is standard LSP
     // behaviour.
     for decl in &parsed.declarations {
-        if let Some((name, tok)) = decl_name_token(decl, source)
-            && name == word
+        // CHEAP DISCRIMINATORS FIRST: name equality, then cursor containment in
+        // the declaration's statement span — both O(1)-ish — before paying for
+        // `decl_name_token`, which is a bounded scan over the declaration's
+        // text. Pre-filtering on the statement span cannot change which
+        // declaration matches: `name_token_span` returns a sub-span of the span
+        // it is given, so `offset` inside the name token always implies
+        // `offset` inside the statement span.
+        let Some((name, span)) = crate::analysis::decl_name_and_span(decl) else {
+            continue;
+        };
+        if name != word || offset < span.start as usize || offset >= span.end as usize {
+            continue;
+        }
+        if let Some(tok) = decl_name_token(source, name, span)
             && offset >= tok.start as usize
             && offset < tok.end as usize
         {
@@ -118,9 +130,15 @@ pub fn compute_goto_definition_with_parsed(
     // exists. Member resolution above keeps returning the full member statement
     // span, unchanged.
     for decl in &parsed.declarations {
-        if let Some((name, tok)) = decl_name_token(decl, source)
-            && name == word
-        {
+        // Cheap discriminator first (see Phase A): only a declaration whose name
+        // IS the word under the cursor is worth narrowing to its name token.
+        let Some((name, span)) = crate::analysis::decl_name_and_span(decl) else {
+            continue;
+        };
+        if name != word {
+            continue;
+        }
+        if let Some(tok) = decl_name_token(source, name, span) {
             return Some(Location {
                 uri: uri.clone(),
                 range: span_to_range(source, tok),
@@ -131,16 +149,20 @@ pub fn compute_goto_definition_with_parsed(
     None
 }
 
-/// The name a top-level declaration declares, paired with the byte span of its
-/// own NAME TOKEN — or `None` when the declaration declares no name of its own,
-/// or when that token cannot be located inside the declaration's span.
+/// The byte span of a top-level declaration's own NAME TOKEN, narrowed from the
+/// `(name, statement span)` pair its kind yields — or `None` when that token
+/// cannot be located inside the declaration's span.
 ///
-/// Kinds come from [`crate::analysis::decl_name_and_span`], whose wildcard-free
-/// exhaustive match is what makes same-file go-to-definition uniform across
-/// declaration kinds instead of a per-kind allowlist. The statement span it
-/// returns is then narrowed to the name token with
-/// [`crate::analysis::name_token_span`] — whole-word, bounded to the
-/// declaration's own span, UTF-8-boundary-snapping. Deliberately NOT
+/// Callers obtain `(name, decl_span)` from
+/// [`crate::analysis::decl_name_and_span`], whose wildcard-free exhaustive match
+/// is what makes same-file go-to-definition uniform across declaration kinds
+/// instead of a per-kind allowlist. They apply the CHEAP discriminators (word
+/// equality; cursor containment in `decl_span`) BEFORE calling this, because
+/// narrowing is a bounded scan over the declaration's text and is worth paying
+/// only for a declaration that already matched.
+///
+/// The narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded
+/// to the declaration's own span, UTF-8-boundary-snapping. Deliberately NOT
 /// [`find_name_offset_in_decl`], which is a bare substring search and would
 /// match the `n` of `fn` for a declaration named `n`.
 ///
@@ -159,13 +181,9 @@ pub fn compute_goto_definition_with_parsed(
 /// - CROSS-file goto-def still covers only the narrower
 ///   [`find_declaration_name_span`] kind list, so Purpose/Constraint/Unit/
 ///   TypeAlias/Joint remain same-file only.
-fn decl_name_token<'a>(
-    decl: &'a reify_ast::Declaration,
-    source: &str,
-) -> Option<(&'a str, SourceSpan)> {
-    let (name, span) = crate::analysis::decl_name_and_span(decl)?;
-    let tok = crate::analysis::name_token_span(source, span, name);
-    (tok.start != tok.end).then_some((name, tok))
+fn decl_name_token(source: &str, name: &str, decl_span: SourceSpan) -> Option<SourceSpan> {
+    let tok = crate::analysis::name_token_span(source, decl_span, name);
+    (tok.start != tok.end).then_some(tok)
 }
 
 /// Compute go-to-definition with cross-file import resolution.
@@ -968,21 +986,140 @@ mod tests {
         // Driven through the SINGLE-FILE entry point on purpose: the cross-file
         // Phase 0 would navigate an `import` to its target file, which is a
         // different contract.
+        //
+        // Each row's WORD is chosen to be exactly what a hypothetical name arm
+        // for that variant would return, so the row actually fails if the arm is
+        // ever flipped from None to Some. Pointing the import row at the module
+        // PATH segment `parts`, or the module row at a single letter of a dotted
+        // `a.b.c` path, would leave both rows green under such a change.
         let cases = [
-            ("import parts.Hole", "parts"),
-            ("module a.b.c", "a"),
+            // The ENTITY name an `Import` binds — what an Import name arm would
+            // yield. Correctly None today: `Import` declares no name of its own,
+            // there is no local `Hole` declaration, and no member named `Hole`.
+            ("import parts.Hole", "Hole"),
+            // Single-segment `module a` (the shape every `examples/*.ri` uses),
+            // so the word under the cursor IS the whole module path.
+            ("module a", "a"),
             ("default Material = steel", "Material"),
         ];
         for (source, word) in cases {
             let offset = source
                 .find(word)
                 .unwrap_or_else(|| panic!("snippet must contain {word:?}: {source}"));
-            let position = crate::convert::offset_to_position(source, offset as u32 + 1);
+            // Midpoint, not `offset + 1`: the latter overshoots a ONE-character
+            // word such as `module a`, landing past the end of the source where
+            // `find_word_at_offset` returns None and the assertion goes vacuous.
+            let position =
+                crate::convert::offset_to_position(source, (offset + word.len() / 2) as u32);
             assert!(
                 compute_goto_definition(source, &test_uri(), position).is_none(),
                 "unnamed declaration kind should not resolve {word:?} for: {source}"
             );
         }
+    }
+
+    /// Parse a test fixture the same way the goto-def entry point does, and
+    /// assert it parses clean — a fixture that silently fails to parse would
+    /// make an ordering pin below pass without exercising the conflict it
+    /// claims to set up.
+    fn parse_clean(source: &str) -> reify_ast::ParsedModule {
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean, got {:?} for: {source}",
+            parsed.errors
+        );
+        parsed
+    }
+
+    #[test]
+    fn goto_def_cursor_on_declaration_name_beats_same_named_member() {
+        // ORDERING PIN for Phase A's placement BEFORE both member phases.
+        //
+        // `Bar` holds a member pathologically named `Foo` — the same name as the
+        // structure declared above it. With the cursor on `structure Foo`'s own
+        // name token, Phase A answers first. Merging Phase A into Phase C, or
+        // moving it after the member phases, would let the all-declarations
+        // member fallback find `param Foo` inside `Bar` and jump THERE instead;
+        // this test is what makes that refactor red.
+        let source = "structure Foo {\n    param x : Length = 5mm\n}\nstructure Bar {\n    param Foo : Length = 1mm\n}";
+        let parsed = parse_clean(source);
+
+        // Fixture guard: the shadowing member must really exist, or the pin is
+        // vacuous.
+        let bar = parsed
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                reify_ast::Declaration::Structure(s) if s.name == "Bar" => Some(s),
+                _ => None,
+            })
+            .expect("fixture declares structure Bar");
+        let shadow = find_named_member_span(&bar.members, "Foo")
+            .expect("fixture: Bar must hold a member named Foo for this pin to bite");
+
+        let decl_name = source.find("Foo").expect("source declares Foo");
+        let position = crate::convert::offset_to_position(source, decl_name as u32 + 1);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("cursor on a declaration's own name token must resolve");
+
+        let (lo, hi) = range_to_byte_range(source, loc.range);
+        assert_eq!(
+            &source[lo..hi],
+            "Foo",
+            "expected the declaration name token"
+        );
+        assert_eq!(
+            lo, decl_name,
+            "must land on `structure Foo`'s own name token, not on the same-named \
+             member at offset {}",
+            shadow.span.start
+        );
+    }
+
+    #[test]
+    fn goto_def_member_use_wins_over_same_named_top_level_declaration() {
+        // ORDERING PIN for Phase C's placement AFTER both member phases — the
+        // "every pre-existing member resolution stays byte-identical" claim.
+        //
+        // A top-level `fn width` shares its name with `S`'s `param width`. A use
+        // of the member must still resolve to the MEMBER statement span; hoisting
+        // Phase C above the member phases would jump to the fn's name token.
+        let source = "fn width(x: Length) -> Length { x }\nstructure S {\n    param width : Length = 5mm\n    let v = width\n}";
+        let parsed = parse_clean(source);
+
+        // Fixture guard: the conflicting top-level declaration must really exist.
+        assert!(
+            parsed.declarations.iter().any(|d| matches!(
+                d,
+                reify_ast::Declaration::Function(f) if f.name == "width"
+            )),
+            "fixture must declare a top-level `fn width` for this pin to bite"
+        );
+
+        let fn_name = source.find("width").expect("fixture declares fn width");
+        let member = source
+            .find("param width")
+            .expect("fixture declares the member");
+        let use_site =
+            source.find("let v = width").expect("fixture holds a use") + "let v = ".len();
+        let position = crate::convert::offset_to_position(source, use_site as u32 + 1);
+
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("a member use must resolve");
+        let (lo, hi) = range_to_byte_range(source, loc.range);
+        assert_eq!(
+            lo,
+            member,
+            "a member use must resolve to the MEMBER statement (offset {member}), \
+             not to the same-named `fn width` name token (offset {fn_name}); got {:?}",
+            &source[lo..hi]
+        );
+        assert!(
+            source[lo..hi].starts_with("param width"),
+            "expected the member statement span, got {:?}",
+            &source[lo..hi]
+        );
     }
 
     #[test]
