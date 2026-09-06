@@ -260,6 +260,57 @@ fn identity_transform() -> Value {
     }
 }
 
+/// Encode a body `pose` as a synthetic 0-DOF rigid link:
+/// `Value::Map { "kind": "fixed", "origin": <pose> }`.
+///
+/// **Why this shape composes correctly through the unmodified chain
+/// machinery.** `joints.rs::transform_at` computes the per-kind motion
+/// first and then applies `origin ∘ motion` UNIFORMLY, once, outside every
+/// per-kind arm (PRD §7.2). The `fixed` arm's motion is the identity, so
+/// the link evaluates to exactly `origin ∘ I = pose`. Every existing chain
+/// consumer — `chain_transform`, `chain_jacobian_fd`,
+/// `loop_residual_jacobian_by_joint` — therefore consumes it with no
+/// signature change, and `extract_loop_closure_chains` resolves it to the
+/// 0-DOF sentinel without making it a solver free variable (task 7186
+/// step-4).
+fn pose_link(pose: &Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("fixed".to_string()),
+    );
+    m.insert(Value::String("origin".to_string()), pose.clone());
+    Value::Map(m)
+}
+
+/// Structural equality against [`identity_transform`].
+///
+/// This is a SIZE OPTIMISATION, not a correctness gate: a semantically-
+/// identity pose that fails this structural test simply yields an identity
+/// rigid link, which composes to a no-op in the residual. Its only job is
+/// to keep the closure paths of the 3-/4-arg `body()` forms (whose pose
+/// defaults to `identity_transform()`) byte-identical to their pre-task-7186
+/// shapes.
+fn is_identity_pose(pose: &Value) -> bool {
+    pose == &identity_transform()
+}
+
+/// The `pose` of the FIRST body record whose `at` field equals `at`.
+///
+/// Mirrors the "first-recorded wins" policy `joint_parents` already applies
+/// to the spanning-tree edge: `path_a` descends the spanning tree, so the
+/// body it terminates at is the one that recorded that edge.
+fn first_body_pose<'a>(bodies: &'a [Value], at: &Value) -> Option<&'a Value> {
+    for body in bodies {
+        if let Value::Map(b) = body
+            && b.get(&Value::String("at".to_string())) == Some(at)
+        {
+            return b.get(&Value::String("pose".to_string()));
+        }
+    }
+    None
+}
+
 /// Build a body record `Value::Map` with the standard five-key layout:
 /// `at`, `id`, `parent`, `pose`, `solid` (alphabetical, matching `BTreeMap`
 /// iteration). Parallel to `make_joint`/`make_coupling` in `joints.rs`.
@@ -398,6 +449,13 @@ fn make_duplicate_solid_error(mech_map: &BTreeMap<Value, Value>, message: String
 ///   `mechanism_loop_closure_chains` reads to emit `LoopClosureChain::Cycle`,
 ///   and those chains are not solver-feedable in the first place.
 ///
+/// On the parent-conflict branch each path may additionally carry ONE
+/// trailing synthetic 0-DOF rigid link `{ kind: "fixed", origin: <pose> }`
+/// encoding that side's terminal body pose (task 7186 defect B) — the
+/// first-recorded body at `at` for `path_a`, the closing call's own `pose`
+/// for `path_b`. An identity pose contributes no link, so the 3-/4-arg
+/// `body()` forms leave both paths joint-only.
+///
 /// The closing joint is always available from the record's explicit
 /// `closing_joint` field, on every branch.
 fn make_loop_closure_record(
@@ -511,6 +569,24 @@ fn append_body(
         let mut path_a = vec![world.clone()];
         path_a.extend(walk_to_world(&joint_parents, existing_parent));
         path_a.push(at.clone());
+        // Task 7186 defect B: admit the terminal body's pose into the
+        // residual as a synthetic 0-DOF rigid link. `bodies` here still
+        // holds only the PRE-EXISTING records (the new body is pushed
+        // below), so this is exactly the first-recorded lookup wanted.
+        //
+        // Poses land at path TERMINALS only — they are deliberately NOT
+        // interleaved after each joint in the walk — because that is what
+        // `walk_fk` does: `joint_world_transform` (snapshot.rs) composes
+        // joint transforms alone when descending, and a body's pose
+        // decorates only that body's own `world_transform`. A per-joint
+        // pose in the residual would make the solved configuration
+        // inconsistent with the FK re-walk snapshot.rs performs
+        // immediately after the solve.
+        if let Some(p) = first_body_pose(&bodies, &at)
+            && !is_identity_pose(p)
+        {
+            path_a.push(pose_link(p));
+        }
         let mut path_b = vec![world];
         path_b.extend(walk_to_world(&joint_parents, &parent));
         // Task 7186 defect A: `at` is deliberately NOT appended here.
@@ -533,6 +609,13 @@ fn append_body(
         // hand-built reference chains already use:
         // reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs (B4) and
         // reify-eval/tests/relate_mounted_joint_sweep_e2e.rs (B7).
+        //
+        // Task 7186 defect B: the CLOSING call's own `pose` is this side's
+        // terminal body pose — the rigid-link offset between the loop's two
+        // attachment frames. Same terminal-only placement rule as path_a.
+        if !is_identity_pose(&pose) {
+            path_b.push(pose_link(&pose));
+        }
         let lc = make_loop_closure_record(next_id, at.clone(), path_a, path_b);
         loop_closures.push(lc);
         true // skip joint_parents.insert below
