@@ -211,8 +211,9 @@
 //! site; and a `Field`'s slots always erase to `Field<Real, Real>`, which is what
 //! produced the false warnings that arm's comment records.  Neither route exists
 //! on the param side, where the slot is always written out.  (These are the same
-//! two entries `arg_type_is_unverifiable` lists in `conformance/mod.rs`; the two
-//! lists must stay consistent.)
+//! two entries the `general_leaf_param_family_is_validated` doc lists under
+//! *Handled by dedicated shape-based arms instead* in `conformance/mod.rs`;
+//! the two lists must stay consistent.)
 //!
 //! There used to be a THIRD, listed first: `point3(…)` is an eval-builtin with no
 //! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders.
