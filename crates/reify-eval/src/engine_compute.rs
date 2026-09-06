@@ -151,6 +151,48 @@ pub(crate) fn soft_no_trampoline_diagnostic(target: &str, registry_empty: bool) 
     diagnostic.with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
 }
 
+/// Build the HARD-site missing-trampoline diagnostic — the form emitted by
+/// [`crate::Engine::dispatch_compute_node`] and
+/// [`crate::Engine::run_compute_dispatch`], both of which return `Err` rather
+/// than falling back.
+///
+/// Same [`NO_TRAMPOLINE_STEM`] as the SOFT form, but the
+/// `(falling back to body-inlining)` clause is deliberately ABSENT: fallback is
+/// the eval-loop caller's behaviour, not these helpers'. Direct callers of
+/// either function do NOT body-inline, so the clause would be a false promise.
+///
+/// The severity is UNCONDITIONALLY [`Severity::Error`](reify_core::Severity::Error)
+/// — the `registry_empty` predicate that [`soft_no_trampoline_diagnostic`]
+/// applies is deliberately NOT applied here. Per the task-5311 RULING in
+/// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4, on the merits:
+///
+/// 1. `fns.is_empty()` can never be true in production at either HARD site.
+///    `dispatch_compute_node` has ZERO non-test callers workspace-wide, and
+///    `run_compute_dispatch`'s `None` arm is reached in production only via
+///    `insert_shell_extract_upstream`, which sits INSIDE the
+///    `compute_dispatch("solver::elastic_static").is_some()` branch — so the
+///    registry is non-empty by construction there. Applying the predicate would
+///    change exactly zero user-observable behaviour while making the contract
+///    murkier.
+/// 2. `dispatch_compute_node`'s rustdoc PROMISES its `Err` arm carries at least
+///    one `Severity::Error`. An `Err` carrying only a Warning is incoherent,
+///    and would be silently swallowed by `reify build` / `reify eval`'s
+///    `has_error_diagnostic` exit gate — a returned failure that stops gating.
+/// 3. `reify check` — the driver whose loud/silent mismatch task 5311 closes —
+///    can only ever reach the two SOFT sites, traced end to end. Nothing
+///    user-observable is lost by leaving these two unconditional.
+///
+/// Both HARD sites are guarded positively by
+/// `dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty_registry`
+/// and `run_compute_dispatch_unregistered_target_is_error_and_coded_even_on_an_empty_registry`,
+/// which feed an EMPTY registry and assert Error anyway.
+pub(crate) fn hard_no_trampoline_diagnostic(target: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "@optimized target {target:?}: {NO_TRAMPOLINE_STEM}"
+    ))
+    .with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+}
+
 // Task #5079 / PRD compute-fea-hardening.md D1 (Contract C2): the
 // `catch_unwind` crash-safety floor in `Engine::invoke_compute_trampoline`
 // below is a documented no-op under `panic = "abort"` (the process would
@@ -690,14 +732,31 @@ impl crate::Engine {
             }
             // Step 3d: Unregistered target — synthesise a Failed diagnostic.
             //
-            // NOTE: the production caller (`engine_eval.rs`) pre-gates on
+            // NOTE: the value-cell caller (`engine_eval.rs`) pre-gates on
             // registration — it body-inlines the unregistered-target path and
             // emits its own diagnostic (PRD §9 Q1) before ever reaching this
-            // function.  This arm is therefore unreachable from production code
-            // and exists as a defensive fallback for direct test calls and any
-            // future caller that does not pre-gate.  The synthesised diagnostic
-            // text intentionally matches the `dispatch_compute_node` wording so
-            // the two helper surfaces stay consistent.
+            // function.  This arm is NOT, however, unreachable from production
+            // code (a claim this comment made until task 5311, and which was
+            // false): it IS reached on a PARTIALLY-registered engine via
+            // `insert_shell_extract_upstream`, which synthesises a
+            // `shell-extract::extract` dispatch from INSIDE the
+            // `compute_dispatch("solver::elastic_static").is_some()` branch and
+            // therefore does not pre-gate on ITS OWN target.  That is the
+            // task-5578 signature, corroborated by
+            // `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`, whose
+            // constructor doc records the eval sweep hitting
+            // `@optimized target "shell-extract::extract": no registered
+            // compute trampoline` for exactly this reason.
+            //
+            // Note the corollary, which is why the HARD sites do not take the
+            // empty-registry downgrade: every production entry to this arm
+            // comes from inside a branch already gated on a REGISTERED target,
+            // so the registry is non-empty by construction here.
+            //
+            // The diagnostic text matching `dispatch_compute_node`'s wording is
+            // now enforced STRUCTURALLY rather than by convention — both call
+            // `hard_no_trampoline_diagnostic`, which single-sources the message
+            // from `NO_TRAMPOLINE_STEM`.
             //
             // ζ / step-10: restore the prior just like Cancelled / Failed —
             // an unregistered target is morally equivalent to a Failed
@@ -716,10 +775,7 @@ impl crate::Engine {
                     );
                 }
                 Err(DispatchError::Failed(
-                    vec![Diagnostic::error(format!(
-                        "@optimized target {:?}: no registered compute trampoline",
-                        target
-                    ))],
+                    vec![hard_no_trampoline_diagnostic(target)],
                     vec![],
                 ))
             }
@@ -1287,7 +1343,9 @@ mod tests {
         // No register_compute_fn call at all — the registry stays EMPTY.
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
         assert!(
-            engine.compute_dispatch("test::never_registered_eps5311").is_none(),
+            engine
+                .compute_dispatch("test::never_registered_eps5311")
+                .is_none(),
             "precondition: the target must be unregistered",
         );
 
