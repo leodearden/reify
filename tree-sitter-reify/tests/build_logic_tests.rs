@@ -69,7 +69,10 @@ const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
 /// Absolute path to `build_support.rs` — the staleness source shared with
 /// build.rs — derived from [`BUILD_RS`]'s directory.
 ///
-/// DERIVED, not a third `env!("CARGO_MANIFEST_DIR")` const, on purpose:
+/// DERIVED, not a third `env!` const on `CARGO_MANIFEST_DIR`, on purpose:
+/// (spelled apart so the occurrence counter in
+/// `test_self_path_constants_guard_is_not_vacuous`, which scans raw source text
+/// including comments, does not count this sentence as a definition.)
 /// `test_self_path_constants_guard_is_not_vacuous` pins that count at exactly 2
 /// to catch INFLATION, and a third const would force that guard to be weakened.
 /// Deriving still anchors on `CARGO_MANIFEST_DIR` transitively, which is the

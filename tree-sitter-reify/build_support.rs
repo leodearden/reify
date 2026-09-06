@@ -33,6 +33,16 @@ const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json
 #[allow(dead_code)]
 const OUTPUTS_STAMP_NAME: &str = ".generated_outputs.stamp";
 
+/// Filename of the grammar-hash stamp `scripts/tree-sitter-generate.sh` writes:
+/// the bare 64-hex sha256 of `grammar.js`, no trailing newline.
+///
+/// The format is load-bearing for three consumers that assert exactly that
+/// shape (`scripts/test_tree_sitter_generate.sh`, and
+/// `tests/infra/test_verify_semaphore_e2e.sh` twice), so anything writing this
+/// file must emit those bytes and nothing else.
+#[allow(dead_code)]
+const GRAMMAR_STAMP_NAME: &str = ".grammar_hash.stamp";
+
 /// One hashing attempt with one binary.
 ///
 /// Three outcomes, deliberately distinguished — the caller's retry and its
@@ -310,4 +320,74 @@ fn needs_generate(
     // Must regenerate unless the outputs on disk are the ones that were
     // generated. Existence is not evidence.
     !outputs_manifest_matches(&src_dir.join(OUTPUTS_STAMP_NAME), src_dir)
+}
+
+/// Check whether the shell-script stamps in `src_dir` already confirm that the
+/// generated outputs match the current `grammar.js`.
+///
+/// `scripts/tree-sitter-generate.sh` writes `.grammar_hash.stamp` (the sha256 of
+/// grammar.js) and `.generated_outputs.stamp` (a per-file content manifest of
+/// the outputs) every time it regenerates. When `verify.sh` runs the script
+/// first — which it always does — and the script says "up to date", both stamps
+/// reflect the tree on disk. In that case re-running `tree-sitter generate` from
+/// the build script is redundant and, on a loaded host, risks timing out.
+///
+/// Returns `true` (safe to skip generation) only when ALL of:
+///   1. Every expected output file exists.
+///   2. `.grammar_hash.stamp` contains a non-empty hash string.
+///   3. `sha256(grammar.js)` matches that hash exactly.
+///   4. `.generated_outputs.stamp` matches the outputs' bytes ON DISK.
+///
+/// CONDITION 4 REPLACED AN MTIME COMPARISON, and must not be reverted to one
+/// (`#6992`). The old check forced regeneration when an output file was NEWER
+/// than the stamp, on the theory that a newer output meant a partially-written
+/// one. In a warm lane that theory is inert: `scripts/seed-warm-lane.sh`
+/// bulk-stamps every non-`target/` file to 2020-01-01 — measured directly in
+/// lane _lane-26, where every entry under `tree-sitter-reify/src/` reads
+/// `Jan  1  2020` — so all mtimes are EQUAL and `file_mtime > stamp_mtime` can
+/// never be true. Worse, conditions 1-3 say nothing about parser.c's bytes, so
+/// with condition 4 inert the function would happily skip generation for a
+/// parser.c generated from an entirely different grammar. That is exactly the
+/// state both of `#6992`'s measurements found. This is the same conclusion
+/// `write_inputs_stamp` already reached for the archive attestation, written
+/// down in its doc comment: content identity is the point, "newer than" says
+/// nothing useful here.
+///
+/// The grammar hash also routes through `sha256_of` rather than a bare
+/// `sha256sum` subprocess, so a shasum-only host (macOS) cannot make this half
+/// disagree with `scripts/tree-sitter-freshness.sh`'s `compute_sha256` — the
+/// failure mode `#5629` documents.
+///
+/// EVERY failure in this chain returns `false` so the caller regenerates.
+/// There is no arm that concedes in the other direction: `true` is the only
+/// verdict that can link a parser the grammar never produced.
+#[allow(dead_code)]
+fn shell_stamp_is_current(
+    grammar_path: &std::path::Path,
+    output_paths: &[&std::path::Path],
+    src_dir: &std::path::Path,
+) -> bool {
+    // 1. All expected output files must exist.
+    for path in output_paths {
+        if !path.exists() {
+            return false;
+        }
+    }
+    // 2. Shell-script stamp must exist and contain a non-empty hash.
+    let shell_stamp = match std::fs::read_to_string(src_dir.join(GRAMMAR_STAMP_NAME)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let expected_hash = shell_stamp.trim();
+    if expected_hash.is_empty() {
+        return false;
+    }
+    // 3. SHA-256 of grammar.js must match it. Both `Ok(None)` (no hasher on this
+    //    host) and `Err(())` (a hasher that would not hash this file) concede.
+    match sha256_of_path(grammar_path) {
+        Ok(Some(computed)) if computed == expected_hash => {}
+        _ => return false,
+    }
+    // 4. The outputs on disk must be the ones that were generated.
+    outputs_manifest_matches(&src_dir.join(OUTPUTS_STAMP_NAME), src_dir)
 }
