@@ -1,9 +1,6 @@
 //! Corpus-cleanliness guard: zero bare `: Scalar` type annotations and bare
 //! `-> Scalar` return codomains (tasks δ + δ-completion).
 //!
-//! Signal: `: *Scalar([^<a-zA-Z]|$)` (annotation) or `-> Scalar([^<a-zA-Z]|$)`
-//! (codomain), with pure-comment lines and `::Scalar` excluded.
-//!
 //! Walks:
 //!   * `examples/**/*.ri`          — design example files
 //!   * `crates/**/*.ri`            — standalone fixture .ri files
@@ -17,33 +14,30 @@
 //!   * `crates/reify-ast/tests/`
 //!
 //! Excluded from scan (conformance corpus, must-reject fixtures are chartered):
-//!   * `crates/reify-spec-conformance/fixtures/` — Ring-1 language-spec
-//!     conformance fixtures are free to violate any spec clause on purpose,
-//!     including this one.
+//!   * `crates/reify-spec-conformance/fixtures/` — see the exclusion arm below
+//!     and, for the charter and the sentinel arrangement that keeps that arm
+//!     non-vacuous, `crates/reify-spec-conformance/fixtures/README.md`.
+//!
+//! The predicate itself and every carve-out's rationale (`::Scalar` enum paths,
+//! `Scalar<…>`, `Scalars`, pure-comment lines, the `{:#?}` Debug struct-field
+//! opener) live on the items in `bare_scalar_predicate.rs`, which this file and
+//! `crates/reify-spec-conformance/tests/fixture_tree.rs` both include so there
+//! is exactly one copy. `predicate_tests` at the bottom of THIS file are that
+//! predicate's unit tests — they live here because this file is self-excluded
+//! from the scan and so may spell violating examples out literally.
 //!
 //! This test is GREEN (δ migration complete). It becomes compiler-redundant
 //! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
 //! guard.
-//!
-//! Design decisions:
-//!   * `::Scalar` (Rust enum paths `Type::Scalar` / `Value::Scalar`) are
-//!     deliberately excluded — they are not type annotations and are not
-//!     renamed by δ.
-//!   * `Scalar<…>` and `Scalar` followed by a letter (e.g. `Scalars`) are
-//!     not matched — they are either qualified or not the plain keyword.
-//!   * Pure comment lines (trimmed starts with `//`) are skipped — doc-prose
-//!     that quotes `-> Scalar` or `: Scalar` in comments must not be flagged.
-//!   * A Rust `{:#?}` Debug struct-field opener — a whole line of the exact
-//!     shape `<ident>: Scalar {` — is excluded. `#[derive(Debug)]` renders the
-//!     `reify_ir::Value::Scalar` ENUM VARIANT *unqualified*, eliding the
-//!     `Value::` prefix the `::Scalar` rule above keys on, so a snapshot golden
-//!     of a dimensioned IR field reads as `width: Scalar {`. This is the SAME
-//!     carve-out with the same rationale — a Rust enum variant name, never a
-//!     DSL type annotation. The `-> Scalar {` codomain arm is deliberately
-//!     untouched: `field def t : Point3 -> Scalar { … }` is real DSL and stays
-//!     a violation.
 
 use std::path::{Path, PathBuf};
+
+/// The detection predicate, single-sourced. Shared by `#[path]` inclusion and
+/// never by a Cargo dependency edge — see that file's header for why.
+#[path = "bare_scalar_predicate.rs"]
+mod bare_scalar_predicate;
+
+use bare_scalar_predicate::line_has_bare_scalar;
 
 /// Resolve the workspace root from CARGO_MANIFEST_DIR.
 ///
@@ -71,121 +65,6 @@ fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
-}
-
-/// Strip a trailing `//` line comment from `line`, returning the portion before
-/// the first comment marker.  `://` (URL schemes that may appear in string
-/// literals) are preserved — only `//` not immediately preceded by `:` is
-/// treated as a comment start.
-///
-/// Limitation: `/* … */` block comments are **not** stripped.  No such block
-/// comment with a bare-`Scalar` mention exists in the scanned corpus today.
-fn strip_trailing_line_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            // Preserve `://` (URL scheme) inside string literals.
-            if i == 0 || bytes[i - 1] != b':' {
-                return &line[..i];
-            }
-        }
-        i += 1;
-    }
-    line
-}
-
-/// Returns `true` when the `Scalar` occurrence at byte offset `abs` in `line`
-/// is the Rust pretty-`Debug` (`{:#?}`) rendering of the `reify_ir::Value::Scalar`
-/// ENUM VARIANT as a struct field — i.e. the whole line is exactly
-/// `<indent><ident>: Scalar {`.
-///
-/// `#[derive(Debug)]` prints a struct-like variant UNQUALIFIED, so the `Value::`
-/// prefix that [`line_has_bare_scalar`]'s `::Scalar` rule keys on is elided:
-/// a `{:#?}` golden of a LENGTH-dimensioned IR field (task 5743's R7 raw-`Value`
-/// chokepoint) reads as `width: Scalar {`. Those goldens are Rust type names in
-/// a snapshot string, never DSL type annotations, so they are excluded for the
-/// same reason `Value::Scalar` already is.
-///
-/// The shape is matched WHOLE-LINE and narrowly on purpose:
-///   * everything after `Scalar` must be exactly ` {` — Rust pretty-Debug puts
-///     nothing else on a struct-variant opener line;
-///   * everything before the `: ` must be leading whitespace plus one plain
-///     Rust identifier — so DSL forms never match. `param w: Scalar = 10mm`
-///     fails on both counts, and `structure def X : Scalar {` (the only DSL
-///     shape that *is* `: <Type> {`, a structure supertype) fails because
-///     `structure def X` is not a single identifier.
-fn is_rust_debug_scalar_field(line: &str, abs: usize) -> bool {
-    // Tail must be exactly ` {` (trailing whitespace tolerated).
-    if line[abs + 6..].trim_end() != " {" {
-        return false;
-    }
-    // Head must be `<whitespace><ident>: `.
-    let Some(head) = line[..abs].strip_suffix(": ") else {
-        return false;
-    };
-    let ident = head.trim_start_matches([' ', '\t']);
-    !ident.is_empty()
-        && ident.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// Returns `true` when `line` contains a bare `: Scalar` type annotation or a
-/// bare `-> Scalar` return codomain that must be migrated.
-///
-/// Matches:
-///   * `: *Scalar([^<a-zA-Z]|$)` where the introducing `:` is **not**
-///     preceded by another `:` (i.e., `::Scalar` Rust enum paths excluded).
-///   * `-> Scalar([^<a-zA-Z]|$)` — bare return codomain.
-///
-/// Pure comment lines (trimmed starts with `//`) are always skipped, and any
-/// trailing line comment is stripped before scanning — only real source /
-/// inline-DSL string content is examined.
-fn line_has_bare_scalar(line: &str) -> bool {
-    // Skip pure comment lines — doc-prose mentioning `-> Scalar` or `: Scalar`
-    // in comments must not be treated as migration violations.
-    if line.trim_start().starts_with("//") {
-        return false;
-    }
-
-    // Strip any trailing line comment before scanning.  This prevents a
-    // migrated line like `-> Length { } // was -> Scalar` from being falsely
-    // flagged due to the `-> Scalar` mention in the comment.
-    let line = strip_trailing_line_comment(line);
-
-    let mut search_start = 0;
-    while let Some(rel) = line[search_start..].find("Scalar") {
-        let abs = search_start + rel;
-
-        // 1. Check character immediately after "Scalar" — must not be `<` or ASCII letter.
-        let after_ok = match line[abs + 6..].chars().next() {
-            None => true, // end of string / line
-            Some(c) => c != '<' && !c.is_ascii_alphabetic(),
-        };
-
-        // 1b. A Rust `{:#?}` Debug struct-field opener (`width: Scalar {`) is
-        //     the unqualified rendering of the `Value::Scalar` enum variant —
-        //     excluded for the same reason `::Scalar` is (see the helper).
-        if after_ok && !is_rust_debug_scalar_field(line, abs) {
-            // 2. Scan backwards from `abs`, skipping spaces, to find the
-            //    preceding non-space character.  It must be:
-            //    (a) a single `:` NOT preceded by another `:` → bare annotation, OR
-            //    (b) `->` → bare return codomain.
-            let before = &line[..abs];
-            let before_trimmed = before.trim_end_matches(' ');
-            // (a) annotation: ends_with(':') but NOT ends_with("::") → bare colon annotation
-            if before_trimmed.ends_with(':') && !before_trimmed.ends_with("::") {
-                return true;
-            }
-            // (b) codomain: ends_with("->") → bare return type
-            if before_trimmed.ends_with("->") {
-                return true;
-            }
-        }
-
-        search_start = abs + 6;
-    }
-    false
 }
 
 #[test]
@@ -236,28 +115,31 @@ fn corpus_has_zero_bare_scalar() {
     let ast_tests = root.join("crates").join("reify-ast").join("tests");
     files.retain(|p| !p.starts_with(&syntax_tests) && !p.starts_with(&ast_tests));
 
-    // Exclude the Ring-1 language-spec conformance fixture tree — its residents
-    // are CHARTERED must-reject fixtures (PRD `docs/prds/v0_6/spec-conformance-suite.md`
-    // D2, leaf beta #6759).  Deliberately unparseable, deliberately-diagnostic-emitting
-    // and deliberately spec-violating .ri files live there by design, and bare-`Scalar`
-    // rejection is ITSELF a spec clause the conformance suite must be able to test —
-    // so its fixtures have to be free to violate it.  See that tree's own
-    // `fixtures/README.md` for the charter.
+    // MARKER: spec-conformance-fixtures-exclusion-arm
+    //
+    // That token is a deliberate machine-read contract, not decoration:
+    // `corpus_guard_still_registers_this_tree` in
+    // `crates/reify-spec-conformance/tests/fixture_tree.rs` greps THIS FILE for
+    // it, so the spec-conformance crate can tell "the arm is still here" from
+    // "the guard was retired out from under my sentinel". Keep the token
+    // adjacent to the `retain` below; if the arm is ever retired, delete the
+    // token in the SAME change so that test reds loudly instead of passing over
+    // a tree nobody excludes any more. Pinning a token rather than the local
+    // binding or the predicate's name is what makes both sides rename-proof.
+    //
+    // The arm itself: the Ring-1 language-spec conformance fixture tree holds
+    // CHARTERED must-reject fixtures (PRD `docs/prds/v0_6/spec-conformance-suite.md`
+    // D2, leaf beta #6759) — bare-`Scalar` rejection is ITSELF a spec clause the
+    // conformance suite must be free to test with a violating fixture. The
+    // charter, and the sentinel arrangement that keeps this arm from going
+    // vacuous, are in `crates/reify-spec-conformance/fixtures/README.md`; the
+    // sentinel's guard-side half is the test below.
     //
     // Accepted blind spot: the exclusion is directory-level, not file-level.
     // Any future fixture added under that tree is also excluded from the scan.
     // This is intentional and matches the arm above: the invariant the directory
     // enforces — a conformance fixture may violate any spec clause on purpose —
-    // holds for every future resident, not just today's files.  The tree carries a
-    // permanently committed placement probe that IS a live violator of this
-    // predicate, so this arm can never silently go vacuous: delete it, narrow its
-    // path, or move the tree, and this test reds again naming that file.
-    //
-    // That "IS a live violator" claim is not left as prose: the sentinel test
-    // `spec_conformance_placement_probe_is_a_live_violator` below runs THIS
-    // file's own predicate over the probe, so a drive-by migration of the
-    // probe's bare annotation reds here — in the very file whose arm it
-    // silently disarms — with zero drift surface.
+    // holds for every future resident, not just today's files.
     let spec_conformance_fixtures = root
         .join("crates")
         .join("reify-spec-conformance")
@@ -295,18 +177,11 @@ fn corpus_has_zero_bare_scalar() {
 
 // ── Sentinel for the spec-conformance exclusion arm ──────────────────
 
-/// The exclusion arm above claims it "can never silently go vacuous" because a
-/// permanently committed live violator sits under it. This test is what makes
-/// that a checked property rather than a comment.
-///
-/// It runs the REAL predicate — the one two lines of scrolling above — over the
-/// probe, so it carries no drift surface at all: any narrowing of
-/// [`line_has_bare_scalar`] that would stop flagging the probe reds here, in
-/// the same file, in the same change.
-///
-/// `crates/reify-spec-conformance/tests/fixture_tree.rs` keeps a MIRRORED copy
-/// of the same check. That copy is the fast-feedback one (it still fires under
-/// a scope narrowing that never builds `reify-cli`); this one is authoritative.
+/// Guard-side half of the placement-probe sentinel: the exclusion arm above is
+/// non-vacuous only while a live violator sits under it, and this makes that a
+/// checked property rather than a comment. Full rationale (and the other half,
+/// in `crates/reify-spec-conformance/tests/fixture_tree.rs`) lives in
+/// `crates/reify-spec-conformance/fixtures/README.md`.
 ///
 /// If this guard is ever retired as compiler-redundant (see the header: once
 /// γ adds `E_BARE_SCALAR`), retire the probe and both sentinels in the same
@@ -328,7 +203,7 @@ fn spec_conformance_placement_probe_is_a_live_violator() {
 
     assert!(
         content.lines().any(line_has_bare_scalar),
-        "The spec-conformance placement probe {} no longer trips this test's own predicate, \
+        "The spec-conformance placement probe {} no longer trips this guard's predicate, \
          so the `reify-spec-conformance/fixtures` exclusion arm above now excludes nothing \
          detectable: it would stay green even if deleted.\n\n\
          Do NOT \"fix\" the probe — its bare annotation is deliberate. Restore it, or retire \
@@ -339,6 +214,11 @@ fn spec_conformance_placement_probe_is_a_live_violator() {
 }
 
 // ── Unit tests for the detection predicate ─────────────────────────────────
+//
+// These are the ONLY unit tests for `bare_scalar_predicate.rs`; the
+// spec-conformance crate includes the same source and so needs no copy of them.
+// They live in THIS file because it is the one self-excluded from the scan
+// above, so its literals may spell `: Scalar` / `-> Scalar` out in full.
 
 #[cfg(test)]
 mod predicate_tests {

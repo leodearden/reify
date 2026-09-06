@@ -2,21 +2,26 @@
 //! (PRD `docs/prds/v0_6/spec-conformance-suite.md`, D1/D2).
 //!
 //! Integration-test-only crate. At leaf β it carries the fixture tree
-//! (`fixtures/<section>/…`, see `fixtures/README.md`) and its placement test,
-//! and deliberately exports NO public API — the directive/annotation harness
-//! (`//@ key: value`, `//~ ERROR E_*`) and the generated `manifest.json`
-//! arrive with leaf γ (#6761), together with the code that consumes them.
+//! (`fixtures/<section>/…`) and its placement test, and deliberately exports NO
+//! public API — the directive/annotation harness (`//@ key: value`,
+//! `//~ ERROR E_*`) and the generated `manifest.json` arrive with leaf γ
+//! (#6761), together with the code that consumes them.
+//!
+//! **The fixture tree's charter is `fixtures/README.md`** — what may live there,
+//! why must-reject fixtures are chartered residents, and the sentinel
+//! arrangement that keeps its corpus-guard exclusion arm non-vacuous. This
+//! header carries only the two obligations that must travel with the *code*.
 //!
 //! Not to be confused with two false friends already in the tree:
 //!   * `reify-compiler/src/conformance/` — struct-ctor / GD&T field conformance.
 //!   * `reify-kernel-conformance` — the kernel-pair producer×consumer matrix.
 //!
-//! # Carry-forward: the OCCT crate set is a hand-synced pair
+//! # Obligation 1: the OCCT crate set is a hand-synced pair
 //!
 //! At β this crate has empty `[dependencies]` and no `[dev-dependencies]`, so
 //! `cargo tree -p reify-spec-conformance -e normal,dev` reaches no
-//! `reify-kernel-occt` and the crate is NOT occt-touching. The moment it takes
-//! a dependency on `reify-cli`, `reify-eval`, `reify-config`, or
+//! `reify-kernel-occt` and the crate is NOT occt-touching. The moment it takes a
+//! dependency on `reify-cli`, `reify-eval`, `reify-config`, or
 //! `reify-test-support`-via-eval, it becomes occt-touching and BOTH
 //! `scripts/occt-touching-crates.txt` AND the `package(...)` filter literal in
 //! `.config/nextest.toml`'s occt-group override must be updated in that same
@@ -24,25 +29,23 @@
 //! set EQUALS the cargo-metadata-derived set in BOTH directions, so updating
 //! one file only is a merge-gate failure.
 //!
-//! # Carry-forward: `fixtures/_*/` is not a spec section — gamma must skip it
+//! `tests/fixture_tree.rs` reaches a `reify-cli` test source by `#[path]`
+//! inclusion, which is NOT such a dependency: it adds no edge to `cargo
+//! metadata`, so the property above is preserved. Keep it that way — reach for
+//! source inclusion, never a `[dev-dependencies]` entry, when this crate needs
+//! to share logic with a heavier one.
+//!
+//! # Obligation 2: `fixtures/_*/` is not a spec section — γ must skip it
 //!
 //! A leading underscore on a directory directly under `fixtures/` marks it as
-//! **not a spec section**. Today there is exactly one: `fixtures/_placement-probe/`,
-//! whose resident is deliberately unparseable, carries no directive annotations,
-//! and is a deliberate violator of the corpus-cleanliness guard — it is the
-//! sentinel that keeps that guard's registered exclusion arm for this tree from
-//! going vacuous, not a conformance fixture. That is machine-checked from BOTH
-//! sides: `spec_conformance_placement_probe_is_a_live_violator` inside the guard
-//! itself (authoritative — it runs the real predicate), and
-//! `placement_probe_sentinel_still_violates_the_corpus_guard` plus
-//! `corpus_guard_still_registers_this_tree` in `tests/fixture_tree.rs` (the
-//! fast-feedback mirror, which also reds if the guard is retired out from under
-//! the probe).
+//! **not a spec section**. Today there is exactly one, `fixtures/_placement-probe/`,
+//! whose resident is deliberately unparseable and carries no directive
+//! annotations.
 //!
-//! This is an obligation on leaf gamma (#6761): the manifest generator and the
+//! This is an obligation on leaf γ (#6761): the manifest generator and the
 //! directive/annotation harness walk `fixtures/**/*.ri`, so they MUST skip any
-//! `fixtures/_*/` directory rather than ingest its contents. Ingesting the probe
-//! would red on a directive-less, unparseable file, or force an ad-hoc special
-//! case discovered at implementation time. The rule is a naming convention, not
-//! a marker file, precisely so it costs a future wave nothing to add another
-//! non-section resident.
+//! `fixtures/_*/` directory rather than ingest its contents. Ingesting that file
+//! would red on a directive-less, unparseable fixture, or force an ad-hoc
+//! special case discovered at implementation time. The rule is a naming
+//! convention, not a marker file, precisely so it costs a future wave nothing to
+//! add another non-section resident.

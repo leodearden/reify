@@ -4,6 +4,11 @@ The fixture corpus for the language-spec conformance suite
 (PRD `docs/prds/v0_6/spec-conformance-suite.md`, D2). Seeded by leaf β (#6759);
 the corpus itself belongs to leaf η (#6765) and the Phase-3 waves.
 
+**This file is the normative home for this tree's charter and for the sentinel
+arrangement described below.** `src/lib.rs`, `tests/fixture_tree.rs` and the
+exclusion arm in `corpus_no_bare_scalar.rs` carry pointers here plus their own
+local detail only — do not re-explain the mechanism there.
+
 ## Layout
 
     crates/reify-spec-conformance/fixtures/<section>/<name>.ri
@@ -69,35 +74,53 @@ live violator, the exclusion arm in `corpus_no_bare_scalar.rs` can never go
 vacuous: delete the arm, narrow its path, or move this tree, and that guard
 reds immediately naming the probe file. Do not "fix" the probe.
 
-That property is itself machine-checked, not merely asked for here. **Two**
-tests hold it up, in two crates, each covering what the other cannot:
+That property is itself machine-checked, not merely asked for here.
+
+### The predicate is single-sourced, so there is no mirror to drift
+
+`crates/reify-cli/tests/harness_cli/bare_scalar_predicate.rs` holds ONE copy of
+the detection predicate and its two helpers. Both test targets pull it in with
+`#[path]` — **source inclusion, never a Cargo dependency edge**, because a
+`reify-spec-conformance` → `reify-cli` dependency would make this crate
+occt-touching and drag in the hand-synced `scripts/occt-touching-crates.txt` /
+`.config/nextest.toml` pair (see `../src/lib.rs`). Its unit tests
+(`predicate_tests`) live in `corpus_no_bare_scalar.rs`, whose own file is
+self-excluded from the scan and so may spell violating literals out in full.
+
+Two tests then run that one predicate over the probe, in two crates, each
+covering what the other cannot:
 
 * `spec_conformance_placement_probe_is_a_live_violator` — in
-  `corpus_no_bare_scalar.rs` **itself**. It runs the guard's REAL predicate over
-  this file, so it has zero drift surface and is the authoritative check: any
+  `corpus_no_bare_scalar.rs` **itself**, adjacent to the arm it defends. Any
   narrowing of the predicate that would stop flagging the probe reds in the very
   file whose exclusion arm it silently disarms.
 * `placement_probe_sentinel_still_violates_the_corpus_guard` — in
-  `crates/reify-spec-conformance/tests/fixture_tree.rs`. It re-runs a *mirror*
-  of that predicate (the crate has empty `[dependencies]` at β, and depending on
-  `reify-cli` to share the real one would make it occt-touching). This is the
-  fast-feedback copy: it still fires under a `.ri`-only scope narrowing that
-  never builds `reify-cli`. The mirror's own unit cases (`mirror_predicate_tests`)
-  are ported from the guard's discriminating ones, so a mirror that drifts
-  LOOSER than the guard reds rather than keeping this sentinel falsely green.
+  `crates/reify-spec-conformance/tests/fixture_tree.rs`. Its distinct value is
+  reach, not independence: it still fires under a `.ri`-only scope narrowing
+  that never builds `reify-cli`.
 
 Either way, migrating the bare `Scalar` annotation to `Length` — the plausible
 drive-by cleanup this section's prose alone could not stop — reds immediately
-with the reason. Both were run against a probe mutated to `Length`, and both
-went red.
+with the reason.
 
-The mirror is safe in one direction only, so a third test covers the other:
-`corpus_guard_still_registers_this_tree` reds if `corpus_no_bare_scalar.rs`
+### The guard itself must stay registered
+
+A sentinel standing watch over a *retired* guard is exactly the vacuity all of
+this exists to prevent, so a third test —
+`corpus_guard_still_registers_this_tree` — reds if `corpus_no_bare_scalar.rs`
 disappears (its own header anticipates becoming compiler-redundant once γ adds
-`E_BARE_SCALAR`) or loses its `spec_conformance_fixtures` exclusion binding —
-because a sentinel standing watch over a retired guard is exactly the vacuity
-all of this exists to prevent. If that guard IS retired, retire the probe and
-these tests in the same change.
+`E_BARE_SCALAR`) or drops its exclusion arm.
+
+It pins **one token**, carried in a comment beside the arm and documented there
+as a machine-read contract:
+
+    MARKER: spec-conformance-fixtures-exclusion-arm
+
+A token rather than a source identifier, deliberately: grepping another crate's
+private local binding or a function name would red this test on any pure rename
+or file move over there, with a failure message wrongly claiming the arm was
+lost. The token is rename-proof from both sides and both sides know it exists.
+If the arm is retired, delete the token in the same change.
 
 Naming the probe is the one place any tracked `.rs` spells out a resident of
 this tree by basename, and it is allowed precisely because the probe is a
@@ -124,21 +147,24 @@ that consumes them. At β this tree carries fixtures and this charter only.
 A committed, re-runnable observation — not a claim. With
 `_placement-probe/placement_probe.ri` present, unparseable *and* carrying a real
 bare `Scalar` annotation, every walker and gate that could plausibly reach this
-tree was run from a clean worktree. **Every row below was re-measured together
-at the current tree state** (the β amendment that added the second sentinel);
-counts that moved since the first run are noted inline.
+tree was run from a clean worktree, and each one was **green**.
+
+The verdict column records the property that is stable and that actually
+matters. Absolute pass counts are deliberately *not* recorded: every future task
+that adds a test to any of these suites would silently falsify them, and a
+reader re-running the table could not then tell drift from regression.
 
 | Command | Verdict |
 |---|---|
-| `cargo build -p reify-spec-conformance` | Finished dev profile, exit 0 |
-| `cargo test -p reify-spec-conformance --test fixture_tree` | ok. 24 passed; 0 failed *(4 at the first run; the amendment added the seeded-fire and mirror unit cases)* |
-| `cargo test -p reify-cli --test harness_cli corpus_no_bare_scalar::` | ok. 27 passed; 0 failed *(the headline observation; 26 + the guard-side sentinel)* |
-| `cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::` | ok. 11 passed; 0 failed (walks `examples/` only; 9 before this branch was rebased onto a main carrying two more examples — drift in `examples/`, not here) |
-| `cargo test -p reify-test-support --test ignore_reason_hygiene` | ok. 1 passed; 0 failed (repo-wide over `*.rs`; nothing here carries `#[ignore]`) |
-| `bash tests/infra/test_verify_scope.sh` | 283 passed, 0 failed (PG-DRIFT / PG-DRIFT-DIR unaffected; 255 before the same rebase) |
-| `bash tests/infra/test_heavy_filter_atoms.sh` | 23 passed, 0 failed; atom count still exactly 8 |
-| `bash scripts/gui-test.sh --no-typecheck -- src/__tests__/reifyGrammarCorpus.test.ts` | 477 passed (Lezer `CORPUS_ROOTS` is explicit-inclusion) |
-| `cargo metadata --format-version 1 --locked` | exit 0 (the `Cargo.lock` entry is current, so `scripts/affected-crates-lib.sh` does not degrade to "ALL crates affected") |
+| `cargo build -p reify-spec-conformance` | exit 0 |
+| `cargo test -p reify-spec-conformance --test fixture_tree` | exit 0, all green |
+| `cargo test -p reify-cli --test harness_cli corpus_no_bare_scalar::` | exit 0, all green — the headline observation |
+| `cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::` | exit 0 (walks `examples/` only; this tree is invisible to it) |
+| `cargo test -p reify-test-support --test ignore_reason_hygiene` | exit 0 (repo-wide over `*.rs`; nothing here carries `#[ignore]`) |
+| `bash tests/infra/test_verify_scope.sh` | exit 0; PG-DRIFT / PG-DRIFT-DIR unaffected |
+| `bash tests/infra/test_heavy_filter_atoms.sh` | exit 0; atom count still exactly 8 |
+| `bash scripts/gui-test.sh --no-typecheck -- src/__tests__/reifyGrammarCorpus.test.ts` | exit 0 (Lezer `CORPUS_ROOTS` is explicit-inclusion) |
+| `cargo metadata --format-version 1 --locked` | exit 0 — the `Cargo.lock` entry is current, so `scripts/affected-crates-lib.sh` does not degrade to "ALL crates affected" |
 
 The walker set was re-derived from the worktree rather than taken on trust.
 Of the 22 sources in the repo that both recurse a directory and mention `.ri`,
@@ -174,14 +200,14 @@ to be non-vacuous rather than merely believed to be:
 
 | Seeded mutation | Observed |
 |---|---|
-| probe's `Scalar` migrated to `Length` | BOTH sentinels red (guard-side and mirror) |
-| the guard's `spec_conformance_fixtures` exclusion arm deleted | `corpus_guard_still_registers_this_tree` red |
+| probe's `Scalar` migrated to `Length` | BOTH sentinels red (guard-side and crate-local) |
+| the guard's `MARKER:` token deleted | `corpus_guard_still_registers_this_tree` red |
+| the whole exclusion arm (token + `retain`) deleted | `corpus_has_zero_bare_scalar` red naming the probe, AND `corpus_guard_still_registers_this_tree` red |
 | `corpus_no_bare_scalar.rs` deleted outright | `corpus_guard_still_registers_this_tree` red |
-| mirror loosened (Debug carve-out / `::Scalar` / `Scalar<…>` / trailing-comment strip / codomain arm each dropped in turn) | 1–2 `mirror_predicate_tests` cases red per mutation |
+| `bare_scalar_predicate.rs` predicate loosened (Debug carve-out / `::Scalar` / `Scalar<…>` / trailing-comment strip / codomain arm each dropped in turn) | `predicate_tests` cases red — once, for both consumers, because there is one copy |
 | `loose_ri_at_root` `is_dir` inverted, or its extension typo'd to `rs` | `loose_ri_at_root_fires_on_a_seeded_violator` red |
 | `collect_ri` made non-recursive | its self-test and `fixture_tree_is_not_vacuous` red |
 
-One mutation is recorded because it did NOT fire: dropping the mirror's
+One mutation is recorded because it did NOT fire: dropping the predicate's
 pure-comment early return changes nothing, since `strip_trailing_line_comment`
-already strips a leading `//`. The same redundancy exists in the guard itself —
-worth knowing before anyone "covers" it.
+already strips a leading `//`. Worth knowing before anyone "covers" it.
