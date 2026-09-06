@@ -7,7 +7,7 @@
 //!   step-7/8: unregistered target fallback diagnostic
 //!   step-9/10: public seam API-surface pin
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::{
     CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
     RealizedContent,
@@ -298,11 +298,37 @@ fn e2e_optimized_fn_lowers_to_compute_node_and_evaluates() {
 
 // ── step-7: RED — unregistered @optimized target fallback diagnostic ──────────
 // PRD §7.2: when the engine encounters an @optimized fn call whose target is not
-// registered, it must emit an Error diagnostic naming the target, then fall back
-// to body-inlining so the cell still evaluates correctly (no ComputeNode inserted).
+// registered, it must emit a diagnostic naming the target, then fall back to
+// body-inlining so the cell still evaluates correctly (no ComputeNode inserted).
+// Task 5311 conditioned that diagnostic's SEVERITY at this SOFT site on whether
+// the engine's compute registry is entirely empty (Warning) or not (Error); the
+// pair of tests below covers both arms. The diagnostic's identity is carried by
+// `DiagnosticCode::NoRegisteredComputeTrampoline`, which is the same in both.
 
-/// Test: @optimized fn with unregistered target emits an Error diagnostic naming
-/// the target, body-inlines (cell value == input), and inserts no ComputeNode.
+/// Test: @optimized fn with unregistered target emits a diagnostic naming the
+/// target, body-inlines (cell value == input), and inserts no ComputeNode.
+///
+/// SUPERSEDED at task 5311 on the SEVERITY assertion only — the four
+/// behavioural assertions below are unchanged. This test builds
+/// `make_simple_engine()`, whose compute registry is entirely EMPTY, and evals
+/// through the SOFT emission site
+/// (`engine_eval.rs::evaluate_params_and_lets_unified`). Per the 2026-09-01
+/// RULING in `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4, that site
+/// now conditions severity on `compute_registry.fns.is_empty()`: an empty
+/// registry means "this driver registered no trampolines at all", which is a
+/// posture, not a defect, so the diagnostic is a `Severity::Warning`.
+///
+/// The old `Severity::Error` assertion pinned CURRENT BEHAVIOUR, not a
+/// contract: the row it cited — `docs/prds/v0_3/compute-node-contract.md`:189 —
+/// asks for a NAMED diagnostic and `Freshness::Failed`, and says NOTHING about
+/// severity. What IS contractual is the CAUSE, so this test now also asserts
+/// `DiagnosticCode::NoRegisteredComputeTrampoline`, which is PRESERVED across
+/// the severity flip precisely so downstream tooling can match the cause
+/// independently of severity.
+///
+/// `e2e_unregistered_optimized_target_on_a_nonempty_registry_stays_an_error`
+/// below is this test's mandatory twin: without it, relaxing the severity here
+/// would be a silent weakening rather than a supersession.
 #[test]
 fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
     // Use compute_identity.ri but register NO trampoline for "test::identity".
@@ -310,29 +336,56 @@ fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
     let compiled = parse_and_compile_with_stdlib(source);
 
     let mut engine = make_simple_engine();
-    // Deliberately no register_compute_fn — "test::identity" is unregistered.
+    // Deliberately no register_compute_fn — "test::identity" is unregistered,
+    // AND the registry is entirely empty, which is what selects Warning.
     let eval_result = engine.eval(&compiled);
 
-    // (a) Must emit at least one Error diagnostic naming the unknown target.
-    let error_diags: Vec<_> = eval_result
+    // (a) Must emit at least one Warning diagnostic naming the unknown target.
+    let warning_diags: Vec<_> = eval_result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
     assert!(
-        !error_diags.is_empty(),
-        "expected Error diagnostic for unregistered @optimized target, \
-         got diagnostics: {:?}",
+        !warning_diags.is_empty(),
+        "expected Warning diagnostic for unregistered @optimized target on an \
+         empty compute registry, got diagnostics: {:?}",
         eval_result.diagnostics
     );
-    let target_named = error_diags
+    let target_named = warning_diags
         .iter()
         .any(|d| d.message.contains("test::identity"));
     assert!(
         target_named,
-        "expected at least one Error diagnostic to name \"test::identity\", \
+        "expected at least one Warning diagnostic to name \"test::identity\", \
          got: {:?}",
-        error_diags
+        warning_diags
+    );
+
+    // (a2) The CAUSE is carried by the code, which survives the severity flip.
+    let coded = warning_diags
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NoRegisteredComputeTrampoline));
+    assert!(
+        coded,
+        "expected the fallback diagnostic to carry \
+         DiagnosticCode::NoRegisteredComputeTrampoline — downstream tooling \
+         matches the code, not the severity or the prose, got: {:?}",
+        warning_diags
+    );
+
+    // (a3) NEGATIVE: no Error-severity diagnostic naming the target may remain.
+    // A `contains`-style assertion alone would pass if BOTH were emitted.
+    let stray_error = eval_result
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Error && d.message.contains("test::identity"));
+    assert!(
+        stray_error.is_none(),
+        "an empty compute registry must produce ONLY the Warning form; a \
+         surviving Error naming \"test::identity\" is the loud/silent mismatch \
+         task 5311 closes, got: {:?}",
+        stray_error
     );
 
     // (b) Body inlines: cell value still equals the input (42).
@@ -349,6 +402,99 @@ fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
     );
 
     // (c) No ComputeNode inserted for the unregistered target.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let rogue_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, data)| data.target == "test::identity");
+    assert!(
+        rogue_node.is_none(),
+        "expected no ComputeNode for unregistered target, found: {:?}",
+        rogue_node.map(|(id, _)| id)
+    );
+}
+
+/// Task 5311 — the MANDATORY TWIN of
+/// `e2e_unregistered_optimized_target_emits_diagnostic_and_inlines` above.
+///
+/// Same fixture, same four behavioural assertions, one difference: an unrelated
+/// trampoline is registered FIRST, so `compute_registry.fns.is_empty()` is
+/// false while `"test::identity"` itself stays unregistered. That is exactly
+/// the `reify eval` / `reify build` posture — both call
+/// `register_compute_trampolines`, whose production bundle registers 19
+/// targets — and it must keep producing `Severity::Error`, because a driver
+/// that registered SOME trampolines and is still missing THIS one is a genuine
+/// defect rather than a declared posture.
+///
+/// Without this test, the severity relaxation in the sibling above would be
+/// indistinguishable from an unconditional downgrade, and review must reject it
+/// as a silent weakening. The `DiagnosticCode` assertion is identical in both,
+/// which is the point: the code identifies the cause; the severity reports how
+/// much the caller's posture makes it matter.
+#[test]
+fn e2e_unregistered_optimized_target_on_a_nonempty_registry_stays_an_error() {
+    let source = compute_identity_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    // A target that exists nowhere else in the workspace: `register_compute_fn`
+    // panics on a duplicate target, so a fresh name is required here.
+    engine.register_compute_fn("test::registry_nonempty_probe", identity_fn as ComputeFn);
+    // "test::identity" remains UNregistered — only the registry's emptiness changed.
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Error, not Warning, because the registry is non-empty.
+    let error_diags: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "a non-empty compute registry missing THIS target is a defect, not a \
+         posture, so the diagnostic must stay Severity::Error, got: {:?}",
+        eval_result.diagnostics
+    );
+    let target_named = error_diags
+        .iter()
+        .any(|d| d.message.contains("test::identity"));
+    assert!(
+        target_named,
+        "expected at least one Error diagnostic to name \"test::identity\", \
+         got: {:?}",
+        error_diags
+    );
+
+    // (a2) Same code as the Warning form — the cause is severity-independent.
+    let coded = error_diags
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NoRegisteredComputeTrampoline));
+    assert!(
+        coded,
+        "expected DiagnosticCode::NoRegisteredComputeTrampoline on the Error \
+         form too, got: {:?}",
+        error_diags
+    );
+
+    // (b) Body still inlines — severity does not change the fallback behaviour.
+    let result_cell = ValueCellId::new("IdentityFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell IdentityFixture.result not found in eval result"));
+    assert_eq!(
+        *result_val,
+        Value::Int(42),
+        "expected IdentityFixture.result == Int(42) (inline fallback), got {:?}",
+        result_val
+    );
+
+    // (c) Still no ComputeNode inserted for the unregistered target.
     let snapshot = engine
         .eval_state()
         .expect("eval_state must be Some after eval()")
