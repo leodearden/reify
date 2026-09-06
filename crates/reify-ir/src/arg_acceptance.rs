@@ -992,7 +992,7 @@ mod tests {
         };
         assert!(
             matches!(
-                accept_arg(&Value::Real(1.5708), &angle_spec),
+                accept_arg(&Value::Real(std::f64::consts::FRAC_PI_2), &angle_spec),
                 Acceptance::Rejected(_)
             ),
             "bare Real at the inline ANGLE spec must stay Rejected — this is \
