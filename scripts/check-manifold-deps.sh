@@ -409,7 +409,9 @@ dep_searched_desc() {
 # env, a different error format, an extra diagnostic — then has to be applied
 # twice and can silently be applied once, which is the drift class the leaf
 # primitives above (dep_find_dir / dep_soname_ver / dep_searched_desc) already
-# exist to prevent one level down.
+# exist to prevent one level down. The DIAGNOSTICS this body invokes are shared
+# for the same reason and by the same rule — see dep_hint() below, of which each
+# dep's `<dep>_hint` is now a data-only wrapper.
 #
 # WHAT IT DOES NOT COVER, deliberately: the OCCT arm stays written out inline
 # below. Its SONAME pin is FATAL and sits BETWEEN resolution and the `ok` line
@@ -432,14 +434,49 @@ dep_presence_arm() {
 
     local inc_env="${prefix}_INCLUDE_DIR" lib_env="${prefix}_LIB_DIR"
     local inc_sent_ref="${prefix}_INCLUDE_SENTINEL" lib_sent_ref="${prefix}_LIB_SENTINEL"
-    local inc_cands_ref="${prefix}_INCLUDE_CANDIDATES[@]" lib_cands_ref="${prefix}_LIB_CANDIDATES[@]"
+    local inc_cands_name="${prefix}_INCLUDE_CANDIDATES" lib_cands_name="${prefix}_LIB_CANDIDATES"
+    local inc_cands_ref="${inc_cands_name}[@]" lib_cands_ref="${lib_cands_name}[@]"
 
     # `:-` on the override reads, same EMPTY-OVERRIDE RULE dep_find_dir
     # documents: an exported-but-empty var counts as UNSET and falls through to
     # the candidate list, matching find_dir_with_override's
     # `.filter(|d| !d.is_empty())`.
+    #
+    # `:-` on the SENTINEL reads too, for a different reason: this script runs
+    # under `set -u`, so a bare `${!lib_sent_ref}` for a dep whose marker block
+    # declares its names slightly differently — or a typo in the
+    # `dep_presence_arm <PREFIX>` argument — aborts the WHOLE preflight with a
+    # bare `check-manifold-deps.sh: line NNN: FOO_LIB_SENTINEL: unbound
+    # variable`. That is precisely the cryptic-failure mode this file exists to
+    # convert into an actionable message, so it must not be this file's own
+    # failure mode. The explicit check below turns it into one.
     local inc_ov="${!inc_env:-}" lib_ov="${!lib_env:-}"
-    local inc_sent="${!inc_sent_ref}" lib_sent="${!lib_sent_ref}"
+    local inc_sent="${!inc_sent_ref:-}" lib_sent="${!lib_sent_ref:-}"
+
+    # The candidate lists are probed with `declare -p` rather than a `${!ref:-}`
+    # read: indirect expansion of an UNDECLARED `FOO[@]` under `:-` yields ONE
+    # EMPTY element rather than none, which would silently hand dep_find_dir a
+    # bogus "" candidate instead of failing. `declare -p` is also correct for a
+    # declared-but-empty array, which a `${!name+x}` probe would misreport.
+    local undeclared=""
+    [ -n "$inc_sent" ] || undeclared="$undeclared $inc_sent_ref"
+    [ -n "$lib_sent" ] || undeclared="$undeclared $lib_sent_ref"
+    declare -p "$inc_cands_name" >/dev/null 2>&1 || undeclared="$undeclared $inc_cands_name"
+    declare -p "$lib_cands_name" >/dev/null 2>&1 || undeclared="$undeclared $lib_cands_name"
+
+    if [ -n "$undeclared" ]; then
+        err "manifold-deps guard: internal error — dep_presence_arm $prefix cannot run;"
+        err "                     these names are not declared:$undeclared"
+        err "                     The '# BEGIN $lower-candidates' block must declare"
+        err "                     ${prefix}_{LIB,INCLUDE}_SENTINEL and"
+        err "                     ${prefix}_{LIB,INCLUDE}_CANDIDATES, and the prefix passed"
+        err "                     to dep_presence_arm must be the same token those names"
+        err "                     use. This is a bug in scripts/check-manifold-deps.sh"
+        err "                     itself, NOT a missing install — do not try to fix it by"
+        err "                     installing anything or setting ${prefix}_LIB_DIR."
+        exit 1
+    fi
+
     local -a inc_cands=("${!inc_cands_ref}") lib_cands=("${!lib_cands_ref}")
 
     # `|| true` inside the substitution: a non-resolving arm must reach the
@@ -484,6 +521,55 @@ dep_presence_arm() {
     local ver
     ver="$(dep_soname_ver "$lib_resolved" "$lib_sent")"
     ok "$label ${ver:-unknown} at $lib_resolved (headers: $inc_resolved)"
+}
+
+# dep_hint <PREFIX> <conda-ver> <apt-ver> <subject> <surfaces-line>... — the
+# complete diagnostic block a presence-only arm prints just before it exits:
+# how to install the dep, then WHY its absence is fatal rather than a warning.
+#
+# WHY THIS IS ONE FUNCTION AND NOT FOUR: gmsh_install_hint/openvdb_install_hint
+# and gmsh_hint/openvdb_hint were four near-verbatim bodies (~28 lines) whose
+# only differences were the dep name, two version numbers, which gated surfaces
+# disappear, and the trailing noun. That is the same drift class
+# dep_presence_arm's own banner argues against one level down — a change to the
+# install instructions (a new setup-dev.sh entry point, a bypass env var) had to
+# be applied twice and could silently be applied once. The executable body was
+# deduplicated while the diagnostics it invokes were left as copies; this closes
+# that gap. The per-dep wrappers below now carry DATA ONLY.
+#
+# NOT SHARED WITH OCCT, deliberately: occt_hint/occt_install_hint stay written
+# out inline. OCCT is called from three different failure paths (both halves
+# unresolved, undeterminable SONAME, SONAME drift) with genuinely different
+# prose per path, and it is an apt-provisioned system dep rather than a
+# conda-forge one — so it shares no sentence with these two.
+#
+# <PREFIX> is UPPERCASE, the same token the marker block and the override env
+# vars use; the lowercase dep name, the crate name and the cfg name are all
+# DERIVED from it rather than passed, so they can never disagree with the arm
+# that printed them.
+#
+# The surfaces clause is taken as TRAILING VARARGS, one per output line, so each
+# dep keeps its own hand-wrapping instead of rendering as a single over-long
+# line that a terminal re-wraps arbitrarily.
+dep_hint() {
+    local prefix="$1" conda_ver="$2" apt_ver="$3" subject="$4"
+    shift 4
+    local lower="${prefix,,}"
+    local line
+
+    err "Provision the conda-forge reify-deps env — scripts/setup-dev.sh's"
+    err "'conda-forge env: gmsh + openvdb' block does exactly this, installing"
+    err "$lower $conda_ver into /opt/reify-deps (apt's $lower is stale at $apt_ver):"
+    err "    ./scripts/setup-dev.sh"
+    err "Or point ${prefix}_INCLUDE_DIR / ${prefix}_LIB_DIR at an existing install."
+    err "WHY THIS IS FATAL rather than a warning: without $lower,"
+    err " reify-kernel-$lower's build.rs never emits has_$lower, so every"
+    err " #[cfg(has_$lower)]-gated item in the workspace is not compiled AT ALL —"
+    for line in "$@"; do
+        err " $line"
+    done
+    err " The suite then reports zero tests REPORTED, not zero tests FAILED, and the"
+    err " gate goes green over $subject nothing exercised."
 }
 
 OCCT_INCLUDE_OVERRIDE="${OCCT_INCLUDE_DIR:-}"
@@ -598,22 +684,11 @@ GMSH_LIB_SENTINEL=libgmsh.so
 GMSH_INCLUDE_SENTINEL=gmshc.h
 # END gmsh-candidates
 
-gmsh_install_hint() {
-    err "Provision the conda-forge reify-deps env — scripts/setup-dev.sh's"
-    err "'conda-forge env: gmsh + openvdb' block does exactly this, installing"
-    err "gmsh 4.15.2 into /opt/reify-deps (apt's gmsh is stale at 4.12.1):"
-    err "    ./scripts/setup-dev.sh"
-    err "Or point GMSH_INCLUDE_DIR / GMSH_LIB_DIR at an existing install."
-}
-
+# Data only — the body is dep_hint() above, shared with openvdb_hint below.
 gmsh_hint() {
-    gmsh_install_hint
-    err "WHY THIS IS FATAL rather than a warning: without gmsh, reify-kernel-gmsh's"
-    err " build.rs never emits has_gmsh, so every #[cfg(has_gmsh)]-gated item in the"
-    err " workspace is not compiled AT ALL — reify-kernel-gmsh's whole test surface,"
-    err " the occt_gmsh conformance suites, and the reify-eval FEA/mesh e2e binaries."
-    err " The suite then reports zero tests REPORTED, not zero tests FAILED, and the"
-    err " gate goes green over a mesher nothing exercised."
+    dep_hint GMSH 4.15.2 4.12.1 "a mesher" \
+        "reify-kernel-gmsh's whole test surface, the occt_gmsh conformance suites," \
+        "and the reify-eval FEA/mesh e2e binaries."
 }
 
 # The whole arm body — override read, both resolutions, report-both-halves,
@@ -656,22 +731,11 @@ OPENVDB_LIB_SENTINEL=libopenvdb.so
 OPENVDB_INCLUDE_SENTINEL=openvdb/openvdb.h
 # END openvdb-candidates
 
-openvdb_install_hint() {
-    err "Provision the conda-forge reify-deps env — scripts/setup-dev.sh's"
-    err "'conda-forge env: gmsh + openvdb' block does exactly this, installing"
-    err "openvdb 13.0.0 into /opt/reify-deps (apt's openvdb is stale at 10.0.1):"
-    err "    ./scripts/setup-dev.sh"
-    err "Or point OPENVDB_INCLUDE_DIR / OPENVDB_LIB_DIR at an existing install."
-}
-
+# Data only — same shared dep_hint() body as gmsh_hint above, so a change to the
+# install instructions or the fatality rationale lands in both by construction.
 openvdb_hint() {
-    openvdb_install_hint
-    err "WHY THIS IS FATAL rather than a warning: without openvdb,"
-    err " reify-kernel-openvdb's build.rs never emits has_openvdb, so every"
-    err " #[cfg(has_openvdb)]-gated item in the workspace is not compiled AT ALL —"
-    err " the crate's whole sparse-SDF/voxel-grid test surface included. The suite"
-    err " then reports zero tests REPORTED, not zero tests FAILED, and the gate goes"
-    err " green over a voxel kernel nothing exercised."
+    dep_hint OPENVDB 13.0.0 10.0.1 "a voxel kernel" \
+        "the crate's whole sparse-SDF/voxel-grid test surface included."
 }
 
 # Same one-call arm as Gmsh's above, one dep over — the body is shared, so a
