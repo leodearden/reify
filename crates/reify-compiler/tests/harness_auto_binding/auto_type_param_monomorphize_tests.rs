@@ -1302,3 +1302,181 @@ fn mixed_explicit_and_auto_type_args_evaluate_without_typeparam_leak() {
         );
     }
 }
+
+/// Residual un-seedable skip path (#6854): the seeding loop requires a
+/// concrete `Type::StructureRef` at the explicit position, but a use-site
+/// nested inside another generic can supply an ENCLOSING generic's own
+/// `Type::TypeParam` instead. In
+/// `structure def Outer<X: Seal> { sub w = Widget<X, auto: Gasket>() }`, `X`
+/// is `Outer`'s own declared type parameter, not a concrete structure — so
+/// `sub.type_args[0]` is `Type::TypeParam("X")`, which the seeding loop's
+/// `if let Some(Type::StructureRef(name)) = ...` pattern does not match.
+/// `T` is therefore never added to `sigma`, coverage stays partial, and
+/// synthesis is (still, correctly) skipped — but that skip is currently
+/// SILENT: zero diagnostics, and `check_source_with_stdlib` panics at
+/// hydration once something instantiates `Outer` concretely.
+///
+/// This is a PRE-EXISTING gap on main, not a #6854 regression: nothing
+/// monomorphizes `Outer` itself (`Top`'s use-site `Outer<SealA>()` carries no
+/// `auto:` clause, so it never enters this phase at all), so the original
+/// `!sigma.is_empty()` guard panics on this source too. Closing it properly
+/// means general monomorphization of explicitly-instantiated generics, which
+/// is out of scope here — this test's contract is narrower: make the
+/// compiler LOUD rather than silent about the gap.
+///
+/// RED after step-6: this source compiles with zero Error diagnostics today.
+/// GREEN once step-8 adds the residual-skip diagnostic.
+#[test]
+fn unseedable_explicit_type_arg_emits_diagnostic_rather_than_silent_leak() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def Outer<X: Seal> { sub w = Widget<X, auto: Gasket>() }
+        structure def Top { sub o = Outer<SealA>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) Exactly one Error diagnostic, naming the unbound type parameter
+    // ('T'), the target ('Widget'), and the owner sub-component ('w') —
+    // enough for a user to locate the use-site. Substring checks are
+    // quote-delimited so they cannot false-positive on stray letters
+    // elsewhere in the prose (e.g. the word "would").
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error diagnostic for the un-seedable explicit \
+         type-arg, got: {:?}",
+        compiled.diagnostics
+    );
+    let message = &errors[0].message;
+    assert!(
+        message.contains("\"T\""),
+        "diagnostic message must name the unbound type parameter 'T', got: {message:?}"
+    );
+    assert!(
+        message.contains("'Widget'"),
+        "diagnostic message must name the target 'Widget', got: {message:?}"
+    );
+    assert!(
+        message.contains("'w'"),
+        "diagnostic message must name the owner sub-component 'w', got: {message:?}"
+    );
+
+    // (2) No monomorph template is synthesized — partial coverage still
+    // skips synthesis; this step changes only whether the skip is reported.
+    assert!(
+        !compiled
+            .templates
+            .iter()
+            .any(|t| t.name.starts_with("Widget$")),
+        "un-seedable partial coverage must NOT synthesize a 'Widget$...' \
+         monomorph; got templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (3) Outer's sub 'w' still references the generic 'Widget' template.
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("expected 'Outer' template");
+    let sub_w = outer
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'Outer'");
+    assert_eq!(
+        sub_w.structure_name, "Widget",
+        "sub 'w' must still reference the generic 'Widget' template, got: {:?}",
+        sub_w.structure_name
+    );
+}
+
+/// Companion assertion pinning the diagnostic-gate design (reviewer detail
+/// (b)): the residual-skip diagnostic must NOT double-report on shapes A/B
+/// (step-1), which already carry the resolver's own
+/// `AutoTypeParamNoCandidate` / `AutoTypeParamAmbiguous` error. The gate is
+/// `params.iter().all(|p| sigma.contains_key(&p.name))` — "the resolver
+/// bound everything it was asked to bind" — which shapes A/B fail (their
+/// sole `auto:`-clause param was never bound), so they must never reach the
+/// new diagnostic. A `diagnostics.len()`-based gate (snapshot before the
+/// resolver call, scan the tail for new errors) would be fragile to the
+/// severity the resolver assigns each halt reason; this assertion is what
+/// would catch that fragility slipping through.
+#[test]
+fn shape_a_and_shape_b_partial_resolution_emit_no_additional_diagnostic() {
+    let depth_bound_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+    let depth_cfg = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 1\n")
+        .expect("valid manifest")
+        .auto_type_params()
+        .clone();
+    let depth_parsed =
+        reify_compiler::parse_with_stdlib(depth_bound_source, ModulePath::single("test"));
+    let depth_compiled = reify_compiler::compile_with_stdlib_with_config(&depth_parsed, &depth_cfg);
+    let depth_errors: Vec<_> = depth_compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !depth_errors.is_empty()
+            && depth_errors
+                .iter()
+                .all(|d| d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+        "shape A (depth-bound) must emit only its own AutoTypeParamNoCandidate \
+         error(s) and no additional residual-skip diagnostic, got: {:?}",
+        depth_errors
+    );
+
+    let cross_product_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def GasketB : Gasket { param g : Real = 1.5 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+    let cross_product_cfg =
+        Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 1\n")
+            .expect("valid manifest")
+            .auto_type_params()
+            .clone();
+    let cross_product_parsed =
+        reify_compiler::parse_with_stdlib(cross_product_source, ModulePath::single("test"));
+    let cross_product_compiled =
+        reify_compiler::compile_with_stdlib_with_config(&cross_product_parsed, &cross_product_cfg);
+    let cross_product_errors: Vec<_> = cross_product_compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !cross_product_errors.is_empty()
+            && cross_product_errors
+                .iter()
+                .all(|d| d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous)),
+        "shape B (cross-product cap) must emit only its own AutoTypeParamAmbiguous \
+         error(s) and no additional residual-skip diagnostic, got: {:?}",
+        cross_product_errors
+    );
+}
