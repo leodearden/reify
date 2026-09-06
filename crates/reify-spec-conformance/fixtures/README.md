@@ -147,7 +147,10 @@ that consumes them. At β this tree carries fixtures and this charter only.
 A committed, re-runnable observation — not a claim. With
 `_placement-probe/placement_probe.ri` present, unparseable *and* carrying a real
 bare `Scalar` annotation, every walker and gate that could plausibly reach this
-tree was run from a clean worktree, and each one was **green**.
+tree was run from a clean worktree, and each one was **green**. The last four
+rows are not walkers: they are the gates that the single-sourced predicate's
+cross-crate `#[path]` include could plausibly disturb, and are recorded here for
+the same reason.
 
 The verdict column records the property that is stable and that actually
 matters. Absolute pass counts are deliberately *not* recorded: every future task
@@ -165,6 +168,10 @@ reader re-running the table could not then tell drift from regression.
 | `bash tests/infra/test_heavy_filter_atoms.sh` | exit 0; atom count still exactly 8 |
 | `bash scripts/gui-test.sh --no-typecheck -- src/__tests__/reifyGrammarCorpus.test.ts` | exit 0 (Lezer `CORPUS_ROOTS` is explicit-inclusion) |
 | `cargo metadata --format-version 1 --locked` | exit 0 — the `Cargo.lock` entry is current, so `scripts/affected-crates-lib.sh` does not degrade to "ALL crates affected" |
+| `cargo tree -p reify-spec-conformance -e normal,dev` | prints the crate alone, zero dependency edges — the `#[path]` predicate include adds none, so this crate stays off the occt-touching set |
+| `bash tests/infra/test_occt_gated_scope.sh` | exit 0; Test 3's bidirectional declared-set-equals-derived-set assertion still holds |
+| `bash tests/infra/test_harness_kloc_cap.sh` | exit 0; `bare_scalar_predicate.rs` is a DECLARED member of `harness_cli` (82 declared == 82 files on disk), not an undeclared one |
+| `bash tests/infra/test_harness_baseline_registration_gate.sh` | exit 0 |
 
 The walker set was re-derived from the worktree rather than taken on trust.
 Of the 22 sources in the repo that both recurse a directory and mention `.ri`,
@@ -195,18 +202,20 @@ change to this tree's location or to that arm.
 ### The RED half, seeded and observed
 
 A green table only shows the exclusion working; these are the mutations that
-were seeded, observed RED, and reverted — so the arm and its sentinels are known
-to be non-vacuous rather than merely believed to be:
+were seeded one at a time, observed RED, and reverted — so the arm and its
+sentinels are known to be non-vacuous rather than merely believed to be. Each
+row was re-observed first-hand against the single-sourced predicate and the
+marker-token pin; the working tree was verified clean after every revert.
 
 | Seeded mutation | Observed |
 |---|---|
-| probe's `Scalar` migrated to `Length` | BOTH sentinels red (guard-side and crate-local) |
-| the guard's `MARKER:` token deleted | `corpus_guard_still_registers_this_tree` red |
-| the whole exclusion arm (token + `retain`) deleted | `corpus_has_zero_bare_scalar` red naming the probe, AND `corpus_guard_still_registers_this_tree` red |
-| `corpus_no_bare_scalar.rs` deleted outright | `corpus_guard_still_registers_this_tree` red |
-| `bare_scalar_predicate.rs` predicate loosened (Debug carve-out / `::Scalar` / `Scalar<…>` / trailing-comment strip / codomain arm each dropped in turn) | `predicate_tests` cases red — once, for both consumers, because there is one copy |
-| `loose_ri_at_root` `is_dir` inverted, or its extension typo'd to `rs` | `loose_ri_at_root_fires_on_a_seeded_violator` red |
-| `collect_ri` made non-recursive | its self-test and `fixture_tree_is_not_vacuous` red |
+| probe's `Scalar` migrated to `Length` | BOTH sentinels red — `placement_probe_sentinel_still_violates_the_corpus_guard` (crate-local) and `spec_conformance_placement_probe_is_a_live_violator` (guard-side) |
+| the guard's `MARKER:` token line deleted, arm otherwise intact | `corpus_guard_still_registers_this_tree` red |
+| the whole exclusion arm deleted (token + `retain`, 30 lines) | `corpus_has_zero_bare_scalar` red with exactly one violation, `…/_placement-probe/placement_probe.ri:14`; AND `corpus_guard_still_registers_this_tree` red |
+| `corpus_no_bare_scalar.rs` moved away outright | `corpus_guard_still_registers_this_tree` red |
+| `bare_scalar_predicate.rs` loosened — Debug carve-out dropped | `predicate_tests::excludes_rust_debug_scalar_struct_field{,_underscore_ident}` red, AND `corpus_has_zero_bare_scalar` red on the real `{:#?}` goldens in the corpus. There is one copy of the predicate, so one set of unit tests covers what both consumers run |
+| `loose_ri_at_root` `is_dir` inverted | `loose_ri_at_root_fires_on_a_seeded_violator` red |
+| `collect_ri` made non-recursive | `collect_ri_recurses_and_filters_by_extension` AND `fixture_tree_is_not_vacuous` red |
 
 One mutation is recorded because it did NOT fire: dropping the predicate's
 pure-comment early return changes nothing, since `strip_trailing_line_comment`
