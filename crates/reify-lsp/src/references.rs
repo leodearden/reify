@@ -4473,35 +4473,57 @@ structure Assembly {
             );
         }
 
-        // And pin the references INCOMPLETENESS explicitly rather than leaving it
-        // latent: with a type-alias declaration plus a type-POSITION use, the
-        // cross-file reference set must not claim to cover that use.
+        // And pin the COUPLING between the two halves, in the direction that
+        // lets the gap be CLOSED: rename may be granted for a kind whose uses
+        // live in type position only once the use-site collectors actually
+        // report those uses.
+        //
+        // Deliberately NOT the earlier form of this assertion, which pinned the
+        // reference-set INCOMPLETENESS ("the type-position use must not be
+        // reported"). That is a deficiency, not a contract: it would red the
+        // moment someone taught `collect_uses`/`collect_idents_in_expr` to walk
+        // type expressions, reading as a rule forbidding the improvement. As
+        // written here, teaching them to walk type expressions keeps this green
+        // (and so does admitting the kind to the rename oracle ONCE they do),
+        // while admitting the kind WITHOUT teaching them — the exact hazard this
+        // guard exists to catch — reds it.
+        //
+        // Today both halves are false (rename refused, use not reported, as the
+        // table above pins), so the implication holds vacuously; both sides are
+        // still evaluated on every run so neither call can rot silently.
         let alias_src = "type Pressure = Force\nstructure S {\n    param p : Pressure = 1.0\n}";
         let parsed_alias = reify_syntax::parse(alias_src, ModulePath::single("guard_alias"));
         let alias_uri = Url::parse("file:///proj/guard_alias.ri").unwrap();
         let occ = occurrences(alias_src, "Pressure");
         assert_eq!(occ.len(), 2, "fixture: declaration + one type-position use");
-        let refs = compute_references_cross_file(
+        let decl_pos = offset_to_position(alias_src, occ[0] as u32);
+        let use_pos = offset_to_position(alias_src, occ[1] as u32);
+
+        let rename_granted =
+            prepare_rename_cross_file(alias_src, &parsed_alias, &alias_uri, decl_pos, &resolver)
+                .is_some();
+        let use_reported = compute_references_cross_file(
             alias_src,
             &parsed_alias,
             &alias_uri,
-            offset_to_position(alias_src, occ[0] as u32),
+            decl_pos,
             true,
             &workspace_docs(&[(alias_uri.clone(), alias_src)]),
             &resolver,
+        )
+        .is_some_and(|locs| {
+            locs.iter()
+                .any(|l| l.uri == alias_uri && l.range.start == use_pos)
+        });
+
+        assert!(
+            !rename_granted || use_reported,
+            "rename is granted for the `type Pressure` declaration but the \
+             cross-file reference set does not cover the `param p : Pressure` \
+             type-position use, so a rename would move the declaration token and \
+             silently miss it. Either teach `collect_uses`/`collect_idents_in_expr` \
+             to walk type expressions, or keep the rename oracle refusing this kind."
         );
-        let use_pos = offset_to_position(alias_src, occ[1] as u32);
-        match &refs {
-            None => {} // Refused outright — the honest answer.
-            Some(locs) => assert!(
-                !locs
-                    .iter()
-                    .any(|l| l.uri == alias_uri && l.range.start == use_pos),
-                "the cross-file reference set must NOT claim to cover the \
-                 `param p : Pressure` type-position use — the use-site collectors \
-                 walk expression identifiers only. Got: {locs:?}"
-            ),
-        }
     }
 
     // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
