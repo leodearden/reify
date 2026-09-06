@@ -3186,6 +3186,152 @@ mod tests {
         );
     }
 
+    // ── rigid platform on two posts (task 7186 defect B) ─────────────────
+
+    /// **Task 7186 defect B, end-to-end.** The `p4_platform` dogfood
+    /// scenario reduced to the minimum that exhibits it: a rigid platform
+    /// carried by two vertical posts whose pivots are 200 mm apart.
+    ///
+    ///   j1 = prismatic(+Z, 0..600mm) at pivot (0, 0, 0)
+    ///   j2 = prismatic(+Z, 0..600mm) at pivot (200mm, 0, 0)
+    ///   m1 = body(m0, "platform", j1)
+    ///   m2 = body(m1, "post2",    j2)
+    ///   m3 = body(m2, "closing",  j2, j1, translate(200mm, 0, 50mm))
+    ///
+    /// The closing call's 5-arg `pose` is the rigid offset between the
+    /// loop's two attachment frames: the deck spans 200 mm from post 1 to
+    /// post 2 and sits 50 mm above post 1's tip frame. With it in the
+    /// residual:
+    ///   chain_a = [j2]                  → T_a = (0.200, 0, d2)
+    ///   chain_b = [j1, F(0.200,0,0.050)] → T_b = (0.200, 0, d1 + 0.050)
+    /// so the residual vanishes iff `d1 == d2 − 0.050`. Binding
+    /// j2 = 300 mm leaves j1 as the only free variable and pins it to
+    /// 250 mm.
+    ///
+    /// That is an EXACT algebraic solution, so 1e-6 m is the solver's own
+    /// `NewtonConfig::default()` `tol_pos_m` and not a fitted threshold.
+    ///
+    /// Before the fix `pose` never reached the path at all: the closure
+    /// reduced to `T(j2) == T(j1)`, i.e. residual `(0.200, 0, d2 − d1)`.
+    /// The 200 mm x-error is unabsorbable — the platform pivot offset is
+    /// inexpressible, exactly as the p4_platform.ri fixture header records —
+    /// and Newton lands on the least-squares point `d1 = d2 = 0.300`,
+    /// 50 mm away from the true assembly.
+    ///
+    /// **The 50 mm z-component of the pose is load-bearing for this test.**
+    /// With a pure `(0.200, 0, 0)` offset (the plan's literal fixture) the
+    /// free variable d1 moves only in z, so the unabsorbable x-error is
+    /// ORTHOGONAL to the free direction and the pre-fix least-squares point
+    /// is still `d1 = 0.300` — numerically identical to the correct answer,
+    /// leaving the test green before the fix and proving nothing. Giving the
+    /// rigid offset a component ALONG the free direction is what makes the
+    /// pose observable in the converged value rather than only in the
+    /// (unsurfaced) residual norm.
+    #[test]
+    fn snapshot_rigid_platform_on_two_posts_closes_with_pose_offset() {
+        fn post(x_m: f64) -> Value {
+            let pivot = eval_builtin(
+                "point3",
+                &[Value::length(x_m), Value::length(0.0), Value::length(0.0)],
+            );
+            eval_builtin(
+                "prismatic",
+                &[
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                    Value::Range {
+                        lower: Some(Box::new(Value::length(0.0))),
+                        upper: Some(Box::new(Value::length(0.6))),
+                        lower_inclusive: true,
+                        upper_inclusive: true,
+                    },
+                    pivot,
+                ],
+            )
+        }
+        // The rigid attachment-frame offset carried by the platform:
+        // 200 mm across to post 2, 50 mm up to the deck.
+        let pose = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.200),
+                Value::length(0.0),
+                Value::length(0.050),
+            ])),
+        };
+
+        let j1 = post(0.0);
+        let j2 = post(0.200);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("platform".to_string()), j1.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("post2".to_string()), j2.clone()],
+        );
+        // Closing edge: j2 is already parented to world, so parenting it to
+        // j1 here is a parent conflict → loop closure with the pose link.
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("closing".to_string()),
+                j2.clone(),
+                j1.clone(),
+                pose,
+            ],
+        );
+
+        let bind_2 = eval_builtin("bind", &[j2.clone(), Value::length(0.300)]);
+        let s = eval_builtin("snapshot", &[m3, Value::List(vec![bind_2])]);
+
+        let smap = match &s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map for the platform, got {:?}", other),
+        };
+        let free_values = match smap.get(&Value::String("free_values".to_string())) {
+            Some(Value::List(fv)) => fv,
+            other => panic!("expected free_values List, got {:?}", other),
+        };
+        assert_eq!(free_values.len(), 1, "exactly one loop closure expected");
+        let loop0 = match &free_values[0] {
+            Value::List(v) => v,
+            other => panic!("expected per-loop free-value List, got {:?}", other),
+        };
+        assert_eq!(
+            loop0.len(),
+            1,
+            "chain_b = [j1, F] — the 0-DOF pose link is NOT a free variable, \
+             so j1 is the only one"
+        );
+        let d1 = match &loop0[0] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][0] must be a Real, got {:?}", other),
+        };
+        assert!(
+            (d1 - 0.250).abs() < 1e-6,
+            "j1 must close at 0.250 m (== the bound j2 minus the pose's 50 mm \
+             z-offset), got {d1} (pre-fix the pose-blind residual yields 0.300)"
+        );
+
+        // The platform body (at=j1, pose=identity) must ride at z = 0.250 m
+        // with no x/y drift — the FK re-walk agreeing with the solve.
+        let (_, [tx, ty, tz]) = decompose_transform_for_assert(body_world_transform(&s, 0));
+        assert!(tx.abs() < 1e-6, "platform tx must be 0, got {tx}");
+        assert!(ty.abs() < 1e-6, "platform ty must be 0, got {ty}");
+        assert!(
+            (tz - 0.250).abs() < 1e-6,
+            "platform tz must be 0.250 m, got {tz}"
+        );
+    }
+
     // ── Snapshot Map carries `free_values` (task 2678 step-5) ─────────────
     //
     // The Snapshot Map is the natural carrier for the loop-closure solver's

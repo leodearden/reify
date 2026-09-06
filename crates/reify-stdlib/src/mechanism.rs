@@ -1203,6 +1203,223 @@ mod tests {
         );
     }
 
+    // ── closing body pose enters the closure path (task 7186 defect B) ───
+
+    /// Build the synthetic 0-DOF rigid link `{ kind: "fixed", origin: pose }`
+    /// that a body's `pose` becomes when it decorates a closure path
+    /// terminal. Test-local mirror of `mechanism::pose_link`.
+    fn expected_pose_link(pose: &Value) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("fixed".to_string()),
+        );
+        m.insert(Value::String("origin".to_string()), pose.clone());
+        Value::Map(m)
+    }
+
+    /// Pull the single loop-closure record's (path_a, path_b) out of a
+    /// Mechanism Map.
+    fn only_closure_paths(m: &Value) -> (Value, Value) {
+        let map = match m {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        assert!(
+            !map.contains_key(&Value::String("error".to_string())),
+            "fixture should not produce an errored mechanism"
+        );
+        let lcs = match map.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(lc)) => lc,
+            other => panic!("expected loop_closures List, got {:?}", other),
+        };
+        assert_eq!(lcs.len(), 1, "exactly one loop-closure entry expected");
+        let lc = match &lcs[0] {
+            Value::Map(m) => m,
+            other => panic!("expected loop_closure Map, got {:?}", other),
+        };
+        (
+            lc.get(&Value::String("path_a".to_string()))
+                .expect("path_a")
+                .clone(),
+            lc.get(&Value::String("path_b".to_string()))
+                .expect("path_b")
+                .clone(),
+        )
+    }
+
+    /// **Task 7186 defect B.** A body's `pose` — the rigid-link offset
+    /// between the joint frame and the body — is written into every body
+    /// record but reaches only `walk_fk`; it never enters the closure
+    /// residual. A rigid platform carried by several joints at different
+    /// pivots is therefore inexpressible.
+    ///
+    /// The fix encodes a terminal body's pose as a synthetic 0-DOF rigid
+    /// link appended to that side's path. `path_a` takes the pose of the
+    /// FIRST-recorded body at `at` (mirroring the "first-recorded wins"
+    /// spanning-tree policy); `path_b` takes the CLOSING call's own pose.
+    ///
+    /// Poses land at path TERMINALS only, never interleaved after each
+    /// joint, because that is what `walk_fk` does: `joint_world_transform`
+    /// composes joint transforms alone when descending, and a body's pose
+    /// decorates only that body's own `world_transform`.
+    #[test]
+    fn closing_body_pose_enters_path_b() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let pose = pose_translate_1mm_x();
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        // Closing edge via the 5-arg form: the pose is the rigid offset
+        // between the two attachment frames of the loop.
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+                pose.clone(),
+            ],
+        );
+
+        let (path_a, path_b) = only_closure_paths(&m2);
+        assert_eq!(
+            path_b,
+            Value::List(vec![
+                world.clone(),
+                j_b.clone(),
+                expected_pose_link(&pose)
+            ]),
+            "path_b must carry the closing call's own pose as a trailing 0-DOF link"
+        );
+        assert_eq!(
+            path_a,
+            Value::List(vec![world.clone(), j_a.clone(), j_x.clone()]),
+            "path_a is unchanged — the first-recorded body at j_x has the default \
+             identity pose, which is omitted"
+        );
+    }
+
+    /// Identity-pose omission rule: the 3-/4-arg `body()` forms default
+    /// `pose` to `identity_transform()`, and an identity pose adds no link.
+    /// The paths must stay byte-identical to the poseless shapes.
+    ///
+    /// This is a size optimisation, not a correctness gate — an identity
+    /// pose that failed the structural test would simply contribute an
+    /// identity link, which composes to a no-op.
+    #[test]
+    fn identity_body_pose_leaves_closure_paths_unchanged() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        // 4-arg closing form (pose defaults to identity).
+        let four = eval_builtin(
+            "body",
+            &[
+                m1.clone(),
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+        // 5-arg closing form with an EXPLICIT identity pose.
+        let five = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+                identity_transform_value(),
+            ],
+        );
+
+        let expect_a = Value::List(vec![world.clone(), j_a.clone(), j_x.clone()]);
+        let expect_b = Value::List(vec![world.clone(), j_b.clone()]);
+        for (label, m) in [("4-arg", &four), ("5-arg identity", &five)] {
+            let (path_a, path_b) = only_closure_paths(m);
+            assert_eq!(path_a, expect_a, "{label}: path_a must be unchanged");
+            assert_eq!(path_b, expect_b, "{label}: path_b must be unchanged");
+        }
+    }
+
+    /// The FIRST-recorded body at `at` carries a non-identity pose: `path_a`
+    /// gains the corresponding rigid link at its tail, AFTER the closing
+    /// joint. "First-recorded wins" mirrors the policy `joint_parents`
+    /// already applies to the spanning-tree edge.
+    #[test]
+    fn first_recorded_body_pose_enters_path_a() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let pose = pose_translate_1mm_x();
+
+        let m0 = eval_builtin("mechanism", &[]);
+        // First-recorded body at j_x carries the pose.
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+                pose.clone(),
+            ],
+        );
+        // Closing edge with the default identity pose.
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+
+        let (path_a, path_b) = only_closure_paths(&m2);
+        assert_eq!(
+            path_a,
+            Value::List(vec![
+                world.clone(),
+                j_a.clone(),
+                j_x.clone(),
+                expected_pose_link(&pose)
+            ]),
+            "path_a must carry the first-recorded body's pose AFTER the closing joint"
+        );
+        assert_eq!(
+            path_b,
+            Value::List(vec![world.clone(), j_b.clone()]),
+            "path_b is unchanged — the closing call's pose is identity"
+        );
+    }
+
     // ── closed-chain detection: joint-graph cycle ────────────────────────
 
     /// v0.2: `body()` calls whose recorded `(at → parent)` edges introduce a
