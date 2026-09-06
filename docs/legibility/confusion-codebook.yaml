@@ -208,6 +208,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Exit code 2 (path/IO error) from sed on missing file `gui/src/debug/bridge.ts` at turn 145, followed by 6 not_found signals across turns 78–178 suggesting retry attempts. Pattern matches 'exit-code-2 misdiagnosed as pattern-not-found, retried by varying only the search string' despite using sed instead of grep.
+  - date: '2026-09-05'
+    project: reify
+    session: 0609f1f1-1bd0-4d41-a950-c94d09a5c0ae
+    origin_phase: implement
+    manifested_phase: implement
+    note: 'Turn 261: grep exits with code 2 (''No such file or directory'') when probing src/__tests__/debugBridge.test.tsx; path error correctly surfaced but indicates file expected at wrong location'
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -1334,6 +1340,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Watcher invoked bounded-wait script 3+ times (turns 91, 101, 110) with --timeout 3600, each returning exit 124 CEILING. Final invocation (turn 151) with adjusted --timeout 1704 resulted in exit 137. Exact pattern: CEILING timeout retried identically with only cosmetic timeout adjustment, ending in resource exhaustion.'
+  - date: '2026-09-05'
+    project: reify
+    session: b1f0eca9-c3a3-4db4-a705-80442c3dd005
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Watcher-rearm.sh CEILING timeout (exit 124) retried 3 times with identical parameters (turns 70,76,81), culminating in harness timeout exit 137. Designed-outcome flag confirms repeated CEILING hits.
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -1693,6 +1705,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Turn 471: Agent chained sleep 120; with ls/awk to poll for dogfood completion markers (screenshot files G/*.png, tasks_filed.md). Blocked by guard with directive to use Monitor instead.'
+  - date: '2026-09-05'
+    project: reify
+    session: 96512fd1-a7fc-4eed-81c7-e32ddfd37801
+    origin_phase: verify
+    manifested_phase: verify
+    note: Verify subprocess produces empty (0-byte) log file; orchestrated agent attempts process diagnostics (pgrep, log wc inspection) to investigate, consistent with background task output polling pattern
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -1862,6 +1880,19 @@ entries:
     origin_phase: decompose
     manifested_phase: verify
     note: 'Turn 155: git commit with heredoc commit message containing parentheses; syntax error ''unexpected token (''; nested quoting breaks during shell evaluation'
+  - date: '2026-09-05'
+    project: reify
+    session: 7b358415-9d5d-4cac-8661-a4d5a766e8a7
+    origin_phase: implement
+    manifested_phase: merge
+    note: 'Turn 91: Bash syntax error in git commit command with heredoc message. Error: ''syntax error near unexpected token `(''''. Complex error text with special characters (backticks, embedded code snippets with arbitrary punctuation) in heredoc commit message breaks Bash heredoc escaping when processed through eval.'
+  - date: '2026-09-05'
+    project: reify
+    session: c92842d0-635b-48b6-9002-29c71253889b
+    origin_phase: implement
+    manifested_phase: merge
+    invariant_violated: Heredoc-wrapped commit message arguments safely accommodate parentheses in message text
+    note: 'Commit message `fix(6387): use is_multiple_of...` contains literal `(` at position 3, triggering bash parse error in `$(cat <<''EOF''...''EOF'')` wrapper. Exit code 127 (command not found) due to syntax error near unexpected token `(`. Agent (Claude Opus 5) constructed heredoc without escaping message content.'
 - id: entry-cand-20260725-4
   title: Concurrent background commit retries collide on git index.lock with no serialization
   severity: medium
@@ -2408,6 +2439,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Three sequential watcher-rearm.sh CEILING timeouts (exit 124, turns 91/164/204); each retry re-issues the bounded-wait command identically except for cosmetic state changes (escalation exclusion added turn 164, timeout reduced turn 204)
+  - date: '2026-09-05'
+    project: reify
+    session: b1f0eca9-c3a3-4db4-a705-80442c3dd005
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Watcher-rearm.sh invoked identically three times (turns 70→76→81), each hitting exit 124 (CEILING). Command parameters unchanged across all attempts despite consistent timeout outcome.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -2509,6 +2546,12 @@ entries:
     origin_phase: architect
     manifested_phase: implement
     note: Symlink at .task/plan.json → /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-19/plan.json exits with code 2 when accessed; target appears unreadable or missing but error is masked by 2>/dev/null
+  - date: '2026-09-05'
+    project: reify
+    session: 7d6b7662-aee1-4cb7-b8ca-b3317763ade8
+    origin_phase: implement
+    manifested_phase: implement
+    note: warm-lane .task/plan.json read succeeds but contains null field; Python script iterates steps and fails on s.get('commit','')[:12] with NoneType subscript error. Consistent with symlink pointing to partially-written or corrupted target.
 - id: entry-cand-20260722-4
   title: Escalation watcher re-attempts a path-scope-guarded cross-project operation after the guard already fired
   severity: medium
@@ -2783,6 +2826,12 @@ entries:
     origin_phase: architect
     manifested_phase: implement
     note: Orchestrated task in warm-lanes worktree (_lane-50) received cross-project file paths (crates/reify-solver-elastic, crates/reify-compiler) that cannot resolve in the worktree cwd; turn 25 bash command 'cd crates/reify-solver-elastic/src' fails with 'No such file or directory' from /home/leo/src/warm-lanes/worktrees/_lane-50; paths appear to have leaked from memory context or plan briefing targeting a different project structure.
+  - date: '2026-09-05'
+    project: reify
+    session: 0609f1f1-1bd0-4d41-a950-c94d09a5c0ae
+    origin_phase: architect
+    manifested_phase: implement
+    note: Agent in warm-lane worktree assumes GUI project-relative paths (gui/ directory, src/__tests__/ paths) that don't exist in actual layout. Turns 73, 257, 261 all fail on paths that appear to be from parent project context leaked into worktree briefing/context
 - id: entry-cand-20260729-6
   title: Escalation-watcher session spawned without DARK_FACTORY_ROOT set, forcing a filesystem-wide find that times out
   severity: medium
@@ -4306,6 +4355,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Session in warm-lanes worktree shows two not-found errors; entry describes agent probing undocumented iterations.jsonl path; pattern aligns but specific failure mode unclear due to truncation
+  - date: '2026-09-05'
+    project: reify
+    session: 896bf61f-138f-47ed-bf65-c92d9d2f8cd2
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Orchestrated task in warm-lane worktree (_lane-2) encountered multiple file-not-found errors, consistent with probing undocumented .task-meta path
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -4694,6 +4749,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Orchestrated task attempts to read /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-51/iterations.jsonl with tail -c 4000; file not found at expected path (exit 1, stderr redirected to /dev/null)
+  - date: '2026-09-05'
+    project: reify
+    session: 896bf61f-138f-47ed-bf65-c92d9d2f8cd2
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Per-lane task-meta iterations.jsonl or related bootstrap files missing in warm-lane worktree context, triggering not-found signals across multiple turns
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -16211,3 +16272,81 @@ candidates:
     origin_phase: architect
     manifested_phase: unknown
     evidence_quote: Session in /home/leo/src/warm-lanes/worktrees/_lane-44; single 'not_found' signal at turn 48; orchestrated-task agent
+- id: cand-20260905-1
+  title: importlib.spec_from_file_location breaks with @dataclass decorators
+  cause: When dynamically loading a Python module via spec_from_file_location(), the module's __module__ attribute is None. Decorators like @dataclass that access sys.modules.get(cls.__module__).__dict__ fail with AttributeError. The agent doesn't account for this module initialization limitation when loading and executing verify scripts dynamically.
+  area: module-loading, verify-infrastructure
+  first_seen: '2026-09-05'
+  disposition: pending
+  sightings:
+  - date: '2026-09-05'
+    project: reify
+    session: 7b358415-9d5d-4cac-8661-a4d5a766e8a7
+    origin_phase: implement
+    manifested_phase: verify
+    evidence_quote: 'File "/home/leo/src/warm-lanes/worktrees/_lane-24/scripts/prd-decompose-verify.py", line 75, in <module> @dataclass ... ns = sys.modules.get(cls.__module__).__dict__ AttributeError: ''NoneType'' object has no attribute ''__dict__'''
+- id: cand-20260905-2
+  title: MCP XML envelope markup in task description field
+  cause: When submitting a task via fused-memory MCP, the description field contains raw XML markup (</description>). The agent either parsed an MCP response envelope and accidentally included markup in a subsequent task submission, or constructed the description through string concatenation that preserved XML tags from structured data.
+  area: mcp-task-submission, response-parsing, string-construction
+  first_seen: '2026-09-05'
+  disposition: pending
+  sightings:
+  - date: '2026-09-05'
+    project: reify
+    session: 7b358415-9d5d-4cac-8661-a4d5a766e8a7
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'Tool call rejected: it carries raw MCP envelope markup in ''description'', which means the caller serialized part of its own tool-call envelope into the payload. matched_pattern: </description>'
+- id: cand-20260905-3
+  title: Warm-lanes worktree turn-metadata lookup fails with 'not found'
+  cause: 'Orchestrated task dispatched to warm-lanes worktree attempts to access/reference turn numbers (67, 122) that do not exist in the session state or metadata structure. Possible causes: turn-level iteration tracking not initialized, stale cross-session references, or metadata registry doesn''t carry forward expected turn history from prior work units.'
+  area: warm-lanes task dispatch / session state management
+  first_seen: '2026-09-05'
+  disposition: pending
+  sightings:
+  - date: '2026-09-05'
+    project: reify
+    session: 1a08ae4a-db25-4e36-bb31-3b0971257754
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'cwd: "/home/leo/src/warm-lanes/worktrees/_lane-19", signal_counts: {not_found: 2}, not_found items: "(turn 67) does not exist", "(turn 122) does not exist"'
+- id: cand-20260905-4
+  title: Source code mutation script fails on unmet fixture structure assumption
+  cause: Orchestrated task performs string-based source code mutation on Rust fixture (extending BijectionFixture with third BRep generation); assertion on expected data structure ('graph', 5) fails at line 54, indicating fixture element missing or malformed
+  area: Code generation, fixture bootstrapping, warm-lane task initialization
+  first_seen: '2026-09-05'
+  disposition: pending
+  sightings:
+  - date: '2026-09-05'
+    project: reify
+    session: 96512fd1-a7fc-4eed-81c7-e32ddfd37801
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'AssertionError: (''graph'', 5) at line 54 in Python script mutating crates/reify-mesh-morph/src/lib.rs; fixture structure check failed before string replacement could proceed'
+- id: cand-20260905-5
+  title: Step record in warm-lane plan.json initialized with null commit field
+  cause: Step execution bootstrap incomplete or interrupted; commit field set to null instead of string or omitted
+  area: warm-lanes task execution, step state initialization
+  first_seen: '2026-09-05'
+  disposition: pending
+  sightings:
+  - date: '2026-09-05'
+    project: reify
+    session: 7d6b7662-aee1-4cb7-b8ca-b3317763ade8
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'for s in p[''steps'']: print(...s.get(''commit'','''')[:12]) ... TypeError: ''NoneType'' object is not subscriptable — step-1 prints successfully, but subsequent step has null commit'
+- id: cand-20260905-6
+  title: New feature term added in parallel with guarded calculation, assuming guard scope covers both
+  cause: Developer added `plan.zeta_material + rayleigh_damping_ratio(...)` expecting existing singularity guard in `rayleigh_damping_ratio` to protect the entire expression. The guard only protects its own rayleigh term. Architectural assumption that guard scope extends to adjacent additions went unvalidated.
+  area: Feature design / Code logic
+  first_seen: '2026-09-05'
+  disposition: pending
+  sightings:
+  - date: '2026-09-05'
+    project: reify
+    session: 09711626-8eec-4eac-88a6-e2e903cb8f3e
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: The new per-mode expression `plan.zeta_material + rayleigh_damping_ratio(...)` adds the MSE term OUTSIDE the near-zero-omega guard that `rayleigh_damping_ratio` applies internally... a rigid-body/spurious mode... η/2 is not the correct answer. No test in the new suite covers an ω ≈ 0 mode under `MaterialDamping`; both... test fixtures assert `f > 1.0 Hz` in a physical-band guard, so the case is structurally excluded from coverage.
