@@ -24,6 +24,12 @@ mod as_printed_material_e2e;
 mod as_printed_r0_trampoline;
 #[path = "harness_fea_solver_e2e/as_printed_trampoline.rs"]
 mod as_printed_trampoline;
+// Task #5025's edit-path dispatch guards. A DELIBERATELY separate stem from
+// `fea_in_the_loop_producer`, whose test-scoped heavy atom would otherwise sweep
+// these two cheap guards off the task/merge gate along with the ~490s producer
+// (task #6630; pinned by tests/infra/test_heavy_filter_atoms.sh Assertion G).
+#[path = "harness_fea_solver_e2e/edit_path_optimized_dispatch.rs"]
+mod edit_path_optimized_dispatch;
 #[path = "harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs"]
 mod fea_bracket_minimize_mass_e2e;
 #[path = "harness_fea_solver_e2e/fea_cold_start_heuristic_e2e.rs"]
