@@ -251,8 +251,11 @@ ts_mtime() {
 #
 # The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c +
 # src/tree_sitter/*.h — i.e. what build.rs declares via rerun-if-changed.
-# src/parser.c is deliberately excluded: build.rs writes it, so watching it
-# would cause double execution, and touching it would repair nothing.
+# src/parser.c is deliberately excluded, and stays excluded after `#6992` made
+# build.rs WATCH it: this models what `ensure` may force-TOUCH, which is a
+# narrower set than what cargo watches (see ts_watched_inputs in
+# scripts/tree-sitter-freshness.sh for why a build-script output must not enter
+# a force set).
 ts_watched_files() {
     local ts="$1" h
     printf '%s\n' "$ts/grammar.js" "$ts/src/scanner.c"
@@ -2524,8 +2527,14 @@ test_freshness_detects_and_repairs_stale_archive() {
     # lane (cleanliness guards, lane audit) can never observe a dirty tree — a far worse
     # failure than the bug under test.
     #
-    # Because parser.c is IN the fingerprint but deliberately NOT watched, mutating it
-    # reproduces exactly the reported shape: fresh sources on disk, stale archive linked.
+    # Since `#6992` parser.c IS watched, so mutating it alone no longer reproduces
+    # the reported shape — cargo would re-run the build script, which would notice
+    # the content mismatch and regenerate, curing the very state under test. The
+    # probe below therefore REWINDS parser.c's mtime to its pre-probe value after
+    # mutating it. That is not a workaround: it is the warm-lane rewind signature
+    # this guard exists for (seed-warm-lane.sh stamps sources back to 2020 while
+    # CoW-cloning target/ intact), and it is the only way "fresh sources on disk,
+    # stale archive linked" is reachable at all now that content is checked.
     local parser="$TS_DIR/src/parser.c"
     assert_file_exists "$parser" || return 1
 
@@ -2615,7 +2624,12 @@ test_freshness_detects_and_repairs_stale_archive() {
     fi
 
     # ---- mutate the gitignored generated source; cargo will NOT recompile ----
+    # The mtime is restored from the untouched backup immediately after the write,
+    # so cargo's watch on src/parser.c sees the same mtime it recorded last build
+    # and declines to re-run the build script. Content changed, mtime rewound —
+    # the warm-lane signature, and now the only route to a stale linked archive.
     printf '\n/* task 5629 probe */\n' >> "$parser"
+    touch -r "$backup" "$parser" || return 1
     guard_rc=0
     run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
         --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
