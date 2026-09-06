@@ -511,29 +511,41 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// declaration's own statement span — or `None` for the kinds that declare
 /// no name of their own.
 ///
-/// This is the UNIFORM source of declaration names for same-file
-/// go-to-definition (task 6388). The match is deliberately **exhaustive with no
-/// `_` wildcard arm**: that is the load-bearing part of the design. Every other
-/// declaration scan in this crate is a per-kind allowlist
-/// (`goto_def::find_declaration_name_span` at 6 kinds,
-/// `references::classify_top_level_decl` at 5,
-/// `compute_document_symbols_from_parsed` at 5), and every one of them silently
-/// dropped Purpose/Constraint/Unit/TypeAlias/Joint when the parser grew them. A
-/// wildcard-free match turns a new `Declaration` variant into a COMPILE ERROR
-/// here, forcing an explicit named-vs-unnamed decision instead of a silent
-/// omission.
+/// SCOPE — this is the uniform source of declaration names for SAME-FILE
+/// go-to-definition (task 6388), and that is its only consumer today
+/// (`goto_def::decl_name_token`). It is deliberately NOT claimed as the
+/// crate-wide source: the other declaration scans are still per-kind
+/// allowlists — `goto_def::decl_name_span_in` at 6 kinds (7 with
+/// `include_aliases`), `references::classify_top_level_decl` at 5, and
+/// [`compute_document_symbols_from_parsed`] at 6 (5 before #6341 added the
+/// type-alias symbol). Each of them silently dropped Purpose/Constraint/Unit/
+/// Joint — and, until #6341, TypeAlias — as the parser grew those variants.
+///
+/// The match here is deliberately **exhaustive with no `_` wildcard arm**, and
+/// that is the load-bearing part of the design: a new `Declaration` variant
+/// becomes a COMPILE ERROR here, forcing an explicit named-vs-unnamed decision
+/// instead of a silent omission.
 ///
 /// The returned span is the whole declaration statement, NOT the name token —
 /// narrow it with [`name_token_span`] when a jump target is wanted.
 ///
-/// `goto_def::find_declaration_name_span` and `references::classify_top_level_decl`
-/// deliberately do NOT delegate to this helper: both are the rename/references
-/// oracle, whose use-site collectors walk expression identifiers only, so
-/// widening them to a type-position-only kind would yield a rename that moves
-/// the declaration token and misses every use site (task 6388 CRITICAL
-/// CONSTRAINT; see the guard test
-/// `rename_and_references_unaffected_by_same_file_goto_def_declaration_names`
-/// in references.rs).
+/// WHY THE OTHER SCANS ARE NOT MIGRATED — two different reasons, and only the
+/// first is principled:
+/// - `goto_def::find_declaration_name_span` and
+///   `references::classify_top_level_decl` MUST stay narrower. Both feed
+///   rename/references, whose use-site collectors walk expression identifiers
+///   only, so widening them to a type-position-only kind yields a rename that
+///   moves the declaration token and misses every use site (task 6388 CRITICAL
+///   CONSTRAINT; see the guard test
+///   `rename_and_references_unaffected_by_same_file_goto_def_declaration_names`
+///   in references.rs).
+/// - [`compute_document_symbols_from_parsed`] carries NO such hazard — the
+///   outline is display-only. Its allowlist is simply UN-MIGRATED: taking its
+///   `(name, span)` pair from here would need a `SymbolKind` decision per
+///   newly-admitted kind and would CHANGE the outline (new symbols for
+///   Field/Purpose/Constraint/Unit/Joint), which is outside task 6388's
+///   same-file goto-def remit. Filed as a follow-up instead of done here, so
+///   the silent-omission failure mode still exists for the outline view.
 pub fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     let named = match decl {
         Declaration::Structure(s) => (s.name.as_str(), s.span),
@@ -557,6 +569,57 @@ pub fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     };
     Some(named)
 }
+
+/// One verified-parseable snippet per NAMED `Declaration` variant, paired with
+/// the name that variant declares — the shared fixture behind
+/// [`decl_name_and_span`]'s wildcard-free match.
+///
+/// SINGLE SOURCE OF TRUTH for both consumers: `analysis::tests`
+/// (`decl_name_and_span_returns_name_and_span_for_every_named_kind`) and
+/// `goto_def::tests`
+/// (`goto_def_cursor_on_declaration_name_resolves_for_every_kind`). The two used
+/// to hold verbatim copies that had to be edited in lockstep on every grammar
+/// change — 9d56ba5485 already had to touch both — so the table lives at module
+/// scope here, next to the oracle it enumerates, rather than inside either
+/// private `tests` module. (`reify-test-support` would be the crate-wide home,
+/// but it is outside task 6388's file scope.)
+///
+/// Every snippet is lifted (verbatim or near-verbatim) from an existing passing
+/// source — `crates/reify-syntax/tests/harness_syntax/*` or
+/// `tree-sitter-reify/test/corpus/*` — rather than invented, so a RED assertion
+/// can never be doomed by a surface-syntax guess. The `field def` codomain is
+/// the one deliberate divergence from verbatim: the lifted original reads
+/// `-> Scalar`, which `corpus_has_zero_bare_scalar` forbids outside its excluded
+/// `crates/reify-syntax/tests` dir, so the snippet follows the post-migration
+/// corpus shape instead (`examples/fields/restrict.ri:27` is
+/// `field def base_field : Point3 -> Real { … }`). Do NOT restore `-> Scalar`
+/// here — it re-reds that guard.
+#[cfg(test)]
+pub(crate) const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
+    ("structure S { param x : Length = 5mm }", "S"),
+    (
+        "occurrence def Welding { param method : Length }",
+        "Welding",
+    ),
+    ("enum Dir { In, Out }", "Dir"),
+    ("fn id_length(x: Length) -> Length { x }", "id_length"),
+    ("trait Rigid { param mass : Mass }", "Rigid"),
+    (
+        "field def temp : Point3 -> Real { source = analytical { |p| p } }",
+        "temp",
+    ),
+    (
+        "purpose lightweight(subject : Structure) { minimize subject.mass }",
+        "lightweight",
+    ),
+    ("constraint def Foo { x > 0 }", "Foo"),
+    ("unit meter : Length", "meter"),
+    ("type Pressure = Force", "Pressure"),
+    (
+        "joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)",
+        "ball",
+    ),
+];
 
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
@@ -2556,49 +2619,6 @@ mod tests {
     }
 
     // --- decl_name_and_span free function tests (task 6388) ---
-
-    /// One verified-parseable snippet per NAMED `Declaration` variant, paired
-    /// with the name that variant declares.
-    ///
-    /// Every snippet is lifted (verbatim or near-verbatim) from an existing
-    /// passing source — `crates/reify-syntax/tests/harness_syntax/*` or
-    /// `tree-sitter-reify/test/corpus/*` — rather than invented, so a RED
-    /// assertion can never be doomed by a surface-syntax guess. The
-    /// `field def` codomain is the one deliberate divergence from
-    /// verbatim: the lifted original reads
-    /// `-> Scalar`, which `corpus_has_zero_bare_scalar` forbids outside its
-    /// excluded `crates/reify-syntax/tests` dir, so the snippet follows the
-    /// post-migration corpus shape instead (`examples/fields/restrict.ri:27`
-    /// is `field def base_field : Point3 -> Real { … }`). Do NOT restore
-    /// `-> Scalar` here — it re-reds that guard.
-    /// Mirrored by
-    /// `goto_def::tests::NAMED_DECL_SNIPPETS` (this module is private, so the
-    /// table is duplicated rather than shared).
-    const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
-        ("structure S { param x : Length = 5mm }", "S"),
-        (
-            "occurrence def Welding { param method : Length }",
-            "Welding",
-        ),
-        ("enum Dir { In, Out }", "Dir"),
-        ("fn id_length(x: Length) -> Length { x }", "id_length"),
-        ("trait Rigid { param mass : Mass }", "Rigid"),
-        (
-            "field def temp : Point3 -> Real { source = analytical { |p| p } }",
-            "temp",
-        ),
-        (
-            "purpose lightweight(subject : Structure) { minimize subject.mass }",
-            "lightweight",
-        ),
-        ("constraint def Foo { x > 0 }", "Foo"),
-        ("unit meter : Length", "meter"),
-        ("type Pressure = Force", "Pressure"),
-        (
-            "joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)",
-            "ball",
-        ),
-    ];
 
     #[test]
     fn decl_name_and_span_returns_name_and_span_for_every_named_kind() {

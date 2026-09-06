@@ -895,45 +895,12 @@ mod tests {
 
     // --- task 6388: uniform same-file declaration-name resolution ---
 
-    /// One verified-parseable snippet per NAMED `Declaration` variant, paired
-    /// with the name it declares.
-    ///
-    /// Mirrors `analysis::tests::NAMED_DECL_SNIPPETS` (that module is private,
-    /// so the table is duplicated rather than shared). Every snippet is lifted
-    /// from an existing passing source — `crates/reify-syntax/tests/
-    /// harness_syntax/*` or `tree-sitter-reify/test/corpus/*` — rather than
-    /// invented, so no assertion can be doomed by a surface-syntax guess. The `field def` codomain is the one
-    /// deliberate divergence from verbatim: the lifted original reads
-    /// `-> Scalar`, which `corpus_has_zero_bare_scalar` forbids outside its
-    /// excluded `crates/reify-syntax/tests` dir, so the snippet follows the
-    /// post-migration corpus shape instead (`examples/fields/restrict.ri:27`
-    /// is `field def base_field : Point3 -> Real { … }`). Do NOT restore
-    /// `-> Scalar` here — it re-reds that guard.
-    const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
-        ("structure S { param x : Length = 5mm }", "S"),
-        (
-            "occurrence def Welding { param method : Length }",
-            "Welding",
-        ),
-        ("enum Dir { In, Out }", "Dir"),
-        ("fn id_length(x: Length) -> Length { x }", "id_length"),
-        ("trait Rigid { param mass : Mass }", "Rigid"),
-        (
-            "field def temp : Point3 -> Real { source = analytical { |p| p } }",
-            "temp",
-        ),
-        (
-            "purpose lightweight(subject : Structure) { minimize subject.mass }",
-            "lightweight",
-        ),
-        ("constraint def Foo { x > 0 }", "Foo"),
-        ("unit meter : Length", "meter"),
-        ("type Pressure = Force", "Pressure"),
-        (
-            "joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)",
-            "ball",
-        ),
-    ];
+    /// The snippet table is SHARED with `analysis::tests`, not mirrored:
+    /// `crate::analysis::NAMED_DECL_SNIPPETS` is a `#[cfg(test)] pub(crate)`
+    /// const sitting next to the `decl_name_and_span` oracle it enumerates.
+    /// Two verbatim copies used to live here and there, and had to be edited in
+    /// lockstep on every grammar change (9d56ba5485 touched both).
+    use crate::analysis::NAMED_DECL_SNIPPETS;
 
     /// Byte offsets of every occurrence of `needle` in `source`, ascending.
     fn occurrences(source: &str, needle: &str) -> Vec<usize> {
