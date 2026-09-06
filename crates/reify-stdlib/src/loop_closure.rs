@@ -2023,6 +2023,36 @@ mod tests {
         Value::Map(m)
     }
 
+    /// Build a synthetic 0-DOF rigid link: `{ kind: "fixed", origin: <pose> }`.
+    /// This is the shape `mechanism::append_body` appends to a closure path to
+    /// carry a body's `pose` into the residual (task 7186 defect B).
+    fn fixed_link(pose: Value) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("fixed".to_string()),
+        );
+        m.insert(Value::String("origin".to_string()), pose);
+        Value::Map(m)
+    }
+
+    /// A pure-translation `Value::Transform` of `len_m` along +X.
+    fn translate_x_transform(len_m: f64) -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(len_m),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        }
+    }
+
     /// `extract_loop_closure_chains` returns the expected five-vector tuple
     /// for a record with `path_a = [world, jA]` (driven by a bound length
     /// of 0.5m) and `path_b = [world, jB]` (free — no binding entry).
@@ -2094,6 +2124,80 @@ mod tests {
             ),
         }
         assert_eq!(free_b, vec![0], "free_b should mark jB (index 0) as free");
+    }
+
+    /// **Task 7186, precondition for defect B.** An UNBOUND `fixed` joint in
+    /// `path_b` must resolve to the 0-DOF sentinel instead of collapsing the
+    /// whole record to `None`, and must NOT become a solver free variable.
+    ///
+    /// Defect B encodes a closing body's `pose` as a synthetic 0-DOF rigid
+    /// link — `Value::Map { kind: "fixed", origin: <pose> }` — appended to
+    /// `path_b`. Nothing binds that synthetic link, so before this fix the
+    /// closing-side fallback (`joint_range_midpoint`, which returns `None`
+    /// for `fixed`) short-circuited `extract_loop_closure_chains` to `None`
+    /// and the whole snapshot to `Undef`. The pre-existing "Asymmetry note
+    /// (v0.2 limitation)" comment named this exact refactor and deferred it
+    /// "once a real fixture demands fixed joints in path_b" — the synthetic
+    /// pose link IS that fixture.
+    #[test]
+    fn extract_loop_closure_chains_admits_unbound_fixed_joint_in_path_b() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bindings = vec![bind_a];
+
+        // A synthetic 0-DOF rigid link carrying a non-identity pose.
+        let link = fixed_link(translate_x_transform(0.2));
+
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_b.clone(), link.clone()],
+            j_a.clone(),
+        );
+
+        let (_chain_a, _vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings).expect(
+                "an unbound 0-DOF `fixed` link in path_b must resolve, not collapse \
+                 the record to None",
+            );
+
+        assert_eq!(chain_b, vec![j_b.clone(), link.clone()]);
+        assert_eq!(vals_b_initial.len(), 2);
+        match &vals_b_initial[1] {
+            JointValue::Scalar(s) => assert!(
+                s.abs() < 1e-12,
+                "the fixed link must take the 0-DOF sentinel Scalar(0.0), got Scalar({s})"
+            ),
+            other => panic!("expected JointValue::Scalar(0.0) for the fixed link, got {other:?}"),
+        }
+        assert!(
+            !free_b.contains(&1),
+            "a 0-DOF link contributes no free variable — free_b must not contain \
+             index 1, got {free_b:?}"
+        );
+        assert!(
+            free_b.contains(&0),
+            "the unbound prismatic jB is still free — free_b must contain index 0, \
+             got {free_b:?}"
+        );
+    }
+
+    /// A synthetic 0-DOF link evaluates to exactly its `origin` pose under
+    /// the unmodified chain machinery — the whole basis of the defect-B
+    /// encoding. `transform_at` computes the per-kind motion first and then
+    /// applies `origin ∘ motion` uniformly outside every arm
+    /// (joints.rs, PRD §7.2); the `fixed` arm's motion is the identity, so
+    /// `origin ∘ I = origin`.
+    #[test]
+    fn chain_transform_over_a_fixed_link_yields_its_origin_pose() {
+        let pose = translate_x_transform(0.2);
+        let link = fixed_link(pose.clone());
+        let t = super::chain_transform(&[link], &[JointValue::Scalar(0.0)])
+            .expect("chain_transform must resolve a single 0-DOF link");
+        assert_eq!(
+            t, pose,
+            "a fixed link with origin = pose must compose to exactly that pose"
+        );
     }
 
     /// KCC-γ step-9: `extract_loop_closure_chains` must populate
