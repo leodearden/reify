@@ -407,9 +407,10 @@ impl MeshToVoxelOptions {
     ///   [`Self::honest_floor`], so every pre-6560 caller keeps the grid it
     ///   always got, bit-for-bit. `None` becomes
     ///   [`VoxelResolutionError::DegenerateMesh`].
-    /// - [`VoxelResolution::TargetVoxelSize(h)`] — `h` is used verbatim after
+    /// - [`VoxelResolution::TargetVoxelSize`] — its `h` is used verbatim after
     ///   validation.
-    /// - [`VoxelResolution::MinFeature(t)`] — `h = t / MIN_FEATURE_VOXELS_ACROSS`.
+    /// - [`VoxelResolution::MinFeature`] — its `t` gives
+    ///   `h = t / MIN_FEATURE_VOXELS_ACROSS`.
     ///
     /// # Errors
     ///
