@@ -87,7 +87,7 @@ use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 // Test 1 — det<0 reflection yields a valid, positive-volume solid
 // ---------------------------------------------------------------------------
 
-/// For each of three convex, primitive-derived fixtures, reflect across the
+/// For each of four convex, primitive-derived fixtures, reflect across the
 /// x=0 plane by BOTH lowerings — [`GeometryOp::Mirror`] (`gp_Trsf::SetMirror`)
 /// and [`GeometryOp::AffineApply`] with `linear = diag(-1,1,1)`
 /// (`gp_GTrsf` / `BRepBuilderAPI_GTransform`) — and assert that both paths
@@ -116,16 +116,20 @@ use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 /// them is invariant under an arbitrary rigid motion, so a `Mirror` or
 /// `AffineApply` that silently degraded to a translation or a no-op copy
 /// would satisfy all of (a)-(e) unchanged. Tolerance is `Mirror` 1e-12
-/// relative (measured bit-exact, same as the volume check) and `AffineApply`
-/// 0.3 relative (**not** the volume check's 2e-2 — a separate, coarser
-/// effect: `BoundingBox` computes via `BRepBndLib`'s default non-precise
-/// mode, which bounds a B-spline surface by its control polygon rather than
-/// the surface itself, and a NURBS approximation of a curved surface has a
-/// control polygon that measurably bulges outside the true envelope;
-/// measured worst case 2.105e-1 relative, on the cone). Both are scaled by
-/// each fixture's own characteristic size (the largest-magnitude source AABB
-/// component) rather than applied per-coordinate — a coordinate close to the
-/// x=0 mirror plane would make a coordinate-relative tolerance meaningless.
+/// relative for every fixture (measured bit-exact, same as the volume
+/// check); `AffineApply` is [`affine_bbox_tolerance`]-per-fixture, NOT a
+/// single shared bound — `BoundingBox` computes via `BRepBndLib`'s default
+/// non-precise mode, which bounds a B-spline surface by its control polygon
+/// rather than the surface itself, and a NURBS approximation of a curved
+/// surface has a control polygon that measurably bulges outside the true
+/// envelope (measured worst case 2.105e-1 relative, on the cone) — but a
+/// FLAT surface's B-spline image is exact (measured delta 0 on the box), so
+/// reusing the cone's loose bound for the box would let a reflection that
+/// degraded by up to 1.8× the box's own x-extent pass unnoticed. Both are
+/// scaled by each fixture's own characteristic size (the largest-magnitude
+/// source AABB component) rather than applied per-coordinate — a coordinate
+/// close to the x=0 mirror plane would make a coordinate-relative tolerance
+/// meaningless.
 #[test]
 fn both_reflection_paths_yield_valid_positive_volume_solids() {
     if !OCCT_AVAILABLE {
@@ -162,10 +166,12 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
         // (path, target, volume-relative-tolerance, bbox-relative-tolerance).
         // The two tolerances are DELIBERATELY different bases, not a shared
         // `tol` — see the (f) comment below for why a shared tolerance would
-        // be doomed.
+        // be doomed. `AffineApply`'s bbox tolerance is additionally
+        // fixture-specific (see [`affine_bbox_tolerance`]), not a single
+        // constant.
         for (path, target, vol_tol, bbox_tol) in [
             ("Mirror", mirrored, 1e-12, 1e-12),
-            ("AffineApply", affine, 2e-2, 0.3),
+            ("AffineApply", affine, 2e-2, affine_bbox_tolerance(name)),
         ] {
             // (b) positive volume under reflection.
             let v = volume_of(&kernel, target);
@@ -203,7 +209,7 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
             //
             // `bbox_tol` is NOT the volume tolerance reused: measured, the
             // two are different-sized effects. `Mirror` is bit-exact here
-            // too (measured delta 0 on all 6 fields × all 3 fixtures), so it
+            // too (measured delta 0 on all 6 fields × all 4 fixtures), so it
             // keeps the same 1e-12 relative bound. `AffineApply`'s bbox error
             // is a SEPARATE, much coarser phenomenon than its ~8.6e-3 volume
             // error: `GeometryQuery::BoundingBox` computes via `BRepBndLib`'s
@@ -211,11 +217,8 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
             // its CONTROL POLYGON rather than the surface itself — and a
             // NURBS approximation of a circular/conical surface has a
             // control polygon that measurably bulges outside the true
-            // envelope. Measured worst case 2.105e-1 relative to
-            // `bbox_scale` (cone xmax); box is unaffected (delta 0 — a
-            // B-spline image of a flat plane is exact, matching test 4's
-            // finding). 0.3 (~1.4× the measured worst case) is used —
-            // reusing the 2e-2 volume band here would be a doomed assertion.
+            // envelope. See [`affine_bbox_tolerance`] for why that bound is
+            // fixture-specific rather than one constant reused everywhere.
             let target_bbox = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(target)));
             let bbox_abs_tol = bbox_tol * bbox_scale;
             for (field, actual, expected) in [
@@ -245,8 +248,9 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
 // reserved for helpers duplicated across MANY modules (see its header).
 // ---------------------------------------------------------------------------
 
-/// Build the three convex, primitive-derived fixtures this module's tests
-/// share: a box, a cylinder and a cone, each translated wholly into x>0.
+/// Build the four convex, primitive-derived fixtures this module's tests
+/// share: a box, a cylinder, a cone and a sphere, each translated wholly
+/// into x>0.
 ///
 /// Two constraints future editors must not break:
 ///   - **Primitive-derived only, never a boolean result.** `BRepAlgoAPI_Cut`
@@ -264,12 +268,10 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
 ///     2D pcurve parameter-space points — the cone source emits 3 of those
 ///     and they are NOT positions.)
 ///
-/// All three are additionally CONVEX, which is what licenses the AABB-centre
-/// reference direction in the outward-winding tessellation check
-/// ([`both_reflection_paths_tessellate_to_outward_wound_closed_manifold`])
-/// — a concave fixture can legitimately have inward-pointing dot products in
-/// its concave regions (measured: 343 outward / 253 inward on a box-minus-
-/// cylinder-minus-sphere part), which would make that assertion meaningless.
+/// All four are additionally CONVEX — see
+/// [`both_reflection_paths_tessellate_to_outward_wound_closed_manifold`]'s
+/// doc comment for why that matters (the AABB-centre outward reference) and
+/// the measured concave-fixture counter-example.
 // Fixture dimensions — single source of truth shared by `convex_fixtures` and
 // `fresh_pretessellated_cylinder`, so the two can never silently drift apart:
 // `fresh_pretessellated_cylinder` must build the exact same `cylinder_r6_h20`
@@ -289,6 +291,9 @@ const CONE_TOP_RADIUS: f64 = 0.004;
 const CONE_HEIGHT: f64 = 0.015;
 const CONE_DX: f64 = 0.030;
 
+const SPHERE_RADIUS: f64 = 0.005;
+const SPHERE_DX: f64 = 0.030;
+
 fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandleId)> {
     let box_src = kernel
         .execute(&GeometryOp::Box {
@@ -307,21 +312,7 @@ fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandle
         .expect("box_10x20x30 translate to x>0 should succeed")
         .id;
 
-    let cyl_src = kernel
-        .execute(&GeometryOp::Cylinder {
-            radius: Value::Real(CYLINDER_RADIUS),
-            height: Value::Real(CYLINDER_HEIGHT),
-        })
-        .expect("cylinder_r6_h20 should build");
-    let cyl_id = kernel
-        .execute(&GeometryOp::Translate {
-            target: cyl_src.id,
-            dx: CYLINDER_DX,
-            dy: CYLINDER_DY,
-            dz: 0.0,
-        })
-        .expect("cylinder_r6_h20 translate to x>0 should succeed")
-        .id;
+    let cyl_id = build_cylinder(kernel);
 
     let cone_src = kernel
         .execute(&GeometryOp::Cone {
@@ -340,11 +331,78 @@ fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandle
         .expect("cone_r8_r4_h15 translate to x>0 should succeed")
         .id;
 
+    let sphere_src = kernel
+        .execute(&GeometryOp::Sphere {
+            radius: Value::Real(SPHERE_RADIUS),
+        })
+        .expect("sphere_r5 should build");
+    let sphere_id = kernel
+        .execute(&GeometryOp::Translate {
+            target: sphere_src.id,
+            dx: SPHERE_DX,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("sphere_r5 translate to x>0 should succeed")
+        .id;
+
     vec![
         ("box_10x20x30", box_id),
         ("cylinder_r6_h20", cyl_id),
         ("cone_r8_r4_h15", cone_id),
+        ("sphere_r5", sphere_id),
     ]
+}
+
+/// `AffineApply`'s relative bbox tolerance for
+/// [`both_reflection_paths_yield_valid_positive_volume_solids`] obligation
+/// (f), keyed by fixture name — NOT a single constant shared across
+/// `convex_fixtures`.
+///
+/// The `BRepBndLib` control-polygon bulge that obligation (f) tolerates (see
+/// that test's doc) is a property of the fixture's OWN surface curvature,
+/// not a fixed fraction of an arbitrary reference: measured, `box_10x20x30`
+/// is unaffected (delta 0 — a B-spline image of a flat plane is exact,
+/// matching test 4's finding), while `cylinder_r6_h20` and `cone_r8_r4_h15`
+/// (both genuinely curved) measure up to 2.105e-1 relative (cone). A single
+/// 0.3 bound sized for the cone would, on `box_10x20x30`, tolerate a
+/// reflection that degraded by ~1.8× the box's entire 10mm x-extent before
+/// this check would notice — so the box gets the same bit-exact 1e-12 bound
+/// as `Mirror` instead. `sphere_r5` is also curved (doubly, unlike the
+/// cylinder/cone's single curvature) and falls through to the same loose
+/// bound by default; a future FLAT fixture should be added to the tight arm
+/// above rather than left on the curved default.
+fn affine_bbox_tolerance(fixture_name: &str) -> f64 {
+    match fixture_name {
+        "box_10x20x30" => 1e-12,
+        _ => 0.3,
+    }
+}
+
+/// Build a single `cylinder_r6_h20` fixture (`GeometryOp::Cylinder` +
+/// `GeometryOp::Translate` to x>0), via the shared `CYLINDER_*` consts.
+///
+/// Extracted so [`convex_fixtures`], [`fresh_pretessellated_cylinder`], and
+/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]'s
+/// half (a) all build the IDENTICAL cylinder from one call site, instead of
+/// three independently-maintained `execute` sequences that could silently
+/// drift apart (e.g. if a fixture gained a third op).
+fn build_cylinder(kernel: &mut OcctKernel) -> GeometryHandleId {
+    let cyl_src = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(CYLINDER_RADIUS),
+            height: Value::Real(CYLINDER_HEIGHT),
+        })
+        .expect("cylinder_r6_h20 should build");
+    kernel
+        .execute(&GeometryOp::Translate {
+            target: cyl_src.id,
+            dx: CYLINDER_DX,
+            dy: CYLINDER_DY,
+            dz: 0.0,
+        })
+        .expect("cylinder_r6_h20 translate to x>0 should succeed")
+        .id
 }
 
 /// Mirror `target` across the x=0 (y-z) plane via [`GeometryOp::Mirror`]
@@ -460,7 +518,7 @@ fn flag_of(kernel: &OcctKernel, query: GeometryQuery) -> bool {
 /// actually observes it, which is exactly what would fail loudly if that
 /// regression ever happened.
 ///
-/// **Convexity precondition**: all three fixtures are convex (documented on
+/// **Convexity precondition**: all four fixtures are convex (documented on
 /// [`convex_fixtures`]), which is what licenses using the AABB centre as the
 /// "outward" reference direction. A non-convex fixture can legitimately
 /// produce inward-pointing dot products in its concave regions — measured
@@ -831,10 +889,11 @@ fn step_text(kernel: &OcctKernel, id: GeometryHandleId) -> String {
 /// whole-string scan exactly as it would be by a line-based one — the
 /// newline is still there, splitting the match either way; scanning the
 /// whole string only helps for a match that spans a line boundary with no
-/// inserted character, which folding never produces. This module's three
-/// fixtures export small STEP files (118-149 entities measured), well under
-/// any line-folding threshold, so nothing folds today and every count below
-/// is exact. A future fixture large enough to fold would need either a
+/// inserted character, which folding never produces. This module's four
+/// fixtures export small STEP files (measured 32-350 `#`-prefixed entity
+/// records, sphere smallest / box largest), well under any line-folding
+/// threshold, so nothing folds today and every count below is exact. A
+/// future fixture large enough to fold would need either a
 /// normalize-then-count pass (strip inserted line breaks before scanning) or
 /// a documented re-verification that folding still doesn't reach the counted
 /// tokens.
@@ -939,8 +998,13 @@ fn positive_x_3d_point_count(step_text: &str) -> usize {
 /// `BRepBuilderAPI_GTransform` rewrites every analytic surface (planes,
 /// cylinders, ...) as a B-spline approximation; `GeometryOp::Mirror`
 /// (`gp_Trsf::SetMirror`) does not, so analytic surface types and exact
-/// volume survive it unchanged. Its four assertions pin TODAY's lossy
-/// behaviour as a hard gate — **if any of them FAILS, OCCT has gotten
+/// volume survive it unchanged. Its four det<0 assertions pin TODAY's lossy
+/// behaviour as a hard gate, and are then repeated VERBATIM against the
+/// IDENTITY linear map (the same determinant-independence control half (b)
+/// uses) — without that repeat, this half would only ever have exercised
+/// det<0, and a reader could not tell this hazard apart from a genuine det<0
+/// orientation defect, which is exactly the ambiguity PRD §4's open question
+/// turns on — **if any of them FAILS (det<0 OR identity), OCCT has gotten
 /// BETTER at preserving analytic geometry under GTransform: update that
 /// assertion and this module's doc (and #6652), rather than treating the
 /// failure as a regression.**
@@ -971,10 +1035,7 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
 
     // --- Half (a): analytic geometry is destroyed (never-tessellated source) ---
     let mut kernel = OcctKernel::new();
-    let (_, cylinder) = convex_fixtures(&mut kernel)
-        .into_iter()
-        .find(|(name, _)| *name == "cylinder_r6_h20")
-        .expect("convex_fixtures should include cylinder_r6_h20");
+    let cylinder = build_cylinder(&mut kernel);
 
     let source_text = step_text(&kernel, cylinder);
     let source_volume = volume_of(&kernel, cylinder);
@@ -1067,6 +1128,63 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
          a regression."
     );
 
+    // Determinant-independence control: the SAME four assertions repeated
+    // against the IDENTITY linear map diag(1,1,1) (det = +1, geometrically a
+    // no-op). Without this, half (a) would only ever have exercised det<0,
+    // and "OCCT mishandles det<0" would be a plausible misreading of the
+    // four assertions above — exactly the ambiguity half (b)'s own identity
+    // check (below) exists to close for the pre-tessellation hazard.
+    // Reproducing all four findings unchanged at det=+1 proves this hazard
+    // belongs to GTransform itself, not to reflection.
+    let identity = affine_linear(
+        &mut kernel,
+        cylinder,
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    );
+    let identity_text = step_text(&kernel, identity);
+    assert_eq!(
+        step_entity_count(&identity_text, "CYLINDRICAL_SURFACE"),
+        0,
+        "AffineApply IDENTITY (det=+1, geometrically a no-op) should ALSO destroy the analytic \
+         CYLINDRICAL_SURFACE entirely — determinant-independence control, proving this hazard \
+         is a GTransform artifact rather than a det<0 orientation defect. Characterization pin \
+         (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion \
+         FAILS, OCCT has gotten BETTER at preserving analytic geometry under GTransform: \
+         update this pin and this module's doc rather than treating the failure as a \
+         regression."
+    );
+    assert_eq!(
+        step_entity_count(&identity_text, "PLANE("),
+        0,
+        "AffineApply IDENTITY should ALSO destroy the analytic PLANE( entities entirely \
+         (determinant-independence control — see the CYLINDRICAL_SURFACE assertion above). \
+         Characterization pin (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — \
+         if this assertion FAILS, OCCT has gotten BETTER at preserving analytic geometry under \
+         GTransform: update this pin and this module's doc rather than treating the failure as \
+         a regression."
+    );
+    assert!(
+        step_entity_count(&identity_text, "B_SPLINE_SURFACE") > 0,
+        "AffineApply IDENTITY should ALSO introduce >=1 B_SPLINE_SURFACE entity \
+         (determinant-independence control). Characterization pin (follow-up task #6652 / \
+         ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten \
+         BETTER at preserving analytic geometry under GTransform (no B-spline substitution \
+         needed): update this pin and this module's doc rather than treating the failure as a \
+         regression."
+    );
+    let identity_volume = volume_of(&kernel, identity);
+    let identity_rel_err = (identity_volume - source_volume).abs() / source_volume;
+    assert!(
+        identity_rel_err > 1e-4,
+        "AffineApply IDENTITY volume should ALSO differ from source by more than 1e-4 relative \
+         (determinant-independence control: this is a GTransform analytic-to-B-spline \
+         approximation-loss artifact, not a det<0 effect), got rel_err={identity_rel_err:e}. \
+         Characterization pin (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — \
+         if this assertion FAILS, OCCT has gotten BETTER at preserving analytic geometry under \
+         GTransform (volume now survives intact): update this pin and this module's doc rather \
+         than treating the failure as a regression."
+    );
+
     // --- Half (b): pre-tessellation fragility, determinant-independent ---
     let (mut kernel_b, base) = fresh_pretessellated_cylinder(1e-4);
 
@@ -1138,21 +1256,7 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
 ///     test 4 half (b) pins.
 fn fresh_pretessellated_cylinder(deflection: f64) -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
-    let cyl_src = kernel
-        .execute(&GeometryOp::Cylinder {
-            radius: Value::Real(CYLINDER_RADIUS),
-            height: Value::Real(CYLINDER_HEIGHT),
-        })
-        .expect("cylinder_r6_h20 should build");
-    let base = kernel
-        .execute(&GeometryOp::Translate {
-            target: cyl_src.id,
-            dx: CYLINDER_DX,
-            dy: CYLINDER_DY,
-            dz: 0.0,
-        })
-        .expect("cylinder_r6_h20 translate to x>0 should succeed")
-        .id;
+    let base = build_cylinder(&mut kernel);
 
     kernel.tessellate(base, deflection).unwrap_or_else(|e| {
         panic!("pre-tessellation of cylinder_r6_h20 at {deflection:e} should succeed: {e:?}")
