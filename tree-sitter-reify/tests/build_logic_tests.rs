@@ -1,9 +1,19 @@
 //! Tests for build.rs pure logic functions.
 //!
-//! Since build.rs is compiled as a standalone build script by cargo,
-//! its functions cannot be imported by test targets. This file
-//! re-implements the pure logic (content hashing, staleness detection,
-//! output verification) to validate correctness.
+//! Since build.rs is compiled as a standalone build script by cargo, its
+//! functions cannot be `use`d by a test target. The historical workaround was
+//! to HAND-COPY them here — and that is precisely how `#6992` shipped: a green
+//! 1879-line suite exercising a private replica while the real build script
+//! carried the defect.
+//!
+//! So the staleness primitives now live in ONE file, `../build_support.rs`,
+//! and both `build.rs` and this test target `include!` it. A test that passes
+//! here is a statement about the code cargo actually runs.
+//!
+//! The remaining local duplicates (`content_hash`, `stamp_write`,
+//! `verify_outputs`, `run_with_timeout`) are logic this task does not touch;
+//! they stay hand-copied and are still labelled as such.
+include!("../build_support.rs");
 
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -47,9 +57,6 @@ fn test_content_hash_changes_on_modification() {
         "different content must produce different hashes"
     );
 }
-
-/// The expected output files that tree-sitter generate produces.
-const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
 
 /// Absolute path to this test file, resolved at compile time via CARGO_MANIFEST_DIR.
 /// Used by source-level regression tests that read this file's own contents.
@@ -1875,5 +1882,239 @@ fn test_no_bare_relative_self_path_reads() {
             .map(|(n, l)| format!("  line {}: {}", n, l.trim()))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+// ── Generated-output manifest primitives (`#6992`) ───────────────────────────
+//
+// The three stamps in this pipeline used to attest only `grammar.js`:
+// `src/.grammar_hash.stamp` and `$OUT_DIR/grammar_hash.stamp` both said "the
+// grammar hashes to X" and then let a merely-EXISTING `src/parser.c` ride along
+// on that claim. A merge that restores an older grammar.js beside a parser.c
+// generated from a newer one therefore produces a stamp that actively vouches
+// for the wrong parser, and the mtime heuristic that was supposed to catch it
+// is erased by warm-lane seeding (every file in this lane is stamped
+// `Jan 1 2020`, so `output_mtime > stamp_mtime` is universally false).
+//
+// The cure is a manifest that names the generated outputs by CONTENT. These
+// tests drive the shared primitives from `build_support.rs` — the same code
+// `build.rs` runs — never a replica.
+
+/// True when this host can hash at all.
+///
+/// Mirrors `sha256_of`'s three-outcome contract: `Ok(None)` is the host-wide
+/// "no sha256sum and no shasum" fact, and every manifest assertion below is
+/// vacuous there. Skipping is the honest response — a panic would report an
+/// environment gap as a defect.
+fn hasher_available() -> bool {
+    matches!(sha256_of(BUILD_RS), Ok(Some(_)))
+}
+
+/// Render a manifest naming `rels` inside `src_dir`, hashing each from disk.
+///
+/// Deliberately hashes the REAL bytes rather than accepting a caller-supplied
+/// digest: a fixture that can mint an arbitrary hash proves nothing about the
+/// predicate under test.
+fn render_manifest_for(src_dir: &Path, rels: &[&str]) -> String {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for rel in rels {
+        let hash = sha256_of_path(&src_dir.join(rel))
+            .expect("fixture file must hash")
+            .expect("hasher_available() was checked first");
+        entries.push((hash, (*rel).to_string()));
+    }
+    outputs_manifest_render(&entries)
+}
+
+/// `src_dir/.generated_outputs.stamp` path — the sibling stamp under test.
+fn outputs_stamp_of(src_dir: &Path) -> std::path::PathBuf {
+    src_dir.join(OUTPUTS_STAMP_NAME)
+}
+
+#[test]
+fn test_outputs_manifest_render_is_sorted_and_byte_shaped() {
+    // The format is REUSED from write_inputs_stamp (build.rs) verbatim:
+    // "<hash>  <relpath>\n" lines, sorted by relpath, two spaces. Both the
+    // Rust and the shell halves parse it, so the bytes are the contract.
+    let rendered = outputs_manifest_render(&[
+        ("cccc".to_string(), "parser.c".to_string()),
+        ("aaaa".to_string(), "grammar.json".to_string()),
+        ("bbbb".to_string(), "node-types.json".to_string()),
+    ]);
+    assert_eq!(
+        rendered, "aaaa  grammar.json\nbbbb  node-types.json\ncccc  parser.c\n",
+        "manifest must be sorted by relpath and use the two-space separator"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_parse_round_trips_render() {
+    let entries = vec![
+        ("aaaa".to_string(), "grammar.json".to_string()),
+        ("bbbb".to_string(), "node-types.json".to_string()),
+        ("cccc".to_string(), "parser.c".to_string()),
+    ];
+    let parsed = outputs_manifest_parse(&outputs_manifest_render(&entries))
+        .expect("a rendered manifest must parse");
+    assert_eq!(parsed, entries, "render -> parse must be lossless");
+}
+
+#[test]
+fn test_outputs_manifest_matches_true_for_untouched_outputs() {
+    // (a) The legitimate fast path: a manifest minted from the outputs on disk
+    // must verify against those same outputs. Without this, the fix would be a
+    // permanent regeneration loop rather than a staleness detector.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
+    )
+    .unwrap();
+
+    assert!(
+        outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a manifest minted from these exact bytes must verify"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_after_one_byte_mutation() {
+    // (b) THE DEFECT, reduced to one byte: parser.c no longer matches what the
+    // manifest recorded. Content is the only signal that survives warm-lane
+    // mtime normalization, so this is the assertion the whole task rests on.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
+    )
+    .unwrap();
+
+    let parser = src_dir.join("parser.c");
+    let mut bytes = std::fs::read(&parser).unwrap();
+    bytes[0] ^= 0x01;
+    std::fs::write(&parser, &bytes).unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a single mutated byte in parser.c must invalidate the manifest"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_when_manifest_missing() {
+    // (c) No manifest is UNPROVEN, and unproven must read as stale. The old
+    // code treated the absence of evidence as evidence of freshness.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "an absent manifest must never vouch for the outputs beside it"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_when_an_expected_output_is_unlisted() {
+    // (d) A manifest covering 2 of the 3 outputs attests nothing about the
+    // third — so it must not verify. A per-entry loop with no set check would
+    // pass here, which is exactly the hole being closed.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, &["grammar.json", "node-types.json"]),
+    )
+    .unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a manifest that omits parser.c must not verify the output set"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_on_unexpected_relpath() {
+    // (e) The other half of the set check: an entry outside EXPECTED_OUTPUTS
+    // means the manifest describes a different output set than the one this
+    // build script produces, so it cannot be trusted for this one.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(src_dir.join("stowaway.c"), b"placeholder").unwrap();
+
+    let mut rels: Vec<&str> = EXPECTED_OUTPUTS.to_vec();
+    rels.push("stowaway.c");
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, &rels),
+    )
+    .unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a manifest naming a file outside EXPECTED_OUTPUTS must not verify"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_on_malformed_line_without_panicking() {
+    // (f) A truncated write (killed generate, full disk) must produce a plain
+    // FALSE, never a panic: this predicate runs inside a build script, where a
+    // panic is a hard build failure rather than a recoverable regeneration.
+    if !hasher_available() {
+        return;
+    }
+    for corrupt in [
+        "not-a-manifest-line\n",
+        "deadbeef\n",
+        "deadbeef parser.c\n",
+        "  parser.c\n",
+        "deadbeef  \n",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = make_populated_src_dir(dir.path());
+        std::fs::write(outputs_stamp_of(&src_dir), corrupt).unwrap();
+        assert!(
+            !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+            "malformed manifest {:?} must read as stale, not as current",
+            corrupt
+        );
+        assert!(
+            outputs_manifest_parse(corrupt).is_none(),
+            "malformed manifest {:?} must fail to parse rather than panic",
+            corrupt
+        );
+    }
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_on_empty_manifest() {
+    // (g) An empty file is the classic crash-mid-write residue: created by the
+    // open, never filled. It names no outputs, so it proves nothing.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(outputs_stamp_of(&src_dir), "").unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "an empty manifest must not verify the outputs beside it"
     );
 }
