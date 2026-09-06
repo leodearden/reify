@@ -4166,6 +4166,23 @@ pub enum DiagnosticCode {
     /// match on this code rather than on the severity or on message substrings
     /// (the `hex_wedge_mesh_diagnostic` precedent below does the same).
     ///
+    /// SIDE EFFECT OF CARRYING A CODE AT ALL — worth knowing before editing
+    /// either constructor. `reify-cli`'s `dedup_diagnostics` short-circuits on
+    /// `code.is_some()`, and its `merge_build_diagnostics` keys on the code, so
+    /// a CODED entry is exempt from within-list collapsing while an UNCODED one
+    /// is not. Before this variant existed the diagnostic was uncoded, so two
+    /// byte-identical copies from two `@optimized` call sites collapsed into
+    /// ONE printed line on `cmd_check`'s realization sub-path; they now both
+    /// survive, so the line count under `check` is per CALL SITE rather than
+    /// per distinct message. Measured on `examples/anisotropic_bar.ri`: two
+    /// `solver::elastic_static` lines; on `examples/fdm_bracket.ri`: three
+    /// lines over two distinct targets. That is the behaviour
+    /// `dedup_diagnostics`' own rationale asks for — a coded entry's
+    /// multiplicity is a per-callout fact, not re-run noise — and the
+    /// coded-vs-uncoded split is pinned by `dedup_collapses_only_uncoded_entries`
+    /// and `dedup_exempts_the_coded_missing_trampoline_pair` in
+    /// `crates/reify-cli/src/main.rs`.
+    ///
     /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, carries no
     /// `VARIANT_COUNT` backstop, and is never matched exhaustively anywhere in
     /// the workspace, so adding one variant is purely additive and round-trips

@@ -482,28 +482,11 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
 ///
 /// **Other `error:` lines still printed at exit 0.** Task 5311 removed this
-/// diagnostic from that set but did not empty it.  A post-fix sweep of all
-/// tracked `examples/**/*.ri` left 12 lines in 9 distinct shapes, spanning four
-/// owning subsystems (geometry compile/realize, relation solving, imported
-/// fields, multi-kernel routing) — too many to fix in that task's diff without
-/// an unbounded scope breach, so they are filed as a low-priority follow-up
-/// rather than dropped.  Eight of the nine read as genuine per-example defect
-/// signals whose only bug is the exit code; one — the geometry-consumer
-/// `could not be resolved … not on the pure value-eval surface` line — is the
-/// same posture-conditional degradation class this task's diagnostic was in.
-/// Re-measure with:
-///
-/// ```text
-/// for f in $(find examples -name '*.ri' | sort); do
-///   err=$(timeout 60 ./target/debug/reify check "$f" 2>&1 >/dev/null)
-///   [ $? = 0 ] && echo "$err" | grep '^error:' | sed "s|^|$f :: |"
-/// done
-/// ```
-///
-/// Baseline for that command: 55 lines before task 5311 (43 of them this
-/// diagnostic), 12 after.  #5403 (leaf gamma) owns the general
-/// `Severity::Error` ⇒ non-zero-exit gate for `check`, so these must be triaged
-/// BEFORE that gate lands or they become spurious CI failures.
+/// diagnostic from that set but did not empty it; the residual shapes across
+/// `examples/**/*.ri` are inventoried and classified in #7308, which also
+/// records the sweep command that measures them.  Triage is required there
+/// BEFORE #5403 (leaf gamma) lands the general `Severity::Error` ⇒
+/// non-zero-exit gate for `check`, or each becomes a spurious CI failure.
 /// The constraint-indeterminacy message grammar, as one pair of literals:
 /// `constraint {label-or-id} indeterminate: {reason}`.
 ///
@@ -1062,9 +1045,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
 
         // Escalate to FAILURE when any DFM Error-severity diagnostic is present
         // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
-        // `dfm_has_error_diagnostic` matches on the `E_DFM_` message prefix so
-        // unrelated code-less Error diagnostics co-resident in a DFM module
-        // (e.g. FEA "no registered compute trampoline") are NOT escalated.
+        // `dfm_has_error_diagnostic` matches on the `E_DFM_` message prefix, so
+        // unrelated Error diagnostics co-resident in a DFM module are NOT
+        // escalated whether they carry a `DiagnosticCode` or not.
+        // (The FEA "no registered compute trampoline" diagnostic used to be the
+        // stock example of that. Since task 5311 it is no longer even a
+        // candidate here: it is a `Severity::Warning` carrying
+        // `DiagnosticCode::NoRegisteredComputeTrampoline` under `check`'s
+        // empty-registry posture, so it fails this predicate's severity test
+        // before the message test is reached.)
         // Gated on `has_dfm_rule` as a first-pass guard so non-DFM modules
         // remain byte-identical (C2).
         // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
@@ -1467,9 +1456,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
     let checker = SimpleConstraintChecker;
     // Register FEA/buckling/modal + shell-extract compute trampolines so that
     // `@optimized("solver::elastic_static")` targets dispatch to the real solver
-    // rather than body-inlining.  Without these registrations the engine emits an
-    // Error-severity "no registered compute trampoline" diagnostic and FEA-result
-    // constraints evaluate to Indeterminate.
+    // rather than body-inlining.  This is also what keeps the missing-trampoline
+    // diagnostic GATING here: without these registrations this engine's compute
+    // registry would be entirely EMPTY — `cmd_check`'s declared trampoline-free
+    // posture — and task 5311's severity predicate would emit
+    // `DiagnosticCode::NoRegisteredComputeTrampoline` at `Severity::Warning`,
+    // leaving FEA-result constraints Indeterminate WITHOUT failing the build.
+    // With the bundle registered, a target that is still unregistered is a
+    // genuine defect and stays `Severity::Error`, which `reify build` gates on.
     //
     // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
     // also adds `.with_solver(production())`).  The DimensionalSolver resolves
@@ -3145,9 +3139,19 @@ fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> boo
 /// the [`reify_core::Diagnostic::message`] field (the format is
 /// `"E_DFM_<KIND>: <human description>"`).  Matching on the message substring
 /// is more precise than `d.code.is_none()`: it avoids escalating unrelated
-/// code-less Error diagnostics (e.g. FEA "no registered compute trampoline",
-/// build-volume usage errors) that may co-reside with a DFMRule in the same
-/// module.
+/// Error diagnostics that may co-reside with a DFMRule in the same module,
+/// whether or not they carry a [`reify_core::DiagnosticCode`] — the predicate
+/// never consults `code` at all, so minting a code for a neighbouring
+/// diagnostic cannot change what escalates here.
+///
+/// The FEA "no registered compute trampoline" diagnostic was this doc's
+/// standing example of such a neighbour.  Task 5311 gave it
+/// `DiagnosticCode::NoRegisteredComputeTrampoline` and made it a
+/// `Severity::Warning` under `cmd_check`'s empty-registry posture, so under
+/// `check` it no longer reaches the message test at all; under `eval`/`build`
+/// it stays a (now coded) `Severity::Error` and is still correctly not
+/// escalated here.  Both shapes are pinned by
+/// `dfm_error_escalation_requires_e_dfm_prefix`.
 ///
 /// Note: `E_DFM_UNDERCUT` is always [`Severity::Error`] regardless of the
 /// rule's declared `DFMSeverity` (a re-entrant wall is a hard manufacturability
@@ -5007,7 +5011,7 @@ mod format_undef_cause_tests {
 #[cfg(test)]
 mod dfm_error_escalation_tests {
     use super::dfm_has_error_diagnostic;
-    use reify_core::Diagnostic;
+    use reify_core::{Diagnostic, DiagnosticCode};
 
     /// Non-OCCT test: `dfm_has_error_diagnostic` must return `true` only for
     /// diagnostics whose message contains `E_DFM_`, distinguishing DFM Error
@@ -5019,10 +5023,20 @@ mod dfm_error_escalation_tests {
     /// synthetic [`reify_core::Diagnostic`] values.
     ///
     /// Covers the reviewer concern (amend: robustness_error_handling) that a
-    /// module carrying BOTH a DFMRule and an unrelated code-less Error diagnostic
-    /// (e.g. FEA "no registered compute trampoline") must NOT escalate to FAILURE:
-    /// the `E_DFM_` prefix match is keyed to the DFM diagnostic, not to mere
-    /// code-lessness.
+    /// module carrying BOTH a DFMRule and an unrelated non-DFM Error diagnostic
+    /// must NOT escalate to FAILURE: the `E_DFM_` prefix match is keyed to the
+    /// DFM diagnostic's MESSAGE, not to code-lessness — the predicate never
+    /// reads `Diagnostic::code`.
+    ///
+    /// Task 5311 note: the standing example of such a neighbour used to be a
+    /// code-less FEA "no registered compute trampoline" Error. The engine no
+    /// longer produces that shape — the diagnostic now always carries
+    /// `DiagnosticCode::NoRegisteredComputeTrampoline`, and under `cmd_check`'s
+    /// empty-registry posture it is a `Severity::Warning` rather than an Error.
+    /// Both of its real shapes are exercised below (the coded `eval`/`build`
+    /// Error and the coded `check` Warning), alongside a genuinely code-less
+    /// non-DFM Error with no FEA attribution, so the test keeps covering
+    /// code-lessness without asserting it of a diagnostic that has a code.
     #[test]
     fn dfm_error_escalation_requires_e_dfm_prefix() {
         // E_DFM_ prefix Error → escalates (DFM violation)
@@ -5041,12 +5055,39 @@ mod dfm_error_escalation_tests {
             "E_DFM_UNDERCUT Error must trigger escalation"
         );
 
-        // Code-less Error WITHOUT E_DFM_ prefix (e.g. FEA) → must NOT escalate
-        let diag_fea = Diagnostic::error("no registered compute trampoline");
+        // Code-less Error WITHOUT E_DFM_ prefix → must NOT escalate.
+        // Deliberately generic: no FEA attribution, because the FEA
+        // missing-trampoline diagnostic is no longer code-less (task 5311).
+        let diag_codeless = Diagnostic::error("synthetic unrelated failure, no code");
         assert!(
-            !dfm_has_error_diagnostic(&[diag_fea]),
-            "non-DFM code-less Error must NOT trigger escalation \
-             (FEA 'no registered compute trampoline' must remain exit 0 under check)"
+            !dfm_has_error_diagnostic(&[diag_codeless]),
+            "a non-DFM code-less Error must NOT trigger escalation"
+        );
+
+        // The REAL missing-trampoline shapes, as the engine emits them since
+        // task 5311 — both coded, one Error (eval/build: non-empty registry)
+        // and one Warning (check: empty registry). Neither may escalate: the
+        // Error is rejected by the `E_DFM_` message test, the Warning by the
+        // severity test.
+        let diag_trampoline_error = Diagnostic::error(
+            "@optimized target \"solver::elastic_static\": no registered compute trampoline",
+        )
+        .with_code(DiagnosticCode::NoRegisteredComputeTrampoline);
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_trampoline_error]),
+            "the CODED missing-trampoline Error (eval/build posture) must NOT \
+             trigger escalation — the predicate keys on the E_DFM_ message \
+             prefix, never on the presence or absence of a DiagnosticCode"
+        );
+        let diag_trampoline_warning = Diagnostic::warning(
+            "@optimized target \"solver::elastic_static\": no registered compute \
+             trampoline (falling back to body-inlining)",
+        )
+        .with_code(DiagnosticCode::NoRegisteredComputeTrampoline);
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_trampoline_warning]),
+            "the missing-trampoline Warning (check's empty-registry posture) \
+             must NOT trigger escalation — check must stay exit 0 for it"
         );
 
         // W_DFM_ Warning → must NOT escalate (only Errors escalate)
@@ -5067,7 +5108,10 @@ mod dfm_error_escalation_tests {
         // (the mix that triggered the reviewer concern: a DFM module
         // co-resident with an unrelated FEA Error must stay exit 0)
         let mixed: Vec<Diagnostic> = vec![
-            Diagnostic::error("no registered compute trampoline"),
+            Diagnostic::error(
+                "@optimized target \"solver::elastic_static\": no registered compute trampoline",
+            )
+            .with_code(DiagnosticCode::NoRegisteredComputeTrampoline),
             Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit"),
         ];
         assert!(
@@ -6226,6 +6270,51 @@ mod d2_pass_ordering_tests {
             vec![key(&uncoded), key(&coded), key(&coded)],
             "the uncoded front-end re-emission collapses; the coded per-callout \
              findings keep their multiplicity, in first-occurrence order"
+        );
+    }
+
+    /// Task 5311 minted `DiagnosticCode::NoRegisteredComputeTrampoline` for a
+    /// diagnostic that until then was UNCODED, which moves it from the
+    /// collapsing population above into the exempt one — a user-visible
+    /// composition change on `cmd_check`'s realization sub-path, pinned here so
+    /// it is a decision rather than an accident.
+    ///
+    /// The two literals below are the same message: the shape the engine emits
+    /// TODAY (coded) and the shape it emitted BEFORE (uncoded). Two `@optimized`
+    /// call sites in one module produce two byte-identical copies, so the
+    /// uncoded pair collapsed to one printed line and the coded pair does not.
+    /// Confirmed end to end against a binary built from this branch:
+    /// `reify check examples/anisotropic_bar.ri` prints the
+    /// `solver::elastic_static` warning twice (two call sites), and
+    /// `examples/fdm_bracket.ri` prints three lines over two distinct targets.
+    /// That is what `dedup_diagnostics`' own rationale asks for — a coded
+    /// entry's multiplicity is a per-callout fact, not re-run noise.
+    #[test]
+    fn dedup_exempts_the_coded_missing_trampoline_pair() {
+        const MESSAGE: &str = "@optimized target \"solver::elastic_static\": \
+                               no registered compute trampoline \
+                               (falling back to body-inlining)";
+
+        let coded =
+            Diagnostic::warning(MESSAGE).with_code(DiagnosticCode::NoRegisteredComputeTrampoline);
+        let as_it_was_before_task_5311 = Diagnostic::warning(MESSAGE);
+
+        assert_eq!(
+            dedup_diagnostics(&[coded.clone(), coded.clone()]).len(),
+            2,
+            "the CODED missing-trampoline diagnostic is exempt from collapsing, \
+             so one line per @optimized call site reaches the user"
+        );
+        assert_eq!(
+            dedup_diagnostics(&[
+                as_it_was_before_task_5311.clone(),
+                as_it_was_before_task_5311,
+            ])
+            .len(),
+            1,
+            "its pre-5311 UNCODED twin collapsed to a single line — this is the \
+             baseline the assertion above is a change from, spelled out so the \
+             change is legible without rebuilding the old binary"
         );
     }
 
