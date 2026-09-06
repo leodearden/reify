@@ -22,19 +22,19 @@
 //!
 //! ## Physics ground truth (an identity, not a fitted number)
 //!
-//! `MaterialDamping` selects ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + ζ_extra(ω_i).
-//! With a SINGLE material every η_e is the same η, so the energy ratio collapses
-//! to 1 **for any mode shape whatsoever** and
+//! With a SINGLE material, PRD §C5's MSE ratio collapses to 1 for any mode shape
+//! whatsoever and
 //!
 //! ζ_i = η/2  exactly, for every FLEXIBLE mode, independent of φ_i.
 //!
-//! That is an algebraic identity (PRD §C5's "degenerate identity"), not a
-//! converged number: it needs no eigensolve accuracy at all. The derivation
-//! divides by Σ_e SE_e, so it does NOT reach ω ≈ 0: a rigid-body or spurious
-//! mode stores no strain energy, making the ratio 0/0 (undefined, not 1), and
-//! reports ζ = 0 through the shared ω-floor in `total_damping_ratio`. This
-//! fixture is fully constrained and every emitted mode is flexible — the
-//! near-zero band is pinned by
+//! That is an algebraic identity, not a converged number: it needs no eigensolve
+//! accuracy at all — which is what makes the 1e-9 tolerances below exactness
+//! pins rather than fitted thresholds. The derivation is written out once, on
+//! `structure def MaterialDamping` (`crates/reify-compiler/stdlib/modal_analysis.ri`),
+//! and the FLEXIBLE qualifier — a rigid-body mode reports ζ = 0 through the
+//! shared ω-floor — is argued once on `total_damping_ratio` (reify-stdlib);
+//! neither is restated here. This fixture is fully constrained and every emitted
+//! mode is flexible, so the near-zero band is out of its reach and is pinned by
 //! `modal_ops::tests::trampoline_floors_material_damping_for_rigid_body_modes`
 //! and by the `total_damping_ratio_*` unit tests in reify-stdlib. `run_modal_analysis`
 //! reads exactly ONE material, so this fixture is that degenerate case by

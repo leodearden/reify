@@ -75,6 +75,17 @@ pub fn rayleigh_damping_ratio(alpha: f64, beta: f64, omega: f64) -> f64 {
 /// ζ = 0                                    for |ω| <= MIN_OMEGA_FOR_DAMPING
 /// ```
 ///
+/// CANONICAL — this doc is the single in-repo expansion of the floor argument
+/// (the function owns the floor: `MIN_OMEGA_FOR_DAMPING` is compared in exactly
+/// one branch in the workspace). Every other site — `modal_ops.rs`'s producer,
+/// plan and classifier docs, the `MaterialDamping` declaration in
+/// `crates/reify-compiler/stdlib/modal_analysis.ri`, and the tests — CITES this
+/// rather than restating it, so a later leaf that makes ζ genuinely
+/// mode-dependent (heterogeneous MSE, #6883) has one place to edit. The
+/// author-facing semantics of ζ_material itself, and the normative derivation,
+/// are correspondingly owned by that `MaterialDamping` declaration and by
+/// PRD §C5 — not repeated here beyond the premise the floor argument needs.
+///
 /// The floor is shared by BOTH halves, and each half justifies it on its own:
 ///
 /// * Rayleigh half — ζ = (α + β·ω²)/(2ω) → ∞ as ω → 0; a rigid-body mode
@@ -206,15 +217,9 @@ mod tests {
 
     // ── total_damping_ratio: ζ = ζ_material + (α + β·ω²)/(2ω), shared ω-floor ─
     //
-    // WHY the material half is floored too (task #6878; a later reader must not
-    // "restore" the degenerate identity below the floor). `rayleigh_damping_ratio`
-    // floors because ζ = (α + β·ω²)/(2ω) → ∞ is non-physical: a rigid-body mode
-    // carries no modal damping. The SAME physics governs the modal-strain-energy
-    // half. A rigid-body mode stores no strain energy, so Σ_e SE_e = 0 and the
-    // energy ratio (Σ_e η_e·SE_e)/(Σ_e SE_e) is 0/0 — UNDEFINED, not 1. The
-    // degenerate identity ζ = η/2 (PRD C5) is derived from a ratio that is 1
-    // "by construction" only when the denominator is nonzero, so it does not
-    // reach the rigid-body case and η/2 is NOT the correct answer there.
+    // WHY the material half is floored too — and why a later reader must not
+    // "restore" the degenerate identity below the floor — is argued once, on
+    // `total_damping_ratio`'s own doc comment above. Not restated here.
 
     /// THE DEFECT this helper exists to close: a rigid-body mode (ω = 0) under a
     /// bare `MaterialDamping()` over `Steel_AISI_1045` (η = 0.0006 ⇒

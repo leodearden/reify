@@ -3042,14 +3042,15 @@ structure StepForceValueRefAtSmoke {
 
 /// `MaterialDamping` is the third `DampingDescriptor` refinement (task #6878,
 /// PRD leaf β of docs/prds/v0_6/damped-modal-bonded-heterogeneous.md). It
-/// selects the MODAL-STRAIN-ENERGY value source for `Mode.damping_ratio`:
+/// selects the MODAL-STRAIN-ENERGY value source for `Mode.damping_ratio`;
+/// the closed form and its derivation live on the declaration itself
+/// (`crates/reify-compiler/stdlib/modal_analysis.ri`) and are not restated here.
 ///
-///   ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + ζ_extra(ω_i)
-///
-/// with η_e the per-material hysteretic loss factor from
-/// `trait Damped { param loss_factor : Real }` (materials_fea.ri, task #6877).
-/// The descriptor therefore carries NO `loss_factor` of its own — η is a
-/// property of the MATERIAL, not of the damping strategy.
+/// What matters for THIS test is only that η — the per-material hysteretic loss
+/// factor from `trait Damped { param loss_factor : Real }` (materials_fea.ri,
+/// task #6877) — is a property of the MATERIAL, not of the damping strategy, so
+/// clause (b) below can assert that the descriptor carries exactly one param and
+/// no `loss_factor` of its own.
 ///
 /// ## What this pins, and why each clause is here
 ///

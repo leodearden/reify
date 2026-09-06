@@ -170,7 +170,14 @@ structure def RayleighDamping : DampingDescriptor {
 
 // `MaterialDamping` selects the MODAL-STRAIN-ENERGY (MSE) value source for
 // `Mode.damping_ratio` (task #6878, PRD leaf β of
-// docs/prds/v0_6/damped-modal-bonded-heterogeneous.md §C5). Per mode i:
+// docs/prds/v0_6/damped-modal-bonded-heterogeneous.md §C5).
+//
+// CANONICAL — this block is the single in-repo, author-facing expansion of
+// PRD §C5's derivation. The Rust sites that implement it (`plan_modal_damping`,
+// `DampingKind::Material`, `ModalDampingPlan` and the producer in
+// crates/reify-eval/src/modal_ops.rs) CITE it rather than restating it, so a
+// later leaf that makes ζ genuinely mode-dependent (the heterogeneous MSE
+// post-process) has one place to edit. Per mode i:
 //
 //     ζ_i = ½ · (Σ_e η_e · SE_e) / (Σ_e SE_e)  +  ζ_extra(ω_i)
 //
@@ -192,20 +199,18 @@ structure def RayleighDamping : DampingDescriptor {
 // where the ratio is no longer 1) is a later leaf of the same PRD and is
 // deliberately NOT implemented by #6878.
 //
-// THE IDENTITY DOES NOT REACH ω ≈ 0. Its derivation divides by Σ_e SE_e, so it
-// needs that sum to be nonzero. A rigid-body or spurious mode — which
-// `modal_analysis` reports under `W_ModalRigidBodyMode` for an under-constrained
-// model — stores NO strain energy, so Σ_e SE_e = 0 and the ratio is 0/0:
-// UNDEFINED, not 1. The ratio being "1 by construction" is therefore a claim
-// about the flexible band only, and η/2 is not the right answer at ω ≈ 0.
-// Such a mode reports
+// THE IDENTITY DOES NOT REACH ω ≈ 0 — hence the "FLEXIBLE" qualifier above. A
+// rigid-body or spurious mode (which `modal_analysis` reports under
+// `W_ModalRigidBodyMode` for an under-constrained model) stores no strain
+// energy, so the ratio's denominator vanishes and η/2 is not the right answer
+// there. Such a mode reports
 //
 //     ζ_i = 0,
 //
-// exactly as `RayleighDamping` already does through its own ω-floor, and for
-// the same physical reason: a rigid-body mode carries no modal damping. Both
-// halves share ONE floor (`total_damping_ratio`, reify-stdlib), so the two
-// descriptors cannot drift apart on this.
+// exactly as `RayleighDamping` already does, through the SAME ω-floor — both
+// halves share one, so the two descriptors cannot drift apart on this. The
+// argument for that floor is owned by `total_damping_ratio`
+// (crates/reify-stdlib/src/modal/free_vibration.rs) and is not restated here.
 //
 // COMPOSITION IS ADDITIVE AND EXPLICIT, NEVER IMPLICIT. `extra` is a full
 // `DampingDescriptor`, and its contribution is the EXISTING Rayleigh closed

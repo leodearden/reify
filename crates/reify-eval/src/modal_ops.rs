@@ -1163,11 +1163,10 @@ pub(crate) struct ModalTrampolineRun {
 /// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Scalar<Frequency>(Hz),
 /// shape: List<Vector3<Dimensionless>>, participation_mass: Real, damping_ratio: Real }`,
 /// where `damping_ratio` is the COMPOSED ratio
-/// `ζ_i = ζ_material + (α + β·ω_i²)/(2·ω_i)` (task #6878): the
-/// modal-strain-energy term contributed by `MaterialDamping` plus the Rayleigh
-/// term, summed through `total_damping_ratio`, which floors the WHOLE value to
-/// `0.0` below `MIN_OMEGA_FOR_DAMPING`. It is 0 for `NoDamping`, and reduces to
-/// the plain Rayleigh ratio for every pre-#6878 descriptor (`ζ_material == 0`).
+/// `ζ_i = ζ_material + (α + β·ω_i²)/(2·ω_i)` (task #6878) — summed, and floored
+/// near ω = 0, by `total_damping_ratio`, whose doc owns both semantics. It is 0
+/// for `NoDamping`, and reduces to the plain Rayleigh ratio for every pre-#6878
+/// descriptor (`ζ_material == 0`).
 /// `Mode.shape` is the mass-normalized eigenvector reshaped
 /// from `phi_full` (length `3·n_nodes`) into `n_nodes` per-node `Vector3`,
 /// `(0,0,0)` at every Dirichlet-constrained node.
@@ -1358,25 +1357,23 @@ pub(crate) fn run_modal_analysis(
         .enumerate()
         .map(|(i, &f)| {
             let omega = 2.0 * PI * f;
-            // Task #6878: ADDITIVE composition, ζ_i = ζ_material + ζ_extra(ω_i),
-            // through the single helper that owns the near-zero-ω floor.
+            // Task #6878: ADDITIVE composition, ζ_i = ζ_material + ζ_extra(ω_i).
+            // The sum and its near-zero-ω floor both belong to
+            // `total_damping_ratio`, whose doc argues them; the sum is NOT
+            // written out here precisely because that would put the material
+            // half outside the floor.
             //
             // B4 (no regression) holds BY CONSTRUCTION, not by inspection: for
             // `Absent` / `NoDamping` / `Rayleigh` / `Unsupported`,
             // `zeta_material` is exactly 0.0 and `(alpha, beta)` are bit-for-bit
-            // what `extract_damping` returned before this task, and
+            // what the pre-#6878 Rayleigh-only read returned, and
             // `total_damping_ratio(0.0, α, β, ω)` IS `rayleigh_damping_ratio(α,
             // β, ω)` — the latter is defined as the former in
             // `free_vibration.rs`. Those results are therefore byte-identical.
             //
-            // The floor is SHARED by both halves, which is why the sum is not
-            // written out here: a rigid-body / spurious mode (ω = 0 from
-            // `eigenvalue_to_frequency_hz`'s λ ≤ 0 clamp, emitted alongside
-            // `W_ModalRigidBodyMode` rather than dropped) must report ζ = 0, not
-            // η/2 — it stores no strain energy, so the MSE ratio is 0/0. That
-            // value is not cosmetic: `run_transient_response` reads
-            // `Mode.damping_ratio` back into the modal integrator AND into its
-            // cache key.
+            // Getting the floor wrong here would not be cosmetic:
+            // `run_transient_response` reads `Mode.damping_ratio` back into the
+            // modal integrator AND into its cache key.
             let damping_ratio =
                 total_damping_ratio(plan.zeta_material, plan.alpha, plan.beta, omega);
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
@@ -3096,14 +3093,12 @@ enum DampingKind {
     /// `RayleighDamping { alpha, beta }` — ζ_i = (α + β·ω_i²)/(2·ω_i).
     Rayleigh { alpha: f64, beta: f64 },
     /// `MaterialDamping { extra }` — selects the MODAL-STRAIN-ENERGY value
-    /// source for `Mode.damping_ratio` (task #6878, PRD leaf β of
-    /// docs/prds/v0_6/damped-modal-bonded-heterogeneous.md §C5):
-    /// ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + ζ_extra(ω_i).
-    ///
-    /// That closed form is the FLEXIBLE-band value. This variant selects the
-    /// value source; it does not evaluate it, and in particular it does not own
-    /// the near-zero-ω floor — `total_damping_ratio` applies that to both terms
-    /// at once, so a rigid-body mode (Σ_e SE_e = 0, ratio 0/0) reports ζ = 0.
+    /// source for `Mode.damping_ratio` (task #6878). The closed form and its
+    /// derivation are owned by `structure def MaterialDamping`
+    /// (`crates/reify-compiler/stdlib/modal_analysis.ri`) and PRD §C5; the
+    /// near-zero-ω floor is owned by `total_damping_ratio`. This variant only
+    /// SELECTS the value source — it neither evaluates it nor floors it — so
+    /// neither is restated here.
     ///
     /// `extra` is the classified ADDITIVE companion descriptor, carried rather
     /// than pre-flattened to an `(α, β)` pair: the stdlib types that slot as the
@@ -3205,11 +3200,10 @@ fn classify_descriptor(val: &Value) -> DampingKind {
 ///   `(alpha, beta)` — the Rayleigh coefficients, mode-dependent through ω.
 ///
 /// The plan carries COEFFICIENTS ONLY; it does not own the near-zero-ω floor.
-/// `total_damping_ratio` does, and it floors BOTH contributions together below
-/// `MIN_OMEGA_FOR_DAMPING` — so `zeta_material` being mode-independent is a
-/// statement about the flexible band, NOT a licence to add it unguarded. A
-/// rigid-body / spurious mode stores no strain energy, making the energy ratio
-/// 0/0 (undefined, not 1), so it reports ζ = 0 rather than η/2.
+/// `total_damping_ratio` does, and it floors BOTH contributions together — so
+/// `zeta_material` being mode-independent is a statement about the flexible
+/// band, NOT a licence to add it unguarded. Why the material half is floored
+/// too is argued once, on that function's doc.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ModalDampingPlan {
     zeta_material: f64,
@@ -3232,17 +3226,21 @@ struct ModalDampingPlan {
 ///
 /// ## Why ζ_material is MODE-INDEPENDENT here
 ///
-/// PRD §C5 defines it as ½·(Σ_e η_e·SE_e)/(Σ_e SE_e). [`run_modal_analysis`]
-/// reads exactly ONE material (`value_inputs[0]`), so every η_e is the same η and
-/// the energy ratio is ≡ 1 **by construction, for any mode shape whatsoever** —
-/// giving ζ = η/2 exactly, with no dependence on φ and no eigensolve accuracy
-/// required. It is implemented as that algebraic short-circuit rather than by
-/// summing per-element SE_e: the sum would add per-element work, re-derive
-/// element matrices outside `assemble_modal_km`, produce the same number to fp
-/// rounding, and introduce accumulation error into an assertion whose whole point
-/// is exactness. The heterogeneous case — where the ratio is genuinely ≠ 1 and ζ
-/// genuinely varies by mode — is a later leaf of the same PRD and is deliberately
-/// not implemented here.
+/// [`run_modal_analysis`] reads exactly ONE material (`value_inputs[0]`), which
+/// is PRD §C5's degenerate case: the energy ratio collapses to 1 for any mode
+/// shape whatsoever, giving ζ = η/2 exactly. The derivation is written out once,
+/// author-facing, on `structure def MaterialDamping`
+/// (`crates/reify-compiler/stdlib/modal_analysis.ri`) — including the
+/// FLEXIBLE-band qualifier — and is not repeated here.
+///
+/// What IS owned here is the implementation choice: that identity is realized as
+/// an algebraic short-circuit rather than by summing per-element SE_e. The sum
+/// would add per-element work, re-derive element matrices outside
+/// `assemble_modal_km`, produce the same number to fp rounding, and introduce
+/// accumulation error into an assertion whose whole point is exactness. The
+/// heterogeneous case — where the ratio is genuinely ≠ 1 and ζ genuinely varies
+/// by mode — is a later leaf of the same PRD and is deliberately not implemented
+/// here.
 ///
 /// ## Returns diagnostics alongside the plan
 ///
