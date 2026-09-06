@@ -203,21 +203,13 @@
 //! are the source of truth, so there is no second copy to drift.
 //!
 //! 1. **`Type::ScalarParam` DEFERS at a dimension slot and REJECTS at an `Int`
-//!    slot.** `Scalar<Q>` is what a dim-kinded generic PARAMETER
-//!    (`fn beam<Q: Dimension>(l: Scalar<Q>)`) resolves to. Its FAMILY is known
-//!    and only its DIMENSION is open, so at a dimension slot there is nothing to
-//!    compare — judging the uninstantiated body under strict `DimensionVector`
-//!    equality could only ever REJECT correct code. The defer's COST is that
-//!    `beam(10kg)` is then undiagnosed at this layer; nothing rechecks a generic
-//!    body per instantiation. That cost, and the three MEASURED cases bounding
-//!    it, are stated once on the `ExpectedArg::Scalar` arm itself. At an
-//!    `Int` COUNT slot the asymmetry flips: `Scalar<Q>` is a dimensioned scalar
-//!    for EVERY binding of `Q`, so the family mismatch is decidable without
-//!    instantiating and rejecting is right. Precedents for the defer:
-//!    `type_compat::is_mul_div_gradualism_skip` and
-//!    `conformance::scalar_param_arg_defers_at_scalar_slot` (task 5627 γ D4-5,
-//!    PRD invariant I5) — the latter deliberately narrow in the same way, gating
-//!    on `matches!(param_type, Type::Scalar { .. })`. Both halves are pinned:
+//!    slot.** `Scalar<Q>` — what a dim-kinded generic PARAMETER
+//!    (`fn beam<Q: Dimension>(l: Scalar<Q>)`) resolves to — has a KNOWN family
+//!    and an OPEN dimension, and the asymmetry falls out of that. Why each half
+//!    is right, what the defer COSTS, the cases bounding that cost and the two
+//!    compiler precedents it follows are stated ONCE, on the two arms that make
+//!    the decision — [`ExpectedArg::Scalar`] and [`ExpectedArg::Int`] in
+//!    [`check_builtin_arg_types`]; the enforcement is
 //!    `tests::scalar_param_defers_at_length_slot` and
 //!    `tests::scalar_param_still_rejected_at_int_slot`.
 //!
@@ -3573,9 +3565,18 @@ mod tests {
     /// the crate's `[dev-dependencies]` self-pull (`reify-compiler { features =
     /// ["test-support"] }`) puts two `reify_compiler` instances in the unit-test
     /// graph, and that helper returns the *external* instance's `CompiledModule`,
-    /// which would not unify with `crate::CompiledModule` here (E0308). Same
-    /// reasoning, same shape, as `relation_signatures.rs`'s `compile_module` and
-    /// `guards.rs`'s equivalent — see their doc comments.
+    /// which would not unify with `crate::CompiledModule` here (E0308).
+    ///
+    /// `relation_signatures.rs`'s `compile_module` is the same three lines for
+    /// the same reason — see its doc comment rather than a third telling of the
+    /// argument here. `guards.rs`'s `guarded_param_default_tests::compile`
+    /// shares only the RATIONALE, not the shape (MEASURED: it parses through
+    /// `reify_syntax::parse` with NO stdlib prelude, asserts the parse is clean,
+    /// and calls the module-local `compile`), so it is not a third copy of this
+    /// helper. Hoisting the two that ARE identical into one crate-internal
+    /// `#[cfg(test)]` module is the right move and is filed as follow-up work:
+    /// it needs edits in `relation_signatures.rs` and a `mod` line in `lib.rs`,
+    /// both outside task 6862's scope.
     fn compile_module(source: &str) -> crate::CompiledModule {
         let parsed = crate::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
         crate::compile_with_stdlib(&parsed)
@@ -3584,22 +3585,102 @@ mod tests {
     /// Every name [`builtin_arg_slots`] actually serves, derived MECHANICALLY
     /// rather than listed by hand.
     ///
-    /// Sweeps [`BUILTIN_NAME_FAMILIES`] (flattened) plus [`NON_FAMILY_SLOT_KEYS`]
-    /// across `0..=MAX_PROBED_ARITY` and keeps every name yielding a non-empty
-    /// slot list at some arity — the same technique
+    /// Sweeps EVERY curated registry that can name a slot key — [`BUILTIN_NAME_FAMILIES`]
+    /// (flattened), [`NON_FAMILY_SLOT_KEYS`] and [`NON_SELECTOR_ARG_SLOT_KEYS`] —
+    /// across `0..=MAX_PROBED_ARITY`, and keeps every name yielding a non-empty
+    /// slot list at some arity. Same technique
     /// [`arg_slot_keys_are_registered_builtin_names`] uses, and what makes the
     /// ledger guard self-maintaining: a name added to the table in a future leaf
     /// is picked up here automatically instead of quietly escaping the guard.
+    ///
+    /// # Why THREE registries and not one (reviewer amendment)
+    ///
+    /// This function is the sole input to
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`], so a slot key
+    /// it cannot NAME is a key that escapes the ledger, escapes the coupling rule,
+    /// and leaves that guard GREEN — the silent false GREEN
+    /// [`NON_FAMILY_SLOT_KEYS`] exists to close. Reaching the key through any ONE
+    /// of the three curated lists is enough, so the hand-maintained
+    /// [`NON_FAMILY_SLOT_KEYS`] is no longer the single point of failure it was:
+    /// the 5662 `mirror` / `circular_pattern` catch worked only because those two
+    /// names happen to sit in a family slice.
+    ///
+    /// MEASURED, so the widening is not mistaken for a fix to a live hole: it
+    /// admits NO name today. Of the 35 [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
+    /// `generate` is the only one unreachable from the family slices, and it is
+    /// already a [`NON_FAMILY_SLOT_KEYS`] entry. The chain is future-proofing —
+    /// a NEW non-selector key added to that curated list is now swept even if
+    /// whoever adds it never touches [`NON_FAMILY_SLOT_KEYS`].
+    ///
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — the third list the slot table draws
+    /// on — needs no chain of its own: it IS a [`BUILTIN_NAME_FAMILIES`] member,
+    /// asserted rather than asserted-in-prose by
+    /// [`slotted_name_sweep_reaches_every_curated_slot_registry`].
+    ///
+    /// Nothing spurious is admitted by widening: every candidate passes the
+    /// `!builtin_arg_slots(..).is_empty()` filter below, and both extra lists
+    /// carry their own no-dead-entry assertions.
     fn slotted_builtin_names() -> BTreeSet<&'static str> {
         BUILTIN_NAME_FAMILIES
             .iter()
             .flat_map(|family| family.iter())
             .chain(NON_FAMILY_SLOT_KEYS.iter())
+            .chain(NON_SELECTOR_ARG_SLOT_KEYS.iter())
             .copied()
             .filter(|name| {
                 (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty())
             })
             .collect()
+    }
+
+    /// The completeness sweep reaches a slot key through ANY curated registry,
+    /// not just through the one hand-maintained list.
+    ///
+    /// Pins the two claims [`slotted_builtin_names`]'s doc makes, so neither can
+    /// rot into a comment that is merely believed:
+    ///
+    /// 1. Every [`NON_FAMILY_SLOT_KEYS`] and every [`NON_SELECTOR_ARG_SLOT_KEYS`]
+    ///    entry comes back from the sweep. (Both lists already reject dead
+    ///    entries elsewhere, so each name here does yield slots.) This pins the
+    ///    OUTCOME — "every curated key is swept" — not any one chain: MEASURED
+    ///    today, the two explicit chains are mutually redundant, since `generate`
+    ///    is the only family-unreachable key and it sits in BOTH lists, so
+    ///    dropping either `.chain(..)` alone leaves this green and dropping both
+    ///    turns it RED. The redundancy is the point of the widening; the
+    ///    assertion becomes chain-specific the moment a curated key is added to
+    ///    only one list.
+    ///
+    /// 2. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` is a [`BUILTIN_NAME_FAMILIES`]
+    ///    member, which is WHY it needs no chain of its own. If a future edit
+    ///    drops it from that array, this fails loudly instead of silently
+    ///    shrinking the sweep — the selectors are 9 of the ledger's
+    ///    [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entries, so losing them would hollow
+    ///    out that arm rather than break it.
+    #[test]
+    fn slotted_name_sweep_reaches_every_curated_slot_registry() {
+        let swept = slotted_builtin_names();
+
+        for &name in NON_FAMILY_SLOT_KEYS
+            .iter()
+            .chain(NON_SELECTOR_ARG_SLOT_KEYS)
+        {
+            assert!(
+                swept.contains(name),
+                "{name:?} is a curated slot-table key but the slotted-name sweep does \
+                 not reach it, so it would escape \
+                 every_slotted_name_is_ledgered_or_recorded_unobservable entirely. \
+                 Restore the .chain(..) that names its registry in slotted_builtin_names()."
+            );
+        }
+
+        assert!(
+            BUILTIN_NAME_FAMILIES
+                .iter()
+                .any(|family| *family == GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
+            "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only because it is a \
+             BUILTIN_NAME_FAMILIES member; it is no longer, so slotted_builtin_names() \
+             must chain it explicitly."
+        );
     }
 
     /// Probe each slotted name's lowering for the arities it ACCEPTS, by
