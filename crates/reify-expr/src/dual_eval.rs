@@ -1210,16 +1210,41 @@ fn eval_kink_builtin(
                 // return +1, passing a one-sided derivative off as two-sided.
                 (BranchChoice::Zero, None)
             };
+            // The record is written BEFORE the mask below and unconditionally:
+            // it mirrors the traversal, so a kink that was evaluated appears
+            // whether or not it contributed a tangent.  Suppressing the entry
+            // would read to λ as "no kink here".
             note(record, path, KinkKind::Abs, choice);
             match dfdx {
                 Some(k) => combine(value, duals, &[k], width),
-                None => {
+                // MASKED BY CONTRIBUTION, exactly as the smooth-builtin
+                // finiteness guard is, and through the SAME `contributes`
+                // predicate rather than a second one that happens to agree
+                // today.  |x| genuinely has no two-sided derivative at 0 — but
+                // a seed-independent `abs(0)` never reaches the chain rule at
+                // all, so refusing over it vetoes rows that are differentiable
+                // in every seeded variable.  `abs(offset)` with a base-map
+                // `offset` of exactly 0.0 (a symmetric tolerance, a zeroed
+                // eccentricity) is routine, and the fast path cannot swallow it
+                // because `abs` is a kink builtin.
+                //
+                // `Tangent::None` on the argument still refuses: `contributes`
+                // is `!is_zero()`, so it holds for `None` too, and the
+                // first-wins refusal slot keeps the INNER cause as the one
+                // `jacobian_row` reports.
+                //
+                // Deliberate asymmetry with `combine`, which for a constant
+                // argument returns `Tangent::Scalar(vec![0.0; width])`: both
+                // materialize to the same zero contribution, and
+                // `Tangent::Zero` is the stronger, cheaper claim.
+                None if contributes(&duals[0]) => {
                     seeds.note_refusal(NonDifferentiable::UnsupportedKind {
                         kind: "`abs` evaluated exactly at its kink (x = 0)",
                         site: KinkSite::new(path.to_vec()),
                     });
                     DualValue::opaque(value)
                 }
+                None => DualValue::constant(value),
             }
         }
         ("clamp", 3) => {
