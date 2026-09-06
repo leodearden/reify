@@ -1258,6 +1258,101 @@ mod tests {
         );
     }
 
+    /// Task 5311 — the second HARD-site guard, pinned POSITIVELY.
+    ///
+    /// Same shape as (b) above, but with NO trampoline registered at all, so
+    /// `run_compute_dispatch` takes its `None` arm. The engine's compute
+    /// registry is entirely EMPTY here — precisely the input that DOWNGRADES
+    /// the diagnostic to `Severity::Warning` at the two SOFT sites in
+    /// `engine_eval.rs`. This HARD site does NOT apply that predicate, so the
+    /// severity must stay `Severity::Error`; a later sweep applying the
+    /// predicate uniformly across all four sites turns this red.
+    ///
+    /// Why the predicate is inapplicable here ON THE MERITS, not merely because
+    /// a test would break: in production this `None` arm is reached only via
+    /// `insert_shell_extract_upstream`, which sits INSIDE the
+    /// `compute_dispatch("solver::elastic_static").is_some()` branch. The
+    /// registry is therefore non-empty by construction at every production
+    /// entry to this arm, so `fns.is_empty()` could never be true and applying
+    /// it would change exactly zero user-observable behaviour while making the
+    /// contract murkier.
+    ///
+    /// The `(falling back to body-inlining)` clause must remain ABSENT for the
+    /// same reason as at `dispatch_compute_node`: this helper returns `Err` and
+    /// never inlines.
+    #[test]
+    fn run_compute_dispatch_unregistered_target_is_error_and_coded_even_on_an_empty_registry() {
+        use crate::engine_compute::DispatchError;
+
+        // No register_compute_fn call at all — the registry stays EMPTY.
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        assert!(
+            engine.compute_dispatch("test::never_registered_eps5311").is_none(),
+            "precondition: the target must be unregistered",
+        );
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let handle = CancellationHandle::new(); // not cancelled
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::never_registered_eps5311",
+            &[Value::Int(7)],
+            &[],
+            &Value::Undef,
+            &handle,
+            VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
+        );
+
+        match result {
+            Err(DispatchError::Failed(diags, _)) => {
+                let error_diag = diags
+                    .iter()
+                    .find(|d| d.severity == reify_core::Severity::Error)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "the HARD sites do NOT apply the empty-registry \
+                             downgrade — this arm is unreachable in production \
+                             with an empty registry, so the predicate would \
+                             change nothing; got: {diags:?}"
+                        )
+                    });
+                assert_eq!(
+                    error_diag.code,
+                    Some(reify_core::DiagnosticCode::NoRegisteredComputeTrampoline),
+                    "the HARD form carries the SAME code as the SOFT form; got: {error_diag:?}"
+                );
+                assert!(
+                    error_diag
+                        .message
+                        .contains("test::never_registered_eps5311"),
+                    "expected the diagnostic to name the unknown target, got: {error_diag:?}"
+                );
+                assert!(
+                    !error_diag.message.contains("falling back to body-inlining"),
+                    "the fallback clause is deliberately omitted at the HARD \
+                     sites: this helper returns Err and never inlines; got: \
+                     {error_diag:?}"
+                );
+            }
+            other => panic!("expected Err(DispatchError::Failed(…)), got {other:?}"),
+        }
+    }
+
     /// A panic must be caught the same way when driven through
     /// `run_compute_dispatch` itself, not just
     /// `invoke_compute_trampoline`/`dispatch_compute_node` directly.

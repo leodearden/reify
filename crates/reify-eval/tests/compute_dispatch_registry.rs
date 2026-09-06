@@ -212,6 +212,79 @@ fn dispatch_compute_node_unregistered_target_returns_error_diagnostic() {
     );
 }
 
+/// Task 5311 — the HARD-site half of the severity split, pinned POSITIVELY.
+///
+/// A SEPARATE SIBLING of
+/// `dispatch_compute_node_unregistered_target_returns_error_diagnostic` above,
+/// which the RULING marks UNCHANGED and which is deliberately not touched.
+///
+/// This test's whole point is its INPUT: `make_simple_engine()` has an entirely
+/// EMPTY compute registry, which is exactly the condition that DOWNGRADES the
+/// diagnostic to `Severity::Warning` at the two SOFT sites in `engine_eval.rs`.
+/// `dispatch_compute_node` is a HARD site and does NOT apply that predicate, so
+/// the severity must stay `Severity::Error` here. If a later sweep ever "tidies
+/// up" by applying the predicate uniformly across all four sites, this test
+/// turns red — which is the only reason it exists.
+///
+/// The RULING's reasons, on the merits rather than "a test would break":
+/// (i) `dispatch_compute_node` has ZERO non-test callers workspace-wide, so
+///     `fns.is_empty()` can never be true here in production — the predicate
+///     would change nothing user-observable while making the contract murkier;
+/// (ii) `dispatch_compute_node`'s own rustdoc promises its `Err` arm carries at
+///     least one `Severity::Error`. An `Err` carrying only a Warning is
+///     incoherent, and is silently swallowed by `reify build`/`reify eval`'s
+///     `has_error_diagnostic` exit gate — a returned failure that stops gating.
+///
+/// The `(falling back to body-inlining)` clause must remain ABSENT: fallback is
+/// the eval-loop caller's behaviour, not this helper's, and direct callers do
+/// not body-inline.
+#[test]
+fn dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty_registry() {
+    let engine = make_simple_engine();
+    assert!(
+        engine.compute_dispatch("nonexistent::target").is_none(),
+        "precondition: the target must be unregistered",
+    );
+
+    let diags = engine
+        .dispatch_compute_node(
+            "nonexistent::target",
+            &[Value::Int(1)],
+            &[],
+            &Value::Undef,
+            None,
+        )
+        .expect_err("expected Err for unregistered target");
+
+    let error_diag = diags
+        .iter()
+        .find(|d| d.severity == Severity::Error)
+        .unwrap_or_else(|| {
+            panic!(
+                "the HARD sites do NOT apply the empty-registry downgrade — an \
+                 Err carrying only a Warning is incoherent and is swallowed by \
+                 build/eval's has_error_diagnostic gate; got: {diags:?}"
+            )
+        });
+
+    assert_eq!(
+        error_diag.code,
+        Some(DiagnosticCode::NoRegisteredComputeTrampoline),
+        "the HARD form carries the SAME code as the SOFT form — the code names \
+         the cause, independently of severity; got: {error_diag:?}"
+    );
+    assert!(
+        error_diag.message.contains("nonexistent::target"),
+        "expected the diagnostic to name the unknown target, got: {error_diag:?}"
+    );
+    assert!(
+        !error_diag.message.contains("falling back to body-inlining"),
+        "the fallback clause is deliberately omitted at the HARD sites: \
+         body-inlining is the eval-loop caller's behaviour, not this helper's, \
+         and direct callers do not inline; got: {error_diag:?}"
+    );
+}
+
 /// Test: dispatch helper propagates Error diagnostics from a Failed trampoline.
 #[test]
 fn dispatch_compute_node_failed_outcome_surfaces_diagnostics() {
