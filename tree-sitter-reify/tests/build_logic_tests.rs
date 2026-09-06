@@ -66,6 +66,37 @@ const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_
 /// Used by source-level regression tests that read the build script's contents.
 const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
 
+/// Absolute path to `build_support.rs` — the staleness source shared with
+/// build.rs — derived from [`BUILD_RS`]'s directory.
+///
+/// DERIVED, not a third `env!("CARGO_MANIFEST_DIR")` const, on purpose:
+/// `test_self_path_constants_guard_is_not_vacuous` pins that count at exactly 2
+/// to catch INFLATION, and a third const would force that guard to be weakened.
+/// Deriving still anchors on `CARGO_MANIFEST_DIR` transitively, which is the
+/// property that actually matters.
+fn build_support_path() -> std::path::PathBuf {
+    Path::new(BUILD_RS).with_file_name("build_support.rs")
+}
+
+/// Return `build_support.rs`'s text for the item named by `fn_sig`, from the
+/// signature through the closing brace in column 0.
+///
+/// A dedicated extractor rather than [`extract_test_fn_body`]: that one is
+/// scoped to THIS file's `#[test]` items and terminates on the next `#[test]`,
+/// an attribute `build_support.rs` — a bare item list — never carries.
+fn extract_build_support_fn<'a>(source: &'a str, fn_sig: &str) -> Option<&'a str> {
+    let start = source.find(fn_sig)?;
+    let rest = &source[start..];
+    let end = rest.find("\n}\n").map(|p| p + 3).unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// Reads `build_support.rs` and returns it as a `String`.
+fn read_build_support_source() -> String {
+    std::fs::read_to_string(build_support_path())
+        .expect("should be able to read build_support.rs from BUILD_RS's directory")
+}
+
 /// Reads this test file's own source code and returns it as a `String`.
 ///
 /// Wraps `std::fs::read_to_string(THIS_FILE)` so callers don't repeat the
@@ -2193,5 +2224,217 @@ fn test_needs_generate_true_when_outputs_manifest_is_absent() {
     assert!(
         needs_generate(&hash, &stamp, &output_refs, &src_dir),
         "an absent outputs manifest must force regeneration, not be read as freshness"
+    );
+}
+
+// ── Holes A and C: the shell stamp vouched by grammar-hash alone, and the
+//    mtime guard that was supposed to catch it is erased by warm lanes ────────
+//
+// `shell_stamp_is_current` returned "safe to skip generation" on four
+// conditions, of which only the first three were real:
+//
+//   1. every expected output EXISTS                     (existence, not content)
+//   2. `src/.grammar_hash.stamp` is non-empty
+//   3. `sha256sum grammar.js` equals it                 (about grammar.js only)
+//   4. no output file is NEWER than the stamp           (inert in a warm lane)
+//
+// Nothing in that chain looks at parser.c's bytes. Condition 4 was the only
+// intended guard, and `scripts/seed-warm-lane.sh` bulk-stamps every non-target/
+// file to 2020-01-01 — measured in this very lane, where `ls -la
+// tree-sitter-reify/src/` shows `Jan  1  2020` on every entry. With all mtimes
+// equal, `file_mtime > stamp_mtime` is universally false and condition 4 can
+// never fire.
+//
+// Every case below forces the mtimes explicitly rather than inheriting the
+// lane's, so the reproduction holds on a cold host too.
+
+/// Recursively collect every regular file under `root`, dotfiles included.
+fn collect_files(root: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
+/// Stamp EVERY file under `root` to an identical 2020-01-01 mtime, reproducing
+/// what `scripts/seed-warm-lane.sh` does to a lane.
+///
+/// Returns false when `touch` is unavailable — an environment gap, so callers
+/// skip rather than fail. Deliberately not `#[cfg(unix)]`-gated: that attribute
+/// would pull the test into `test_unix_permission_tests_have_root_guard`'s set,
+/// which requires an `is_root()` guard these tests have no use for.
+fn normalize_mtimes_to_2020(root: &Path) -> bool {
+    let mut files = Vec::new();
+    collect_files(root, &mut files);
+    if files.is_empty() {
+        return false;
+    }
+    let mut cmd = std::process::Command::new("touch");
+    cmd.arg("-d").arg("2020-01-01 00:00:00");
+    for f in &files {
+        cmd.arg(f);
+    }
+    let ok = matches!(cmd.status(), Ok(st) if st.success());
+    if !ok {
+        return false;
+    }
+    // The reproduction is only meaningful if the mtimes really are identical —
+    // otherwise a future `touch` behaviour change would silently turn these
+    // tests back into the mtime-ordering world they exist to rule out.
+    let mut seen: Option<std::time::SystemTime> = None;
+    for f in &files {
+        let Ok(m) = std::fs::metadata(f).and_then(|m| m.modified()) else {
+            return false;
+        };
+        match seen {
+            None => seen = Some(m),
+            Some(first) => assert_eq!(
+                first, m,
+                "fixture precondition: every file must carry the SAME mtime, or the \
+                 warm-lane state is not reproduced"
+            ),
+        }
+    }
+    true
+}
+
+/// A package-root-shaped fixture: `grammar.js` beside a `src/` holding the three
+/// outputs, `.grammar_hash.stamp` carrying the REAL sha256 of grammar.js, and —
+/// when `attest` is set — `.generated_outputs.stamp` describing those outputs.
+///
+/// `None` when this host cannot hash; the assertions are vacuous there.
+fn make_shell_stamp_fixture(
+    attest: bool,
+) -> Option<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
+    if !hasher_available() {
+        return None;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'measured'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let sha = sha256_of_path(&grammar).ok()??;
+    std::fs::write(src_dir.join(GRAMMAR_STAMP_NAME), &sha).unwrap();
+    if attest {
+        std::fs::write(
+            outputs_stamp_of(&src_dir),
+            render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
+        )
+        .unwrap();
+    }
+    Some((dir, grammar, src_dir))
+}
+
+/// The three output paths inside `src_dir`, in `EXPECTED_OUTPUTS` order.
+fn output_paths_of(src_dir: &Path) -> Vec<std::path::PathBuf> {
+    EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect()
+}
+
+#[test]
+fn test_shell_stamp_not_current_when_parser_c_is_from_another_grammar() {
+    // (a) THE MEASURED STATE, and the direct regression for both measurements.
+    //
+    // build.rs can regenerate parser.c without ever touching
+    // src/.grammar_hash.stamp (it shells out to `tree-sitter generate` and stops
+    // there), so parser.c(B) can sit beside a stamp still reading sha256(A). A
+    // later merge that restores grammar.js == A makes the stamp match AGAIN —
+    // and it now actively vouches for the wrong parser. Every mtime is identical,
+    // so the old condition 4 sees nothing.
+    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
+        return;
+    };
+    std::fs::write(src_dir.join("parser.c"), b"parser.c generated from grammar B").unwrap();
+    if !normalize_mtimes_to_2020(dir.path()) {
+        return;
+    }
+
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    assert!(
+        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "a grammar-hash match must not vouch for a parser.c whose bytes contradict \
+         the generated-outputs manifest"
+    );
+}
+
+#[test]
+fn test_shell_stamp_current_survives_identical_mtimes() {
+    // (b) The legitimate warm-lane fast path must SURVIVE. Content agrees on
+    // every axis and every mtime is 2020-01-01 — the ordinary state of a seeded
+    // lane. A fix that regenerated here would trade a false GREEN for a
+    // permanent `tree-sitter generate` on every build.
+    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
+        return;
+    };
+    if !normalize_mtimes_to_2020(dir.path()) {
+        return;
+    }
+
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    assert!(
+        shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "the fast path must survive when the grammar hash AND the output manifest \
+         both agree, whatever the mtimes say"
+    );
+}
+
+#[test]
+fn test_shell_stamp_not_current_without_an_outputs_manifest() {
+    // (c) A correct .grammar_hash.stamp beside outputs nothing has attested is
+    // exactly the shape a `git clean -xfd -e target` / CoW-seeded lane produces.
+    // Unproven must read as stale.
+    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(false) else {
+        return;
+    };
+    if !normalize_mtimes_to_2020(dir.path()) {
+        return;
+    }
+
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    assert!(
+        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "an absent .generated_outputs.stamp must force regeneration"
+    );
+}
+
+#[test]
+fn test_shell_stamp_has_no_error_path_that_skips_generation() {
+    // (d) The INVERTED fallback. Condition 4 read the stamp's mtime and, on a
+    // stat failure, did `Err(_) => return true` under the comment "Can't stat
+    // stamp; assume it's fine" — but `true` from this function means SKIP
+    // GENERATION. The one branch that admitted it did not know returned the one
+    // answer that cannot be taken back.
+    //
+    // Asserted at source level because the condition is not reachable through
+    // the filesystem: `read_to_string` succeeding implies `metadata` succeeds,
+    // so no fixture can produce a readable-but-unstattable stamp. What IS
+    // assertable, and is the durable property, is that the mtime comparison is
+    // gone and every error path concedes in the safe direction.
+    let source = read_build_support_source();
+    let body = extract_build_support_fn(&source, "fn shell_stamp_is_current(")
+        .expect("build_support.rs must define shell_stamp_is_current");
+
+    assert!(
+        !body.contains("=> return true"),
+        "no error arm in shell_stamp_is_current may return true — true means \
+         SKIP GENERATION, which is the one verdict a branch that does not know \
+         must never give. Body:\n{}",
+        body
+    );
+    assert!(
+        !body.contains(".modified()"),
+        "shell_stamp_is_current must not compare mtimes: warm-lane seeding stamps \
+         every source to 2020-01-01, so mtime ordering carries no information \
+         there (measured in this lane). Body:\n{}",
+        body
     );
 }
