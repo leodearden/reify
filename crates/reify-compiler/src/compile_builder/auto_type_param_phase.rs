@@ -31,11 +31,14 @@
 //!      `SubComponentDecl.type_args` entry — an explicitly-supplied type-arg
 //!      is not unbound, only unbound *by this resolver* — so full coverage,
 //!      and therefore synthesis, is now the norm rather than the exception
-//!      for mixed use-sites. The residual skip-synthesis path is reached
-//!      only for a genuinely unbound `auto:` param (shapes A/B) or an
-//!      explicit type-arg that is not a concrete `Type::StructureRef` and so
-//!      cannot be seeded, leaving the use-site pointing at the generic
-//!      template (#6854),
+//!      for mixed use-sites. The residual skip-synthesis path is reached for
+//!      a genuinely unbound `auto:` param (shapes A/B) or an explicit
+//!      type-arg that is not a concrete `Type::StructureRef` and so cannot
+//!      be seeded; either way the use-site is left pointing at the generic
+//!      template. Shapes A/B stay silent here — they already carry the
+//!      resolver's own `NoCandidate` / `Ambiguous` error — while the
+//!      un-seedable residual is diagnosed with a dedicated compile error
+//!      instead of failing silently (#6854),
 //!   4. accumulates `(param_name, template_name)` substitution pairs across all
 //!      requests, deduping first-wins, into `ctx.auto_type_substitution`.
 //!
@@ -344,11 +347,53 @@ pub(crate) fn phase_auto_type_param_resolution(
             // raw `Type::TypeParam(name)`. That is the one shape no
             // downstream `type_params.is_empty()` filter can ever detect,
             // since the clone itself claims to have zero free type-params.
+            // The un-seedable residual (below) is diagnosed rather than left
+            // silent; shapes A/B are not — they already carry the resolver's
+            // own `NoCandidate`/`Ambiguous` error.
             let sigma_covers_all_type_params = !target.type_params.is_empty()
                 && target
                     .type_params
                     .iter()
                     .all(|tp| sigma.contains_key(tp.name.as_str()));
+
+            // Diagnose the residual un-seedable case: the resolver bound
+            // every `auto:`-clause param it was asked to (so this is NOT
+            // shape A/B, which already carries its own `NoCandidate` /
+            // `Ambiguous` error and must not be double-reported), yet full
+            // `target.type_params` coverage is still not reached — meaning
+            // an explicitly-supplied position held something other than a
+            // concrete `Type::StructureRef` (e.g. an enclosing generic's own
+            // `TypeParam`, #6854) and the seeding loop above could not bind
+            // it. Gating on "the resolver bound everything it was asked to
+            // bind" rather than scanning `diagnostics` for newly-pushed
+            // errors avoids depending on which `Severity` the resolver
+            // assigns each halt reason.
+            let all_auto_clause_params_bound =
+                params.iter().all(|p| sigma.contains_key(p.name.as_str()));
+            if !sigma_covers_all_type_params && all_auto_clause_params_bound {
+                let unbound: Vec<&str> = target
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.name.as_str())
+                    .filter(|n| !sigma.contains_key(*n))
+                    .collect();
+                let sub_name = template_registry
+                    .get(req.owner_structure.as_str())
+                    .and_then(|owner| owner.sub_components.get(req.sub_index))
+                    .map(|sub| sub.name.as_str())
+                    .unwrap_or("<unknown>");
+                let owner_structure = req.owner_structure.as_str();
+                let target_name = req.target_name.as_str();
+                diagnostics.push(Diagnostic::error(format!(
+                    "sub-component '{sub_name}' of '{owner_structure}' instantiates \
+                     generic '{target_name}' with an explicitly-supplied \
+                     type-argument that is not a concrete structure (type \
+                     parameter(s) {unbound:?} could not be bound), so no monomorph \
+                     can be synthesized; the sub-component would retain \
+                     unsubstituted type parameters at evaluation time"
+                )));
+            }
+
             if sigma_covers_all_type_params {
                 // Sort by position to guarantee deterministic mangle order
                 // regardless of outcome.substitution iteration order.
