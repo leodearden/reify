@@ -2624,12 +2624,27 @@ test_freshness_detects_and_repairs_stale_archive() {
     fi
 
     # ---- mutate the gitignored generated source; cargo will NOT recompile ----
-    # The mtime is restored from the untouched backup immediately after the write,
-    # so cargo's watch on src/parser.c sees the same mtime it recorded last build
-    # and declines to re-run the build script. Content changed, mtime rewound —
-    # the warm-lane signature, and now the only route to a stale linked archive.
+    # parser.c's OWN pre-probe mtime is captured into a witness first and restored
+    # immediately after the write, so cargo's watch on src/parser.c (added by
+    # `#6992`) sees the same mtime it compared against last build and declines to
+    # re-run the build script. Content changed, mtime rewound — the warm-lane
+    # signature, and now the only route to a stale linked archive.
+    #
+    # The witness is NOT $backup, and the difference is the whole test. `cp`
+    # without `-p` stamps the copy with the time of the copy, and that instant is
+    # LATER than the last real build-script run (an earlier case in this file,
+    # test_auto_generation_rebuilds_parser, already rebuilt the lane's archive, so
+    # the `output` file cargo compares against is older than this test's setup).
+    # Rewinding to $backup therefore moved parser.c FORWARD past cargo's
+    # reference: cargo re-ran the build script, the new content check regenerated
+    # parser.c, and the stale state under test cured itself before it could be
+    # observed. `touch -r` copies the reference's full-precision mtime, so the
+    # restore is exact rather than truncated to whole seconds by `stat`/`touch -d`.
+    local mtime_witness="$bakdir/parser.c.mtime"
+    : > "$mtime_witness" || return 1
+    touch -r "$parser" "$mtime_witness" || return 1
     printf '\n/* task 5629 probe */\n' >> "$parser"
-    touch -r "$backup" "$parser" || return 1
+    touch -r "$mtime_witness" "$parser" || return 1
     guard_rc=0
     run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
         --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
