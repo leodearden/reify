@@ -30,8 +30,9 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'behavioral floor: baseline fixtures re-parse + reify-syntax suites
-        green; blanket tree-sitter test exit 0 would false-fail on the pre-existing
-        #5492 red'
+        green; tree-sitter test is not CI-run, so its exit code is not the floor
+        (the pre-existing #5492 red that originally motivated this exclusion has
+        since been fixed)'
 - label: β
   task_id: 5482
   title: 'indexed-sub β: compiler lowering — indexed template → collection-sub expansion

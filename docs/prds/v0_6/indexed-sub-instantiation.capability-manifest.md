@@ -41,10 +41,12 @@ Evidence fixtures committed beside this manifest at
 `single_sub_pose_resolves.ri`, `posed_subs_distance_query_unresolvable.ri`,
 `self_collection_count_redirect_rejected.ri`, `collection_expr_index_resolves.ri`).
 Two pre-existing defects surfaced by the run: the tree-sitter corpus red on
-main (`imaginary_literal.txt`, 218/219) is NEW — filed as independent task
-**#5492** (not part of this batch); the `orient_identity` zero-arg
-return-type silent-default-Real warning was ALREADY tracked — **#5344**
-(pending) with follow-up **#5380** — no duplicate filed.
+main at decompose time (2026-07-25; `imaginary_literal.txt`, 218/219) was
+NEW — filed as independent task **#5492** (not part of this batch), since
+fixed — corpus green as of re-measurement 2026-09-03: 246/246; the
+`orient_identity` zero-arg return-type silent-default-Real warning was
+ALREADY tracked — **#5344** (pending) with follow-up **#5380** — no
+duplicate filed.
 Grammar gate: the ONE novel production (indexer clause) is α's deliverable;
 its fixture FAILS to parse today by design (probe #4) — `grammar_confirmed=false`
 on α only, true elsewhere (all other surfaces parse today: probes #5–#7 contexts).
