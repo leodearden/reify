@@ -9,7 +9,7 @@
 
 use reify_config::Manifest;
 use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 
 /// Keystone test: a single `auto:` use-site produces a monomorph template.
 ///
@@ -1025,16 +1025,25 @@ fn cross_product_cap_partial_resolution_synthesizes_no_monomorph() {
 /// `params.len() == 1` (U only) and `sigma.len() == 1` — step-2's
 /// `sigma.len() == params.len()` check PASSES even though T, a declared type
 /// parameter of `Widget`, was never substituted into the monomorph clone's own
-/// `slot_t` cell. Zero diagnostics are emitted (T needed no resolution; U has a
-/// single feasible candidate) — this is a SILENT corruption, unlike shapes A/B
-/// which at least carry the resolver's own error.
+/// `slot_t` cell.
 ///
-/// RED today: `Widget$GasketA` is still synthesized with `type_params=[]` and
-/// `slot_t : TypeParam("T")` leaked. GREEN once the guard measures coverage
-/// against `target.type_params` (both T and U) rather than against the
-/// auto-clause list (U only).
+/// Review round 2 (#6854) established that SKIPPING synthesis here — step-4's
+/// behaviour — is unsafe rather than a safe degradation: the generic `Widget`
+/// template is only harmless while nothing points at it, and
+/// `assert_value_cell_types_representable` walks the hydrated graph, not
+/// `compiled.templates`, so leaving `sub w` on the generic drags its
+/// `Type::TypeParam` cells straight into a hydration-time panic (see the
+/// eval-level sibling test below). An explicitly-supplied type-arg is not
+/// unbound — it is already resolved, just not by this resolver — so the
+/// correct fix SEEDS `sigma`/`candidates_by_position` from the sub's
+/// already-resolved explicit type-arg, reaching full `target.type_params`
+/// coverage and synthesizing a correct `Widget$SealA$GasketA` monomorph.
+///
+/// RED against HEAD (step-4's skip-on-partial guard, no seeding yet):
+/// `Widget$SealA$GasketA` does not exist and `sub w` still references the
+/// generic `Widget`. GREEN once step-6 lands the seeding.
 #[test]
-fn mixed_explicit_and_auto_type_args_synthesize_no_partial_monomorph() {
+fn mixed_explicit_and_auto_type_args_synthesize_full_monomorph() {
     let source = r#"
         trait Seal {}
         trait Gasket {}
@@ -1046,16 +1055,50 @@ fn mixed_explicit_and_auto_type_args_synthesize_no_partial_monomorph() {
 
     let compiled = compile_source_with_stdlib(source);
 
-    // (1) No partial monomorph is synthesized.
+    // (1) The seeded monomorph IS synthesized, with BOTH slots substituted —
+    // slot_t from the seeded explicit arg, slot_u from the resolver.
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget$SealA$GasketA")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected seeded monomorph 'Widget$SealA$GasketA' in compiled.templates, \
+                 got: {:?}",
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
     assert!(
-        !compiled.templates.iter().any(|t| t.name == "Widget$GasketA"),
-        "mixed explicit+auto (T explicit, U auto-resolved) must NOT synthesize \
-         'Widget$GasketA' while T's slot is left unsubstituted; got templates: {:?}",
-        compiled
-            .templates
-            .iter()
-            .map(|t| &t.name)
-            .collect::<Vec<_>>()
+        monomorph.type_params.is_empty(),
+        "monomorph 'Widget$SealA$GasketA' must have no type_params, got: {:?}",
+        monomorph.type_params
+    );
+    let slot_t = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_t")
+        .expect("expected 'slot_t' value cell in 'Widget$SealA$GasketA'");
+    assert_eq!(
+        slot_t.cell_type,
+        Type::StructureRef("SealA".to_string()),
+        "'slot_t' cell_type must be StructureRef(\"SealA\") — seeded from the \
+         explicit type-arg, got: {:?}",
+        slot_t.cell_type
+    );
+    let slot_u = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_u")
+        .expect("expected 'slot_u' value cell in 'Widget$SealA$GasketA'");
+    assert_eq!(
+        slot_u.cell_type,
+        Type::StructureRef("GasketA".to_string()),
+        "'slot_u' cell_type must be StructureRef(\"GasketA\"), got: {:?}",
+        slot_u.cell_type
     );
 
     // (2) General invariant: no '$'-named, type-params-empty template retains
@@ -1083,9 +1126,9 @@ fn mixed_explicit_and_auto_type_args_synthesize_no_partial_monomorph() {
         leaks
     );
 
-    // (3) WidgetAssembly's sub 'w' still references the generic 'Widget'
-    // template, and the auto slot IS resolved back into type_args — proving
-    // the skip is scoped to synthesis and does not discard resolution work.
+    // (3) WidgetAssembly's sub 'w' now references the seeded monomorph, and
+    // its type_args are unchanged by seeding (the explicit T slot was never
+    // rewritten — it already held its final StructureRef).
     let assembly = compiled
         .templates
         .iter()
@@ -1097,9 +1140,9 @@ fn mixed_explicit_and_auto_type_args_synthesize_no_partial_monomorph() {
         .find(|s| s.name == "w")
         .expect("expected sub 'w' in 'WidgetAssembly'");
     assert_eq!(
-        sub_w.structure_name, "Widget",
-        "sub 'w' must still reference the generic 'Widget' template on partial \
-         resolution, got: {:?}",
+        sub_w.structure_name, "Widget$SealA$GasketA",
+        "sub 'w' must reference the seeded monomorph once full coverage is \
+         reached, got: {:?}",
         sub_w.structure_name
     );
     assert_eq!(
@@ -1108,14 +1151,12 @@ fn mixed_explicit_and_auto_type_args_synthesize_no_partial_monomorph() {
             Type::StructureRef("SealA".to_string()),
             Type::StructureRef("GasketA".to_string()),
         ],
-        "sub 'w' type_args must be [StructureRef(SealA), StructureRef(GasketA)] \
-         — the explicit T arg unchanged, the auto U arg resolved — even though \
-         synthesis was skipped, got: {:?}",
+        "sub 'w' type_args must remain [StructureRef(SealA), StructureRef(GasketA)] \
+         — unchanged by seeding, got: {:?}",
         sub_w.type_args
     );
 
-    // (4) Zero Error diagnostics — this shape is silent-but-valid pre-fix and
-    // must stay silent post-fix (no new diagnostic code is introduced).
+    // (4) Zero Error diagnostics.
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -1124,7 +1165,140 @@ fn mixed_explicit_and_auto_type_args_synthesize_no_partial_monomorph() {
     assert_eq!(
         errors.len(),
         0,
-        "expected zero error diagnostics for this silent-but-valid mixed shape, got: {:?}",
+        "expected zero error diagnostics for this seeded mixed shape, got: {:?}",
         errors
     );
+}
+
+/// Companion to the test above, and the EXACT shape review round 2 used to
+/// demonstrate the step-4 regression: T is PHANTOM w.r.t. top-level value
+/// cells — `Widget` declares no `slot_t` at all, only `slot_u : U`. Measured
+/// on this worktree: this source compiled AND evaluated cleanly (0
+/// diagnostics) under the ORIGINAL pre-#6854 `!sigma.is_empty()` guard, and
+/// PANICS under step-4's skip-on-partial guard at
+/// `crates/reify-eval/src/engine_eval.rs:210`
+/// (`unrepresentable cell_type: value cell 'Widget.slot_u' has cell_type
+/// TypeParam("U")`) — because skipping synthesis leaves `sub w` pointing at
+/// the generic `Widget` template, which is exactly what drags its
+/// `Type::TypeParam` cell into the hydrated graph. See the eval-level sibling
+/// test below for the assertion that actually catches this.
+///
+/// RED against HEAD for the same reason as the non-phantom sibling: no
+/// `Widget$SealA$GasketA` monomorph is synthesized. GREEN once step-6 lands.
+#[test]
+fn mixed_explicit_and_auto_type_args_phantom_param_synthesize_full_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget$SealA$GasketA")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected seeded monomorph 'Widget$SealA$GasketA' in compiled.templates \
+                 (phantom T), got: {:?}",
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        monomorph.type_params.is_empty(),
+        "monomorph 'Widget$SealA$GasketA' must have no type_params, got: {:?}",
+        monomorph.type_params
+    );
+    let slot_u = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_u")
+        .expect("expected 'slot_u' value cell in 'Widget$SealA$GasketA'");
+    assert_eq!(
+        slot_u.cell_type,
+        Type::StructureRef("GasketA".to_string()),
+        "'slot_u' cell_type must be StructureRef(\"GasketA\"), got: {:?}",
+        slot_u.cell_type
+    );
+
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget$SealA$GasketA",
+        "sub 'w' must reference the seeded monomorph even though T is phantom \
+         w.r.t. top-level value cells, got: {:?}",
+        sub_w.structure_name
+    );
+}
+
+/// The assertion steps 1-4 were missing, and the one that would have caught
+/// the regression before review round 2: `compile_source_with_stdlib` alone
+/// cannot see the shape-C defect, because the leaked `Type::TypeParam` sits on
+/// the GENERIC `Widget` template — always present in `compiled.templates` and
+/// harmless until a sub points at it — while
+/// `assert_value_cell_types_representable` runs over the HYDRATED GRAPH, not
+/// over `compiled.templates`. Only `check_source_with_stdlib` (compile +
+/// evaluate) can distinguish "sound compile, sound eval" from "sound compile,
+/// panics at hydration".
+///
+/// RED against HEAD: both the non-phantom and phantom sources panic inside
+/// `check_source_with_stdlib` at `engine_eval.rs:210`
+/// (`unrepresentable cell_type ... TypeParam(...) post-compilation`), because
+/// step-4's guard skips synthesis and leaves `sub w` on the generic `Widget`
+/// template. GREEN once step-6 seeds `sigma` so a correct monomorph is
+/// synthesized and `sub w` points at it instead.
+#[test]
+fn mixed_explicit_and_auto_type_args_evaluate_without_typeparam_leak() {
+    let non_phantom_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+    let phantom_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+
+    for (label, source) in [
+        ("non-phantom", non_phantom_source),
+        ("phantom", phantom_source),
+    ] {
+        let result = check_source_with_stdlib(source);
+        let errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            0,
+            "[{label}] expected zero error diagnostics evaluating the mixed \
+             explicit+auto shape, got: {:?}",
+            errors
+        );
+    }
 }
