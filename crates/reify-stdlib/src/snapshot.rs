@@ -3007,6 +3007,173 @@ mod tests {
         assert!(tz_3.abs() < 1e-6, "body 3 tz must be 0, got {tz_3}");
     }
 
+    // ── Grashof 4-bar: the closure must be the ANALYTIC assembly ──────────
+
+    /// **Task 7186 defect A, end-to-end.** A pure Value-level replay of the
+    /// `p5_fourbar` dogfood fixture (identical in shape to
+    /// `examples/kinematic/relate_mounted_fourbar.ri`): a planar Grashof
+    /// 4-bar with crank a=40mm, coupler b=120mm, rocker c=116.282484506mm,
+    /// ground d=140mm, driven at `θ_crank = 45°` with the coupler straight.
+    ///
+    /// The closing call `body(m5, "closing", j_coupler_tip, j_rocker_tip)`
+    /// is a parent conflict (`j_coupler_tip` is already parented to
+    /// `j_coupler`), so the recorded chains are
+    ///   chain_a = [j_crank, j_coupler, j_coupler_tip]   (pivot A → pivot C)
+    ///   chain_b = [j_rocker, j_rocker_tip]              (pivot D → pivot C)
+    /// with the closing joint composed EXACTLY ONCE.
+    ///
+    /// Analytic assembled configuration at θ_crank = 45°:
+    ///   C = (113.137, 113.137) mm (crank + straight coupler),
+    ///   θ_rocker     = atan2(113.137, 113.137 − 140) = 1.8039163646188838 rad,
+    ///   |DC| = 116.2825 mm = c (so the loop closes exactly), and the
+    ///   orientation match gives
+    ///   θ_rocker_tip = θ_crank − θ_rocker = −1.0185182012214355 rad.
+    ///
+    /// **Tolerance is derived, not fitted — do NOT retune it.** Those two
+    /// constants are the in-tree validated reference: `relate_mounted_joint_
+    /// sweep_e2e.rs` (B7 c) asserts that `loop_residual_twist` evaluated at
+    /// exactly these values sits below `NewtonConfig::default()`'s
+    /// `tol_rot_rad` / `tol_pos_m` on this same asymmetric chain pair. 1e-4 rad
+    /// sits ~2 orders above solver noise (a 1e-6 m position residual over
+    /// ~0.116 m links maps to ~1e-5 rad) and ~4 orders below the 1.09 rad
+    /// error of the pre-fix answer.
+    ///
+    /// Before the defect-A fix the closing joint was appended to `path_b`
+    /// too, conjugating the residual and relocating the closure to pivot B;
+    /// that system is infeasible by 1.045 mm and Newton returns the
+    /// least-squares point (2.8936, −2.1083) rad instead.
+    #[test]
+    fn snapshot_grashof_fourbar_converges_to_analytic_closure() {
+        fn angle_range(lo: f64, hi: f64) -> Value {
+            Value::Range {
+                lower: Some(Box::new(Value::angle(lo))),
+                upper: Some(Box::new(Value::angle(hi))),
+                lower_inclusive: true,
+                upper_inclusive: true,
+            }
+        }
+        fn pivot_x(len_m: f64) -> Value {
+            eval_builtin(
+                "point3",
+                &[Value::length(len_m), Value::length(0.0), Value::length(0.0)],
+            )
+        }
+
+        let turn = angle_range(0.0, std::f64::consts::TAU);
+        let j_crank = eval_builtin("revolute", &[axis_z_unit(), turn.clone()]);
+        let j_coupler = eval_builtin("revolute", &[axis_z_unit(), turn.clone(), pivot_x(0.040)]);
+        let j_coupler_tip =
+            eval_builtin("revolute", &[axis_z_unit(), turn.clone(), pivot_x(0.120)]);
+        // Free ranges narrowed around the closure so the midpoint warm start
+        // is in the right assembly branch (mirrors the .ri fixture).
+        let j_rocker = eval_builtin(
+            "revolute",
+            &[axis_z_unit(), angle_range(1.5, 2.1), pivot_x(0.140)],
+        );
+        let j_rocker_tip = eval_builtin(
+            "revolute",
+            &[
+                axis_z_unit(),
+                angle_range(-1.3, -0.7),
+                pivot_x(0.116_282_484_506),
+            ],
+        );
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("crank".to_string()), j_crank.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("coupler".to_string()),
+                j_coupler.clone(),
+                j_crank.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("coupler_tip".to_string()),
+                j_coupler_tip.clone(),
+                j_coupler.clone(),
+            ],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("rocker".to_string()), j_rocker.clone()],
+        );
+        let m5 = eval_builtin(
+            "body",
+            &[
+                m4,
+                Value::String("rocker_tip".to_string()),
+                j_rocker_tip.clone(),
+                j_rocker.clone(),
+            ],
+        );
+        // Closing edge: j_coupler_tip already maps to j_coupler.
+        let m = eval_builtin(
+            "body",
+            &[
+                m5,
+                Value::String("closing".to_string()),
+                j_coupler_tip.clone(),
+                j_rocker_tip.clone(),
+            ],
+        );
+
+        let bindings = Value::List(vec![
+            eval_builtin(
+                "bind",
+                &[j_crank.clone(), Value::angle(std::f64::consts::FRAC_PI_4)],
+            ),
+            eval_builtin("bind", &[j_coupler.clone(), Value::angle(0.0)]),
+            eval_builtin("bind", &[j_coupler_tip.clone(), Value::angle(0.0)]),
+        ]);
+        let s = eval_builtin("snapshot", &[m, bindings]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map for the 4-bar, got {:?}", other),
+        };
+        let free_values = match smap.get(&Value::String("free_values".to_string())) {
+            Some(Value::List(fv)) => fv,
+            other => panic!("expected free_values List, got {:?}", other),
+        };
+        assert_eq!(free_values.len(), 1, "exactly one loop closure expected");
+        let loop0 = match &free_values[0] {
+            Value::List(v) => v,
+            other => panic!("expected per-loop free-value List, got {:?}", other),
+        };
+        assert_eq!(
+            loop0.len(),
+            2,
+            "chain_b = [j_rocker, j_rocker_tip] — two free variables"
+        );
+        let got = |i: usize| match &loop0[i] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][{i}] must be a Real, got {:?}", other),
+        };
+
+        const THETA_ROCKER: f64 = 1.803_916_364_618_883_8;
+        const THETA_ROCKER_TIP: f64 = -1.018_518_201_221_435_5;
+        let (r, rt) = (got(0), got(1));
+        assert!(
+            (r - THETA_ROCKER).abs() < 1e-4,
+            "θ_rocker must converge to the analytic assembly {THETA_ROCKER}, got {r} \
+             (pre-fix the double-counted closing joint yields ≈2.8936)"
+        );
+        assert!(
+            (rt - THETA_ROCKER_TIP).abs() < 1e-4,
+            "θ_rocker_tip must converge to the analytic assembly {THETA_ROCKER_TIP}, got {rt} \
+             (pre-fix the double-counted closing joint yields ≈−2.1083)"
+        );
+    }
+
     // ── Snapshot Map carries `free_values` (task 2678 step-5) ─────────────
     //
     // The Snapshot Map is the natural carrier for the loop-closure solver's

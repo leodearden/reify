@@ -1064,6 +1064,98 @@ mod tests {
         );
     }
 
+    // ── closing-joint composition: chain_b must NOT re-append it ─────────
+
+    /// **Task 7186 defect A.** The parent-conflict branch must append the
+    /// closing joint to `path_a` only — never to `path_b`.
+    ///
+    /// The residual the solver drives to zero is `log(inv(T_a) · T_b)`.
+    /// With the closing joint `A` appended to BOTH sides we get `T_a = X·A`
+    /// and `T_b = Y·A`, whose zero set is `inv(A)·inv(X)·Y·A = I ⟺ X = Y` —
+    /// so `A` does not cancel harmlessly, it CONJUGATES the residual and
+    /// relocates the closure from the closing joint's OUTPUT frame to its
+    /// BASE frame. For the Grashof 4-bar that relocation makes the loop
+    /// infeasible by 1.045 mm (see
+    /// `snapshot_grashof_fourbar_converges_to_analytic_closure`).
+    ///
+    /// The correct, asymmetric shape is already the one the in-tree
+    /// hand-built reference chains use —
+    /// `reify-eval/tests/relate_mounted_joint_sweep_e2e.rs` (B7) and
+    /// `reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs` (B4) both feed
+    /// `chain_a = [.., closing_joint]` against a `chain_b` that stops at the
+    /// closing edge's `parent`.
+    ///
+    /// Fixture is the parent-conflict shape of
+    /// `parent_conflict_records_loop_closure_constraint`: `j_x → j_a` from
+    /// call 1, then the closing `body(m, solidB, j_x, j_b)`.
+    #[test]
+    fn parent_conflict_path_b_omits_closing_joint() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+
+        let map = match m2 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        let loop_closures = match map.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(lc)) => lc,
+            other => panic!("expected loop_closures List, got {:?}", other),
+        };
+        assert_eq!(
+            loop_closures.len(),
+            1,
+            "exactly one loop-closure entry expected"
+        );
+        let lc = match &loop_closures[0] {
+            Value::Map(m) => m,
+            other => panic!("expected loop_closure Map, got {:?}", other),
+        };
+
+        let world = eval_builtin("world", &[]);
+        // chain_a still terminates at the closing joint — it reaches the
+        // shared pivot through the spanning tree.
+        assert_eq!(
+            lc.get(&Value::String("path_a".to_string())),
+            Some(&Value::List(vec![world.clone(), j_a.clone(), j_x.clone()])),
+            "path_a must still be [world, j_a, j_x] (unchanged)"
+        );
+        // chain_b reaches the SAME pivot through `parent` and must stop
+        // there: the closing joint's transform belongs to exactly one side.
+        assert_eq!(
+            lc.get(&Value::String("path_b".to_string())),
+            Some(&Value::List(vec![world.clone(), j_b.clone()])),
+            "path_b must be [world, j_b] — the closing joint must NOT be re-appended"
+        );
+        // The record's explicit closing_joint field is unaffected: consumers
+        // that need the closing joint read it from here, not from chain_b.last().
+        assert_eq!(
+            lc.get(&Value::String("closing_joint".to_string())),
+            Some(&j_x),
+            "closing_joint field is unchanged by the path-shape fix"
+        );
+    }
+
     // ── closed-chain detection: joint-graph cycle ────────────────────────
 
     /// v0.2: `body()` calls whose recorded `(at → parent)` edges introduce a
