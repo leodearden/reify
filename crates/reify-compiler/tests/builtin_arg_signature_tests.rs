@@ -1307,22 +1307,70 @@ fn build_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<reify_cor
 /// If this test ever turns RED because a diagnostic APPEARED, that is good news
 /// — some later leaf started checking instantiations. Delete the test and say
 /// so; do not re-pin the silence.
+///
+/// # Scoped to the DIMENSION-rejection family, not to Error-severity at large
+///
+/// The filter names [`DiagnosticCode::ArgTypeMismatch`] and
+/// [`DiagnosticCode::DimensionedArgRejected`] — the two codes that carry a
+/// wrong-dimension rejection at the compile and eval layers respectively — and
+/// not "any Error". An unrelated future Error on this fixture (a new stdlib
+/// check, a name-resolution rule, a change to `Solid` return typing) would
+/// otherwise turn this RED under a message that asserts a specific wrong cause,
+/// sending the next reader to the `ScalarParam` arm for a defect that is not
+/// there. The sibling SIGNAL test
+/// [`dim_kinded_generic_param_at_length_slot_compiles_clean`] keeps the broad
+/// Error sweep, because there exit-0 equivalence IS the assertion.
+///
+/// The narrowing costs a vacuity risk — a fixture that stopped compiling at all
+/// would emit no dimension diagnostic either — so the shape under test is
+/// anchored first: `beam` must still be compiled with a dim-kinded
+/// (`Type::ScalarParam`) parameter, which is the only way its body can reach a
+/// LENGTH slot with the type this defer is about.
 #[test]
 fn wrong_dimension_through_a_dim_kinded_generic_is_undiagnosed_at_compile() {
     let compiled = compile_source_with_stdlib(&dim_kinded_wrong_dimension_source());
 
-    let errors: Vec<_> = compiled
+    let beam = compiled
+        .functions
+        .iter()
+        .find(|f| f.name == "beam")
+        .unwrap_or_else(|| {
+            panic!(
+                "the fixture's `beam` is not in the compiled module, so the silence \
+                 asserted below would be vacuous — it would hold of a module that \
+                 never compiled the generic body at all.\nAll diagnostics: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert!(
+        beam.params
+            .iter()
+            .any(|(_, ty)| matches!(ty, reify_core::Type::ScalarParam(_))),
+        "`beam` must still take a DIM-KINDED parameter (`Scalar<Q>` → \
+         `Type::ScalarParam`) — that type at a LENGTH slot is the whole subject \
+         of this pin. Got: {:?}",
+        beam.params
+    );
+
+    let dimension_rejections: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| {
+            d.severity == Severity::Error
+                && matches!(
+                    d.code,
+                    Some(DiagnosticCode::ArgTypeMismatch)
+                        | Some(DiagnosticCode::DimensionedArgRejected)
+                )
+        })
         .collect();
     assert!(
-        errors.is_empty(),
+        dimension_rejections.is_empty(),
         "MEASURED (task 6862 reviewer amendment): `beam(10kg)` through a \
-         dim-kinded generic emits no compile Error — the deliberate cost of the \
-         ScalarParam defer. A diagnostic appearing here means instantiations are \
-         now checked; update the arm's comment in `builtin_signatures.rs` and \
-         this test together.\nGot: {errors:#?}"
+         dim-kinded generic emits no wrong-dimension Error — the deliberate cost \
+         of the ScalarParam defer. A rejection appearing here means instantiations \
+         are now checked; update the arm's comment in `builtin_signatures.rs` and \
+         this test together.\nGot: {dimension_rejections:#?}"
     );
 }
 
