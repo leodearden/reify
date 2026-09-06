@@ -480,6 +480,30 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// codes.  The contrast is pinned by
 /// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
 /// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
+///
+/// **Other `error:` lines still printed at exit 0.** Task 5311 removed this
+/// diagnostic from that set but did not empty it.  A post-fix sweep of all
+/// tracked `examples/**/*.ri` left 12 lines in 9 distinct shapes, spanning four
+/// owning subsystems (geometry compile/realize, relation solving, imported
+/// fields, multi-kernel routing) — too many to fix in that task's diff without
+/// an unbounded scope breach, so they are filed as a low-priority follow-up
+/// rather than dropped.  Eight of the nine read as genuine per-example defect
+/// signals whose only bug is the exit code; one — the geometry-consumer
+/// `could not be resolved … not on the pure value-eval surface` line — is the
+/// same posture-conditional degradation class this task's diagnostic was in.
+/// Re-measure with:
+///
+/// ```text
+/// for f in $(find examples -name '*.ri' | sort); do
+///   err=$(timeout 60 ./target/debug/reify check "$f" 2>&1 >/dev/null)
+///   [ $? = 0 ] && echo "$err" | grep '^error:' | sed "s|^|$f :: |"
+/// done
+/// ```
+///
+/// Baseline for that command: 55 lines before task 5311 (43 of them this
+/// diagnostic), 12 after.  #5403 (leaf gamma) owns the general
+/// `Severity::Error` ⇒ non-zero-exit gate for `check`, so these must be triaged
+/// BEFORE that gate lands or they become spurious CI failures.
 /// The constraint-indeterminacy message grammar, as one pair of literals:
 /// `constraint {label-or-id} indeterminate: {reason}`.
 ///
