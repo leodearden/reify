@@ -3674,9 +3674,7 @@ mod tests {
         }
 
         assert!(
-            BUILTIN_NAME_FAMILIES
-                .iter()
-                .any(|family| *family == GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
+            BUILTIN_NAME_FAMILIES.contains(&GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
             "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only because it is a \
              BUILTIN_NAME_FAMILIES member; it is no longer, so slotted_builtin_names() \
              must chain it explicitly."
