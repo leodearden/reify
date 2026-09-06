@@ -5,8 +5,8 @@
 //! ## What this pins
 //!
 //! `ModalOptions.damping` accepts a `DampingDescriptor`. Before #6878 the FEA
-//! producer read it through `extract_damping`, whose deliberate `_ => (0.0, 0.0)`
-//! catch-all flattens ANY descriptor that is not `RayleighDamping` to the
+//! producer read it through a lossy `(α, β)`-only view whose deliberate
+//! catch-all flattened ANY descriptor that is not `RayleighDamping` to the
 //! undamped pair. So a `MaterialDamping` descriptor — the author's explicit
 //! request for modal-strain-energy damping — evaluated to `damping_ratio = 0`
 //! with **exit 0 and zero diagnostics**: the INV-SF-3 silent-failure shape.
