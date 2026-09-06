@@ -603,6 +603,21 @@ pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, cont
 /// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
 /// must be absent.
 ///
+/// # Vacuity hazard: bare trait bodies
+///
+/// A `trait` body compiled with NO conforming structure emits zero error
+/// diagnostics no matter how broken it is — dimension mismatches, undefined
+/// member fields and wrong `let` annotations are all deferred to conformance.
+/// So an assertion of absence against a bare trait body passes unconditionally
+/// and tests nothing. Declare a conformer (`structure def C : T { ... }`), or
+/// write the probe as a `structure`.
+///
+/// The executable statement of this rule lives in
+/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`
+/// (`trait_body_without_conformer_is_not_dimension_checked` and its
+/// non-vacuity guard `conformed_trait_body_dimension_mismatch_errors`); that
+/// module's doc has the full rule and the measurement provenance.
+///
 /// # Panics
 /// Panics if any `Severity::Error` diagnostic is present. The panic message
 /// includes `context` and the list of error messages.
@@ -627,6 +642,14 @@ pub fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
 ///
 /// `context` is a short label that appears in the panic message to identify
 /// which compilation or evaluation phase failed — e.g. `"compile"`, `"guard block"`.
+///
+/// # Vacuity hazard: bare trait bodies
+///
+/// Same trap as [`assert_no_error_diagnostics`], and being stricter about
+/// severity does not escape it: a bare trait body emits nothing at all, so
+/// this assertion is equally vacuous there. See that helper's `Vacuity
+/// hazard` section, and the pins it names in
+/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`.
 ///
 /// # Panics
 /// Panics if `diagnostics` is non-empty. The panic message includes `context`
