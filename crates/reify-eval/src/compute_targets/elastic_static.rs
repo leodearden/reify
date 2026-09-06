@@ -3506,7 +3506,11 @@ fn median(values: &[f64]) -> Option<f64> {
         return None;
     }
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // `total_cmp` rather than `partial_cmp(..).unwrap_or(Equal)` (INV-FEA-3): these
+    // sizes come from `(6 * V).cbrt()` over realized-mesh coordinates, so a NaN is not
+    // structurally excluded, and a NaN-as-equal fallback would yield an unstable sort
+    // and a meaningless baseline `mesh_size`.
+    sorted.sort_by(f64::total_cmp);
     Some(sorted[sorted.len() / 2])
 }
 
