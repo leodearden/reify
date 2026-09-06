@@ -509,16 +509,19 @@ pub type LoopClosureSolverInputs = (
 ///   * `chain_b`         — the joints in `path_b` with the world sentinel
 ///     stripped.
 ///   * `vals_b_initial`  — initial-guess SI values for `chain_b`. Joints with
-///     a direct binding entry use the bound value; otherwise the range midpoint.
+///     a direct binding entry use the bound value; otherwise they resolve
+///     through the same `resolve_joint_value` ladder as `chain_a`
+///     (coupling → parent, `fixed` → `0.0` sentinel, else range midpoint).
 ///   * `free_b`          — positions in `chain_b` whose joints are free
-///     (no direct binding entry); the solver iterates these.
+///     (no direct binding entry AND not the 0-DOF `fixed` kind); the solver
+///     iterates these.
 ///
 /// Returns `None` on:
 ///   * non-Map record,
 ///   * missing/non-List `path_a` or `path_b`,
 ///   * either path empty or missing the leading world sentinel,
-///   * any chain joint that has no resolvable SI value (no binding,
-///     no midpoint — e.g. multi-DOF kinds, malformed Maps).
+///   * any chain joint that has no resolvable SI value (no binding, not
+///     0-DOF, no midpoint — e.g. malformed Maps, unbounded ranges).
 ///
 /// The world sentinel at chain head is identified by `kind = "world"`
 /// (matching `mechanism::is_world`) and dropped before composition — the
@@ -558,42 +561,65 @@ pub fn extract_loop_closure_chains(
     }
 
     // chain_b is the closing side: a joint with a *direct* binding entry
-    // is a fixed initial value; any joint without a direct binding becomes
-    // a free index, seeded from its range midpoint.  Coupling and fixed
-    // arms intentionally fall through the direct-lookup branch — multi-loop
-    // coupling is out of v0.2 scope (see plan design-decisions §4).
+    // is a fixed initial value; any joint without a direct binding is
+    // resolved the same way chain_a's are, and becomes a free index unless
+    // it is a 0-DOF link.
     //
-    // **Asymmetry note (v0.2 limitation).**  `chain_a` resolves via
-    // `resolve_joint_value`, which carries a fixed-joint sentinel arm
-    // (returns `Some(JointValue::Scalar(0.0))`).  `chain_b`'s unbound-joint
-    // fallback uses `joint_range_midpoint` directly, which returns `None`
-    // for fixed joints — so a fixed joint appearing in `path_b` without a
-    // direct binding would collapse the whole record to None and the
-    // snapshot to Undef.  In practice the mechanism builder does not place
-    // fixed joints on closing paths (the closing edge always references a
-    // motion joint to drive the solver), so this asymmetry is a latent
-    // shape constraint rather than a live bug.  A future v0.3 refactor
-    // can route this fallback through `resolve_joint_value` (and skip the
-    // index from `free_b` when the result is the fixed sentinel) once a
-    // real fixture demands fixed joints in path_b.
+    // **Symmetry note (task 7186).**  Both sides now resolve through the
+    // SAME helper, `resolve_joint_value` — which layers direct binding,
+    // coupling-tracks-parent recursion, the `fixed` 0-DOF sentinel, and the
+    // range-midpoint fallback.  The two sides still differ in exactly one
+    // respect, and it is the intended one: chain_b additionally records
+    // which of its entries the solver may iterate.  A 0-DOF link in EITHER
+    // path contributes its transform (`origin ∘ identity`) to the residual
+    // without contributing a free variable, which is what lets
+    // `mechanism::append_body` carry a closing body's `pose` into the
+    // closure as a synthetic `{ kind: "fixed", origin: <pose> }` rigid link.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
         if let Some(v_jv) = direct_binding_value(joint, bindings) {
             vals_b_initial.push(v_jv);
         } else {
-            // KCC-γ step-10: `joint_range_midpoint` now returns
-            // `Option<JointValue>` — multi-DOF kinds (planar / spherical /
+            // KCC-γ step-10: multi-DOF kinds (planar / spherical /
             // cylindrical) produce per-DOF surfaces that flow directly into
             // the widened `Vec<JointValue>` solver-input shape.  The
             // f64-shim that collapsed multi-DOF midpoints to None is gone.
-            let mid_jv = joint_range_midpoint(joint)?;
-            vals_b_initial.push(mid_jv);
-            free_b.push(i);
+            //
+            // `resolve_joint_value` re-checks the direct binding first; that
+            // lookup is known to have missed here, so control always reaches
+            // its coupling / fixed / midpoint arms.  A non-fixed joint with
+            // no binding and no resolvable range still short-circuits the
+            // whole call to None, exactly as the old `joint_range_midpoint?`
+            // did.
+            let jv = resolve_joint_value(joint, bindings)?;
+            vals_b_initial.push(jv);
+            // Free-variable membership is decided by the joint's declared
+            // KIND, not by the resolved value: a genuinely free prismatic
+            // whose range midpoint happens to be 0.0 must stay free, so
+            // matching on `JointValue::Scalar(0.0)` would be wrong.
+            if !is_zero_dof_joint(joint) {
+                free_b.push(i);
+            }
         }
     }
 
     Some((chain_a, vals_a, chain_b, vals_b_initial, free_b))
+}
+
+/// Returns `true` when `joint` is the 0-DOF `fixed` kind — a rigid link that
+/// contributes a transform to a chain but no free variable to the solver.
+///
+/// Read from the joint Map's declared `kind` rather than inferred from a
+/// resolved `JointValue::Scalar(0.0)`: the fixed sentinel and a genuinely
+/// free prismatic seeded at a 0.0 midpoint are indistinguishable by value.
+fn is_zero_dof_joint(joint: &Value) -> bool {
+    match joint {
+        Value::Map(m) => {
+            m.get(&Value::String("kind".to_string())) == Some(&Value::String("fixed".to_string()))
+        }
+        _ => false,
+    }
 }
 
 /// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
