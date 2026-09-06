@@ -1,4 +1,4 @@
-// Scenario 17 (PRD §8.1, lane δ-B): ordinary comments carrying a cite that must
+// Scenario 20 (PRD §8.1, lane δ-B): ordinary comments carrying a cite that must
 // NOT classify. Every line here is a negative — the fixture contributes ZERO
 // findings, which is what makes it an over-fire guard rather than a smoke test.
 //
@@ -23,32 +23,32 @@
 // crates/reify-eval/src/cache.rs, where every one carries a genuine cite.
 
 // cause via mark_pending_with_cause (task #2330 §9.2 invariant).
-fn scenario17_identifier_snake_case() {}
+fn scenario20_identifier_snake_case() {}
 
 /// / `mark_pending_with_cause` (tasks #2326, #2335) and all Failed transitions
-fn scenario17_identifier_in_doc_comment() {}
+fn scenario20_identifier_in_doc_comment() {}
 
 // --- pending_cause / mark_failed / mark_pending_with_cause tests (task #2330 step-3) ---
-fn scenario17_identifier_prefix() {}
+fn scenario20_identifier_prefix() {}
 
 // --- mark_pruned_pending producer tests (task #4739 γ) ---
-fn scenario17_identifier_suffix() {}
+fn scenario20_identifier_suffix() {}
 
 // A hyphenated compound NAMES a thing rather than deferring work (guard 3).
 // the pending-queue drain path is exercised by task #2330's harness
-fn scenario17_hyphenated_compound() {}
+fn scenario20_hyphenated_compound() {}
 
 // A member/path qualification is a SYMBOL reference, not prose (guard 3, left).
 // self.pending is recomputed on every demand walk (task #2330)
-fn scenario17_member_qualified() {}
+fn scenario20_member_qualified() {}
 
 // A quoted state name is not deferral prose (guard 2).
 /// serialises the "pending" wire tag for the GUI bridge (task #2326)
-fn scenario17_quoted_state() {}
+fn scenario20_quoted_state() {}
 
 // `Pending` is the NodeCache freshness enum VARIANT (guard 1, case-sensitive).
 /// constructs a Pending producer for the demand-prune tests (task #2335)
-fn scenario17_enum_variant() {}
+fn scenario20_enum_variant() {}
 
 // --- class (b): the cite is PRD-RELATIVE, not a task id --------------------
 // Killed by §8.2's prd_relative_cite via has_canonical_cite. The first three are
@@ -56,17 +56,17 @@ fn scenario17_enum_variant() {}
 // so the prose guards alone do not save them; only the cite grammar does.
 
 /// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for
-fn scenario17_prd_relative_family3() {}
+fn scenario20_prd_relative_family3() {}
 
 /// a uniaxial-stretch scenario is deferred to the downstream PRD task #12
-fn scenario17_prd_relative_family3_downstream() {}
+fn scenario20_prd_relative_family3_downstream() {}
 
 //   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:
-fn scenario17_prd_relative_family2() {}
+fn scenario20_prd_relative_family2() {}
 
 // A glued PRD-artifact namespace (family 1).
 /// envelope assembly is blocked on §7#5 landing first
-fn scenario17_prd_relative_family1() {}
+fn scenario20_prd_relative_family1() {}
 
 // --- class (c): δ-B is cite-ANCHORED --------------------------------------
 // A deferral with no canonical cite is not a candidate at all, so the lane can
@@ -74,7 +74,7 @@ fn scenario17_prd_relative_family1() {}
 // containing the word pending".
 
 /// wiring is pending the morph rewrite
-fn scenario17_uncited_deferral() {}
+fn scenario20_uncited_deferral() {}
 
 // --- class (d): a G-allow marker belongs to its own lane -------------------
 // That lane runs an independent scan_g_allow_markers →
@@ -101,15 +101,15 @@ fn scenario17_uncited_deferral() {}
 // seeded terminal so a δ-B that reached the line would fire.
 
 // G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
-fn scenario17_g_allow_marker_live_shape() {}
+fn scenario20_g_allow_marker_live_shape() {}
 
 // G-allow: shared envelope assembler; the four surfaces are blocked on PRD #7777 — no non-test caller until then
-fn scenario17_g_allow_marker_discriminating() {}
+fn scenario20_g_allow_marker_discriminating() {}
 
 // G-allow: envelope assembly is deferred to #4092 (done); re-homed from cancelled #3429 — no non-test caller yet
-fn scenario17_g_allow_marker_owner_less() {}
+fn scenario20_g_allow_marker_owner_less() {}
 
 // --- the dominant benign class: a comment that EXPLAINS rather than defers --
 
 /// Maps each hex/wedge outcome onto its diagnostic code (task #2330).
-fn scenario17_benign_explanatory() {}
+fn scenario20_benign_explanatory() {}

@@ -715,7 +715,7 @@ Fixture-driven, both directions across the detector↔repo and detector↔DB sea
 | 17 | Inverse: renamed path, target tracked | metadata.files names a path whose last-touching commit renamed it to a path still tracked at HEAD | one `task-cites-renamed-path` Medium finding naming BOTH paths + the sha; no `task-cites-deleted-path` |
 | 18 | Inverse: renamed path, target itself absent | same, but the rename target is not tracked either (renamed again / later deleted) | `task-cites-deleted-path` (never advertise a target that is itself gone) |
 | 19 | Inverse: genuine delete (regression pin) | metadata.files names a deleted path, no rename target resolvable (also the merge-commit and git-error shapes) | `task-cites-deleted-path`, unchanged — and carrying no `File` evidence ref |
-| 20 | δ-B over-fire guard (committed fixture) | `tests/fixtures/ptodo/scenario17_delta_b_cited_deferral.rs` — identifier-class, PRD-relative, cite-free-deferral, G-allow and benign-explanatory lines, with **every** cite it carries seeded TERMINAL | **no findings** |
+| 20 | δ-B over-fire guard (committed fixture) | `tests/fixtures/ptodo/scenario20_delta_b_cited_deferral.rs` — identifier-class, PRD-relative, cite-free-deferral, G-allow and benign-explanatory lines, with **every** cite it carries seeded TERMINAL | **no findings** |
 
 ## 10. Cross-PRD relationship (G4)
 

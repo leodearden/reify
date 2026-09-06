@@ -1163,7 +1163,7 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_F}, 'done');
     #                 G-allow lane's own rule (c) exempts it and stays silent —
     #                 which leaves δ-B's g_allow_marker_body guard as the only
     #                 thing preventing a finding, exactly as in
-    #                 crates/reify-audit/tests/fixtures/ptodo/scenario17_delta_b_cited_deferral.rs.
+    #                 crates/reify-audit/tests/fixtures/ptodo/scenario20_delta_b_cited_deferral.rs.
     #
     #     SELF-MATCH SAFETY: this file is swept and is NOT allowlisted.  Lane
     #     δ-B is .rs-gated so a literal cited-deferral comment here could not

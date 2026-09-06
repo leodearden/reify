@@ -702,7 +702,7 @@ mod tests {
 
     /// FP guard at the fixture level for δ-B, mirroring
     /// `committed_allow_dead_code_fixture_contributes_zero_findings`: the
-    /// committed `scenario17_delta_b_cited_deferral.rs` fixture is entirely
+    /// committed `scenario20_delta_b_cited_deferral.rs` fixture is entirely
     /// NEGATIVE — every line must fail at least one of the lane's guards.
     ///
     /// This is the enforcement point that matters most for δ-B, because the
@@ -725,16 +725,16 @@ mod tests {
     #[test]
     fn committed_delta_b_fixture_contributes_zero_findings() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/ptodo/scenario17_delta_b_cited_deferral.rs");
+            .join("tests/fixtures/ptodo/scenario20_delta_b_cited_deferral.rs");
         let content = std::fs::read_to_string(&fixture)
             .unwrap_or_else(|e| panic!("read committed fixture {}: {e}", fixture.display()));
 
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        write_file(root, "scenario17_delta_b_cited_deferral.rs", &content);
+        write_file(root, "scenario20_delta_b_cited_deferral.rs", &content);
 
         let mut git = MockGitOps::new();
-        git.set_ls_files(vec!["scenario17_delta_b_cited_deferral.rs".to_string()]);
+        git.set_ls_files(vec!["scenario20_delta_b_cited_deferral.rs".to_string()]);
 
         // Seed every id the fixture cites TERMINAL wherever a terminal status is
         // safe. `done`/`cancelled` is the worst case for this lane — it is what
@@ -1463,7 +1463,7 @@ mod inverse {
         assert!(has_commit, "evidence must contain Commit ref with sha: {:?}", f.evidence);
     }
 
-    // Scenario 17 (PRD §9): non-terminal task whose metadata.files names a path
+    // Scenario 20 (PRD §9): non-terminal task whose metadata.files names a path
     // that was RENAMED (not deleted), to a target still tracked at HEAD → one
     // task-cites-renamed-path finding naming BOTH paths.
     //
