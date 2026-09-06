@@ -81,13 +81,13 @@ fn build_support_path() -> std::path::PathBuf {
     Path::new(BUILD_RS).with_file_name("build_support.rs")
 }
 
-/// Return `build_support.rs`'s text for the item named by `fn_sig`, from the
-/// signature through the closing brace in column 0.
+/// Return the text of the top-level item named by `fn_sig`, from the signature
+/// through the closing brace in column 0.
 ///
-/// A dedicated extractor rather than [`extract_test_fn_body`]: that one is
-/// scoped to THIS file's `#[test]` items and terminates on the next `#[test]`,
-/// an attribute `build_support.rs` — a bare item list — never carries.
-fn extract_build_support_fn<'a>(source: &'a str, fn_sig: &str) -> Option<&'a str> {
+/// A separate extractor from [`extract_test_fn_body`], which is scoped to THIS
+/// file's `#[test]` items and terminates on the next `#[test]` — an attribute
+/// neither `build.rs` nor `build_support.rs` carries.
+fn extract_top_level_fn<'a>(source: &'a str, fn_sig: &str) -> Option<&'a str> {
     let start = source.find(fn_sig)?;
     let rest = &source[start..];
     let end = rest.find("\n}\n").map(|p| p + 3).unwrap_or(rest.len());
@@ -284,16 +284,163 @@ fn test_all_three_outputs_verified() {
 }
 
 #[test]
-fn test_no_redundant_rerun_if_changed() {
-    // Source-level regression guard: build.rs must NOT contain rerun-if-changed=src/parser.c
+fn test_generated_parser_c_is_watched() {
+    // Hole E, and the INVERSE of the pin this test used to carry.
+    //
+    // build.rs excluded src/parser.c from its watch loop — `if rel ==
+    // "src/parser.c" { continue; }` — citing double execution. Cargo narrows a
+    // build script's watch set to EXACTLY the emitted rerun-if-changed list, so
+    // the consequence was that parser.c could be DELETED, or replaced by CoW
+    // seeding with a copy from a different base, with grammar.js untouched, and
+    // cargo had no reason to re-run this script: the previously-built
+    // libtree_sitter_reify.a stayed linked and the change was never under test.
+    // That is the same defect class `#5784`/`#5629` already fixed for
+    // src/scanner.c and the headers, left open for the one input that matters
+    // most.
+    //
+    // The double-execution cost is real but BOUNDED and CONVERGENT — see
+    // test_gating_predicates_converge_after_one_regeneration, which pins that
+    // directly. One extra build-script run after a genuine regeneration is a
+    // build you were going to pay for anyway.
     let build_rs = std::fs::read_to_string(BUILD_RS)
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
+
+    // The staleness logic is include!d rather than a crate dependency, so cargo
+    // learns about it ONLY from an explicit directive.
     assert!(
-        !build_rs.contains("rerun-if-changed=src/parser.c"),
-        "build.rs must NOT contain 'rerun-if-changed=src/parser.c' — \
-         src/parser.c is a generated output managed by build.rs itself. \
-         Watching it causes double execution."
+        build_rs.contains("cargo:rerun-if-changed=build_support.rs"),
+        "build.rs must emit 'cargo:rerun-if-changed=build_support.rs' — the \
+         predicates deciding whether to regenerate are include!d, so an edit to \
+         them is invisible to cargo without this line."
     );
+
+    // src/parser.c must be IN the enumeration the watch loop iterates...
+    let inputs = extract_top_level_fn(&build_rs, "fn compilation_inputs()")
+        .expect("build.rs must define compilation_inputs");
+    assert!(
+        inputs.contains("src/parser.c"),
+        "compilation_inputs() must enumerate src/parser.c — its bytes are \
+         compiled into the archive. Body:\n{}",
+        inputs
+    );
+
+    // ...and the loop must emit EVERY element, with no exclusion for it.
+    assert!(
+        !build_rs.contains("rel == \"src/parser.c\""),
+        "build.rs must not exclude src/parser.c from the watch loop. Cargo \
+         narrows the watch set to exactly the emitted list, so an excluded \
+         parser.c cannot re-trigger the build script when it is deleted or \
+         CoW-replaced — the archive stays linked and the change is never tested."
+    );
+}
+
+#[test]
+fn test_regeneration_branch_writes_both_shell_stamps() {
+    // Hole B. build.rs's run_tree_sitter_generate() shells straight out to
+    // `tree-sitter generate` and stops there — it never touches
+    // src/.grammar_hash.stamp. So build.rs can leave parser.c(B) on disk beside
+    // a stamp still reading sha256(A). A later merge or checkout that restores
+    // grammar.js == A makes that stamp MATCH again, and it then actively vouches
+    // for a parser the current grammar never produced. That is the reproducing
+    // sequence for both of #6992's measurements.
+    //
+    // The cure is that whatever regenerates must also re-attest.
+    let build_rs = std::fs::read_to_string(BUILD_RS)
+        .expect("should be able to read build.rs from tree-sitter-reify crate root");
+    let main_body =
+        extract_top_level_fn(&build_rs, "fn main()").expect("build.rs must define main");
+
+    let after_generate = main_body
+        .split_once("run_tree_sitter_generate();")
+        .expect("main() must call run_tree_sitter_generate()")
+        .1;
+    assert!(
+        after_generate.contains("verify_outputs(src_dir)"),
+        "the regeneration branch must still verify the outputs exist before \
+         attesting them. Branch:\n{}",
+        after_generate
+    );
+    assert!(
+        after_generate.contains("write_shell_stamps("),
+        "the regeneration branch must write BOTH shell stamps immediately after \
+         verify_outputs — otherwise build.rs regenerates parser.c behind a \
+         .grammar_hash.stamp that still describes the PREVIOUS grammar, which is \
+         exactly how a later merge turns a matching stamp into a false GREEN. \
+         Branch:\n{}",
+        after_generate
+    );
+
+    let support = read_build_support_source();
+    let writer = extract_top_level_fn(&support, "fn write_shell_stamps(")
+        .expect("build_support.rs must define write_shell_stamps");
+    for name in ["GRAMMAR_STAMP_NAME", "OUTPUTS_STAMP_NAME"] {
+        assert!(
+            writer.contains(name),
+            "write_shell_stamps must write {} — a regeneration that re-attests \
+             only one of the two stamps leaves the other vouching for bytes that \
+             no longer exist. Body:\n{}",
+            name,
+            writer
+        );
+    }
+}
+
+#[test]
+fn test_gating_predicates_converge_after_one_regeneration() {
+    // Watching a file this build script WRITES costs one extra build-script run
+    // after each genuine regeneration: cargo sees parser.c newer than its
+    // recorded reference and re-runs. The old exclusion comment called that
+    // "double execution" as if it were a loop. It is not — the extra run finds
+    // both stamps current, writes nothing, and the run after it is clean.
+    //
+    // Pinned behaviourally so a bounded cost cannot silently become an unbounded
+    // one: evaluate the gating predicates twice in a row from a regenerated
+    // state and require the second evaluation to ask for no regeneration.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'converge'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let out_stamp = out_dir.join("grammar_hash.stamp");
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    let grammar_hash = content_hash(&grammar);
+
+    // Round 1: nothing is attested yet, so both predicates must ask for a
+    // generate. Non-vacuity guard for round 2.
+    assert!(
+        needs_generate(&grammar_hash, &out_stamp, &output_refs, &src_dir),
+        "round 1 must want a regeneration, or round 2 proves nothing"
+    );
+    assert!(
+        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "round 1 must not report the shell stamps as current"
+    );
+
+    // The regeneration itself: outputs verified, then BOTH shell stamps and the
+    // OUT_DIR stamp written — exactly what build.rs's branch does.
+    let sha = sha256_of_path(&grammar).unwrap().unwrap();
+    write_shell_stamps(&src_dir, &sha);
+    std::fs::write(&out_stamp, &grammar_hash).unwrap();
+
+    // Round 2: settled. And round 3, so "settled" is a fixed point rather than
+    // an alternation.
+    for round in 2..=3 {
+        assert!(
+            !needs_generate(&grammar_hash, &out_stamp, &output_refs, &src_dir),
+            "round {round}: the gating predicates must converge — watching a \
+             build-script output may cost ONE extra run, never a loop"
+        );
+        assert!(
+            shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+            "round {round}: the shell stamps written by the regeneration must \
+             read back as current"
+        );
+    }
 }
 
 /// Find the Err(e) arm in source code using brace-depth tracking.
@@ -2423,7 +2570,7 @@ fn test_shell_stamp_has_no_error_path_that_skips_generation() {
     // assertable, and is the durable property, is that the mtime comparison is
     // gone and every error path concedes in the safe direction.
     let source = read_build_support_source();
-    let body = extract_build_support_fn(&source, "fn shell_stamp_is_current(")
+    let body = extract_top_level_fn(&source, "fn shell_stamp_is_current(")
         .expect("build_support.rs must define shell_stamp_is_current");
 
     assert!(
