@@ -12,6 +12,7 @@
 //! the contract; [`non_indexed_subs_emit_no_interim_diagnostic`] is the
 //! over-firing guard.
 
+use crate::common::{find_cst_node, make_ts_parser};
 use reify_ast::ast::ExprKind;
 use reify_ast::decl::{Declaration, MemberDecl, SubDecl};
 use reify_core::ModulePath;
@@ -499,6 +500,97 @@ fn non_indexed_subs_lower_to_none_binder_and_domain() {
         assert!(
             sub.index_domain.is_none(),
             "{label}: non-indexed sub must have index_domain == None"
+        );
+    }
+}
+
+/// Attributable staleness guard for the LINKED parser (`#6992`).
+///
+/// Every other test in this file goes through `reify_syntax::parse`, i.e. the
+/// full CST→AST lowering. That makes them exquisitely sensitive to a stale
+/// `tree-sitter-reify/src/parser.c` and completely silent about *why*: a parser
+/// built from a grammar that predates the indexer clause turns
+/// `sub idlers[i in 0..4] = …` into an ERROR node, and what the reader is
+/// handed is eight lowering assertions failing on absent
+/// `index_binder`/`index_domain` — a defect that reads as if it lives in
+/// `lower_sub`. `#6992`'s MEASUREMENT 1 is that exact confusion, found against
+/// grammar.js:846 (the indexer clause this file exists for).
+///
+/// So this probes the parser DIRECTLY rather than through lowering. It is the
+/// one test here that can distinguish "the grammar's contract changed" from
+/// "the compiled parser on disk is not the one grammar.js describes", and it is
+/// deliberately not a restatement of `indexed_sub_lowers_binder_and_domain`:
+/// that pins where the fields LAND in `SubDecl`, this pins that the linked
+/// parser emits them at all.
+///
+/// # Why the field-id probe alone is not enough
+///
+/// `field_id_for_name` answers only "is this name in the language's field
+/// table", and the table is the union over the WHOLE grammar. Both names are
+/// used elsewhere — `field('domain', $.type_expr)` at grammar.js:314 and
+/// `field('binder', $.identifier)` in `field_binding` at grammar.js:1391, the
+/// latter landed by `0b2868f522`, which PREDATES the indexer clause
+/// (`56f398dd11`). So a parser.c generated from a grammar without the indexer
+/// clause still reports both ids as `Some`, and a field-id-only guard would sit
+/// green through precisely the staleness it was written to catch. The
+/// reachability half below is the assertion with teeth: it demands the fields
+/// on an actual `sub_declaration` node, which only the indexer clause can
+/// produce.
+#[test]
+fn linked_parser_exposes_the_indexer_clause_fields() {
+    /// Appended to every failure here: the diagnosis a bare assertion cannot give.
+    const STALE_PARSER: &str = "\n\n\
+        This is the `#6992` signature: tree-sitter-reify/src/parser.c is a \
+        GENERATED, gitignored artifact, and nothing in this crate can tell a \
+        grammar regression from a parser.c that was never regenerated for the \
+        grammar.js on disk. If grammar.js still declares the indexer clause \
+        (grammar.js:846), the parser is stale — run \
+        `scripts/tree-sitter-generate.sh --force` and re-run this test before \
+        looking anywhere else.";
+
+    // (1) The cheap signal: the field NAMES exist in the linked language.
+    //
+    // Necessary but NOT sufficient (see the doc comment). Kept because it
+    // separates a truncated/foreign parser.c — where the names vanish outright
+    // — from one merely generated before the indexer clause, which (2) catches.
+    let language: tree_sitter::Language = tree_sitter_reify::language().into();
+    for field in ["binder", "domain"] {
+        assert!(
+            language.field_id_for_name(field).is_some(),
+            "the linked tree-sitter parser has no `{field}` field at all, so the \
+             indexer clause cannot possibly parse.{STALE_PARSER}"
+        );
+    }
+
+    // (2) The signal with teeth: both fields are reachable on a real
+    // `sub_declaration`, parsed by the linked parser with no error recovery.
+    let mut parser = make_ts_parser();
+    let tree = parser
+        .parse(INDEXED_SUB_SOURCE, None)
+        .expect("the linked tree-sitter parser must return a tree for valid source");
+    let root = tree.root_node();
+    assert!(
+        !root.has_error(),
+        "the linked parser produced ERROR recovery on the canonical indexed sub \
+         `{INDEXED_SUB_SOURCE}` — it does not accept the indexer clause.\n\
+         CST: {}{STALE_PARSER}",
+        root.to_sexp()
+    );
+
+    let sub = find_cst_node(root, "sub_declaration").unwrap_or_else(|| {
+        panic!(
+            "the linked parser produced no `sub_declaration` node for \
+             `{INDEXED_SUB_SOURCE}`.\nCST: {}{STALE_PARSER}",
+            root.to_sexp()
+        )
+    });
+    for field in ["binder", "domain"] {
+        assert!(
+            sub.child_by_field_name(field).is_some(),
+            "the linked parser parsed the indexed sub but exposes no `{field}` \
+             child on `sub_declaration` — the indexer clause at grammar.js:846 \
+             is absent from the compiled parser.\nCST: {}{STALE_PARSER}",
+            sub.to_sexp()
         );
     }
 }

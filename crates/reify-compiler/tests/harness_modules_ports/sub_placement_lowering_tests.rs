@@ -537,3 +537,63 @@ structure Rig {
          no element template"
     );
 }
+
+// ── Attributable staleness guard (#6992) ─────────────────────────────────────
+
+/// The `sub … at <pose>` surface this whole file rests on must still PARSE.
+///
+/// `#6992`'s MEASUREMENT 2 is what this exists for: a
+/// `tree-sitter-reify/src/parser.c` generated from one grammar left sitting
+/// beside a `grammar.js` from another. reify-compiler has no tree-sitter
+/// dependency at all (verified in its Cargo.toml), so it cannot probe the
+/// linked parser the way `reify-syntax`'s
+/// `linked_parser_exposes_the_indexer_clause_fields` does — the only reachable
+/// signal is the one the `reify_test_support::compile_source_with_stdlib`
+/// family already carries.
+///
+/// # Why this is not `valid_at_and_aux_compile_clean` again
+///
+/// That test asserts the same predicate through
+/// `compile_source_with_stdlib`, which routes via `parse_with_stdlib_or_panic`
+/// and **panics** on any parse error (reify-test-support `helpers.rs:191`). So
+/// under a stale parser it does not fail — it ABORTS, dumping a raw
+/// `parse errors: [...]` list with no hint that the compiled parser is the
+/// suspect, and every other test in this file aborts the same way at the same
+/// instant. This guard uses the `_allow_parse_errors` variant already used
+/// below by `indexed_sub_is_rejected_with_interim_diagnostic_and_elaborates_to_one_instance`,
+/// which forwards parse diagnostics instead of panicking, so the failure is a
+/// single assertion that names the cause and the remedy. It asserts nothing
+/// about the lowered IR — `aux_sub_lowers_pose_and_is_aux` owns `pose`/`is_aux`
+/// and this deliberately does not restate it.
+#[test]
+fn sub_at_pose_surface_still_parses_against_the_linked_parser() {
+    let source = r#"structure Child {
+    param h: Length = 10mm
+}
+structure Parent {
+    sub plate : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+}"#;
+    // Forwards parse errors as diagnostics rather than panicking, so a stale
+    // parser reaches the assertion below instead of aborting inside the helper.
+    let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
+
+    let errors: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "the `sub … at <pose>` surface every test in this file is written \
+         against no longer compiles cleanly; got: {errors:?}\n\n\
+         Before treating this as a compiler regression, rule out `#6992`: \
+         tree-sitter-reify/src/parser.c is a GENERATED, gitignored artifact, \
+         and a parser.c left over from a different grammar.js turns this \
+         surface into a parse error that surfaces here as an opaque compile \
+         failure. Run `scripts/tree-sitter-generate.sh --force` and re-run. \
+         If reify-syntax's `linked_parser_exposes_the_indexer_clause_fields` \
+         is also red, the parser is the cause, not this crate."
+    );
+}
