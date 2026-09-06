@@ -10412,13 +10412,21 @@ impl Engine {
                                     }
                                 }
                             } else {
-                                // Unregistered @optimized target: emit Error, fall through
-                                // to body-inlining.
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "@optimized target {:?}: no registered compute trampoline \
-                                     (falling back to body-inlining)",
-                                    target
-                                )));
+                                // Unregistered @optimized target: emit the SOFT-site
+                                // diagnostic, then fall through to body-inlining.
+                                // Task 5311: Warning when this engine's compute
+                                // registry is entirely EMPTY (a declared
+                                // trampoline-free posture, e.g. `reify check` /
+                                // reify-lsp), Error otherwise (a driver that
+                                // registered some trampolines is genuinely missing
+                                // this one). Wording and code are single-sourced by
+                                // the constructor — see `NO_TRAMPOLINE_STEM`.
+                                diagnostics.push(
+                                    crate::engine_compute::soft_no_trampoline_diagnostic(
+                                        &target,
+                                        self.compute_registry.fns.is_empty(),
+                                    ),
+                                );
                             }
                         }
                     }
@@ -11528,14 +11536,23 @@ impl Engine {
                             }
                         }
                     } else {
-                        // Unregistered target (PRD §9 Q1, task γ): emit Error
-                        // diagnostic, then fall through to body-inlining.
-                        // Release-hard-error is deferred to slice η.
-                        diagnostics.push(Diagnostic::error(format!(
-                            "@optimized target {:?}: no registered compute trampoline \
-                             (falling back to body-inlining)",
-                            target
-                        )));
+                        // Unregistered target (PRD §9 Q1, task γ): emit the
+                        // SOFT-site diagnostic, then fall through to
+                        // body-inlining.
+                        // Task 5311: Warning when this engine's compute registry
+                        // is entirely EMPTY (a declared trampoline-free posture,
+                        // e.g. `reify check` / reify-lsp), Error otherwise (a
+                        // driver that registered some trampolines is genuinely
+                        // missing this one). Wording and code are single-sourced
+                        // by the constructor — see `NO_TRAMPOLINE_STEM`.
+                        // The release-hard-error variant remains open in
+                        // docs/prds/v0_3/compute-node-contract.md §9 OQ-1
+                        // ("body-inline in debug, hard error in release"); no
+                        // task tracks it today.
+                        diagnostics.push(crate::engine_compute::soft_no_trampoline_diagnostic(
+                            &target,
+                            self.compute_registry.fns.is_empty(),
+                        ));
                     }
                 }
             }

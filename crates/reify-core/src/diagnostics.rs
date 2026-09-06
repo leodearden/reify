@@ -4126,6 +4126,51 @@ pub enum DiagnosticCode {
     /// non-breaking and round-trips through the feature-gated serde derives
     /// automatically.
     EvalCachedGuardedGroupsFallback,
+    /// Origin: all FOUR `@optimized`-target-not-registered emission sites, and
+    /// only those:
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_params_and_lets_unified` (SOFT)
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_let_bindings` (SOFT)
+    ///   - `crates/reify-eval/src/engine_admin.rs::dispatch_compute_node` (HARD)
+    ///   - `crates/reify-eval/src/engine_compute.rs::run_compute_dispatch` (HARD)
+    ///
+    /// Two canonical message forms, both single-sourced from
+    /// `engine_compute.rs`'s `NO_TRAMPOLINE_STEM` and built by the constructor
+    /// pair beside it (`soft_no_trampoline_diagnostic` /
+    /// `hard_no_trampoline_diagnostic`):
+    /// - SOFT: `"@optimized target \"<t>\": no registered compute trampoline (falling back to body-inlining)"`
+    /// - HARD: `"@optimized target \"<t>\": no registered compute trampoline"`
+    ///
+    /// The clause is present only at the SOFT sites because body-inlining is
+    /// what those two call sites actually go on to do; the HARD sites return
+    /// `Err` and never inline, so claiming a fallback there would be false.
+    ///
+    /// SEVERITY POLICY (task 5311; RULING in
+    /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4). At the two SOFT
+    /// sites the severity is conditioned on the engine's compute registry:
+    /// `Severity::Warning` iff the registry is entirely EMPTY, `Severity::Error`
+    /// otherwise. An empty registry means the *driver* declared a
+    /// trampoline-free posture — `reify check` and `reify-lsp` both construct
+    /// their engine without calling `register_compute_trampolines` — so the
+    /// missing trampoline is expected, not a defect, and reporting it as an
+    /// error while exiting 0 is a loud/silent mismatch. A driver that
+    /// registered SOME trampolines (`reify eval`, `reify build`: 19 production
+    /// targets) and is still missing THIS one is a genuine defect, so the
+    /// severity stays `Severity::Error` there and keeps gating those exit codes.
+    /// At the two HARD sites the severity is UNCONDITIONALLY `Severity::Error`
+    /// — see `hard_no_trampoline_diagnostic`'s rustdoc for why the predicate is
+    /// inapplicable there on the merits.
+    ///
+    /// The CODE is PRESERVED across that severity flip, deliberately: it names
+    /// the CAUSE, while the severity reports how much the caller's posture
+    /// makes that cause matter. Downstream tooling and tests should therefore
+    /// match on this code rather than on the severity or on message substrings
+    /// (the `hex_wedge_mesh_diagnostic` precedent below does the same).
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, carries no
+    /// `VARIANT_COUNT` backstop, and is never matched exhaustively anywhere in
+    /// the workspace, so adding one variant is purely additive and round-trips
+    /// through the feature-gated serde derives automatically.
+    NoRegisteredComputeTrampoline,
 }
 
 /// A diagnostic message with location and optional labels.

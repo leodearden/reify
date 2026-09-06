@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{ComputeNodeId, ContentHash, Diagnostic, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, Diagnostic, DiagnosticCode, ValueCellId, VersionId};
 use reify_ir::{OpaqueState, Value};
 
 use crate::cache::NodeId;
@@ -83,6 +83,72 @@ impl ComputeDispatchRegistry {
             volume_mesh_boundary_demand_targets: HashSet::new(),
         }
     }
+}
+
+// ── Missing-trampoline diagnostic: one stem, two constructors (task 5311) ─────
+//
+// All FOUR `@optimized`-target-not-registered emission sites route through the
+// constructor pair below rather than each formatting its own `format!`, so
+// "byte-identical wording across all four" is STRUCTURAL rather than
+// conventional, and `DiagnosticCode::NoRegisteredComputeTrampoline` has exactly
+// one attachment point per form.
+//
+// Why the wording is load-bearing: severity is asserted by 2 tests
+// workspace-wide, but the message TEXT is asserted by ~10 that are entirely
+// severity-blind (`no_stale_undef_invariant_gate.rs`'s `TRAMPOLINE_MISSING`
+// sites, `test_runner.rs`, `cli_build_fea.rs`). Changing the severity is a
+// two-test change; changing this stem is a ten-test change. Single-sourcing it
+// makes the expensive edit impossible to make by accident.
+//
+// TRAP for anyone writing a matcher against these messages: the co-resident
+// `"@optimized target {t:?}: compute trampoline was cancelled"` Error in
+// `engine_admin.rs::dispatch_compute_node` shares this message's
+// `"@optimized target {t:?}: "` PREFIX and must KEEP gating build/eval exit
+// codes. Never widen a matcher to the prefix alone — match the stem below, or
+// better, match `DiagnosticCode::NoRegisteredComputeTrampoline`.
+
+/// The single source of truth for the missing-trampoline message body.
+///
+/// Both constructors below build their message from this const; nothing else
+/// in the workspace may spell it out inline.
+const NO_TRAMPOLINE_STEM: &str = "no registered compute trampoline";
+
+/// Build the SOFT-site missing-trampoline diagnostic — the form emitted by the
+/// two `engine_eval.rs` call sites that push a diagnostic and then FALL THROUGH
+/// to body-inlining.
+///
+/// The `(falling back to body-inlining)` clause is present here because it is
+/// literally what those two sites go on to do.
+///
+/// `registry_empty` selects the severity, per the task-5311 RULING in
+/// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4:
+///
+/// - `true` ⇒ [`Severity::Warning`](reify_core::Severity::Warning). An entirely
+///   empty compute registry means the driver declared a trampoline-free posture
+///   rather than forgetting one trampoline. `reify check` (whose `cmd_check`
+///   constructs its engines without ever
+///   calling `register_compute_trampolines`) and `reify-lsp` (`Engine::new`
+///   with no registration) are both in that posture, and reporting a posture as
+///   an `error:` while exiting 0 is the loud/silent mismatch this task closes.
+/// - `false` ⇒ [`Severity::Error`](reify_core::Severity::Error). A driver that
+///   registered SOME trampolines and is still missing THIS one is a genuine
+///   defect. `reify eval` and
+///   `reify build` both register the 19-target production bundle, so they stay
+///   on this arm and the diagnostic keeps gating their exit codes.
+///
+/// The [`DiagnosticCode`] is the SAME on both arms by design: the code names
+/// the cause, the severity reports how much the caller's posture makes that
+/// cause matter.
+pub(crate) fn soft_no_trampoline_diagnostic(target: &str, registry_empty: bool) -> Diagnostic {
+    let message = format!(
+        "@optimized target {target:?}: {NO_TRAMPOLINE_STEM} (falling back to body-inlining)"
+    );
+    let diagnostic = if registry_empty {
+        Diagnostic::warning(message)
+    } else {
+        Diagnostic::error(message)
+    };
+    diagnostic.with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
 }
 
 // Task #5079 / PRD compute-fea-hardening.md D1 (Contract C2): the
