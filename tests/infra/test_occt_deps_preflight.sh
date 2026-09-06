@@ -91,7 +91,12 @@
 #      FIRST-level symlink target (gmsh one hop => 4.15.2; openvdb two hops =>
 #      13.0, NOT the 13.0.0 `readlink -f` would give). RECORDED only —
 #      deliberately not pinned to an accepted set, because unlike OCCT neither
-#      build.rs splices a version into any link directive.
+#      build.rs splices a version into any link directive. The other half of
+#      that asymmetry is pinned here too: a regular-file (non-symlink) dev
+#      sentinel is FATAL for OCCT (section 6) but must stay NON-fatal for these
+#      two — exit 0, recorded as `<Label> unknown at ` — driven from the same
+#      _mk_plainfile_lib_fixture so the two expectations cannot be silently
+#      unified by a later dedup.
 #  12. COMPLETENESS: the set of deps gated by scripts/check-manifold-deps.sh
 #      (derived from its `# BEGIN <dep>-candidates` marker-block NAMES) equals
 #      the variants of `enum NativeDep` (derived from its
@@ -223,13 +228,22 @@ _mk_conda_lib_fixture() {
     printf '%s' "$d"
 }
 
-# _mk_plainfile_lib_fixture <name> — dir whose libTKernel.so is a REGULAR FILE,
-# not a symlink. The sentinel exists (so find() resolves the dir and has_occt
-# IS set) but no SONAME can be read from it.
+# _mk_plainfile_lib_fixture <name> [<sentinel>] — dir whose lib sentinel is a
+# REGULAR FILE, not a symlink. The sentinel exists (so find() resolves the dir
+# and the dep's has_* cfg IS set) but no SONAME can be read from it. Sentinel
+# defaults to OCCT's libTKernel.so, matching the other _mk_*_lib_fixture
+# helpers.
+#
+# The <sentinel> parameter exists so this one fixture can drive BOTH SIDES of
+# the deliberate OCCT-vs-Gmsh/OpenVDB asymmetry on an undeterminable SONAME:
+# fatal for OCCT (section 6), NON-fatal for gmsh and openvdb (section 11). Those
+# are opposite expectations over the identical on-disk shape, so pinning them
+# from the same fixture is what makes the asymmetry a tested contract rather
+# than a comment. Prints the path.
 _mk_plainfile_lib_fixture() {
-    local d="$_TMPDIR/$1"
+    local d="$_TMPDIR/$1" sentinel="${2:-libTKernel.so}"
     mkdir -p "$d"
-    : > "$d/libTKernel.so"
+    : > "$d/$sentinel"
     printf '%s' "$d"
 }
 
@@ -1315,6 +1329,53 @@ assert "guard RECORDS the resolved OpenVDB version and both resolved dirs on the
     _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
         OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
         -- "OpenVDB 13.0 at " "$_OPENVDB_LIB_OK" "$_OPENVDB_INC_OK"
+
+# --- the OTHER half of the asymmetry: an UNREADABLE SONAME is NOT fatal here -
+#
+# dep_presence_arm ends with `ok "$label ${ver:-unknown} at ..."`, and the
+# `unknown` branch is a load-bearing contract, not a fallback nobody meant: the
+# arm banner, dep_presence_arm's own banner and this section's banner all state
+# that an undeterminable SONAME must stay NON-fatal for gmsh and openvdb,
+# because neither build.rs splices a version into any link directive and there
+# is therefore no unverified-link hazard to gate on.
+#
+# Section 6 pins the OCCT side of that contract behaviourally
+# (_mk_plainfile_lib_fixture => guard exits NON-zero, "could not determine").
+# Until these four asserts, the gmsh/openvdb side was pinned only in prose — no
+# case anywhere drove either dep with a regular-file sentinel, so both the
+# `${ver:-unknown}` branch AND the `exit 0` it has to preserve were entirely
+# unexercised.
+#
+# WHAT THAT WOULD HAVE COST: a future refactor hoisting OCCT's hard-fail into
+# the shared helper — exactly the direction dep_hint/dep_presence_arm's
+# deduplication already moves — would red EVERY RUN_RUST=1 verify on any host
+# whose gmsh or openvdb is repackaged with a plain-file dev sentinel, and no
+# test would catch it before the merge gate. The same fixture that pins OCCT's
+# hard-fail now pins these two NOT hard-failing, so the two expectations cannot
+# be silently unified.
+#
+# Both cases still supply healthy fixtures for every OTHER arm: an exit-0
+# assert is only meaningful if the arms ahead of AND behind this one also pass.
+_GMSH_LIB_PLAIN="$(_mk_plainfile_lib_fixture gmsh-lib-plainfile libgmsh.so)"
+_OPENVDB_LIB_PLAIN="$(_mk_plainfile_lib_fixture openvdb-lib-plainfile libopenvdb.so)"
+
+assert "guard exits 0 when libgmsh.so is a REGULAR FILE — an unreadable Gmsh SONAME is NOT fatal" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_PLAIN" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
+
+assert "guard RECORDS 'Gmsh unknown at ' rather than hard-failing on the undeterminable SONAME" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_PLAIN" GMSH_INCLUDE_DIR="$_GMSH_INC_OK" \
+        -- "Gmsh unknown at " "$_GMSH_LIB_PLAIN"
+
+assert "guard exits 0 when libopenvdb.so is a REGULAR FILE — an unreadable OpenVDB SONAME is NOT fatal" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_PLAIN" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
+
+assert "guard RECORDS 'OpenVDB unknown at ' rather than hard-failing on the undeterminable SONAME" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_PLAIN" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
+        -- "OpenVDB unknown at " "$_OPENVDB_LIB_PLAIN"
 
 # ---------------------------------------------------------------------------
 # 12. COMPLETENESS — every NativeDep variant has a gate arm (task #6493).
