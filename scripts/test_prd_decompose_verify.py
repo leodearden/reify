@@ -2880,5 +2880,270 @@ class TestUserObservableSignal(unittest.TestCase):
         self.assertIn(f"{len(bv.fixture_absent)} fixture-absent", header)
 
 
+# ---------------------------------------------------------------------------
+# task #7257 amendment: HARNESS_ERROR is exempt from BOTH evidence downgrades
+# ---------------------------------------------------------------------------
+
+class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
+    """A HARNESS_ERROR blocks regardless of evidence, and is never fixture-absent.
+
+    Two review findings, one root cause.  The evidence gate and the
+    fixture-absent carve-out both exist to stop a PREMISE FALSIFICATION being
+    claimed on no evidence.  HARNESS_ERROR makes no such claim — it reports
+    that the probe machinery could not run — so routing it through either
+    downgrade inverts its meaning and stops it blocking:
+
+      - MALFORMED: the Prover prompt's own documented fallback for "I could not
+        run anything at all" is `{verdict: "HARNESS_ERROR", command: [],
+        exit_code: -1}`, which carries no evidence BY CONSTRUCTION.  Under a
+        blanket gate, python3 missing / a wrong α path / a dead shell step
+        silently became INCOMPLETE instead of BLOCKS.
+      - FIXTURE_ABSENT: a harness-level ENOENT (`python3: can't open file ...
+        [Errno 2] No such file or directory`) matched the ENOENT phrase and was
+        reported as "the fixture is the leaf's own deliverable" — the opposite
+        diagnosis.
+
+    The blast radius is pinned in both directions: an evidence-free FAIL is
+    still MALFORMED, and a FAIL carrying the same ENOENT stderr is still
+    FIXTURE_ABSENT.
+    """
+
+    # The exact fallback record the Prover prompt tells the agent to emit.
+    # _assert_the_mjs_prompt_still_emits_this_shape keeps it honest.
+    def _prompt_fallback_record(self, capability: str = "leaf label (delta)") -> dict:
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": "HARNESS_ERROR",
+            "command": [],
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "bind step exited 2: no such option --json",
+        }
+
+    def _executed(self, capability: str, verdict: str, stderr: str,
+                  exit_code: int = 2) -> dict:
+        """An EXECUTED record (real command, real exit code) with a chosen stderr."""
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": ["python3", "scripts/prd-capability-check.py",
+                        "--json", "/tmp/ps.json"],
+            "exit_code": exit_code,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    # ── (1) the prompt's own fallback record produces the intended disposition ─
+
+    def test_prompt_fallback_record_blocks(self):
+        """The documented "nothing ran" record must still stop the batch."""
+        rec = self._prompt_fallback_record()
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks,
+                        "an evidence-free HARNESS_ERROR is the ONE path that means "
+                        "'the harness itself died' — it must block")
+        self.assertEqual(bv.blocking, ["leaf label (delta)"])
+
+    def test_prompt_fallback_record_is_not_malformed(self):
+        """It is not an unexecuted promise — nothing was promised."""
+        rec = self._prompt_fallback_record()
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.malformed, [])
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_prompt_fallback_record_is_classified_blocking(self):
+        """Unit-level, so a regression localises to classify_record."""
+        self.assertEqual(pdv.classify_record(self._prompt_fallback_record()),
+                         pdv.CAT_BLOCKING)
+
+    def test_the_mjs_prompt_still_emits_this_shape(self):
+        """Drift guard: the record above is a COPY of the .mjs prompt template.
+
+        If the prompt's fallback stops saying `command: [], exit_code: -1`, the
+        tests above stop testing the shape that actually reaches the harness.
+        """
+        with open(_PDV_MJS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('verdict: "HARNESS_ERROR"', src,
+                      "the Prover prompt no longer documents a HARNESS_ERROR fallback")
+        self.assertIn("command: [], exit_code: -1", src,
+                      "the fallback template no longer emits the evidence-free shape "
+                      "these tests pin; re-sync _prompt_fallback_record")
+
+    def test_evidence_free_harness_error_still_counts_zero_executed(self):
+        """The exemption is about BLOCKING, not about faking evidence.
+
+        `executed` must stay honest: nothing ran, so the counts header still
+        reports 0 with executed-probe evidence even though the batch blocks.
+        """
+        bv = pdv.synthesize_batch({"prover": [self._prompt_fallback_record()],
+                                   "adversary": []})
+        self.assertEqual(bv.executed, 0)
+        self.assertEqual(bv.total, 1)
+        header = bv.report.splitlines()[0]
+        self.assertIn("1 total", header)
+        self.assertIn("0 with executed-probe evidence", header)
+        self.assertIn("1 blocking", header)
+        self.assertIn("0 malformed", header)
+
+    # ── (2) a harness-level ENOENT is not a missing deliverable ──────────────
+
+    def test_harness_error_with_enoent_stderr_still_blocks(self):
+        """`python3: can't open file ...` is a broken harness, not an unwritten .ri."""
+        rec = self._executed(
+            "alpha script path cap", "HARNESS_ERROR",
+            stderr="python3: can't open file 'scripts/prd-capability-check.py': "
+                   "[Errno 2] No such file or directory")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertEqual(bv.blocking, ["alpha script path cap"])
+        self.assertEqual(bv.fixture_absent, [],
+                         "a harness-level ENOENT must not be reported as a missing "
+                         "leaf deliverable")
+
+    def test_harness_error_with_bare_errno_stderr_still_blocks(self):
+        """The Rust-style spelling of the same failure is treated identically."""
+        rec = self._executed("cwd cap", "HARNESS_ERROR",
+                             stderr="failed to spawn probe: os error 2")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_harness_error_enoent_is_classified_blocking(self):
+        """Unit-level pin on the classify_record precedence order."""
+        rec = self._executed("harness enoent cap", "HARNESS_ERROR",
+                             stderr="No such file or directory")
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
+
+    # ── (3) blast radius: neither downgrade is disabled for probe verdicts ───
+
+    def test_fail_with_the_same_enoent_stderr_is_still_fixture_absent(self):
+        """The carve-out still applies where its rationale applies — to a probe."""
+        rec = self._executed("missing deliverable cap", "FAIL",
+                             stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.fixture_absent, ["missing deliverable cap"])
+
+    def test_evidence_free_fail_is_still_malformed(self):
+        """The evidence gate is intact for the verdicts it was written for."""
+        rec = dict(self._prompt_fallback_record("vacuous cap"), verdict="FAIL")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.malformed, ["vacuous cap"])
+
+    def test_evidence_free_unprovable_is_still_malformed(self):
+        """Same for UNPROVABLE — only HARNESS_ERROR is exempt."""
+        rec = dict(self._prompt_fallback_record("vacuous cap"), verdict="UNPROVABLE")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.malformed, ["vacuous cap"])
+
+    # ── (4) end to end through the CLI ───────────────────────────────────────
+
+    def test_cli_exits_1_on_the_prompt_fallback_record_alone(self):
+        """The exit code — what the Synthesize agent actually relays — is 1."""
+        data = {"prover": [self._prompt_fallback_record()], "adversary": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            tmp = f.name
+        buf_out, buf_err = io.StringIO(), io.StringIO()
+        try:
+            with unittest.mock.patch("sys.stdout", buf_out), \
+                 unittest.mock.patch("sys.stderr", buf_err):
+                rc = pdv.main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 1, "a dead harness must not exit 0")
+        payload = json.loads(buf_out.getvalue())
+        self.assertTrue(payload["blocks"])
+        self.assertEqual(payload["blocking"], ["leaf label (delta)"])
+        self.assertEqual(payload["malformed"], [])
+        self.assertEqual(payload["executed"], 0)
+
+
+# ---------------------------------------------------------------------------
+# task #7257 amendment: the report format cannot drift between sections
+# ---------------------------------------------------------------------------
+
+class TestEvidenceBlockIsShared(unittest.TestCase):
+    """All three report sections render evidence through ONE builder.
+
+    They drifted within one task: the fixture-absent branch silently omitted
+    `stdout`, so a probe that wrote to stdout before failing to find its fixture
+    lost that evidence — contrary to PRD §6 decision 4's "exact command +
+    stdout/stderr + exit code".  A reader comparing sections must be comparing
+    like with like.
+    """
+
+    _STDOUT = "partial output before the open failed"
+
+    def _rec(self, capability: str, verdict: str, stderr: str,
+             command=None, exit_code=1) -> dict:
+        return {
+            "capability": capability,
+            "probe_kind": "ir",
+            "verdict": verdict,
+            "command": ["reify", "eval", "f.ri"] if command is None else command,
+            "exit_code": exit_code,
+            "stdout": self._STDOUT,
+            "stderr": stderr,
+        }
+
+    def test_fixture_absent_section_carries_stdout(self):
+        """The drift that motivated the extraction."""
+        bv = pdv.synthesize_batch({"prover": [self._rec(
+            "fixture-absent cap", "FAIL",
+            "Error: No such file or directory (os error 2)")], "adversary": []})
+        self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
+        self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
+
+    def test_malformed_section_carries_stdout(self):
+        bv = pdv.synthesize_batch({"prover": [self._rec(
+            "vacuous cap", "FAIL", "", command=[], exit_code=None)],
+            "adversary": []})
+        self.assertEqual(bv.malformed, ["vacuous cap"])
+        self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
+
+    def test_blocking_section_carries_stdout(self):
+        bv = pdv.synthesize_batch({"prover": [self._rec(
+            "real fail cap", "FAIL", "type mismatch")], "adversary": []})
+        self.assertEqual(bv.blocking, ["real fail cap"])
+        self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
+
+    def test_all_three_sections_share_one_line_format(self):
+        """Same record, three categories — the evidence lines must be identical."""
+        common = dict(command=["reify", "eval", "f.ri"], exit_code=1)
+        block = pdv._evidence_block("FAIL", "cap", "prover", "reify eval f.ri",
+                                    1, self._STDOUT, "stderr text")
+        for stderr, category in (
+            ("type mismatch: expected axis", "blocking"),
+            ("Error: No such file or directory (os error 2)", "fixture-absent"),
+        ):
+            with self.subTest(category=category):
+                bv = pdv.synthesize_batch({"prover": [
+                    self._rec("cap", "FAIL", stderr, **common)], "adversary": []})
+                rendered = "\n".join(
+                    ln for ln in bv.report.splitlines()
+                    if ln.startswith(("[FAIL]", "  command:", "  exit_code:",
+                                      "  stdout:", "  stderr:")))
+                self.assertEqual(
+                    rendered,
+                    block.replace("stderr text", stderr),
+                    f"the {category} section renders a different evidence block",
+                )
+
+    def test_empty_stdout_and_stderr_lines_are_omitted(self):
+        """An evidence block never pads the report with contentless lines."""
+        block = pdv._evidence_block("FAIL", "cap", "prover", "reify eval f.ri",
+                                    1, "", "")
+        self.assertNotIn("stdout:", block)
+        self.assertNotIn("stderr:", block)
+        self.assertEqual(block.splitlines()[0], "[FAIL] cap (role: prover)")
+
+
+
 if __name__ == "__main__":
     unittest.main()

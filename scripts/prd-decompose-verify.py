@@ -32,12 +32,14 @@ Design decisions:
       deterministic and unit-tested, NOT left to the LLM Enumerator.
   D2: `synthesize_batch` unions Prover + Adversary results; blocks on any
       FAIL / UNPROVABLE / HARNESS_ERROR; Adversary can only ADD blocking
-      signals (net-positive recall, PRD decision 5).  A blocking verdict only
+      signals (net-positive recall, PRD decision 5).  A FAIL/UNPROVABLE only
       counts when the record carries executed-probe evidence (a non-empty
       command AND a non-None exit_code) — PRD §6 decision 4 makes captured
       output mandatory on every verdict, so an evidence-free verdict is an
       unexecuted promise (a harness defect) and is reported as MALFORMED
-      rather than tabulated as a premise falsification.
+      rather than tabulated as a premise falsification.  HARNESS_ERROR is
+      exempt and always blocks: it is the verdict that reports "nothing could
+      be run at all", so absent evidence is its message, not a defect in it.
   D3: reuse α's exact output shape via importlib — no re-implementation.
 """
 
@@ -334,7 +336,15 @@ def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
     the OS emit the SAME ENOENT text (α wraps it as
     `f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}"`), but nothing was probed at all, so
     it is a real harness failure that must keep blocking.  The sentinel is read
-    from α rather than re-declared as a literal so the two cannot drift.
+    from α rather than re-declared as a literal so the two cannot drift.  α
+    itself always classifies that case HARNESS_ERROR (observe() checks the
+    sentinel before any kind-specific logic), and classify_record now short-
+    circuits HARNESS_ERROR to BLOCKING before calling this function at all — so
+    for α-produced records this carve-out is belt-and-braces.  It is kept
+    because these records reach the harness via a relay agent, which can
+    mislabel a launch failure as a bare FAIL; then this is the only thing
+    standing between "the binary is missing" and "the fixture is the leaf's own
+    deliverable".
 
     The errno signature is ANCHORED (`os error 2(?![0-9])`).  ENOENT is errno 2,
     and an unanchored `"os error 2"` substring is a prefix test that also fires
@@ -384,13 +394,36 @@ def classify_record(rec: Dict[str, Any]) -> str:
                           deliberately does NOT re-litigate a non-blocking
                           record: it exists to stop unexecuted promises from
                           being tabulated as falsifications.
-      2. MALFORMED      — a blocking verdict with no executed-probe evidence.
+      2. BLOCKING (HARNESS_ERROR) — see the carve-out below; checked before
+                          BOTH downgrade branches.
+      3. MALFORMED      — a FAIL/UNPROVABLE with no executed-probe evidence.
                           A harness defect, not a premise falsification.
-      3. FIXTURE_ABSENT — the probe ran but its target file did not exist.
-                          Ordered AFTER malformed so an evidence-free record is
-                          never reclassified on the strength of a stderr string
-                          no process produced.
-      4. BLOCKING       — an evidence-backed falsification.
+      4. FIXTURE_ABSENT — a FAIL/UNPROVABLE whose probe ran but whose target
+                          file did not exist.  Ordered AFTER malformed so an
+                          evidence-free record is never reclassified on the
+                          strength of a stderr string no process produced.
+      5. BLOCKING       — an evidence-backed falsification.
+
+    HARNESS_ERROR CARVE-OUT (task #7257 amendment).  Both downgrade branches
+    exist to stop a *premise falsification* being claimed on no evidence.
+    HARNESS_ERROR does not make that claim — it says "the probe machinery
+    itself could not run", which is the one verdict for which absent evidence
+    is the message rather than a defect in the message.  Routing it through
+    either downgrade inverts its meaning:
+
+      - MALFORMED: the Prover prompt's documented fallback for "I could not run
+        anything at all" is literally `{verdict: "HARNESS_ERROR", command: [],
+        exit_code: -1}`.  Under a blanket evidence gate that record stops
+        blocking, so the one path meaning "python3 missing / α script path
+        wrong / the shell step died" silently downgrades the batch to
+        INCOMPLETE.
+      - FIXTURE_ABSENT: a harness-level ENOENT (e.g. `python3: can't open file
+        'scripts/prd-capability-check.py': [Errno 2] No such file or
+        directory`, or a mis-resolved repo root) matches the ENOENT phrase and
+        would be reported as "the fixture is the leaf's own deliverable" — the
+        opposite diagnosis, and it stops blocking.  The carve-out's rationale
+        (a not-yet-written `.ri` deliverable) is about a PROBE verdict; it has
+        no purchase on a harness error.
 
     Args:
         rec: An α --json result record.
@@ -399,8 +432,11 @@ def classify_record(rec: Dict[str, Any]) -> str:
         One of CAT_NON_BLOCKING / CAT_MALFORMED / CAT_FIXTURE_ABSENT /
         CAT_BLOCKING.
     """
-    if rec.get("verdict", "") not in _BLOCKING_VERDICTS:
+    verdict = rec.get("verdict", "")
+    if verdict not in _BLOCKING_VERDICTS:
         return CAT_NON_BLOCKING
+    if verdict == "HARNESS_ERROR":
+        return CAT_BLOCKING
     if not has_probe_evidence(rec):
         return CAT_MALFORMED
     if fixture_absent_evidence(rec):
@@ -421,10 +457,12 @@ class BatchVerdict:
                          executed / blocking / malformed / fixture-absent;
                          labelled sections below it embed the captured evidence
                          (command, exit_code, stdout, stderr) per record
-        malformed      — capability strings for blocking verdicts that carry NO
-                         executed-probe evidence.  A harness defect, not a
-                         falsification: these do NOT set `blocks`, but they mean
-                         the batch was not actually verified.
+        malformed      — capability strings for FAIL/UNPROVABLE verdicts that
+                         carry NO executed-probe evidence.  A harness defect,
+                         not a falsification: these do NOT set `blocks`, but
+                         they mean the batch was not actually verified.
+                         HARNESS_ERROR is never routed here — it always blocks
+                         (see classify_record).
         fixture_absent — capability strings whose probe could not run because
                          the fixture does not exist (populated from step-06).
         executed       — number of records carrying executed-probe evidence
@@ -450,6 +488,45 @@ class BatchVerdict:
 # synthesize_batch() — union Prover + Adversary → BatchVerdict
 # ---------------------------------------------------------------------------
 
+def _evidence_block(verdict: str, capability: str, role: str, cmd_str: str,
+                    exit_code: Any, stdout: str, stderr: str) -> str:
+    """Render ONE record's captured evidence for the report.
+
+    Single builder for all three report sections (BLOCKING, MALFORMED,
+    FIXTURE ABSENT) on purpose: they are the same artifact under three labels,
+    and three hand-maintained copies drifted within one task — the
+    fixture-absent copy silently dropped `stdout`, contradicting PRD §6
+    decision 4's "exact command + stdout/stderr + exit code".  A reader
+    comparing sections must be comparing like with like.
+
+    Empty stdout/stderr lines are omitted (not rendered as `stdout:` with
+    nothing after it) so an evidence block never pads a report with lines that
+    carry no information.  The line format is asserted byte-for-byte by the
+    pre-existing report tests — do not reflow it.
+
+    Args:
+        verdict:    the record's verdict string, as received.
+        capability: the capability the record is about.
+        role:       "prover" / "adversary" / "unknown".
+        cmd_str:    the command, already normalized for rendering.
+        exit_code:  the exit code as received (may be the "?" placeholder).
+        stdout:     captured stdout (omitted when empty).
+        stderr:     captured stderr (omitted when empty).
+
+    Returns:
+        A newline-joined evidence block, with no trailing newline.
+    """
+    parts = [
+        f"[{verdict}] {capability} (role: {role})",
+        f"  command:   {cmd_str}",
+        f"  exit_code: {exit_code}",
+    ]
+    if stdout:
+        parts.append(f"  stdout:    {stdout}")
+    if stderr:
+        parts.append(f"  stderr:    {stderr}")
+    return "\n".join(parts)
+
 def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerdict:
     """Synthesize Prover + Adversary α result records into a BatchVerdict.
 
@@ -463,22 +540,28 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         - An all-PASS Adversary does NOT clear a Prover FAIL.
 
     Evidence gate (PRD §6 decision 4, task #7257 ARM 1):
-        A blocking verdict is only tabulated as `blocking` when the record
-        carries executed-probe evidence (see has_probe_evidence).  A blocking
+        A FAIL / UNPROVABLE is only tabulated as `blocking` when the record
+        carries executed-probe evidence (see has_probe_evidence).  Such a
         verdict with no evidence is an UNEXECUTED PROMISE — a harness defect —
         and is routed to `malformed` instead, where it is reported but does not
         set `blocks`.  Without this, one real falsification was buried among N
         vacuous ones and a human reading the report could not tell them apart.
 
+        HARNESS_ERROR is exempt from BOTH downgrades and always blocks: it is
+        the verdict that *reports* "nothing could be run", so absent evidence is
+        its message rather than a defect in its message.  See classify_record.
+
     Fixture-absent carve-out (task #7257 ARM 1):
-        A probe that ran but could not find its target file has falsified
-        nothing — during decompose the fixture is very often the leaf's own
-        deliverable.  Such records are routed to `fixture_absent`, reported
-        under their own label, and do NOT set `blocks`.  Detection is
+        A FAIL/UNPROVABLE probe that ran but could not find its target file has
+        falsified nothing — during decompose the fixture is very often the
+        leaf's own deliverable.  Such records are routed to `fixture_absent`,
+        reported under their own label, and do NOT set `blocks`.  Detection is
         stderr-signature based rather than filesystem based; see
         fixture_absent_evidence for the time-of-check/time-of-run rationale and
         for the binary-not-found carve-out that keeps a missing `reify` binary
-        blocking.
+        blocking.  A HARNESS_ERROR is never routed here either: a harness-level
+        ENOENT means the machinery is broken, not that a deliverable is
+        unwritten.
 
     Args:
         role_results: dict with "prover" and "adversary" keys, each mapping to
@@ -526,46 +609,22 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         stdout = rec.get("stdout", "")
         stderr = rec.get("stderr", "")
 
+        # One builder for all three sections — see _evidence_block for why.
+        block = _evidence_block(verdict, capability, role, cmd_str,
+                                exit_code, stdout, stderr)
+
         if category == CAT_MALFORMED:
             malformed.append(capability)
-            parts = [
-                f"[{verdict}] {capability} (role: {role})",
-                f"  command:   {cmd_str}",
-                f"  exit_code: {exit_code}",
-            ]
-            if stdout:
-                parts.append(f"  stdout:    {stdout}")
-            if stderr:
-                parts.append(f"  stderr:    {stderr}")
-            malformed_parts.append("\n".join(parts))
+            malformed_parts.append(block)
             continue
 
         if category == CAT_FIXTURE_ABSENT:
             fixture_absent.append(capability)
-            parts = [
-                f"[{verdict}] {capability} (role: {role})",
-                f"  command:   {cmd_str}",
-                f"  exit_code: {exit_code}",
-            ]
-            if stderr:
-                parts.append(f"  stderr:    {stderr}")
-            fixture_absent_parts.append("\n".join(parts))
+            fixture_absent_parts.append(block)
             continue
 
         blocking.append(capability)
-
-        # Build evidence block for this blocking probe.
-        parts = [
-            f"[{verdict}] {capability} (role: {role})",
-            f"  command:   {cmd_str}",
-            f"  exit_code: {exit_code}",
-        ]
-        if stdout:
-            parts.append(f"  stdout:    {stdout}")
-        if stderr:
-            parts.append(f"  stderr:    {stderr}")
-
-        report_parts.append("\n".join(parts))
+        report_parts.append(block)
 
     blocks = len(blocking) > 0
 
