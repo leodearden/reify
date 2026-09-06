@@ -2080,3 +2080,140 @@ fn a_builtin_whose_primal_is_undef_refuses_at_the_primal_cliff_regardless_of_the
         }
     }
 }
+
+// ===========================================================================
+// Step-29: the `abs` KINK guard must be masked by argument contribution too
+// ===========================================================================
+//
+// Step-25 masked the SMOOTH-builtin finiteness guard by which arguments
+// actually carry a tangent.  `abs` is the one kink arm that was left refusing
+// unconditionally: it fires whenever `xs[0] == 0.0`, with no check that the
+// argument contributes anything, so it can veto a derivative that provably
+// exists — the exact failure `contributes`' own doc forbids ("a partial the
+// chain rule never reads must not be able to veto a derivative that exists").
+//
+// It is reachable for a SEED-INDEPENDENT `abs`.  The fast path only swallows a
+// subtree that hides no kink, and `abs` is a kink builtin, so a constant
+// `abs(...)` is always descended into; the kink dispatch then runs BEFORE the
+// all-zero-tangent shortcut.  A residual containing `abs(offset)` where
+// `offset` is a base-map constant that happens to be exactly 0.0 — a
+// symmetric-tolerance default, a zeroed eccentricity, both routine in
+// engineering models — therefore returns `Tangent::None`, the parent
+// propagates opaque, and `jacobian_row` fails the WHOLE row: η gets a tier-2
+// refusal for a residual that is differentiable in every seeded variable.
+//
+// As in step-25, the mask is NOT a blanket amnesty: a SEEDED `abs` sitting
+// exactly on its kink must still refuse, and block (3) asserts exactly that.
+
+// ---------------------------------------------------------------------------
+// (1) A constant `abs` at the origin must not veto the row it never touches
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_constant_abs_at_the_origin_still_yields_a_full_row() {
+    // `abs(0) + w`, seeded on `w` alone.  ∂R/∂w = 1 exactly; the `abs` node
+    // contributes nothing to that column and must not be able to withhold it.
+    let (values, seed_cells) = probe(&[("w", 0.0)]);
+    let expr = binop(BinOp::Add, call1("abs", literal(Value::Real(0.0))), pref("w"));
+    let (primal, row) = jrow(&expr, &values, &seed_cells)
+        .unwrap_or_else(|err| panic!("abs(0) + w: refused with {err:?}"));
+    assert_eq!(primal, 0.0, "the primal is an ordinary 0.0 — nothing here is undefined");
+    assert_eq!(row, vec![1.0], "∂(abs(0) + w)/∂w = 1");
+}
+
+#[test]
+fn a_constant_abs_at_the_origin_nested_a_level_down_still_yields_a_full_row() {
+    // `w · (abs(0) + 1)` — the same node in a different syntactic position, so
+    // the fix is a property of the NODE and not of one shape.  ∂R/∂w = 1.
+    let (values, seed_cells) = probe(&[("w", 0.0)]);
+    let inner =
+        binop(BinOp::Add, call1("abs", literal(Value::Real(0.0))), literal(Value::Real(1.0)));
+    let expr = binop(BinOp::Mul, pref("w"), inner);
+    let (primal, row) = jrow(&expr, &values, &seed_cells)
+        .unwrap_or_else(|err| panic!("w * (abs(0) + 1): refused with {err:?}"));
+    assert_eq!(primal, 0.0, "0 · 1");
+    assert_eq!(row, vec![1.0], "∂(w·(abs(0) + 1))/∂w = abs(0) + 1 = 1");
+}
+
+#[test]
+fn a_constant_abs_has_no_cliff_at_zero() {
+    // What "a constant contributes nothing" MEANS: the row does not depend on
+    // where the constant argument sits relative to the kink.  A constant 0 and
+    // a constant 2 must produce the SAME row — anything else is a cliff in the
+    // Jacobian at a point no seeded variable can even move through.
+    let (values, seed_cells) = probe(&[("w", 0.0)]);
+    let at_kink = binop(BinOp::Add, call1("abs", literal(Value::Real(0.0))), pref("w"));
+    let away = binop(BinOp::Add, call1("abs", literal(Value::Real(2.0))), pref("w"));
+
+    let (_, row_at_kink) = jrow(&at_kink, &values, &seed_cells)
+        .unwrap_or_else(|err| panic!("abs(0) + w: refused with {err:?}"));
+    let (_, row_away) = jrow(&away, &values, &seed_cells)
+        .unwrap_or_else(|err| panic!("abs(2) + w: refused with {err:?}"));
+    assert_eq!(
+        row_at_kink, row_away,
+        "a constant argument contributes nothing, so the kink's position cannot move the row"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (2) The mask is not a blanket amnesty
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_seeded_abs_sitting_exactly_on_its_kink_still_refuses() {
+    // The argument genuinely moves, so there genuinely is no two-sided
+    // derivative.  A one-sided derivative dressed up as two-sided is exactly
+    // what the refusal prevents, and masking must not reach this case.
+    const ABS_KINK: &str = "`abs` evaluated exactly at its kink (x = 0)";
+
+    let (values, seed_cells) = probe(&[("x", 0.0)]);
+    let direct = call1("abs", pref("x"));
+    match jrow(&direct, &values, &seed_cells) {
+        Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
+            assert_eq!(kind, ABS_KINK, "abs(x) at x = 0 must keep naming the abs kink");
+        }
+        other => panic!("abs(x) at x = 0: expected UnsupportedKind, got {other:?}"),
+    }
+
+    // And through a subtraction: seeded `x` sitting exactly ON the constant it
+    // is measured against is the commonest way a solver arrives at the kink.
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    let shifted = call1("abs", binop(BinOp::Sub, pref("x"), literal(Value::Real(3.0))));
+    match jrow(&shifted, &values, &seed_cells) {
+        Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
+            assert_eq!(kind, ABS_KINK, "abs(x − 3) at x = 3 must keep naming the abs kink");
+        }
+        other => panic!("abs(x - 3) at x = 3: expected UnsupportedKind, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (3) `abs` is the lone outlier — pin that the other kinks stay that way
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_other_all_constant_kink_already_yields_a_full_row() {
+    // `min`/`max`/`clamp` adopt the chosen constant operand's `Tangent::Zero`
+    // through `select`, `floor` returns a `DualValue::constant` outright, and
+    // `mod` goes through `combine` — none of them can withhold a row.  They do
+    // this today; this pins that they keep doing it, so the step-30 mask cannot
+    // be read as "abs was special" and quietly regress elsewhere.
+    let (values, seed_cells) = probe(&[("w", 0.0)]);
+    let c = |v: f64| literal(Value::Real(v));
+    // `mod` is the one Int-only stdlib binding (numeric.rs:89), so it gets Int
+    // constants; 7 mod 3 = 1, which is also why the expected primal is per-case.
+    let cases: [(&str, CompiledExpr, f64); 5] = [
+        ("min(0, 0)", calln("min", vec![c(0.0), c(0.0)]), 0.0),
+        ("max(0, 0)", calln("max", vec![c(0.0), c(0.0)]), 0.0),
+        ("clamp(0, 0, 1)", calln("clamp", vec![c(0.0), c(0.0), c(1.0)]), 0.0),
+        ("floor(0)", call1("floor", c(0.0)), 0.0),
+        ("mod(7, 3)", calln("mod", vec![literal(Value::Int(7)), literal(Value::Int(3))]), 1.0),
+    ];
+    for (label, kink, expected_primal) in cases {
+        let expr = binop(BinOp::Add, kink, pref("w"));
+        let (primal, row) = jrow(&expr, &values, &seed_cells)
+            .unwrap_or_else(|err| panic!("{label} + w: refused with {err:?}"));
+        assert_eq!(primal, expected_primal, "{label} + w at w = 0");
+        assert_eq!(row, vec![1.0], "{label} + w: ∂/∂w = 1");
+    }
+}

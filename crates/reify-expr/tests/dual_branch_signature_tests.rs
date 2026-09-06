@@ -441,6 +441,33 @@ fn abs_at_the_origin_records_zero_and_refuses_a_tangent() {
 }
 
 #[test]
+fn a_constant_abs_at_the_origin_records_its_kink_yet_refuses_nothing() {
+    // The SAME kink, on an argument that does not move: `abs(0)` where the 0 is
+    // a base-map constant (a symmetric-tolerance default, a zeroed eccentricity)
+    // and the seed is some OTHER cell.  |x| still has no two-sided derivative at
+    // 0 — but this `abs` never reaches the chain rule at all, so refusing over
+    // it would veto a row that is differentiable in every seeded variable.  That
+    // is the failure the module's own `contributes` doc forbids: a partial the
+    // chain rule never reads must not be able to veto a derivative that exists.
+    //
+    // The RECORD is unconditional either way.  λ still needs to see that a kink
+    // was evaluated and WHERE, so it can watch that site flip on a later step;
+    // suppressing the entry because the tangent happened to be zero would read
+    // to λ as "no kink here", the same silent blindness the dependent-cell fold
+    // had to fix.
+    let expr = call("abs", vec![literal(Value::Real(0.0))]);
+    let (v, t, rec) = run(&expr, &[("w", Value::Real(4.0))], &["w"]);
+    assert_eq!(v, Value::Real(0.0));
+    assert_single_entry(&rec, &[], KinkKind::Abs, BranchChoice::Zero, "constant_abs_at_zero");
+    assert_eq!(
+        t,
+        Tangent::Zero,
+        "a constant `abs` contributes nothing to any column, so its tangent is a genuine \
+         zero — not a refusal that takes the whole row down with it"
+    );
+}
+
+#[test]
 fn a_nested_kink_records_its_structural_child_index_path_not_a_visit_counter() {
     // −|x| : the `abs` node sits at child index 0 of the `neg` node.
     let expr = neg(call("abs", vec![vref("x")]));
