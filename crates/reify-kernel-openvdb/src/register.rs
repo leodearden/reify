@@ -116,11 +116,13 @@ pub const OPENVDB_KERNEL_VERSION: &str = "13.0.0";
 
 /// Construct the OpenVDB [`CapabilityDescriptor`].
 ///
-/// Enumerates the five operations OpenVDB supports: the three Voxel-Boolean
-/// operations (`BooleanUnion`, `BooleanDifference`, `BooleanIntersection`) plus
-/// `Convert{from:Mesh}→Voxel` (Mesh→Voxel via `meshToVolume`, added in task η)
-/// and `Convert{from:Voxel}→Mesh` (Voxel→Mesh via marching cubes /
-/// `volumeToMesh`, added in task ι).
+/// Enumerates the six operations OpenVDB supports: the three Voxel-Boolean
+/// operations (`BooleanUnion`, `BooleanDifference`, `BooleanIntersection`),
+/// `Convert{from:Mesh}→Voxel` (Mesh→Voxel via `meshToVolume`, added in task η),
+/// `Convert{from:Voxel}→Mesh` (Voxel→Mesh via marching cubes /
+/// `volumeToMesh`, added in task ι), and `(Surface, Mesh)` (isosurface terminal
+/// anchor, added in task 5033 — detailed under "Planning vs execution
+/// contract" below).
 /// Called by the `KernelRegistration::descriptor` function pointer at engine
 /// startup (once per `collect_registry()` call, not per geometry op).
 ///
