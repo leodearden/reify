@@ -4047,4 +4047,81 @@ mod tests {
             );
         }
     }
+
+    /// The task-5662 pattern-origin pair is LEDGERED, and its multi-arity row is
+    /// discharged by a real `if arg_count ==` guard rather than by an exemption.
+    ///
+    /// # Provenance
+    ///
+    /// `mirror` and `circular_pattern` are not names task 6862 went looking for.
+    /// They landed on `main` in task 5662 while this branch was away, and
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] FIRED on them
+    /// unprompted the moment the two were merged, naming exactly
+    /// `["circular_pattern", "mirror"]`. That is the completeness arm doing the
+    /// one job it exists for, on an UNRELATED task's change — the strongest
+    /// available evidence the FINDING-2 guard is enforceable rather than
+    /// decorative.
+    ///
+    /// # What this pins that main's arity tests do not
+    ///
+    /// [`mirror_origin_slots_are_arity_7_only`] and
+    /// [`circular_pattern_origin_slots_are_arity_9_only`] already pin the slot
+    /// SHAPE against a hard-coded arity, and this test deliberately does not
+    /// restate them. It pins the LEDGER-side fact they cannot see: each name
+    /// carries a MEASURED [`LOWERING_ACCEPTED_ARITIES`] row, that row is
+    /// MULTI-ARITY, and the coupling rule is therefore discharged the STRONG way
+    /// — by a guard that discriminates the accepted arities — and not by a
+    /// [`MULTI_ARITY_AGNOSTIC_SAFE`] exemption. Every arity it reasons about is
+    /// read back from the probe; none is written by hand.
+    #[test]
+    fn pattern_origin_family_is_ledgered_and_guarded_not_exempted() {
+        let probed = lowering_accepted_arities();
+
+        for name in ["mirror", "circular_pattern"] {
+            assert!(
+                LOWERING_ACCEPTED_ARITIES.iter().any(|(n, _)| *n == name),
+                "{name:?} yields origin slots (task 5662) but carries no \
+                 LOWERING_ACCEPTED_ARITIES row, so nothing pins its accepted \
+                 arities and the coupling rule never reaches it. Measure the set \
+                 with `lowering_accepted_arities()` and land the row."
+            );
+
+            let measured = probed
+                .get(name)
+                .unwrap_or_else(|| panic!("{name:?} must be a slotted builtin"));
+
+            // MULTI-ARITY is what puts these two under the coupling rule at all:
+            // the lowering accepts BOTH the scalar form and the value form.
+            assert!(
+                measured.len() > 1,
+                "{name} is expected to accept both a scalar and a value form, but \
+                 the probe measured only {measured:?}. If the value form went \
+                 away the coupling rule no longer bites here and this test should \
+                 go with it."
+            );
+
+            // Discharged by a GUARD, never by an exemption.
+            assert!(
+                !MULTI_ARITY_AGNOSTIC_SAFE.contains(&name),
+                "{name} must satisfy the coupling rule with its `if arg_count ==` \
+                 guard, never with a MULTI_ARITY_AGNOSTIC_SAFE exemption: index 1 \
+                 is `ox` at the scalar form but the composite plane/axis at the \
+                 value form, so an arity-agnostic arm would demand a Length OF A \
+                 PLANE on correct code."
+            );
+            let slotted: Vec<usize> = measured
+                .iter()
+                .copied()
+                .filter(|&k| !builtin_arg_slots(name, k).is_empty())
+                .collect();
+            assert_eq!(
+                slotted.len(),
+                1,
+                "exactly ONE of {name}'s accepted arities {measured:?} may carry \
+                 origin slots — the scalar form. The value form hands index 1 a \
+                 composite built by a stdlib producer, so slotting it would fire \
+                 on correct code. Slots found at: {slotted:?}"
+            );
+        }
+    }
 }
