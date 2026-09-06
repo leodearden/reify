@@ -884,7 +884,13 @@ mod tests {
     /// so the table is duplicated rather than shared). Every snippet is lifted
     /// from an existing passing source — `crates/reify-syntax/tests/
     /// harness_syntax/*` or `tree-sitter-reify/test/corpus/*` — rather than
-    /// invented, so no assertion can be doomed by a surface-syntax guess.
+    /// invented, so no assertion can be doomed by a surface-syntax guess. The `field def` codomain is the one
+    /// deliberate divergence from verbatim: the lifted original reads
+    /// `-> Scalar`, which `corpus_has_zero_bare_scalar` forbids outside its
+    /// excluded `crates/reify-syntax/tests` dir, so the snippet follows the
+    /// post-migration corpus shape instead (`examples/fields/restrict.ri:27`
+    /// is `field def base_field : Point3 -> Real { … }`). Do NOT restore
+    /// `-> Scalar` here — it re-reds that guard.
     const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
         ("structure S { param x : Length = 5mm }", "S"),
         (
@@ -895,7 +901,7 @@ mod tests {
         ("fn id_length(x: Length) -> Length { x }", "id_length"),
         ("trait Rigid { param mass : Mass }", "Rigid"),
         (
-            "field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
+            "field def temp : Point3 -> Real { source = analytical { |p| p } }",
             "temp",
         ),
         (
