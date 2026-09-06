@@ -461,6 +461,53 @@ ts_masked_path_dir() {
     printf '%s' "$shim"
 }
 
+# ts_sha256 <file>
+#
+# Bare sha256 of one file. Mirrors portable_sha256 (scripts/lib_portable.sh)
+# rather than sourcing it: run_tests discovers cases by matching 'test_' against
+# every `declare -F` line, so sourcing a library here would run any of ITS
+# functions whose name happens to contain that substring.
+ts_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+# mk_ts_generate_fixture
+#
+# A throwaway root holding a copy of scripts/ and a minimal tree-sitter-reify/,
+# so the REAL scripts/tree-sitter-generate.sh can be driven end to end without
+# ever mutating the lane's own tree. The script resolves its target as
+# "$SCRIPT_DIR/../tree-sitter-reify", so the two must be copied together.
+#
+# Only grammar.js and package.json are copied in: `tree-sitter generate` needs
+# nothing else, and everything under src/ is an OUTPUT this fixture exists to
+# observe. Prints the root; registers its own cleanup.
+mk_ts_generate_fixture() {
+    local dir
+    dir="$(mktemp -d)" || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
+    mkdir -p "$dir/tree-sitter-reify/src" || return 1
+    cp "$TS_DIR/grammar.js" "$dir/tree-sitter-reify/grammar.js" || return 1
+    [ -f "$TS_DIR/package.json" ] && cp "$TS_DIR/package.json" "$dir/tree-sitter-reify/"
+    printf '%s' "$dir"
+}
+
+# ts_generate_outputs_stamp <fixture-root> — path to the new sibling stamp.
+ts_generate_outputs_stamp() {
+    printf '%s' "$1/tree-sitter-reify/src/.generated_outputs.stamp"
+}
+
+# ts_generate_grammar_stamp <fixture-root> — path to the grammar-hash stamp.
+ts_generate_grammar_stamp() {
+    printf '%s' "$1/tree-sitter-reify/src/.grammar_hash.stamp"
+}
+
 # mk_verify_fixture
 #
 # A throwaway git repo holding a copy of scripts/ and .config/, enough for
@@ -3124,6 +3171,189 @@ test_freshness_refuses_partial_fingerprint_on_unhashable_input() {
     return 0
 }
 
+
+test_generate_writes_a_content_manifest_for_its_outputs() {
+    # (a) `#6992`. Until now the script wrote ONE stamp — sha256(grammar.js) —
+    # and then declared "up to date" on nothing more than the three outputs
+    # EXISTING. Nothing attested their bytes, so a parser.c belonging to a
+    # different grammar rode along on a stamp that was, in its own terms,
+    # perfectly correct.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+    assert_cmd_success "generate script succeeds in a throwaway fixture" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local stamp
+    stamp=$(ts_generate_outputs_stamp "$fix")
+    assert_file_nonempty "$stamp" || return 1
+
+    # Exactly the three EXPECTED_OUTPUTS, sorted, and every hash must match the
+    # file actually on disk.
+    local expected_rels="grammar.json
+node-types.json
+parser.c"
+    local actual_rels
+    actual_rels=$(awk '{print $2}' "$stamp")
+    if [ "$actual_rels" != "$expected_rels" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: manifest must name exactly the three generated outputs, sorted"
+        echo "  --- expected ---"; printf '%s\n' "$expected_rels"
+        echo "  --- actual ---";   printf '%s\n' "$actual_rels"
+        return 1
+    fi
+
+    local rel recorded actual
+    while read -r recorded rel; do
+        [ -n "$rel" ] || continue
+        actual=$(ts_sha256 "$fix/tree-sitter-reify/src/$rel") || {
+            echo ""; echo "  SKIP: no sha256sum/shasum on PATH"; return 0
+        }
+        if [ "$recorded" != "$actual" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: manifest hash for $rel does not match the file on disk"
+            echo "  recorded: $recorded"
+            echo "  actual:   $actual"
+            return 1
+        fi
+    done < "$stamp"
+}
+
+test_generate_keeps_the_grammar_stamp_format_intact() {
+    # (b) FORMAT GUARD. `.generated_outputs.stamp` is a SIBLING, not a widening
+    # of `.grammar_hash.stamp`, precisely because three live consumers assert
+    # that file is exactly 64 hex characters equal to sha256(grammar.js):
+    # scripts/test_tree_sitter_generate.sh, and tests/infra/test_verify_semaphore_e2e.sh
+    # in two places. Pinned here so the new stamp cannot quietly annex the old one.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+    assert_cmd_success "generate script succeeds in a throwaway fixture" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local stamp content expected
+    stamp=$(ts_generate_grammar_stamp "$fix")
+    assert_file_nonempty "$stamp" || return 1
+    content=$(cat "$stamp")
+    if ! [[ "$content" =~ ^[0-9a-f]{64}$ ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: .grammar_hash.stamp must stay exactly 64 hex chars"
+        echo "  got: $content"
+        return 1
+    fi
+    expected=$(ts_sha256 "$fix/tree-sitter-reify/grammar.js") || {
+        echo ""; echo "  SKIP: no sha256sum/shasum on PATH"; return 0
+    }
+    if [ "$content" != "$expected" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: .grammar_hash.stamp must equal sha256(grammar.js)"
+        echo "  stamp:    $content"
+        echo "  expected: $expected"
+        return 1
+    fi
+}
+
+test_generate_regenerates_when_parser_c_is_corrupt() {
+    # (c) THE MEASURED STATE, driven through the real script.
+    #
+    # Corrupt src/parser.c while leaving .grammar_hash.stamp perfectly correct,
+    # then re-run WITHOUT --force. Before #6992 the script printed "up to date
+    # (grammar.js unchanged)" and exited 0, because its staleness check asked
+    # only whether the outputs EXISTED. That is the false GREEN both measurements
+    # hit: a stamp that is true about grammar.js and silent about the parser.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+    assert_cmd_success "baseline generate" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local parser="$fix/tree-sitter-reify/src/parser.c"
+    local good
+    good=$(ts_sha256 "$parser") || { echo "  SKIP: no sha256sum/shasum on PATH"; return 0; }
+
+    printf '\n/* task 6992 probe — bytes from another grammar */\n' >> "$parser"
+
+    local out
+    out=$(bash "$fix/scripts/tree-sitter-generate.sh" 2>&1) || {
+        echo ""
+        echo "  ASSERTION FAILED: re-run exited non-zero"
+        echo "$out"
+        return 1
+    }
+    if grep -q "up to date" <<< "$out"; then
+        echo ""
+        echo "  ASSERTION FAILED: script claimed 'up to date' with a corrupt parser.c"
+        echo "  The grammar hash still matches, so only a CONTENT check can see this."
+        echo "$out"
+        return 1
+    fi
+    if ! grep -q "generated parser files" <<< "$out"; then
+        echo ""
+        echo "  ASSERTION FAILED: script did not regenerate"
+        echo "$out"
+        return 1
+    fi
+
+    local after
+    after=$(ts_sha256 "$parser")
+    if [ "$after" != "$good" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: parser.c was not restored to its correct bytes"
+        echo "  before probe: $good"
+        echo "  after re-run: $after"
+        return 1
+    fi
+}
+
+test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
+    # (d) A generate that fails must leave NEITHER stamp. _cleanup_partial_outputs
+    # already deletes the three outputs on both error branches; a stamp surviving
+    # that deletion would vouch for files that no longer exist, and the next run
+    # would have to be lucky rather than correct.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+    assert_cmd_success "baseline generate" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+    assert_file_exists "$(ts_generate_grammar_stamp "$fix")" || return 1
+    assert_file_exists "$(ts_generate_outputs_stamp "$fix")" || return 1
+
+    # A stub tree-sitter that writes partial outputs and then fails — the same
+    # shape scripts/test_tree_sitter_generate.sh Test 17 uses.
+    local stubdir
+    stubdir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$stubdir'")
+    cat > "$stubdir/tree-sitter" <<'STUB'
+#!/bin/sh
+touch src/parser.c src/grammar.json src/node-types.json
+exit 1
+STUB
+    chmod +x "$stubdir/tree-sitter"
+
+    # Force, so the (now content-aware) staleness check cannot short-circuit the
+    # run before the stub is ever reached.
+    ( export PATH="$stubdir:$PATH"; bash "$fix/scripts/tree-sitter-generate.sh" --force ) \
+        >/dev/null 2>&1 && {
+        echo ""
+        echo "  ASSERTION FAILED: generate script exited 0 despite a failing tree-sitter"
+        return 1
+    }
+
+    local st
+    for st in "$(ts_generate_grammar_stamp "$fix")" "$(ts_generate_outputs_stamp "$fix")"; do
+        if [ -f "$st" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: $st survived a failed generate"
+            echo "  _cleanup_partial_outputs deleted the outputs; a stamp left behind now"
+            echo "  vouches for files that do not exist."
+            return 1
+        fi
+    done
+}
 
 # --- Main ---
 run_tests
