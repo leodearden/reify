@@ -113,42 +113,62 @@ impl ComputeDispatchRegistry {
 /// in the workspace may spell it out inline.
 const NO_TRAMPOLINE_STEM: &str = "no registered compute trampoline";
 
-/// Build the SOFT-site missing-trampoline diagnostic — the form emitted by the
-/// two `engine_eval.rs` call sites that push a diagnostic and then FALL THROUGH
-/// to body-inlining.
-///
-/// The `(falling back to body-inlining)` clause is present here because it is
-/// literally what those two sites go on to do.
-///
-/// `registry_empty` selects the severity, per the task-5311 RULING in
-/// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4:
-///
-/// - `true` ⇒ [`Severity::Warning`](reify_core::Severity::Warning). An entirely
-///   empty compute registry means the driver declared a trampoline-free posture
-///   rather than forgetting one trampoline. `reify check` (whose `cmd_check`
-///   constructs its engines without ever
-///   calling `register_compute_trampolines`) and `reify-lsp` (`Engine::new`
-///   with no registration) are both in that posture, and reporting a posture as
-///   an `error:` while exiting 0 is the loud/silent mismatch this task closes.
-/// - `false` ⇒ [`Severity::Error`](reify_core::Severity::Error). A driver that
-///   registered SOME trampolines and is still missing THIS one is a genuine
-///   defect. `reify eval` and
-///   `reify build` both register the 19-target production bundle, so they stay
-///   on this arm and the diagnostic keeps gating their exit codes.
-///
-/// The [`DiagnosticCode`] is the SAME on both arms by design: the code names
-/// the cause, the severity reports how much the caller's posture makes that
-/// cause matter.
-pub(crate) fn soft_no_trampoline_diagnostic(target: &str, registry_empty: bool) -> Diagnostic {
-    let message = format!(
-        "@optimized target {target:?}: {NO_TRAMPOLINE_STEM} (falling back to body-inlining)"
-    );
-    let diagnostic = if registry_empty {
-        Diagnostic::warning(message)
-    } else {
-        Diagnostic::error(message)
-    };
-    diagnostic.with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+impl crate::Engine {
+    /// Build the SOFT-site missing-trampoline diagnostic — the form emitted by
+    /// the two `engine_eval.rs` call sites that push a diagnostic and then FALL
+    /// THROUGH to body-inlining.
+    ///
+    /// The `(falling back to body-inlining)` clause is present here because it
+    /// is literally what those two sites go on to do.
+    ///
+    /// A METHOD, not a free function taking a `registry_empty: bool`: the
+    /// emptiness predicate is the POLICY, and the two call sites must not each
+    /// compute it. A bare positional bool would let an inverted-polarity typo
+    /// at one site compile and silently flip that site's severity — the same
+    /// class of duplicated-policy drift this constructor pair exists to stop
+    /// for the message text. Reading `self.compute_registry` here spells it
+    /// exactly once.
+    ///
+    /// The severity, per the task-5311 RULING in
+    /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4:
+    ///
+    /// - registry entirely EMPTY ⇒
+    ///   [`Severity::Warning`](reify_core::Severity::Warning). An empty compute
+    ///   registry means the driver declared a trampoline-free posture rather
+    ///   than forgetting one trampoline. `reify check` (whose `cmd_check`
+    ///   constructs its engines without ever calling
+    ///   `register_compute_trampolines`) and `reify-lsp` (`Engine::new` with no
+    ///   registration) are both in that posture, and reporting a posture as an
+    ///   `error:` while exiting 0 is the loud/silent mismatch this task closes.
+    /// - registry NON-empty ⇒ [`Severity::Error`](reify_core::Severity::Error).
+    ///   A driver that registered SOME trampolines and is still missing THIS
+    ///   one is a genuine defect. `reify eval` and `reify build` both register
+    ///   the 19-target production bundle, so they stay on this arm and the
+    ///   diagnostic keeps gating their exit codes.
+    ///
+    /// The [`DiagnosticCode`] is the SAME on both arms by design: the code
+    /// names the cause, the severity reports how much the caller's posture
+    /// makes that cause matter.
+    ///
+    /// BOTH SOFT sites and BOTH arms are covered:
+    /// `evaluate_params_and_lets_unified` by the e2e pair in
+    /// `tests/compute_dispatch_registry.rs`
+    /// (`e2e_unregistered_optimized_target_emits_diagnostic_and_inlines` /
+    /// `…_on_a_nonempty_registry_stays_an_error`), and `evaluate_let_bindings`
+    /// by `evaluate_let_bindings_trampoline_severity_tests` in `engine_eval.rs`,
+    /// which drives that second site directly on an empty and a non-empty
+    /// registry.
+    pub(crate) fn soft_no_trampoline_diagnostic(&self, target: &str) -> Diagnostic {
+        let message = format!(
+            "@optimized target {target:?}: {NO_TRAMPOLINE_STEM} (falling back to body-inlining)"
+        );
+        let diagnostic = if self.compute_registry.fns.is_empty() {
+            Diagnostic::warning(message)
+        } else {
+            Diagnostic::error(message)
+        };
+        diagnostic.with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+    }
 }
 
 /// Build the HARD-site missing-trampoline diagnostic — the form emitted by
@@ -162,7 +182,8 @@ pub(crate) fn soft_no_trampoline_diagnostic(target: &str, registry_empty: bool) 
 /// either function do NOT body-inline, so the clause would be a false promise.
 ///
 /// The severity is UNCONDITIONALLY [`Severity::Error`](reify_core::Severity::Error)
-/// — the `registry_empty` predicate that [`soft_no_trampoline_diagnostic`]
+/// — the empty-registry predicate that
+/// [`Engine::soft_no_trampoline_diagnostic`](crate::Engine::soft_no_trampoline_diagnostic)
 /// applies is deliberately NOT applied here. Per the task-5311 RULING in
 /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4, on the merits:
 ///

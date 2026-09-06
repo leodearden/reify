@@ -10419,14 +10419,11 @@ impl Engine {
                                 // trampoline-free posture, e.g. `reify check` /
                                 // reify-lsp), Error otherwise (a driver that
                                 // registered some trampolines is genuinely missing
-                                // this one). Wording and code are single-sourced by
-                                // the constructor — see `NO_TRAMPOLINE_STEM`.
-                                diagnostics.push(
-                                    crate::engine_compute::soft_no_trampoline_diagnostic(
-                                        &target,
-                                        self.compute_registry.fns.is_empty(),
-                                    ),
-                                );
+                                // this one). Wording, code AND that emptiness
+                                // predicate all live in the constructor — see
+                                // `Engine::soft_no_trampoline_diagnostic`; this
+                                // site deliberately spells none of them.
+                                diagnostics.push(self.soft_no_trampoline_diagnostic(&target));
                             }
                         }
                     }
@@ -11543,16 +11540,15 @@ impl Engine {
                         // is entirely EMPTY (a declared trampoline-free posture,
                         // e.g. `reify check` / reify-lsp), Error otherwise (a
                         // driver that registered some trampolines is genuinely
-                        // missing this one). Wording and code are single-sourced
-                        // by the constructor — see `NO_TRAMPOLINE_STEM`.
+                        // missing this one). Wording, code AND that emptiness
+                        // predicate all live in the constructor — see
+                        // `Engine::soft_no_trampoline_diagnostic`; this site
+                        // deliberately spells none of them.
                         // The release-hard-error variant remains open in
                         // docs/prds/v0_3/compute-node-contract.md §9 OQ-1
                         // ("body-inline in debug, hard error in release"); no
                         // task tracks it today.
-                        diagnostics.push(crate::engine_compute::soft_no_trampoline_diagnostic(
-                            &target,
-                            self.compute_registry.fns.is_empty(),
-                        ));
+                        diagnostics.push(self.soft_no_trampoline_diagnostic(&target));
                     }
                 }
             }
@@ -14068,6 +14064,190 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
             "pass 3 must have taken the pre-eval Pending gate (b's freshness \
              should be Pending, got {:?})",
             engine.cache_store().freshness(&b_node)
+        );
+    }
+}
+
+/// Task 5311 — SOFT emission site TWO (`evaluate_let_bindings`), both severity
+/// arms, driven DIRECTLY.
+///
+/// The e2e pair in `tests/compute_dispatch_registry.rs` covers the OTHER SOFT
+/// site: `engine.eval(&compiled)` on a plain `param` + `let` module reaches
+/// `evaluate_params_and_lets_unified`, not this one. `evaluate_let_bindings` is
+/// reached from `eval()` only for a template with sub-components or on the
+/// post-resolution re-eval pass, and from `dispatch_merged_cluster_solve` — so
+/// without these two tests the identical empty-registry predicate at this site
+/// would be pinned by nothing, and an edit that dropped it or inverted its
+/// polarity here would pass the whole suite.
+///
+/// Calling the private method directly (as
+/// `evaluate_let_bindings_provenance_and_freshness_tests` above does) exercises
+/// the site in isolation, without depending on which caller happens to route
+/// there or on a second diagnostic arriving from the sibling site.
+#[cfg(test)]
+mod evaluate_let_bindings_trampoline_severity_tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
+    use reify_ir::{DeterminacyState, OpaqueState, Value, ValueMap};
+
+    use crate::Engine;
+    use crate::engine_compute::{ComputeFn, ComputeOutcome};
+    use crate::graph::CancellationHandle;
+    use crate::snapshot::Snapshot;
+    use reify_compute_contract::RealizationReadHandle;
+    use reify_test_support::mocks::MockConstraintChecker;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    /// Unregistered anywhere in the workspace, and outside
+    /// `register_production_compute_fns`' 19-target bundle, so no
+    /// duplicate-target panic can collide with it.
+    const UNREGISTERED_TARGET: &str = "test::let_site_never_registered";
+
+    /// A DIFFERENT target, registered only to make `fns.is_empty()` false while
+    /// `UNREGISTERED_TARGET` itself stays unregistered — the `reify eval` /
+    /// `reify build` posture in miniature.
+    const NONEMPTY_REGISTRY_PROBE: &str = "test::let_site_registry_nonempty_probe";
+
+    const SOURCE: &str = r#"
+@optimized("test::let_site_never_registered")
+fn let_site_probe(x: Int) -> Int {
+    x
+}
+
+structure LetSiteProbe {
+    param input: Int = 42
+    let result = let_site_probe(input)
+}
+"#;
+
+    fn probe_fn(
+        value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: value_inputs.first().cloned().unwrap_or(Value::Undef),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    /// Drive `evaluate_let_bindings` once over the `SOURCE` template and return
+    /// the diagnostics it pushed. `input` is pre-seeded into BOTH maps because
+    /// `detect_let_cycle` collects only Let cells, so the Param is never
+    /// evaluated in this pass.
+    fn drive_let_site(engine: &mut Engine) -> Vec<Diagnostic> {
+        let module = parse_and_compile_with_stdlib(SOURCE);
+        let template = &module.templates[0];
+        let mut snapshot = Snapshot::from_compiled_module(&module);
+
+        let input_id = ValueCellId::new("LetSiteProbe", "input");
+        let mut values = ValueMap::new();
+        values.insert(input_id.clone(), Value::Int(42));
+        snapshot
+            .values
+            .insert(input_id, (Value::Int(42), DeterminacyState::Determined));
+
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.evaluate_let_bindings(
+            template,
+            &mut values,
+            &mut snapshot,
+            1,
+            &module.functions,
+            &meta_map,
+            &mut diagnostics,
+            &mut structured_detail,
+            &runtime_sink,
+        );
+
+        // Non-vacuity: if the @optimized lowering ever stops recognising this
+        // shape, every assertion below would pass on an empty vec.
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains(UNREGISTERED_TARGET)),
+            "evaluate_let_bindings must have reached the unregistered-@optimized \
+             SOFT site and named {UNREGISTERED_TARGET}; got: {diagnostics:?}"
+        );
+        diagnostics
+    }
+
+    /// EMPTY registry ⇒ `Severity::Warning`, coded. This is `reify check`'s and
+    /// `reify-lsp`'s posture: no trampolines registered at all, so a missing one
+    /// is the declared posture rather than a defect.
+    #[test]
+    fn evaluate_let_bindings_unregistered_target_warns_on_an_empty_registry() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let diagnostics = drive_let_site(&mut engine);
+
+        let diag = diagnostics
+            .iter()
+            .find(|d| d.message.contains(UNREGISTERED_TARGET))
+            .expect("checked by drive_let_site");
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "an entirely empty compute registry must downgrade this SOFT site \
+             exactly as it downgrades evaluate_params_and_lets_unified; got: {diag:?}"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::NoRegisteredComputeTrampoline),
+            "the code names the cause and survives the severity flip; got: {diag:?}"
+        );
+        assert!(
+            diag.message.contains("falling back to body-inlining"),
+            "this is a SOFT site: the fallback clause is what it goes on to do; \
+             got: {diag:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains(UNREGISTERED_TARGET)),
+            "no Error-severity copy may survive beside the Warning — that pair is \
+             the loud/silent mismatch task 5311 closes; got: {diagnostics:?}"
+        );
+    }
+
+    /// NON-EMPTY registry ⇒ `Severity::Error`, same code. This is `reify eval`'s
+    /// and `reify build`'s posture: a driver that registered SOME trampolines and
+    /// is still missing THIS one is a genuine defect, and the diagnostic must
+    /// keep gating their exit codes. The mandatory twin of the test above —
+    /// without it, the downgrade there would be indistinguishable from an
+    /// unconditional one.
+    #[test]
+    fn evaluate_let_bindings_unregistered_target_stays_an_error_on_a_nonempty_registry() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(NONEMPTY_REGISTRY_PROBE, probe_fn as ComputeFn);
+
+        let diagnostics = drive_let_site(&mut engine);
+
+        let diag = diagnostics
+            .iter()
+            .find(|d| d.message.contains(UNREGISTERED_TARGET))
+            .expect("checked by drive_let_site");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "one unrelated registered trampoline is enough to make this a defect \
+             rather than a posture; got: {diag:?}"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::NoRegisteredComputeTrampoline),
+            "the code is identical on both arms by design; got: {diag:?}"
         );
     }
 }
