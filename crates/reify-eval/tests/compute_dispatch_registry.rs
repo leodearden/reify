@@ -212,32 +212,31 @@ fn dispatch_compute_node_unregistered_target_returns_error_diagnostic() {
     );
 }
 
-/// Task 5311 — the HARD-site half of the severity split, pinned POSITIVELY.
-///
-/// A SEPARATE SIBLING of
+/// Task 5311 — the two assertions the HARD-site contract ADDS, kept as a
+/// separate sibling of
 /// `dispatch_compute_node_unregistered_target_returns_error_diagnostic` above,
-/// which the RULING marks UNCHANGED and which is deliberately not touched.
+/// which the RULING in `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4
+/// marks UNCHANGED and which is therefore not touched.
 ///
-/// This test's whole point is its INPUT: `make_simple_engine()` has an entirely
-/// EMPTY compute registry, which is exactly the condition that DOWNGRADES the
-/// diagnostic to `Severity::Warning` at the two SOFT sites in `engine_eval.rs`.
-/// `dispatch_compute_node` is a HARD site and does NOT apply that predicate, so
-/// the severity must stay `Severity::Error` here. If a later sweep ever "tidies
-/// up" by applying the predicate uniformly across all four sites, this test
-/// turns red — which is the only reason it exists.
+/// HONEST SCOPE — the INPUT is not what is new here. `make_simple_engine()`'s
+/// compute registry is empty in the older test too, so "still `Severity::Error`
+/// on an entirely empty registry" — the input that DOWNGRADES the two SOFT
+/// sites in `engine_eval.rs` — is already pinned there, and stays pinned there.
+/// What this test adds is only what that lock cannot absorb without being
+/// edited: the [`DiagnosticCode`], and the deliberate ABSENCE of the
+/// `(falling back to body-inlining)` clause. The severity is re-asserted on the
+/// code-selected entry, in one line, so "coded AND still Error" is stated
+/// somewhere as a single fact.
 ///
-/// The RULING's reasons, on the merits rather than "a test would break":
-/// (i) `dispatch_compute_node` has ZERO non-test callers workspace-wide, so
-///     `fns.is_empty()` can never be true here in production — the predicate
-///     would change nothing user-observable while making the contract murkier;
-/// (ii) `dispatch_compute_node`'s own rustdoc promises its `Err` arm carries at
-///     least one `Severity::Error`. An `Err` carrying only a Warning is
-///     incoherent, and is silently swallowed by `reify build`/`reify eval`'s
-///     `has_error_diagnostic` exit gate — a returned failure that stops gating.
+/// If a later sweep ever "tidies up" by applying the empty-registry predicate
+/// uniformly across all four sites, BOTH tests turn red — which is the point of
+/// keeping them adjacent.
 ///
-/// The `(falling back to body-inlining)` clause must remain ABSENT: fallback is
-/// the eval-loop caller's behaviour, not this helper's, and direct callers do
-/// not body-inline.
+/// Why the predicate is deliberately not applied at the HARD sites, argued on
+/// the merits: `hard_no_trampoline_diagnostic`'s rustdoc in
+/// `crates/reify-eval/src/engine_compute.rs`. Not restated here — it was
+/// previously triplicated across that constructor, this docblock and an
+/// assertion message.
 #[test]
 fn dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty_registry() {
     let engine = make_simple_engine();
@@ -256,32 +255,27 @@ fn dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty
         )
         .expect_err("expected Err for unregistered target");
 
-    let error_diag = diags
+    let diag = diags
         .iter()
-        .find(|d| d.severity == Severity::Error)
+        .find(|d| d.code == Some(DiagnosticCode::NoRegisteredComputeTrampoline))
         .unwrap_or_else(|| {
             panic!(
-                "the HARD sites do NOT apply the empty-registry downgrade — an \
-                 Err carrying only a Warning is incoherent and is swallowed by \
-                 build/eval's has_error_diagnostic gate; got: {diags:?}"
+                "the HARD form carries the SAME code as the SOFT form — the code \
+                 names the cause, independently of severity, and downstream \
+                 tooling matches on it rather than on the prose; got: {diags:?}"
             )
         });
-
     assert_eq!(
-        error_diag.code,
-        Some(DiagnosticCode::NoRegisteredComputeTrampoline),
-        "the HARD form carries the SAME code as the SOFT form — the code names \
-         the cause, independently of severity; got: {error_diag:?}"
+        diag.severity,
+        Severity::Error,
+        "the HARD sites do NOT apply the empty-registry downgrade — see \
+         hard_no_trampoline_diagnostic's rustdoc; got: {diag:?}"
     );
     assert!(
-        error_diag.message.contains("nonexistent::target"),
-        "expected the diagnostic to name the unknown target, got: {error_diag:?}"
-    );
-    assert!(
-        !error_diag.message.contains("falling back to body-inlining"),
+        !diag.message.contains("falling back to body-inlining"),
         "the fallback clause is deliberately omitted at the HARD sites: \
          body-inlining is the eval-loop caller's behaviour, not this helper's, \
-         and direct callers do not inline; got: {error_diag:?}"
+         and direct callers do not inline; got: {diag:?}"
     );
 }
 
