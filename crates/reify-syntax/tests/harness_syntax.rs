@@ -1,13 +1,25 @@
-//! Consolidated integration-test harness for reify-syntax's parser/grammar/lowering tests.
+//! Consolidated integration-test harness for reify-syntax's parser/grammar tests.
 //!
-//! Task #5275 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf C-syntax):
-//! folds the former 61 standalone `tests/<file>.rs` binaries into this single compile
-//! unit to cut the merge-gate link count. Layout-only — no `#[test]` fn is added or
-//! removed. Each former file is included as a stem-named module so its `<file>::<test>`
+//! Task #5275 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf C-syntax)
+//! folded the former 61 standalone `tests/<file>.rs` binaries into one compile unit to cut
+//! the merge-gate link count. Task #7040 then split the CST→AST lowering family out into
+//! the sibling root `harness_syntax_lowering.rs`, so this is no longer reify-syntax's
+//! single test binary: it now holds the 49 grammar/parser-side modules below, and its
+//! sibling holds 14. Layout-only in both directions — no `#[test]` fn was added or removed
+//! by either. Each former file is included as a stem-named module so its `<file>::<test>`
 //! module path (and thus every `test(/^<file>::/)` filterset) resolves unchanged.
 //! Explicit `#[path]` is required: this harness root is an integration-test crate root,
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_syntax/` subdir — mirroring crates/reify-eval/tests/harness_geometry.rs.
+//!
+//! WHY THE LOWERING FAMILY LEFT. Measured before the split, this unit stood at 18957 lines
+//! = 94.8% of `tests/infra/test_harness_kloc_cap.sh`'s 20000-line rule (a) cap, leaving
+//! 1043 lines of headroom, with `module_lines` (18739) dominating the breakdown. §7 of the
+//! PRD resolves that pressure by SPLIT, never by raising the cap, and the
+//! `module_lines`-dominant remedy is exactly "split the module dir into a second
+//! `harness_<subsystem2>.rs`". After the split this unit measures 14576 lines (72.9% of
+//! cap, 5424 lines of headroom) over 49 modules; see `harness_syntax_lowering.rs` for the
+//! full rationale and the measured before/after in the guard's own field order.
 //!
 //! `common` (the shared tree-sitter CST helper module under `tests/common/`) is declared
 //! exactly once here, at the crate root, rather than once per dependent submodule. Ten of
@@ -18,6 +30,15 @@
 //! here and having dependents `use crate::common::{...}` preserves the single shared
 //! implementation without a duplicate load; `common` carries no `#[test]` fns, so this does
 //! not affect any `<file>::<test>` module path.
+//!
+//! The split did not change where `common` is charged, and must not: it is compiled into
+//! THIS binary and no other. All ten of its `crate::common` consumers are grammar/parser-
+//! side modules that stayed here — not one `*_lowering_tests` module referenced it — so
+//! `harness_syntax_lowering.rs` declares no `mod common;`. That matters because rustc
+//! compiles a separate copy of a `tests/common/` helper into every binary that includes it,
+//! so a second declaration would duplicate the 70-line helper's compile cost, which is the
+//! opposite of what a cap-relief split is for. The kLOC guard measures this directly as the
+//! `external`/`external_files` fields: 70/1 here, 0/0 on the sibling.
 #[path = "common/mod.rs"]
 mod common;
 #[path = "harness_syntax/ad_hoc_selector_tests.rs"]
