@@ -868,16 +868,24 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoopClosureChain {
-    /// `chain_b` contains the closing joint exactly once (its last element).
-    /// Produced by the parent-conflict branch of `append_body`.
+    /// `chain_b` contains the closing joint AT MOST once. Produced by the
+    /// parent-conflict branch of `append_body`.
     /// Solver-feedable via `chain_transform` / `solve_loop_closure`.
+    ///
+    /// Task 7186 defect A: for records the v0.2 builder emits, the count is
+    /// ZERO — `chain_a` terminates at the closing joint and `chain_b`
+    /// terminates at the closing edge's `parent`, so the closing joint's
+    /// transform is composed exactly once across the pair. (Composing it on
+    /// both sides conjugates the residual instead of cancelling out of it.)
+    /// The classification rule below is `> 1`, so a hand-built pair that
+    /// happens to carry the closing joint once still lands here.
     WellFormed {
         chain_a: Vec<reify_ir::Value>,
         chain_b: Vec<reify_ir::Value>,
         /// The closing joint: propagated from the loop-closure record's
         /// `closing_joint` field so callers do not need `chain_b.last().unwrap()`
-        /// (a partial function). Equals the last element of both `chain_a` and
-        /// `chain_b` by the path invariant.
+        /// (a partial function). It is the last element of `chain_a`; it is
+        /// NOT in `chain_b` for a builder-produced record (task 7186).
         closing_joint: reify_ir::Value,
     },
     /// `chain_b` contains the closing joint more than once — at the end
@@ -890,8 +898,9 @@ pub enum LoopClosureChain {
         chain_b: Vec<reify_ir::Value>,
         /// The closing joint: propagated from the loop-closure record's
         /// `closing_joint` field so callers do not need `chain_b.last().unwrap()`
-        /// (a partial function). Equals the last element of both `chain_a` and
-        /// `chain_b` by the path invariant.
+        /// (a partial function). On this branch it IS the last element of
+        /// `chain_b` (the cycle branch still appends it as the marker), and
+        /// occurs at least once more mid-walk.
         closing_joint: reify_ir::Value,
     },
 }
@@ -915,11 +924,20 @@ pub enum LoopClosureChain {
 /// The world sentinel is identified by `kind = "world"`.
 ///
 /// **Classification rule:** a chain pair is [`LoopClosureChain::Cycle`] iff
-/// `chain_b` contains its last element (the closing joint) more than once.
+/// `chain_b` contains the closing joint more than once.
 /// This subsumes both the 2-body cycle case (`chain_b = [j_b, j_a, j_b]`,
 /// `j_b` twice) and the self-loop case (`chain_b = [j, j]`, `j` twice).
-/// Parent-conflict pairs (`chain_b`'s last element occurs exactly once)
-/// classify as [`LoopClosureChain::WellFormed`].
+/// Parent-conflict pairs classify as [`LoopClosureChain::WellFormed`]; since
+/// task 7186 their `chain_b` contains the closing joint ZERO times (it is
+/// composed on `chain_a` only — see `mechanism::append_body`).
+///
+/// One shape's classification changes with that fix: an edge that is BOTH a
+/// parent conflict AND has `at` as an ancestor of `parent` now yields
+/// `chain_b` containing the closing joint exactly ONCE (mid-walk, as that
+/// ancestor) and so classifies `WellFormed` rather than `Cycle`. That is the
+/// correct label: `append_body`'s parent-conflict guard runs before the
+/// cycle guard, so such an edge was always recorded as a parent conflict —
+/// the old `Cycle` label came purely from the now-removed duplicate append.
 ///
 /// Returns `None` on any shape error:
 /// - a `loop_closures` entry is not a `Value::Map`
@@ -927,8 +945,11 @@ pub enum LoopClosureChain {
 /// - either path has fewer than 2 elements (the stripped tail would not terminate at a closing joint)
 /// - the first element of a path does not have `kind = "world"`
 ///
-/// Downstream contract: chains terminate at the closing joint (the last
-/// element equals `loop_closure.closing_joint`), world sentinel stripped.
+/// Downstream contract (world sentinel stripped from both): `chain_a`
+/// terminates at the closing joint; `chain_b` terminates at the closing
+/// edge's `parent` on the parent-conflict branch, or at the appended `at`
+/// marker on the cycle branch. Read `closing_joint` from the returned
+/// variant's field rather than from either chain's tail.
 pub fn mechanism_loop_closure_chains(
     mech_map: &reify_ir::Value,
 ) -> Option<Vec<LoopClosureChain>> {
@@ -2267,12 +2288,13 @@ mod tests {
     ///
     /// Scenario: parent-conflict via `body(m0, solid_a, j_x, j_a)` then
     /// `body(m1, solid_b, j_x, j_b)`. The expected paths are:
-    ///   path_a = [world, j_a, j_x]  (recorded by body() for parent j_a)
-    ///   path_b = [world, j_b, j_x]  (recorded by body() for parent j_b)
+    ///   path_a = [world, j_a, j_x]  (spanning-tree walk, terminating at j_x)
+    ///   path_b = [world, j_b]       (walk to the closing edge's parent j_b)
     /// After world-sentinel stripping:
     ///   chain_a = [j_a, j_x]
-    ///   chain_b = [j_b, j_x]
-    /// j_x appears exactly once in chain_b → WellFormed.
+    ///   chain_b = [j_b]
+    /// j_x appears ZERO times in chain_b (task 7186: the closing joint is
+    /// composed on chain_a only), which is `> 1` false → WellFormed.
     #[test]
     fn mechanism_loop_closure_chains_extracts_pairs() {
         use crate::eval_builtin;
@@ -2317,14 +2339,18 @@ mod tests {
             &chain_a[1], &j_x,
             "chain_a[1] should be j_x (closing joint)"
         );
-        // chain_b = [j_b, j_x] (world sentinel stripped from [world, j_b, j_x])
-        assert_eq!(chain_b.len(), 2, "chain_b should have 2 elements");
+        // chain_b = [j_b] (world sentinel stripped from [world, j_b]).
+        // Task 7186 defect A: this used to be [j_b, j_x]; re-composing the
+        // closing joint on both sides conjugates the residual rather than
+        // cancelling out of it.
+        assert_eq!(chain_b.len(), 1, "chain_b should have 1 element");
         assert_eq!(&chain_b[0], &j_b, "chain_b[0] should be j_b");
-        assert_eq!(
-            &chain_b[1], &j_x,
-            "chain_b[1] should be j_x (closing joint)"
+        assert!(
+            !chain_b.contains(&j_x),
+            "chain_b must NOT contain the closing joint j_x"
         );
-        // closing_joint is propagated from the loop-closure record.
+        // closing_joint is propagated from the loop-closure record — the
+        // only place a consumer can read it now that chain_b omits it.
         assert_eq!(cj, &j_x, "closing_joint should be j_x");
     }
 

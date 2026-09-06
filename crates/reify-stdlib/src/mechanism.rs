@@ -377,8 +377,29 @@ fn make_duplicate_solid_error(mech_map: &BTreeMap<Value, Value>, message: String
 
 /// Build a single loop-closure record `Value::Map` with the five-key shape:
 /// `{ body_id, closing_joint, kind="loop_closure", path_a, path_b }`.
-/// Both paths are `[world, joint_0, ..., closing_joint]` (world sentinel
-/// prepended, both chains terminating at the closing joint).
+///
+/// Both paths carry the world sentinel at the head, but they do **not**
+/// share a terminator — the two shapes differ, and differ again by branch
+/// (task 7186 defect A):
+///
+/// * `path_a` is always `[world, joint_0, ..., closing_joint]`: the
+///   spanning-tree walk down to the shared pivot, terminating AT the
+///   closing joint.
+/// * `path_b`, on the **parent-conflict** branch, is
+///   `[world, joint_0, ..., parent]`: the walk that reaches the same pivot
+///   through the closing edge's `parent`. It terminates at `parent` and
+///   does **not** contain the closing joint at all — composing the closing
+///   joint on both sides conjugates the residual instead of cancelling
+///   (see the comment at the push site in `append_body`).
+/// * `path_b`, on the **cycle / self-loop** branch, retains its
+///   `[world, ..., at]` marker shape: `at` is appended so the closing node
+///   is visible twice (once mid-walk as an ancestor of `parent`, once at
+///   the tail). That duplicate is the classification signal
+///   `mechanism_loop_closure_chains` reads to emit `LoopClosureChain::Cycle`,
+///   and those chains are not solver-feedable in the first place.
+///
+/// The closing joint is always available from the record's explicit
+/// `closing_joint` field, on every branch.
 fn make_loop_closure_record(
     body_id: i64,
     closing_joint: Value,
@@ -492,7 +513,26 @@ fn append_body(
         path_a.push(at.clone());
         let mut path_b = vec![world];
         path_b.extend(walk_to_world(&joint_parents, &parent));
-        path_b.push(at.clone());
+        // Task 7186 defect A: `at` is deliberately NOT appended here.
+        //
+        // The closing joint's transform belongs to exactly ONE side of the
+        // loop: chain_a reaches the shared pivot through the spanning tree
+        // (…→ existing_parent → at), and chain_b reaches that SAME pivot
+        // through the closing edge's `parent`. Appending `at` to both sides
+        // makes the residual `log(inv(T_a) · T_b)` with `T_a = X·A` and
+        // `T_b = Y·A` — whose zero set is `inv(A)·inv(X)·Y·A = I ⟺ X = Y`.
+        // So `A` does not cancel harmlessly; it CONJUGATES the residual and
+        // relocates the closure from the closing joint's OUTPUT frame to its
+        // BASE frame. On the Grashof 4-bar
+        // (examples/kinematic/relate_mounted_fourbar.ri) that relocation
+        // moves the closure from pivot C to pivot B and makes the system
+        // infeasible by 1.045 mm, so Newton returns a least-squares point
+        // ~1.09 rad away from the analytic assembly.
+        //
+        // The asymmetric shape produced here is the one the in-tree
+        // hand-built reference chains already use:
+        // reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs (B4) and
+        // reify-eval/tests/relate_mounted_joint_sweep_e2e.rs (B7).
         let lc = make_loop_closure_record(next_id, at.clone(), path_a, path_b);
         loop_closures.push(lc);
         true // skip joint_parents.insert below
@@ -949,7 +989,13 @@ mod tests {
     /// - `joint_parents.get(j_x) == Some(j_a)` (first-recorded edge wins)
     /// - `loop_closures` is a List with exactly one Map entry:
     ///   `kind="loop_closure"`, `body_id=Int(1)`, `closing_joint=j_x`,
-    ///   path_a=[world, j_a, j_x], path_b=[world, j_b, j_x]
+    ///   path_a=[world, j_a, j_x], path_b=[world, j_b]
+    ///
+    /// Task 7186 defect A: `path_b` used to be `[world, j_b, j_x]`. The
+    /// closing joint belongs to exactly one side of the loop — appending it
+    /// to both conjugates the residual rather than cancelling out of it (see
+    /// `parent_conflict_path_b_omits_closing_joint` and the push-site comment
+    /// in `append_body`). This expectation encoded the double count.
     #[test]
     fn parent_conflict_records_loop_closure_constraint() {
         // j_a, j_b distinct; j_x distinct again.
@@ -1059,8 +1105,9 @@ mod tests {
         );
         assert_eq!(
             lc.get(&Value::String("path_b".to_string())),
-            Some(&Value::List(vec![world.clone(), j_b.clone(), j_x.clone()])),
-            "path_b should be [world, j_b, j_x]"
+            Some(&Value::List(vec![world.clone(), j_b.clone()])),
+            "path_b should be [world, j_b] — the closing joint j_x is composed \
+             on path_a only (task 7186 defect A)"
         );
     }
 

@@ -2828,18 +2828,28 @@ mod tests {
     /// (`j_x`) that body C anchors to `j_a` (forming the spanning-tree
     /// edge `j_x → j_a`) and body D anchors to `j_b` (forming the
     /// closing edge that becomes a `loop_closures` record with
-    /// `path_a=[world,j_a,j_x]` and `path_b=[world,j_b,j_x]`).
+    /// `path_a=[world,j_a,j_x]` and `path_b=[world,j_b]`).
     ///
-    /// `j_a` is bound to 0.5 m (driver value).  The closure constraint
-    /// `j_a + j_x = j_b + j_x` forces `j_b = j_a = 0.5 m`.  Today's
-    /// snapshot ignores `loop_closures` and `j_b` falls back to its
-    /// range midpoint (1.0 m for range 0..2 m) — so body 1's translation
-    /// (1.0, 0, 0) violates the closure, distinguishable from the
-    /// post-step-4 solver-driven (0.5, 0, 0).
+    /// **Task 7186 defect A.** This fixture used to rely on the closing
+    /// joint being appended to BOTH paths — its doc said "jX's rotation
+    /// cancelling out of both paths", which is exactly the conjugation the
+    /// double count produced. With the corrected asymmetric chains
+    /// (`chain_a = [jA, jX]`, `chain_b = [jB]`) jX's transform is composed
+    /// once, on the tree side only, so its rotation is no longer opposed by
+    /// anything: left at its range midpoint (π/2) it would make the closure
+    /// infeasible for the single free prismatic. `j_x` is therefore bound to
+    /// 0 rad, which restores the intended model
+    /// `T(jA)·T(jX) == T(jB)  ⟺  jA == jB`.
+    ///
+    /// `j_a` is bound to 0.5 m (driver value), so the solver must drive
+    /// `j_b` to 0.5 m.  The test's load-bearing intent is unchanged: jB's
+    /// own range midpoint is 1.0 m (range 0..2 m), so a snapshot that
+    /// ignored `loop_closures` would place body 1 at (1.0, 0, 0) and the
+    /// assertion distinguishes that from the solver-driven (0.5, 0, 0).
     ///
     /// The closing-edge body's world translation is asserted to match
-    /// the path-b expectation `(j_b_solved + j_x_value)` within 1e-6 m,
-    /// pinning the round-trip from solver output back into the FK walk.
+    /// the path-b expectation `j_b_solved` within 1e-6 m, pinning the
+    /// round-trip from solver output back into the FK walk.
     #[test]
     fn snapshot_solves_closed_chain_via_loop_closure_solver() {
         // jA on +X with range 0..1m; midpoint = 0.5m.
@@ -2860,11 +2870,9 @@ mod tests {
                 },
             ],
         );
-        // jX is a revolute around +Z with range 0..π; pure rotation about
-        // world-Z preserves the +X translation contributions of j_a and j_b
-        // (both project onto the rotated +X), so the closure simplifies to
-        // a 1-DOF translation match with jX's rotation cancelling out of
-        // both paths.
+        // jX is a revolute around +Z with range 0..π.  It is composed on
+        // chain_a ONLY (task 7186), so it is pinned to 0 rad below; the
+        // closure then reduces to the 1-DOF translation match jA == jB.
         let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
 
         let world = eval_builtin("world", &[]);
@@ -2934,10 +2942,14 @@ mod tests {
             other => panic!("expected Mechanism Map, got {:?}", other),
         }
 
-        // Bind jA = 0.5m.  The closure jA + jX = jB + jX simplifies to
-        // jA = jB → solver should drive jB to 0.5m (NOT jB's midpoint 1.0m).
+        // Bind jA = 0.5m and pin jX = 0rad.  The closure T(jA)·T(jX) = T(jB)
+        // then simplifies to jA = jB → solver should drive jB to 0.5m (NOT
+        // jB's midpoint 1.0m).  jX must be pinned because it now appears on
+        // chain_a only: its midpoint rotation (π/2) would otherwise be
+        // unopposable by the single free prismatic jB.
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
-        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a, bind_x])]);
 
         // After step-4 the closed-chain snapshot must produce a valid
         // Snapshot Map (not Undef): the loop-closure-solver wiring runs
@@ -4341,18 +4353,29 @@ mod tests {
     /// in loop_closure.rs) — collapsing this fixture's 2-free-joint,
     /// 1-loop-closure topology to a spurious 2-loop-closure self-loop.
     ///
-    /// `j_b`'s offset must also be non-zero (and specifically ≠ `j_a`'s
-    /// bound value minus `j_b`/`j_x`'s shared range midpoint) so the
-    /// closure residual at the all-midpoints starting guess is non-zero.
-    /// With `j_b`'s offset at 0.0 the residual collapses to exactly 0 at
-    /// that starting point — Newton reports `Converged` at iteration 0
-    /// without ever inverting the (rank-deficient) Jacobian, since a
-    /// zero-residual check short-circuits before the LDLᵀ solve. Offset
-    /// 0.1 breaks that coincidence while leaving the FD columns identical.
+    /// The offsets must also be chosen so the closure residual at the
+    /// all-midpoints starting guess is non-zero. If the two sides coincide
+    /// there, the residual collapses to exactly 0 at that starting point —
+    /// Newton reports `Converged` at iteration 0 without ever inverting the
+    /// (rank-deficient) Jacobian, since a zero-residual check short-circuits
+    /// before the LDLᵀ solve. Here chain_a reaches 0.5 + (0.3 + 0.5) = 1.3 m
+    /// and chain_b reaches (0.1 + 0.5) + (0.25 + 0.5) = 1.35 m, a 0.05 m
+    /// residual, while leaving the FD columns identical.
+    ///
+    /// **Task 7186 defect A.** The rank deficiency used to come from the
+    /// closing joint being appended to `path_b` as well: `chain_b` was
+    /// `[j_b, j_x]`, two unbound +X prismatics whose Jacobian columns are
+    /// identical. With the closing joint composed exactly once, `chain_b`
+    /// on that fixture is `[j_b]` alone — a full-rank 6×1 Jacobian, so the
+    /// fixture stopped exhibiting the condition it exists to pin. The two
+    /// identical free columns are therefore re-homed onto a genuine
+    /// two-deep closing-side walk (`j_b → world`, `j_c → j_b`, closing
+    /// `j_x → j_c`), which yields `chain_b = [j_b, j_c]` with both free.
     #[test]
     fn snapshot_bakes_is_singular_true_for_rank_deficient_closed_chain() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let j_b = offset_prismatic_x(0.1);
+        let j_c = offset_prismatic_x(0.25);
         let j_x = offset_prismatic_x(0.3);
 
         let world = eval_builtin("world", &[]);
@@ -4375,25 +4398,36 @@ mod tests {
                 world.clone(),
             ],
         );
-        let m3 = eval_builtin(
+        // j_c hangs off j_b, giving the closing side a two-deep walk.
+        let m2b = eval_builtin(
             "body",
             &[
                 m2,
                 Value::String("solidC".to_string()),
+                j_c.clone(),
+                j_b.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2b,
+                Value::String("solidD".to_string()),
                 j_x.clone(),
                 j_a.clone(),
             ],
         );
-        // Closing edge: j_x re-registered with parent=j_b (!= j_a) ->
-        // loop_closures record with path_b = [world, j_b, j_x] (both
-        // free/unbound, same +X axis).
+        // Closing edge: j_x re-registered with parent=j_c (!= j_a) ->
+        // loop_closures record with path_a = [world, j_a, j_x] and
+        // path_b = [world, j_b, j_c] (both free/unbound, same +X axis, so
+        // their residual-Jacobian columns are identical → rank-deficient).
         let m4 = eval_builtin(
             "body",
             &[
                 m3,
-                Value::String("solidD".to_string()),
+                Value::String("solidE".to_string()),
                 j_x.clone(),
-                j_b.clone(),
+                j_c.clone(),
             ],
         );
 
@@ -4414,8 +4448,10 @@ mod tests {
             other => panic!("expected Mechanism Map, got {:?}", other),
         }
 
-        // Only j_a is bound; j_b and j_x are free (same +X axis => identical
-        // Jacobian columns => rank-deficient).
+        // Only j_a is bound; j_b and j_c are the two free variables on
+        // chain_b (same +X axis => identical Jacobian columns =>
+        // rank-deficient).  j_x sits on chain_a and resolves to its own
+        // range midpoint.
         let bind_a = eval_builtin("bind", &[j_a, Value::length(0.5)]);
         let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
 
