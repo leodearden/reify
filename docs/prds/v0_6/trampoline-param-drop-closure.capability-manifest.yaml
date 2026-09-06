@@ -1,0 +1,941 @@
+prd: docs/prds/v0_6/trampoline-param-drop-closure.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 7079
+  title: 'trampoline param-drop α: E_PARAM_NOT_HONORED / W_PARAM_NOT_APPLICABLE DiagnosticCode
+    variants + the honored/ignored/not_applicable declaration mechanism (INV-PD-1 C1-C3)'
+  capabilities:
+  - name: diagnosticcode-additive-variant-substrate
+    binding: 'capability->producer (substrate) - DiagnosticCode in crates/reify-core/src/diagnostics.rs
+      is #[non_exhaustive], carries 191 variants, and has no exhaustive match-on-self anywhere
+      in the workspace. Verified 2026-08-31. Minting two variants is additive and non-breaking.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ParamNotHonored
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: severity-carrier-substrate
+    binding: capability->producer (substrate) - Diagnostic::error / Diagnostic::warning fix
+      Severity and the fluent .with_code(DiagnosticCode) attaches the code; verified 2026-08-31.
+      So E_PARAM_NOT_HONORED = Diagnostic::error(..).with_code(..) and W_PARAM_NOT_APPLICABLE
+      = Diagnostic::warning(..).with_code(..). No new type is required.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ParamNotApplicable
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: mnemonic-is-prose-not-a-renderable-identifier
+    binding: 'CORRECTION APPLIED (G6 branch 3, end-to-end capability). DiagnosticCode has
+      NO Display, NO as_str, NO code_str, NO FromStr and no exhaustiveness test - verified
+      2026-08-31. A signal asserting the two codes ''round-trip'' as the strings E_PARAM_NOT_HONORED
+      / W_PARAM_NOT_APPLICABLE would therefore be a FALSE PREMISE. The only machine identity
+      is the serde PascalCase variant name; the E_/W_ mnemonic reaches a user only if embedded
+      in the message text, the house precedent being the ''E_DUP_MEMBER_KEY: '' message prefix.
+      Alpha''s signal is restated accordingly: the variants exist, serialize to their PascalCase
+      names, and the mnemonic appears in the emitted message.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: negative structural fact (absence of Display/FromStr on DiagnosticCode); an
+        expect:absent on a bare token would violate the reify overlay's scoping rule. The
+        positive half is covered by the two variant checks above.
+  - name: house-precedent-shape-wired
+    binding: capability->producer (substrate, wired-on-main) - buckling_unsupported_option_diagnostics
+      in crates/reify-eval/src/compute_targets/buckling.rs is the workspace's only existing
+      diagnostic of this kind. It is called on the production path from solve_buckling_trampoline's
+      final step and attaches DiagnosticCode::BucklingOptionUnsupported - not test-only. Its
+      central unsupported_diag template plus its PRESENT-and-non-default firing rule is exactly
+      contract C2 + C3, so alpha ports a shape rather than inventing one.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact, already true on main; asserting it as a delivered_check would
+        be vacuous. The behavioural twin is the two DiagnosticCode variant checks above.
+  - name: default-comparison-rule-is-non-breaking
+    binding: 'C3 (default-comparison) - every consumed structure_def declares its defaults
+      inline, so C3 has a real source. Measured 2026-08-31 across the tracked .ri corpus:
+      every BucklingOptions and ModalOptions call site spells its params AT their declared
+      defaults (every sigma is 0.0), so the uniform-Error rule of D2 turns NO existing example
+      red. That is what makes ''Error, not Warning'' landable without a migration wave.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: corpus-wide property measured at decompose time; the durable enforcement is
+        leaf eta's PDROP gate, not a pattern.
+  - name: positional-vs-by-name-ctor-binding-is-contested-prose
+    binding: 'hazard recorded (alpha edits option structure_defs). examples/buckling_column_p2.ri
+      carries a long header asserting BucklingOptions arguments bind POSITIONALLY in declaration
+      order regardless of name: labels - which would make adding or reordering a param silently
+      re-bind every existing call site. Task #6484 (pending) exists precisely because that
+      claim is FALSE: task 4522 landed a by-name binder, re-probed 2026-08-31. Alpha must
+      not add params on the strength of the stale comment, and must not rely on positional
+      order either; #6484 is retiring the comments. File contention only, no dependency wired.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'cross-task prose-correctness record; #6484 owns the comment retirement.'
+  - name: pdiag-is-not-on-main
+    binding: 'cross-PRD reality check (INV-SF-6). docs/prds/v0_6/eradicate-silent-undef.md
+      owns INV-SF-6 and its PDIAG enforcement, but PDIAG is NOT on main as of 2026-08-31:
+      crates/reify-audit/src/pdiag.rs, crates/reify-audit/pdiag-baseline.txt and docs/notes/diagnostic-severity-policy.md
+      are all absent, and the work lives unlanded on branch task/5405 (#5405, in-progress).
+      Alpha therefore owns COMPLIANCE - both new diagnostics carry codes by construction -
+      and must NOT bind evidence to ''PDIAG is green''. No dependency edge is wired from alpha:
+      compliance does not need the enforcer to exist. Leaf eta DOES carry a real edge to #5405,
+      for a different reason (shared registration surfaces).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-PRD posture record; the mechanical half is the coded-diagnostic requirement
+        already asserted by the two variant checks above.
+- label: β
+  task_id: 7080
+  title: 'trampoline param-drop β: vertical slice - ElasticOptions fully declared; max_iter
+    and cg_tolerance honored in elastic_static'
+  capabilities:
+  - name: max-iter-and-cg-tolerance-both-dropped
+    binding: 'capability->producer (substrate, the defect being fixed) - crates/reify-eval/src/compute_targets/elastic_static.rs
+      builds its CgSolverOptions with a hardcoded tolerance of 1e-6 and max_iter set to the
+      pub(crate) const SOLVER_MAX_ITER = 2000. Verified 2026-08-31. The drop is TWO-wide:
+      max_iter (declared default 1000, so the hardcode also contradicts the declaration) and
+      cg_tolerance (declared default 0.000001, numerically equal to the hardcode today, so
+      only a user-supplied DIFFERENT value is lost).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'max_iter: SOLVER_MAX_ITER'
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: absent
+  - name: c1-union-equals-elasticoptions-param-set
+    binding: 'C1 invariant 1 (the union must EQUAL the param set, not be a subset) - RESOLVED
+      AT DECOMPOSE so beta does not discover it at dispatch. ElasticOptions declares 17 params.
+      Measured 2026-08-31 by grepping each field-name string across crates/reify-eval/src,
+      crates/reify-expr/src and crates/reify-stdlib/src: HONORED TODAY (10) - threads, shell_threshold,
+      shell_voxel_size, shell_branch_prune_ratio, shell_force, deterministic, adaptive, target_accuracy,
+      max_refinement_iterations, max_dofs. HONORED BY BETA (2) - max_iter, cg_tolerance. IGNORED,
+      each needing a live owner (5) - mesh_size (zero reads anywhere in the workspace), element_order
+      on the elastic path (read only in buckling.rs and modal_ops.rs, never in elastic_static.rs),
+      target_quantity_of_interest, force_tet, require_hex_wedge. 10 + 2 + 5 = 17, so the union
+      closes with NO unowned residue.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: set-equality judgment over a structure_def param list; the durable mechanical
+        twin is leaf eta's PDROP C4a check ('param in no set').
+  - name: ignored-entry-owners-are-live
+    binding: 'C4c / D4 (every allowlist entry names a live owner) - both historical owners
+      are TERMINAL: #2911 (done) specified mesh_size, element_order, max_iter and cg_tolerance
+      and shipped only the declarations; #2998 (done) deliberately ratified target_quantity_of_interest
+      as accepted-but-ignored in v0.4. New live owners were filed by this decomposition (the
+      iota discharge - see the .md manifest for the ids); force_tet and require_hex_wedge
+      already have a live owner in #4746 (pending). DELIBERATELY NO dependency edge is wired
+      from beta or eta onto any owner task: the gate requires each owner to be LIVE, and an
+      owner reaching done is precisely what reds C4c - an edge would invert the contract.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-liveness property, enforced at run time by leaf eta's PDROP liveness lane
+        (is_terminal_status against the task store), never by a static pattern.
+  - name: error-severity-exit-is-eval-and-build-today-not-check
+    binding: 'DECOMPOSE-TIME G6 FINDING (branch 3, end-to-end capability) - the PRD''s boundary
+      rows B2/B3 assert that a declared-ignored param at a non-default value makes `reify
+      check` exit nonzero, and that the same param at its default keeps it at exit 0. Measured
+      2026-08-31, `reify check` cannot deliver that today: cmd_check''s finish_check decides
+      its exit from constraint outcomes alone plus two per-code bolt-ons (a GdtIllegalModifier
+      code match and an E_DFM_ message-prefix match), so an Error-severity diagnostic raised
+      anywhere else prints `error:` and still exits 0 - this is INV-SF-2''s own recorded evidence.
+      The general Severity::Error exit gate for cmd_check is task #5405''s sibling #5403 (in-progress,
+      high), and routing check through build so it SEES trampoline diagnostics is #5748. Separately,
+      an Error-severity diagnostic returned inside ComputeOutcome::Completed does not by itself
+      fail the solve. RESOLUTION, per G6 resolution (c) - change the asserted configuration
+      so the claim becomes true: B2/B3''s signal is restated against `reify eval` (equivalently
+      `reify build`), which ALREADY gates exit on Severity::Error generally (task 4458, cited
+      as INV-SF-2''s house pattern) and which definitely runs the compute trampoline. `reify
+      check` converges onto the same behaviour for free once #5403 and #5748 land. NO dependency
+      edge is wired: the restated signal needs neither task, and C3''s default-comparison
+      rule means no existing .ri file trips the new Error, so #5403 landing later introduces
+      no regression and needs no allowlist entry for these codes.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-task capability-routing correction; the behavioural twin is the two DiagnosticCode
+        variant checks under alpha, plus beta's own eval-level e2e.
+  - name: non-convergence-is-user-observable
+    binding: 'signal premise (G6 branch 3) - classify_convergence is called on the production
+      path in elastic_static.rs with SOLVER_MAX_ITER, and ConvergenceStatus is a real result
+      surface, so iteration-budget exhaustion is reportable rather than internal. RESIDUAL
+      RECORDED rather than hidden: whether a CI-practical cantilever mesh actually needs MORE
+      than 50 CG iterations was not measured at decompose time - and then it WAS. Direct measurement
+      against target/release/reify during verification: a fea_cantilever_smoke.ri-shaped design
+      with ElasticOptions(max_iter: 50) today returns converged: true, iterations: 719. So
+      the mesh genuinely needs far more than 50 iterations, the solve runs straight past the
+      requested budget, and B1''s signal IS observable at 50. The same run also confirms the
+      drop end-to-end from the user surface, not just by inspection. The assertion remains
+      ''the solver used the user''s budget'', not the literal 50.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an explicitly unmeasured observability premise with a stated adjustment rule;
+        pinning a pattern now would assert the answer.
+- label: γ
+  task_id: 7081
+  title: 'trampoline param-drop γ: buckling honors supports, PointLoad.point/.direction, PressureLoad/Gravity'
+  capabilities:
+  - name: supports-discard-is-real
+    binding: 'capability->producer (substrate, the defect) - crates/reify-eval/src/compute_targets/buckling.rs
+      discards its supports slot with a bare `let _ = &value_inputs[5];` under a comment stating
+      that BCs are hardcoded to pin-pin and that ''Support-driven BC selection is deferred
+      (no live task)''. solve_buckling''s signature doc pins slot [5] as `supports : List<Support>`,
+      and crates/reify-compiler/stdlib/solver_buckling_fns.ri declares that parameter REQUIRED,
+      with no default and no ignored-caveat in its doc block. Verified 2026-08-31.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Support-driven BC selection is deferred
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling.rs
+      expect: absent
+  - name: bc-port-source-is-modal-not-elastic
+    binding: 'CORRECTION APPLIED (capability->producer, wrong-layer risk). PRD section 7 names
+      modal''s build_dirichlet_bcs / support_targets for finding A1 and elastic_static''s
+      target_node_set plus #4245''s direction handling for A2. Verified 2026-08-31: all of
+      them exist as production symbols - build_dirichlet_bcs, support_targets and simply_supported_pin_pin_bcs
+      in crates/reify-eval/src/modal_ops.rs (with the unit test build_dirichlet_bcs_selects_pin_pin_vs_clamp),
+      and loads_supports_to_bc_node_sets plus target_node_set in crates/reify-eval/src/compute_targets/elastic_static.rs.
+      BUT they are structurally different designs: target_node_set resolves geometry handles
+      over a REALIZED boundary association, while support_targets works from string face names
+      over analytic beam coordinates. The buckling trampoline builds a SYNTHETIC grid in-trampoline
+      and holds no BoundaryAssociation, so the MODAL mechanism is the correct port source
+      for both halves, and A2''s point/direction must be mapped onto the synthetic grid''s
+      named faces rather than routed through target_node_set.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: design-direction correction; the behavioural twin is the supports-discard check
+        above and the relational buckling assertion below.
+  - name: fixed-free-is-reachable-in-the-kernel
+    binding: 'capability->producer (substrate) - the buckling kernel ALREADY supports non-pin-pin
+      end conditions, so gamma plumbs supports through to a working capability rather than
+      adding one. crates/reify-solver-elastic/tests/euler_column_pin_pin.rs carries four landed,
+      calibrated BC families each with its own analytic reference: pin-pin (k=1, bound < 0.10,
+      observed 9.21%), fixed-free (k=2, bound < 0.11, observed 10.02%), fixed-pin (k about
+      0.6992, bound < 0.10, observed 8.82%) and fixed-guided (k=0.5, bound < 0.09), all at
+      nx=ny=8, nz=160.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact, already true on main; asserting it would be vacuous. It is the
+        calibration reference for the numeric-floor capability below.
+  - name: buckling-signal-is-relational-not-a-textbook-constant
+    binding: 'NUMERIC FLOOR (G6 branches 1+2 - the esc-3453-5/6 class). The PRD carries an
+      explicit G6 note on B8 and this binding is its mechanization. Two MEASURED hazards forbid
+      an absolute textbook-constant assertion. (1) P1-tet BENDING LOCK floors slender-column
+      accuracy at roughly 6.8-10% regardless of mesh density - an exponential fit to the measured
+      data yields a 6.8% asymptote (#4052/#4066). (2) Pointwise Dirichlet BCs realize an effective
+      fixed-pin k of about 0.67-0.70, not the textbook fixed-fixed 0.5. The pin-pin reference
+      itself sits at 9.21% against a 10% bound - 0.79 percentage points of headroom. B8''s
+      assertion is therefore RELATIONAL: with supports honored, the fixed-free result must
+      move off the discarded-supports pin-pin number in the predicted direction (lower; the
+      analytic ratio is 0.25) and rough magnitude, asserted as a RATIO against the current
+      pin-pin number at the SAME mesh. Any absolute bound gamma chooses must be justified
+      against the fixed-free 11%-bound / 10.02%-observed floor at the mesh actually used,
+      and must NEVER assert agreement with k=2. Only element_order: ElementOrder.P2 reaches
+      below 5%.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the floor and the relational form are a design constraint on the test gamma
+        writes; the pinned calibration numbers live in crates/reify-solver-elastic/tests/euler_column_pin_pin.rs
+        and must be re-read, not copied, at implementation time.
+  - name: smoke-comment-contradiction-is-real-and-doubled
+    binding: 'capability->producer (substrate) - CONFIRMED and WIDENED 2026-08-31. examples/buckling_column_smoke.ri
+      says ''Support: pin-pin - fixed supports at both ends (lateral restraint)'' on the line
+      above a single FixedSupport(target: "base") that becomes a 1-element LoadCase.supports
+      list. The comment describes the BCs the trampoline hardcodes, not the ones the file
+      declares - an inconsistency the discard currently hides. examples/buckling_column_p2.ri
+      carries the BYTE-IDENTICAL contradiction. The PRD names only the smoke file, so gamma''s
+      scope is widened to both.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fixed supports at both ends
+      paths:
+      - examples/buckling_column_smoke.ri
+      - examples/buckling_column_p2.ri
+      expect: absent
+  - name: smoke-fixture-is-numerically-embedded-twice
+    binding: 'blast radius (same-diff obligation) - examples/buckling_column_smoke.ri is include_str!-embedded
+      by crates/reify-eval-fea-tests/tests/buckling_smoke.rs and by crates/reify-eval-fea-tests/tests/buckling_persistent_cache_round_trip.rs,
+      both of which pin its numeric result, and it is pinned in the GUI grammar drift ledger.
+      Honoring supports CHANGES the asserted critical load - fixed-free is about a quarter
+      of pin-pin - so both embeds must be re-baselined in gamma''s own diff. Separately, examples/*.ri
+      has NO carve-out arm in verify.sh''s decide_scope and falls to the conservative default,
+      so gamma''s diff runs the full workspace gate: expected, not a defect.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: blast-radius record; the two embeds are named so they are edited in the same
+        diff rather than discovered as a post-merge red.
+  - name: pressureload-on-buckling-is-unmeasured
+    binding: 'OPEN PREMISE, carried deliberately (PRD section 12 open question 4). Whether
+      buckling''s geometric-stiffness formulation can consume a PressureLoad without new kernel
+      work was never measured. The elastic side has the port source - #4264 bridged PressureLoad
+      and #4439/#4440 bridged Gravity through extract_loads to apply_body_force - but buckling-side
+      feasibility does not follow from that. Gamma MEASURES this first and, if it needs kernel
+      work, moves PressureLoad to the split PRD and allowlists it against that PRD''s owner
+      rather than forcing it. Scoped as a decision inside gamma, not an assumed capability.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an explicitly unmeasured premise with a stated resolution branch; binding a
+        pattern now would assert the answer.
+  - name: malformed-ptodo-cites-in-the-touched-region
+    binding: 'blast radius (ratchet) - crates/reify-eval/src/compute_targets/buckling.rs''s
+      extract_total_load carries the deferral cite ''task theta/3457'' and elastic_static.rs''s
+      #4245 in-plane-force warning cites ''task 4245''. Both are PROSE forms that resolve
+      to PTODO malformed-cite, and both sit in gamma''s edit region. Touching them surfaces
+      a live fingerprint absent from crates/reify-audit/ptodo-baseline.txt, which is the ENFORCED
+      severity-blind merge gate. Gamma fixes them to the #NNNN form in its own diff rather
+      than re-baselining. The #4245 warning is additionally a code-less Diagnostic::warning
+      - the exact prior art for W_PARAM_NOT_APPLICABLE - and should gain a code when ported.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: task θ/3457
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling.rs
+      expect: absent
+- label: δ
+  task_id: 7082
+  title: 'trampoline param-drop δ: LoadCase.options on the buckling_multi_case path - honor
+    it or make the drop loud; never silent'
+  capabilities:
+  - name: multi-case-honors-it-elastic-side
+    binding: capability->producer (substrate, the port source) - crates/reify-eval/src/compute_targets/multi_case.rs
+      resolves a per-case override inside solve_multi_case_trampoline (Option(Some(x)) becomes
+      the per-case value, anything else falls back to the shared default), with an interpreted
+      twin resolve_load_case_options in crates/reify-expr/src/lib.rs. Confirmed wired-on-main
+      2026-08-31.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact, already true on main; the deliverable check is the loudness
+        capability below.
+  - name: buckling-multi-case-drop-is-a-TYPED-drop-not-an-oversight
+    binding: 'DECOMPOSE-TIME G6 FINDING (branch 3, end-to-end capability). PRD section 7 dispositions
+      A4 as ''honor - multi_case.rs already does it''. Measured 2026-08-31, that premise does
+      not survive contact: crates/reify-eval/src/compute_targets/buckling_multi_case.rs passes
+      the shared BucklingOptions to every case under an explicit design decision DD-4, because
+      LoadCase.options is typed Option<ElasticOptions> - the WRONG KNOB TYPE for buckling
+      - and the module doc says so. So ''honor it'' as literally written is unreachable without
+      either a per-case BucklingOptions surface (new stdlib type work, out of proportion to
+      this PRD) or an ElasticOptions-to-BucklingOptions mapping rule that does not exist.
+      RESOLUTION, per G6 resolution (b) - weaken the assertion to what is achievable and record
+      the stronger property: delta''s deliverable becomes the PRD''s own section 1 guarantee
+      rather than section 7''s verb - the drop must stop being SILENT. The recommended classification
+      is not_applicable carrying the DD-4 type-mismatch reason, since a structurally inapplicable
+      param is exactly contract C1''s not_applicable category, yielding W_PARAM_NOT_APPLICABLE.
+      If delta instead judges it ignored, delta files a live owner for the per-case-buckling-options
+      work in its own diff. The signal is disjunctive - honored OR loud, never silent - which
+      is the house shape already used by eradicate-silent-undef''s leaves gamma and delta.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ParamNotApplicable|ParamNotHonored
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling_multi_case.rs
+      expect: present
+- label: ε
+  task_id: 7083
+  title: 'trampoline param-drop ε: honor TOTSShaper/RevoluteTOTSShaper actuator_limits; delete
+    the force_limit phantom read; decide the keying/arity contract'
+  capabilities:
+  - name: force-limit-is-a-phantom-field
+    binding: 'capability->producer (substrate, the defect) - CONFIRMED ON BOTH HALVES 2026-08-31.
+      crates/reify-stdlib/src/trajectory/trampoline.rs reads field_f64(shaper_data, "force_limit",
+      1000.0) inside input_shape_tots. A repo-wide `git grep -n force_limit -- ''*.ri''` returns
+      ZERO hits: force_limit is a field on NO .ri structure anywhere. The declared field is
+      actuator_limits - List<JointLimit> on TOTSShaper and List<RevoluteJointLimit> on RevoluteTOTSShaper,
+      both in crates/reify-compiler/stdlib/trajectory.ri - and the per-joint force field inside
+      JointLimit is named max_force, not force_limit. So the 1000.0 default ALWAYS wins and
+      every joint''s limit is silently uniform. A comment in the same Rust file concedes the
+      uniform-placeholder convention.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: field_f64\(shaper_data, "force_limit"
+      paths:
+      - crates/reify-stdlib/src/trajectory/trampoline.rs
+      expect: absent
+  - name: actuator-limits-is-declared-and-actually-supplied
+    binding: 'capability->producer (substrate) - actuator_limits is declared on both shaper
+      structures in crates/reify-compiler/stdlib/trajectory.ri and is actually supplied by
+      callers: examples/trajectory/printer_print_envelope.ri passes actuator_limits: [JointLimit(joint:
+      0.0, max_force: 1000N)] and examples/trajectory/tots_optimal_ptp.ri passes a non-empty
+      list. The data reaching the trampoline is real, not hypothetical - so honoring it changes
+      an observable answer.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact, already true on main; the deliverable check is the phantom-read
+        deletion above.
+  - name: b9-as-written-is-not-observable-signal-restated
+    binding: 'DECOMPOSE-TIME FALSIFICATION (G6 branch 3). Boundary row B9 asserts that two
+      joints at DIFFERENT actuator limits produce a per-joint-different shaped trajectory.
+      Adversarial verification reports, and the code path corroborates, that joints with index
+      >= 1 have force_peak == 0 STRUCTURALLY, so that difference cannot appear. Mechanism:
+      in crates/reify-stdlib/src/trajectory/tots.rs the per-joint peak is filled from the
+      flattened RNEA torque with a .take(n_joints) over mechanism.links built by build_rnea_links_for_sample
+      (crates/reify-stdlib/src/trajectory/simulate.rs), and the trampoline''s own comment
+      concedes that value_to_mechanism_model uses a uniform PLACEHOLDER convention for inertia.
+      The SQP constraint vector is per joint, so a limit on a joint whose force_peak is 0
+      is a permanently inactive constraint. RESOLUTION: the signal is restated against JOINT
+      0, where force_peak is non-zero and the constraint is active - a max_force well below
+      the current uniform 1000 N default produces an observably longer optimized duration
+      than the same design at a high limit, where today both runs are byte-identical. If the
+      j >= 1 inertness is confirmed at implementation time it is a SECOND defect of this PRD''s
+      own class and epsilon files it as its own live owner rather than papering over it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the restated signal is a two-run eval comparison on joint 0; the j >= 1 inertness
+        is an instruction to verify and file, not a capability this leaf delivers.
+  - name: keying-and-arity-contract-is-undecided-and-silently-accepted
+    binding: 'DECOMPOSE-TIME FINDING, SCOPE ADDED (INV-SF-3 declared-intent-consumed-or-diagnosed).
+      JointLimit.joint is declared joint : Real - a placeholder-typed joint id per INV-SF-5
+      - and nothing today defines how a limit is KEYED to a joint, nor what happens when the
+      list length does not match the joint count. Measured: a mismatched, out-of-range limit
+      list is SILENTLY ACCEPTED. Honoring actuator_limits without settling this merely MOVES
+      the silence: an author who mis-keys a limit, or supplies three limits for two joints,
+      still gets a plausible-but-wrong trajectory. Epsilon must decide the contract - positional
+      by index or keyed by the joint field, and what an arity mismatch or out-of-range id
+      does - and make a violation loud in this PRD''s own vocabulary. In scope: it is the
+      PRD''s own section 1 guarantee applied to the param this leaf honors.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a design decision this leaf must make and enforce; the enforcing diagnostic's
+        exact shape is chosen at implementation time.
+  - name: per-joint-difference-must-be-observable
+    binding: 'signal premise (G6 branch 3) - B9 asserts that two joints at DIFFERENT limits
+      produce a per-joint-different shaped trajectory. The uniform max_force is threaded into
+      profile_to_joint_waypoints, so the value does reach per-joint construction and a per-joint
+      difference is structurally reachable. RESIDUAL RECORDED: whether the shaped-trajectory
+      result surface exposes a per-joint difference through reify eval was not measured at
+      decompose time. If the output collapses joints, epsilon restates the signal against
+      whatever per-joint surface does exist - it must NOT fall back to a synthetic-input unit
+      test, which G2 rejects as a leaf signal.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an explicitly unmeasured observability premise with a stated fallback that stays
+        inside the G2 signal vocabulary.
+  - name: angular-boundary-must-declare-its-convention
+    binding: 'G7 - INV-AD-4 `boundaries-declare-angle-convention`. RevoluteTOTSShaper''s limits
+      are angular: velocity_limit is Scalar<AngularVelocity>, acceleration_limit is Rate<AngularVelocity>,
+      and actuator_limits is List<RevoluteJointLimit>. Honoring them per joint marshals angular
+      values across the .ri-to-Rust f64 boundary in crates/reify-stdlib/src/trajectory/trampoline.rs,
+      where the typed distinction does not reach. INV-AD-4 requires that boundary to NAME
+      its convention (rad / deg / cycles) in a greppable contract comment - a silent rad=1
+      SI erasure is a defect even when the number it produces is correct. Epsilon adds the
+      declaring comment beside the marshalling site rather than retyping anything; the house
+      precedents are eigenvalue_to_frequency_hz and the spring_rate_for_lumped_dof refusal
+      guard. NOT waived - the obligation is one comment and epsilon is the change that creates
+      the boundary.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a same-diff authoring obligation; the reviewer check is that the marshalling
+        site names its angle convention.
+  - name: file-contention-with-6240
+    binding: 'file-lock contention, NOT a dependency - #6240 (pending) owns the wrong-kind
+      joint-limit pairing diagnostic and declares crates/reify-compiler/stdlib/trajectory.ri
+      plus two compiler tests. Its subject is ctor-time dimension-kind pairing; epsilon''s
+      is param-drop-to-kernel. The two are independent within the file. Recorded so the sequencing
+      is visible; no add_dependency wired.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scheduling and file-lock observation, not a delivered capability.
+- label: ζ
+  task_id: 7084
+  title: 'trampoline param-drop ζ: mechanism_modal - declare tol/max_iters/element_order not_applicable
+    (the dense direct eigensolve has no iterative budget)'
+  capabilities:
+  - name: tol-and-max-iters-are-NOT-HONORABLE-prd-disposition-falsified
+    binding: 'DECOMPOSE-TIME FALSIFICATION (G6 branch 3) - THE MOST CONSEQUENTIAL FINDING
+      IN THIS MANIFEST. PRD section 7 row A9 dispositions mechanism_modal''s tol/max_iters
+      as HONOR. Adversarially verified and then independently re-confirmed against source
+      2026-08-31: that is not achievable. run_mechanism_modal (crates/reify-eval/src/modal_ops.rs)
+      calls solve_eigen_dense UNCONDITIONALLY as its sole eigensolve - no size or conditioning
+      branch, in deliberate contrast to the FEA modal path in the same file, which DOES branch
+      dense-versus-shift-invert. And solve_eigen_dense (crates/reify-solver-elastic/src/eigensolve.rs)
+      reads ONLY opts.n_modes: its sole opts. reads are the n_take truncation and the converged
+      comparison. It never touches opts.tol or opts.max_iters, and hardcodes n_converged:
+      0 with the documented reason that the direct path has no iterative budget to report.
+      Contract C1 defines honored as ''reaches the kernel AND CHANGES THE RESULT''; an iterative
+      budget on a DIRECT solver cannot change the result at any value. RESOLUTION (G6 (b),
+      weaken to what is achievable): zeta becomes a NOT_APPLICABLE leaf for tol and max_iters
+      alongside element_order. It still delivers the PRD''s section 1 guarantee, via the W_PARAM_NOT_APPLICABLE
+      arm rather than the honor arm - the same correction shape as sibling delta. Declaring
+      them honored would have been a false-green of exactly the class C1 invariant 1 exists
+      to prevent.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is the not_applicable declaration and its diagnostic, asserted
+        by the ParamNotApplicable check below; the falsified 'honor' half is deliberately
+        NOT bound to a check, because zeta must NOT change the EigenSolverOptions construction.
+  - name: mechanism_modal-is-not-a-callable-false-green-vector
+    binding: 'DECOMPOSE-TIME FINDING (G6 branch 4, rejection/false-green). The identifier
+      the PRD''s boundary row B4 and the original leaf text both use, mechanism_modal(...),
+      IS NOT A CALLABLE. The stdlib function is mechanism_modal_analysis (crates/reify-compiler/stdlib/modal_mechanism_fns.ri);
+      modal::mechanism_modal is only the @optimized compute-target id. Verified 2026-08-31.
+      This matters because reify''s omega fallback SILENTLY ACCEPTS an unknown function name
+      - measured: reify check exits 0 with ''All constraints satisfied.'' and ZERO diagnostics,
+      reify eval exits 0 with the binding undef and only a note: line. A fixture written against
+      mechanism_modal(...) would pass while testing NOTHING. This is a CROSS-CUTTING hazard,
+      not a zeta-only one: every leaf''s fixture must assert its result is not undef so a
+      name typo cannot read as green.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a fixture-authoring rule; the mechanical twin would be a grep for the correct
+        callable in a fixture whose filename is chosen at implementation time.
+  - name: two-default-divergence-c3-uses-the-declared-default
+    binding: DECOMPOSE-TIME CORRECTION (contract C3). EigenSolverOptions::default() is n_modes
+      10, tol 1e-8, max_iters 1000, and the PRD's section 2.1 row A9 cites those library values
+      - but the DECLARED surface defaults in ModalOptions (crates/reify-compiler/stdlib/modal_analysis.ri)
+      are tol = 0.000000001 (1e-9) and max_iters = 200. C3 fires on a value differing from
+      the STRUCTURE_DEF's declared default, so the comparison must use 1e-9 and 200. Getting
+      this backwards would make the diagnostic fire on the declared default and stay silent
+      on a deliberate change - exactly inverted.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a numeric-source correction to the C3 comparison; the values live in the .ri
+        declaration and must be read there, not copied from here.
+  - name: b4-is-not-expressible-in-the-prd-gate-probe-harness
+    binding: DECOMPOSE-TIME FINDING (probe-vector limitation, measured). B4's observable -
+      exit 0 with W_PARAM_NOT_APPLICABLE firing - cannot be expressed in the prd-gate probe
+      harness as it stands. The ir probe kind maps exit 0 to ABSENT UNCONDITIONALLY, before
+      its match clause is consulted, so a warning-at-exit-0 can never be observed PRESENT
+      by an ir probe; and the check probe kind never runs the trampoline at all - a live reify
+      check on a modal fixture prints 'no registered compute trampoline (falling back to body-inlining)'
+      on stderr and exits 0. Zeta asserts its behaviour through reify eval plus a Rust integration
+      test that inspects the emitted diagnostics directly, and does NOT attempt an ir probe
+      row. Recorded because two probe bindings authored during verification were vacuous for
+      exactly this reason.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a harness limitation governing how zeta's test is written, not a capability
+        of the code.
+  - name: modal-knob-drop-is-real
+    binding: 'capability->producer (substrate, the defect) - CONFIRMED 2026-08-31. run_mechanism_modal
+      in crates/reify-eval/src/modal_ops.rs destructures extract_eigen_knobs as (requested_n_modes,
+      _, _, _), discarding tol, max_iters and sigma, and then applies n_modes only as a post-hoc
+      TRUNCATION rather than as a solve input. The same function builds EigenSolverOptions
+      with n_modes: padded_size and ..Default::default(), and that Default is what silently
+      replaces the user''s values. The contrast case sits in the same file: run_modal_analysis
+      destructures all four returns and passes them through.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'CORRECTED AT DECOMPOSE: this was originally an expect:absent check on the EigenSolverOptions{n_modes:
+        padded_size, ..Default::default()} construction. That check asserts a change zeta
+        no longer makes - the dense solver ignores tol/max_iters, so the construction stays
+        as it is and the check could never go green, permanently blocking dependent leaf kappa
+        with a false DEP_CAPABILITY_NOT_DELIVERED. Zeta''s deliverable is the not_applicable
+        declaration, asserted by the ParamNotApplicable check below.'
+  - name: no-double-landing-of-6097
+    binding: 'DAG-direction plus scope disjointness (the brief''s named hazard). #6097 (pending)
+      renames ModalOptions.sigma to shift_frequency : Frequency = 0Hz, has the solver convert
+      lambda = (2*pi*f)^2, and ALREADY carries the modal ''declared but not yet honored''
+      warning as its own numbered item 4, explicitly mirroring the buckling guard. Read via
+      get_task on 2026-08-31 and confirmed verbatim. Zeta''s residual is therefore EXACTLY
+      tol + max_iters + the element_order not_applicable declaration; sigma/shift_frequency
+      is 6097''s, not zeta''s. A real add_dependency edge zeta -> #6097 is wired rather than
+      a prose ordering, because 6097 also edits crates/reify-eval/src/modal_ops.rs - the contention
+      is genuine as well as semantic.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency and checked by the scheduler.
+  - name: c1-union-equals-modaloptions-param-set
+    binding: 'C1 invariant 1 (union EQUALS the param set) - ModalOptions declares 8 params:
+      n_modes, boundary_conditions, damping, sigma, tol, max_iters, reference_direction, element_order.
+      On the mechanism_modal path: n_modes is honored as a truncation; damping has been honored
+      since #6875 (done - mechanism_modal_analysis used to drop its RayleighDamping descriptor,
+      and that is the precedent shape for this whole leaf); tol and max_iters are honored
+      BY zeta; sigma is owned by #6097; and THREE params are not_applicable - element_order
+      (meaningless in a lumped generalized-coordinate model, and documented NOWHERE today,
+      which is the PRD''s section 2.2 finding) plus boundary_conditions and reference_direction,
+      both already documented as meaningless in the lumped model. The PRD names only element_order
+      as the not_applicable member; zeta must classify all three or the union is a subset
+      and C1 invariant 1 fails.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ParamNotApplicable
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+      expect: present
+  - name: user-tol-must-be-observable-on-the-lumped-path
+    binding: signal premise (G6 branch 3) - RESIDUAL RECORDED. The mechanism_modal path is
+      a LUMPED generalized-coordinate model whose eigenproblem is small (n_dof equals the
+      number of bodies) and is always solved by the dense path, so a different tol may not
+      change the reported modes at all. Zeta must establish an observable difference before
+      freezing the signal - an absurd tol that fails to converge, or the reported iteration/convergence
+      surface - and if none exists on the dense path, restate the signal around the W_PARAM_NOT_APPLICABLE
+      half rather than asserting an unobservable numeric change. Naming this at decompose
+      is the cheapest place to catch it.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an explicitly unmeasured observability premise with a stated fallback; binding
+        a pattern now would assert the answer.
+- label: η
+  task_id: 7085
+  title: 'trampoline param-drop η: reify-audit --pattern PDROP + allowlist baseline + owning-task
+    liveness lane'
+  capabilities:
+  - name: pattern-extension-is-live-substrate
+    binding: 'capability->producer (substrate) - reify-audit carries a Pattern enum in crates/reify-audit/src/lib.rs
+      with 12 variants plus a per-pattern module family (p1_producer_orphan.rs, p2_consumer_stub.rs,
+      p5_phantom_done.rs, pdead_dead_code.rs, ptodo.rs, puntested.rs, player.rs, pdssentinel.rs,
+      pdoccover.rs), so PDROP extends live substrate. NOTE: the enum''s own doc comment makes
+      the P<N><Name> shape NORMATIVE for downstream prefix routing, so the conforming variant
+      name is PDrop. There is NO FromStr and NO clap - the --pattern token set is a hand-rolled
+      matches! literal list in crates/reify-audit/src/bin/reify-audit.rs, which must gain
+      the token, the error string, both usage strings, a run_pdrop dispatch predicate and
+      a dispatch arm. Verified 2026-08-31.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PDrop
+      paths:
+      - crates/reify-audit/src/lib.rs
+      expect: present
+  - name: pattern-token-reaches-the-cli
+    binding: 'capability->producer (the CLI half of the same registration) - a Pattern variant
+      alone does not make --pattern PDROP work: the binary validates tokens against a literal
+      matches! set and rejects anything else. Both halves are required for the /audit skill
+      to reach the detector.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PDROP
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+  - name: liveness-lane-precedent-is-ptodo-not-the-http-client
+    binding: 'CORRECTION APPLIED (capability->producer, wrong-mechanism risk). PRD section
+      3 says liveness ''is resolved through the existing fused_memory_client the audit crate
+      already carries ... the same mechanism PTODO''s liveness lane beta uses''. Measured
+      2026-08-31, those are two different mechanisms and the second clause is the operative
+      one: PTODO''s liveness lane does NOT use FusedMemoryClient. It opens the task store
+      directly READ-ONLY via rusqlite (tasks_db_path, honoring the REIFY_PTODO_TASKS_DB override,
+      and open_tasks_db with SQLITE_OPEN_READ_ONLY) and queries status and metadata for a
+      single id under the master tag. Both mechanisms exist in the crate; PDROP must copy
+      the PTODO one. The live-versus-terminal predicate to reuse verbatim is ptodo.rs''s is_terminal_status
+      - done or cancelled - together with its fail-soft contract, where a missing store degrades
+      the lane with one stderr breadcrumb and leaves the exit class untouched.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: mechanism-selection correction; the behavioural twin is the PDrop registration
+        checks above and the drift-guard row under eta-prime.
+  - name: ratchet-precedent-and-fingerprint-grammar
+    binding: 'capability->producer (substrate) - PTODO supplies the ratchet precedent PDROP
+      should copy rather than re-derive: one canonical fingerprint function producing ''<path>
+      :: <kind> :: <normalized text>'', a committed crates/reify-audit/ptodo-baseline.txt,
+      a generator bin picked up by cargo autobin discovery (so no Cargo.toml edit), a shell
+      ratchet in tests/infra carrying a scan-evidence vacuity floor, and a Rust well-formedness
+      test over the baseline. PRD section 12 open question 3 proposes that the allowlist IS
+      the baseline; see the enumeration-completeness capability below for why that choice
+      is load-bearing rather than cosmetic.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact, already true on main; the deliverable checks are the registration
+        ones above.
+  - name: enumeration-completeness-is-the-landing-risk
+    binding: 'DECOMPOSE-TIME FINDING (contract C4a ''param in no set'' versus landing green).
+      The repo declares roughly sixteen @optimized trampoline targets: solver::elastic_static,
+      solver::buckling, solver::buckling_multi_case, solver::multi_case, solver::form_find,
+      solver::form_find_free, solver::membrane_load, modal::free_vibration, modal::mechanism_modal,
+      modal::transient_response, modal::displacement_at, trajectory::input_shape, trajectory::simulate,
+      dynamics::inverse_dynamics, fdm::slice and fdm::as_printed_material_r_fast. Leaves alpha
+      through zeta deliver C1 declarations for FIVE of them. If PDROP enumerates all sixteen
+      and reds on any param in no set, eta lands RED on main on day one. Eta must therefore
+      pick ONE of two landable shapes and record the choice. Shape 1: complete the declarations
+      for the remaining eleven trampolines inside eta''s own scope - which includes free_vibration''s
+      ModalOptions declaration, the C1 invariant-3 worked case the PRD itself names, where
+      free_vibration honors element_order while mechanism_modal declares it not_applicable.
+      Shape 2: enumerate only trampolines carrying a declaration marker, plus a committed
+      ratcheting list of not-yet-declared trampolines that must not grow. Shape 2 is the PTODO/PDIAG
+      house posture and the cheaper landing; shape 1 is the stronger end state. Either lands
+      green; neither is optional.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a design choice with two acceptable resolutions, recorded so it is made deliberately
+        at implementation time rather than discovered at merge.
+  - name: pdiag-branch-collision-real-edge-wired
+    binding: 'DAG-direction - #5405 (in-progress) is landing PDIAG on branch task/5405 and
+      touches the EXACT same registration surfaces PDROP needs: the Pattern enum in crates/reify-audit/src/lib.rs,
+      the --pattern token set and dispatch in crates/reify-audit/src/bin/reify-audit.rs, and
+      the crate''s tests. It also lands the baseline-ratchet and per-site-escape design PDROP
+      should copy. A real add_dependency edge eta -> #5405 is wired.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency and checked by the scheduler.
+  - name: format-markdown-is-not-a-binary-flag
+    binding: 'CORRECTION APPLIED (G3, false-substrate guard). --format markdown is NOT a reify-audit
+      flag: parse_args accepts only --task, --pre-done, --since, --pattern, --tasks-file,
+      --fused-memory-url, --runs-db, --project-root, the --jcodemunch family, --no-jcodemunch,
+      --help and --version, and hard-rejects anything else as an unknown flag. --format markdown
+      is an argument of the /audit SKILL, which renders the report itself. The PRD''s eta
+      row says ''/audit --pattern PDROP reports the live allowlist'', which is the skill and
+      is therefore correct as written - this binding exists so no implementer binds evidence
+      to a binary flag that does not exist. The binary emits a JSON Finding array on stderr
+      and a human summary on stdout, with per-run artifacts under data/audit-runs/.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: negative substrate fact recorded to prevent a false evidence binding downstream.
+- label: η′
+  task_id: 7086
+  title: 'trampoline param-drop η′: PDROP gate-test drift-guard registration'
+  capabilities:
+  - name: manifest-row-is-the-forcing-function
+    binding: 'capability->producer (substrate) - tests/infra/run-all-classification.manifest
+      declares ''<test_basename> <bucket>'' for every discovered tests/infra/test_*.sh, with
+      exactly three bucket values: pool, intra-run-serial and host-exclusive. tests/infra/test_run_all_classification.sh
+      asserts that the symmetric declared-versus-discovered difference is EMPTY via a shared
+      accessor library, and separately asserts that guard is itself non-vacuous by re-running
+      it against a fixture manifest missing a row. So a new tests/infra/test_reify_audit_pdrop.sh
+      WITHOUT a manifest row reds immediately. PTODO''s own split is the precedent to mirror:
+      the cargo-running ratchet is intra-run-serial, the hermetic fixture-repo probes are
+      pool.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pdrop
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: registration-must-not-be-prose-ordered
+    binding: DAG-direction (the overlay's worked failure, esc-4914-162). Task 4914 landed
+      a gate-resident smoke binary without its drift-guard registrations, turning main RED
+      for every subsequent merge, because the registration was ordered after the test-adding
+      task by PRD prose only rather than by a hard edge. Eta-prime is wired as a real add_dependency
+      on eta and its deliverable IS the registration; the overlay additionally permits the
+      same-diff form. What is REJECTED is a sibling ordered only by prose.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency and checked by the scheduler.
+  - name: nextest-and-harness-baseline-need-no-row
+    binding: 'capability->producer (substrate) - NEGATIVE RESULT RECORDED so no phantom registration
+      work is filed. Verified 2026-08-31. (a) .config/nextest.toml needs NO entry: reify-audit
+      is outside the occt test-group package filter, and a new crates/reify-audit/tests/pdrop.rs
+      inherits the default profile''s 20-minute ceiling; an override is required only for
+      a genuinely longer binary. (b) scripts/check-harness-baseline-registration.sh applies
+      only to the five consolidatable crates - reify-cli, reify-syntax, reify-kernel-occt,
+      reify-eval, reify-compiler - and reify-audit is not among them, which is why ptodo.rs,
+      pdoccover.rs, pdssentinel.rs and player.rs already sit as standalone tests there. (c)
+      tests/infra/test_no_new_wallclock_upper_bounds.sh scopes to tests/infra/*.sh only and
+      has no registry; its escape is an inline wallclock:allow comment on the offending line.
+      (d) scripts/heavy-test-filter-lib.sh classifies heavy by membership in one positive
+      filterset expression, so a PDROP test is gate-resident by default and adding an atom
+      would be an opt-OUT, not a registration.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a negative substrate finding; asserting absence of rows nobody needs would be
+        a vacuous check.
+  - name: manifest-edit-escalates-scope
+    binding: 'blast radius - tests/infra/run-all-classification.manifest, its accessor library
+      and its guard are declared LOAD-BEARING verify-pipeline artifacts in the manifest''s
+      own header, so eta-prime''s edit routes through the full --scope all gate. Expected,
+      not a defect. File contention to be aware of: #6354 (pending) also edits this manifest
+      for the PDOCCOVER/PDSSENTINEL skill-doc registration - contention only, no dependency
+      wired.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scheduling and scope observation, not a delivered capability.
+- label: θ
+  task_id: 7087
+  title: 'trampoline param-drop θ: RULING - wire or delete target_fidelity on FDMSliceOptions
+    and AsPrintedOptions'
+  capabilities:
+  - name: consumer-is-provably-unreachable
+    binding: 'capability->producer (substrate, the premise of the ruling) - CONFIRMED 2026-08-31.
+      select_rungs is defined in crates/reify-fdm/src/as_printed.rs and re-exported from crates/reify-fdm/src/lib.rs,
+      and a repo-wide git grep finds NO caller in any crates/*/src/* outside that re-export:
+      the only callers are crates/reify-fdm/tests/as_printed.rs and crates/reify-eval/tests/fdm_progressive_refinement_e2e.rs,
+      both test-only. A corroborating note in crates/reify-eval/src/compute_targets/fdm_slice.rs
+      independently calls target_fidelity an inert no-op placeholder. This is the C-10 test-only
+      shape, and it is exactly why decision D5 makes this a ruling rather than a build task.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact, already true on main; theta's deliverable is a ruling, whose
+        two acceptable outcomes are disjunctive and not expressible as one pattern.
+  - name: delete-branch-has-a-known-blast-radius
+    binding: 'blast radius, recorded so the ruling is made with its cost visible - target_fidelity
+      is declared twice, on FDMSliceOptions in crates/reify-compiler/stdlib/fdm_slice.ri and
+      on AsPrintedOptions in crates/reify-compiler/stdlib/fdm_as_printed.ri, and a type-identity
+      test in crates/reify-compiler/tests/harness_langcore/prelude_sub_member_typing_tests.rs
+      asserts that BOTH structures declare target_fidelity AT THE SAME TYPE. The delete branch
+      therefore reds that test and must update it in the same diff. Adjacent but no seam:
+      #5806 (deferred) owns the dimension-check half of the AsPrintedOptions readers and shares
+      crates/reify-eval/src/compute_targets/as_printed_material.rs - contention only, no dependency
+      wired.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cost record attached to one branch of the ruling; asserting it would presuppose
+        that branch.
+  - name: execution-path-is-a-human-ruling
+    binding: routing (execution_class) - PRD decision D5 states the disposition is 'a decision
+      task, not a build task, and is filed as such'. Theta is filed task_kind=deterministic
+      with metadata.execution_class=decision, which submit converts into an always-escalates
+      pure gate whose dispatch action is a born-at-L2 escalation to a human. It is NOT a normal
+      code leaf, and it is NOT filed operational-because-it-is-not-code, which Leo's 2026-08-24
+      ruling rejects. The implementing change follows the ruling and is filed at resolve time.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-routing property, expressed in the filed task's kind and metadata rather
+        than in the tree.
+- label: κ
+  task_id: 7088
+  title: 'trampoline param-drop κ: docs-truth - solver-option doc chunk, best-practices exemplar,
+    cheatsheet index, discoverability'
+  capabilities:
+  - name: no-fea-or-solver-chunk-exists-so-this-is-net-new-content
+    binding: capability->producer (substrate) - MEASURED 2026-08-31. crates/reify-mcp/src/tools/chunks/
+      holds 17 chunks (collections, connect, constraints, enums, fields, functions, geometry,
+      guards, occurrences, parameters, purposes, stdlib, structures, syntax, traits, types,
+      units) and grep returns ZERO hits across ALL of them for ElasticOptions, max_iter, cg_tolerance,
+      solve_buckling, actuator_limits and mechanism_modal. The only FEA-adjacent content is
+      a one-line module-tree entry each for std.structural and std.analysis in stdlib.md.
+      Kappa therefore writes NET-NEW content rather than editing - which is precisely the
+      docs-truth gate's 'language surface landed without its doc leaf' failure, caught here
+      instead of at a dogfood session.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'kappa may either extend stdlib.md or add a new chunk; pinning one path now
+        would prejudge the placement. The reviewer check is: the affected chunk names the
+        solver-option knobs, and every documented signature compiles as written in a smoke
+        .ri.'
+  - name: chunk-registry-is-hand-maintained-with-a-hardcoded-count
+    binding: 'blast radius (capability->producer) - chunks are NOT globbed and no build script
+      is involved. crates/reify-mcp/src/tools/language_chunks.rs requires FOUR edits for a
+      new chunk: an include_str! const, a TOPICS row, a get_chunk match arm, and a HARDCODED
+      assert_eq! on available_topics().len() in its own inline unit test, which is a guaranteed
+      RED if missed. A FIFTH edit lands in crates/reify-mcp/tests/reference_tools_tests.rs,
+      whose duplicated ALL_TOPICS list has NO drift guard tying it to TOPICS, so a chunk added
+      without touching it is silently untested there. If kappa extends stdlib.md instead of
+      adding a chunk, none of these apply.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: conditional blast radius that applies only under the new-chunk branch of the
+        placement decision above.
+  - name: exemplar-corpus-gates
+    binding: capability->producer (substrate) - an examples/best_practices/ addition is gated
+      three ways, all confirmed 2026-08-31. It is auto-compiled by the recursive examples
+      walk in crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs -
+      NOTE that the reify overlay's docs-truth section cites the stale path crates/reify-compiler/tests/examples_smoke.rs,
+      which does not exist; the harness submodule path is the live one. It is catalogued bidirectionally
+      against INDEX.md's '| Exemplar | Idiom | Anti-pattern it replaces |' table. And it is
+      constraint-gated by crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs,
+      which requires every constraint to be Satisfied or pinned in an EXPECTED_INDETERMINATE
+      allowlist with a documented reason. An FEA-derived constraint is likely Indeterminate
+      on the pure value-eval surface - the clearance_oracle.ri precedent - so kappa should
+      expect to need an allowlist pin. No existing exemplar covers FEA or solver options.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the gates are substrate; the deliverable is the new exemplar plus its INDEX.md
+        row, whose filename is chosen at implementation time.
+  - name: pdoccover-fabrication-lane
+    binding: 'hazard recorded (anti-fabrication) - crates/reify-audit/src/pdoccover.rs runs
+      a fabrication lane over the chunk corpus: any call-shaped name documented in a chunk
+      that exists nowhere in compiler or stdlib source is a High-severity fabricated-name
+      finding. Kappa documents signatures that DO exist - solve_buckling, ElasticOptions,
+      BucklingOptions, ModalOptions and both shapers are real stdlib declarations - so the
+      lane should stay quiet. Kappa''s acceptance nonetheless includes each documented signature
+      compiling as written in a smoke .ri, which is the docs-truth gate''s own requirement
+      and the direct defence against the phantom-signature class (#5347/#5364).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a hazard the acceptance criterion already covers behaviourally; a grep would
+        only assert the detector exists, which is already true.
+  - name: discoverability-acceptance-is-intent-level
+    binding: 'signal premise (docs-truth gate requirement 4) - the leaf''s signal includes
+      intent-level findability: an author who knows the GOAL (''make the solver use my iteration
+      budget'', ''make the column''s end conditions matter'') but not the feature name reaches
+      the knob from the chunk text or the corpus index line. The cheatsheet entry goes in
+      the ''Probe-verified idioms - index'' section of .claude/skills/reify-design/SKILL.md
+      as a one-line pointer at the corpus file, never an inline playbook.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a qualitative acceptance criterion by construction; mechanizing it would reduce
+        it to 'a line exists', which is exactly the vacuity this gate guards against.
+- label: λ
+  task_id: 7089
+  title: 'trampoline param-drop λ: PRD close - task-id backfill verification, terminal stamp,
+    AS-AUTHORED freeze header'
+  capabilities:
+  - name: decomposition-rows-carry-real-ids
+    binding: capability->producer (decompose-close obligation 1) - section 10's leaf rows
+      were backfilled with real task ids by this decompose session, in the same commit as
+      this manifest. Lambda VERIFIES that each row still resolves and repairs any drift, rather
+      than discovering at close time that leaf state is mechanically unresolvable from the
+      document - the structural cause of the kernel-seam-contracts recurrence named in esc-6232-5.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the backfill is already committed by this session, so a grep for it would be
+        green before lambda runs; lambda's job is verification and repair, not creation.
+  - name: terminal-vocabulary-is-closed
+    binding: 'capability->producer (decompose-close obligation 2) - the terminal token set
+      is CLOSED to exactly SHIPPED, SUPERSEDED and WITHDRAWN, matched case-insensitively on
+      the first token after the Status label within the first ten lines, with ALL CAPS the
+      preferred authoring form. SHIPPED requires every leaf terminal, with cancelled leaves
+      tolerated alongside provided at least one landed. The header shape to copy is docs/prds/v0_6/data-carrying-enums.md
+      and docs/prds/kernel-seam-contracts.md - NOT the #4438 or #3847 precedents, whose own
+      output is non-conformant with this rule. The same header is applied to the .capability-manifest.md.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Status.{0,12}(SHIPPED|SUPERSEDED|WITHDRAWN)
+      paths:
+      - docs/prds/v0_6/trampoline-param-drop-closure.md
+      expect: present
+  - name: cancelled-dependency-disposition
+    binding: DAG-direction - lambda depends on every other leaf by real add_dependency edges.
+      A cancelled sibling counts as satisfied for lambda's edge, since both SHIPPED and WITHDRAWN
+      require lambda to stay dispatchable against one; if the scheduler treats a cancelled
+      edge as unmet, the decompose steward removes it by hand and applies the stamp in a docs-only
+      commit rather than leaving lambda permanently blocked.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property plus its documented manual fallback.

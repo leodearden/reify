@@ -2,13 +2,14 @@
 > fallback-soundness investigation; it is the evidence base cited by
 > `docs/prds/v0_6/builtin-signature-registry.md`. Everything below was measured against main
 > `36738b9b92`. Companion raw data: `fallback-soundness-xref-2026-08-03.json` (the two flat name
-> sets the set-diff was taken over — `eval`: 231 names, `fallback`: 121 names). Moved into the
+> sets the set-diff was taken over — `eval`: 231 names, `fallback`: 121 names — plus a
+> `corrections` array added 2026-08-25; see Corrections below). Moved into the
 > repo on 2026-08-07 because the originally-cited session scratchpad path no longer exists.
 > This is a dated snapshot, not a maintained document.
 
 > **Corrections (2026-08-07 review).** A follow-up review (the type-decision enshrinement
-> review, ratified 2026-08-07) re-probed this snapshot's load-bearing claims. Three passages
-> below would actively mislead and carry inline `[2026-08-07 correction]` markers at the
+> review, ratified 2026-08-07) re-probed this snapshot's load-bearing claims. Four passages
+> below would actively mislead and carry inline `[<date> correction]` markers at the
 > affected spots:
 >
 > 1. `complex_mul`/`complex_div`/`complex_pow` were classified FALLBACK-CORRECT by a
@@ -24,6 +25,30 @@
 > 3. The blanket "typed Scalar<Length>/Real" for the `prb_*` family is imprecise for
 >    `prb_cartwheel_flexure`, which leads with an Int `blade_count` (flexures/compound.rs:289)
 >    and is fallback-typed `Int`.
+> 4. [2026-08-25 correction: `iso_it_tolerance`, listed in the FALLBACK-WRONG Stackup/DFM/tolerancing… bullet below
+>    (`-> Scalar<LENGTH>, typed Int`), has moved to FALLBACK-CORRECT. Task #6091 (RULING,
+>    merged `12d6b19353`, on `main` as of 2026-09-03) flipped `iso_it_tolerance`'s argument
+>    order from grade-first `(grade, nominal_min, nominal_max)` to subject-first
+>    `(nominal_min, nominal_max, grade)`. The name is still not registered in any
+>    compiler-ladder name family (units.rs / signature files) either before or after the
+>    flip, so its call sites still fall through `NoUserFunctions` to the terminal
+>    first-arg fallback — but the new arg0 (`nominal_min`, a `Scalar<LENGTH>`) now matches
+>    the true result type, where the old arg0 (`grade`, an `Int`) did not. Measured
+>    first-hand on branch task/6091 (assertion `(a2)` in
+>    `iso_tolerance_grade_tolerance_value_derived_let`,
+>    crates/reify-compiler/tests/tolerancing_tests.rs): mutating the prelude call site
+>    (crates/reify-compiler/stdlib/tolerancing.ri) back to grade-first reproduces
+>    `left: Int, right: Scalar { dimension: LENGTH }`; subject-first infers `Scalar<LENGTH>`
+>    correctly. This is an untracked side effect of the arg-order ruling, not a deliberate
+>    registry fix — registry τ4 (task #6006) is still `pending` as of 2026-09-03 and has not
+>    added an explicit `iso_it_tolerance` row; when it lands, the name moves again, from
+>    FALLBACK-CORRECT to EXPLICIT, and stops depending on the fallback ladder at all.
+>    Headline counts (FALLBACK-WRONG 93 / FALLBACK-CORRECT 16) elsewhere in this snapshot are
+>    left as written, per the same convention as correction 1. Companion raw-data file
+>    `fallback-soundness-xref-2026-08-03.json` is unaffected by this correction: its
+>    `fallback` list is flat ladder-fallthrough membership, not a WRONG/CORRECT split, and
+>    `iso_it_tolerance` genuinely still falls through to the ladder — see that file's own
+>    `corrections` key for the parallel note.]
 
 ---
 
@@ -106,7 +131,7 @@ The fallback is wrong for **93 of its 121 actual clients (77%)**. The five suspe
 - Flexures (14): all prb_* constructors return joint Maps, typed Scalar<Length>/Real; several example-attested. *[2026-08-07 correction: imprecise for `prb_cartwheel_flexure`, which leads with an Int `blade_count` (flexures/compound.rs:289) and is fallback-typed `Int`. See Corrections at top.]*
 - FEA (11, fea.rs): envelope_max/min (→Field, typed Map<String,Field>), case_names, result_for, linear_combine, min_max_stress, worst_case (→String; real impl in reify-expr), worst_buckling_case, envelope_critical_load, envelope_argmax/argmin.
 - Mechanism/snapshot/dynamics (7): world, bodies, transform_of, sweep_grid, ramp_profile_lower, inverse_dynamics_lower, inverse_dynamics_at_snapshot_lower.
-- Stackup/DFM/tolerancing/supports/loads/tensegrity (12): contributor, contributor_asym, stackup_worst_case, stackup_rss, monte_carlo_stackup, fits_build_volume (→Bool, typed BoundingBox), iso_it_tolerance (→Scalar<LENGTH>, typed Int), DisplacementSupport, RollerSupport, gravity, tensegrity_wires, tensegrity_surfaces.
+- Stackup/DFM/tolerancing/supports/loads/tensegrity (12): contributor, contributor_asym, stackup_worst_case, stackup_rss, monte_carlo_stackup, fits_build_volume (→Bool, typed BoundingBox), iso_it_tolerance (→Scalar<LENGTH>, typed Int), DisplacementSupport, RollerSupport, gravity, tensegrity_wires, tensegrity_surfaces. *[2026-08-25 correction: `iso_it_tolerance` is now FALLBACK-CORRECT under the #6091 subject-first arg order. See Corrections at top.]*
 - Trajectory internals (9): gcode_import_lower, end_effector_track_at, deviation_from_nominal_at, peak_deviation_at, evaluate_profile_at/_dot_at/_ddot_at, profile_duration_at, piecewise_polynomial (eval is a permanent Undef stub — fallback typing is vacuous).
 - reify-expr native (2): argmax/argmin (→domain coordinate Point, typed Field).
 

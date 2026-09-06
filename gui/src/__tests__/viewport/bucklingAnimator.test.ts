@@ -11,7 +11,7 @@
  * MockBufferGeometry / MockBufferAttribute from threeMocks.ts.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ── Three.js mock ────────────────────────────────────────────────────────────
 
@@ -191,5 +191,175 @@ describe('createBucklingAnimator', () => {
     for (const m of mockMaterials) {
       expect(m.dispose).toHaveBeenCalled();
     }
+  });
+});
+
+// ── update() length-mismatch contract (task #6813) ───────────────────────────
+
+/**
+ * `dispGeom`'s position attribute is a fixed-size `Float32Array` allocated once
+ * from `base` in the factory — WebGL buffers cannot be resized, which is the
+ * whole point of task #6757.  So `update()` cannot grow to fit an over-long
+ * `positions`, and must bound its copy loop by the DESTINATION length.
+ *
+ * Today the copy loop in `update()` runs to `positions.length`.  The
+ * over-long case is safe only by accident: TypedArray out-of-bounds writes are
+ * silent no-ops, a property of the array type rather than of the code.  Both
+ * mismatch directions currently pass silently — the over-long case drops the
+ * excess, the short case leaves a stale tail — with no diagnostic either way.
+ *
+ * The mocked `three` is deliberately retained here (unlike the real-three
+ * meshManager files): `MockBufferAttribute.array` is a genuine `Float32Array`,
+ * which is all this defect depends on.
+ */
+describe('createBucklingAnimator update() length mismatch (#6813)', () => {
+  /** 2 nodes × 3 floats — a 6-slot fixed-size destination buffer. */
+  const BASE_2 = [0, 0, 0, 1, 0, 0];
+
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  /** The displaced point cloud is the first geometry the factory creates. */
+  function positionArray(): Float32Array {
+    const geom = mockGeometries.find((g) => g.attributes['position']);
+    expect(geom).toBeDefined();
+    return geom.attributes['position'].array as Float32Array;
+  }
+
+  /** The single warn call's message, asserted to be exactly one call. */
+  function soleWarning(): string {
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    return String(warnSpy.mock.calls[0]!.join(' '));
+  }
+
+  it('CASE A: warns naming both lengths when positions is longer than the buffer', () => {
+    const animator = createBucklingAnimator(BASE_2);
+    const arr = positionArray();
+    expect(arr.length).toBe(6);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    const msg = soleWarning();
+    expect(msg).toMatch(/\b9\b/);
+    expect(msg).toMatch(/\b6\b/);
+    // The destination was neither resized nor left short: it holds exactly the
+    // first 6 source values, which is also today's observable behaviour.
+    expect(arr.length).toBe(6);
+    expect(Array.from(arr)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    animator.dispose();
+  });
+
+  it('CASE B: warns naming both lengths when positions is shorter than the buffer', () => {
+    const animator = createBucklingAnimator(BASE_2);
+    const arr = positionArray();
+
+    animator.update([7, 8, 9]);
+
+    const msg = soleWarning();
+    expect(msg).toMatch(/\b3\b/);
+    expect(msg).toMatch(/\b6\b/);
+    // The prefix is written; the tail is stale. Unchanged behaviour — the point
+    // of the warning is that this is now observable rather than silent.
+    expect(arr.length).toBe(6);
+    expect(Array.from(arr).slice(0, 3)).toEqual([7, 8, 9]);
+
+    animator.dispose();
+  });
+
+  it('CASE C: does not warn when positions exactly matches the buffer', () => {
+    // Non-vacuity / no-false-positive guard: without this, an implementation
+    // that warned unconditionally would pass CASE A and CASE B.
+    const animator = createBucklingAnimator(BASE_2);
+    const arr = positionArray();
+
+    animator.update([1, 2, 3, 4, 5, 6]);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(Array.from(arr)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    animator.dispose();
+  });
+
+  // ── Latching (#6813 amendment) ────────────────────────────────────────────
+  //
+  // `update()` is driven from a requestAnimationFrame loop (BucklingPanel), and
+  // a mismatch is not necessarily transient: the animator is built once in
+  // onMount from `store.state.base` and its Float32Array is fixed thereafter,
+  // while `bucklingStore.ingestFrame` can replace `state.base` with a
+  // different-length array after a re-solve/re-tessellation.  An unlatched
+  // warn would then emit ~60×/s indefinitely, flooding devtools, taxing the
+  // render loop with per-frame string concatenation, and burying the one
+  // diagnostic it exists to surface.  (The `validateMeshData` precedent this
+  // message shape follows is called once per sync, not once per frame, so the
+  // convention does not transfer unchanged.)
+  //
+  // The latch is keyed on the offending length, not a bare boolean, so a
+  // *different* mismatch is still reported — and it resets on a matching call
+  // so a recurrence after recovery is reported too.
+
+  it('CASE D: warns only once across repeated updates at the same mismatching length', () => {
+    const animator = createBucklingAnimator(BASE_2);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    animator.update([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+
+    // One warning, not one per frame.
+    const msg = soleWarning();
+    expect(msg).toMatch(/\b9\b/);
+    expect(msg).toMatch(/\b6\b/);
+    // Clamping still applies on every call, latched or not.
+    expect(Array.from(positionArray())).toEqual([9, 8, 7, 6, 5, 4]);
+
+    animator.dispose();
+  });
+
+  it('CASE E: warns again when the mismatching length changes', () => {
+    const animator = createBucklingAnimator(BASE_2);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // 9 vs 6 → warn
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // latched → silent
+    animator.update([1, 2, 3]); // 3 vs 6 → new shape, warn
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(String(warnSpy.mock.calls[0]!.join(' '))).toMatch(/\b9\b/);
+    expect(String(warnSpy.mock.calls[1]!.join(' '))).toMatch(/\b3\b/);
+
+    animator.dispose();
+  });
+
+  it('CASE F: an intervening matching update re-arms the latch', () => {
+    const animator = createBucklingAnimator(BASE_2);
+
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // mismatch → warn
+    animator.update([1, 2, 3, 4, 5, 6]); // matches → silent, re-arms
+    animator.update([1, 2, 3, 4, 5, 6, 7, 8, 9]); // mismatch again → warn
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    animator.dispose();
+  });
+
+  it('CASE G: each animator latches independently', () => {
+    // The latch must be per-animator closure state, not module state — two
+    // viewports (or a re-mounted panel) must each get their own diagnostic.
+    const first = createBucklingAnimator(BASE_2);
+    first.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    const second = createBucklingAnimator(BASE_2);
+    second.update([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    first.dispose();
+    second.dispose();
   });
 });

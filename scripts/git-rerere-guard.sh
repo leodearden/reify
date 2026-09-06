@@ -85,6 +85,26 @@
 # neutralises the residual cache in place, while deleting an rr-cache entry that
 # another live worktree still holds is precisely the operation that reproduces
 # the segfault + stale-lock signature.
+#
+# CALLERS — two cadences, both invoking `arm`:
+#
+#   scripts/setup-dev.sh                      DEVELOPER cadence.  Pins the store
+#     when a developer runs setup.  Aborts setup on an unexpected non-zero,
+#     because a developer can act on it immediately.
+#
+#   scripts/seed-warm-lane.sh --fresh-checkout   LANE cadence (task 6889).  Pins
+#     the store on EVERY warm-lane ACQUIRE.  It exists because setup-dev's
+#     cadence leaves the shared config unpinned for as long as a developer goes
+#     without re-running setup — measured on the live store, the config was found
+#     ARMED twice on a single day.  Fail-OPEN: an acquire must never fail because
+#     the shared store could not be pinned, so seed warns and continues on any
+#     non-zero.  Its gating rules (mode gate, existence gate) and its
+#     REIFY_WARM_LANE_RERERE_ARM=0 escape hatch live THERE, not here — this guard
+#     stays a caller-agnostic primitive.
+#
+# Lane cadence NARROWS the re-arm window; it does not close it.  The re-armer is
+# agent behaviour, and no `arm` cadence outruns an agent re-running the write —
+# see docs/notes/git-rerere-shared-worktree-hazard.md §7.
 
 set -euo pipefail
 

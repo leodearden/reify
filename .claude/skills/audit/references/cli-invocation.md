@@ -284,7 +284,56 @@ restarting fused-memory (the same red-tier restart it exists to avoid), and on
 the LIVE hook path it makes the gate silent rather than advisory, because
 dark-factory's `pre_done_hook.py` surfaces the subprocess's captured stderr only
 on a non-zero exit. Rollout sequence:
-`docs/architecture-audit/f-infra-design.md` §11.1.4.
+`docs/architecture-audit/f-infra-design.md` §11.1.4. (The freshness guard's own
+rc-0 advisory escapes that silence by ALSO going to the journal and a sentinel
+file — see the table below. `REIFY_AUDIT_PREDONE_WARN_ONLY`'s downgraded
+finding does not; it is still stderr-only.)
+
+**A blocked done-flip is not always a finding.** Since task 7139 the predone
+wrapper's BINARY FRESHNESS guard no longer blocks on staleness. If you are
+triaging a REFUSED flip, both refusals exit 125 and are told apart only by
+their token — check these before reading anything into `metadata.files` or
+`done_provenance`:
+
+| stderr carries | rc | meaning |
+|---|---|---|
+| `E_AUDIT_BIN_STALE` | 125 | the installed `reify-audit` predates `crates/reify-audit` AND an operator armed `REIFY_AUDIT_FRESHNESS_STRICT=1`, so the guard refuses instead of falling open. Unset it, or reinstall. |
+| `E_AUDIT_BIN_MISSING` | 125 | there is no runnable `reify-audit` at `$REIFY_AUDIT_BIN` at all — nothing to fall open onto. Reinstall. |
+
+**The stale-but-runnable case does not block, and you will not see it on
+stderr.** A stale binary the wrapper can still execute produces an
+`E_AUDIT_BIN_STALE` advisory at **rc 0**: nothing is refused, and per the
+paragraph above `pre_done_hook.py` discards captured stderr on a zero exit, so
+that advisory never reaches the MCP caller. Do not go looking for it there.
+Where it IS observable:
+
+- `journalctl --user -t reify-audit-predone` — the wrapper also emits the
+  advisory via `logger`, and its parent is `fused-memory.service`;
+- the one-line sentinel file `${TMPDIR:-/tmp}/reify-audit-predone-advisory.$(id -u)`
+  (override: `REIFY_AUDIT_ADVISORY_SENTINEL`). Truncate-written on every
+  advisory, never written when the binary is fresh — so its **presence** means
+  the fleet is running a stale detector and its **mtime** says since when;
+- stderr, when you invoke `scripts/reify-audit-predone-wrapper.sh` directly, or
+  under `scripts/deploy-reify-audit-predone-hook.sh`'s step-6 probe (which
+  treats the advisory as fatal regardless of rc).
+
+Fix either way: `cargo install --path crates/reify-audit --root ~/.cargo --force`.
+
+A fourth token, `E_AUDIT_GUARD_BAD_MODE`, means a CALLER passed
+`reify_audit_guard` a mode string it does not know (a typo at a call site). The
+call is then treated as `warn-open`, so it never blocks — fix the call site.
+
+None of these tokens is an audit finding, and none is about task records. This
+matters because the outage that motivated 7139 produced three escalations
+(esc-7042-2, esc-6315-2, esc-6120-5) that all misattributed it to stale
+`metadata.files` or the `done_provenance` ancestor check. A real P5 refusal
+exits with the High COUNT and says `pre-done gate:` — an infrastructure
+refusal exits `125` and leads with one of the tokens above.
+
+`REIFY_AUDIT_FRESHNESS_STRICT` and `REIFY_AUDIT_PREDONE_WARN_ONLY` gate
+DIFFERENT things and are not substitutes: the former is binary-freshness
+policy (fall open vs refuse), the latter is a FINDING's severity
+(`High` → advisory `Low`). Neither affects the other.
 
 **Never refuses on incomplete evidence.** Every git leg fail-safes to
 `false`/empty, which on this path would converge on a blocking `High`, so four

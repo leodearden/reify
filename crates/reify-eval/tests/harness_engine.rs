@@ -121,3 +121,12 @@ mod eval_cached_guarded_groups;
 // geometry kernel — engine-level, kernel-independent.
 #[path = "harness_engine/redispatch_template_order_regression.rs"]
 mod redispatch_template_order_regression;
+// Task #6756's driver-level triage probe (P7) lands here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above. It is also a
+// topical fit: it drives `compile_source_with_stdlib` -> `Engine::eval`, the
+// engine-level entry point, to reproduce the objective seed-parking at the `.ri`
+// driver level. Its solver-level siblings (P1-P6, P8) live in
+// `crates/reify-constraints/tests/objective_seed_parking_triage.rs`, a crate
+// outside the C1 consolidatable set.
+#[path = "harness_engine/objective_seed_parking_e2e.rs"]
+mod objective_seed_parking_e2e;

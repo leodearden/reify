@@ -23,16 +23,17 @@
 // (Documented in crates/reify-compiler/stdlib/modal_analysis_fns.ri:28-36.)
 //
 // Boundary conditions — pin-pin realization:
-//   A gantry crossbeam rests on two end mounts. Two `FixedSupport`s targeting
-//   "x_min" and "x_max" signal the pin-pin (simply-supported) configuration to
-//   the trampoline. `build_dirichlet_bcs` (modal_ops.rs:1222) routes this
-//   two-support set to `simply_supported_pin_pin_bcs` (modal_ops.rs:1294),
-//   which pins transverse Z on both end faces and adds minimal axial/lateral
-//   anchors at the neutral-axis nodes — coordinate-based (catches P2
-//   edge-midpoints), removes all 6 rigid-body modes, and yields real/positive/
-//   distinct natural frequencies. There is no fixed-fixed branch; a single
-//   support is the cantilever clamp. Two end-mounts ⇒ pin-pin is the correct
-//   and only multi-support realization.
+//   A gantry crossbeam RESTS ON two end mounts, so the mounts are pinned, not
+//   clamped: two `PinnedSupport`s targeting "x_min" and "x_max".
+//   `build_dirichlet_bcs` (modal_ops.rs) reads the support KIND per face
+//   (task 6663) and, because BOTH end faces are named by PINNED supports,
+//   routes this set to `simply_supported_pin_pin_bcs`, which pins transverse Z
+//   on both end faces and adds minimal axial/lateral anchors at the
+//   neutral-axis nodes — coordinate-based (catches P2 edge-midpoints), removes
+//   all 6 rigid-body modes, and yields real/positive/distinct natural
+//   frequencies. A single support is the cantilever clamp; two `FixedSupport`s
+//   would now mean a genuinely CLAMPED-CLAMPED crossbeam (a ~2.27x higher
+//   fundamental), which is not what a rested crossbeam is.
 //
 // Material coercion (same pattern as sibling fixtures):
 //   `modal_analysis` declares `material : ElasticMaterial`. Wrap the material
@@ -101,12 +102,17 @@ structure PrinterGantryModes {
     // compile-time type ElasticMaterial (matching the fn param type).
     let mi = FEAMaterialInput(material: material)
 
-    // Gantry end mounts: pin BOTH end faces (x_min and x_max). Two FixedSupports
-    // signal the pin-pin (simply-supported) configuration to the trampoline —
-    // removes all 6 rigid-body modes so K_free is non-singular and the lowest
-    // 5 modes are real, positive, and distinct.
-    let mount_left  = FixedSupport(target: "x_min")
-    let mount_right = FixedSupport(target: "x_max")
+    // Gantry end mounts: pin BOTH end faces (x_min and x_max). A gantry
+    // crossbeam RESTS ON its two end mounts, so these are PinnedSupports — the
+    // trampoline reads the support KIND per face (task 6663) and realizes a
+    // pinned pair as the simply-supported configuration, which removes all 6
+    // rigid-body modes so K_free is non-singular and the lowest 5 modes are
+    // real, positive, and distinct. (These were FixedSupports while the
+    // trampoline discriminated on target face NAMES alone; that spelling would
+    // now mean genuinely clamped mounts, which is not what a rested crossbeam
+    // is.)
+    let mount_left  = PinnedSupport(target: "x_min")
+    let mount_right = PinnedSupport(target: "x_max")
 
     // Modal options: request n_modes = 7 at element_order = ElementOrder.P2.
     //

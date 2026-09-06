@@ -13,22 +13,161 @@ Sibling documents: `warm-lane-ref-visibility-seam.md`,
 This upgrades esc-5363-5's hypothesis to a code-level finding, traced read-only
 through dark-factory.
 
-`<worktree_base>/<lane>.lock` is **one inode** — `verify_cancel.py`'s
+`<worktree_base>/<lane>.lock` is **one inode per host** — `verify_cancel.py`'s
 `def lane_lock_path(lane_dir: Path) -> Path:` returns
 `lane_dir.with_name(lane_dir.name + '.lock')`, i.e. a *sibling* of the lane
-directory. Four dark-factory call sites acquire it, each on its own
-independently-tunable wait constant:
+directory, resolved against whichever host's own `<worktree_base>` is asking.
+Five dark-factory call sites acquire it: four in-orchestrator sites below run
+on the **workstation** and so share its one literal inode, each on its own
+independently-tunable wait constant; a fifth, on a **separate host**, is
+described in prose after the table:
 
 | Acquirer | Wait | On timeout |
 |---|---|---|
 | `GitOps.merge_verify_lease` (`git_ops.py`, `_MERGE_VERIFY_LEASE_WAIT_SECS`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
-| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | **the lock acquire** raises `MergeVerifyLeaseContended` (DF task 3003; fail-CLOSED — tree untouched) → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(category=NONE, escalate_to_human=False, requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → caught by `merge_queue.py` `_run_inflight_verify`'s defer arm, placed **before** its generic `except Exception` → `InflightStatus.REQUEUED` with `req.result` left PENDING → **transient DEFER, not a merge failure**. Two bounds: git faults *inside the method body* still raise plain `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git fault still classifies as blocked"); and continuous contention past `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally resolve `MergeOutcome('blocked')` |
+| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | **the lock acquire** raises `MergeVerifyLeaseContended` (DF task 3003; fail-CLOSED — tree untouched) → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(category=NONE, escalate_to_human=False, requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → caught by `merge_queue.py` `_run_inflight_verify`'s defer arm, placed **before** its generic `except Exception` → `InflightStatus.REQUEUED` with `req.result` left PENDING → **transient DEFER, not a merge failure — on the merge-worker path**. See the prose after this table for the `cli.py` `verify-merge` path (which never reaches this arm) and for the defer's own bounds |
 | `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | fail-CLOSED at the lock: `rc == _SEED_WARM_LANE_LOCK_TIMEOUT_RC` is logged as a distinct diagnosable timeout ("failing closed rather than risk a torn target/") and returned to callers, which read any non-zero as a seed fault and degrade to a **cold** worktree — fail-soft, the lane is never removed and the scheduler never blocks. No retry inside the method. Same VALUE as the reset row (30) but a **separate** constant since DF 3003 |
 | `GitOps.task_verify_lease` (`git_ops.py`, `async def task_verify_lease(`) — DF task 3027 | 300s (`_TASK_VERIFY_LEASE_WAIT_SECS`), then **holds for the whole task-lane verify** | **fail-OPEN**: logs a WARNING and yields *without* the hold rather than raising. A task verify must never be aborted by its own lane lease, and proceeding unheld is exactly the pre-3027 baseline, so fail-open is non-regressive. No merge-queue disposition is involved on this path at all |
 
+The reset row's defer carries bounds of its own, stated once here rather than
+inside the cell above. Git faults *inside the method body* still raise plain
+`RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git
+fault still classifies as blocked"). Continuous contention past
+`MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally
+resolve `MergeOutcome('blocked')`, its reason carrying a strictly-increasing
+per-worker cap-out ordinal (`_contended_lease_cap_outs`, rendered `lane
+cap-out #N`) so consecutive cap-outs stay signature-DISTINCT and can never
+re-feed `consecutive_merge_thrash` — closing the false-positive story below.
+That cap is the *only* terminal bound on the defer itself: between attempts
+it is throttled to `CONTENDED_LEASE_DEFER_MIN_PERIOD_SECS` (30s,
+`merge_queue.py` — already paid by this row's own 30s wait, so free here —
+the floor exists for `MergeVerifyLeaseHeld`'s zero-wait pre-check, which
+refuses IMMEDIATELY with no wait of its own and would otherwise spin the
+dequeue at whatever rate git allows for the life of a 1–2h foreign holder);
+an unbroken streak crossing `CONTENDED_LEASE_REQUEUE_WARN_STREAK` (5, `==`
+not `>=`, so it fires once at the crossing) logs a single ERROR with WARNING
+heartbeats either side, resolving nothing by itself; and a non-cap-out defer
+leaves `req.result` PENDING with `_last_merge_block_reason` (`workflow.py`)
+never set, so it cannot feed that ladder either way.
+
+The reset row above corrects a claim with a real, traceable source, worth
+recording so a future re-verifier does not read the same DF comments and
+"correct" the doc straight back. `git_ops.py`'s
+`_RESET_WARM_LANE_LOCK_WAIT_SECS` rationale paraphrases `cli.py`'s own
+comment carrying that exact sentence — but `cli.py`'s comment describes a
+**counterfactual**: what would happen if the CLI held the lane lock
+continuously across `_run()`, which is precisely the esc-2830-1
+self-conflict bug task 2830's DUAL-LOCK, SPLIT lane-lock lifetime (same
+file, same `_run()`) was written to *avoid*. Under the code as it stands
+the lock is not held continuously, so that chain never fires — each
+paraphrase (`cli.py` → `git_ops.py` → this doc) was locally faithful; the
+root was never live behaviour.
+
+Measured chain instead, at DF HEAD `14232ac30d`: `verify-merge` wraps
+`asyncio.run(_run())` in a generic `try` / `except Exception as e:
+click.echo(...); sys.exit(1)`, and `_run()` is what calls
+`acquire_host_verify_worktree` (→ this row's
+`reset_persistent_merge_worktree`). `MergeVerifyLeaseContended` **is-a**
+`RuntimeError` (this section's own "ancestry" paragraph, below), so the
+generic arm catches it — zero *typed* `except`-Lease arms in `cli.py` is not
+zero handlers. `sys.exit(1)` is a non-zero exit, which `RemoteRunner`
+(`verify_runner.py`) maps via `if ssh_rc != 0: raise
+RunnerUnavailable(...)`. The production remote path does not then fall back
+to a local runner despite `VerifyRunnerPool`'s own docstring promising it:
+`merge_queue.py` builds that path's pool as `VerifyRunnerPool([runner],
+...)` with no `LocalRunner` member, so `dispatch`'s `except
+RunnerUnavailable` finds `self._local is None` and re-raises (DF's own
+INV-2 comment: "the single-runner production pool's caller benches +
+re-dispatches on a free host"). What actually catches it is
+`merge_queue.py` `_run_inflight_verify`'s own `except RunnerUnavailable` arm
+— placed *before* the typed Lease arm this row describes above — which
+clears the contended-lease streak ("a dead remote transport is not lane
+contention", DF's own task 3003 amend comment) and returns an
+`InflightStatus.RUNNER_UNAVAILABLE` result, driving
+`HostAllocator.quarantine_and_release` (`verify_runner.py`) to bench the
+host before `_remerge` re-dispatches on a fresh `_merge-<uuid>`. Net effect
+on this path: **host bench-and-re-dispatch** — neither a terminal merge
+failure nor a merge-worker-style defer — and because the streak is cleared
+explicitly, this occurrence is invisible to both the requeue cap and the
+`consecutive_merge_thrash` ladder this row otherwise documents. Not free,
+but not terminal either: lane contention here is laundered into a host
+quarantine instead.
+
+A fifth call site sits outside dark-factory's in-process orchestrator entirely,
+on a genuinely separate machine: `cli.py`'s own `verify-merge` command, reached
+only via `RemoteRunner` (`verify_runner.py`; ships the spec over `git push` +
+`ssh` — `is_local: ClassVar[bool] = False`). `LocalRunner`
+(`is_local = True`) covers the workstation's own in-process verify and wraps
+`run_scoped_verification` directly; it never calls `cli.py` at all, so the
+workstation itself never takes this fifth acquirer's lock. In this deployment
+the dispatch target is runner `laptop` (ssh_host `leo-laptop`,
+`dark-factory-orchestrator.yaml` `verify_runners`) — a second, physically
+distinct host. `verify-merge` gates
+dispatch onto *that host's own* `_merge-verify.lock` before it ever touches the
+tree: same name and `lane_lock_path()` derivation as the four rows above, but
+that host's own inode on that host's own disk, not literally the workstation's
+("one inode per host", this section's opening). Its pre-flight acquire,
+`acquire_merge_verify_flock(lane_lock_path(git_ops.persistent_merge_worktree_path),
+flock_wait_secs)`, waits 10s (`MERGE_VERIFY_FLOCK_WAIT_SECS = 10.0`) — uniquely
+in this family **env-overridable**, via `ORCH_MERGE_VERIFY_FLOCK_WAIT_SECS`. DF's
+own comment at that gate calls it "the SAME lock
+`GitOps.merge_verify_lease`, `GitOps.reset_persistent_merge_worktree`, and
+reify's seed/thin/gc take" (task 2685) — true of *that host's* own local
+instances of those methods and scripts (its own subsequent
+`acquire_host_verify_worktree` → `reset_persistent_merge_worktree` call, just
+below, exercises exactly that on the same host), not a claim that it is the
+workstation's inode. On timeout the gate is fail-**CLOSED**
+and **terminal**, not deferred: it returns a distinguished
+`make_flock_contention_result` *without ever touching the tree* (no
+`acquire_host_verify_worktree`, no ephemeral fallback) and the command still
+exits 0 with a `passed=False` `VerifyResult` on stdout — no
+`MergeVerifyLeaseContended`, no `BlockDisposition`, no requeue arm anywhere on
+this path. (What the workstation does once that result comes back is traced
+below, in this section's closing paragraphs, to a terminal
+`MergeOutcome('blocked')`.)
+
+That pre-flight gate is actually two sequential bounded-wait acquires under
+one fail-closed contract, not one: only once the lane lock above is won does
+the same gate go on to acquire a second, transitional `.merge_verify.lock`
+compat co-lock (`merge_verify_lock_path` — a *different* inode, retained for
+old-code rollout exclusion and held across the whole span, next paragraph)
+under the identical wait budget, and a timeout on *that* second acquire
+(`cli.py`, the compat-co-lock branch) emits the byte-identical
+`make_flock_contention_result` — same `FLOCK_CONTENTION_CATEGORY`, same fixed
+`summary` string, and a `contention` payload carrying only `host` /
+`holder_pgid` / `waiter_pgid` (`is_flock_contention_failure` on the receiving
+side keys on `category` alone, per its own docstring). Nothing in that
+payload names which lock was actually held, so an observed `category:
+flock_contention` is evidence the pre-flight gate *as a whole* failed closed,
+not by itself evidence the lane lock specifically was the contended one —
+this section's lane-lock attribution is about the gate traced here, not about
+what a downstream observer can infer from the result alone. Worth flagging so
+a future re-verifier does not read the upstream source and "correct" this
+paragraph back: `make_flock_contention_result`'s own docstring still
+describes itself as scoped to the pre-2830 `.merge_verify.lock`-only span,
+"intentionally distinct from the local in-process consumer's shared
+`<lane_dir>.lock`" — stale relative to `cli.py`, which has called it from the
+lane-lock branch (above) too, since task 2830.
+
+The same `verify-merge` invocation re-acquires that same host-local lock a
+second time, inside its `_run()` closure, held only around the build. That reacquire
+shares the gate's own `MERGE_VERIFY_FLOCK_WAIT_SECS` /
+`ORCH_MERGE_VERIFY_FLOCK_WAIT_SECS` constant rather than an
+independently-tunable one of its own, which is why it is not counted as a
+sixth entry here; unlike the gate, it is fail-**OPEN** on contention (proceeds
+unrecorded) — the comment's own reasoning is that a live actor is already
+excluded by the gate that already ran, plus a transitional `.merge_verify.lock`
+compat co-lock held across the whole span.
+
+Ruled out as further acquirers: `_acquire_lane_flock_off_thread`'s internal
+`acquire_merge_verify_flock` call is this same shared helper, not a distinct
+site, and `remove_merge_worktree_guarded`'s zero-wait acquire early-returns
+`skipped_persistent` for the persistent merge worktree, so it never takes the
+`_merge-verify` lock at all.
+
 **That asymmetry on one inode WAS the defect**, not speculation about load — and
 it is now HISTORICAL: DF task 3003 closed it upstream (verified at DF HEAD
-`7cb0ef2e0c`, 2026-08-21). Recorded here because it is esc-5363-5's signature
+`14232ac30d`, 2026-08-31). Recorded here because it is esc-5363-5's signature
 and nothing else in this repo states it: a lease held for ~2h starves a 30s
 waiter, and the two paths *then* disagreed about what a timeout on the *same
 lock* meant — 300s said "requeue", 30s said "this merge failed". Pre-3003, a
@@ -93,8 +232,14 @@ with no registered in-process hold is a leaked fd, and nothing releases it
 before process exit, so deferring can never succeed. (On the merge-worker path
 that row is not what fires: the defer arm catches the leak as its parent class
 first, and the loud first-occurrence signal is the `logger.error` at the
-detection site in `GitOps._lane_lock_self_owned_leak`. The row governs `cli.py`
-`verify-merge` and workflow block classification.) Separately, a fail-CLOSED
+detection site in `GitOps._lane_lock_self_owned_leak`. The row governs
+workflow block classification only — not `cli.py` `verify-merge`, which
+never reaches a `BlockDisposition` lookup at all (zero hits for
+`BlockDisposition` / `block_disposition` / `workflow_types` in `cli.py`). On
+that path this leak surfaces exactly like any other Lease exception does:
+the `logger.error` at the detection site above, plus the generic exit-1 →
+`RunnerUnavailable` → host bench-and-re-dispatch chain this section
+documents earlier.) Separately, a fail-CLOSED
 pre-check raises `MergeVerifyLeaseHeld` — same disposition row, same defer arm —
 when a **different** live pgid holds the merge-verify lease.
 
@@ -102,7 +247,54 @@ when a **different** live pgid holds the merge-verify lease.
 yaml key and **no** env override for it anywhere: zero hits for
 `lock_timeout` / `lock_wait` / `flock_wait` / `lane_lock` across DF `config.py`,
 DF `defaults.yaml`, and reify's `dark-factory-orchestrator.yaml`. Raising it
-requires a dark-factory code change.
+requires a dark-factory code change. That is scoped to this one constant, not
+the whole inode family: `MERGE_VERIFY_FLOCK_WAIT_SECS` (`cli.py`, the fifth
+acquirer above) *is* env-overridable, via `ORCH_MERGE_VERIFY_FLOCK_WAIT_SECS`
+— the one exception in this family, and easy to misread this paragraph as
+covering it too.
+
+**One path on this inode still resolves a genuinely terminal,
+thrash-ladder-eligible outcome, unaffected by DF 3003 or any of the bounds
+above** — because it never raises at all. The fifth acquirer's pre-flight gate
+(above) does not defer on contention: it returns a distinguished
+`VerifyResult` (`make_flock_contention_result`; `verify_runner.py`
+`FLOCK_CONTENTION_CATEGORY = 'flock_contention'`) and the CLI still exits 0.
+On the receiving side, `merge_queue.py` `_run_post_merge_verify` checks
+`is_flock_contention_failure(verify)` FIRST — before the unscoped-gate
+sentinel and the main-health probe — and on a match: (a) fires
+`_alarm_verify_worktree_contention`, a `level=2` / `severity='critical'`
+**born-at-L2** escalation that routes straight to a human, bypassing the
+auto-watcher (deduped per-host while one is already open, so an orphaned
+holder does not repeat-fire); and (b) returns `MergeOutcome('blocked',
+reason=f'Post-merge verification blocked: {verify.summary} [category:
+{verify.category}]', failure_category=verify.category)`. Because that is a
+**return**, not a **raise**, the typed `except (MergeVerifyLeaseContended,
+MergeVerifyLeaseHeld)` defer arm this section leans on throughout is never in
+the call stack to catch it — this path is terminal on its FIRST occurrence,
+with no defer, no requeue, no bounded-wait budget to burn through first.
+
+And unlike the 3003 cap-out (above), whose per-worker ordinal keeps
+consecutive cap-outs signature-DISTINCT, this outcome's basis is invariant:
+`verify.category` is the constant `'flock_contention'` — never a dynamic
+value, and even `verify.summary` (the reason string's fallback) is a fixed
+literal, not host- or holder-specific — so
+`RetryLedger.compute_merge_outcome_signature(category, cause_hint, ...)`
+(`shared/task_metadata.py`, what `workflow.py`'s `_merge_outcome_signature`
+delegates to) hashes `category + '\x1f' + normalize_cause_hint(cause_hint)` and
+produces an **identical** 16-hex signature on every occurrence, on any host,
+against any holder. That is the exact deterministic-signature shape
+this section already blames for the esc-5363-5 false-positive on
+`consecutive_merge_thrash` (above) — still live here, predates DF 3003, and
+untouched by it: 3003 fixed a *raise*-based timeout on the reset path, and
+this is a *return*-based classification on a different acquirer entirely,
+never in that task's scope.
+
+Scoped fact, not a generalisation: this is runner `laptop`'s (ssh_host
+`leo-laptop`) own lane lock, not the workstation's four rows above — see the
+fifth-acquirer paragraph above for the host and inode scoping, and for why an
+observed `flock_contention` does not by itself discriminate which of that
+host's two locks was held. No fix is proposed here — this document records
+the seam; remediation, if any, is dark-factory's half.
 
 ## 2. Hypothesis correction — do not re-file this
 
@@ -230,7 +422,7 @@ task 5608's lock set, so it is filed as follow-up rather than done here.
 
 There is deliberately **no** `--wait N` mode and **no** holder-PID attribution.
 Waiting policy is the contended half of the seam and belongs to DF, which
-already owns four waits on this inode family (§1); a fifth would recreate the
+already owns five waits on this inode family (§1); a sixth would recreate the
 very asymmetry described there. Attribution would need `fuser` / `/proc` scraping,
 and DF already writes its own holder pgid.
 
@@ -268,7 +460,7 @@ fi
 
 **(b) ~~Give the 30s `reset_persistent_merge_worktree` path the requeue
 disposition the 300s lease path already has~~ — LANDED upstream as DF task
-3003.** Verified at DF HEAD `7cb0ef2e0c` (2026-08-21): the path's lock acquire
+3003.** Verified at DF HEAD `14232ac30d` (2026-08-31): the path's lock acquire
 raises `MergeVerifyLeaseContended`, `workflow_types.py` carries its REQUEUE /
 no-cap-burn `BlockDisposition` row, and `merge_queue.py` `_run_inflight_verify`
 requeues it in a defer arm ahead of the generic handler. Contention on this
@@ -279,7 +471,9 @@ than deleted, because §1's historical chain and esc-5363-5 both refer to it; se
 Only **(a)** remains outstanding, and it is genuinely unlanded — at the same DF
 HEAD, zero hits for `lock_guard_enabled`, `warm-lane-lock-guard` or
 `WARM_LANE_LOCK_BUSY` anywhere in DF source, and no `lock_guard` key in reify's
-`dark-factory-orchestrator.yaml`. Its value survives (b): a contended dispatch
+`dark-factory-orchestrator.yaml` (a bare `lock_guard` grep over DF source does
+return hits — 16 of them at this HEAD — but every one is the unrelated
+`reblock_guard`; a decoy, not (a) having landed). Its value survives (b): a contended dispatch
 that is *deferred upstream of the acquire* never burns the 30s bounded wait, nor
 the requeue and re-dispatch cycle that now follows it.
 
@@ -308,8 +502,13 @@ script's `${REIFY_...:-<literal>}` fallback.)
 ## 5. Scope bound
 
 **Task 5608 does not by itself eliminate the cost of a contended 30s lock
-wait.** The spurious `merge_error` it was originally scoped against is gone —
-DF task 3003 reclassified that timeout as a defer (§1, §4(b)). What a reify-side
+wait.** The spurious `merge_error` it was originally scoped against is gone
+**on the merge-worker path**, within the bounds §1 now enumerates — DF task
+3003 reclassified that timeout as a defer (§1, §4(b)), though the defer's own
+4h cap still ends in a terminal `blocked` (signature-distinct, so it cannot
+re-feed the thrash ladder) and a separate acquirer, `cli.py` `verify-merge`'s
+flock-contention gate, still ends in a terminal `blocked` with a constant,
+thrash-eligible signature (§1's closing paragraphs). What a reify-side
 primitive still cannot fix alone is the wait: with no pre-dispatch consult, DF
 burns the full 30s bounded wait on an inode it could have known was held, then
 pays a requeue and re-dispatch cycle. Task 5608 ships the primitive and pins

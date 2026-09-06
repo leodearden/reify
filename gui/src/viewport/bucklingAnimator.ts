@@ -71,7 +71,21 @@ export interface BucklingAnimator {
   object3d: Points;
   /** The undeformed reference overlay; toggle .visible to show/hide. */
   undeformedOverlay: Points;
-  /** Write new positions into the GPU buffer in place. */
+  /**
+   * Write new positions into the GPU buffer in place.
+   *
+   * The buffer is fixed-size from construction — it is sized once from the
+   * `base` passed to `createBucklingAnimator` and is never reallocated, because
+   * WebGL buffers cannot be resized (#6757). A `positions` whose length differs
+   * from that buffer is therefore clamped to the buffer length and warned about
+   * rather than throwing (an animation tick must not break the render loop): an
+   * over-long array has its tail dropped, a short one leaves a stale tail.
+   *
+   * That warning is LATCHED per offending length, because this is called from a
+   * requestAnimationFrame loop and a mismatch can persist for every subsequent
+   * frame. Expect one warning per distinct mismatching length, not one per
+   * frame; a matching call re-arms the latch.
+   */
   update(positions: number[]): void;
   /** Show or hide the undeformed (reference) overlay. */
   setUndeformedVisible(visible: boolean): void;
@@ -108,10 +122,56 @@ export function createBucklingAnimator(base: number[]): BucklingAnimator {
 
   // ── Methods ──────────────────────────────────────────────────────────────
 
+  /**
+   * Length of the last mismatch already reported by `update()`, or `null` when
+   * the latch is armed. Per-animator closure state, never module state, so two
+   * animators each get their own diagnostic.
+   */
+  let lastWarnedLength: number | null = null;
+
   function update(positions: number[]): void {
     const posAttr = dispGeom.getAttribute('position') as Float32BufferAttribute;
     const arr = posAttr.array as Float32Array;
-    for (let i = 0; i < positions.length; i++) {
+    // The destination is fixed-size: it was allocated once from `base` above
+    // and cannot be grown, because WebGL buffers have fixed size (#6757). So
+    // bound the copy by the DESTINATION, not the source. Bounding by the source
+    // was safe only by accident — TypedArray out-of-bounds writes happen to be
+    // silent no-ops, a property of the array type rather than of this code.
+    //
+    // Warn rather than throw: update() runs on every animation tick, so a throw
+    // would turn a cosmetically-wrong frame into a broken render loop. This
+    // follows validateMeshData's convention for caller-supplied array-length
+    // inconsistencies (meshManager.ts) — name the offending length and what it
+    // was compared against, then degrade gracefully (#6813).
+    //
+    // The warning is LATCHED, and that is load-bearing rather than tidiness:
+    // update() is driven from a requestAnimationFrame loop (BucklingPanel), and
+    // a mismatch is not necessarily transient — the animator is constructed once
+    // in onMount from `store.state.base` and its Float32Array is fixed
+    // thereafter, while `bucklingStore.ingestFrame` can replace `state.base`
+    // with a different-length array after a re-solve/re-tessellation. Warning
+    // unconditionally would then emit ~60×/s indefinitely, flooding devtools,
+    // taxing the render loop with per-frame string concatenation, and burying
+    // the one diagnostic this exists to surface. (validateMeshData, whose
+    // message shape this follows, runs once per sync — the convention does not
+    // transfer to frame cadence unchanged.) Latching on the offending LENGTH
+    // rather than a bare boolean keeps a *different* mismatch reportable; the
+    // reset below re-arms so a recurrence after recovery is reported too.
+    if (positions.length !== arr.length) {
+      if (positions.length !== lastWarnedLength) {
+        lastWarnedLength = positions.length;
+        console.warn(
+          `bucklingAnimator.update(): positions.length (${positions.length}) != ` +
+            `position buffer length (${arr.length}); ` +
+            `writing ${Math.min(positions.length, arr.length)} values, buffer not resized ` +
+            `(further warnings at this length suppressed)`,
+        );
+      }
+    } else {
+      lastWarnedLength = null;
+    }
+    const n = Math.min(positions.length, arr.length);
+    for (let i = 0; i < n; i++) {
       arr[i] = positions[i]!;
     }
     posAttr.needsUpdate = true;

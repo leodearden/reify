@@ -381,6 +381,23 @@ fi
 # shellcheck source=scripts/heavy-test-filter-lib.sh
 source "$SCRIPT_DIR/heavy-test-filter-lib.sh"
 
+# Git repository-environment scrub for infra-test EXECUTION (task #7106).
+# Provides REIFY_GIT_ENV_SCRUB_VARS / reify_git_env_scrub /
+# reify_git_env_scrub_prefix; the last is interpolated into the selective-infra
+# plan leaf below. The defect, its measurement and the variable list live in ONE
+# place — scripts/lib_git_env_scrub.sh's header — and are deliberately NOT
+# restated here; only this site's own reasoning is.
+#
+# Sourced HERE, at load time, and applied only at the test-execution leaf: the
+# scope-derivation phase legitimately reads the hook environment
+# (CHANGED_FILES_RAW comes from `git diff --cached`) and must stay untouched.
+if [ ! -f "$SCRIPT_DIR/lib_git_env_scrub.sh" ]; then
+    echo "verify.sh: ERROR — scripts/lib_git_env_scrub.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$SCRIPT_DIR/lib_git_env_scrub.sh"
+
 # Fail loudly at load time (not at a mid-run nextest parse error) if the
 # sourced constant is somehow empty — an empty REIFY_HEAVY_NEXTEST_FILTER
 # would make the REIFY_GATE_EXCLUDE_HEAVY=1 fragment below `-E "not ()"`,
@@ -1055,7 +1072,14 @@ is_occt_crate() {
 #     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
-#     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788)
+#     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
+#     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
+#     jacobian_column_members.ri (read via std::fs::read_to_string by
+#     jacobian_column_member_access.rs's fixture_source(), task 6102),
+#     damped_material_mixin_conformance.ri + damped_material_preset_conformance.ri
+#     (both read via std::fs::read_to_string by materials_fea_tests.rs, task
+#     6877 — the mixin one pins the Damped-mixin SUBSTRATE with probe-local
+#     trait names, the preset one pins the LANDED stdlib surface)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1068,7 +1092,10 @@ is_occt_crate() {
 #     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495)
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
-#     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri
+#     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri,
+#     cost_robustness_tradeoff_form.ri (task 5711: reify-constraints'
+#     cost_robustness_tradeoff_blend.rs and solver.rs cite it as the .ri form
+#     the in-Rust blend fixtures mirror — no read today)
 # Deliberately NO file:line citations: nothing validates them and they rot on
 # the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
 # tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
@@ -1081,7 +1108,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1104,10 +1131,21 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri ge
 # fails on any pinned fixture missing here. Do not hand-edit without re-running
 # it; do not trust a copy of this list anywhere else.
 #
-# NOTE the two lists NEST: all 14 _RUST_COUPLED_RI_FIXTURES members are also
-# pinned in the ledger, and the rust arm already sets gui=1, so it short-circuits
-# them. They are retained here deliberately so that dropping a fixture from the
-# rust list can never silently drop its gui coverage too.
+# NOTE the two lists MOSTLY NEST: every _RUST_COUPLED_RI_FIXTURES member that is
+# also a grammar-ledger pin is listed below as well, and the rust arm already
+# sets gui=1, so it short-circuits them. They are retained here deliberately so
+# that dropping a fixture from the rust list can never silently drop its gui
+# coverage too. THREE members are not EXPECTED_CLEAN pins and so have no gui
+# entry to retain: jacobian_column_members.ri (read by a compiled Rust target
+# but never pinned, task 6102), and task 6877's
+# damped_material_{mixin,preset}_conformance.ri (deliberately not pinned — an
+# unpinned fixture is inert for that ledger, so pinning them would add the
+# PG-DRIFT-GUI obligation for no added signal).
+#
+# Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
+# MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
+# rots on the next addition — this one already had, still reading 10 after the
+# list had grown past it, when task #5784 added unit_middot_mul.ri.
 _GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 decide_scope() {
@@ -1215,7 +1253,7 @@ decide_scope() {
                 #     its own tests/fixtures + examples/, then pushes ONE
                 #     explicit prd-gate path — so ADDING a fixture provably
                 #     cannot change any Rust target's inputs. EDITING one of the
-                #     eleven in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
+                #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
                 #     no later gate — a red-main class outage). That
@@ -2555,6 +2593,28 @@ build_plan() {
         add_tool "./scripts/tree-sitter-generate.sh"
     fi
 
+    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). The leaf
+    # above refreshes tree-sitter-reify/src/ ON DISK but does not by itself make
+    # cargo recompile it: cargo re-runs a build script only for paths declared
+    # via rerun-if-changed, and cc emits none of its own. So without this leaf
+    # the gate can link a libtree_sitter_reify.a built from different bytes than
+    # the tree it is verifying — a false GREEN for an external-scanner change.
+    # `ensure` repairs (bumps the watched inputs' mtime so cargo must rebuild)
+    # rather than hard-failing; `check` is the assert-only mode for a checkpoint.
+    #
+    # Placement is load-bearing, both halves:
+    #   AFTER tree-sitter-generate.sh  — src/parser.c must be current on disk
+    #     before it is fingerprinted, or the verdict describes a stale input set.
+    #   BEFORE `verify.sh compile-gate` and every cargo leaf — a force applied
+    #     after the compile repairs nothing.
+    # Guarded on RUN_RUST exactly as the generate leaf is, so docs-only /
+    # gui-src-only plans keep zero command leaves.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add_tool "./scripts/tree-sitter-freshness.sh ensure"
+    fi
+
     # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
     # for the jobserver's implicit-token leak (FIFO pool tokens + 1 implicit
     # token per concurrent cargo) and non-cargo load.  Emitted only when
@@ -2758,6 +2818,12 @@ build_plan() {
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"  # ld-ok: cargo — MIXED shell+cargo (gui sidecar compile check); needs OCCT
     fi
+
+    # The tree-sitter freshness POST-CONDITION leaf does NOT belong here, after
+    # the clippy/gui-check wave — it must follow the LAST cargo leaf that can
+    # compile the parser (add_test_passes), or it attests a fingerprint dir that
+    # no test binary links. It is emitted at the end of build_plan; see the
+    # `check` block there before moving it back up.
 
     # Overlap join: wait for the background node lane before infra checks / pole.
     # Maximises the concurrency window (join as late as possible while still
@@ -3025,9 +3091,18 @@ build_plan() {
     # cf. test_run_all_ambient_isolation.sh, task 4961).
     if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         local _glob
+        # Git repository-environment scrub (task #7106), interpolated from
+        # reify_git_env_scrub_prefix so this leaf and the runner helper can never
+        # disagree about the variable set. It sits INSIDE the leaf, between the
+        # timeout and the bash it wraps — NOT in add_tool's _LD_SCRUB, which
+        # prefixes EVERY plan line and would rewrite every plan string, breaking
+        # the --print-plan byte-identity oracles (test_occt_flock_gate.sh Tests
+        # 17/17b, test_verify_scope.sh, test_occt_gated_scope.sh).
+        local _git_scrub
+        _git_scrub="$(reify_git_env_scrub_prefix)"
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m $_git_scrub bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi
@@ -3038,6 +3113,53 @@ build_plan() {
     # (task #4448 fail-fast reorder)
     if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add_test_passes
+    fi
+
+    # tree-sitter freshness POST-CONDITION (task #5629, review rounds 2-3).
+    # The `ensure` leaf near the top of the plan runs BEFORE the cargo wave and
+    # only ATTEMPTS the repair — it bumps mtimes and trusts cargo to act on them,
+    # and by design it never fails for a condition it believes it repaired. So
+    # without this line the gate carried no evidence the rebuild actually
+    # happened: if the mtime force failed to trigger one, the run went green
+    # having linked an archive it never compiled — the same false-GREEN class the
+    # task exists to close, one level up. `check` closes it by ASSERTING, after
+    # the fact, that the archives cargo built match the sources on disk.
+    #
+    # EMITTED LAST — after add_test_passes — and that position is load-bearing
+    # (review round 3). Round 2 placed it right after the clippy / `cargo check -p
+    # reify-gui` wave, which attested the WRONG archive: clippy compiles into a
+    # different fingerprint dir than the test-profile build, and under
+    # `--profile both` the debug and release nextest passes each compile the
+    # parser again, all of them AFTER that point. The assertion has to follow the
+    # last cargo leaf that can compile the parser, or it attests an archive no
+    # test binary ever linked.
+    #
+    # Guard: RUN_RUST && (lint || typecheck || test). The `test` arm was missing
+    # until the amendment pass on #5629, on the reasoning that "action=test has no
+    # compile leaf before this pole, so asserting there would hard-fail a
+    # repairable pre-build condition". That reasoning contradicted this leaf's own
+    # position: it is emitted AFTER add_test_passes, and on an action=test plan
+    # add_test_passes emits `cargo nextest run --workspace`, which COMPILES the
+    # parser. So every action=test plan forced a rebuild via `ensure` and then
+    # asserted nothing — leaving the whole test-only tier carrying exactly the
+    # one-level-up false GREEN this leaf was added to close.
+    #
+    # RUN_RUST is what keeps docs-only / gui-src-only plans at zero command leaves;
+    # with RUN_RUST=1 at least one of the three action flags is always set, so the
+    # inner disjunction is documentation of intent rather than a live filter — it
+    # keeps the leaf tied to "something compiled the parser", which is what makes
+    # the assertion meaningful.
+    #
+    # `check` hard-asserts over every fingerprint dir whose build-script run marker
+    # advanced during THIS run (the epoch `ensure` stamped), so the multi-dir
+    # debug+release case is covered rather than just the single newest dir. Dirs
+    # untouched by this run stay dormant `note:` lines — a checkout carries 7-9 of
+    # them, stale forever, so a whole-tree assertion would be permanently RED.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ] \
+        && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ] || [ "$DO_TEST" -eq 1 ]; }; then
+        add_tool "./scripts/tree-sitter-freshness.sh check"
     fi
 
     # retry_failed_only HONEST MARKER (task 5290 / PRD verify-retry-failed-only

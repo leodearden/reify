@@ -231,13 +231,19 @@ while absent and reported again once it is back, since `check` is re-run rather 
 
 ### `arm` writes with `--replace-all`
 
-`git config --add rerere.enabled true` — precisely what an unidentified re-armer (§7) would leave
-behind — makes the shared key **multi-valued**, and a plain single-value write then fails:
-measured on git 2.43.0, `git config --local rerere.enabled false` against a `true`/`true` shared
-config reports `error: cannot overwrite multiple values with a single value` and exits 5. That was
-not inert: `arm` returned 1, and `setup-dev.sh`'s `*` arm turns any non-zero into `err` + `exit 1`,
-killing the build-accelerator systemd block, npm and the smoke test for every developer — while the
-fleet stayed **armed**, the exact outcome the guard exists to prevent.
+`git config --add rerere.enabled true` makes the shared key **multi-valued**, and a plain
+single-value write then fails: measured on git 2.43.0, `git config --local rerere.enabled false`
+against a `true`/`true` shared config reports `error: cannot overwrite multiple values with a
+single value` and exits 5. That was not inert: `arm` returned 1, and `setup-dev.sh`'s `*` arm turns
+any non-zero into `err` + `exit 1`, killing the build-accelerator systemd block, npm and the smoke
+test for every developer — while the fleet stayed **armed**, the exact outcome the guard exists to
+prevent.
+
+This defence is **prophylactic**, not a description of the live writer. The re-armer identified in
+§7 uses a plain set, not `--add`, so no sighting on this store has been multi-valued — every armed
+reading has been the single-valued SPLIT shape. It is kept because the failure mode it prevents is
+*measured* rather than hypothetical, and one `--add` from any of the ~253 lanes — by an agent, or by
+a future script — is enough to trigger it.
 
 `--replace-all` is a strict superset of the old write: **byte-identical** output for the unset and
 single-valued cases (so idempotence is unchanged), and it collapses a multi-valued key to one
@@ -445,50 +451,173 @@ is what makes the periodic-probe item below cheap.
 > than re-writing the whole `[rerere]` section. That narrows the *shape* of the write, **not** its
 > source; the writer is still unidentified and no candidate mechanism has been excluded.
 
+### 2026-08-30 — the re-armer is IDENTIFIED (task 6889, open item (a))
+
+**It is agent behaviour, not automation.** A bare `git config rerere.enabled true` run from inside a
+**linked worktree** is `--local`-scoped, and for a linked worktree `--local` resolves to the **SHARED
+common-dir** `.git/config` — not to worktree scope, which is what the operator intends. So a write
+believed to be lane-local silently re-arms rerere for the whole store.
+
+Proven hermetically rather than inferred, in a throwaway store built for the purpose (`git init` +
+`git worktree add`): a bare `git config zzz.probe hello` issued from the LINKED worktree landed in
+`main-checkout/.git/config` and **not** in `main-checkout/.git/worktrees/<name>/config`;
+`git config --show-scope --show-origin` reported it as `local  file:.../main-checkout/.git/config`.
+In that same lane `git rev-parse --absolute-git-dir` gives `.../worktrees/<name>` while
+`--git-common-dir` gives `.../main-checkout/.git` — the two paths whose conflation is the whole bug.
+
+The real store matches: `git -C /home/leo/src/reify-fix{12,13,14,15} rev-parse --git-common-dir` all
+return `/home/leo/src/reify/.git`, so a `git config` issued in any of those recovery checkouts writes
+the shared config. Full identification evidence, including the transcript counts that located the
+instruction (the literal string appears 27× in one session transcript and across 37 files under
+`~/.claude/projects/-home-leo-src-reify/`) and the hard negatives that cleared every mechanical
+suspect: mem0 `bdae6960-5a5e-4c73-838f-7919c08cead5`.
+
+This explains the SPLIT signature §7 hypothesised above and could not previously source: the
+instruction sets `enabled` **alone**, so the guard's earlier `autoupdate = false` survives untouched.
+Every armed sighting since has carried exactly that shape.
+
+**Measurements taken 2026-08-30 (read-only, from lane `_lane-31`).** Observations, stated as fact:
+
+| When | Measurement |
+|---|---|
+| 07:06:11 | `.git/config` mtime; size **2508**; SPLIT (`rerere.enabled=true` + `rerere.autoupdate=false`, both `--local`). |
+| 11:44:46 | Re-armed. Same size **2508**, same SPLIT shape. `rr-cache` **355** entries, **254** linked worktrees. |
+| 12:13:01 | Re-armed a **third** time the same day. Size **2508**, SPLIT. Measured first-hand at 12:29 BST: `rr-cache` **355** entries, **253** linked worktrees, 43 packs, 1638 refs, 65G `.git`. |
+
+The **one-byte size discriminator** tells a third-party write from the guard's own: `true` → `false`
+is one character longer, so an armed config is 2508 bytes and the guard's disarm write leaves 2509.
+Every sighting above is 2508 — none of them is the guard.
+
+`rr-cache` growth across the same window: **266** (2026-08-26) → **269** (2026-08-28) → **354**
+(2026-08-30, earlier) → **355** (2026-08-30, 12:29). Entries are still never pruned (§5).
+
+`check` from a lane against the live store: **exit 1** (`ARMED: rerere.enabled=true`), stdout empty,
+three consecutive runs at **0.180s / 0.082s / 0.120s** wall (an earlier cold run the same day measured
+0.249s). Read-only and sub-second, which is what makes lane-cadence arming free.
+
+**The re-arm interval is minutes, not hours.** esc-5870-14 measured a **~10-minute** window between a
+disarm and the next armed reading; the 11:44:46 → 12:13:01 pair above is ~28 minutes. The earlier
+"~17h" figure was an artefact of infrequent sampling, not the writer's actual rate.
+
+**Negative sweeps, re-run 2026-08-30 and still clean.** No `rerere` *writer* exists in reify's
+`scripts/` or `hooks/` beyond the guard itself — the only hits are `setup-dev.sh` *calling* the guard
+and a row in `scripts/verify-pipeline-infra-tests.txt`. A grep of dark-factory's code files
+(`*.py`, `*.sh`, `*.toml`, `*.yaml`, `*.yml`, excluding its worktrees, `data/`, `docs/` and `plans/`)
+returns **zero** matches for `rerere`; the only tree-wide hits are prose in archived escalations and
+confusion-codebook entries. The orchestrator side is now cleared, closing the gap §7 left open when
+the equivalent 2026-08-27 sweep was killed at a 45s timeout.
+
+**CONSEQUENCE — do not read the lane-cadence wiring (§8 item 3) as a cure.** No `arm` cadence outruns
+an agent that re-runs the shared write: an acquire pins the store, an agent re-arms it minutes later,
+and any resolution recorded in between still lands in the one shared cache. Lane cadence is a
+**mitigation** that narrows the exposure window from "since the last developer setup" to "since the
+last acquire". The only cure is stopping the practice: never run a bare `git config rerere.enabled
+true` (or any bare `git config rerere.*` write) in **any** reify worktree — use process-scoped
+`git -c rerere.enabled=true <cmd>` when the behaviour is genuinely wanted for one command.
+
 ## 8. Open items
 
-1. **`git fsck` on the shared store remains UNMEASURED.** The 2026-07-30 attempt was killed at a 900s
-   timeout. It needs a queue-idle window. Until then, whether the concurrent writes left any
-   object-level damage behind is an open question — the hardening here prevents *new* occurrences, and
-   makes no claim about the existing store's integrity.
+All three items below are **CLOSED** as of 2026-08-30 (task 6889). They are kept as a numbered
+ledger — at their original numbers, which §7 back-references — because each records what was
+measured and, more importantly, what its closure does *not* buy.
 
-2. **The re-armer is unidentified** (esc-5870-11, above). This bounds what landing this task buys: the
-   guard re-asserts `false` on every `setup-dev.sh` run, so if an active writer does exist, that
-   per-run re-assertion **narrows the window between re-arm and disarm — it does not close it.** Any
-   resolution recorded inside that window still lands in the one shared cache. Closing it requires
-   naming the writer, which requires sampling the effective config over time rather than reading it
-   once; `check` is the natural probe, since it already exits 1 on an armed store. **Such a probe
-   must treat any non-zero as "not clean", not just 1** — `check` exit **3** means it could not
-   determine some lane's state at all (§6), and reading that as healthy would put the fail-open hole
-   back in the one place the probe exists to close.
+1. **CLOSED 2026-08-30 (task 6889, open item (b)) — `git fsck` is MEASURED, and the store is clean.**
+   `git fsck --connectivity-only --no-progress` on `/home/leo/src/reify` completes in **1m12s**,
+   **exit 0**, emitting only `dangling tree` / `dangling commit` lines. The 900s timeout that killed
+   the 2026-07-30 attempt was never a wall, and the queue-idle window this item asked for turned out
+   not to be needed. Store shape measured alongside the run: **39G** of objects, **43** packs,
+   **1641** refs, **253** linked worktrees. Forensics record: mem0
+   `d26dcfbb-c59e-4de7-b4da-fdb6570e51e9`.
 
-   `Hypothesis:` the store could have been re-armed through an `include.path` chain rather than a
-   direct key — a shape `check` was blind to until the round documented in §6, and one that would
-   have left no `rerere` string in the file an auditor grepped. This is a possibility that fix makes
-   newly *detectable*, **not** a diagnosis, and the evidence currently points the other way: the
-   writer has still not been isolated, and both the 2026-08-27 measurement and a read-only
+   **The interpretive point outlives the result, and is the half a future reader cannot re-derive
+   from a clean exit code: `.git/rr-cache` holds plain `preimage`/`postimage`/`thisimage` FILES, not
+   git objects.** The concurrent rr-cache writers this runbook is about were therefore never capable
+   of corrupting the object database *at all* — no amount of cross-lane rr-cache contention reaches
+   the ODB, so a clean fsck here confirms a property that was structural rather than lucky. The only
+   ODB-visible residue of the exit-128-yet-lands path (§3) is **dangling objects**, which is exactly
+   what the run reported.
+
+   This **retires** the old "whether the concurrent writes left any object-level damage behind is an
+   open question" caveat rather than deferring it: §8's standing claim about the existing store's
+   integrity is now positive — measured clean — instead of absent.
+
+2. **CLOSED 2026-08-30 (task 6889, open item (a)) — the re-armer is IDENTIFIED.** It is **agent
+   behaviour**, not automation: a bare `git config rerere.enabled true` run from inside a **linked
+   worktree** is `--local`-scoped, and for a linked worktree `--local` resolves to the **SHARED**
+   common-dir config. The evidence — the hermetic proof, the transcript counts that located the
+   instruction, the hard negatives that cleared every mechanical suspect (including the now-complete
+   dark-factory sweep), and the measured re-arm interval — is in §7's *2026-08-30 — the re-armer is
+   IDENTIFIED* subsection, and is not restated here.
+
+   **What survives the resolution.** Naming the writer sharpens this item's bound; it does not lift
+   it. The guard re-asserting `false` — now at lane cadence as well as developer cadence (item 3) —
+   still only **narrows the window between re-arm and disarm; it does not close it**, because no
+   `arm` cadence outruns an agent re-running the shared write, and any resolution recorded inside
+   that window still lands in the one shared cache. The **cure** is the practice change stated at
+   the end of §7, not the cadence.
+
+   **The periodic-`check` probe this item proposed is still the right monitoring**, and its
+   normative caveat is untouched by the identification: **such a probe must treat any non-zero as
+   "not clean", not just 1** — `check` exit **3** means it could not determine some lane's state at
+   all (§6), and reading that as healthy would put the fail-open hole back in the one place the
+   probe exists to close.
+
+   **RETIRED hypothesis — `include.path`, ruled out.** This item previously carried a `Hypothesis:`
+   that the store was being re-armed through an `include.path` chain rather than a direct key. It
+   was never the diagnosis, and it is not the diagnosis now: the identified writer sets the key
+   directly, and the measurements agree — both the 2026-08-27 reading and a read-only
    re-measurement on 2026-08-28 found the keys set **directly** in `/home/leo/src/reify/.git/config`
-   (lines 46-48) with **no `include` directive anywhere in that file** — `check` exit 1,
-   `rr-cache` 269 entries, still armed.
+   (lines 46-48) with **no `include` directive anywhere in that file** (`check` exit 1, `rr-cache`
+   269 entries, still armed). It is recorded here rather than deleted because the *detectability*
+   point stands on its own: an `include.path` re-arm would leave no `rerere` string in the file an
+   auditor greps, so §6's `--includes` reads keep covering that shape whichever writer is live.
 
-3. **`arm` runs at developer-setup cadence, not lane cadence.** This is the concrete form of item 2's
-   "narrows the window, does not close it", and it is worth stating as its own gap because
-   `CLAUDE.md` states the disarm as an invariant: as landed, *no frequently-executed path upholds it*.
-   `setup-dev.sh` is the only caller, and a developer runs it rarely — which is why the 2026-08-29
-   re-measurement above found the store armed with nothing having re-asserted the pin in between.
+3. **CLOSED 2026-08-30 (task 6889, open item (c)) — `arm` now runs at LANE cadence.** The gap this
+   item recorded was real: `CLAUDE.md` states the disarm as an invariant while `setup-dev.sh` was
+   the only caller, so *no frequently-executed path upheld it* — which is why the 2026-08-29
+   re-measurement found the store armed with nothing having re-asserted the pin in between.
+   `scripts/seed-warm-lane.sh --fresh-checkout` now delegates to `git-rerere-guard.sh arm` at the
+   tail of the seed, re-pinning the shared config on **every warm-lane ACQUIRE**. The mechanism —
+   mode gate, existence gate, the fail-open `0 | 2 | *` branch that guarantees an acquire never
+   fails because the store could not be pinned, and the `REIFY_WARM_LANE_RERERE_ARM=0` operator
+   escape hatch — is normative in that script's *git rerere disarm at LANE cadence* block and
+   summarised in the guard header's CALLERS section; it is not restated here.
 
-   The natural fix is a caller at lane cadence. `scripts/setup-main-gate-worktree-config.sh` is the
-   obvious candidate: it already exists to defend against the same per-worktree-enter shared-config
-   clobber, and it already runs per lane. The orchestrator's lane ACQUIRE is the other. Either is
-   cheap — `check` is sub-second on the live 254-lane store (measured, §7) and `arm` is a byte-level
-   no-op when the pin is already in place. Neither is wired today; both are outside this task's
-   module scope, so this is filed as follow-up rather than done here.
+   **CORRECTION, in place rather than merely superseded: `setup-main-gate-worktree-config.sh` does
+   NOT run per lane.** This item previously named `scripts/setup-main-gate-worktree-config.sh` as
+   the obvious fix because "it already runs per lane". That is **measured false**, and it is the
+   exact claim that mis-aimed this task's own original description, so it is corrected here rather
+   than quietly dropped. MEASURED on base `ee5c57c8ca`: its only runtime caller is
+   `scripts/setup-dev.sh:341` — the *same* developer-setup cadence this gap is about — so wiring
+   `arm` there would have bought nothing. `scripts/seed-warm-lane.sh --fresh-checkout`, driven by
+   dark-factory's `_seed_warm_lane()` (`git_ops.py:1227`) on every ACQUIRE, is the only genuine
+   per-lane host inside reify. `scripts/warm-lane-preflight.sh` is **not** a substitute either: it
+   is pool-level, takes `--mount`/`--base-dir` and never a lane dir, and is fail-closed.
+   Measurement record: mem0 `329f8efa-c09f-47d7-b926-5880e11f619c`.
+
+   **A mitigation, not a cure — do not read this closure as closing the hazard.** Lane cadence
+   narrows the exposure window from "since the last developer setup" to "since the last acquire";
+   it does not close it, because the re-armer is **agent behaviour** and no `arm` cadence outruns an
+   agent re-running the shared write (§7's CONSEQUENCE paragraph, and item 2 above). The cost is why
+   running it every acquire is free regardless: `check` is sub-second on the live 253-lane store
+   (0.082–0.180s, measured §7) and `arm` is a byte-level no-op once the pin is in place.
+
+   **Known gap, left deliberately.** The merge-spec lane is not covered: dark-factory's
+   `acquire_spec_lane` (`git_ops.py:5923`) calls `_seed_warm_lane(lane, '--reset-in-place')` at
+   `:6076`, at an indent common to BOTH its create and its reset branch, so a merge-spec acquire is
+   **always** `--reset-in-place` and never reaches the block. That is harmless for this defence,
+   which is why the gate was left as-is rather than widened: the pin is a property of the **one
+   shared `.git/config`**, not of a lane, so any acquire that pins it pins it for every lane
+   including the spec lane — and task-lane acquires dominate by volume. It would matter for a
+   lane-scoped write; it does not for a shared-store one.
 
 ## Pointers
 
 | Topic | Source |
 |---|---|
-| Guard contract, exit codes, subcommand detail | `scripts/git-rerere-guard.sh` header |
+| Guard contract, exit codes, subcommand detail (incl. CALLERS, both cadences) | `scripts/git-rerere-guard.sh` header |
+| Lane-cadence `arm` wiring (mode gate, fail-open, opt-out) | `scripts/seed-warm-lane.sh` → *git rerere disarm at LANE cadence* block |
+| Developer-cadence `arm` wiring (aborts setup on an unexpected non-zero) | `scripts/setup-dev.sh` |
 | Behavioural oracles (real conflicted merges against a populated cache) | `tests/infra/test_git_rerere_guard.sh` |
 | Sibling shared-`.git` hazard (`refs/stash` is one host-wide ref) | `CLAUDE.md` → "Warm lanes"; `hooks/reference-transaction` |
 | Warm-lane pool lifecycle & invariants | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5 |

@@ -670,16 +670,74 @@ max_turns:
 #     implementer/debugger's pre-amendment 1200s default), architect
 #     doesn't run the compile-heavy verify commands that are this task's
 #     documented root cause, and it's separately bounded by reify's own
-#     max_turns.architect=120 above. Revisit if architect sessions start
+#     max_turns.architect=120 above (stale cite: 180 since 2026-08-19, see
+#     the max_turns block). Revisit if architect sessions start
 #     showing the same 0-turn misreported-kill signature.
 #
-# Load-once config (dark-factory-orchestrator.yaml has no hot-reload): takes effect at
-# the next orchestrator restart. Do NOT restart mid-flight — land for the
-# next quiet window, the same restart that activates the
-# verify_clock_stop_heartbeat_idle_max bump (task 5156).
+# 2026-09-01 amendment (task 7182, esc-5469-10, Leo approved): the (2)
+# revisit trigger fired, and its rationale is falsified for reify —
+# architects here DO run compile-heavy commands during planning premise
+# verification (esc-5469-6: cargo build + two full test suites inside an
+# architect run). Fleet data since 2026-07-01: 2450 architect successes, 44
+# legitimately past 2400s (max 5331s), 4 timeout kills — each discarding the
+# entire plan product (--print emits stdout only at process end, so a
+# SIGTERM yields nothing; DF task 2360). Semantics, source-verified: a
+# timeouts.<role> value is NOT a total-wall-clock cap. It feeds the
+# working-regime watchdog as the transcript-SILENCE bound
+# (idle_bound = max(working_idle_secs, timeouts.<role>),
+# cli_invoke.py:3851-3852) — a single long synchronous tool call (cold
+# cargo test) with no new assistant turns reads as "idle" and is killed at
+# that bound. Total runtime is capped independently by
+# invocation_timeout=7200 (config.py:4397, RED-tier/restart-only), so any
+# per-role value >= 7200 (including the 7800s above) effectively means
+# "absolute cap governs". architect: 7200 makes the silence bound
+# coincide with the cap — the honest maximum.
+#
+# Hot-reload note (corrects the stale "Load-once config" claim that stood
+# here): timeouts.* is on the code-owned green-tier allowlist
+# (dark-factory config.py RELOADABLE_FIELDS via
+# _submodel_leaf_paths('timeouts', TimeoutsConfig)), so this block takes
+# effect via the escalation MCP's reload_config — no orchestrator restart
+# required. Always read the returned applied/restart_required dispositions.
 timeouts:
   implementer: 7800
   debugger: 7800
+  architect: 7200
+  # 2026-09-03 incident (task 6644 / esc-6644-3, Leo approved): the PRE-turn-1
+  # startup grace, NOT a silence bound. The three values above feed the
+  # WORKING-regime watchdog and only latch once an assistant turn is seen
+  # (cli_invoke.py:3813/:3852); until then this separate, much shorter bound
+  # governs (cli_invoke.py:3829: `not seen_turn and live_turns == 0 and
+  # elapsed >= startup_grace_secs`), so architect: 7200 is inert against it.
+  #
+  # WHY RAISED 120 -> 450. An upstream claude-opus-5 degradation (HTTP 500 from
+  # ~13:24 UTC escalating to 529 Overloaded) starved agents of a first
+  # transcript turn; the 120s grace then SIGTERMed them MID-RETRY. Measured
+  # blast radius: 86 kills / 25 tasks / 2 projects / 3 roles in one 2.5h window,
+  # 100% opus (sonnet 0/17, null-model 0/39) — against a base rate of 0-6/day,
+  # with a structurally identical precedent burst on 2026-08-24 (60 events).
+  # The kill is worse than the delay it prevents: it lands BEFORE the CLI can
+  # surface `API Error: 529`, so no api_error_status is ever recorded, which
+  # simultaneously defeats the scheduler's transient-requeue lane
+  # (scheduler.py:465, matches only `agent API error: HTTP \d{3}`) and DF task
+  # 3316's 5xx-requeue fix. A task 6644 sibling steward that outlived the grace
+  # did surface the 529 — after 209s. 450 clears that observed retry span with
+  # margin, and is chosen for robustness under CPU starvation: a first turn can
+  # also be legitimately slow when the box is oversubscribed, and killing a
+  # healthy-but-starved agent costs a whole plan (--print emits stdout only at
+  # process end, so a SIGTERM yields nothing; DF task 2360).
+  #
+  # COST OF BEING WRONG is bounded and small: a genuine from-source-build / uv /
+  # MCP-startup wedge — the case this grace exists to catch — now burns 450s
+  # instead of 120s before the kill. That is cheap against the alternative
+  # observed here, which is a terminal BLOCKED task plus an L2 escalation plus a
+  # human unblock session, because the planning path has no retry for this shape
+  # (_ARCHITECT_TRANSIENT_RETRY_KINDS, workflow.py:299-303, excludes TIMED_OUT).
+  #
+  # Green-tier: timeouts.startup_grace_secs is in RELOADABLE_FIELDS via
+  # _submodel_leaf_paths('timeouts', TimeoutsConfig) — verified directly, not
+  # assumed. Applies via the escalation MCP's reload_config, no restart.
+  startup_grace_secs: 450
 
 unblock_auto:
   timeout_seconds: 1800
@@ -807,9 +865,10 @@ orch_daily_cost_ceiling_usd: 10000.0
 watcher_daily_cost_ceiling_usd: 10000.0
 
 # Usage cap / multi-account failover
-# 6 automation accounts (G→F→E→C→B→D); A reserved for interactive (eval runners
-# inject A dynamically via USAGE_ACCOUNTS_FILE override). Authoritative pool list:
-# config/usage-accounts.yaml.
+# 7 automation accounts (B→C→D→E→F→G→H); A reserved for INTERACTIVE use only.
+# Evals have NO dedicated account — they draw on this same pool and must be
+# robust to cap/429 events (ruling 2026-08-30, task 4741). Authoritative pool
+# list: config/usage-accounts.yaml, which here is a symlink to dark-factory's.
 # When one account hits its cap, UsageGate rotates to the next in list order.
 usage_cap:
   enabled: true
