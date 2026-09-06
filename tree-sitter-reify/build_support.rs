@@ -265,3 +265,49 @@ fn outputs_manifest_matches(manifest_path: &std::path::Path, src_dir: &std::path
     }
     true
 }
+
+/// Check if regeneration is needed based on content staleness.
+///
+/// TRUE (regenerate) when any expected output is missing, when
+/// `$OUT_DIR/grammar_hash.stamp` is missing, when its hash differs from
+/// `grammar_hash`, OR when `src_dir`'s outputs do not match the
+/// `.generated_outputs.stamp` beside them.
+///
+/// That last clause is `#6992`. The OUT_DIR stamp attests ONE fact — "the
+/// grammar hashed to X when this stamp was written" — and the old code let a
+/// merely-EXISTING `src/` tree ride along on it. Two routine lane operations
+/// break that inference: `git clean -xfd -e target` at acquire deletes the
+/// untracked `src/parser.c` while preserving `target/`, and CoW seeding can
+/// pair a `target/` cloned from one base with a `src/` checked out from
+/// another. In both cases the surviving stamp describes a `src/` tree it never
+/// saw. The manifest is the only thing that can tell them apart.
+///
+/// The caller must compute `grammar_hash` once and pass it here as well as
+/// to the stamp-write step — this avoids a TOCTOU race where grammar.js
+/// could change between the staleness check and the stamp write.
+#[allow(dead_code)]
+fn needs_generate(
+    grammar_hash: &str,
+    stamp_path: &std::path::Path,
+    output_paths: &[&std::path::Path],
+    src_dir: &std::path::Path,
+) -> bool {
+    // Must regenerate if any output file is missing.
+    for path in output_paths {
+        if !path.exists() {
+            return true;
+        }
+    }
+    // Must regenerate if stamp file is missing.
+    let stamp_content = match std::fs::read_to_string(stamp_path) {
+        Ok(s) => s,
+        Err(_) => return true,
+    };
+    // Must regenerate if grammar hash differs from stamp.
+    if stamp_content.trim() != grammar_hash {
+        return true;
+    }
+    // Must regenerate unless the outputs on disk are the ones that were
+    // generated. Existence is not evidence.
+    !outputs_manifest_matches(&src_dir.join(OUTPUTS_STAMP_NAME), src_dir)
+}

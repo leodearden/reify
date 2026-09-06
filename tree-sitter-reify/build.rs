@@ -86,33 +86,6 @@ fn run_tree_sitter_generate() {
     }
 }
 
-/// Check if regeneration is needed based on content hash staleness.
-/// Returns true if any output file is missing, stamp file is missing,
-/// or stamp hash doesn't match the provided grammar hash.
-///
-/// The caller must compute `grammar_hash` once and pass it here as well as
-/// to the stamp-write step — this avoids a TOCTOU race where grammar.js
-/// could change between the staleness check and the stamp write.
-fn needs_generate(
-    grammar_hash: &str,
-    stamp_path: &std::path::Path,
-    output_paths: &[&std::path::Path],
-) -> bool {
-    // Must regenerate if any output file is missing.
-    for path in output_paths {
-        if !path.exists() {
-            return true;
-        }
-    }
-    // Must regenerate if stamp file is missing.
-    let stamp_content = match std::fs::read_to_string(stamp_path) {
-        Ok(s) => s,
-        Err(_) => return true,
-    };
-    // Must regenerate if grammar hash differs from stamp.
-    stamp_content.trim() != grammar_hash
-}
-
 /// Check whether the shell-script stamp (`src/.grammar_hash.stamp`) already
 /// confirms that the generated outputs match the current `grammar.js`.
 ///
@@ -388,7 +361,7 @@ fn main() {
     // where grammar.js could change between the two reads.
     let grammar_hash = content_hash(grammar_path);
 
-    if needs_generate(&grammar_hash, &stamp_path, &output_refs) {
+    if needs_generate(&grammar_hash, &stamp_path, &output_refs, src_dir) {
         // Fast-path: if the shell script already validated the outputs, skip
         // `tree-sitter generate` (which can take >60 s on a loaded build host).
         // This is safe: cargo's `rerun-if-changed=grammar.js` guarantees the
