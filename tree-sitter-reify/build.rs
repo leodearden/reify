@@ -1,3 +1,10 @@
+// The staleness primitives shared with `tests/build_logic_tests.rs`.
+//
+// A build script cannot be `use`d by a test target, and the old workaround —
+// hand-copying this logic into the test file — is how `#6992` shipped: the
+// replica was green while this file was wrong. One source, two include sites.
+include!("build_support.rs");
+
 use std::hash::{Hash, Hasher};
 
 /// Compute a content hash of a file's bytes, returning a hex-encoded u64.
@@ -78,9 +85,6 @@ fn run_tree_sitter_generate() {
         );
     }
 }
-
-/// The expected output files that tree-sitter generate produces.
-const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
 
 /// Check if regeneration is needed based on content hash staleness.
 /// Returns true if any output file is missing, stamp file is missing,
@@ -226,102 +230,6 @@ fn compilation_inputs() -> Vec<String> {
     inputs
 }
 
-/// One hashing attempt with one binary.
-///
-/// Three outcomes, deliberately distinguished — the caller's retry and its
-/// `UNAVAILABLE` decision both hinge on telling them apart:
-///   `Ok(Some(hash))` hashed;
-///   `Ok(None)`       the binary is not on PATH — a permanent fact about this
-///                    host, so trying again is pointless;
-///   `Err(())`        the binary exists but THIS attempt failed (fork pressure,
-///                    EMFILE, a signal) — transient, so worth retrying.
-fn try_hasher(bin: &str, args: &[&str], path: &str) -> Result<Option<String>, ()> {
-    let output = match std::process::Command::new(bin)
-        .args(args)
-        .arg(path)
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        Ok(o) => o,
-        // ENOENT means "no such binary": a permanent property of this host.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(()),
-    };
-    if !output.status.success() {
-        return Err(());
-    }
-    // sha256sum / `shasum -a 256` output format: "<hash>  <filename>\n"
-    let stdout = String::from_utf8(output.stdout).map_err(|_| ())?;
-    match stdout.split_whitespace().next() {
-        Some(h) if !h.is_empty() => Ok(Some(h.to_string())),
-        _ => Err(()),
-    }
-}
-
-/// SHA-256 of a file, via `sha256sum` or `shasum -a 256`.
-///
-/// THREE outcomes, and the caller depends on telling them apart (`#5629`
-/// amendment pass) — collapsing the last two into one `None` is what let a
-/// per-file failure mint the permanent `UNAVAILABLE` sentinel:
-///   `Ok(Some(hash))` hashed;
-///   `Ok(None)`       NO hasher on this host — neither binary is on PATH. A
-///                    permanent, host-wide fact, and the ONLY thing
-///                    `UNAVAILABLE` is allowed to mean;
-///   `Err(())`        a hasher IS on PATH but would not hash THIS file after
-///                    the retries (an unreadable mode, or sustained fork/EMFILE
-///                    pressure). Scoped to one file, and NOT a statement about
-///                    the host — so the caller writes no stamp rather than the
-///                    sentinel. This mirrors the shell half exactly:
-///                    `ts_hash_file`/`ts_fingerprint` hard-fail naming the file
-///                    instead of emitting a degraded manifest.
-///
-/// TWO hashers, and a bounded retry, for two distinct reasons (`#5629` review):
-///
-/// 1. The shell side of this contract —
-///    `scripts/tree-sitter-freshness.sh` -> `compute_sha256` ->
-///    `portable_sha256` in `scripts/lib.sh` — supports BOTH binaries. With
-///    `sha256sum` only here, a shasum-only host (macOS is the canonical case)
-///    makes the two sides disagree: every stamp says `UNAVAILABLE` while the
-///    script computes a real fingerprint, so every archive is permanently
-///    unattestable and the guard is silently a no-op for that whole checkout.
-///
-/// 2. `UNAVAILABLE` must mean "no hasher on this host" and nothing else.
-///    Without the retry, one momentary subprocess failure during one build
-///    mints the sentinel for a fingerprint dir — and a dir cargo will not
-///    rebuild never gets it rewritten, so that one spike disables attestation
-///    for that dir indefinitely, then propagates into every lane CoW-seeded
-///    from that base.
-///
-/// The loop exits immediately (no sleeps) when neither binary is on PATH at all.
-fn sha256_of(path: &str) -> Result<Option<String>, ()> {
-    const HASHERS: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
-    const ATTEMPTS: u32 = 3;
-
-    for attempt in 0..ATTEMPTS {
-        let mut retryable = false;
-        for (bin, args) in HASHERS {
-            match try_hasher(bin, args, path) {
-                Ok(Some(hash)) => return Ok(Some(hash)),
-                Ok(None) => {} // not on PATH — fall through to the next binary
-                Err(()) => retryable = true, // present but failed — a retry may win
-            }
-        }
-        // Nothing failed transiently, so nothing can change on a retry: the
-        // host simply has no hasher. Return now rather than sleeping twice.
-        if !retryable {
-            return Ok(None);
-        }
-        if attempt + 1 < ATTEMPTS {
-            std::thread::sleep(std::time::Duration::from_millis(
-                100 * u64::from(attempt + 1),
-            ));
-        }
-    }
-    // A hasher exists and kept failing on THIS file. Deliberately NOT Ok(None):
-    // that would claim a host-wide property from one file's evidence.
-    Err(())
-}
-
 /// Attest what was just compiled.
 ///
 /// Writes a per-file SHA-256 manifest — `<hash>  <relpath>` lines, sorted by
@@ -456,6 +364,10 @@ fn main() {
     // automatically rather than silently unwatched (which is exactly how this
     // defect class recurs).
     println!("cargo:rerun-if-changed=grammar.js");
+    // The shared staleness logic is `include!`d, not a separate crate, so
+    // cargo does not learn about it from the module graph — it must be
+    // declared here or an edit to the predicates never re-runs them.
+    println!("cargo:rerun-if-changed=build_support.rs");
     for rel in compilation_inputs() {
         if rel == "src/parser.c" {
             continue;
