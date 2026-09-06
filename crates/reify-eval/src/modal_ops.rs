@@ -3056,7 +3056,9 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
 /// Reads the `Value::Vector` field's three components (each via
 /// [`read_scalar_si`]) and normalizes to a unit vector — realizing the
 /// `reference_direction.norm() > 0` invariant deferred from the structure-def to
-/// this trampoline (modal_analysis.ri:382-389). A missing / degenerate
+/// this trampoline (the `reference_direction` field note on `structure def
+/// ModalOptions`, modal_analysis.ri — cited by name, not by line: that block has
+/// moved twice since the line range originally written here). A missing / degenerate
 /// (zero-norm) direction falls back to the slender bending default `[0, 0, 1]`.
 fn extract_reference_direction(val: &Value) -> [f64; 3] {
     let default_dir = [0.0, 0.0, 1.0];
