@@ -810,8 +810,21 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
 /// (a world-rooted prefix joint) is perturbed consistently in both chains,
 /// yielding the correct total derivative.
 ///
-/// The closing joint — not being a tree `at` joint — is never passed as a
-/// target and therefore never perturbed; its direction is removed by
+/// The closing joint is **not** excluded from `target_joints`. In the
+/// parent-conflict shape it IS a spanning-tree `at` joint — its
+/// first-recorded edge is precisely what made the second edge a conflict —
+/// so `closed_chain_inverse_dynamics` passes it like any other tree joint.
+/// The in-tree witness is
+/// `closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`, which lists
+/// `j_coupler_tip` in its `target_joints` under the comment
+/// "// also the closing joint".
+///
+/// Task 7186 changed **where** the closing joint is perturbed, not whether.
+/// It now occurs exactly once, at the tail of `chain_a`, so its column is the
+/// derivative through `chain_a` alone.  Before 7186 it was appended to
+/// `chain_b` as well, and the perturb-every-occurrence rule above
+/// differentiated both copies together.  Its absorbed directions are still
+/// removed downstream by
 /// [`reduce_constraint_rank`](crate::dynamics::closed_chain::reduce_constraint_rank).
 ///
 /// # Parameters
