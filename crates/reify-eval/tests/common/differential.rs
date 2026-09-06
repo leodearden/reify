@@ -63,9 +63,14 @@ use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with
 ///
 /// An `@optimized` stdlib fn whose target has no registered compute trampoline
 /// does NOT error out. `engine_eval.rs`'s dispatch takes a documented
-/// else-branch: it pushes a CODELESS Error diagnostic ("@optimized target …: no
+/// else-branch: it pushes a diagnostic coded
+/// `DiagnosticCode::NoRegisteredComputeTrampoline` ("@optimized target …: no
 /// registered compute trampoline (falling back to body-inlining)") and then
-/// body-inlines the fn. For the solver fns that body is a never-run sentinel — a
+/// body-inlines the fn. Since task 5311 that diagnostic is a `Severity::Warning`
+/// on an engine whose compute registry is entirely EMPTY — which is precisely
+/// the case this section is about, an engine that never called
+/// `register_compute_fns` — and a `Severity::Error` otherwise. Neither severity
+/// stops the body-inlining below, which is the whole hazard. For the solver fns that body is a never-run sentinel — a
 /// bare struct ctor whose params are ALL required with no defaults (e.g.
 /// `form_find_free`'s `{ FormFindResult() }`, `crates/reify-compiler/stdlib/tensegrity.ri`).
 /// The result is a NON-Undef struct whose every field is Undef, so every

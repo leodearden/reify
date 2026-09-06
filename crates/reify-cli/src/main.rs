@@ -467,11 +467,19 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
 /// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
 ///
-/// **Known limitation:** `reify check` still surfaces the engine-owned
-/// `Severity::Error` "no registered compute trampoline (falling back to
-/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
-/// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
-/// separate engine-side concern (deferred, out of scope for this CLI task).
+/// **Severity of the missing-trampoline diagnostic (task 5311):** `reify check`
+/// surfaces the engine-owned "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves at
+/// `Severity::Warning`, carrying
+/// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
+/// severity on its compute registry being entirely EMPTY, which is exactly this
+/// function's posture — `cmd_check` never calls `register_compute_trampolines`,
+/// so a missing trampoline here is the declared posture rather than a defect.
+/// `reify eval` and `reify build` DO register the production bundle, so the
+/// same diagnostic stays `Severity::Error` there and keeps gating their exit
+/// codes.  The contrast is pinned by
+/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
+/// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
 /// The constraint-indeterminacy message grammar, as one pair of literals:
 /// `constraint {label-or-id} indeterminate: {reason}`.
 ///
