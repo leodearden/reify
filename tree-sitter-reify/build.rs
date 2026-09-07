@@ -292,6 +292,13 @@ fn main() {
         // land here with a fresh OUT_DIR stamp but a valid shell stamp, the
         // outputs are already current.
         if !shell_stamp_is_current(grammar_path, &output_refs, src_dir) {
+            // Hash grammar.js BEFORE generating, exactly as `grammar_hash`
+            // above and as `scripts/tree-sitter-generate.sh` do (it captures
+            // `GRAMMAR_HASH` before taking the lock and writes it after). The
+            // stamp must describe the grammar the generator actually consumed;
+            // a hash taken AFTER a >60 s `tree-sitter generate` describes
+            // whatever landed in the meantime.
+            let grammar_sha_before = sha256_of_path(grammar_path);
             run_tree_sitter_generate();
             // Verify all 3 output files were created.
             verify_outputs(src_dir);
@@ -301,8 +308,29 @@ fn main() {
             // later merge or checkout restoring that grammar made the stamp
             // match again, and it then actively vouched for a parser the current
             // grammar never produced. Whatever regenerates must re-attest.
-            match sha256_of_path(grammar_path) {
-                Ok(Some(sha)) => write_shell_stamps(src_dir, &sha),
+            //
+            // Re-hash and require the two to AGREE (`#6992` amendment pass).
+            // `tree-sitter generate` can run for over a minute, and an
+            // interactive edit / cargo-watch / a merge landing in that window
+            // makes grammar.js(B) the thing we would stamp while parser.c and
+            // the outputs manifest describe A. That pair is SELF-CONSISTENT and
+            // therefore permanently green: the next build sees the OUT_DIR
+            // content hash differ, but `shell_stamp_is_current` then finds
+            // sha256(grammar.js) == the grammar stamp AND the manifest matching
+            // parser.c, skips generation, and links parser.c(A) against
+            // grammar.js(B) forever — the very false GREEN this task removes,
+            // through a narrower window. On disagreement write NEITHER stamp:
+            // the outputs stay unproven and the next build regenerates.
+            match (grammar_sha_before, sha256_of_path(grammar_path)) {
+                (Ok(Some(before)), Ok(Some(after))) if before == after => {
+                    write_shell_stamps(src_dir, &before)
+                }
+                (Ok(Some(_)), Ok(Some(_))) => eprintln!(
+                    "tree-sitter-reify: {} changed while `tree-sitter generate` \
+                     was running; leaving the shell stamps unwritten (the \
+                     outputs stay unproven and the next build will regenerate)",
+                    grammar_path.display()
+                ),
                 // No hasher, or a grammar.js that would not hash: write NO
                 // stamp rather than a wrong one. The outputs stay UNPROVEN, so
                 // the next build regenerates — the safe direction, and the same
