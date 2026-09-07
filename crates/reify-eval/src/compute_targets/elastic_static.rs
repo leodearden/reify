@@ -1491,10 +1491,10 @@ pub fn solve_elastic_static_trampoline(
             // Post-loop cancel check (reviewer_comprehensive amendment), the
             // exact shape of §6b above and for the same compute-node-contract
             // §2 reason: a cancel raised DURING the refinement loop makes every
-            // CG solve from that point on bail early (see
-            // `RealizedAdaptiveProblem::solve_and_estimate`'s cancel poll), so
-            // the a-posteriori triple below would be computed from partial
-            // displacements. §6b fires before this branch and cannot see a
+            // CG solve from that point on bail early (BOTH lanes'
+            // `solve_and_estimate` pass `ambient_cg_cancel_poll()` as their CG
+            // progress callback), so the a-posteriori triple below would be
+            // computed from partial displacements. §6b fires before this branch and cannot see a
             // cancel raised after it. Returning `Cancelled` leaves the output VC
             // `Freshness::Pending` rather than caching a bogus partial result.
             if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
