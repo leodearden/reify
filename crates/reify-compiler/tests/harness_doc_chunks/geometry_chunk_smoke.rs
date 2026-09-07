@@ -394,6 +394,27 @@ const LENGTH_ARGS_SECTION_MARKER: &str = "<!-- LENGTH-ARGS-SECTION -->";
 /// only; nothing matches on it.
 const LENGTH_ARGS_SECTION_TITLE: &str = "### Dimensioned arguments";
 
+/// Marker that OPENS the MEASUREMENT / mass-property section — the one that
+/// documents [`reify_compiler::GEOMETRY_QUERY_NAMES`] as call forms. Matched
+/// BYTE-EXACTLY on the trimmed line, exactly as [`ORACLE_SECTION_MARKER`] is,
+/// and for the identical reason: the anchor must be inert so the heading's
+/// wording stays free to change.
+///
+/// Scoping matters here more than anywhere else in this file, because the names
+/// in this family are the ones a chunk-wide scan cannot distinguish. `volume`
+/// and `area` are ordinary English words that already appeared in this repo's
+/// chunks as HAND-COMPUTED parameter arithmetic (`structures.md`'s
+/// `let volume = thickness * width * width`), and `contains` is also the
+/// `List`/`Set`/`Range` method documented in the `collections` chunk. An
+/// unscoped word scan is satisfied by every one of those while teaching a reader
+/// nothing about the kernel query — which is precisely the misdirection task
+/// 5581 exists to remove, so the SECTION is what gets scanned.
+const MEASUREMENT_SECTION_MARKER: &str = "<!-- MEASUREMENT-SECTION -->";
+
+/// Human-readable name of [`MEASUREMENT_SECTION_MARKER`]'s section. Panic text
+/// only; nothing matches on it.
+const MEASUREMENT_SECTION_TITLE: &str = "## Measurement & Mass-Property Queries";
+
 fn read_chunk() -> String {
     std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
         panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
@@ -638,6 +659,65 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
              reify_compiler::GEOMETRY_QUERY_NAMES ({:?}) — the chunk now documents a phantom \
              builtin. Rename the doc's call form to match the registry.",
             reify_compiler::GEOMETRY_QUERY_NAMES
+        );
+    }
+}
+
+/// Every member of the geometry-QUERY registry must be documented as a call form
+/// in the chunk's measurement section.
+///
+/// THE REGISTRY IS ITERATED DIRECTLY, not mirrored into a local list plus a
+/// set-equality guard the way [`KINEMATIC_ORACLE_NAMES`] is. That two-test shape
+/// exists so a failure can distinguish "the registry grew" from "the doc
+/// shrank", and at three names it is cheap. At fifteen — and at the thirty-one of
+/// `topology_selector_family_documented_in_geometry_chunk` — the mirror becomes
+/// its own drift surface: a hand-copied list that must be edited in lockstep with
+/// the registry it claims to reproduce. Iterating the registry collapses both
+/// halves into one check with strictly less to maintain, and keeps the
+/// distinguishing power where it is actually read: the panic message below names
+/// the offending registry member and both remedies.
+///
+/// A CALL FORM (`name(`) rather than a bare word, and that needle is doing real
+/// work here rather than mirroring a convention. `volume`, `area`, `centroid` and
+/// `contains` all already appear as bare words elsewhere in the chunk corpus —
+/// `volume` as `structures.md`'s hand-computed `thickness * width * width`,
+/// `contains` as the `List`/`Set`/`Range` method in the `collections` chunk — so
+/// a word-boundary scan (which is exactly what the out-of-band PDOCCOVER detector
+/// in `crates/reify-audit/src/pdoccover.rs` performs) reports them DOCUMENTED
+/// while a reader learns nothing about the kernel query. The open paren is what
+/// separates a query from a noun.
+///
+/// No leading backtick is required, for the reason
+/// `interference_oracle_names_documented_in_geometry_chunk` states at length: the
+/// house rule this file inherits forbids pinning doc TYPOGRAPHY. The one
+/// exception — the `-> <Type>` notation — is imposed only on the whole-handle
+/// four, by `documented_measurement_arities_are_exercised_by_a_compiling_fence`.
+///
+/// Anti-vacuity comes free from [`section_body`], which panics when its marker is
+/// absent, so deleting the section is RED rather than silently green.
+#[test]
+fn measurement_query_family_documented_in_geometry_chunk() {
+    let markdown = read_chunk();
+    let section = section_body(
+        &markdown,
+        MEASUREMENT_SECTION_MARKER,
+        CHUNK_PATH,
+        MEASUREMENT_SECTION_TITLE,
+    );
+
+    for name in reify_compiler::GEOMETRY_QUERY_NAMES {
+        let call_form = format!("{name}(");
+        assert!(
+            section.contains(&call_form),
+            "{CHUNK_PATH}'s `{MEASUREMENT_SECTION_TITLE}` section does not document the geometry \
+             query `{name}` as a call form ({call_form}...). The chunk is what the in-GUI \
+             assistant retrieves, so an undocumented query reads to it as a MISSING CAPABILITY: \
+             asked for a part's mass or its centre of area it will hand-compute the figure from \
+             the parameters instead of asking the kernel, and silently return a number that no \
+             longer describes the realized geometry once a feature is added (task 5581). Either \
+             document the call form in that section, or — if the builtin itself is gone — remove \
+             `{name}` from reify_compiler::GEOMETRY_QUERY_NAMES, which is iterated directly here \
+             and is the sole source of this list."
         );
     }
 }
