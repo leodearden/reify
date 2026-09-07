@@ -135,6 +135,16 @@
 #     Knobs: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT (see below).
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
 #
+# REIFY_WARM_LANE_RERERE_ARM=0 — OPERATOR ESCAPE HATCH, not a tuning knob.
+#   Skips the shared-store `git-rerere-guard.sh arm` delegation at the tail of
+#   --fresh-checkout (see the block there for why lane cadence exists at all).
+#   Exact `= "0"` match, inverted from the other knobs here on purpose: unset and
+#   every other value keep the defence ARMED, so the failure direction is always
+#   "still protected", never "silently off". Exists because that call runs on
+#   EVERY acquire across all linked worktrees of one shared .git/config, and a
+#   fleet-wide write path deserves an off-switch that needs no code change and no
+#   merge. Steady-state cost is a read-only sweep with no config lock taken.
+#
 # REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 — HERMETIC-FIXTURE / deliberate-accept
 #   seam, NOT a production knob. Downgrades inv.13's refusal to a [warn] (the
 #   downgrade is itself logged) so a fixture that intentionally exercises the
@@ -153,6 +163,12 @@
 #   abort → empty stdout → the caller falls back to a cold rebuild).
 
 set -euo pipefail
+
+# Resolved once so sibling scripts/ helpers can be invoked by absolute path
+# regardless of the caller's CWD (this script is run from dark-factory, from
+# tests/infra fixtures, and by hand). Used by the rerere-disarm delegation at
+# the tail of this file.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── log helpers (all write to stderr) ────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
@@ -309,6 +325,12 @@ Guards (seed mode, fail-closed before any work):
            REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under mount → exit 1.
            LANE_TARGET or LANE_DIR == BASE_TARGET_DIR (self-clobber) → exit 1.
          REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 forces synchronous trash rm (tests).
+
+Environment (escape hatch):
+  REIFY_WARM_LANE_RERERE_ARM=0  Skip the shared-store `git-rerere-guard.sh arm`
+         delegation run at the end of --fresh-checkout. Operator escape hatch,
+         not a tuning knob: unset and any value other than a literal 0 keep the
+         disarm ARMED, so the failure direction is always "still protected".
 EOF
 }
 
@@ -1566,6 +1588,99 @@ fi
 #   Per D10 always-re-seed-at-acquire: production acquires (task lanes AND
 #   merge-spec slots) ALWAYS use --fresh-checkout, so the invalidation above
 #   covers both lane classes without extra code.
+
+# ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
+#
+# DELEGATION, not an implementation: every rerere.* write, every scope-resolution
+# rule and the whole exit-code contract stay normative in ONE place — the header
+# of scripts/git-rerere-guard.sh. This script grows no `git config` logic of its
+# own (it has exactly zero today, by design, as a CoW-clone + mtime-stamping
+# primitive); it only decides WHEN the guard runs.
+#
+# WHY HERE: .git/rr-cache is a git COMMON path, so all 254 linked worktrees of
+# this store share ONE unlocked resolution cache and one .git/config. scripts/
+# setup-dev.sh already calls the guard, but at DEVELOPER-SETUP cadence — nothing
+# re-pins the shared config between two setup runs. Measured on the live store,
+# that window is too wide: the shared config was found ARMED twice on a single
+# day (2026-08-30 07:06:11 and 11:44:46). An ACQUIRE is the natural narrower
+# cadence, and it costs a read-only sweep in the steady state.
+#
+# PLACEMENT: after every fail-closed post-condition above
+# (_assert_no_stale_delta_stamp and siblings) and immediately before the terminal
+# ok/echo pair, so it can never mask, precede or reorder an existing assertion —
+# and a seed that fails early never reaches it.
+#
+# EXISTENCE GATE: a checkout without the guard degrades to one stderr warning.
+#
+# FAIL-OPEN, ALWAYS: an ACQUIRE must never fail because the shared store could
+# not be pinned. 254 lanes contend for one .git/config, so a lost race on
+# .git/config.lock is a live possibility, and this defence is advisory.
+#
+# EXIT-CODE CONTRACT — normative in the guard's header; read it there before
+# touching the branch below. In short the branch is `0 | 2 | *`, NEVER a closed
+# set {0,1,2}: the guard runs under `set -euo pipefail`, so a git invocation
+# aborting outside a guarded `if` propagates GIT's own status, not 1.
+#
+# STDOUT: the >/dev/null is structural, not defensive style. This script's stdout
+# is a single-use machine-readable channel — exactly the one echo below (see the
+# Stdout contract in the header, pinned by C5/C6/E3/H1c/I3). The guard is
+# stderr-only today; the redirect makes that a property of this call site rather
+# than a property inherited from the callee.
+#
+# OPT-OUT — REIFY_WARM_LANE_RERERE_ARM=0 skips this block entirely. This is an
+# operator escape hatch, not a tuning knob: the call now runs on EVERY acquire
+# across 254 linked worktrees that share ONE .git/config, so if lane-cadence
+# arming ever produced .git/config.lock contention under fleet load, the
+# alternative to a switch would be an emergency revert. It also lets the seed
+# suite exercise both directions of this branch (Block W's W5-W7).
+# Skipped when and ONLY when the value is exactly `0` (the
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC / REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT exact-
+# match idiom), so unset and every other value keep the defence armed — the
+# failure direction must be "still protected", never "silently off".
+# COST, so nobody reaches for the switch reflexively: the steady state takes no
+# .git/config.lock at all. cmd_arm compares against the current --local value and
+# skips the write when that set is exactly one `false` (git-rerere-guard.sh:735-758),
+# so once the store is pinned each acquire pays only a read-only sweep — measured
+# at 0.249s from a lane on the live 254-worktree store.
+#
+# MODE GATE — $FRESH_CHECKOUT, not a new flag. It reuses the discriminator this
+# script already switches on at the three sites above rather than inventing a
+# mode flag, and it covers every TASK-lane acquire: dark-factory drives those
+# through _seed_warm_lane(lane, '--fresh-checkout') at seven call sites in
+# orchestrator/src/orchestrator/git_ops.py.
+#
+# It does NOT cover the merge-spec lane. MEASURED 2026-08-30, correcting the
+# claim in this script's own --reset-in-place block below (and in the PRD prose
+# it quotes) that production acquires "task lanes AND merge-spec slots" always
+# use --fresh-checkout: acquire_spec_lane (git_ops.py:5923) calls
+# _seed_warm_lane(lane, '--reset-in-place') at :6076, at an indent common to
+# BOTH its create and its reset branch — so the merge-spec acquire is
+# ALWAYS --reset-in-place and never reaches this block.
+#
+# That gap is harmless for THIS defence, which is why the gate stays as it is:
+# the pin is a property of the ONE shared .git/config, not of a lane, so any
+# acquire that pins it pins it for every lane including the spec lane — and
+# task-lane acquires dominate by volume. It would matter for a lane-scoped
+# write; it does not for a shared-store one.
+if [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ] \
+        && [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
+    _rerere_arm_rc=0
+    "$_SCRIPT_DIR/git-rerere-guard.sh" arm "$LANE_DIR" >/dev/null || _rerere_arm_rc=$?
+    if [ "$_rerere_arm_rc" -eq 0 ]; then
+        info "git rerere disarmed for the shared store (lane cadence)"
+    elif [ "$_rerere_arm_rc" -eq 2 ]; then
+        warn "shared config pinned, but rerere is still armed — or unverifiable — in a"
+        warn "  scope 'arm' cannot reach (another lane's config.worktree, or the global"
+        warn "  gitconfig). Run 'scripts/git-rerere-guard.sh check' — it names the worktree."
+        warn "  See docs/notes/git-rerere-shared-worktree-hazard.md"
+    else
+        warn "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc) — seed continues"
+        warn "  the shared store may be rerere-ARMED; run 'scripts/git-rerere-guard.sh check'"
+    fi
+    unset _rerere_arm_rc
+elif [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ]; then
+    warn "scripts/git-rerere-guard.sh not executable — skipping the shared-store rerere disarm"
+fi
 
 ok "Warm lane seeded at $LANE_TARGET"
 echo "$LANE_TARGET"

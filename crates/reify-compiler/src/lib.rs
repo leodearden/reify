@@ -124,8 +124,8 @@ pub use units::{
     DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
     GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
     GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, UnitEntry, UnitRegistry,
-    UnitResolveError, geometry_query_result_type, resolve_unit_expr,
-    topology_selector_result_type,
+    UnitResolveError, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, geometry_query_result_type,
+    resolve_unit_expr, topology_selector_result_type,
 };
 
 use std::collections::{HashMap, HashSet};

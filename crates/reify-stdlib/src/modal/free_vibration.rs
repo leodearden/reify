@@ -21,7 +21,20 @@ const MIN_OMEGA_FOR_DAMPING: f64 = 1e-9;
 /// `λ ≤ 0` — a zero-energy rigid-body mode, or a spurious negative pair from
 /// numerical noise — clamps to `0.0` rather than producing `NaN` from
 /// `√(negative)`. A `NaN` λ likewise maps to `0.0` (the `λ > 0` predicate is
-/// false). PRD §4.1 / §7.
+/// false). PRD §4.1 / §7. The clamp is unrelated to the unit crossing below.
+///
+/// This is a **D4 rad/cycle crossing** — the INVERSE of the one in
+/// `trajectory::input_shape::build_train_for_shaper`: rad/s → Hz, i.e. dividing
+/// out 2π rad·cycle⁻¹. That is its own crossing class in the angle-dimension
+/// doctrine, distinct from the η = 1 rad SI-coherence identity; the typed layer
+/// already forces it (FREQUENCY ≠ ANGULAR_VELOCITY as `DimensionVector`s), and
+/// this `f64` boundary is where that distinction is lost — hence a
+/// doctrine-citing comment rather than a retype. See
+/// `docs/prds/v0_6/angle-dimension-completion.md` D4 (#6184).
+///
+/// This function is the module's ONLY unit crossing:
+/// [`rayleigh_damping_ratio`] below stays entirely in rad/s and crosses
+/// nothing, so a reader need not check it.
 pub fn eigenvalue_to_frequency_hz(lambda: f64) -> f64 {
     if lambda > 0.0 {
         lambda.sqrt() / (2.0 * PI)

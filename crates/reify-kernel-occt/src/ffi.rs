@@ -531,6 +531,15 @@ pub mod ffi {
             dy: f64,
             dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the origin.
+        ///
+        /// **Angular unit contract** (INV-AD-4; #6184): `angle_rad` is SI
+        /// RADIANS and crosses this bridge UNSCALED — the C++ side hands it
+        /// straight to `gp_Trsf::SetRotation`, which takes radians too, so no
+        /// layer converts. Lengths cross unscaled here as well (model space is
+        /// SI metres); the x1000 the STEP writer applies is an EXPORT-time
+        /// rescale, not a bridge-time one. Same contract on
+        /// `rotate_around_shape` and `make_revolve`/`make_revolve_with_history`.
         fn rotate_shape(
             shape: &OcctShape,
             ax: f64,
@@ -545,6 +554,9 @@ pub mod ffi {
             cy: f64,
             cz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the pivot
+        /// point `(px, py, pz)`. `angle_rad` is SI radians, unscaled — see
+        /// `rotate_shape` above for the contract (#6184).
         fn rotate_around_shape(
             shape: &OcctShape,
             px: f64,
@@ -688,6 +700,11 @@ pub mod ffi {
 
         // --- Thicken / Shell / Offset Solid ---
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a surface (open face/shell) by `distance` along its normal via
+        /// `BRepOffsetAPI_MakeOffsetShape` in Skin mode (offset_surface θ).
+        /// Positive `distance` offsets along the face's +normal. Errs when
+        /// `distance` is ~0 or the result is degenerate/invalid.
+        fn make_offset_surface(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
         fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
@@ -830,6 +847,10 @@ pub mod ffi {
             dz: f64,
             both: bool,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Revolve `profile` about the axis through `(ox, oy, oz)` with
+        /// direction `(ax, ay, az)`. `angle_rad` is SI radians, unscaled (a
+        /// full revolution is `2*PI`) — see `rotate_shape` for the contract
+        /// (#6184).
         fn make_revolve(
             profile: &OcctShape,
             ox: f64,

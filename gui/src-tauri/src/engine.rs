@@ -1474,6 +1474,26 @@ impl EngineSession {
     /// Delegates to [`Self::with_solve_slot`]; see there for lifecycle details
     /// and the no-interruption limitation.
     fn check_with_solve_slot(&mut self, compiled: &CompiledModule) -> CheckResult {
+        // Task 5212 (bound OCCT native-shape memory across reloads): every
+        // whole-file reload entry (load_file / update_source / load_from_source)
+        // funnels through here exactly once, so this is the single place to
+        // reset the geometry kernels — freeing the previous design's resident
+        // native shapes — AND clear the realization cache. Both are required:
+        // reloads preserve prior module identity, so build-2 entities collide on
+        // entity_id with build-1 and would otherwise cache-hit a build-1
+        // KernelHandle whose shape this reset just evicted → InvalidReference →
+        // broken render; clearing the cache forces a fresh re-execution against
+        // the reset kernel. Idempotent no-op on a cold engine (first load).
+        //
+        // Placement: the reset must live on THIS funnel, not deeper in the
+        // pipeline. tessellate_snapshot / execute_realization_ops also run on
+        // every slider tick, so a reset there would wipe warm shapes on each
+        // parameter change; reify-eval Engine::check()/build() are also reached
+        // by CLI build() and relate_solve sub-builds. The slider path
+        // (set_parameter → edit_check) deliberately BYPASSES check_with_solve_slot,
+        // so a parameter drag never triggers a reset — exactly the behaviour the
+        // reload-wiring regression test pins.
+        self.core.engine_mut().reset_geometry_for_reload();
         self.with_solve_slot(|s| s.core.engine_mut().check(compiled))
     }
 
@@ -2122,6 +2142,59 @@ impl EngineSession {
         self.build_gui_state()
     }
 
+    /// The shared cell lookup: the declared [`reify_core::Type`] of the value
+    /// cell `cell_id` names in some compiled template, a discriminated `Err`
+    /// otherwise.
+    ///
+    /// Both entry points that mutate a parameter's value run it — the ephemeral
+    /// engine-state edit ([`Self::set_parameter`], what the property-panel
+    /// slider drives today, which needs the type to make its parse
+    /// dimension-aware per task #5757) and the INV-GUI-3 source write-back
+    /// ([`Self::resolve_rewritable_default_span`], which
+    /// [`Self::apply_param_to_source`] resolves through and which needs only the
+    /// existence half, via [`Self::require_known_cell`]). They MUST agree about
+    /// what a cell id denotes: a slider that moves a param the write-back
+    /// reports as unknown (or the reverse) is a contradiction the user has no
+    /// way to make sense of.
+    ///
+    /// Agreement by ONE function rather than by two hand-copied predicates,
+    /// because nothing structural stops one copy from being updated and the
+    /// other not — the next time this lookup widens (searching realizations as
+    /// well as templates, say) is exactly when they would drift.
+    ///
+    /// The type is BORROWED out of `compiled()` rather than cloned, so the
+    /// existence-only caller ([`Self::require_known_cell`], the write-back's
+    /// gate) pays nothing for a value it discards. `set_parameter`, the one
+    /// caller that genuinely needs an owned `Type` — it needs `&mut self`
+    /// afterwards, which this borrow would block — clones at its own call site.
+    fn resolve_known_cell_type(
+        &self,
+        cell_id: &ValueCellId,
+        cell_id_str: &str,
+    ) -> Result<&reify_core::Type, String> {
+        let compiled = self
+            .core
+            .compiled()
+            .ok_or_else(|| "No module loaded".to_string())?;
+        compiled
+            .templates
+            .iter()
+            .find_map(|t| t.value_cells.iter().find(|vc| vc.id == *cell_id))
+            .map(|vc| &vc.cell_type)
+            .ok_or_else(|| format!("Unknown parameter '{}'", cell_id_str))
+    }
+
+    /// The existence half of [`Self::resolve_known_cell_type`]: `Ok(())` when
+    /// `cell_id` names a value cell of some compiled template.
+    ///
+    /// The write-back path splices a source literal and has no use for the
+    /// declared type — but it must refuse exactly the cell ids `set_parameter`
+    /// refuses, so it asks the same function and discards the type rather than
+    /// carrying a second predicate.
+    fn require_known_cell(&self, cell_id: &ValueCellId, cell_id_str: &str) -> Result<(), String> {
+        self.resolve_known_cell_type(cell_id, cell_id_str).map(|_| ())
+    }
+
     /// Set a parameter value by cell ID string and value string.
     ///
     /// `cell_id_str` is "Entity.member" (e.g., "Bracket.width").
@@ -2142,18 +2215,14 @@ impl EngineSession {
         // the lookup first also keeps "Unknown parameter" ahead of any parse
         // diagnostic — an unknown cell is the more specific complaint.
         //
-        // The type is cloned rather than borrowed because `with_solve_slot`
-        // below needs `&mut self`, which the `compiled()` borrow would block.
-        let compiled = self
-            .core
-            .compiled()
-            .ok_or_else(|| "No module loaded".to_string())?;
-        let cell_type = compiled
-            .templates
-            .iter()
-            .find_map(|t| t.value_cells.iter().find(|vc| vc.id == cell_id))
-            .map(|vc| vc.cell_type.clone())
-            .ok_or_else(|| format!("Unknown parameter '{}'", cell_id_str))?;
+        // The clone lives HERE, at the one call site that needs an owned type:
+        // `with_solve_slot` below needs `&mut self`, which the `compiled()`
+        // borrow would block. The shared lookup hands back a borrow so the
+        // existence-only caller (`require_known_cell`) pays nothing for it.
+        // The lookup itself is `resolve_known_cell_type` so this path and the
+        // INV-GUI-3 write-back agree by construction about what a cell id
+        // denotes — see that function.
+        let cell_type = self.resolve_known_cell_type(&cell_id, cell_id_str)?.clone();
 
         let value = parse_value_string_for_cell(value_str, &cell_type)?;
 
@@ -2185,6 +2254,383 @@ impl EngineSession {
         self.invalidate_geometry_derived_cache_for_entity(&edited_entity);
         self.post_engine_call_telemetry();
         self.build_gui_state()
+    }
+
+    /// Write `value` back into the session's canonical `.ri` file as the
+    /// source-of-truth edit for `cell_id_str`'s default literal.
+    ///
+    /// This is the INV-GUI-3 primitive: **the `.ri` source is the canonical
+    /// truth of the design for all mutations** (task 5096 γ, PRD
+    /// `docs/prds/v0_6/ai-native-editing.md` §6.1, D1/D6/D7). Every durable
+    /// value mutation — the MCP write tools (δ) and the GUI slider once it is
+    /// re-homed (η) — is meant to land here rather than as an ephemeral
+    /// engine-state override, so that a design's on-disk text and the engine's
+    /// idea of it can never diverge.
+    ///
+    /// # Phase order
+    ///
+    /// **resolve → serialize → splice → confirm disk → recompile → write.**
+    ///
+    /// 1. **Resolve** the default span this cell may be written through, via
+    ///    [`Self::resolve_rewritable_default_span`].
+    /// 2. **Serialize** `value` with [`reify_ir::value_to_ri_literal_with_unit`],
+    ///    hinted by the unit read off the literal being replaced
+    ///    ([`unit_hint_from_default_literal`]) so `80mm` stays millimetres
+    ///    instead of hopping to the canonical ladder.
+    /// 3. **Splice** by BYTE offset — a minimal replacement of just that span,
+    ///    never a re-serialization of the file, so comments, whitespace and
+    ///    every other declaration survive byte for byte (D6: no round-tripping
+    ///    pretty-printer exists, and inventing one here would silently reformat
+    ///    the user's document on every parameter tweak).
+    /// 4. **Confirm** the on-disk file still holds the text this session
+    ///    compiled, and REFUSE rather than clobber it if not. INV-GUI-3 makes
+    ///    the `.ri` canonical for the engine; it does not make this process the
+    ///    file's only writer. The rationale, the two ordinary causes and the
+    ///    two qualifications are stated once, at the check itself.
+    /// 5. **Recompile** in process through [`Self::update_source`]. The
+    ///    recompile precedes the write, and that ordering is load-bearing —
+    ///    stated once, at the call site.
+    /// 6. **Write** the spliced text to disk. Replace-atomic and its residual
+    ///    are [`write_file_atomically`]'s contract, stated once there.
+    ///
+    /// # Atomicity ledger
+    ///
+    /// Four state surfaces move together or not at all (the §6.1 invariant: on
+    /// success they are mutually consistent, on failure NONE are mutated):
+    ///
+    /// - the on-disk `.ri` file;
+    /// - the parse/compile surface — `source_map`, `parsed_cache`, `compiled`,
+    ///   `last_check` — which [`Self::update_source`] commits as one unit;
+    /// - the failure surfaces `compile_failure` and `last_reload_error`, which
+    ///   drive the diagnostics list and the hot-reload staleness banner;
+    /// - engine eval state, as read back through [`Self::build_gui_state`].
+    ///
+    /// Per failure phase:
+    ///
+    /// - **Resolve** (unknown cell, malformed id, an entity that is not the
+    ///   entry file's, no default, non-literal default, a unit the emitter
+    ///   cannot put back) returns before ANY of the four is touched.
+    /// - **Serialize** (no `.ri` literal re-parses to this value — a non-finite
+    ///   real, say) likewise: nothing has been mutated at that point.
+    /// - **No file to write** — a `load_from_source` session has no canonical
+    ///   `.ri` at all, and is refused rather than degraded to the engine-state
+    ///   edit INV-GUI-3 exists to replace — likewise.
+    /// - **Disk divergence** (the file no longer holds the text this session
+    ///   compiled) likewise: the check runs before the recompile precisely so
+    ///   its refusal costs no rollback.
+    /// - **Recompile** rejection restores `compile_failure` and
+    ///   `last_reload_error` from a snapshot taken immediately before the call,
+    ///   so the rejected text leaves no diagnostics behind.
+    /// - **Disk-write** failure rolls the engine back by recompiling the
+    ///   pre-edit text through [`Self::update_source`], so the engine is never
+    ///   left ahead of what is on disk, and restores the SAME snapshot
+    ///   afterwards — the rollback recompile succeeds, and a successful
+    ///   `commit_state` would otherwise clear a staleness banner this call
+    ///   never earned the right to clear.
+    ///
+    /// Both restores live at their own call sites, with the reason each one
+    /// belongs there rather than inside [`Self::update_source`].
+    ///
+    /// # Exactly one emit (D7)
+    ///
+    /// There is deliberately NO second emit path here. The frontend
+    /// notification rides [`Self::update_source`]'s `post_engine_call_telemetry`
+    /// — the one shared gui-state-sync choke-point — including on the
+    /// disk-write rollback, which is routed through `update_source` for
+    /// precisely that reason. The in-process recompile is authoritative and the
+    /// FS-watcher re-fire reloads identical content for an empty delta (D7,
+    /// §7 B5), so a second emit would buy nothing and cost the single-source
+    /// property. δ and η must not add one either; reconcile any further
+    /// divergence at `gui-state-sync`, which owns that seam.
+    ///
+    /// # Why a non-literal default is refused
+    ///
+    /// A default that is a `BinOp`, an `Auto`, a call or an identifier is
+    /// REFUSED rather than spliced over. `param depth = width * 2` encodes a
+    /// user-authored parametric relationship and `param length = auto` encodes
+    /// a solver-determined value; overwriting either with a constant destroys
+    /// it silently, and the user would discover it only when the design stopped
+    /// responding to the parameter it used to follow. Refusing hands the caller
+    /// a structured rejection to surface instead — see
+    /// [`Self::resolve_rewritable_default_span`] for the discriminated taxonomy
+    /// δ maps into its tool results.
+    ///
+    /// A literal in a unit the emitter cannot put back (`200mil`) is refused on
+    /// the same grounds and discriminated apart from this one — see
+    /// [`unit_is_emittable_as_written`], which owns that rule.
+    pub fn apply_param_to_source(
+        &mut self,
+        cell_id_str: &str,
+        value: &Value,
+    ) -> Result<GuiState, String> {
+        let span = self.resolve_rewritable_default_span(cell_id_str)?;
+        let (_, source) = self
+            .resolve_source()
+            .ok_or_else(|| "no module loaded".to_string())?;
+
+        let old = &source[span.start as usize..span.end as usize];
+        let literal =
+            reify_ir::value_to_ri_literal_with_unit(value, unit_hint_from_default_literal(old))
+                .map_err(|e| format!("cannot serialize value for '{cell_id_str}': {e}"))?;
+
+        let mut new_source = String::with_capacity(source.len() - old.len() + literal.len());
+        new_source.push_str(&source[..span.start as usize]);
+        new_source.push_str(&literal);
+        new_source.push_str(&source[span.end as usize..]);
+
+        // The PRE-EDIT buffer, owned. It is the rollback text for a failed disk
+        // write below, and it has to be owned in any case: `source` borrows
+        // `&self`, while the recompile that follows needs `&mut self`.
+        let original = source.to_owned();
+
+        let path = self
+            .core
+            .file_path()
+            .ok_or_else(|| "session has no on-disk .ri file to write".to_string())?
+            .to_path_buf();
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| format!("path {} is not valid UTF-8", path.display()))?;
+
+        // INV-GUI-3 makes the `.ri` canonical for the ENGINE; it does not make
+        // this process the file's only writer. The write below replaces the
+        // whole file with the in-memory buffer, so a divergence between the two
+        // would be resolved by DESTROYING the disk side wholesale — not just at
+        // the spliced span. That divergence has two ordinary causes: an
+        // external editor saved the file and the FS-watcher has not re-fired
+        // `update_source` yet, or the GUI editor's dirty-buffer path (which
+        // calls `update_source` per keystroke and never writes disk) is holding
+        // text the user has not saved. Refuse both rather than clobber: a
+        // parameter tweak must not discard another writer's edit, and must not
+        // force-save a document behind the user's back.
+        //
+        // Placed BEFORE the recompile so the refusal is a resolve-phase-shaped
+        // rejection that costs no rollback. It narrows the race rather than
+        // closing it — a writer landing between here and the rename still
+        // loses, which only locking the GUI does not take could prevent.
+        //
+        // A file that cannot be READ is deliberately NOT treated as divergence:
+        // there are no bytes to preserve and no comparison to make, so it falls
+        // through to the write, which fails and rolls the engine back with an
+        // error naming the real problem.
+        if let Ok(on_disk) = std::fs::read_to_string(&path)
+            && on_disk != original
+        {
+            return Err(format!(
+                "refusing to write '{cell_id_str}' back to {}: the file on disk no longer \
+                 matches the source this session compiled (an external edit, or unsaved \
+                 editor changes) — reload or save it first",
+                path.display()
+            ));
+        }
+
+        // The recompile runs BEFORE the disk write: it is the step that can
+        // legitimately reject the edit (type/dimension mismatch), and writing
+        // disk first would leave the on-disk `.ri` holding text the engine
+        // rejected — the FS-watcher would then reload the broken file into
+        // the GUI. Ordering recompile→write makes that state unreachable.
+        //
+        // The failure-diagnostic surfaces are snapshotted across that call and
+        // restored if it rejects. `update_source`'s failure path calls
+        // `record_compile_failure`, which stores the text it failed to compile
+        // together with diagnostics indexed into it — load-bearing for the
+        // EDITOR path, where that text IS the buffer the user is looking at.
+        // The write-back is the opposite case: the failed text was synthesized
+        // by this method from a value the caller supplied, was never shown to
+        // anyone, and reached neither disk nor `source_map`. Surfacing
+        // diagnostics against it would point the user at lines of a document
+        // that does not exist. So the restore belongs HERE, at the one call
+        // site with that property — do NOT "fix" this by pushing it down into
+        // `update_source`, which would blind the editor path.
+        //
+        // Error path only: a SUCCESSFUL `update_source` clears both fields via
+        // `commit_state`, which is exactly right.
+        let failure_surface = (self.compile_failure.clone(), self.last_reload_error.clone());
+        let state = match self.update_source(path_str, &new_source) {
+            Ok(state) => state,
+            Err(e) => {
+                (self.compile_failure, self.last_reload_error) = failure_surface;
+                return Err(e);
+            }
+        };
+
+        if let Err(e) = write_file_atomically(&path, &new_source) {
+            let write_err = format!("Error writing {}: {e}", path.display());
+            // The engine committed and disk did not, so the engine is now AHEAD
+            // of the canonical `.ri` — the exact inconsistency INV-GUI-3 exists
+            // to forbid. Roll it back to the pre-edit text.
+            //
+            // Routed through `update_source`, NOT a hand-rolled `commit_state`,
+            // so the restored state reaches the frontend through the ONE shared
+            // choke-point (`post_engine_call_telemetry`) exactly as the forward
+            // commit did. A failed write therefore fires two emits, both down
+            // the same path, and the LAST one the frontend sees is the pre-edit
+            // state.
+            //
+            // The rollback recompile cannot fail on well-formed input — this is
+            // text that compiled moments ago — but its `Err` is still handled
+            // rather than ignored: a session left silently inconsistent is
+            // worse than a loud combined error.
+            //
+            // The rollback restores the ENGINE and deliberately does not touch
+            // disk. It does not have to: `write_file_atomically` fails BEFORE
+            // the rename or not at all, so the on-disk `.ri` still holds the
+            // pre-edit text this rollback returns the engine to — the two agree
+            // again without a second write down the path that just failed.
+            return match self.update_source(path_str, &original) {
+                Ok(_) => {
+                    // The SAME snapshot restore as the recompile-rejection arm
+                    // above, for the same reason and one step later. This call
+                    // has failed, so the ledger says none of the four surfaces
+                    // may move — but the rollback `update_source` SUCCEEDED,
+                    // and a successful `commit_state` clears `compile_failure`
+                    // and `last_reload_error` unconditionally, including any
+                    // that PREDATE this call. Without the restore a failed
+                    // write silently clears a staleness banner the user's
+                    // last hot reload really did earn, and `is_stale()` starts
+                    // claiming the GUI is in sync with a reload that never
+                    // succeeded.
+                    //
+                    // Restored only on the Ok arm on purpose: if the rollback
+                    // recompile itself failed, `record_compile_failure` has
+                    // just stored a diagnostic about a REAL, current
+                    // inconsistency (the engine is stuck on the post-edit
+                    // text), and overwriting it with the pre-edit snapshot
+                    // would hide exactly the state the combined error below is
+                    // shouting about.
+                    (self.compile_failure, self.last_reload_error) = failure_surface;
+                    Err(write_err)
+                }
+                Err(restore_err) => Err(format!(
+                    "{write_err}; the engine could not be rolled back to the pre-edit \
+                     source either: {restore_err}"
+                )),
+            };
+        }
+
+        Ok(state)
+    }
+
+    /// Resolve the byte range [`Self::apply_param_to_source`] may splice over,
+    /// or a DISCRIMINATED rejection saying which of the four preconditions
+    /// failed (PRD §7 B7 — δ, the MCP `set_parameter` tool, is the consumer
+    /// that maps these categories into its tool result).
+    ///
+    /// α's [`Self::resolve_param_default_span`] collapses every one of these
+    /// into one `Option::None`, the right shape for a *resolver* and the wrong
+    /// shape for an *entry point*: "you named an entity that does not exist"
+    /// and "that param's default is a formula I refuse to overwrite" call for
+    /// opposite responses from the caller. The categories, in the order they
+    /// are checked:
+    ///
+    /// 1. **Malformed cell id** — no `.` at all, so it never denoted a cell.
+    ///    Propagated verbatim from `parse_cell_id`.
+    /// 2. **Unknown parameter** — the cell id is well-formed but names no cell
+    ///    in `compiled.templates[].value_cells`. Checked through the SHARED
+    ///    [`Self::require_known_cell`] rather than a second copy of the
+    ///    predicate, deliberately: this entry point and [`Self::set_parameter`]
+    ///    must agree about what a cell id denotes, or the slider and the
+    ///    write-back would disagree about which params exist.
+    /// 3. **Not the entry file's entity** — the cell exists, but its entity is
+    ///    not declared in the module this session can rewrite. The commonest
+    ///    case is a param of an IMPORTED `.ri`, whose pub template
+    ///    `compile_entry_with_imports` merges into `compiled.templates` (so it
+    ///    passes 2) while its text never enters `source_map` or `parsed_cache`
+    ///    (so there is nothing here to splice). Discriminated ahead of 4
+    ///    because it would otherwise be misreported as "no default expression".
+    /// 4. **No default expression** — a real, editable cell whose param has
+    ///    nothing to rewrite. This bucket also absorbs the AST-walk refusals α
+    ///    documents (a name declared in more than one guarded branch; a param
+    ///    reachable only through a port body or an instance path), which is
+    ///    why the message hedges rather than asserting "declared without a
+    ///    default".
+    /// 5. **Non-literal default** — the gate this whole method exists for. See
+    ///    [`Self::apply_param_to_source`] for why a `BinOp`/`Auto`/call/ident
+    ///    default is REFUSED rather than spliced over.
+    /// 6. **Unwritable unit** — the default IS an admitted literal, but its unit
+    ///    is not one the emitter can put back (`200mil`, `2km`, a compound
+    ///    expression). Discriminated apart from 5 because the default is not a
+    ///    formula and saying so would send δ's caller looking for one. See
+    ///    [`unit_is_emittable_as_written`], which owns the rule and the reason.
+    ///
+    /// Every arm returns before any of the four state surfaces is touched.
+    fn resolve_rewritable_default_span(
+        &self,
+        cell_id_str: &str,
+    ) -> Result<reify_core::SourceSpan, String> {
+        let cell_id = parse_cell_id(cell_id_str)?;
+
+        self.require_known_cell(&cell_id, cell_id_str)?;
+
+        // The existence gate above searches `compiled.templates`, into which
+        // `compile_entry_with_imports` MERGES every direct import's pub
+        // templates — so a param declared in an imported `.ri` passes it. The
+        // default-expression walk below searches `parsed_cache`, which holds
+        // the entry module's declarations and nothing else (imported file
+        // contents never enter `source_map` either — the v1 limitation
+        // documented on `compile_entry_with_imports`). Without this arm an
+        // imported param would fall out of the walk as `None` and be reported
+        // as "no default expression", which is not what happened and would send
+        // δ's caller looking for a default that is right there in the other
+        // file.
+        //
+        // Refusing is the honest answer, not a placeholder: writing back to an
+        // imported module would need that module's text in `source_map` (so the
+        // splice has bytes to work on) and its own recompile+write, neither of
+        // which exists yet.
+        let parsed = self.parsed_cache.as_ref().ok_or_else(|| {
+            format!("cannot rewrite '{cell_id_str}': this session has no parsed entry source")
+        })?;
+        if !entry_declares_entity(parsed, &cell_id.entity) {
+            return Err(format!(
+                "cannot write '{cell_id_str}' back to source: '{}' is not declared as a \
+                 top-level structure or occurrence in the entry file (it is declared in an \
+                 imported module, or nested in a form the write-back does not reach), and \
+                 write-back only rewrites the entry file",
+                cell_id.entity
+            ));
+        }
+
+        let default = self
+            .resolve_param_default_expr(cell_id_str)
+            .ok_or_else(|| {
+                format!(
+                    "parameter '{cell_id_str}' has no default expression to rewrite in \
+                     source (it may be declared without a default, declared in more than \
+                     one guarded branch, or not addressable by its bare name)"
+                )
+            })?;
+
+        match &default.kind {
+            // A quantity literal is admitted only when its unit is one the
+            // emitter can WRITE BACK — see `unit_is_emittable_as_written`.
+            reify_ast::ExprKind::QuantityLiteral { unit, .. } => {
+                if unit_is_emittable_as_written(unit) {
+                    Ok(default.span)
+                } else {
+                    Err(format!(
+                        "cannot write '{cell_id_str}' back to source: its default is written \
+                         in {}, which the write-back cannot re-emit — rewriting it would \
+                         silently replace the unit you authored with a built-in one \
+                         ({}), so the existing literal is preserved instead",
+                        describe_unit_expr(unit),
+                        reify_core::units::BUILTIN_UNITS
+                            .iter()
+                            .map(|(s, ..)| *s)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                }
+            }
+            reify_ast::ExprKind::NumberLiteral { .. }
+            | reify_ast::ExprKind::StringLiteral(_)
+            | reify_ast::ExprKind::BoolLiteral(_) => Ok(default.span),
+            other => Err(format!(
+                "cannot write '{cell_id_str}' back to source: its default is not a literal \
+                 ({}), so the existing expression is preserved rather than overwritten",
+                expr_kind_name(other)
+            )),
+        }
     }
 
     /// Task #5338: drop the geometry-derived value retention for one ENTITY —
@@ -2871,11 +3317,42 @@ impl EngineSession {
         files
     }
 
-    /// Build compile diagnostics for `GuiState`, appending live-edit failures
-    /// and hot-reload errors when present.
+    /// Build compile diagnostics for `GuiState`, appending live-edit failures,
+    /// hot-reload errors, and build/realization-time geometry **errors** when
+    /// present.
     ///
     /// Shared by `build_gui_state` and `set_active_fea_case` so both paths
     /// produce identical diagnostic data and cannot silently drift.
+    ///
+    /// # Build-time geometry errors (tasks 5197 / 5208)
+    ///
+    /// `get_diagnostics` returns only the *static* `compiled.diagnostics` — what
+    /// the compiler knew before any geometry ran. Errors raised by the
+    /// build/realization pass (`tessellate_snapshot`) land in the separate
+    /// `tess_diag_cache` / `GuiState::tessellation_diagnostics` stream, which the
+    /// designer-facing diagnostics panel does not read. A program that compiled
+    /// cleanly but produced no geometry therefore rendered as an empty viewport
+    /// with an EMPTY diagnostics list, and the designer had nothing to act on.
+    ///
+    /// This became a live concern with task 5208: curated 3-arg
+    /// `fillet`/`chamfer` is now genuinely reachable through the production `.ri`
+    /// pipeline, so its *residual* failures — a selector that picks zero edges, a
+    /// radius the kernel cannot apply, a reference to an unrealized solid — are
+    /// ordinary authoring mistakes that must be reported like any other.
+    ///
+    /// Only the **`Error`** class crosses over. Tessellation `Warning`/`Info`
+    /// entries (kernel chatter such as the "no topology extraction fixture"
+    /// seeder warning) stay confined to `tessellation_diagnostics`, so folding
+    /// does not flood the panel on an otherwise-healthy load.
+    ///
+    /// Direction matters: the reverse flow stays blocked. Compile diagnostics are
+    /// never copied INTO `tessellation_diagnostics` — that half of the
+    /// disjointness contract is pinned by
+    /// `build_gui_state_compile_diagnostics_populated_from_warning`.
+    ///
+    /// Ordering: build-time errors are appended LAST, after the static
+    /// diagnostics and the live-edit / hot-reload synthetics, so existing
+    /// positional expectations over the leading entries are unaffected.
     fn build_compile_diagnostics(&self) -> Vec<DiagnosticInfo> {
         let mut compile_diagnostics = self.get_diagnostics();
         if let Some(f) = &self.compile_failure
@@ -2902,6 +3379,30 @@ impl EngineSession {
                 has_location: false,
             });
         }
+
+        // Fold in build/realization-time geometry ERRORS (see the doc comment
+        // above). `tess_diag_cache` is refreshed by `build_gui_state` immediately
+        // after `tessellate_snapshot` and BEFORE this helper is called, and is
+        // reset to empty on the no-tessellation branch — so it always reflects
+        // the current snapshot and cannot carry stale errors forward.
+        //
+        // The identity guard is belt-and-braces: the two sources are disjoint by
+        // construction (static compile vs. build pass), so it is a no-op today.
+        // It exists so that if a diagnostic ever becomes reachable from both, the
+        // designer sees it once rather than twice.
+        for diag in self
+            .tess_diag_cache
+            .iter()
+            .filter(|d| d.severity == "Error")
+        {
+            let already_present = compile_diagnostics
+                .iter()
+                .any(|c| c.message == diag.message && c.line == diag.line);
+            if !already_present {
+                compile_diagnostics.push(diag.clone());
+            }
+        }
+
         compile_diagnostics
     }
 
@@ -3259,6 +3760,7 @@ impl EngineSession {
                             indices: surface.mesh.indices,
                             normals: surface.mesh.normals,
                             scalar_channels: std::collections::HashMap::new(),
+                            scalar_channel_tags: Default::default(),
                             displaced_positions: None,
                             element_kind: None,
                             region_tags: None,
@@ -3310,6 +3812,7 @@ impl EngineSession {
                         indices: m.indices.clone(),
                         normals: m.normals.clone(),
                         scalar_channels: std::collections::HashMap::new(),
+                        scalar_channel_tags: Default::default(),
                         displaced_positions: None,
                         element_kind: None,
                         region_tags: None,
@@ -4076,6 +4579,30 @@ impl EngineSession {
     /// a `load_from_compiled`-injected session. Plain `as_ref()?` is the correct
     /// degradation.
     pub fn resolve_param_default_span(&self, cell_id_str: &str) -> Option<reify_core::SourceSpan> {
+        self.resolve_param_default_expr(cell_id_str).map(|e| e.span)
+    }
+
+    /// Resolve the default EXPRESSION a `cell_id` names — the `&Expr`-returning
+    /// primitive [`Self::resolve_param_default_span`] is a thin
+    /// `.map(|e| e.span)` over.
+    ///
+    /// Every word of that method's contract applies here unchanged (the
+    /// entity-variant set, the instance-path and port-body exclusions, the
+    /// multiply-declared refusal, the `parsed_cache`-absent degradation); this
+    /// is the SAME walk, stopping one step earlier. Splitting it this way —
+    /// rather than re-deriving the expression from the span, or hand-rolling a
+    /// second member walk in this file — is what keeps the span a caller
+    /// splices and the expression it type-checks first from ever disagreeing.
+    ///
+    /// The caller that needs the expression rather than the span is
+    /// [`Self::apply_param_to_source`], whose literal-ness gate must refuse to
+    /// overwrite a `BinOp`, an `Auto`, a call or an identifier — which is, as
+    /// of γ, EVERY production caller. [`Self::resolve_param_default_span`] is
+    /// retained as α's published resolver for the consumers still to come (δ's
+    /// MCP tools, η's re-homed slider) and for anything that wants a span
+    /// without an AST borrow; it is not dead by oversight, but it has no
+    /// in-tree caller today beyond its own tests.
+    pub fn resolve_param_default_expr(&self, cell_id_str: &str) -> Option<&reify_ast::Expr> {
         // Reuse `parse_cell_id` — the SAME parse `set_parameter` uses — so this
         // resolver and the entry point that will consume it cannot disagree
         // about what a cell_id denotes.
@@ -4083,14 +4610,35 @@ impl EngineSession {
         let parsed = self.parsed_cache.as_ref()?;
         parsed.declarations.iter().find_map(|decl| match decl {
             reify_ast::Declaration::Structure(s) if s.name == cell.entity => {
-                reify_ast::find_param_default_span(&s.members, &cell.member)
+                reify_ast::find_param_default_expr(&s.members, &cell.member)
             }
             reify_ast::Declaration::Occurrence(o) if o.name == cell.entity => {
-                reify_ast::find_param_default_span(&o.members, &cell.member)
+                reify_ast::find_param_default_expr(&o.members, &cell.member)
             }
             _ => None,
         })
     }
+}
+
+/// Does the ENTRY module's parse declare `entity` as a top-level structure or
+/// occurrence?
+///
+/// The existence half of `EngineSession::resolve_param_default_expr`'s walk,
+/// separated out so `resolve_rewritable_default_span` can tell "this cell
+/// belongs to an imported module" apart from "this cell's param has no default"
+/// — two rejections with different answers for the caller, which the walk's
+/// single `Option::None` cannot distinguish.
+///
+/// The variant set is `Structure | Occurrence`, deliberately IDENTICAL to that
+/// walk's: a name this predicate accepted but the walk did not reach (or the
+/// reverse) would put `resolve_rewritable_default_span` back to reporting the
+/// wrong category, which is the whole point of splitting them.
+fn entry_declares_entity(parsed: &reify_ast::ParsedModule, entity: &str) -> bool {
+    parsed.declarations.iter().any(|decl| match decl {
+        reify_ast::Declaration::Structure(s) => s.name == entity,
+        reify_ast::Declaration::Occurrence(o) => o.name == entity,
+        _ => false,
+    })
 }
 
 // ---- GUI-state helpers -------------------------------------------------------
@@ -6601,6 +7149,29 @@ pub(crate) fn normalize_unit_label(label: &str) -> String {
     label.replace('\u{00B2}', "^2").replace('\u{00B3}', "^3")
 }
 
+/// The SUPERSCRIPT spelling of a curated unit label — the inverse of
+/// [`normalize_unit_label`] over the same two-glyph alphabet.
+///
+/// WHY IT EXISTS. Until task λ (#5788) the curated ladders were themselves
+/// spelled with U+00B2/U+00B3, so [`COMPOSED_UNIT_INDEX`] got the superscript
+/// spelling for free — it was the rung's own label, and only the ASCII form had
+/// to be synthesized. λ relabelled the tables to the ASCII `^`-exponent
+/// alphabet, which flips that around: the label IS the normal form now, and it
+/// is the legacy spelling that has to be synthesized or it silently leaves the
+/// index. Registering it keeps the accept-set from NARROWING as a side effect of
+/// a display relabel — a value a user could commit before λ still commits after.
+///
+/// Identity on a label carrying no caret exponent, so the builder can push it
+/// unconditionally and let `push`'s dedup collapse the no-op.
+///
+/// This is a legacy-input alias, NOT a second display spelling: nothing renders
+/// its output, `reify_core::display_units::ascii_label_spelling` remains the one
+/// direction the compiler's `@display` hint speaks, and the frontend gate still
+/// admits only the ASCII form.
+pub(crate) fn superscript_label_spelling(label: &str) -> String {
+    label.replace("^2", "\u{00B2}").replace("^3", "\u{00B3}")
+}
+
 /// One resolvable unit spelling in [`composed_unit_index`].
 #[derive(Debug)]
 pub(crate) struct ComposedUnit {
@@ -6716,12 +7287,17 @@ pub(crate) fn dimension_requires_unit(
 ///     `reify_core::unit_symbol_to_si` is a faithful view of. Contributes the SI
 ///     bases no ladder carries (`s`, `K`, `A`, `mol`, `cd`).
 ///
-/// BOTH SPELLINGS of every curated rung are registered: the raw superscript one
-/// a user can copy-paste from the picker, and the ASCII one
-/// [`normalize_unit_label`] produces — the only one the frontend gate admits,
-/// since `normalizeUnitLabel` is one-way. That makes this a strict SUPERSET of
-/// the frontend gate, so no frontend-accepted spelling can be refused on commit.
-/// Pinned by `parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings`.
+/// BOTH SPELLINGS of every curated rung are registered — the ASCII one
+/// [`normalize_unit_label`] produces, which is the only one the frontend gate
+/// admits (`normalizeUnitLabel` is one-way) and, since task λ (#5788), also the
+/// one the curated tables themselves carry; and the superscript one
+/// [`superscript_label_spelling`] produces, which the picker showed before λ and
+/// which a pre-λ file or copy-paste can still carry. Registering both makes this
+/// a strict SUPERSET of the frontend gate, so no frontend-accepted spelling can
+/// be refused on commit, and keeps the accept-set from narrowing when a display
+/// relabel moves which of the two the table happens to hold. Pinned by
+/// `parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings` and
+/// `parse_value_string_also_accepts_the_raw_superscript_ladder_spellings`.
 ///
 /// ORDERING IS LOAD-BEARING: [`resolve_quantity_suffix`] takes the first
 /// matching suffix, so descending label length is what stops `m` shadowing `cm`
@@ -6803,10 +7379,25 @@ static COMPOSED_UNIT_INDEX: std::sync::LazyLock<Vec<ComposedUnit>> =
                 continue;
             };
             for opt in ladder.units {
-                let normalized = normalize_unit_label(&opt.label);
-                if normalized != opt.label {
-                    push(&mut entries, normalized, opt.si_scale, dimension);
-                }
+                // Three spellings, pushed unconditionally and deduped by
+                // `push`: the rung's own label, its ASCII normal form and its
+                // superscript form. Which two of the three collapse depends on
+                // how the curated table is spelled TODAY — before task λ
+                // (#5788) the label was the superscript one, since λ it is the
+                // ASCII one — and the index must not care, because what it
+                // owes its callers is that BOTH spellings resolve either way.
+                push(
+                    &mut entries,
+                    normalize_unit_label(&opt.label),
+                    opt.si_scale,
+                    dimension,
+                );
+                push(
+                    &mut entries,
+                    superscript_label_spelling(&opt.label),
+                    opt.si_scale,
+                    dimension,
+                );
                 push(&mut entries, opt.label, opt.si_scale, dimension);
             }
         }
@@ -7018,6 +7609,275 @@ pub(crate) fn parse_value_string_for_cell(
     }
 
     Ok(value)
+}
+
+/// Extract the unit symbol trailing a default-literal slice, as an ADVISORY
+/// hint for [`reify_ir::value_to_ri_literal_with_unit`]'s `preferred_unit`
+/// parameter (task 5096 γ, INV-GUI-3 write-back).
+///
+/// Deliberately LEXICAL, not a parser: it reads the symbol off the literal
+/// being replaced and hands it to `value_to_ri_literal_with_unit` as a hint
+/// only — that function honours the hint exclusively when it resolves as a
+/// bare built-in, its dimension matches the value being written, and the
+/// magnitude is bit-exact, silently falling back to the canonical unit
+/// ladder otherwise. So a false positive here (e.g. reading `mm` off the
+/// identifier `x2mm`) can only change WHICH exact literal
+/// [`EngineSession::apply_param_to_source`] writes, never WHETHER the write
+/// is exact.
+///
+/// Algorithm: take the longest trailing run of `is_ascii_alphabetic` chars
+/// in the trimmed slice, then look at the character immediately before that
+/// run (skipping ASCII whitespace). The run is returned as the hint only
+/// when that predecessor is an ASCII digit or `.` — that is what rejects a
+/// bare identifier (`width`), `auto`, and `true`/`false`, none of which have
+/// a digit/`.` anchoring their trailing letters.
+pub(crate) fn unit_hint_from_default_literal(default_slice: &str) -> Option<&str> {
+    let trimmed = default_slice.trim();
+    let mut alpha_start = trimmed.len();
+    for (i, c) in trimmed.char_indices().rev() {
+        if !c.is_ascii_alphabetic() {
+            break;
+        }
+        alpha_start = i;
+    }
+    // alpha_start == trimmed.len(): the trailing run is empty (the last char
+    // isn't alphabetic). alpha_start == 0: the run reaches the start of the
+    // string, so there is no predecessor to check (a bare identifier like
+    // "width" or "auto").
+    if alpha_start == 0 || alpha_start == trimmed.len() {
+        return None;
+    }
+    match trimmed[..alpha_start].trim_end().chars().next_back() {
+        Some(c) if c.is_ascii_digit() || c == '.' => Some(&trimmed[alpha_start..]),
+        _ => None,
+    }
+}
+
+/// Reports whether a quantity literal's `unit` is one
+/// [`EngineSession::apply_param_to_source`] can write back WITHOUT changing the
+/// unit vocabulary the user authored — i.e. a bare symbol that
+/// [`reify_core::units::unit_symbol_to_si`] resolves.
+///
+/// The write-back's serializer, [`reify_ir::value_to_ri_literal_with_unit`],
+/// validates its `preferred_unit` hint against the BUILT-IN table only: bare
+/// `mm`/`m`/`in`/`deg`/… and nothing else. User-declared units (`unit mil :
+/// Length = 0.0000254`, or `km` and `ft` out of `std.units`) live exclusively
+/// in the compiler's per-module `UnitRegistry`, which that layer deliberately
+/// has no view of. A hint it cannot resolve is silently DROPPED and the value
+/// goes out on the canonical ladder instead — so without this gate, tweaking
+/// `param thickness: Length = 200mil` would rewrite it as `5.08mm`. The number
+/// is right; the vocabulary the user chose for their own document is gone, and
+/// nothing told them.
+///
+/// That is the same class of silent destruction the non-literal gate exists to
+/// prevent (see [`EngineSession::apply_param_to_source`]), so it gets the same
+/// answer: REFUSE, with a discriminated message δ can surface, rather than
+/// canonicalize behind the user's back. Compound unit expressions (`kN*m`,
+/// `kg/m^3`) are refused for the same reason plus a second one — the emitter's
+/// ladder covers no compound dimension at all, so they could only ever be
+/// rejected one phase later with a much vaguer message.
+///
+/// This is a LIMITATION of the emitter, not a policy: the day
+/// `value_to_ri_literal_with_unit` can resolve a hint through the compiled
+/// module's `UnitRegistry`, this gate should widen to match rather than stay.
+fn unit_is_emittable_as_written(unit: &reify_ast::UnitExpr) -> bool {
+    match unit {
+        reify_ast::UnitExpr::Unit(symbol) => {
+            reify_core::units::unit_symbol_to_si(symbol).is_some()
+        }
+        reify_ast::UnitExpr::Mul(..)
+        | reify_ast::UnitExpr::Div(..)
+        | reify_ast::UnitExpr::Pow(..) => false,
+    }
+}
+
+/// Describe `unit` for the rejection [`EngineSession::resolve_rewritable_default_span`]
+/// returns when [`unit_is_emittable_as_written`] refuses it.
+///
+/// Names the offending SYMBOL for a bare unit, because that is the word the
+/// user will search their `.ri` for; a compound expression is described by
+/// shape rather than reconstructed, since the reader has the span in front of
+/// them and a half-faithful re-rendering would be worse than none.
+fn describe_unit_expr(unit: &reify_ast::UnitExpr) -> String {
+    match unit {
+        reify_ast::UnitExpr::Unit(symbol) => {
+            format!("the unit '{symbol}', which is not a built-in unit symbol")
+        }
+        reify_ast::UnitExpr::Mul(..)
+        | reify_ast::UnitExpr::Div(..)
+        | reify_ast::UnitExpr::Pow(..) => {
+            "a compound unit expression, which has no bare-literal form".to_string()
+        }
+    }
+}
+
+/// Name the `ExprKind` variant `kind` is, as its Rust identifier (`"BinOp"`,
+/// `"Auto"`, `"FunctionCall"`, …), for the rejection message
+/// [`EngineSession::resolve_rewritable_default_span`] returns when a param's
+/// default is not a literal it may splice over (task 5096 γ, INV-GUI-3).
+///
+/// Written as an EXHAUSTIVE match with NO `_` arm ON PURPOSE. A future
+/// `ExprKind` variant must be classified deliberately — is it splice-safe
+/// (another literal form the write-back may overwrite) or not? — and the
+/// missing-arm compile error is what forces that decision. A catch-all would
+/// silently absorb the new variant into a generic label, which reads as an
+/// answered question when it is an unasked one.
+///
+/// The names are the Rust variant identifiers rather than user-facing prose
+/// because the consumer is a diagnostic aimed at someone reading the `.ri`
+/// alongside this code; `resolve_rewritable_default_span`'s taxonomy tests
+/// assert on these substrings.
+fn expr_kind_name(kind: &reify_ast::ExprKind) -> &'static str {
+    use reify_ast::ExprKind as K;
+    match kind {
+        K::NumberLiteral { .. } => "NumberLiteral",
+        K::QuantityLiteral { .. } => "QuantityLiteral",
+        K::StringLiteral(_) => "StringLiteral",
+        K::BoolLiteral(_) => "BoolLiteral",
+        K::Ident(_) => "Ident",
+        K::BinOp { .. } => "BinOp",
+        K::UnOp { .. } => "UnOp",
+        K::FunctionCall { .. } => "FunctionCall",
+        K::MemberAccess { .. } => "MemberAccess",
+        K::EnumAccess { .. } => "EnumAccess",
+        K::Conditional { .. } => "Conditional",
+        K::ListLiteral(_) => "ListLiteral",
+        K::SetLiteral(_) => "SetLiteral",
+        K::MapLiteral(_) => "MapLiteral",
+        K::IndexAccess { .. } => "IndexAccess",
+        K::Match { .. } => "Match",
+        K::Auto { .. } => "Auto",
+        K::Undef => "Undef",
+        K::Lambda { .. } => "Lambda",
+        K::Quantifier { .. } => "Quantifier",
+        K::AdHocSelector { .. } => "AdHocSelector",
+        K::QualifiedAccess { .. } => "QualifiedAccess",
+        K::InstanceQualifiedAccess { .. } => "InstanceQualifiedAccess",
+        K::Range { .. } => "Range",
+        K::TraitMethodCall { .. } => "TraitMethodCall",
+        K::TraitStaticCall { .. } => "TraitStaticCall",
+        K::VariantConstruct { .. } => "VariantConstruct",
+        K::InterpolatedString(_) => "InterpolatedString",
+    }
+}
+
+/// Replace `path`'s contents with `content` ATOMICALLY: write a sibling temp
+/// file, sync it, then `rename` it over `path`.
+///
+/// The write-back ([`EngineSession::apply_param_to_source`]) is the caller. A
+/// plain `fs::write` truncates in place, so a write that fails part-way
+/// (ENOSPC, EIO, a killed process) leaves a TRUNCATED `.ri` on disk — a corrupt
+/// design that the FS-watcher would then dutifully reload into the GUI. A
+/// rename within one directory is atomic, so every reader sees the whole old
+/// file or the whole new one and that failure mode does not exist.
+///
+/// Four details that are load-bearing rather than incidental:
+///
+/// * **Symlinks are followed, not replaced.** `rename(2)` does NOT follow a
+///   symlink at its destination, so renaming straight over `path` would DELETE
+///   a symlinked `.ri` and leave a regular file in its place, while the file
+///   the link pointed at kept the pre-edit content forever — and the caller's
+///   divergence guard could not notice, because `fs::read_to_string` follows
+///   the link and would keep comparing against the (matching) target's bytes.
+///   `path` is therefore resolved through [`std::fs::canonicalize`] first and
+///   the write goes to the RESOLVED file, matching the write-through behaviour
+///   a plain `fs::write` would have had. A path that cannot be canonicalized
+///   (it does not exist yet, say) falls back to itself unchanged.
+/// * **Same directory.** `rename` is only atomic within a filesystem, so the
+///   temp lives beside the resolved target — not in `/tmp`, and not beside the
+///   symlink when those differ.
+/// * **`.tmp` suffix, plus pid AND a process-local sequence number.** The GUI's
+///   watcher filters on the `.ri` extension (`watcher.rs`), so a `.tmp` sibling
+///   never reads as a design file appearing in the project. The pid keeps two
+///   PROCESSES writing the same design off one temp path, and the sequence
+///   number does the same for two `EngineSession`s inside ONE process, which
+///   share a pid. The rename itself DOES fire a watch event for the resolved
+///   path — the watcher accepts `Modify(_)`, which covers inotify's
+///   rename-into-place — so hot reload still works; through a symlink the event
+///   lands on the target's directory rather than the link's, which the
+///   authoritative in-process recompile (D7) already covers.
+/// * **Permissions are carried over** from the file being replaced, so a
+///   design the user made read-only-for-group (or otherwise chmod'd) does not
+///   silently come back with the process umask's mode. Best-effort: a
+///   permission read/write failure is not worth failing the edit over.
+///
+/// The temp is removed on every failure path, so a failed write leaves no
+/// litter next to the user's design.
+///
+/// Contents are `sync_all`ed before the rename, and the containing DIRECTORY is
+/// synced after it, so the replacement survives a power loss rather than merely
+/// being atomic against concurrent readers. The directory sync is best-effort:
+/// not every filesystem permits opening a directory for sync, and a design edit
+/// that already reached the page cache is not worth failing over one.
+fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Disambiguates temp paths between two `EngineSession`s in ONE process,
+    /// which the pid alone cannot: they would otherwise race on the same name
+    /// and one would `create`-truncate the other's half-written temp.
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    // See the doc comment: rename(2) would otherwise destroy a symlinked `.ri`
+    // and orphan its target. Fall back to `path` when it cannot be resolved —
+    // there is then no link to follow and nothing this can improve on.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    let file_name = target.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path has no file name to write",
+        )
+    })?;
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp_path = target.with_file_name(tmp_name);
+
+    let write_and_rename = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        file.write_all(content.as_bytes())?;
+        // Order the contents before the rename: a rename that lands while the
+        // data is still only in the page cache would publish an empty or
+        // partial file to a reader that crosses the same crash.
+        file.sync_all()?;
+        drop(file);
+
+        // Best-effort mode preservation — see the doc comment. Deliberately
+        // ignores errors: failing an otherwise-good edit because a mode could
+        // not be copied would be the wrong trade.
+        if let Ok(meta) = std::fs::metadata(&target)
+            && meta.is_file()
+        {
+            let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
+        }
+
+        std::fs::rename(&tmp_path, &target)?;
+
+        // Durability, not atomicity: the rename is already atomic against a
+        // concurrent reader, but the DIRECTORY entry it rewrote can still be
+        // lost to a power cut until the directory itself is synced. Mirrors
+        // `reify_eval::persistent_cache::write_entry`. Best-effort by design —
+        // see the doc comment.
+        if let Some(parent) = target.parent()
+            && let Ok(dir) = std::fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    };
+
+    let result = write_and_rename();
+    if result.is_err() {
+        // The rename is what consumes the temp, so any failure before it (or a
+        // failed rename itself) leaves the temp behind. Remove it rather than
+        // littering the user's project directory with one file per failure.
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
 }
 
 /// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).
@@ -7822,6 +8682,15 @@ pub(crate) fn extract_fea_convergence(
 /// - `mesh.scalar_channels["vonMises"]` (length = vertex_count): von-Mises stress
 ///   sampled at each vertex; OOB/out-of-solid vertices receive
 ///   `SCALAR_CHANNEL_OOB_SENTINEL`.
+///
+/// Both `"vonMises"` and (when populated) `"errorIndicator"` are stamped into
+/// `mesh.scalar_channel_tags` as
+/// [`ScalarChannelTag::pressure()`](crate::types::ScalarChannelTag::pressure) —
+/// unit [`PRESSURE_CHANNEL_UNIT`](crate::types::PRESSURE_CHANNEL_UNIT), unsigned.
+/// That is the declared GUI-boundary unit for these channels (the runtime
+/// `SampledField` carries no dimension, so it cannot be derived); `unsigned` is
+/// honest because both samplers return a norm — √(a quadratic form) and a field
+/// norm respectively — or exactly `SCALAR_CHANNEL_OOB_SENTINEL`.
 /// - `mesh.displaced_positions` (length = `vertices.len()`): vertex positions
 ///   plus warp = 1 displacement; OOB/out-of-solid vertices keep their original
 ///   position.
@@ -7886,9 +8755,20 @@ pub(crate) fn apply_fea_channels(
         }
 
         mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
+        mesh.scalar_channel_tags.insert(
+            "vonMises".to_string(),
+            crate::types::ScalarChannelTag::pressure(),
+        );
         mesh.displaced_positions = Some(disp_vec);
+        // The tag is stamped INSIDE this conditional, not beside it: a tag for a
+        // channel that was never inserted is an orphan and hard-fails
+        // MeshData::serialize.
         if error_indicator_sf.is_some() {
             mesh.scalar_channels.insert("errorIndicator".to_string(), ei_vec);
+            mesh.scalar_channel_tags.insert(
+                "errorIndicator".to_string(),
+                crate::types::ScalarChannelTag::pressure(),
+            );
         }
     }
 }
@@ -7938,7 +8818,11 @@ fn identity_element_index(face_count: usize) -> Vec<u32> {
 /// - `element_kind` = `view.element_kind` (all `1` = shell triangle),
 ///   `region_tags` = `view.region_tags` (`SegmentationResult` labels).
 /// - `scalar_channels` gains `vonMises_top` / `vonMises_mid` /
-///   `vonMises_bottom` (recovered per-vertex; `len == vertex_count`).
+///   `vonMises_bottom` (recovered per-vertex; `len == vertex_count`), each
+///   stamped into `scalar_channel_tags` as
+///   [`ScalarChannelTag::pressure()`](crate::types::ScalarChannelTag::pressure)
+///   — unit [`PRESSURE_CHANNEL_UNIT`](crate::types::PRESSURE_CHANNEL_UNIT),
+///   unsigned, since recovered von Mises is a norm.
 /// - `vector_channels` gains `shell_normal_per_face` — the
 ///   [`PER_FACE_CHANNEL_SUFFIX`](crate::types::PER_FACE_CHANNEL_SUFFIX) makes
 ///   the serialize-time length check use `3 * face_count`.
@@ -7975,6 +8859,10 @@ pub(crate) fn apply_shell_channels(
             .insert("vonMises_mid".to_string(), view.von_mises_mid.clone());
         mesh.scalar_channels
             .insert("vonMises_bottom".to_string(), view.von_mises_bottom.clone());
+        for key in ["vonMises_top", "vonMises_mid", "vonMises_bottom"] {
+            mesh.scalar_channel_tags
+                .insert(key.to_string(), crate::types::ScalarChannelTag::pressure());
+        }
 
         mesh.vector_channels.insert(
             format!("shell_normal{}", crate::types::PER_FACE_CHANNEL_SUFFIX),

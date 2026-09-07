@@ -37,7 +37,7 @@ tasks:
       expect: present
   - name: loud-envelope-rejection
     binding: capability→producer (this leaf) — E_ThreadSolidOutOfEnvelope + recorded
-      UndefCause; house pattern = iso_it diagnose (tolerancing.rs:197-214)
+      UndefCause; house pattern = iso_it diagnose (tolerancing.rs, `pub fn diagnose`)
     verdict: PASS
     delivered_check:
       kind: grep
@@ -128,7 +128,7 @@ tasks:
       reason: existing substrate; γ's DFM constraints get their own check()-time tests
         (boundary row 8)
   - name: iso-it-tolerance-wired
-    binding: capability→producer (substrate, wired) — tolerancing.rs:112-128 + eval_builtin
+    binding: capability→producer (substrate, wired) — tolerancing.rs (`fn iso_it_tolerance`) + eval_builtin
       dispatch lib.rs:225/286; 24.969µm value-pin precedent
     verdict: PASS
     delivered_check:

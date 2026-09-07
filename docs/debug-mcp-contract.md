@@ -11,6 +11,7 @@
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
+| §2d Image + trailing-text envelope | EMISSION: `debug_server.rs` `mcp_content_blocks_*` tests. DECODE: `rpc.test.ts` case 4b + `rpcEnvelope.test.ts`'s branch-3 fall-through case — the same success envelope through both JS decoders |
 | §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
@@ -119,7 +120,8 @@ MCP client
                       → invoke('debug_response', { id, result: JSON.stringify(result) })
               → DebugBridge::resolve(id, json) wakes the waiting oneshot
               → returns serde_json::from_str(json) : Value
-  → MCP tool-result content block (text or image)
+  → MCP tool-result content ARRAY: [text] | [image] | [image, text]
+       (the third shape is element_screenshot's pane diagnostics — see §2d)
 ```
 
 The `id` is a monotonically incrementing u64 assigned by `DebugBridge::next_id`
@@ -155,6 +157,31 @@ Three distinct error shapes exist depending on which layer the error originates.
 // Viewport not ready:
 { "error": "viewport not ready" }
 ```
+
+A **wrong-typed** parameter is a schema violation, and gets a §2a error that
+says so — never a not-found, and never an observation. `{"testId": 3}` does not
+come back as `element with data-testid="3" not found`, which would send a
+harness author hunting in the DOM for an element that was never asked for; and
+`{"selector": ["div"]}` does not come back as `{"exists": true, …}`, which
+would answer a malformed *request* with a true-looking *observation* — the
+array stringifies to `div` inside `querySelector`, so only the guard stops it.
+Every tool that resolves an element from a caller-supplied value rejects the
+type at its own boundary before resolution — whether that value is `testId`,
+`open_menu`'s `name`, the tree-node tools' `path`, or a whole-selector
+`selector`. That rule is stated once as THE BOUNDARY RULE on
+`RESOLVE_BY_TESTID_ERRORS` in `bridge.ts`, whose exported
+`TYPE_GUARDED_RESOLVER_TOOLS` carries the canonical enumeration as a checkable
+value, and is pinned **per guard copy** — the guards are independent copies, so
+one row per copy is what keeps any single one from regressing — by the
+`boundary guards above the escape` block in `debugBridge.test.tsx`, which also
+asserts the enumeration against those rows.
+
+Type-guarding is not escaping, and the two arms differ only on the latter: a
+value *interpolated into* a selector this bridge builds (`testId`, `name`,
+`path`) is additionally escaped, while a *whole* `selector` is not — its
+metacharacters are the caller's own syntax. A malformed selector STRING is
+therefore still the §2a `Failed to execute 'querySelector'…` above, not a
+required-param error.
 
 The Rust transport passes this object through verbatim: the JSON string
 returned by the JS bridge is parsed by `DebugBridge::resolve` →
@@ -216,6 +243,46 @@ inside a tool result.
 | Rust Err(String) | `{ content:[…], isError:true }` | ✓ |
 | Unknown JSON-RPC method | `{ error: { code, message } }` | n/a (protocol layer) |
 
+### 2d — Image tool results: image block + optional trailing text
+
+**Source:** `mcp_content_blocks()` in `gui/src-tauri/src/debug_server.rs`.
+
+A tool result is a content **array**, and for image tools it is not always of
+length 1. The two wire shapes a decoder has to handle:
+
+```jsonc
+// screenshot, screenshot_window, and a single-match element_screenshot:
+{ "content": [ {"type": "image", "data": "<base64 PNG>", "mimeType": "image/png"} ] }
+
+// element_screenshot that matched more than one element:
+{ "content": [
+    {"type": "image", "data": "<base64 PNG>", "mimeType": "image/png"},
+    {"type": "text",  "text": "{\n  \"viewportId\": \"design-main\",\n  \"matchCount\": 2\n}"}
+] }
+```
+
+Decoder-author checklist:
+
+- The image block is **always** at `content[0]` — diagnostics are APPENDED,
+  never prepended. A positional `content[0].type === "image"` test is therefore
+  safe.
+- `content.length` is **not** always 1, and must never be assumed to be. A
+  decoder that reads only `content[0]` silently discards the pane diagnostics.
+- `screenshot` and `screenshot_window` never emit the trailing block. Only
+  `element_screenshot` does.
+
+Two further facts about this envelope live with the code that enforces them:
+
+- GATING RULE — the exact condition under which the trailing block is emitted:
+  the `mcp_content_blocks` doc comment, property 2
+  (`gui/src-tauri/src/debug_server.rs`).
+- The trailing block never carries a top-level string `error`: the
+  CROSS-LANGUAGE INVARIANT paragraph in `isInBandError`'s docblock
+  (`gui/test/visual/rpcEnvelope.mjs`), stated there for BOTH languages.
+
+The positional-vs-search split between the two JS decoders is the one §2d fact
+this doc owns, under "The §2d divergence — canonical statement" below.
+
 ### JS-side decoders
 
 `gui/test/visual/rpcEnvelope.mjs` is the single home of the JS-side decode of all
@@ -235,8 +302,51 @@ itself.
 rendering. It shares the §2a discriminator and the text-payload parse with the
 module above, but deliberately keeps its own branch table — it collapses every
 failure into `{ok: false, error}` where `normalizeRpcEnvelope` preserves the
-in-band shape. That divergence is intentional and pinned case-by-case by
-`gui/test/visual/rpc.test.ts`; consult those tests before collapsing the two.
+in-band shape.
+
+#### The §2d divergence — canonical statement
+
+The two decoders diverge on §2d's image envelope as well, and again on purpose.
+This section is the canonical statement of that rationale; the code sites cite it
+rather than restating it.
+
+`normalizeRpcEnvelope` SEARCHES the content array for its text block;
+`parseRpcResponse` stays POSITIONAL on `content[0]`. Each is right for its own
+caller: `run.ts` feeds `value.data` straight into `Buffer.from(…, "base64")`, so
+the typed harness must take the IMAGE at `content[0]`; no driver reads image
+data, so the normaliser searches past it and hands back the diagnostics a driver
+can actually branch on.
+
+Do NOT reconcile them. Rewriting `parseRpcResponse`'s branch 3 to search for the
+TEXT block the way `normalizeRpcEnvelope` does — `content.find(c => c.type ===
+"text") ?? content[0]`, where the `?? content[0]` fallback is needed here and
+not in `normalizeRpcEnvelope`, to keep the image check reachable when no text
+block exists — lets branch 4 win ahead of branch 3 for a multi-match
+`element_screenshot`. Branch 4 JSON-parses the diagnostics text into
+`{viewportId, matchCount}`, which has no `data` field, so `value.data` goes
+missing: a `{path: "data", op: "exists"}` assertion (`assertions.ts`'s
+`element_screenshot` scenario) fails outright, and a consumer piping
+`value.data` into `Buffer.from` gets a TypeError on `undefined`. `run.ts`'s own
+`Buffer.from` call reads the `screenshot` tool, whose envelope never carries a
+trailing block, so it is untouched either way — which is why, before case 4b
+existed, this rewrite passed the entire JS suite and surfaced only as corrupt
+PNG bytes.
+
+An IMAGE-targeted `.find` is a different matter and the suite does not object:
+`content.find(c => c.type === "image") ?? content[0]` agrees with the positional
+read on every envelope this contract admits, because §2d fixes the image at
+`content[0]` — an ordering pinned by the Rust test
+`mcp_content_blocks_appends_pane_diagnostics_beside_the_image`. Branch 3 stays
+positional to keep branch PRECEDENCE explicit at the point of reading, not
+because a test would catch that rewrite.
+
+Coverage: §2d is pinned on both sides. EMISSION by `debug_server.rs`'s
+`mcp_content_blocks_*` tests; DECODE by one *success* two-block envelope fed
+through both decoders — case 4b of `gui/test/visual/rpc.test.ts`'s "the
+documented divergence" suite, which asserts the two verdicts side by side, and
+the branch-3 fall-through case in `gui/test/visual/rpcEnvelope.test.ts`. The
+error-envelope divergences are pinned case-by-case in those same two files.
+Under the TEXT-targeted rewrite above, case 4b is the SOLE failure.
 
 ---
 

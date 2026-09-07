@@ -341,6 +341,37 @@ info "Seeding per-worktree core.hooksPath via extensions.worktreeConfig..."
 "$(dirname "${BASH_SOURCE[0]}")/setup-main-gate-worktree-config.sh"
 ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 
+# ---------- git rerere disarm ----------
+#
+# Every warm lane shares ONE unlocked rr-cache, so a resolution recorded by one
+# task can be auto-staged into an unrelated task's merge.  Re-run every setup:
+# git's rerere.enabled default is -1 ("enabled iff rr-cache/ exists"), so LOSING
+# the explicit false silently re-arms the fleet.  Idempotent; never prunes
+# rr-cache.  Mechanism and recovery:
+# docs/notes/git-rerere-shared-worktree-hazard.md.
+#
+# EXIT-CODE CONTRACT — normative in the header of scripts/git-rerere-guard.sh;
+# read it there before touching the branch below.  In short: the shared-config
+# write is the success criterion here, not a globally clean verdict, so 2 is
+# advisory (something out of `arm`'s --local reach) and must not abort the rest
+# of setup — and the branch is `0 | 2 | *`, never a closed set {0,1,2}.
+
+info "Disabling git rerere repo-wide (shared rr-cache hazard)..."
+_rerere_arm_rc=0
+"$(dirname "${BASH_SOURCE[0]}")/git-rerere-guard.sh" arm || _rerere_arm_rc=$?
+if [ "$_rerere_arm_rc" -eq 0 ]; then
+    ok "git rerere disarmed (rerere.enabled=false, rerere.autoupdate=false)"
+elif [ "$_rerere_arm_rc" -eq 2 ]; then
+    warn "shared config pinned, but rerere is still armed — or unverifiable — in a scope"
+    warn "  'arm' cannot reach (another lane's config.worktree, or one it cannot read)"
+    warn "  run 'scripts/git-rerere-guard.sh check' — it names the worktree either way"
+    warn "  see docs/notes/git-rerere-shared-worktree-hazard.md"
+else
+    err "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc)"
+    exit 1
+fi
+unset _rerere_arm_rc
+
 # ---------- build-accelerator systemd --user services ----------
 #
 # Build infra installed as systemd --user units so it survives reboots and
@@ -371,10 +402,62 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 install_build_services() {
     local unit_dir="$HOME/.config/systemd/user"
     local sccache_bin="$HOME/.cargo/bin/sccache"
-    local repo_dir size
+    local repo_dir size jobserver_dir main_checkout
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     size="${REIFY_SCCACHE_SIZE:-100G}"
     mkdir -p "$unit_dir"
+
+    # ---- HOST-GLOBAL ExecStart pinning (task 5888) --------------------------
+    # $unit_dir is host-global: a unit written here outlives whatever checkout
+    # installed it.  setup-dev.sh is routinely run from a warm-lane worktree
+    # (/home/leo/src/warm-lanes/worktrees/_lane-N), so a ${repo_dir}-derived
+    # ExecStart pins the jobserver units at a path that vanishes the moment
+    # that lane is reclaimed and re-seeded: every subsequent start then fails
+    # with status=203/EXEC, the dual-pool jobserver never comes up, and every
+    # verify silently fails open to a private -j(nproc) — silently, because
+    # nothing Requires= these units.  Host convention is therefore that a
+    # host-global unit names the stable MAIN checkout; see the inline notes on
+    # deploy/systemd/reify-warm-lane{,-gc}.service (#4720) and the identical
+    # fix shape in scripts/setup-agent-cache-redirect.sh:498-507,549-560.
+    #
+    # ONLY the two jobserver ExecStarts (and the chmod that makes exactly those
+    # two executables runnable) are pinned.  sccache.service's ExecStart is
+    # $HOME/.cargo/bin/sccache — already checkout-independent — and every
+    # PER-WORKTREE call site in this script (hooks wiring, the debug port, the
+    # .cargo config, the warm-lane FS, the agent cache redirect) must stay
+    # relative to the INVOKING checkout or running from a lane would provision
+    # the wrong tree.  Do not widen this.
+    jobserver_dir="$repo_dir"
+    main_checkout=""
+    if [ -r "$repo_dir/scripts/lib_main_checkout.sh" ]; then
+        # shellcheck source=scripts/lib_main_checkout.sh
+        . "$repo_dir/scripts/lib_main_checkout.sh" || true
+    fi
+    if declare -F reify_main_checkout >/dev/null 2>&1; then
+        main_checkout="$(reify_main_checkout "$repo_dir" 2>/dev/null || true)"
+    fi
+    # A resolved path is not enough: it must actually HOLD the executables, or
+    # we would pin a unit at a silently dead ExecStart.  Falling back to the
+    # invoking copy (and saying so) keeps a contributor clone with no main
+    # checkout working — same posture as install_boot_unit() in
+    # scripts/setup-agent-cache-redirect.sh.
+    if [ -n "$main_checkout" ] \
+        && [ -x "$main_checkout/scripts/jobserver-balancer.py" ] \
+        && [ -x "$main_checkout/scripts/jobserver-canary.sh" ]; then
+        jobserver_dir="$main_checkout"
+    else
+        # Deliberately NOT gated on `[ "$main_checkout" != "$repo_dir" ]`.  When
+        # the invoking checkout IS the main one but the two scripts are missing
+        # or non-executable there, the units are still about to be pinned at a
+        # tree that cannot run them — the exact 203/EXEC failure this block
+        # exists to prevent — so it must be reported, not silently fallen
+        # through.  This is also the ONE branch whose guard being wrong
+        # re-creates the original defect, so it says so out loud; B6 in
+        # tests/infra/test_host_global_unit_pinning.sh asserts both the pin and
+        # this warn.
+        warn "no executable jobserver scripts at the stable main checkout (${main_checkout:-<unresolved>})"
+        warn "  — pinning the host-global jobserver units at the invoking checkout: $repo_dir"
+    fi
 
     cat > "$unit_dir/sccache.service" <<EOF
 [Unit]
@@ -425,7 +508,7 @@ Type=simple
 # write_owner_stamp()'s tmp+rename sidecar in case a prior incarnation
 # crashed mid-write (rare, best-effort — see jobserver-balancer.py).
 ExecStartPre=-/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back /tmp/reify-jobserver-merge.owner /tmp/reify-jobserver-task.owner /tmp/reify-jobserver-merge.owner.tmp /tmp/reify-jobserver-task.owner.tmp
-ExecStart=${repo_dir}/scripts/jobserver-balancer.py
+ExecStart=${jobserver_dir}/scripts/jobserver-balancer.py
 ExecStopPost=/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back /tmp/reify-jobserver-merge.owner /tmp/reify-jobserver-task.owner /tmp/reify-jobserver-merge.owner.tmp /tmp/reify-jobserver-task.owner.tmp
 Restart=on-failure
 RestartSec=2
@@ -440,7 +523,7 @@ Description=Re-seed the dual-pool cargo jobserver (merge+task FIFOs) if tokens h
 
 [Service]
 Type=oneshot
-ExecStart=${repo_dir}/scripts/jobserver-canary.sh
+ExecStart=${jobserver_dir}/scripts/jobserver-canary.sh
 StandardOutput=journal
 StandardError=journal
 EOF
@@ -458,7 +541,21 @@ AccuracySec=15s
 WantedBy=timers.target
 EOF
 
-    chmod +x "$repo_dir/scripts/jobserver-canary.sh" "$repo_dir/scripts/jobserver-balancer.py"
+    # Same tree the two ExecStarts above name — not necessarily the invoking one.
+    # When the main-checkout pin was taken this is a MODE-BIT no-op by
+    # construction (the -x guard above already required both executable there),
+    # so it never silently mutates another worktree.
+    #
+    # NON-FATAL on purpose.  "No-op" covers the mode bits, NOT chmod(2)'s
+    # ownership requirement: chmod fails EPERM if $jobserver_dir is owned by
+    # another uid, and EROFS on a read-only mount.  This file runs under
+    # `set -euo pipefail`, so an unguarded failure here would abort
+    # install_build_services AFTER all four units are already written but
+    # BEFORE daemon-reload/enable — leaving stale, unreloaded units on disk,
+    # which is a worse end state than a warned-about un-chmod'ed script.
+    chmod +x "$jobserver_dir/scripts/jobserver-canary.sh" \
+             "$jobserver_dir/scripts/jobserver-balancer.py" \
+        || warn "could not chmod +x the jobserver scripts under $jobserver_dir — leaving their existing modes"
     systemctl --user daemon-reload
     # γ/4517 rewrote jobserver-canary.sh for the dual-FIFO pools; η/4521
     # validated the end-to-end acceptance criteria before landing.  The C2

@@ -331,10 +331,12 @@ type Twist = Map { angular: Vector3<Angle>, linear: Vector3<Length> }
 
 A `Map` shape (rather than a 6-component `Vector`) is required because
 `Vector` enforces a single shared dimension across components; a twist mixes
-`Angle` rotation and `Length` translation. `joint_jacobian` (§13.1) returns the
-same `Map` **shape**, which lets solver code destructure both uniformly — but a
-Jacobian column is `d(pose)/dq`, not a twist, so the shape match does not imply
-a type match and its components are dimensioned on their own terms.
+`Angle` rotation and `Length` translation. `joint_jacobian` (§13.1) does
+**not** return a `Twist`: its columns are partial derivatives of pose with
+respect to a joint coordinate (dpose/dq), not spatial velocities (dpose/dt), and
+they have their own type, `JacobianColumn`. The two happen to share the
+`angular`/`linear` key names; they are not interchangeable, and a Jacobian column
+must not be fed to `transform_exp`.
 
 **Rotation-vector dimension convention (`angular`).** A rotation vector is
 `axis * angle` — a dimensionless unit axis scaled by an angle — so it carries
@@ -372,30 +374,56 @@ the offending vector and cannot fire; the call fails the old silent way (a bare
 mixed-dimension container at its construction site is a separate, general
 concern and is tracked as follow-up work.
 
-**Linear-component dimension convention.** Unchanged by the rotation-vector
-ruling above, and deliberately still polymorphic: `transform_log` preserves the
-input `Transform`'s translation dimension on `linear` verbatim, and
-`transform_exp` accepts `linear` with the same polymorphic policy:
+**Linear-component dimension convention.** `transform_log` requires the input
+`Transform`'s translation to be `Vector3<Length>` and emits `linear` as
+`Vector3<Length>`; `transform_exp` requires `linear` to be `Vector3<Length>`:
 
-| `linear` dimension | accepted? | notes                                   |
-|--------------------|-----------|-----------------------------------------|
-| `Length`           | ✓         | canonical — matches the `Twist` type    |
-| `Dimensionless`    | ✓         | unit-less twists / numerical work       |
-| `Angle`, `Mass`, … | ✗         | rejected as `Undef`                     |
+| `linear` dimension       | accepted? | notes                                                                            |
+|--------------------------|-----------|----------------------------------------------------------------------------------|
+| `Length`                 | ✓         | canonical — matches the `Twist` type                                             |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension      |
+| `Angle`, `Mass`, …       | ✗         | same rejection + `Error`                                                          |
 
-The pair `transform_log` ↔ `transform_exp` round-trips exactly under both
-policies, so a `Transform` whose translation is `Dimensionless` will round-trip
-through a `Dimensionless` linear, and likewise for `Length`. Note the asymmetry
-with `angular`: a wrong `linear` dimension is a silent `Undef`, not an error
-diagnostic.
+Rejection is uniform: every non-`Length` dimension takes the same branch.
 
-**`joint_jacobian` is out of scope here.** It always emits `Dimensionless` on
-both `angular` and `linear`, because joint parameters are unit-less in the
-joint's local frame. Its columns are `d(pose)/dq` rather than twists, and
-nothing feeds one to `transform_exp`, so the rotation-vector convention above
-does not reach them — the shared `Map` shape is not a type match. Giving those
-columns their own structure, and correcting §13.1's `joint_jacobian -> Twist`
-rows accordingly, is tracked by `#6102`.
+There is now ONE policy — `Length` — and both ends of the seam gate identically,
+so `transform_log` ↔ `transform_exp` round-trips exactly on `Length` and both
+ends reject in lockstep otherwise. Identity and pure-rotation transforms are
+unaffected: `transform3_identity` builds `Length` zeros.
+
+> **RULING #6126** (Leo, 2026-08-07): a twist's `linear` half is
+> `Vector3<Length>`, and mirrored, a `Transform`'s translation crossing this seam
+> carries `Length` and only `Length`. Grounds: decision D11 of
+> `docs/prds/v0_6/units-length-gate-completion.md` — after the `Real` →
+> `Scalar{Dimensionless}` unification, "also admits `Dimensionless`" means "also
+> admits bare numbers". This closes the last `Length | Dimensionless` disjunction
+> **on this seam**, which is the whole of the ruling's scope.
+>
+> **Severity amendment** (Leo, 2026-08-19, via esc-6080-6): the rejection is a
+> `Severity::Error`, so `reify eval` exits 1. A wrong dimension is a
+> design-correctness fault rather than a degradation to tolerate, and the sibling
+> angular half of the same builtin family (#6080) reports its equivalent fault at
+> the same severity — so one fault class does not report two ways across one
+> seam. The diagnostic stays code-less; minting
+> `DiagnosticCode::ArgDimensionMismatch` is owned by
+> `docs/prds/v0_6/dimension-checked-readers.md` §6.
+
+**Scope: this seam only.** The gate above is *not* evidence that the transform
+family is uniformly `Length`-only. `transform3`'s signature above declares
+`translation: Vector3<Length>`, but the evaluator applies no dimension check to
+it — only a 3-component `Vector` shape check — and `transform_compose` /
+`transform_inverse` propagate whatever dimension they are handed. So
+`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs, composes,
+and inverts without complaint; the rejection surfaces only downstream at
+`transform_log`. That asymmetry is deliberate and owned elsewhere — task #6089
+rules `Transform` translation `Length` and stamps the constructor arms, and
+#5747 (R12/R8) narrows the affine and pose-decode readers.
+
+By CONTRAST, `joint_jacobian` (§13.1) shares the `Map { angular, linear }` shape
+but its columns are ∂pose/∂q, **not** twists — a revolute column's linear part is
+m/rad — so they are not governed by this ruling and keep emitting
+`Dimensionless` on both halves because joint parameters are unit-less in the
+joint's local frame (#6102 gives them their own structure).
 
 ### 3.2 `std.geometry.primitive`
 
@@ -1806,7 +1834,7 @@ structure def Fixed : Joint {}  // 0-DOF rigid sub-assembly grouping; no motion 
 
 This hierarchy is enforced via nominal conformance, not merely declared: `bind`/`sweep`/`dim` (§13.3–§13.4) carry a `DrivingJoint` bound checked at both the runtime (L1) and compile-time (L2) layers and reject `Coupling`/`Fixed` arguments with `error[E_MECHANISM_NONDRIVING_JOINT]`.
 
-`JointBinding` (the `bind()` return type, §13.3) and `Twist` (the `joint_jacobian` return type, below) are likewise declared marker structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`Twist` values rather than bare `Map`s, even though neither structure yet declares member fields (field layout is a follow-on, not part of this reconciliation).
+`JointBinding` (the `bind()` return type, §13.3) and `JacobianColumn` (the `joint_jacobian` return type, below) are likewise declared structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`JacobianColumn` values rather than bare `Map`s. `JointBinding` is still a field-less marker (its field layout is a follow-on, not part of this reconciliation); `JacobianColumn` does declare its members, `angular` and `linear`, so a column's parts are readable from user code.
 
 The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
 
@@ -1840,17 +1868,22 @@ fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
 **Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
-`joint_jacobian_value` at `:776`) that returns the analytic SE(3) twist column
+`joint_jacobian_value` at `:777`) that returns the analytic Jacobian column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
-returned `Twist` shape (`Map { angular, linear }`) is the same one used by
-`transform_log` / `transform_exp` (§3.1), so solver code can compose joint
-Jacobian columns and twists uniformly.
+returned type is `JacobianColumn`: the partial derivative of pose with respect
+to the joint's own coordinate, dpose/dq, whose `angular`/`linear` components
+carry per-joint-kind *rates* — for a revolute joint `linear` is m/rad, for a
+prismatic joint `angular` is rad/m. That is why a column is deliberately **not**
+a `Twist` (§3.1), which is a spatial velocity, dpose/dt, and why a column must
+not be fed to `transform_exp`. The two types share the `angular`/`linear` key
+names and nothing else; multiplying a column by a joint rate is the consumer's
+job.
 
 ```
-fn joint_jacobian(j: Prismatic) -> Twist          // angular = 0,        linear  = unit(axis)
-fn joint_jacobian(j: Revolute)  -> Twist          // angular = unit(axis), linear = 0
-fn joint_jacobian(j: Coupling<P>) -> Twist        // ratio * joint_jacobian(parent)
+fn joint_jacobian(j: Prismatic) -> JacobianColumn    // angular = 0,        linear  = unit(axis)
+fn joint_jacobian(j: Revolute)  -> JacobianColumn    // angular = unit(axis), linear = 0
+fn joint_jacobian(j: Coupling<P>) -> JacobianColumn  // ratio * joint_jacobian(parent)
 ```
 
 The axis is unit-normalized in the return value (matching `transform_at`'s

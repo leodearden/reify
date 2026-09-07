@@ -6,6 +6,7 @@
 //! `reify-solver-elastic` crate has no build.rs that propagates `has_gmsh`).
 
 use reify_kernel_gmsh::MeshingOptions;
+use reify_solver_elastic::refine_marked_elements;
 use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 
@@ -135,6 +136,48 @@ fn dummy_surface() -> Mesh {
     }
 }
 
+/// Hex8 `VolumeMesh` (8 vertices, P1-only) — non-tetrahedral connectivity
+/// used to exercise the tet-only connectivity guard (task 4996).
+fn hex_vm() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            1.0, 1.0, 0.0, // 2
+            0.0, 1.0, 0.0, // 3
+            0.0, 0.0, 1.0, // 4
+            1.0, 0.0, 1.0, // 5
+            1.0, 1.0, 1.0, // 6
+            0.0, 1.0, 1.0, // 7
+        ],
+        connectivity: VolumeConnectivity::Hex {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Wedge/PRI6 `VolumeMesh` (6 vertices, P1-only) — non-tetrahedral
+/// connectivity used to exercise the tet-only connectivity guard (task 4996).
+fn wedge_vm() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            0.0, 1.0, 0.0, // 2
+            0.0, 0.0, 1.0, // 3
+            1.0, 0.0, 1.0, // 4
+            0.0, 1.0, 1.0, // 5
+        ],
+        connectivity: VolumeConnectivity::Wedge {
+            indices: vec![0, 1, 2, 3, 4, 5],
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
 /// `size_hints` with wrong length must return `SizeHintsLengthMismatch`.
 #[test]
 fn size_hints_length_mismatch_errors() {
@@ -183,6 +226,254 @@ fn non_finite_size_errors() {
     assert!(
         matches!(result, Err(RefineError::NonFiniteSize { index: 1 })),
         "expected NonFiniteSize {{index: 1}}, got: {result:?}",
+    );
+}
+
+/// A Hex `VolumeMesh` passed to `refine_with_size_field` (tet-only) must be
+/// rejected via `RefineError::UnsupportedConnectivity` from the
+/// `tet_shape` guard, before any size-hint validation or gmsh call
+/// (task 4996).
+#[test]
+fn refine_with_size_field_errors_on_hex_connectivity() {
+    let surface = dummy_surface();
+    let vm = hex_vm();
+    let opts = MeshingOptions::default();
+
+    // size_hints length is irrelevant here: the connectivity guard fires
+    // before the length check.
+    let result = refine_with_size_field(&surface, &vm, &[], &opts);
+    assert!(
+        matches!(result, Err(RefineError::UnsupportedConnectivity)),
+        "expected UnsupportedConnectivity, got: {result:?}",
+    );
+}
+
+/// A Wedge `VolumeMesh` passed to `refine_marked_elements` (tet-only) must be
+/// rejected via `RefineError::UnsupportedConnectivity` from the shared
+/// `tet_shape` chokepoint, before any size-hint/marked-index validation
+/// or gmsh call (task 4996).
+#[test]
+fn refine_marked_elements_errors_on_wedge_connectivity() {
+    let surface = dummy_surface();
+    let vm = wedge_vm();
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[], &[], &opts);
+    assert!(
+        matches!(result, Err(RefineError::UnsupportedConnectivity)),
+        "expected UnsupportedConnectivity, got: {result:?}",
+    );
+}
+
+/// One-element P2 tet `VolumeMesh` (10 nodes, stride 10) — the only fixture in
+/// this crate's suites that exercises the non-P1 branch of
+/// `VolumeMesh::nodes_per_element()`.
+///
+/// Node positions are irrelevant to `tet_shape`, which reads only the
+/// index-buffer length and the order tag; they are laid out as the 4 corners
+/// followed by the 6 edge midpoints so the fixture reads as a real P2 tet.
+fn one_p2_tet_vm() -> VolumeMesh {
+    VolumeMesh {
+        #[rustfmt::skip]
+        vertices: vec![
+            // 4 corners
+            0.0_f32, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            // 6 edge midpoints
+            0.5, 0.0, 0.0,
+            0.5, 0.5, 0.0,
+            0.0, 0.5, 0.0,
+            0.0, 0.0, 0.5,
+            0.5, 0.0, 0.5,
+            0.0, 0.5, 0.5,
+        ],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            order: ElementOrderTag::P2,
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Stride regression pin: `tet_shape` must divide a P2 tet index buffer by
+/// 10, not 4.
+///
+/// Every other fixture in this crate's suites is P1 (stride 4), so without
+/// this test the P2 branch of `VolumeMesh::nodes_per_element()` — adopted when
+/// the crate-local `nodes_per_element(order)` helper was deleted — is
+/// unexercised here, and a stride regression would surface only as a silently
+/// wrong element count. Asserting `expected: 1` (not `expected: 2`) on the
+/// length-mismatch report pins the divisor: 10 indices / 10 nodes = 1 element.
+#[test]
+fn tet_shape_divides_p2_tet_indices_by_ten() {
+    let surface = dummy_surface();
+    let vm = one_p2_tet_vm(); // 10 indices, P2 → exactly 1 element
+    let size_hints = vec![1.0_f64; 3]; // deliberately wrong length
+    let opts = MeshingOptions::default();
+
+    let result = refine_with_size_field(&surface, &vm, &size_hints, &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::SizeHintsLengthMismatch { got: 3, expected: 1 })
+        ),
+        "expected SizeHintsLengthMismatch {{got: 3, expected: 1}} (10 indices / \
+         10 nodes per P2 tet = 1 element; a stride-4 divisor would report 2), \
+         got: {result:?}",
+    );
+}
+
+/// Tet index buffer whose length is not a whole multiple of the per-element
+/// node count — 5 indices at P1 stride 4 — must be rejected at the
+/// `tet_shape` chokepoint.
+///
+/// Before the divisibility guard, the truncating division reported 1 element,
+/// so `size_hints` of length 1 cleared the length check and
+/// `project_per_element_sizes_to_vertices` then panicked with an
+/// index-out-of-bounds on the trailing remainder chunk emitted by
+/// `chunks(4)`. This pins the structured error in place of that panic.
+#[test]
+fn refine_with_size_field_errors_on_non_multiple_tet_indices() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 15], // 5 vertices × 3 coords
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4], // 5 indices, P1 stride 4 → not a multiple
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    // Length 1 is exactly what the old truncating count would have accepted.
+    let result = refine_with_size_field(&surface, &vm, &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "expected MalformedTetIndices {{len: 5, stride: 4}} rather than a \
+         downstream index-out-of-bounds panic, got: {result:?}",
+    );
+}
+
+/// The same malformed buffer must be rejected through the `adaptive` entry
+/// point too — both public entry points share the `tet_shape` chokepoint.
+#[test]
+fn refine_marked_elements_errors_on_non_multiple_tet_indices() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 15],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "expected MalformedTetIndices {{len: 5, stride: 4}}, got: {result:?}",
+    );
+}
+
+/// A correctly-SHAPED tet buffer carrying an out-of-range index VALUE must be
+/// rejected at the same chokepoint.
+///
+/// The structural guards (connectivity family, length divisibility) pass here:
+/// 4 indices at P1 stride 4 is exactly one element. Only the index *value* is
+/// wrong — 99 with 4 vertices — which used to reach
+/// `project_per_element_sizes_to_vertices` and abort the process on its
+/// unguarded `vertex_sizes[99]`. This pins the structured error in place of
+/// that panic (mirrors `reify-mesh-morph`'s `InvalidTetIndex`).
+#[test]
+fn refine_with_size_field_errors_on_out_of_range_tet_index() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 12], // 4 vertices × 3 coords ⇒ valid ids are 0..=3
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    // One hint for one element: the size-hint length check would pass, so the
+    // only thing standing between this mesh and the panic is the index gate.
+    let result = refine_with_size_field(&surface, &vm, &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4
+            })
+        ),
+        "expected InvalidTetIndex {{vertex_index: 99, vertex_count: 4}} rather \
+         than an index-out-of-bounds panic in the projector, got: {result:?}",
+    );
+}
+
+/// The out-of-range index must be rejected through the `adaptive` entry point
+/// too, and the STRUCTURAL check must win when a buffer is both mis-sized and
+/// out-of-range.
+#[test]
+fn refine_marked_elements_errors_on_out_of_range_tet_index() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 12], // 4 vertices
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4
+            })
+        ),
+        "expected InvalidTetIndex {{vertex_index: 99, vertex_count: 4}}, got: {result:?}",
+    );
+
+    // Both defects at once (5 indices AND index 99): the structural check runs
+    // first, so the report names the shape, not the value.
+    let both = VolumeMesh {
+        vertices: vec![0.0_f32; 12],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 99, 3],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let result = refine_marked_elements(&surface, &both, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "a mesh that is both mis-sized and out-of-range must report the \
+         structural defect first, got: {result:?}",
     );
 }
 
@@ -235,21 +526,35 @@ fn non_finite_size_errors() {
 ///
 /// `refine_with_size_field` needs *some* `VolumeMesh` to attach per-element
 /// hints to, and this one is written out by hand. The reason it was originally
-/// hand-built has since been closed at the consumer; the reasons it stays that
-/// way are independent of it.
+/// hand-built has since been closed at BOTH ends — consumer by #6211, producer
+/// by #6298 — but the reasons it stays that way never depended on either.
 ///
-/// **The original reason, closed by #6211.** `mesh_to_volume` sets the
-/// **global** gmsh options `Mesh.MeshSizeMin` and `Mesh.MeshSizeMax` to its
-/// resolved size (`kernel_real.rs:203-206`), and `ffi::clear()` clears
-/// *models*, not *options*. Before task #6211 `refine_volume_with_size_field`
-/// wrote neither option, so every later per-corner `SetSize` in the same
-/// process was squeezed into `[size, size]` and the size field silently became
-/// a no-op. That inbound squeeze can no longer happen: the function now writes
-/// the pair itself on entry — `MeshSizeMin` to gmsh's `0.0` default,
-/// `MeshSizeMax` to `max(vertex_sizes)`, at the "Mesh-size clamp: set
-/// explicitly, never inherited" block in `refine_volume.rs` — so its
-/// output is a function of its own arguments rather than of whatever a sibling
-/// entry point last left behind.
+/// **The original reason, closed by #6211 and #6298.** `mesh_to_volume` sets
+/// the **global** gmsh options `Mesh.MeshSizeMin` and `Mesh.MeshSizeMax` to its
+/// resolved size, and `ffi::clear()` clears *models*, not *options*. Before
+/// task #6211 `refine_volume_with_size_field` wrote neither option, so every
+/// later per-corner `SetSize` in the same process was squeezed into
+/// `[size, size]` and the size field silently became a no-op.
+///
+/// Both ends of that leak are now shut, and each has its own guard one crate
+/// over in `reify-kernel-gmsh`:
+///
+/// * *Consumer, #6211*: the refine writes the pair itself on entry —
+///   `MeshSizeMin` to gmsh's `0.0` default, `MeshSizeMax` to
+///   `max(vertex_sizes)`, at the "Mesh-size clamp: set explicitly, never
+///   inherited" block in `refine_volume.rs` — so its output is a function of
+///   its own arguments rather than of whatever a sibling last left behind.
+/// * *Producer, #6298*: `mesh_to_volume` no longer leaves that clamp behind at
+///   all. It arms `mesh_size_clamp::MeshSizeClampReset` on entry (in
+///   `kernel_real.rs`), which restores gmsh's defaults on every exit path,
+///   early `?` returns included. Pinned by
+///   `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`.
+///
+/// The end-to-end sequence this note is about — seed via `mesh_to_volume`,
+/// then refine with a size field — is itself pinned, in that same crate, by
+/// `tests/mesh_to_volume_clamp_hermeticity.rs::refine_after_mesh_to_volume_honours_its_own_size_field`,
+/// which measured that it takes the loss of BOTH halves to reproduce the
+/// original symptom.
 ///
 /// **Why it stays hand-built anyway.** (i) *Producer symmetry*: the section
 /// above re-based the baseline onto this same function precisely so both sides
@@ -257,12 +562,17 @@ fn non_finite_size_errors() {
 /// put a second producer's sizing semantics back on one side of it. (ii)
 /// *Determinism*: this 6-tet Kuhn partition is fixed in source, so the seed
 /// cannot drift under a gmsh version bump and needs no gmsh at all to build.
-/// (iii) *#6298 is still open*: #6211 defended this **consumer**, it did not fix
-/// the **producer**, so `mesh_to_volume` still leaves its clamp behind for any
-/// later caller that writes no clamp of its own.
 ///
-/// Measured **before #6211**, one process per reading (unit cube, P1) — the two
-/// `mesh_to_volume →` rows record the inbound leak as it behaved then:
+/// Both surviving reasons are independent of the clamp leak, so closing #6211
+/// and #6298 does not make the hand-built seed obsolete. Reverting it to a
+/// `mesh_to_volume` seed would re-introduce exactly the cross-producer confound
+/// the section above removed — measured then as baseline=99 vs refined=95,
+/// with the assertion inverted.
+///
+/// Measured **before #6211 and #6298**, one process per reading (unit cube,
+/// P1) — the two `mesh_to_volume →` rows record the inbound leak as it behaved
+/// then, when the producer still leaked its clamp and the consumer still
+/// inherited it. Historical evidence, NOT a description of today's behaviour:
 ///
 /// | call sequence                              | tets |
 /// |--------------------------------------------|------|
@@ -279,42 +589,16 @@ fn non_finite_size_errors() {
 /// refined call returned bit-identical meshes (181 vs 181, equal average edge
 /// length), so assertion (b) could not pass no matter how the field was built —
 /// which is why re-basing alone was not sufficient here. Kept as measured: it
-/// is the evidence for the defect #6211 fixed, not a description of today's
-/// behaviour.
+/// is the evidence for the defect #6211 and #6298 fixed between them.
 ///
-/// Filed as **task #6298** — a producer-side defect, out of #6200's scope
-/// (#6200 owns the `classify_surfaces` feature angle; the leak is a distinct
-/// bug in a different function). Tasks #6211, #6212 and #6262 cover adjacent
-/// facets of the same global-option leak.
-///
-/// # The constraint this test needs, until #6298 is fixed
-///
-/// **No test in this binary may call `GmshKernel::mesh_to_volume`.** Not "this
-/// one must be the only one", and not "no sibling may do so *before* it" —
-/// `cargo` runs a binary's tests in ONE process with no guaranteed order, so
-/// any sibling that meshes via `mesh_to_volume` could leak its clamp into this
-/// test whatever order they run in. As of this commit no test here calls it,
-/// which is why the constraint reads as a prohibition rather than a
-/// reservation. Since #6211 it is *also* enforced mechanically for the clamp
-/// pair: `refine_volume.rs` sets `Mesh.MeshSizeMin` / `MeshSizeMax` on entry
-/// and restores gmsh's defaults on every exit path — early `?` returns
-/// included — via its `MeshSizeClampReset` RAII guard, so a `[size, size]`
-/// leaked by a sibling `mesh_to_volume` can no longer reach this test's refine
-/// calls. (Both directions are pinned by fixtures in
-/// `reify-kernel-gmsh/tests/refine_volume_tests.rs`, not only by this note.)
-///
-/// What that does *not* cover is any global option `refine_volume.rs` does not
-/// itself write on entry. Today it writes `General.Terminal`,
-/// `General.NumThreads`, `Mesh.ElementOrder`, `Mesh.Algorithm3D`,
-/// `Mesh.MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary` and the
-/// clamp pair, which happens to be a superset of everything `mesh_to_volume`
-/// writes — but that is a coincidence of two option sets, not an invariant
-/// anything checks, and it says nothing about a *future* producer-side write.
-/// So the prohibition stays, alongside the self-diagnosing failure message on
-/// assertion (b) below, and both still-open directions keep their owners:
-/// **#6298** for the producer-side leak (`mesh_to_volume` leaving its clamp
-/// behind), **#6212** for this function's own outbound
-/// `MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary` leak.
+/// The producer-side half was filed as **task #6298** — out of #6200's scope
+/// (#6200 owns the `classify_surfaces` feature angle; the leak was a distinct
+/// bug in a different function) — and has since landed. What remains open is
+/// **#6212**: `refine_volume_with_size_field`'s own outbound
+/// `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+/// `MeshSizeExtendFromBoundary` leak, the same defect class in the same
+/// direction for a different option set, and the reason a future producer-side
+/// write could still reach this test.
 #[test]
 fn localized_size_reduction_refines_marked_region_only() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -339,9 +623,12 @@ fn localized_size_reduction_refines_marked_region_only() {
     // cross-producer confound — the baseline below is produced entirely by the
     // function under test.
     //
-    // The seed is hand-built rather than meshed by `mesh_to_volume`, which
-    // would silently disable the size field for the rest of the process — see
-    // "Why the seed is hand-built" in the doc comment above.
+    // The seed is hand-built rather than meshed by `mesh_to_volume` for
+    // producer symmetry and determinism — see "Why the seed is hand-built" in
+    // the doc comment above. It is NOT a clamp-leak workaround any more: since
+    // #6211 (consumer) and #6298 (producer) a `mesh_to_volume` seed can no
+    // longer disable the size field. Both surviving reasons are independent of
+    // that, so the fixture stays.
     let vm_seed = kuhn_6tet_unit_cube_vm();
     let n_seed_tets = vm_seed.tet_indices().expect("seed is tet-only").len() / 4;
     assert!(n_seed_tets > 0, "seed must have at least one tet");
@@ -380,11 +667,16 @@ fn localized_size_reduction_refines_marked_region_only() {
         "marked region must have more tets after refinement: \
          baseline={base_marked}, refined={refined_marked}.\n\
          If those two counts are EQUAL and the whole meshes are bit-identical, \
-         suspect the #6298 global-option leak before suspecting the size field: \
-         some test in this binary called `GmshKernel::mesh_to_volume`, which \
-         leaves `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pinned to its own resolved \
-         size process-wide (gmsh's option table survives `gmshClear`), squeezing \
-         every later per-corner `SetSize` into [size, size]. See the \
+         the size field did not reach gmsh at all — most likely one half of the \
+         Mesh.MeshSizeMin/Max clamp discipline has regressed, since it takes \
+         the loss of BOTH to reproduce this symptom. Check \
+         `refine_volume.rs`'s inbound writes at the 'Mesh-size clamp: set \
+         explicitly, never inherited' block (#6211) and \
+         `mesh_size_clamp::MeshSizeClampReset` armed in \
+         `kernel_real.rs::mesh_to_volume` (#6298). The guards in \
+         reify-kernel-gmsh's `tests/refine_volume_tests.rs` and \
+         `tests/mesh_to_volume_clamp_hermeticity.rs` would have gone red too; \
+         if they are green, suspect the size field after all. See the \
          'Why the seed is hand-built' note on this test."
     );
 

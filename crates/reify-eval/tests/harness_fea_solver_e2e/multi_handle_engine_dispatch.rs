@@ -480,10 +480,16 @@ fn with_registered_kernels_end_to_end_two_boxes_plus_union() {
     let checker = SimpleConstraintChecker;
     let mut engine = Engine::with_registered_kernels(Box::new(checker));
 
-    // STEP rather than STL: OCCT's `OcctKernelHandle::export` returns
-    // `unsupported export format: Stl` for `ExportFormat::Stl`. STEP is the
-    // only BRep-native export OCCT supports; the round-trip pin needs a
-    // format that actually round-trips.
+    // STEP rather than STL: STEP is OCCT's BRep-native export format, so it is
+    // what this round-trip pin should go through.
+    //
+    // NOT because STL is unsupported: `OcctKernelHandle::export` HAS since been
+    // wired for `ExportFormat::Stl` (see the comment on
+    // `export_unsupported_format_returns_error` in
+    // `crates/reify-kernel-occt/src/handle.rs`, which now uses `Obj` to pin the
+    // unsupported-format contract), and reify-eval's
+    // `harness_engine::export_unit_regime_e2e` drives STL through this same
+    // handle end to end.
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let errors: Vec<_> = result

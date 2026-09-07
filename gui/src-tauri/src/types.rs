@@ -665,6 +665,83 @@ pub const PER_FACE_CHANNEL_SUFFIX: &str = "_per_face";
 /// computation so that OOB vertices do not perturb the stress scale.
 pub const SCALAR_CHANNEL_OOB_SENTINEL: f32 = -1.0;
 
+/// Declared unit symbol for pressure-dimensioned scalar channels (von Mises
+/// stress, error indicator) crossing the GUI boundary.
+///
+/// The GUI producer cannot *derive* this: `SampledField`
+/// (`crates/reify-ir/src/value.rs`) carries no dimension/codomain slot, so the
+/// unit at the boundary must be **declared**, not computed.  PRD
+/// `angle-dimension-completion` INV-AD-4 requires exactly that — a boundary
+/// crossing names its convention in a greppable contract declaration.
+pub const PRESSURE_CHANNEL_UNIT: &str = "Pa";
+
+/// Declared unit symbol for angle-dimensioned scalar channels crossing the GUI
+/// boundary.  Reify's canonical angle unit at this boundary is the **radian**.
+///
+/// No production channel carries this yet.  It is declared here deliberately,
+/// ahead of the first Angle-dimensioned field channel (#6164 `.rotation`, and
+/// σ's shear angles), so that channel lands on an already-declared wire format
+/// rather than arriving as unmarked radians that the frontend then clamps.
+/// `ScalarChannelTag::angle` is the grep target that makes such a crossing
+/// visible at review.
+pub const ANGLE_CHANNEL_UNIT: &str = "rad";
+
+/// Per-channel unit / signedness tag for one `MeshData::scalar_channels` entry.
+///
+/// Twin of the frontend `ScalarChannelTag` in `gui/src/types.ts`.  The two
+/// facts are deliberately orthogonal fields rather than one derived from the
+/// other: a `rad` channel need not be signed (an unwrapped magnitude is not),
+/// and a `Pa` channel can be (principal / normal stress).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScalarChannelTag {
+    /// Display-ready SI unit symbol (e.g. `"Pa"`, `"rad"`) — sourced from a
+    /// declared constant such as [`PRESSURE_CHANNEL_UNIT`] or
+    /// [`ANGLE_CHANNEL_UNIT`], never computed from a runtime value.
+    pub unit: String,
+    /// Whether this channel's values may legitimately be negative.
+    ///
+    /// Consumers use this to decide whether to include negative values in the
+    /// colormap range: `false` (and untagged) keeps the historical `v < 0`
+    /// filter that implements the [`SCALAR_CHANNEL_OOB_SENTINEL`] consumer
+    /// contract; `true` takes the true min/max.
+    ///
+    /// ## Load-bearing contract for `signed: true` channels
+    ///
+    /// A signed channel **must not** use [`SCALAR_CHANNEL_OOB_SENTINEL`] to
+    /// mark out-of-bounds vertices: `-1.0` is a legal value there, and NaN is
+    /// barred from the wire by the `FiniteF32MapRef` guard, so **no
+    /// discriminator exists** that a consumer could use to tell an OOB marker
+    /// from real data.  A signed channel's producer must therefore supply an
+    /// in-band finite value at OOB vertices (or omit the channel entirely).
+    /// This is documentation, not enforcement, precisely because the missing
+    /// discriminator makes enforcement impossible.
+    pub signed: bool,
+}
+
+impl ScalarChannelTag {
+    /// Tag for a pressure-dimensioned channel: [`PRESSURE_CHANNEL_UNIT`],
+    /// unsigned.  Von Mises stress is √(a quadratic form) and the error
+    /// indicator is a norm, so both are physically ≥ 0 (or exactly
+    /// [`SCALAR_CHANNEL_OOB_SENTINEL`]).
+    pub fn pressure() -> Self {
+        Self {
+            unit: PRESSURE_CHANNEL_UNIT.to_string(),
+            signed: false,
+        }
+    }
+
+    /// Tag for an angle-dimensioned channel: [`ANGLE_CHANNEL_UNIT`], signed.
+    ///
+    /// This is the landing pad for the first signed Angle channel — see the
+    /// `signed` field's contract before stamping it on a producer.
+    pub fn angle() -> Self {
+        Self {
+            unit: ANGLE_CHANNEL_UNIT.to_string(),
+            signed: true,
+        }
+    }
+}
+
 /// Flattened PBR material appearance for a single mesh surface.
 ///
 /// This is the renderer-facing **egress** projection of PRD-1's stdlib
@@ -729,6 +806,25 @@ pub struct MeshData {
     /// enforced at serialization time.
     #[serde(default)]
     pub scalar_channels: HashMap<String, Vec<f32>>,
+    /// Per-channel unit / dimension tag for `scalar_channels` entries.
+    ///
+    /// Sparse: a channel with no entry here is **untagged**, and consumers
+    /// treat it exactly as they did before this map existed — the legend shows
+    /// no unit and the colormap range treats the channel as unsigned.  Omitted
+    /// from the wire when empty, so non-FEA and pre-tag payloads stay compact
+    /// and byte-identical.
+    ///
+    /// A sibling map (rather than a richer `scalar_channels` value type) keeps
+    /// `scalar_channels` unchanged on the wire, so every existing frontend read
+    /// site is untouched.  Note `displaced_positions` is a separate field and
+    /// carries no tag.
+    ///
+    /// **Contracts** (both enforced at serialization time): every key must name
+    /// an existing `scalar_channels` entry (no orphan tags), and a channel
+    /// tagged `signed: false` must not carry a negative value other than
+    /// exactly [`SCALAR_CHANNEL_OOB_SENTINEL`].
+    #[serde(default)]
+    pub scalar_channel_tags: HashMap<String, ScalarChannelTag>,
     /// Packed displaced vertex positions produced by the FEA deformation field.
     ///
     /// Same layout as `vertices` (`[x0, y0, z0, x1, y1, z1, ...]`).  Omitted
@@ -821,6 +917,10 @@ impl serde::Serialize for MeshData {
     ///
     /// Returns `Err` (via `S::Error::custom`) if:
     /// - any `scalar_channels` entry length ≠ `vertices.len() / 3`, or
+    /// - any `scalar_channel_tags` key names a channel absent from
+    ///   `scalar_channels` (an orphan tag), or
+    /// - any channel tagged `signed: false` carries a negative value other than
+    ///   exactly `SCALAR_CHANNEL_OOB_SENTINEL`, or
     /// - `displaced_positions` length ≠ `vertices.len()` (when `Some`), or
     /// - `element_kind` length ≠ `indices.len() / 3` (when `Some`), or
     /// - `region_tags` length ≠ `indices.len() / 3` (when `Some`), or
@@ -850,6 +950,47 @@ impl serde::Serialize for MeshData {
                     "scalar channel '{channel}' has length {} but vertex count is {vertex_count}",
                     values.len()
                 )));
+            }
+        }
+
+        // Contract: every scalar_channel_tags key must name an existing channel.
+        // An orphan tag means a producer stamped a tag on a channel it did not
+        // actually insert (e.g. a conditionally-populated one), which would ship
+        // a unit/signedness claim about data that is not on the wire.
+        for channel in self.scalar_channel_tags.keys() {
+            if !self.scalar_channels.contains_key(channel) {
+                return Err(S::Error::custom(format!(
+                    "scalar_channel_tags names '{channel}' but there is no such scalar channel"
+                )));
+            }
+        }
+
+        // Contract: a channel tagged `signed: false` must not carry a negative
+        // value other than exactly SCALAR_CHANNEL_OOB_SENTINEL.  This is what
+        // makes the unsigned claim load-bearing rather than decorative — it is
+        // the guard that catches a producer mis-tagging a genuinely signed
+        // channel (e.g. a rotation in radians) as unsigned, which would then be
+        // silently clamped away by the consumer's `v < 0` range filter.
+        //
+        // The sentinel exemption is written as EXACT equality, not a tolerance
+        // band: a false positive here surfaces as a hard IPC error rather than
+        // a merely-wrong legend, so the check must not over-reach.
+        for (channel, tag) in &self.scalar_channel_tags {
+            if tag.signed {
+                continue;
+            }
+            let Some(values) = self.scalar_channels.get(channel) else {
+                continue; // unreachable: the orphan check above already returned.
+            };
+            for value in values {
+                if *value < 0.0 && *value != SCALAR_CHANNEL_OOB_SENTINEL {
+                    return Err(S::Error::custom(format!(
+                        "scalar channel '{channel}' is tagged unsigned (unit '{}') but carries \
+                         negative value {value}, which is not the OOB sentinel \
+                         ({SCALAR_CHANNEL_OOB_SENTINEL})",
+                        tag.unit
+                    )));
+                }
             }
         }
 
@@ -922,10 +1063,14 @@ impl serde::Serialize for MeshData {
         }
 
         // entity_path, vertices, indices, normals are always serialized.
-        // scalar_channels, displaced_positions, element_kind, region_tags,
-        // element_index, vector_channels, and appearance are omitted when absent/empty.
+        // scalar_channels, scalar_channel_tags, displaced_positions, element_kind,
+        // region_tags, element_index, vector_channels, and appearance are omitted
+        // when absent/empty.
         let mut field_count = 4usize;
         if !self.scalar_channels.is_empty() {
+            field_count += 1;
+        }
+        if !self.scalar_channel_tags.is_empty() {
             field_count += 1;
         }
         if self.displaced_positions.is_some() {
@@ -954,6 +1099,9 @@ impl serde::Serialize for MeshData {
         s.serialize_field("normals", &FiniteF32SliceOpt(&self.normals))?;
         if !self.scalar_channels.is_empty() {
             s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels, "scalar channel"))?;
+        }
+        if !self.scalar_channel_tags.is_empty() {
+            s.serialize_field("scalar_channel_tags", &self.scalar_channel_tags)?;
         }
         if self.displaced_positions.is_some() {
             s.serialize_field(

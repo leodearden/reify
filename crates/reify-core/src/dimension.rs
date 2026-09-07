@@ -508,9 +508,9 @@ impl DimensionVector {
         } else if *self == DimensionVector::ANGLE {
             (display_value, Cow::Borrowed("deg"))
         } else if *self == DimensionVector::AREA {
-            (display_value, Cow::Borrowed("mm\u{00B2}"))
+            (display_value, Cow::Borrowed("mm^2"))
         } else if *self == DimensionVector::VOLUME {
-            (display_value, Cow::Borrowed("mm\u{00B3}"))
+            (display_value, Cow::Borrowed("mm^3"))
         } else if *self == DimensionVector::MONEY {
             (display_value, Cow::Borrowed("USD"))
         } else if self.is_dimensionless() {
@@ -2217,5 +2217,64 @@ mod tests {
         // ANGULAR_VELOCITY is rad·s⁻¹ (slot 2=-1, slot 7=+1);
         // VELOCITY is m·s⁻¹ (slot 0=+1, slot 2=-1, no angle slot).
         assert_ne!(DimensionVector::VELOCITY, DimensionVector::ANGULAR_VELOCITY);
+    }
+
+    /// `to_display_units` returns curated labels in the ASCII `^`-exponent
+    /// alphabet (task λ, #5788).
+    ///
+    /// This is a SEPARATE curated label table from
+    /// `reify_core::display_units::unit_ladders()`, and it is the one the GUI's
+    /// value badge actually reads: `ValueData.unit` reaches the front end via
+    /// gui/src-tauri `format_value` → `types.rs` → reify-ir
+    /// `format_display_pair` → here, NOT through the ladders. Relabelling only
+    /// the ladders would ship a property-editor cell whose dropdown reads
+    /// `mm^3` while its badge reads `mm³`.
+    ///
+    /// The unchanged neighbours are asserted too, so a future reordering of
+    /// this if-else chain cannot silently reroute a dimension to the composed
+    /// fallback while this test still passes on the two arms it targets.
+    #[test]
+    fn to_display_units_uses_ascii_exponent_labels() {
+        assert_eq!(DimensionVector::AREA.to_display_units(1.0).1, "mm^2");
+        assert_eq!(DimensionVector::VOLUME.to_display_units(1.0).1, "mm^3");
+
+        // Unchanged neighbours — arm order must not shift.
+        assert_eq!(DimensionVector::LENGTH.to_display_units(1.0).1, "mm");
+        assert_eq!(DimensionVector::ANGLE.to_display_units(1.0).1, "deg");
+        assert_eq!(DimensionVector::MONEY.to_display_units(1.0).1, "USD");
+    }
+
+    /// THE CONTRACT-C2 FENCE. Green before task λ (#5788) and required to STAY
+    /// green after it: S1's COMPOSED labels keep U+00B7 as their separator, and
+    /// λ must not "finish the job" by normalizing them too.
+    ///
+    /// WHY the split is not arbitrary. `Display` composes a label from an
+    /// arbitrary `DimensionVector` — a 10-slot integer vector with no finite
+    /// enumeration — so there is no table to curate and no set of spellings a
+    /// grammar could accept. Contract C2 therefore ACCEPTS `·` here while
+    /// NORMALIZING the finite curated tables (`to_display_units` above,
+    /// `display_units::unit_ladders`, `value::dimension_unit_label`). Task κ
+    /// owns the `·` half and has deliberately not converged it.
+    ///
+    /// WHY this is a test and not a comment: this file carries dozens of
+    /// `kg·m²·s⁻²`-style lines, so "normalize the superscripts" reads as a
+    /// file-wide sweep, and the two lines that DO change sit right beside
+    /// prose that must not. A comment saying "do not sweep" is invisible to
+    /// the next agent running a regex; a failing assertion is not.
+    ///
+    /// Note the exponents here are ALREADY ASCII (`m^-1`, not `m⁻¹`) — the
+    /// separator is the only non-ASCII character S1 emits, which is exactly
+    /// what makes C2's accept/normalize line drawable at all.
+    #[test]
+    fn s1_composed_labels_keep_middot_separator() {
+        assert_eq!(
+            format!("{}", DimensionVector::PRESSURE),
+            "kg\u{00B7}m^-1\u{00B7}s^-2"
+        );
+        let density = format!("{}", DimensionVector::MASS_DENSITY);
+        assert!(
+            density.contains('\u{00B7}'),
+            "S1 composed labels must keep the U+00B7 separator, got {density:?}"
+        );
     }
 }

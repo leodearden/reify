@@ -30,6 +30,8 @@ mod geometry_centered_primitives_tests;
 mod geometry_let_value_cell_lowering;
 #[path = "harness_geometry_solver/geometry_profile_precondition_tests.rs"]
 mod geometry_profile_precondition_tests;
+#[path = "harness_geometry_solver/geometry_query_inline_arg_tests.rs"]
+mod geometry_query_inline_arg_tests;
 #[path = "harness_geometry_solver/geometry_traits_inference_tests.rs"]
 mod geometry_traits_inference_tests;
 #[path = "harness_geometry_solver/geometry_traits_tests.rs"]

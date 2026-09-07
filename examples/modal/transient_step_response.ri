@@ -26,7 +26,7 @@
 // queries it (both resolve geometry-free to the same fundamental-mode antinode
 // node until task 4122 lands selector→mesh-node resolution; plan design-dec-3).
 //
-// Damping: `RayleighDamping(alpha: 0, beta: 0.0003)` gives a per-mode ratio
+// Damping: `RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)` gives a per-mode ratio
 // ζ_i = (α + β·ω_i²)/(2·ω_i) = β·ω_i/2. For the fundamental (f₁ ≈ 44.7 Hz at P1,
 // ω₁ ≈ 281 rad/s) that is ζ₁ ≈ 0.042 (lightly under-damped → the Duhamel exact
 // path), decaying ~26.5 %/period. The 2nd Z-bending mode (ω ≈ 6.3·ω₁) damps
@@ -43,9 +43,12 @@
 //   - FEAMaterialInput(material: mat) → mi.material (ElasticMaterial coercion).
 //   - boundary_conditions accepts the List<FixedSupport> value for its
 //     List<Support> param (structure ctors do not type-check args).
-//   - ModalOptions args are POSITIONAL (name: labels are cosmetic, bound in
-//     declaration order); every param up to `element_order` is spelled out so the
-//     trailing reference_direction / element_order land in the right slots.
+//   - ModalOptions args bind BY NAME (task-4522's by-name ctor binder resolves
+//     each `name:` label against the declared params; only UNLABELLED args fill
+//     the remaining slots in declaration order). Every param is still spelled
+//     out because a MISSPELLED label is STILL bound leniently — appended as
+//     `__arg{i}`, leaving the real param at its default — under only an
+//     `E_CTOR_UNKNOWN_FIELD` Warning today (Error at δ).
 
 structure CantileverStepResponse {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
@@ -73,7 +76,7 @@ structure CantileverStepResponse {
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [root],
-        damping: RayleighDamping(alpha: 0.0, beta: 0.0003),
+        damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0003s),
         sigma: 0.0,
         tol: 0.000000001,
         max_iters: 200,

@@ -544,3 +544,55 @@ fn e2e_t_prism_lowers_to_compute_node_and_solves() {
     // canonical-prism assertion helper (same contract as the trampoline-unit test).
     assert_triplex_form_find_result(fields);
 }
+
+// ── task #6120: dimensionless gate on seed_ratios ─────────────────────────────
+
+/// (#6120-e) `seed_ratios` are nullity-invariant RELATIVE ratios (the stdlib
+/// `form_find_free` doc: "Overall scaling of q is nullity-invariant, so only
+/// relative ratios matter"), so a DIMENSIONED `Scalar` seed is a category error
+/// and must be rejected with a located wrong-unit diagnostic — not silently
+/// stripped to its SI magnitude and used as the ratio.
+#[test]
+fn free_trampoline_dimensioned_seed_ratio_is_failed_wrong_unit() {
+    let seeds_with_unit = Value::List(vec![
+        Value::Real(-1.0),
+        Value::Real(1.0),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::FORCE_DENSITY,
+        }, // ← dimensioned: must not be accepted
+    ]);
+    let value_inputs = vec![
+        triplex_tensegrity(),
+        triplex_group_ids(),
+        seeds_with_unit,
+        Value::Int(1), // reference_group
+    ];
+
+    match call_form_find_free(&value_inputs) {
+        ComputeOutcome::Failed { diagnostics, .. } => {
+            let joined = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                joined.contains("E_FormFindInfeasible"),
+                "expected an E_FormFindInfeasible diagnostic, got: {joined}"
+            );
+            assert!(
+                joined.contains("wrong unit"),
+                "expected the diagnostic to name the wrong unit, got: {joined}"
+            );
+            assert!(
+                joined.contains("seed_ratios[2]"),
+                "expected the diagnostic to locate the offending entry as \
+                 seed_ratios[2], got: {joined}"
+            );
+        }
+        other => panic!(
+            "a dimensioned seed_ratios entry must be rejected, not silently \
+             stripped; got {other:?}"
+        ),
+    }
+}

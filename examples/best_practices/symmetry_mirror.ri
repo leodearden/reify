@@ -25,14 +25,24 @@ module symmetry_mirror
 //   the NORMAL components stay bare dimensionless numbers:
 //       mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)     // correct
 //       mirror(g,   0,   0,   0, 1, 0, 0)     // WRONG — bare-0 origin
-//   The wrong form yields "mirror: ox argument expects Length, got Int; pass a
-//   dimensioned length such as `5mm`" and then a hard geometry-compile error
-//   ("missing or non-Length argument 'ox' for mirror").
+//   The wrong form is rejected at COMPILE time, before anything is built: one
+//   error per component ("mirror: ox argument expects Length, got Int; pass a
+//   dimensioned length such as `5mm`", then the same for oy and oz), and exit 1
+//   under BOTH `reify check` and `reify eval`. Compilation aborts there, so the
+//   older geometry-compile error ("missing or non-Length argument 'ox' for
+//   mirror") is NOT reached on this route — it survives only on the
+//   decoded-value route described just below.
 //
-//   TRAP: that error does NOT appear under `reify check` — check reports "All
-//   constraints satisfied" on the bare-0 form. It only surfaces at `reify eval`
-//   / build time. A green check is not evidence that a geometry call's argument
-//   dimensions are right.
+//   TRAP, re-scoped: the bare-0 7-arg form above is now a HARD `reify check`
+//   failure — a compile-layer ArgTypeMismatch (task 5662) on each of ox, oy and
+//   oz, exit 1, and no verdict line at all. What survives is narrower: on the
+//   decoded-value route `mirror(g, plane_yz(0))` the same three ox/oy/oz Length
+//   errors DO reach check's stderr, yet check still exits 0 and still prints
+//   "All constraints satisfied." underneath them. So the surviving warning is
+//   about the EXIT STATUS and that trailing verdict line, not about the error
+//   being absent — read check's stderr, never its exit code alone. That split
+//   is measured behaviour here and is deliberate but not permanent; re-measure
+//   rather than trusting this line.
 //
 //   Plane constructors: plane_xy(z), plane_xz(y), plane_yz(x) — each takes
 //   EXACTLY ONE offset argument, naming the axis the plane spans (so the

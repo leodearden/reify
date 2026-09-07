@@ -1041,6 +1041,1071 @@ mod tests {
         assert_eq!(pre_done_findings, scoped_findings);
     }
 
+    /// A `TaskMetadata` in the exact state the D-1 pre-done hook observes:
+    /// pre-transition `status`, and `done_provenance: None` because the
+    /// interceptor has not written it yet.
+    fn pre_done_meta(task_id: &str, status: &str, files: &[&str]) -> TaskMetadata {
+        TaskMetadata {
+            task_id: task_id.to_string(),
+            status: status.to_string(),
+            files: files.iter().map(|s| s.to_string()).collect(),
+            done_provenance: None,
+            title: format!("Task {}", task_id),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        }
+    }
+
+    /// A gitignored `metadata.files` entry must never refuse a done-flip.
+    ///
+    /// A gitignored path can never resolve on main *by construction*, so
+    /// letting it block a fail-closed state transition is a guaranteed false
+    /// positive (memory:
+    /// `project_steward_metadata_files_gitignore_falsepositive.md`). The
+    /// gitignored aspect already has its own dedicated breadcrumb — the
+    /// `P5MetadataFilesGitignored` Medium from `check_gitignored` — which is
+    /// the correct channel for it.
+    ///
+    /// Note the deliberate divergence from the SWEEP, which does NOT exclude
+    /// gitignored entries from `genuinely_absent` (see the comment above the
+    /// deliverable-presence rescue in `p5_phantom_done.rs`). The gate diverges
+    /// on purpose: refusing a state transition is a far costlier error than a
+    /// Low sweep finding.
+    #[test]
+    fn pre_done_gate_does_not_refuse_on_gitignored_entry() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_path_tracked_on("main", "crates/reify-audit/src/lib.rs", true);
+        git.set_is_gitignored("target/debug/generated.rs", true);
+        // `path_tracked_on` for the gitignored path stays at its `false`
+        // default — a build artefact is never tracked on main.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345G".to_string(),
+            pre_done_meta(
+                "6345G",
+                "in-progress",
+                &["crates/reify-audit/src/lib.rs", "target/debug/generated.rs"],
+            ),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345G");
+
+        let highs: Vec<&Finding> =
+            findings.iter().filter(|f| f.severity == Severity::High).collect();
+        assert!(
+            highs.is_empty(),
+            "a gitignored metadata.files entry must not refuse the done-flip; got {:?}",
+            highs
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly the gitignored breadcrumb; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P5MetadataFilesGitignored);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
+    /// The ALL-gitignored declared set must reach `check_pre_done_landing`'s
+    /// `declared.is_empty()` early return, not the `absent.is_empty()` one.
+    ///
+    /// `cli-invocation.md` promises the gate "never refuses" on "a list
+    /// consisting solely of gitignored entries", and the code implements that
+    /// by `retain`-ing the gitignored subset away FIRST and returning on the
+    /// resulting empty set. The sibling test
+    /// `pre_done_gate_does_not_refuse_on_gitignored_entry` mixes one gitignored
+    /// entry with one tracked-on-main entry, so it exits through the LATER
+    /// `absent.is_empty()` leg and leaves the promised branch unexecuted — a
+    /// refactor that moved the gitignored filter after the tracked-on-main
+    /// filter would keep it green while refusing every all-gitignored flip.
+    ///
+    /// Here the single declared entry is gitignored AND not tracked on main
+    /// (the `path_tracked_on` default), so only the first return can produce
+    /// the empty result.
+    #[test]
+    fn pre_done_gate_does_not_refuse_when_every_entry_is_gitignored() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_gitignored("target/debug/generated.rs", true);
+        // `path_tracked_on` stays false and `is_ancestor("main", "main")` stays
+        // false: if control ever reached the refusal road, the MAIN_BASE probe
+        // would fire and this test would see an advisory Low — so a green run
+        // proves the gitignored filter ran FIRST.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345GALL".to_string(),
+            pre_done_meta("6345GALL", "in-progress", &["target/debug/generated.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345GALL");
+
+        assert!(
+            findings.iter().all(|f| f.pattern != Pattern::P5PhantomDone),
+            "a declared set consisting solely of gitignored entries must never \
+             produce a pre-done refusal at ANY severity; got {:?}",
+            findings
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly the gitignored breadcrumb; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P5MetadataFilesGitignored);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
+    /// Defect 2, on the SWEEP path: a task whose claimed commit has LANDED
+    /// must corroborate via that commit's own delta, not via `main..<commit>`.
+    ///
+    /// `main..<commit>` is a two-point TREE diff. Once `<commit>` is an
+    /// ancestor of main the two trees agree on exactly the paths the commit
+    /// introduced, so the task's own files are EXCLUDED by construction and
+    /// what comes back is the reverse-delta of whatever landed afterwards.
+    /// MEASURED on the live repo: for merge `bc8f74a4d4`, `main..M` returned
+    /// 6 paths and all six of that task's own files were absent from the set.
+    ///
+    /// The fixture reproduces exactly that shape: the claimed commit IS an
+    /// ancestor, the degenerate reverse-delta names only an unrelated later
+    /// merge's file, and there is no sibling rescue available — so the primary
+    /// leg alone must decide, and it must decide correctly.
+    #[test]
+    fn landed_ancestor_commit_corroborates_via_its_own_delta() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "6345A");
+
+        let mut git = MockGitOps::new();
+        // The claimed commit is on main.
+        git.set_is_ancestor("mergesha", "main", true);
+        // The degenerate reverse-delta: an unrelated later merge's file, and
+        // NOT the task's own.
+        git.set_diff_changed_paths(
+            "main",
+            "mergesha",
+            vec!["crates/reify-other/src/unrelated.rs".to_string()],
+        );
+        // The true delta.
+        git.set_changed_paths_in_commit(
+            "mergesha",
+            vec!["crates/reify-x/src/landed.rs".to_string()],
+        );
+        // No sibling rescue — the primary leg alone must decide.
+        git.set_log_grep("main", "6345A", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345A".to_string(),
+            TaskMetadata {
+                task_id: "6345A".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-x/src/landed.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("mergesha".to_string()),
+                    note: None,
+                }),
+                title: "A task whose merge commit has landed".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "a task whose landed merge commit's own delta covers metadata.files must \
+             produce no finding — reading the degenerate main..<commit> instead is the \
+             false-High this fix removes; got {:?}",
+            findings
+        );
+    }
+
+    /// A `log_grep` rescue must only fire on a commit that references the task
+    /// id as a WHOLE NUMBER.
+    ///
+    /// `git log --grep=<id>` is a bare substring match, so `--grep=593` matches
+    /// "Merge task/5937 into main". The pure-reachability fallback fires
+    /// whenever `siblings` is non-empty, so a short or colliding id silently
+    /// downgrades a genuine phantom-done to Low — a FALSE NEGATIVE. (The code
+    /// comments recorded this as an accepted task-4464 bias toward fewer
+    /// false-Highs; this task is explicitly the false-negative direction, so
+    /// the bias is now inverted.)
+    ///
+    /// The positive control in the same test proves the filter NARROWS the
+    /// match rather than disabling the rescue.
+    #[test]
+    fn log_grep_rescue_requires_task_id_digit_boundary() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "593");
+        insert_task_completed_event(&conn, "5937");
+
+        let mut git = MockGitOps::new();
+
+        // --- the collision: `--grep=593` also matches 5937 and 5930 ---
+        git.set_log_grep(
+            "main",
+            "593",
+            vec![
+                GitCommit {
+                    sha: "c7f659fd6a".to_string(),
+                    subject: "Merge task/5937 into main".to_string(),
+                },
+                GitCommit {
+                    sha: "aa11bb22".to_string(),
+                    subject: "Merge task/5930 into main".to_string(),
+                },
+            ],
+        );
+        // Neither colliding commit covers task 593's deliverable.
+        git.set_diff_changed_paths(
+            "main",
+            "c7f659fd6a",
+            vec!["crates/reify-other/src/a.rs".to_string()],
+        );
+        git.set_diff_changed_paths(
+            "main",
+            "aa11bb22",
+            vec!["crates/reify-other/src/b.rs".to_string()],
+        );
+        // The claimed commit covers nothing.
+        git.set_diff_changed_paths("main", "staleref", vec![]);
+
+        // --- the positive control: task 5937's OWN landing commit ---
+        git.set_log_grep(
+            "main",
+            "5937",
+            vec![GitCommit {
+                sha: "c7f659fd6a".to_string(),
+                subject: "Merge task/5937 into main".to_string(),
+            }],
+        );
+        git.set_diff_changed_paths("main", "staleref5937", vec![]);
+
+        // `path_tracked_on` and `is_ancestor` stay at their `false` defaults for
+        // every path/commit — no other rescue is available to either task.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "593".to_string(),
+            TaskMetadata {
+                task_id: "593".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-x/src/never_landed.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("staleref".to_string()),
+                    note: None,
+                }),
+                title: "A genuine phantom-done with a short id".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        task_metadata.insert(
+            "5937".to_string(),
+            TaskMetadata {
+                task_id: "5937".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-y/src/landed_via_sibling.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("staleref5937".to_string()),
+                    note: None,
+                }),
+                title: "The task the colliding subject actually names".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+
+        let for_593: Vec<&Finding> = findings.iter().filter(|f| f.task_id == "593").collect();
+        assert_eq!(
+            for_593.len(),
+            1,
+            "expected exactly one finding for task 593; got {:?}",
+            for_593
+        );
+        assert_eq!(for_593[0].pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            for_593[0].severity,
+            Severity::High,
+            "\"Merge task/5937 into main\" must NOT rescue task 593 — a substring \
+             collision is not landing evidence; got {:?}",
+            for_593[0]
+        );
+
+        let for_5937: Vec<&Finding> = findings.iter().filter(|f| f.task_id == "5937").collect();
+        assert_eq!(
+            for_5937.len(),
+            1,
+            "expected exactly one finding for task 5937; got {:?}",
+            for_5937
+        );
+        assert_eq!(
+            for_5937[0].severity,
+            Severity::Low,
+            "the filter must NARROW the rescue, not disable it: the same subject \
+             \"Merge task/5937 into main\" must still rescue task 5937; got {:?}",
+            for_5937[0]
+        );
+    }
+
+    /// The pre-done gate must accept a task whose deliverable was DELETED (or
+    /// renamed away) by its landing commit.
+    ///
+    /// This is why defects 1 and 2 had to land together. A removed file has
+    /// `path_tracked_on(main, p) == false`, so the tracked-on-main leg alone
+    /// would refuse every removal/refactor task. Only the landing commit's own
+    /// delta (`<merge>^1..<merge>`) shows a deletion — `main..<merge>` can
+    /// never show it, because a path absent from both trees is not in a
+    /// two-point diff at all.
+    ///
+    /// Case (b) pins that the rescue NARROWS the gate rather than defeating
+    /// it: a landing commit that touched something else entirely is not
+    /// evidence that this task's deliverable landed.
+    #[test]
+    fn pre_done_gate_accepts_deletion_task_via_landing_commit() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+
+        // The repo-health probe: `is_ancestor(main, main)` is exit-0 iff `main`
+        // resolves. A pre-done refusal is only allowed to fire on a healthy
+        // repo — without this the gate reports an advisory Low ("git degraded")
+        // instead, which is exactly the fail-safe that keeps an infra hiccup
+        // from blocking a legitimate done-flip.
+        git.set_is_ancestor("main", "main", true);
+
+        // (a) the deletion task — its landing commit removed the declared file.
+        git.set_log_grep(
+            "main",
+            "6345D",
+            vec![GitCommit {
+                sha: "mergesha".to_string(),
+                subject: "Merge task/6345D into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("mergesha", "main", true);
+        git.set_changed_paths_in_commit(
+            "mergesha",
+            vec!["crates/reify-x/src/removed.rs".to_string()],
+        );
+
+        // (b) same shape, but the landing commit's delta covers an unrelated
+        // path only — no evidence this task's deliverable landed.
+        git.set_log_grep(
+            "main",
+            "6345E",
+            vec![GitCommit {
+                sha: "mergeshaE".to_string(),
+                subject: "Merge task/6345E into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("mergeshaE", "main", true);
+        git.set_changed_paths_in_commit(
+            "mergeshaE",
+            vec!["crates/reify-other/src/something_else.rs".to_string()],
+        );
+
+        // `path_tracked_on` stays at its `false` default for both declared
+        // files — that is the whole point: the file is gone from main.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345D".to_string(),
+            pre_done_meta("6345D", "review", &["crates/reify-x/src/removed.rs"]),
+        );
+        task_metadata.insert(
+            "6345E".to_string(),
+            pre_done_meta("6345E", "review", &["crates/reify-x/src/never_landed.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        // (a) must PASS the gate.
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345D");
+        assert!(
+            findings.is_empty(),
+            "a task whose landing commit DELETED its declared file must pass the \
+             pre-done gate — path_tracked_on is false by construction for a removal; \
+             got {:?}",
+            findings
+        );
+
+        // (b) must still be REFUSED.
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345E");
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one refusal for 6345E; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "a landing commit that touched something else entirely must not rescue \
+             an absent deliverable; got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::MetadataFiles { entries }
+                    if entries == &vec!["crates/reify-x/src/never_landed.rs".to_string()]
+            )),
+            "the refusal must cite the still-absent entry; got {:?}",
+            findings[0].evidence
+        );
+    }
+
+    /// The deletion rescue must be DIRECTORY-aware, mirroring `path_tracked_on`.
+    ///
+    /// `git ls-tree main -- <dir>` resolves a directory entry, so a
+    /// `metadata.files` entry may legitimately name a directory. A
+    /// `--name-only` delta, by contrast, lists the individual files beneath it
+    /// and never the directory itself — so matching the delta by exact string
+    /// equality refuses a task whose declared DIRECTORY was removed or renamed
+    /// away by its own landing commit, even though the removal is right there
+    /// in the delta.
+    ///
+    /// Case (b) pins that the prefix match is anchored: a sibling directory
+    /// with a shared textual prefix (`crates/reify-x/src/gone_too/`) must not
+    /// satisfy a declared `crates/reify-x/src/gone` entry.
+    ///
+    /// Case (c) is the same directory written WITH a trailing slash —
+    /// `metadata.files` is hand-authored and nothing normalises it. Without
+    /// trimming, the anchor check indexes the byte after the slash and can
+    /// never see a `/`, so the entry stays absent and the flip is refused for
+    /// work that did land. The healthy `path_tracked_on` leg cannot mask it:
+    /// `git ls-tree main -- <dir>/` is equally empty once the directory is
+    /// gone from main.
+    #[test]
+    fn pre_done_gate_accepts_deleted_directory_entry_via_landing_commit() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+
+        // (a) the declared entry is a DIRECTORY the landing commit removed;
+        // the delta lists the files that were under it.
+        git.set_log_grep(
+            "main",
+            "6345DIR",
+            vec![GitCommit {
+                sha: "dirmerge".to_string(),
+                subject: "Merge task/6345DIR into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("dirmerge", "main", true);
+        git.set_changed_paths_in_commit(
+            "dirmerge",
+            vec![
+                "crates/reify-x/src/gone/mod.rs".to_string(),
+                "crates/reify-x/src/gone/inner/impl.rs".to_string(),
+            ],
+        );
+
+        // (b) the delta only touches a DIFFERENT directory that happens to
+        // share a textual prefix with the declared one.
+        git.set_log_grep(
+            "main",
+            "6345PFX",
+            vec![GitCommit {
+                sha: "pfxmerge".to_string(),
+                subject: "Merge task/6345PFX into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("pfxmerge", "main", true);
+        git.set_changed_paths_in_commit(
+            "pfxmerge",
+            vec!["crates/reify-x/src/gone_too/mod.rs".to_string()],
+        );
+
+        // (c) the SAME removed directory as (a), but declared with a trailing
+        // slash — the form `metadata.files` may legitimately carry.
+        git.set_log_grep(
+            "main",
+            "6345SLASH",
+            vec![GitCommit {
+                sha: "slashmerge".to_string(),
+                subject: "Merge task/6345SLASH into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("slashmerge", "main", true);
+        git.set_changed_paths_in_commit(
+            "slashmerge",
+            vec!["crates/reify-x/src/gone/mod.rs".to_string()],
+        );
+
+        // `path_tracked_on` stays false for both declared entries — the
+        // directory is gone from main, which is the whole premise.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345DIR".to_string(),
+            pre_done_meta("6345DIR", "review", &["crates/reify-x/src/gone"]),
+        );
+        task_metadata.insert(
+            "6345PFX".to_string(),
+            pre_done_meta("6345PFX", "review", &["crates/reify-x/src/gone"]),
+        );
+        task_metadata.insert(
+            "6345SLASH".to_string(),
+            pre_done_meta("6345SLASH", "review", &["crates/reify-x/src/gone/"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345DIR");
+        assert!(
+            findings.is_empty(),
+            "a declared DIRECTORY removed by the task's own landing commit must pass \
+             the pre-done gate — the delta lists the files beneath it, never the \
+             directory itself; got {:?}",
+            findings
+        );
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345PFX");
+        assert_eq!(
+            findings.len(),
+            1,
+            "a sibling directory sharing a textual prefix must not satisfy the \
+             declared entry — the prefix match must be anchored at a `/`; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].severity, Severity::High);
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345SLASH");
+        assert!(
+            findings.is_empty(),
+            "a declared directory written WITH a trailing slash must behave exactly \
+             like the un-slashed form — the trailing separator is not evidence that \
+             the work failed to land; got {:?}",
+            findings
+        );
+    }
+
+    /// A pre-done refusal must rest on evidence actually gathered.
+    ///
+    /// Every git leg in this crate fail-safes to `false`/empty on error. In the
+    /// SWEEP that converges on "no finding"; on the pre-done path it converges
+    /// on a High that BLOCKS a state transition, so an infra hiccup would be
+    /// indistinguishable from a genuine phantom-done. The `MAIN_BASE` probe
+    /// inverts that: with git degraded the finding is still emitted (visible)
+    /// but as an advisory Low, which cannot block the flip.
+    #[test]
+    fn pre_done_gate_degraded_git_downgrades_to_advisory_low() {
+        let conn = seed_db();
+
+        // Nothing is set on the mock at all: every git call fail-safes exactly
+        // as `RealGitOps` does when the repo/ref/binary is unavailable, and
+        // `is_ancestor("main", "main")` is false — the probe's failure signal.
+        let git = MockGitOps::new();
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345INFRA".to_string(),
+            pre_done_meta("6345INFRA", "review", &["crates/reify-x/src/thing.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345INFRA");
+        assert_eq!(
+            findings.len(),
+            1,
+            "the degraded-git case must still be VISIBLE, not silent; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            findings[0].severity,
+            Severity::Low,
+            "a refusal built on a git failure must not block a done-flip; got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].summary.contains("[advisory"),
+            "the downgrade reason must be legible in the summary; got {:?}",
+            findings[0].summary
+        );
+    }
+
+    /// A PER-CALL `git ls-tree` failure must not manufacture a refusal.
+    ///
+    /// The whole-repo `MAIN_BASE` probe is not sufficient on its own: it
+    /// cannot distinguish a per-call git failure from a genuine observation.
+    /// `path_tracked_on` fail-safes to `false` on ANY `ls-tree` error
+    /// (unreadable pack, fd exhaustion under orchestrator load, index
+    /// contention), so with `main` still resolving, one transient failure plus
+    /// an empty `log_grep` yielded a BLOCKING High against a legitimate
+    /// done-flip — the exact fail-safe inversion the guards exist to close.
+    ///
+    /// The control task in the same fixture is byte-identical except that git
+    /// ANSWERS "not tracked" instead of failing, and must still be refused at
+    /// High — so this test cannot pass by simply muting the gate.
+    #[test]
+    fn pre_done_gate_ls_tree_failure_downgrades_to_advisory_low() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        // The repo is HEALTHY: `main` resolves, so the MAIN_BASE probe passes
+        // and cannot be what downgrades the finding.
+        git.set_is_ancestor("main", "main", true);
+
+        // (a) git FAILED for the declared entry — the question is unanswered.
+        git.set_path_tracked_on_error(
+            "main",
+            "crates/reify-x/src/flaky.rs",
+            "git exited Some(128): fatal: unable to read tree",
+        );
+        git.set_log_grep("main", "6345LSERR", vec![]);
+
+        // (b) control: git ANSWERED "not tracked" for an identical-shaped task.
+        git.set_path_tracked_on("main", "crates/reify-x/src/absent.rs", false);
+        git.set_log_grep("main", "6345LSOK", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345LSERR".to_string(),
+            pre_done_meta("6345LSERR", "review", &["crates/reify-x/src/flaky.rs"]),
+        );
+        task_metadata.insert(
+            "6345LSOK".to_string(),
+            pre_done_meta("6345LSOK", "review", &["crates/reify-x/src/absent.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LSERR");
+        assert_eq!(
+            findings.len(),
+            1,
+            "a degraded ls-tree must stay VISIBLE, not silent; got {:?}",
+            findings
+        );
+        assert_eq!(
+            findings[0].severity,
+            Severity::Low,
+            "a refusal resting on an ls-tree that FAILED must not block a done-flip \
+             — `false` from a failed `git ls-tree` is not evidence of absence; \
+             got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].summary.contains("[advisory")
+                && findings[0].summary.contains("ls-tree"),
+            "the failing seam must be named in the summary so an operator can \
+             re-check it by hand; got {:?}",
+            findings[0].summary
+        );
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LSOK");
+        assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "git ANSWERING \"not tracked\" is evidence and must still refuse — \
+             otherwise the fix above has merely muted the gate; got {:?}",
+            findings[0]
+        );
+    }
+
+    /// A `git log --grep` failure must not manufacture a refusal either.
+    ///
+    /// `log_grep` fail-safes to an empty vec, which empties the rescue
+    /// candidate list — so a genuinely-absent declared entry that a landing
+    /// commit WOULD have accounted for is refused because the search never
+    /// ran. The control task differs only in that git answers "no matching
+    /// commits" rather than failing, and must still be refused at High.
+    #[test]
+    fn pre_done_gate_log_grep_failure_downgrades_to_advisory_low() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+
+        // Both tasks: git ANSWERS "not tracked on main" — genuine absence.
+        git.set_path_tracked_on("main", "crates/reify-x/src/gone.rs", false);
+
+        // (a) the rescue search itself failed.
+        git.set_log_grep_error(
+            "main",
+            "6345LGERR",
+            "git exited Some(128): fatal: bad revision 'main'",
+        );
+        // (b) control: the rescue search ran and matched nothing.
+        git.set_log_grep("main", "6345LGOK", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345LGERR".to_string(),
+            pre_done_meta("6345LGERR", "review", &["crates/reify-x/src/gone.rs"]),
+        );
+        task_metadata.insert(
+            "6345LGOK".to_string(),
+            pre_done_meta("6345LGOK", "review", &["crates/reify-x/src/gone.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LGERR");
+        assert_eq!(findings.len(), 1, "expected one finding; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::Low,
+            "an empty rescue candidate list produced by a FAILED `git log --grep` \
+             is not evidence that no commit references the task; got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].summary.contains("[advisory")
+                && findings[0].summary.contains("log --grep"),
+            "the failing seam must be named in the summary; got {:?}",
+            findings[0].summary
+        );
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LGOK");
+        assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "a rescue search that RAN and matched nothing is evidence and must \
+             still refuse; got {:?}",
+            findings[0]
+        );
+    }
+
+    /// A `log_grep`-derived sibling is an ancestor of `MAIN_BASE` by
+    /// construction, so the pre-done scan must not fork to ask.
+    ///
+    /// `git log <MAIN_BASE> --grep=…` lists only commits REACHABLE FROM
+    /// `MAIN_BASE` — the same relation `git merge-base --is-ancestor` tests,
+    /// against the same ref in the same repo in the same process. Asking
+    /// anyway doubled the per-sibling fork count on the one path that runs
+    /// inside fused-memory's per-project write lock under a 30 s hard timeout:
+    /// 2 × `PRE_DONE_SIBLING_SCAN_CAP` ≈ 5.7 s at the measured ~57 ms/fork.
+    ///
+    /// The fixture pins the priming directly rather than counting forks:
+    /// `is_ancestor` for the sibling is LEFT at MockGitOps' `false` default,
+    /// so only a primed cache can send `changed_paths_for_claim` down the
+    /// `<commit>^1..<commit>` arm where the rescue evidence lives. Unprimed,
+    /// it takes the degenerate `main..<sha>` arm, finds nothing, and refuses.
+    ///
+    /// The invariant is provable at THIS call site only, which is why the
+    /// sweep's rescue leg still asks git.
+    #[test]
+    fn pre_done_gate_primes_ancestry_for_log_grep_siblings() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        // The repo-health probe keys on ("main", "main") — a different entry
+        // from the sibling's, which stays deliberately unset.
+        git.set_is_ancestor("main", "main", true);
+
+        git.set_log_grep(
+            "main",
+            "6345PRIME",
+            vec![GitCommit {
+                sha: "primemerge".to_string(),
+                subject: "Merge task/6345PRIME into main".to_string(),
+            }],
+        );
+        // NOT set: `git.set_is_ancestor("primemerge", "main", true)`.
+        git.set_changed_paths_in_commit(
+            "primemerge",
+            vec!["crates/reify-x/src/landed.rs".to_string()],
+        );
+        // The degenerate arm carries nothing, exactly as post-merge reality.
+        git.set_diff_changed_paths("main", "primemerge", vec![]);
+
+        // The declared file was removed by its own landing commit, so
+        // `path_tracked_on` stays false and the rescue leg must decide.
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345PRIME".to_string(),
+            pre_done_meta("6345PRIME", "review", &["crates/reify-x/src/landed.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345PRIME");
+        assert!(
+            findings.is_empty(),
+            "a `log_grep`-derived sibling must be treated as an ancestor without \
+             a `merge-base` fork — the reachability invariant makes the answer \
+             `true` by construction; got {:?}",
+            findings
+        );
+    }
+
+    /// A truncated sibling scan must not refuse: the corroborating commit may
+    /// simply have been the one past the cap.
+    ///
+    /// `PRE_DONE_SIBLING_SCAN_CAP` bounds the scan so the hook cannot
+    /// head-of-line block fused-memory's per-project write lock. Emitting a
+    /// blocking High off a knowingly incomplete search inverts the crate's
+    /// fail-safe direction, so truncation downgrades to an advisory Low.
+    #[test]
+    fn pre_done_gate_truncated_sibling_scan_downgrades_to_advisory_low() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+
+        // More candidates than the cap, none of which cover the declared file.
+        let siblings: Vec<GitCommit> = (0..80)
+            .map(|i| GitCommit {
+                sha: format!("sib{i}"),
+                subject: format!("Merge task/6345CAP into main ({i})"),
+            })
+            .collect();
+        for c in &siblings {
+            git.set_is_ancestor(&c.sha, "main", true);
+            git.set_changed_paths_in_commit(
+                &c.sha,
+                vec!["crates/reify-other/src/unrelated.rs".to_string()],
+            );
+        }
+        git.set_log_grep("main", "6345CAP", siblings);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345CAP".to_string(),
+            pre_done_meta("6345CAP", "review", &["crates/reify-x/src/thing.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345CAP");
+        assert_eq!(findings.len(), 1, "expected one finding; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::Low,
+            "a refusal built on a scan truncated at the cap must be advisory, not \
+             blocking — the corroborating commit may be the one never inspected; \
+             got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].summary.contains("[advisory"),
+            "the truncation must be legible in the summary; got {:?}",
+            findings[0].summary
+        );
+    }
+
+    /// The digit-boundary filter must drop only DEMONSTRATED collisions, never
+    /// a commit that references the task somewhere `log_grep` cannot show us.
+    ///
+    /// `git log --grep=<id>` matches the WHOLE commit message, but
+    /// `LOG_GREP_FORMAT` (`%H%x09%s`) carries only the subject. So a commit
+    /// citing the task only in its body arrives with a subject that does not
+    /// mention the id at all — MEASURED on the live repo: `git log main
+    /// --grep=6200` returns `1881ede9ac docs(6211): …` and `09de21ab8e Merge
+    /// main into task/6211`. Dropping those would silently widen the collision
+    /// filter into "reject every body-only reference", producing a false High
+    /// in the sweep and a wrongful refusal at the gate.
+    #[test]
+    fn log_grep_rescue_keeps_body_only_reference() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+
+        // The subject does not contain "6200" anywhere: git matched the body.
+        git.set_log_grep(
+            "main",
+            "6200",
+            vec![GitCommit {
+                sha: "bodyonly".to_string(),
+                subject: "docs(6211): record the pre-done hook contract".to_string(),
+            }],
+        );
+        git.set_is_ancestor("bodyonly", "main", true);
+        git.set_changed_paths_in_commit(
+            "bodyonly",
+            vec!["crates/reify-x/src/landed_then_removed.rs".to_string()],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6200".to_string(),
+            pre_done_meta(
+                "6200",
+                "review",
+                &["crates/reify-x/src/landed_then_removed.rs"],
+            ),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6200");
+        assert!(
+            findings.is_empty(),
+            "a log_grep hit whose subject does not mention the id at all matched on \
+             the BODY, which LOG_GREP_FORMAT never returns — it must still count as \
+             task-referencing; got {:?}",
+            findings
+        );
+    }
+
     /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
     /// unreachable AND no sibling-FF covers the missing set, but every
     /// metadata.files entry resolves to a tracked path on main (dir-aware,

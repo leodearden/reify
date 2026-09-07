@@ -14,6 +14,25 @@ use reify_test_support::missing_paths_under;
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
+/// Discovery-regression TRIPWIRE, NOT a corpus-size target: catches a walk
+/// bug, a bad path resolution, or a refactor that stops [`discover_ri_files`]
+/// from recursing. Derived from [`MIN_EXERCISED_RI_FILES`] plus
+/// [`SKIP_SET`]'s size so the two floors cannot drift apart from each other;
+/// [`discovery_floor_tracks_the_live_corpus`] is what keeps
+/// `MIN_EXERCISED_RI_FILES` itself fresh against the live corpus. Lower
+/// `MIN_EXERCISED_RI_FILES` if the corpus is ever intentionally trimmed
+/// below this floor.
+const MIN_DISCOVERED_RI_FILES: usize = MIN_EXERCISED_RI_FILES + SKIP_SET.len();
+
+/// Discovery-regression TRIPWIRE, NOT a corpus-size target, for the
+/// SKIP_SET-filtered `exercised` count in
+/// [`no_example_emits_ctor_field_conformance_diagnostics`]. Deliberately
+/// absolute rather than derived from the live count, which would shrink in
+/// lockstep with a discovery regression and never fire.
+/// [`discovery_floor_tracks_the_live_corpus`] is the freshness ratchet that
+/// keeps this constant from going stale.
+const MIN_EXERCISED_RI_FILES: usize = 200;
+
 /// Files to skip in the bulk smoke test.  Each entry is `(relative_path, reason)`
 /// where `relative_path` is the forward-slash-separated path rooted at `examples/`
 /// (e.g. `"bracket.ri"`, `"fields/composed_stiffness.ri"`).  Using the full
@@ -23,20 +42,18 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// to carry a one-line human-readable justification, making skips auditable at
 /// review time.
 ///
-/// Default: empty — all 43 example files compile clean on HEAD after task #2346
-/// (recursive examples_smoke discovery) was merged on 2026-04-26.
+/// Entries here are files that cannot yet reach a clean `compile_with_stdlib`
+/// run, or are covered instead by a dedicated gated test elsewhere; every
+/// other file discovered under `examples/` is expected to compile clean.
+/// Deliberately does not pin a corpus count or set size here: the live
+/// corpus size is enforced by [`discovery_floor_tracks_the_live_corpus`],
+/// whose failure message reports the current count.
+// NOTE: `topology_selectors/fillet_top_edges.ri` used to be skipped here for a
+// missing 3-arg `fillet(solid, edges, radius)` stdlib binding.  That binding
+// landed (#3205/#4360/#4362) and #5208 made curated 3-arg fillet reachable
+// through the production pipeline, so the entry was removed and the file is now
+// compiled by the bulk walker like every other example.
 const SKIP_SET: &[(&str, &str)] = &[
-    (
-        "topology_selectors/fillet_top_edges.ri",
-        "topology-selectors PRD task 7 worked example; \
-         compile_with_stdlib gated on the missing 3-arg fillet(solid, edges, radius) \
-         stdlib binding — current compiler only wires 2-arg fillet(solid, radius) \
-         (crates/reify-compiler/src/geometry_modify.rs:115). \
-         This is NOT a 2698/2699 gap (those are landed); it is a separate binding. \
-         Gated compile-with-stdlib smoke is in \
-         crates/reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs::\
-         fillet_top_edges_compiles_with_stdlib_no_errors (#[ignore]).",
-    ),
     (
         "auto/bearing_constraint_select.ri",
         "strict `auto: Seal` with two stub-feasible candidates (ThinSeal, ThickSeal) \
@@ -180,28 +197,23 @@ const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
 /// at the first one.  Files listed in `SKIP_SET` are excluded from the walk.
 #[test]
 fn all_examples_parse_and_compile_with_stdlib() {
-    use std::collections::HashSet;
-
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
     let mut failures: Vec<(String, String)> = Vec::new();
 
     let paths = discover_ri_files();
     let total = paths.len();
     assert!(
-        total >= 40,
-        "examples_smoke discovered only {} .ri files — expected ~42; \
-         did the examples/ directory move or get renamed?",
-        total
+        total >= MIN_DISCOVERED_RI_FILES,
+        "examples_smoke discovered only {} .ri files, below the \
+         MIN_DISCOVERED_RI_FILES floor of {} — did the examples/ directory \
+         move or get renamed, or did discover_ri_files() stop recursing?",
+        total,
+        MIN_DISCOVERED_RI_FILES
     );
 
-    let mut exercised = 0usize;
-    for path in &paths {
-        let rel_key = relative_to_examples_dir(path);
-        if skip.contains(rel_key.as_str()) {
-            continue;
-        }
-        exercised += 1;
-        smoke_one(path, &rel_key, &mut failures);
+    let exercised_list = exercised_paths(&paths);
+    let exercised = exercised_list.len();
+    for (path, rel_key) in &exercised_list {
+        smoke_one(path, rel_key, &mut failures);
     }
 
     if !failures.is_empty() {
@@ -255,14 +267,28 @@ fn all_examples_parse_and_compile_with_stdlib() {
 /// free, added no `CTOR_CONFORMANCE_MIGRATION_DEBT` entry, and δ inherits it.
 #[test]
 fn no_example_emits_ctor_field_conformance_diagnostics() {
-    let walk = ctor_conformance_corpus_walk();
-
+    // Fail fast on the discovery floor BEFORE the corpus walk. This pre-check
+    // is a directory walk only, whereas ctor_conformance_corpus_walk() compiles
+    // every exercised file inside its OnceLock — so reading walk.exercised here
+    // instead would pay for the whole corpus before reporting a misconfigured
+    // discover_ri_files()/SKIP_SET. Deliberately symmetric with the eval-side
+    // gate in
+    // auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded,
+    // which is fail-fast for the same reason.
+    let paths = discover_ri_files();
+    let exercised = exercised_paths(&paths).len();
     assert!(
-        walk.exercised >= 40,
-        "ctor-conformance corpus gate exercised only {} .ri files — expected ~40+; \
-         did the examples/ directory move, or did SKIP_SET grow unexpectedly?",
-        walk.exercised
+        exercised >= MIN_EXERCISED_RI_FILES,
+        "ctor-conformance corpus gate exercised only {} .ri files, below the \
+         MIN_EXERCISED_RI_FILES floor of {} (SKIP_SET has {} entries) — did \
+         the examples/ directory move or get renamed, did discover_ri_files() \
+         stop recursing, or did SKIP_SET grow unexpectedly?",
+        exercised,
+        MIN_EXERCISED_RI_FILES,
+        SKIP_SET.len()
     );
+
+    let walk = ctor_conformance_corpus_walk();
 
     let unwaived: Vec<&CtorConformanceViolation> = walk
         .violations
@@ -426,6 +452,30 @@ fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The subset of `paths` not present in [`SKIP_SET`] (keyed by
+/// [`relative_to_examples_dir`]), each paired with its precomputed relative
+/// key. The single source of the SKIP_SET-filtered "exercised" quantity —
+/// every consumer (both corpus-walking `#[test]`s and
+/// [`discovery_floor_tracks_the_live_corpus`]) calls this instead of
+/// re-deriving the filter, so they can never disagree about what "exercised"
+/// means.
+fn exercised_paths(paths: &[PathBuf]) -> Vec<(&PathBuf, String)> {
+    use std::collections::HashSet;
+
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
+    paths
+        .iter()
+        .filter_map(|p| {
+            let rel = relative_to_examples_dir(p);
+            if skip.contains(rel.as_str()) {
+                None
+            } else {
+                Some((p, rel))
+            }
+        })
+        .collect()
+}
+
 /// Verify that `relative_to_examples_dir` strips the `EXAMPLES_DIR` prefix and
 /// returns a portable forward-slash-separated relative path for both top-level
 /// and nested `.ri` files.
@@ -468,6 +518,98 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
             path
         );
     }
+}
+
+/// Freshness ratchet for [`MIN_EXERCISED_RI_FILES`]: this floor is a
+/// discovery-regression TRIPWIRE, not a corpus-size target, so it only
+/// stays useful while it tracks the live corpus size. Checking this
+/// constant alone is enough: [`MIN_DISCOVERED_RI_FILES`] is derived from
+/// it, so it cannot go stale independently.
+///
+/// One-directional by construction: a discovery regression only SHRINKS
+/// `exercised`, which makes the assertion below easier to satisfy, while
+/// the absolute gate in
+/// [`no_example_emits_ctor_field_conformance_diagnostics`] is what actually
+/// fires on that regression. So this ratchet can never mask it — it only
+/// fires once the corpus has grown enough that the floor has lost its
+/// tripwire sensitivity; see the assertion message for the current bound.
+///
+/// Measures `exercised` via the same [`exercised_paths`] helper the gate
+/// calls, so this test can never disagree with the gate it ratchets.
+/// Directory walk only — no compile, no check — so it stays as cheap as the
+/// other sanity guards here.
+///
+/// Also asserts that `exercised_paths` excluded exactly `SKIP_SET.len()`
+/// files: `total - exercised` must equal `SKIP_SET.len()`, or a SKIP_SET key
+/// no longer matches `relative_to_examples_dir()`'s output (e.g. a
+/// path-separator change or a stray prefix) and a skip has silently stopped
+/// taking effect — `skip_set_entries_exist_under_examples_dir` alone cannot
+/// catch this, since it only proves each key *joins* onto a real file, not
+/// that the key string equals the one `exercised_paths` filters on.
+#[test]
+fn discovery_floor_tracks_the_live_corpus() {
+    let paths = discover_ri_files();
+    let total = paths.len();
+    let exercised = exercised_paths(&paths).len();
+
+    assert_eq!(
+        total - exercised,
+        SKIP_SET.len(),
+        "exercised_paths excluded {} of {} SKIP_SET entries — SKIP_SET keys \
+         no longer match relative_to_examples_dir() output",
+        total - exercised,
+        SKIP_SET.len()
+    );
+
+    assert!(
+        MIN_EXERCISED_RI_FILES * 2 >= exercised,
+        "MIN_EXERCISED_RI_FILES ({}) has drifted stale: the live examples/ \
+         corpus now exercises {} .ri files ({} discovered, {} in SKIP_SET), \
+         more than 2x the floor. Raise MIN_EXERCISED_RI_FILES to ~{} (its \
+         derived sibling MIN_DISCOVERED_RI_FILES will follow automatically) \
+         and re-review both constants' tripwire doc comments.",
+        MIN_EXERCISED_RI_FILES,
+        exercised,
+        total,
+        SKIP_SET.len(),
+        exercised * 3 / 4
+    );
+}
+
+/// Pins the single-source-of-`exercised` invariant that [`exercised_paths`]'s
+/// doc comment claims: the memoized [`ctor_conformance_corpus_walk`] must take
+/// its exercised set FROM that helper rather than re-deriving the `SKIP_SET`
+/// filter itself.
+///
+/// Without this the same quantity has two independent derivations — the gate's
+/// floor in [`no_example_emits_ctor_field_conformance_diagnostics`] reads the
+/// walk's count, while [`discovery_floor_tracks_the_live_corpus`] measures
+/// `exercised_paths`. They agree today, so this is a characterization test; it
+/// exists so that if a later edit reintroduces a second filter the divergence
+/// fails HERE, naming the invariant, instead of silently invalidating the
+/// ratchet's freshness claim about the floor the gate actually enforces.
+///
+/// Free to run: [`ctor_conformance_corpus_walk`] is memoized behind a
+/// `OnceLock`, so this reuses the corpus pass the sibling gate already paid
+/// for rather than compiling anything a second time.
+///
+/// Deliberately does NOT re-assert the floor — that is the gate's job. This
+/// test is about the two derivations AGREEING, not about how large they are.
+#[test]
+fn ctor_conformance_walk_exercises_exactly_the_exercised_paths_set() {
+    let walk_exercised = ctor_conformance_corpus_walk().exercised;
+    let helper_exercised = exercised_paths(&discover_ri_files()).len();
+
+    assert_eq!(
+        walk_exercised, helper_exercised,
+        "ctor_conformance_corpus_walk() reported {} exercised .ri files but \
+         exercised_paths() yields {} — the walk must derive its exercised set \
+         from exercised_paths() instead of re-deriving the SKIP_SET filter, or \
+         the gate's MIN_EXERCISED_RI_FILES floor and \
+         discovery_floor_tracks_the_live_corpus's ratchet are measuring two \
+         different quantities.",
+        walk_exercised, helper_exercised
+    );
 }
 
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
@@ -577,22 +719,17 @@ struct CtorConformanceWalk {
 /// data, so memoizing keeps the second guard free rather than doubling the
 /// gate's wall-clock.
 fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
-    use std::collections::HashSet;
     use std::sync::OnceLock;
 
     static WALK: OnceLock<CtorConformanceWalk> = OnceLock::new();
     WALK.get_or_init(|| {
-        let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
         let mut violations: Vec<CtorConformanceViolation> = Vec::new();
-        let mut exercised = 0usize;
+        let paths = discover_ri_files();
+        let exercised_list = exercised_paths(&paths);
+        let exercised = exercised_list.len();
 
-        for path in &discover_ri_files() {
-            let rel_key = relative_to_examples_dir(path);
-            if skip.contains(rel_key.as_str()) {
-                continue;
-            }
-            exercised += 1;
-            ctor_conformance_one(path, &rel_key, &mut violations);
+        for (path, rel_key) in &exercised_list {
+            ctor_conformance_one(path, rel_key, &mut violations);
         }
 
         CtorConformanceWalk {

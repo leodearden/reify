@@ -731,7 +731,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
         }
         "joint_jacobian" => {
-            // SE(3) twist column for a joint, returned as
+            // Jacobian column for a joint — the `JacobianColumn` nominal type
+            // (dpose/dq, NOT a Twist / spatial velocity), returned as
             // `Map { "angular": Vector3<DIMENSIONLESS>, "linear": Vector3<DIMENSIONLESS> }`.
             //
             // Per-kind formula (constant w.r.t. the motion variable for v0.1

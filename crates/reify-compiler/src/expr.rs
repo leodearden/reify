@@ -8485,7 +8485,7 @@ pub structure Rack {
     /// - `prismatic` (driving kind) → StructureRef("Prismatic")
     /// - `couple` (coupling kind) → StructureRef("Coupling")
     /// - `bind` (JointBinding) → StructureRef("JointBinding")
-    /// - `joint_jacobian` (Twist) → StructureRef("Twist")
+    /// - `joint_jacobian` (Jacobian column) → StructureRef("JacobianColumn")
     ///
     /// Mirrors `body_mass_props_resolves_to_function_call_returning_mass_properties`.
     /// RED until step-6 wires the `is_joint_typed_fn` arm into the ladder.
@@ -8533,8 +8533,12 @@ pub structure Rack {
         );
         // JointBinding → JointBinding.
         check("bind", 2, Type::StructureRef("JointBinding".to_string()));
-        // Twist / joint Jacobian → Twist.
-        check("joint_jacobian", 1, Type::StructureRef("Twist".to_string()));
+        // Joint Jacobian → JacobianColumn (task 6102: dpose/dq, not a Twist).
+        check(
+            "joint_jacobian",
+            1,
+            Type::StructureRef("JacobianColumn".to_string()),
+        );
     }
 
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is

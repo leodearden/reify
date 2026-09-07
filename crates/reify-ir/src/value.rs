@@ -2713,7 +2713,7 @@ impl Value {
     /// Format this value for GUI display, returning `(formatted_value, unit_string)`.
     ///
     /// Unlike [`format_hover`](Value::format_hover) which shows raw SI values,
-    /// this method converts to standard engineering display units (mm, deg, mm², mm³)
+    /// this method converts to standard engineering display units (mm, deg, mm^2, mm^3)
     /// via [`DimensionVector::to_display_units`].
     pub fn format_display_pair(&self) -> (String, String) {
         match self {
@@ -3022,8 +3022,16 @@ fn superscript_exponent(exponent: i32) -> String {
 /// sig-fig/trailing-zero convention as a plain one.
 ///
 /// ASCII `4.2e-3` was considered and declined: §5c's worked example shows the
-/// `×10ⁿ` form, and this crate already emits Unicode in display strings
-/// (`mm²`, `mm³`, `kg/m³`, `kg·m^-3`).
+/// `×10ⁿ` form, and this crate still emits Unicode in display strings — the
+/// composed `Display` fallback keeps its U+00B7 separator (`kg·m^-3`), which
+/// contract C2 accepts because an arbitrary `DimensionVector` has no finite
+/// enumeration to curate.
+///
+/// Task λ (#5788) ASCII-normalized the finite curated LABEL tables (`mm²`,
+/// `mm³`, `kg/m³` are now `mm^2`, `mm^3`, `kg/m^3`) but deliberately left this
+/// formatter alone, per PRD §10: it formats the NUMBER, not the unit, so there
+/// is no `@display(...)` literal for a grammar to accept. See the fence test
+/// `engineering_notation_keeps_its_superscript_digits`.
 ///
 /// An `exponent` of zero short-circuits to the bare mantissa. That is
 /// unreachable from
@@ -3046,9 +3054,9 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// here when it is valid *at that raw magnitude*.
 ///
 /// `LENGTH`/`AREA`/`VOLUME`/`ANGLE` keep their own hardcoded raw-SI arms
-/// (`"m"`/`"m²"`/`"m³"`/`"rad"`) rather than the unit-ladder registry's
+/// (`"m"`/`"m^2"`/`"m^3"`/`"rad"`) rather than the unit-ladder registry's
 /// curated name, because their registry default rung is *scaled*
-/// (mm/mm²/mm³/deg) — adopting it here would misrender the raw magnitude
+/// (mm/mm^2/mm^3/deg) — adopting it here would misrender the raw magnitude
 /// (e.g. a raw `0.08` m would read `"0.08 mm"`). `MONEY` and dimensionless
 /// keep their own arms too: Money is not a registry ladder dimension, and
 /// dimensionless has no unit at all.
@@ -3065,13 +3073,30 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// rather than a bare placeholder — hence the `Cow` return: known arms
 /// borrow a `'static` string, the composed fallback owns a freshly
 /// formatted one.
-fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
+///
+/// # Stability — PROVISIONAL public surface
+///
+/// Widened from a private helper by task λ (#5788, §11 Q2) so task μ can read
+/// the curated raw-SI label across the crate boundary. That consumer has not
+/// landed, so no real call site has yet exercised this signature: the
+/// `&DimensionVector -> Cow<'static, str>` shape is not settled and may change
+/// (or narrow back to `pub(crate)`) once μ shows what it actually needs.
+/// `crates/reify-ir/tests/api_surface.rs` records this under its explicit
+/// `PROVISIONAL SURFACE` banner, NOT in the pinned contract: it records only
+/// that both the flat and module-path spellings resolve, and that file states
+/// outright that narrowing an item below the banner is a normal edit rather
+/// than an API break. Narrowing therefore means deleting that block, not
+/// arguing a contract change.
+/// In-crate callers wanting the rendered value should keep using
+/// [`Value::format_hover`] / `format_display_pair` / `resolve_display`, which
+/// remain the stable surface.
+pub fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
         Cow::Borrowed("m")
     } else if *dim == DimensionVector::AREA {
-        Cow::Borrowed("m\u{00B2}")
+        Cow::Borrowed("m^2")
     } else if *dim == DimensionVector::VOLUME {
-        Cow::Borrowed("m\u{00B3}")
+        Cow::Borrowed("m^3")
     } else if *dim == DimensionVector::ANGLE {
         Cow::Borrowed("rad")
     } else if *dim == DimensionVector::MONEY {
@@ -4579,6 +4604,70 @@ impl KeyedMember {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
+
+    /// Dimensioning an angle literal does not change the number any `as_f64`
+    /// consumer sees — the premise PRD
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` decision D2 rests on
+    /// (task 5777, angle-units α).
+    ///
+    /// `as_f64`'s `Scalar` arm returns `si_value` verbatim, and
+    /// `Value::angle(r)` stores `r` as `si_value` with no scaling (`rad` has a
+    /// conversion factor of exactly 1.0). So `Value::angle(x)` and
+    /// `Value::Real(x)` are indistinguishable to every consumer that reads
+    /// through `as_f64` — including `reify-kernel-occt`'s `extract_f64`, which
+    /// is a thin wrapper over it, and which is how the migrated OCCT `Draft`
+    /// fixtures reach the kernel.
+    ///
+    /// This is a CHARACTERIZATION pin, expected green against unchanged
+    /// production code. Its value is prospective: it is what would fail if
+    /// `as_f64` ever started scaling or rejecting dimensioned scalars, which
+    /// would otherwise silently re-dimension the whole migrated corpus.
+    ///
+    /// The inputs are chosen to DISCRIMINATE, not to restate the migration:
+    /// the asserted property is value-independent, so repeating it over α's
+    /// four migrated constants would be the same assertion four times. `TAU` is
+    /// kept as one representative migrated value; the rest are the values that
+    /// would actually catch a future `as_f64` that scales or sanitises —
+    /// `MIN_POSITIVE` (any factor other than exactly 1.0 perturbs or flushes
+    /// it), `INFINITY` (a rejecting `as_f64` returns `None`), and `-0.0` (a
+    /// sanitising one drops the sign). `NAN` is deliberately absent: it is
+    /// never `assert_eq!`-comparable.
+    ///
+    /// Compares are on BIT PATTERNS, never an epsilon and never bare `==` —
+    /// `==` cannot tell `-0.0` from `0.0`, so it would silently defeat the one
+    /// input that tests sign preservation.
+    #[test]
+    fn angle_and_real_agree_bit_exactly_under_as_f64() {
+        for x in [
+            std::f64::consts::TAU,
+            0.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            f64::INFINITY,
+        ] {
+            assert_eq!(
+                Value::angle(x).as_f64().map(f64::to_bits),
+                Value::Real(x).as_f64().map(f64::to_bits),
+                "Value::angle({x}) and Value::Real({x}) must be indistinguishable \
+                 through as_f64 (PRD D2 behaviour-preservation premise)"
+            );
+            assert_eq!(
+                Value::angle(x).as_f64().map(f64::to_bits),
+                Some(x.to_bits()),
+                "Value::angle({x}).as_f64() must return the source magnitude \
+                 unscaled, bit for bit — `rad` converts by a factor of exactly 1.0"
+            );
+            // Anti-vacuity: the pin above would also hold if BOTH sides
+            // degenerated to a bare `Real`. Require the dimension to actually
+            // be there.
+            assert_eq!(
+                Value::angle(x).dimension(),
+                DimensionVector::ANGLE,
+                "Value::angle({x}) must genuinely carry ANGLE dimension, else the \
+                 equivalence above passes vacuously"
+            );
+        }
+    }
 
     // Boundary float values used by IEEE 754 totalOrder ordering tests.
     // All 7 values are bit-distinct; insertion order is intentionally scrambled
@@ -10681,8 +10770,8 @@ mod tests {
     fn dimension_unit_label_mass_density_uses_curated_registry_name() {
         assert_eq!(
             dimension_unit_label(&DimensionVector::MASS_DENSITY),
-            "kg/m\u{00B3}",
-            "dimension_unit_label(MASS_DENSITY) should adopt the registry's curated \"kg/m³\", not compose \"kg·m^-3\""
+            "kg/m^3",
+            "dimension_unit_label(MASS_DENSITY) should adopt the registry's curated \"kg/m^3\", not compose \"kg·m^-3\""
         );
     }
 
@@ -10696,8 +10785,8 @@ mod tests {
         };
         assert_eq!(
             v.format_hover(),
-            "1270 kg/m\u{00B3}",
-            "format_hover() on a MASS_DENSITY scalar should render the registry-curated \"kg/m³\""
+            "1270 kg/m^3",
+            "format_hover() on a MASS_DENSITY scalar should render the registry-curated \"kg/m^3\""
         );
     }
 
@@ -10763,6 +10852,110 @@ mod tests {
         assert_eq!(dimension_unit_label(&DimensionVector::DIMENSIONLESS), "");
     }
 
+    /// S3's curated alphabet, per task λ (#5788) contract C2: the two raw-SI
+    /// arms that carry an exponent spell it ASCII (`m^2`/`m^3`), not with the
+    /// Latin-1 superscripts U+00B2/U+00B3.
+    ///
+    /// This closes a real coverage gap rather than restating an existing pin.
+    /// Every SIBLING arm of `dimension_unit_label` is already pinned — LENGTH
+    /// and ANGLE by `..._scaled_default_rung_dims_stay_on_raw_si_label`, MONEY
+    /// by `..._money_returns_usd`, MASS/dimensionless by
+    /// `..._unaffected_arms_unchanged` — but AREA and VOLUME, the two arms C2
+    /// actually moves, are covered by NO test today. Flipping them without
+    /// this would be an untested production change.
+    ///
+    /// The unchanged neighbours are asserted alongside deliberately: the arms
+    /// are an if-else chain over `DimensionVector` equality, so a future
+    /// reordering could silently reroute a dimension into the composed
+    /// `Display` fallback (`"kg·m^-3"`-style) while the AREA/VOLUME pins alone
+    /// still passed.
+    ///
+    /// The negative sweep is what makes the pin unfalsifiable by relabelling:
+    /// on its own the positive `assert_eq!`s would also be satisfied by some
+    /// third spelling, and on its own the sweep would be satisfied by the arms
+    /// returning `""`. Superscripts are written as `\u{00B2}`/`\u{00B3}`
+    /// escapes (addendum L2) so this test survives a glyph-normalizing tool —
+    /// which would otherwise rewrite the very characters it exists to reject.
+    #[test]
+    fn dimension_unit_label_uses_ascii_exponent_labels() {
+        // The two arms C2 moves.
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::AREA),
+            "m^2",
+            "AREA's raw-SI arm must spell its exponent ASCII"
+        );
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::VOLUME),
+            "m^3",
+            "VOLUME's raw-SI arm must spell its exponent ASCII"
+        );
+
+        // Unchanged neighbours: a reordered if-else chain must not reroute
+        // these into the composed fallback.
+        assert_eq!(dimension_unit_label(&DimensionVector::LENGTH), "m");
+        assert_eq!(dimension_unit_label(&DimensionVector::ANGLE), "rad");
+        assert_eq!(dimension_unit_label(&DimensionVector::MONEY), "USD");
+        assert_eq!(dimension_unit_label(&DimensionVector::MASS), "kg");
+
+        // Negative sweep: no superscript exponent glyph in any curated arm.
+        for dim in [
+            DimensionVector::AREA,
+            DimensionVector::VOLUME,
+            DimensionVector::MASS_DENSITY,
+        ] {
+            let label = dimension_unit_label(&dim);
+            for bad in ['\u{00B2}', '\u{00B3}'] {
+                assert!(
+                    !label.contains(bad),
+                    "dimension_unit_label({dim:?}) returned {label:?}, which contains {bad:?}"
+                );
+            }
+        }
+    }
+
+    /// THE PRD-§10 FENCE, the value.rs twin of dimension.rs's
+    /// `s1_composed_labels_keep_middot_separator`. Green before task λ (#5788)
+    /// and required to STAY green after it: the ENGINEERING-NOTATION formatter
+    /// keeps its superscript digits, and λ must not "finish the job" by
+    /// normalizing them too.
+    ///
+    /// WHY the split is not arbitrary. `×10ⁿ` formats the NUMBER, not the
+    /// unit. C2 normalizes the finite curated LABEL tables because a label is
+    /// something a user types into `@display(...)` and a grammar must accept —
+    /// but `1.27×10³ kg/m^3` is not a literal form in any grammar, so there is
+    /// nothing to accept and nothing to normalize. PRD §10 puts the magnitude
+    /// formatter explicitly out of scope.
+    ///
+    /// WHY this is a test and not a comment: value.rs carries 27 glyph-bearing
+    /// lines, and in three places (`resolve_display_none_renders_engineering_
+    /// notation_when_no_rung_fits`) a `×10ⁿ` MAGNITUDE and a curated LABEL sit
+    /// on ADJACENT LINES — so the site a sweep must skip is one line from the
+    /// site it must hit. A comment saying "do not sweep" is invisible to the
+    /// next agent running a regex over this file; a failing assertion is not.
+    #[test]
+    fn engineering_notation_keeps_its_superscript_digits() {
+        assert_eq!(
+            superscript_exponent(3),
+            "\u{00B3}",
+            "the exponent half of §5c's ×10ⁿ form stays Unicode"
+        );
+
+        let rendered = format_engineering(1.27, 3);
+        assert!(
+            rendered.contains('\u{00D7}'),
+            "engineering notation must keep U+00D7 (×), got {rendered:?}"
+        );
+        assert!(
+            rendered.contains('\u{00B3}'),
+            "engineering notation must keep its superscript digits, got {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("10^3"),
+            "the magnitude formatter must NOT be ASCII-normalized like the \
+             curated labels were — PRD §10 puts it out of scope; got {rendered:?}"
+        );
+    }
+
     // ── Value::Complex format_display_pair scaling (task 5198 amend) ─────────
     // format_display_pair's Complex arm scales `im` via
     // `DimensionVector::display_scale` instead of a second `to_display_units`
@@ -10822,7 +11015,7 @@ mod tests {
         );
         assert_eq!(
             resolve_display(1270.0, &DimensionVector::MASS_DENSITY, None),
-            ("1270".to_string(), "kg/m\u{00B3}".to_string())
+            ("1270".to_string(), "kg/m^3".to_string())
         );
         assert_eq!(
             resolve_display(250.0, &DimensionVector::FORCE, None),
@@ -10865,7 +11058,7 @@ mod tests {
         );
         assert_eq!(
             resolve_display(0.0045, &DimensionVector::AREA, None),
-            ("45".to_string(), "cm\u{00B2}".to_string())
+            ("45".to_string(), "cm^2".to_string())
         );
         assert_eq!(
             resolve_display(0.007, &DimensionVector::VOLUME, None),
@@ -10937,7 +11130,7 @@ mod tests {
                 DimensionVector::MASS_DENSITY,
                 7850.0,
                 "7850",
-                "kg/m\u{00B3}",
+                "kg/m^3",
             ),
             // Structurally excluded (`auto_scale: None`).
             (DimensionVector::ANGLE, std::f64::consts::PI, "180", "deg"),
@@ -11013,7 +11206,7 @@ mod tests {
             resolve_display(0.5, &DimensionVector::AREA, None),
             (
                 "500\u{00D7}10\u{00B3}".to_string(),
-                "mm\u{00B2}".to_string()
+                "mm^2".to_string()
             ),
             "no Area rung lands in band at 0.5 m²"
         );
@@ -11028,7 +11221,7 @@ mod tests {
             resolve_display(5000.0, &DimensionVector::VOLUME, None),
             (
                 "5\u{00D7}10\u{00B9}\u{00B2}".to_string(),
-                "mm\u{00B3}".to_string()
+                "mm^3".to_string()
             )
         );
 
@@ -11048,7 +11241,7 @@ mod tests {
             resolve_display(0.5678, &DimensionVector::AREA, None),
             (
                 "567.8\u{00D7}10\u{00B3}".to_string(),
-                "mm\u{00B2}".to_string()
+                "mm^2".to_string()
             )
         );
     }
@@ -11248,7 +11441,7 @@ mod tests {
         assert_eq!(
             resolve_display(0.007, &DimensionVector::VOLUME, Some(&liters)),
             ("7".to_string(), "L".to_string()),
-            "explicit preference overrides the registry default rung (mm\u{00B3})"
+            "explicit preference overrides the registry default rung (mm^3)"
         );
 
         let cm = DisplayPreference::new("cm", 1e-2);

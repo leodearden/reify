@@ -151,6 +151,99 @@ fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)>
     Some((w / norm, x / norm, y / norm, z / norm))
 }
 
+/// The one and only dimension admitted on the linear half of a twist — and,
+/// mirrored, on a `Transform`'s translation where it crosses the `transform_log`
+/// ↔ `transform_exp` seam.
+///
+/// RULING #6126 (Leo, 2026-08-07): a twist is
+/// `Map { angular: Vector3<…>, linear: Vector3<Length> }`. The linear half carries
+/// LENGTH and only LENGTH; every other dimension — DIMENSIONLESS included — is
+/// rejected as `Value::Undef` and explained by [`diagnose`].
+///
+/// Grounds (decision D11 of `docs/prds/v0_6/units-length-gate-completion.md`): after the
+/// `Real` → `Scalar{DIMENSIONLESS}` unification, an "also admits DIMENSIONLESS"
+/// gate means "also admits bare numbers", which is an affordance for exactly the
+/// unit-less numerical work this seam should not silently accept. This closes the
+/// last `LENGTH | DIMENSIONLESS` disjunction ON THE log↔exp SEAM — which is the whole
+/// of RULING #6126's scope, and is NOT the same as "the transform family is uniformly
+/// Length-only".
+///
+/// SCOPE BOUNDARY, so a future reader does not over-read the line above: `"transform3"`
+/// applies NO dimension gate at all to its translation (only a 3-`Vector` shape check),
+/// and `transform_compose` / `transform_inverse` propagate whatever dimension they are
+/// handed. So `transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still CONSTRUCTS,
+/// and the rejection only surfaces downstream at `transform_log`. That asymmetric seam
+/// is deliberate and owned elsewhere: #6089 rules `Transform` translation LENGTH and
+/// stamps the constructor arms, and #5747 R12/R8 narrows the affine and pose-decode
+/// readers. Closing it here would double-migrate their work.
+///
+/// This const is the SINGLE source of truth for the admitted DIMENSION, consulted by
+/// the `transform_log` eval arm, the `transform_exp` eval arm, and both of
+/// [`diagnose`]'s arms — so the eval gates and the post-`Undef` classifier cannot drift
+/// apart (the same hazard the `stackup::parse_chain` / `parse_chain_checked` split
+/// answers). [`decompose_twist_component`] plays the identical role for the twist SHAPE
+/// the gates are applied to.
+///
+/// NOT applicable to `joint_jacobian`: its columns share the `{angular, linear}`
+/// Map shape but are ∂pose/∂q, not twists (a revolute column's linear part is
+/// m/rad), so they must never be held to this constant (#6102 gives them their own
+/// structure).
+const TWIST_LINEAR_DIM: DimensionVector = DimensionVector::LENGTH;
+
+/// The dimension admitted on the ANGULAR half of a twist.
+///
+/// NOT ruled by #6126 — **#6080 owns the angular half**, including whether this value
+/// stays DIMENSIONLESS or widens (to ANGLE, or to a set). This const exists purely so
+/// that the value has ONE spelling instead of two, because two co-dependent sites read
+/// it and they are 1000 lines apart:
+///
+/// 1. the `transform_exp` EVAL gate, which rejects a non-admitted angular half; and
+/// 2. [`diagnose`]'s `transform_exp` arm, which DEFERS (stays silent) exactly when that
+///    eval gate is the one that owns the failure, so a twist wrong in both halves is
+///    not mis-attributed to `linear`.
+///
+/// The deferral is only correct while it agrees with the gate. Re-spelling the literal
+/// at both sites made that agreement unenforced, and the failure is SILENT in the
+/// dangerous direction: widen the eval gate alone and the classifier keeps requiring
+/// DIMENSIONLESS, so it stops emitting the #6126 linear Error for every twist whose
+/// angular half is newly-valid — a diagnostic regression no test that hardcodes
+/// DIMENSIONLESS can see. `diagnose_transform_exp_deferral_tracks_evals_angular_gate`
+/// is the behavioural pin: it builds its angular half FROM this const, so it follows
+/// the gate wherever #6080 moves it and goes red if only one site moves.
+///
+/// #6080 therefore changes this ONE line (plus, if the gate becomes a set rather than a
+/// single dimension, both readers together — which the pin will force it to notice).
+const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::DIMENSIONLESS;
+
+/// Decompose one half of a twist — `Map { angular: Vector3<…>, linear: Vector3<…> }` —
+/// into its three finite components and their single shared dimension.
+///
+/// This is the SINGLE source of truth for the twist SHAPE (the `Value::Map` match and
+/// the field key), the way [`TWIST_LINEAR_DIM`] is the single source of truth for the
+/// admitted dimension. The `transform_exp` eval arm and [`diagnose`]'s `transform_exp`
+/// arm both go through it, so a later change to the key name — or to accepting a
+/// `Point` alongside a `Vector` — cannot silently mute the classifier while eval keeps
+/// rejecting. Without it both sites independently re-spell `Value::Map` →
+/// `map.get(&Value::String("linear".into()))` → [`decompose_vec3`], which is the exact
+/// drift the const was introduced to prevent.
+///
+/// Returns `None` for every SHAPE failure: a non-`Map` argument, a missing key, or a
+/// value that is not a 3-`Vector` of finite, single-dimension components. Eval maps
+/// that to `Value::Undef`; the classifier maps it to silence (no mis-attribution).
+///
+/// The eval arm's `angular` lookup is deliberately still spelled inline: #6080 owns the
+/// angular half and will restructure that extraction along with its gate, so rewriting
+/// it here would only manufacture a merge conflict. [`diagnose`] does route its angular
+/// deferral through this helper, and that direction is fail-safe — a key-name drift
+/// makes the deferral decline to speak rather than speak wrongly.
+fn decompose_twist_component(v: &Value, key: &str) -> Option<([f64; 3], DimensionVector)> {
+    let map = match v {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    decompose_vec3(map.get(&Value::String(key.to_string()))?)
+}
+
 /// Build a translation/twist component preserving the carried dimension:
 /// `DIMENSIONLESS → Value::Real(v)`, otherwise `Value::Scalar { si_value, dim }`.
 ///
@@ -586,46 +679,43 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            let linear_val = match map.get(&Value::String("linear".to_string())) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
-            // Extract angular: must be Vector3<ANGLE>.
+            // Extract angular: must be Vector3<DIMENSIONLESS>.
             //
-            // Twist angular convention (monomorphic, mirrored on transform_log):
-            //   • ANGLE only — a rotation vector is axis * angle (#6080), the
-            //     same dimension `orient_log` emits.
-            //   • Every other dim, INCLUDING DIMENSIONLESS → rejected as Undef.
-            //     DIMENSIONLESS is a specific dimension (the zero exponent
-            //     vector), not a wildcard, so admitting it would re-open the
-            //     hole PRD #5747 decision D11 closed. A bare radian rotation
-            //     vector is spelled `1.5708rad` / `90deg`.
-            //
-            // The θ arithmetic below consumes radians, which is `Value::angle`'s
-            // SI contract — a type gate, not a numerics change.
+            // The gate is spelled via `TWIST_ANGULAR_DIM` — NOT because #6126 rules the
+            // angular half (it does not; #6080 does), but because `diagnose`'s
+            // transform_exp arm defers to THIS gate and must not drift from it. See
+            // that const's doc for the co-dependence.
             let (ang_comps, ang_dim) = match decompose_vec3(angular_val) {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            if ang_dim != DimensionVector::ANGLE {
+            if ang_dim != TWIST_ANGULAR_DIM {
                 return Some(Value::Undef);
             }
             let (wx, wy, wz) = (ang_comps[0], ang_comps[1], ang_comps[2]);
             // Extract linear: must be Vector3 with a single shared dimension.
             //
-            // Twist linear convention (polymorphic, mirrored on transform_log):
-            //   • LENGTH       — canonical (matches Twist type in the doc reference)
-            //   • DIMENSIONLESS — accepted for unit-less twists / numerical work
-            //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
+            // Twist linear convention (RULING #6126): `linear` must be
+            // `Vector3<Length>`. Any other dimension — DIMENSIONLESS included — returns
+            // Undef here AND is explained by `diagnose`, which names the offending
+            // dimension rather than leaving a bare OpContractViolation note.
             //
-            // transform_log applies the identical LENGTH|DIMENSIONLESS gate and
-            // preserves the dimension on output, so the log↔exp round-trip is
-            // symmetric on both accept and reject.
-            let (lin_comps, lin_dim) = match decompose_vec3(linear_val) {
+            // `transform_log` applies the identical `TWIST_LINEAR_DIM` gate to a
+            // Transform's translation, so both ends of the log↔exp seam agree on what
+            // they admit.
+            //
+            // The shape (Map + field key) is read through `decompose_twist_component`,
+            // the SAME helper `diagnose`'s transform_exp arm uses, so eval and the
+            // classifier cannot disagree about what a twist's `linear` half even IS.
+            // Every shape failure it folds into `None` — non-Map arg, missing key, not a
+            // 3-Vector, mixed or non-finite components — was already Undef here; moving
+            // the missing-key check after the angular gate is not observable, since both
+            // orders yield Undef.
+            let (lin_comps, lin_dim) = match decompose_twist_component(&args[0], "linear") {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            if lin_dim != DimensionVector::LENGTH && lin_dim != DimensionVector::DIMENSIONLESS {
+            if lin_dim != TWIST_LINEAR_DIM {
                 return Some(Value::Undef);
             }
             let (lx, ly, lz) = (lin_comps[0], lin_comps[1], lin_comps[2]);
@@ -694,15 +784,15 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            // Transform translation convention (polymorphic, mirrored on transform_exp):
-            //   • LENGTH        — canonical (matches Transform type in the doc reference)
-            //   • DIMENSIONLESS — accepted for unit-less transforms / numerical work
-            //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
+            // Transform translation convention (RULING #6126): the translation must be
+            // Vector3<Length> — LENGTH and nothing else, DIMENSIONLESS included. A
+            // non-LENGTH translation returns Undef here AND is explained by `diagnose`,
+            // which names the offending dimension rather than leaving a bare
+            // OpContractViolation note.
             //
-            // transform_exp applies the identical LENGTH|DIMENSIONLESS gate on the
-            // twist linear field and preserves the dimension on output, so the
-            // log↔exp round-trip is symmetric on both accept and reject.
-            if t_dim != DimensionVector::LENGTH && t_dim != DimensionVector::DIMENSIONLESS {
+            // `transform_exp` applies the identical `TWIST_LINEAR_DIM` gate to a twist's
+            // `linear` field, so both ends of the log↔exp seam agree on what they admit.
+            if t_dim != TWIST_LINEAR_DIM {
                 return Some(Value::Undef);
             }
             let (tx, ty, tz) = (t[0], t[1], t[2]);
@@ -768,18 +858,9 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             let mut m = BTreeMap::new();
-            // The angular half is monomorphic ANGLE (#6080), so it is built with
-            // `Value::angle` directly rather than `make_dimensioned_component`:
-            // the latter's Real-for-dimensionless collapse has nothing to do
-            // here, and the direct constructor states the dimension
-            // unconditionally. Mirrors transform_exp's ANGLE-only gate.
             m.insert(
                 Value::String("angular".to_string()),
-                Value::Vector(vec![
-                    Value::angle(wx),
-                    Value::angle(wy),
-                    Value::angle(wz),
-                ]),
+                Value::Vector(vec![Value::Real(wx), Value::Real(wy), Value::Real(wz)]),
             );
             m.insert(
                 Value::String("linear".to_string()),
@@ -853,30 +934,75 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         "frame_at" => eval_frame_at(args),
 
         // --- BoundingBox constructors ---
+        //
+        // A BoundingBox is Length-valued BY CONSTRUCTION (task 6081, ruling
+        // from esc-5997-2): `bbox` admits only `Point3<Length>` corners, and
+        // both accessors emit `Length` components unconditionally — even for a
+        // hand-built or kernel-produced box whose stored corners say otherwise.
+        //
+        // The quantity polymorphism this replaced was NOT a designed
+        // capability: it was incidental generic component-dimension
+        // propagation. The old gate only checked that the two corners AGREED,
+        // and the accessors merely echoed whatever dimension they found. Do not
+        // re-derive it as intentional. The only real producer,
+        // `dispatch_bounding_box` (reify-eval/src/geometry_ops.rs), is
+        // unconditionally `Point3<Length>`, and the sole `.ri` consumer
+        // (examples/differential_field_ops.ri) is metre-valued.
+        //
+        // DELIBERATE REINTERPRETATION, and the one place where this ruling
+        // trades a check for a guarantee. The accessors do not merely decline to
+        // propagate a non-Length stored dimension — for a UNIFORMLY non-Length
+        // corner (an all-Angle box, say) they RELABEL those magnitudes as metres.
+        // A MIXED-dimension stored corner is still rejected outright, because the
+        // accessors read corners through `tensor_components_f64`. The relabelling
+        // is what makes reify-compiler's static rows `Vector3<Length>` /
+        // `Point3<Length>` sound rather than an over-claim: a row true only of
+        // constructor-produced boxes would be the very static/runtime
+        // disagreement this ruling removes, since `Value::BoundingBox` is also
+        // minted by `dispatch_bounding_box` and constructible directly in Rust.
+        // The narrowed constructor above is what makes the relabelled input
+        // impossible in the first place; a uniformly non-Length stored corner can
+        // now only be a PRODUCER bug, and if one ever appears the better answer
+        // is to reject it here (with a `diagnose` arm for `bbox_size` /
+        // `bbox_center`) rather than to coerce it. Not done today: there is no
+        // such producer, and the tests
+        // `bbox_size/bbox_center_emits_length_components_for_angle_bbox` pin the
+        // coercion as the current, deliberate behaviour.
+        //
+        // Going monomorphic is the SAFE direction: a later `BoundingBox<Q>`
+        // would be a WIDENING, which is the easy one. For scale, the static
+        // type is a bare unit variant referenced across six crates
+        // (reify-compiler, reify-core, reify-eval, reify-expr, reify-ir,
+        // reify-kernel-openvdb) — re-derive the current site list with
+        //   grep -rn --include=*.rs -E 'Type::BoundingBox|Type::bounding_box\(\)' crates gui
+        // rather than trusting a count quoted here (the house convention on
+        // rotting inventory numbers; see `NAMED_DIMENSIONS` in reify-core).
         "bbox" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
             let min = &args[0];
             let max = &args[1];
-            let min_comps = match min {
-                Value::Point(comps) if comps.len() == 3 => comps,
-                _ => return Some(Value::Undef),
-            };
-            let max_comps = match max {
-                Value::Point(comps) if comps.len() == 3 => comps,
-                _ => return Some(Value::Undef),
-            };
-            let min_dim = min_comps
-                .first()
-                .map(|v| v.dimension())
-                .unwrap_or(DimensionVector::DIMENSIONLESS);
-            let max_dim = max_comps
-                .first()
-                .map(|v| v.dimension())
-                .unwrap_or(DimensionVector::DIMENSIONLESS);
-            if min_dim != max_dim {
-                return Some(Value::Undef);
+            // A BoundingBox is Length-valued by construction (task 6081): both
+            // corners must be `Point3<Length>` — UNIFORMLY, in every component.
+            // The quantity is therefore read through [`classify_bbox_corner`] and
+            // NOT off component 0: a first-component reading admitted
+            // `bbox(point3(1m, 2deg, 3m), …)`, whose stored corner is not
+            // Length-valued at all, and merely displaced the failure one call
+            // downstream to `bbox_size`/`bbox_center` — where, the `bbox` call
+            // having SUCCEEDED, the post-Undef classifier never fires and the user
+            // gets exactly the silent Undef this ruling exists to remove.
+            //
+            // This subsumes the older `min_dim != max_dim` gate: any non-Length
+            // corner is rejected, so mismatched corners cannot both be Length
+            // either. The explanation is emitted by the post-Undef classifier
+            // `diagnose` below, not here — and it decodes the corners through the
+            // SAME helper, so the two cannot drift in the shape dimension any more
+            // than they can in the quantity one.
+            for corner in [min, max] {
+                if classify_bbox_corner(corner) != BboxCorner::Uniform(DimensionVector::LENGTH) {
+                    return Some(Value::Undef);
+                }
             }
             Value::BoundingBox {
                 min: Box::new(min.clone()),
@@ -891,7 +1017,15 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
             match &args[0] {
                 Value::BoundingBox { min, max } => {
-                    let (min_vals, dim) = match tensor_components_f64(min) {
+                    // A BoundingBox is Length-valued by construction (task 6081),
+                    // so the extent is Length regardless of what the stored
+                    // corners carry — the stored dimension is deliberately NOT
+                    // propagated. See the DELIBERATE REINTERPRETATION note on the
+                    // `bbox` constructor banner above: for a uniformly non-Length
+                    // stored corner this RELABELS the magnitudes as metres rather
+                    // than rejecting them, which is sound only because such a box
+                    // is impossible by construction.
+                    let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
@@ -902,20 +1036,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     if min_vals.len() != 3 || max_vals.len() != 3 {
                         return Some(Value::Undef);
                     }
-                    let make_component = |v: f64| -> Value {
-                        if dim.is_dimensionless() {
-                            Value::Real(v)
-                        } else {
-                            Value::Scalar {
-                                si_value: v,
-                                dimension: dim,
-                            }
-                        }
-                    };
                     Value::Vector(vec![
-                        make_component(max_vals[0] - min_vals[0]),
-                        make_component(max_vals[1] - min_vals[1]),
-                        make_component(max_vals[2] - min_vals[2]),
+                        Value::length(max_vals[0] - min_vals[0]),
+                        Value::length(max_vals[1] - min_vals[1]),
+                        Value::length(max_vals[2] - min_vals[2]),
                     ])
                 }
                 _ => Value::Undef,
@@ -927,7 +1051,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
             match &args[0] {
                 Value::BoundingBox { min, max } => {
-                    let (min_vals, dim) = match tensor_components_f64(min) {
+                    // A BoundingBox is Length-valued by construction (task 6081),
+                    // so the centre is Length regardless of what the stored
+                    // corners carry — the stored dimension is deliberately NOT
+                    // propagated. Same DELIBERATE REINTERPRETATION note as
+                    // `bbox_size` above; see the constructor banner.
+                    let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
@@ -938,20 +1067,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     if min_vals.len() != 3 || max_vals.len() != 3 {
                         return Some(Value::Undef);
                     }
-                    let make_component = |v: f64| -> Value {
-                        if dim.is_dimensionless() {
-                            Value::Real(v)
-                        } else {
-                            Value::Scalar {
-                                si_value: v,
-                                dimension: dim,
-                            }
-                        }
-                    };
                     Value::Point(vec![
-                        make_component((min_vals[0] + max_vals[0]) / 2.0),
-                        make_component((min_vals[1] + max_vals[1]) / 2.0),
-                        make_component((min_vals[2] + max_vals[2]) / 2.0),
+                        Value::length((min_vals[0] + max_vals[0]) / 2.0),
+                        Value::length((min_vals[1] + max_vals[1]) / 2.0),
+                        Value::length((min_vals[2] + max_vals[2]) / 2.0),
                     ])
                 }
                 _ => Value::Undef,
@@ -1460,45 +1579,107 @@ fn eval_frame_at(args: &[Value]) -> Value {
 
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
-// The `E_RotationVectorDimension` message is built by ONE shared constructor
-// (#6080 amendment) so this arm and `orientation::diagnose`'s `orient_exp` arm
-// cannot drift apart in token, severity or recommended fix.
-use crate::orientation::rotation_vector_dimension_error;
 
-/// Pure classifier (post-`Value::Undef` hook) for affine-constructor and
-/// `transform_exp` calls, mirroring `stackup::diagnose` / `fea::diagnose`.
-/// `reify-expr`'s `FunctionCall` arm calls this (re-exported as
-/// `geometry_diagnose`) when a stdlib builtin returns `Value::Undef`, and pushes
-/// any returned `Diagnostic` into the `EvalContext` runtime sink so
-/// `reify eval` can print it.
+/// Human-readable name for a dimension, for use in diagnostic messages.
 ///
-/// Two names are diagnosed, with *different* severities:
+/// `DimensionVector::canonical_name()` yields `"Length"` / `"Angle"` / `"Mass"` from
+/// the `NAMED_DIMENSIONS` table, and deliberately returns `None` for DIMENSIONLESS,
+/// whose `Display` renders `"dimensionless"`. This is what lets a message NAME the
+/// offending dimension instead of hardcoding one string.
 ///
-/// **`affine_scale`** (exactly 3 args) — distinguishes its two user-correctable
-/// failure causes (the third — arity — stays silent, like the `transform3`
-/// convention):
-/// - **dimensioned factor** → violates the G6 dimensionless-linear-part contract;
-/// - **zero factor** → degenerate (det=0, non-invertible) map.
+/// KNOWN NEAR-DUPLICATE, and the divergence is deliberate — do not blind-unify. Two
+/// sibling helpers in `reify-eval` branch on the same `canonical_name()`:
+/// `arg_acceptance.rs`'s `value_short_label` and `geometry_ops.rs`'s
+/// `scalar_got_label` (whose own doc already notes it is replicated rather than
+/// shared). Both label a VALUE, so both suffix `" Scalar"` and render DIMENSIONLESS as
+/// `"dimensionless Scalar"` and an unnamed dimension as the generic
+/// `"dimensioned Scalar"`. This one labels a DIMENSION, in a sentence that has already
+/// named the value ("a twist's `linear` must be Vector3<Length>; got …"), so it
+/// diverges on both counts on purpose: the `Scalar` suffix would be redundant AND
+/// wrong (the offending component may be a `Value::Real`, never a `Value::Scalar`),
+/// and the fallback goes through `Display` so an unnamed dimension still prints its
+/// actual exponents rather than the uninformative word "dimensioned". Hoisting a
+/// shared `DimensionVector::diagnostic_label()` to `reify-core` is worth doing, but it
+/// must carry BOTH renderings rather than collapsing them; that lives outside this
+/// crate's scope and is filed as follow-up work.
+fn dimension_label(dim: DimensionVector) -> String {
+    dim.canonical_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| dim.to_string())
+}
+
+/// Pure classifier (post-`Value::Undef` hook) for geometry builtin calls,
+/// mirroring `stackup::diagnose` / `fea::diagnose`. `reify-expr`'s `FunctionCall`
+/// arm calls this (re-exported as `geometry_diagnose`) when a stdlib builtin
+/// returns `Value::Undef`, and pushes any returned `Diagnostic` into the
+/// `EvalContext` runtime sink so `reify eval` can print it.
 ///
-/// Severity here is `Warning` with no `DiagnosticCode`, mirroring the existing
-/// degenerate-scale rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
+/// Names served:
+/// - **`affine_scale`** (exactly 3 args), distinguishing its two user-correctable
+///   failure causes (the third — arity — stays silent, like the `transform3`
+///   convention):
+///   - *dimensioned factor* → violates the G6 dimensionless-linear-part contract;
+///   - *zero factor* → degenerate (det=0, non-invertible) map.
+/// - **`transform_log`** (exactly 1 arg) — a `Transform` whose translation is not
+///   `Vector3<Length>` (RULING #6126).
+/// - **`transform_exp`** (exactly 1 arg) — a twist whose `linear` half is not
+///   `Vector3<Length>` (RULING #6126), AND whose `angular` half passed eval's own
+///   gate. A twist wrong in both halves is rejected by eval's angular gate before the
+///   linear one is reached, so this arm stays silent there and leaves the explaining
+///   to #6080, which owns that gate.
+/// - **`bbox`** (exactly 2 args) — a corner that is not `Point3<Length>`
+///   (task 6081: a BoundingBox is spatial by construction), including one whose
+///   components carry MIXED dimensions. Every SHAPE failure stays silent — a
+///   non-`Point` argument, a component count other than 3, a non-numeric
+///   component — like the arity convention above: a type failure is not a
+///   dimension failure.
 ///
-/// **`transform_exp`** — diagnoses a `Twist` whose `angular` half carries the
-/// wrong dimension. A rotation vector is `axis * angle`, so `Twist.angular` is
-/// `Vector3<Angle>` (#6080); `DIMENSIONLESS` used to be the accepted spelling
-/// and is now rejected like any other wrong dimension, so this diagnostic is the
-/// migration mechanism for that breaking change. Severity is `Error` (so
-/// `reify eval` exits 1), per #6126's 2026-08-19 amendment via esc-6080-6, with
-/// the `E_` token carried in the message text rather than as a `DiagnosticCode`
-/// variant. The message is built by `orientation::rotation_vector_dimension_error`,
-/// shared with that module's `orient_exp` arm so the token, the severity and the
-/// recommended fix cannot drift between the two.
+/// Invariant: the two RULING #6126 dimension arms consult [`TWIST_LINEAR_DIM`] —
+/// the SAME const the eval gates use — and read the twist shape through
+/// [`decompose_twist_component`] — the SAME helper the eval arm uses — so the
+/// classifier cannot drift away from what eval actually rejects, in either the
+/// dimension or the shape dimension of that drift. The `bbox` arm holds the same
+/// property the same way: it decodes both corners through
+/// [`classify_bbox_corner`] — the SAME helper its own eval gate reads, which is
+/// where `DimensionVector::LENGTH` is compared — so the shape half is pinned
+/// alongside the quantity half rather than re-derived here.
 ///
-/// This arm inspects ONLY the `angular` key: the `linear` convention is
-/// owned by #6126, so a linear-half failure falls through as `None` rather than
-/// being poached by a competing angular message.
+/// Invariant: this hook fires on EVERY `Value::Undef` from these builtins, not just
+/// dimension rejections, so each arm stays SILENT (`None`) on every non-dimension
+/// cause — wrong arity, wrong argument shape, a degenerate or non-finite
+/// quaternion, non-finite components — rather than mis-attributing an unrelated
+/// failure to a dimension problem. Concretely: only emit when the decomposition
+/// SUCCEEDS and the recovered dimension differs from the admitted one.
 ///
-/// Returns `None` for any other name, wrong arity, a shape error, or valid input.
+/// Severity is split by fault class, and the split is deliberate:
+///
+/// - The `affine_scale` arms are `Warning`, mirroring the existing degenerate-scale
+///   rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
+/// - The two RULING #6126 dimension arms (`transform_log`, `transform_exp`) are
+///   `Severity::Error`, per Leo's severity amendment (2026-08-19, via esc-6080-6): a
+///   wrong dimension is a design-correctness fault, so `reify eval` must EXIT 1 rather
+///   than print and continue. `cmd_eval` gates its exit code on
+///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
+///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
+///   half, so one fault class does not report two ways across one builtin family.
+/// - The `bbox` arm is `Severity::Error` for the same reason (task 6081): a
+///   non-Length corner is an outright CONSTRUCTION failure — no BoundingBox is
+///   produced at all — rather than a drop-and-continue like `affine_scale`,
+///   where the offending factor is discarded and evaluation proceeds.
+///
+/// `DiagnosticCode` is deliberately NOT uniform across the arms. The two RULING
+/// #6126 arms stay code-less because MINTING
+/// `DiagnosticCode::ArgDimensionMismatch` is owned by
+/// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
+/// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
+/// this same hook is the standing in-crate precedent. The `bbox` arm mints nothing
+/// either — it carries the PRE-EXISTING
+/// [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
+/// `reify_eval::geometry_ops` already attaches to exactly this fault class (an
+/// `Severity::Error` runtime dimension rejection of a positional argument).
+/// Converging the two — once the PRD's code exists — is worth doing and is
+/// deliberately NOT done here.
+/// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
         "affine_scale" => {
@@ -1521,29 +1702,178 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             }
             None
         }
+        "transform_log" => {
+            if args.len() != 1 {
+                return None;
+            }
+            // `decompose_transform` returning None covers every non-dimension cause:
+            // a non-Transform argument, a non-Orientation or non-finite rotation, a
+            // translation that is not a 3-Vector, mixed component dimensions, and
+            // non-numeric or non-finite components. Staying silent there is the
+            // no-mis-attribution guard.
+            let (_, _, t_dim) = decompose_transform(&args[0])?;
+            if t_dim == TWIST_LINEAR_DIM {
+                return None;
+            }
+            Some(reify_core::Diagnostic::error(format!(
+                "transform_log: a Transform's translation must be Vector3<Length>; got {} \
+                 (a twist's `linear` half carries Length — RULING #6126)",
+                dimension_label(t_dim)
+            )))
+        }
         "transform_exp" => {
             if args.len() != 1 {
                 return None;
             }
-            let Value::Map(m) = &args[0] else {
-                return None;
-            };
-            let angular = m.get(&Value::String("angular".to_string()))?;
-            // `decompose_vec3` returns `None` for every shape error (non-Vector,
-            // non-3d, mixed or non-finite components), which keeps those silent
-            // so a shape error is never misattributed as a dimension error.
-            let (_, ang_dim) = decompose_vec3(angular)?;
-            if ang_dim == DimensionVector::ANGLE {
+            // Speak only when the LINEAR gate is the one eval actually reached. Eval
+            // checks `angular` BEFORE `linear`, so a twist wrong in both halves is
+            // rejected by the angular gate and never reaches the linear one. Blaming
+            // `linear` there is a mis-attribution with a nasty second act: the user
+            // makes `linear` a Length, still gets Undef, and now gets NO diagnostic at
+            // all — this arm having gone silent. So decline whenever the angular gate
+            // owns the failure.
+            //
+            // This keeps the arm independent of #6080 (which owns the angular gate and
+            // will add its own arm to explain it) in the only way that is actually
+            // independent: by declining to speak for it, rather than by speaking over
+            // it. `TWIST_ANGULAR_DIM` below is eval's angular gate, not this ruling's —
+            // #6126 governs the linear half only. It is read from the const rather than
+            // re-spelled so widening the gate cannot silently mute this arm; see that
+            // const's doc, and the `..._deferral_tracks_evals_angular_gate` pin.
+            //
+            // Shape failures on the angular half — a non-Map argument, a missing
+            // `angular` key, a non-3-Vector — fold into `None` here for the same
+            // no-mis-attribution reason they do on the linear half.
+            let (_, ang_dim) = decompose_twist_component(&args[0], "angular")?;
+            if ang_dim != TWIST_ANGULAR_DIM {
                 return None;
             }
-            Some(rotation_vector_dimension_error(
-                "transform_exp",
-                Some("angular"),
-                ang_dim,
-            ))
+            // As on the transform_log arm, `decompose_twist_component` returning None
+            // covers every non-dimension cause (non-Map arg, missing `linear` key — a
+            // SHAPE failure, not a 3-Vector, mixed component dimensions, non-numeric or
+            // non-finite components) — the no-mis-attribution guard. It is the SAME
+            // helper the eval arm reads the shape through, so this arm cannot go quiet
+            // while eval keeps rejecting.
+            let (_, lin_dim) = decompose_twist_component(&args[0], "linear")?;
+            if lin_dim == TWIST_LINEAR_DIM {
+                return None;
+            }
+            Some(reify_core::Diagnostic::error(format!(
+                "transform_exp: a twist's `linear` must be Vector3<Length>; got {} \
+                 (RULING #6126)",
+                dimension_label(lin_dim)
+            )))
+        }
+        "bbox" => {
+            if args.len() != 2 {
+                return None;
+            }
+            diagnose_bbox_corners(&args[0], &args[1])
         }
         _ => None,
     }
+}
+
+/// How a `bbox` corner argument decodes.
+///
+/// The SINGLE decoder shared by the `bbox` eval gate and
+/// [`diagnose_bbox_corners`], so the classifier cannot drift from what eval
+/// actually rejects — in the SHAPE dimension of that drift as well as the
+/// quantity one. The RULING #6126 arms get that property by sharing
+/// [`decompose_twist_component`] with their eval gate; before this the `bbox`
+/// pair shared only the `DimensionVector::LENGTH` constant, and the shape halves
+/// had duly diverged (the classifier reported a `Point3<…>` for a `Point2`
+/// argument, naming a Point3 that did not exist).
+///
+/// The three cases fall on two sides of [`diagnose`]'s no-mis-attribution
+/// invariant: a QUANTITY failure is the classifier's to explain, a SHAPE failure
+/// is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BboxCorner {
+    /// A `Point` of exactly 3 numeric components that all carry this dimension.
+    /// The only shape eval admits — and then only at `LENGTH`.
+    Uniform(DimensionVector),
+    /// A `Point` of exactly 3 numeric components whose dimensions DISAGREE
+    /// (`point3(1m, 2deg, 3m)`). A quantity failure: the classifier speaks.
+    Mixed,
+    /// Not a corner at all — a non-`Point`, a component count other than 3, or a
+    /// non-numeric component. A shape failure: the classifier stays silent.
+    NotACorner,
+}
+
+/// Decode one `bbox` corner argument. See [`BboxCorner`] for why the three cases
+/// are distinguished rather than folded together.
+fn classify_bbox_corner(v: &Value) -> BboxCorner {
+    let comps = match v {
+        Value::Point(comps) if comps.len() == 3 => comps,
+        _ => return BboxCorner::NotACorner,
+    };
+    // Read the quantity through the same uniformity-checking extractor the two
+    // accessors read a stored corner through, so the gate cannot admit a corner
+    // `bbox_size`/`bbox_center` would go on to reject.
+    if let Some((_, dim)) = tensor_components_f64(v) {
+        return BboxCorner::Uniform(dim);
+    }
+    // `tensor_components_f64` folds MIXED component dimensions and NON-NUMERIC
+    // components into one `None`; split them apart again, because they land on
+    // opposite sides of the no-mis-attribution invariant. Non-numeric wins the
+    // tie: it is the shape failure, and a shape failure is never blamed on a
+    // dimension.
+    if comps.iter().any(|c| c.as_f64().is_none()) {
+        BboxCorner::NotACorner
+    } else {
+        BboxCorner::Mixed
+    }
+}
+
+/// The `bbox` arm of [`diagnose`]: report the first corner that is not
+/// `Point3<Length>`.
+///
+/// `min` is reported before `max` so a both-wrong call names `min`
+/// deterministically. Every SHAPE failure returns `None` — a non-`Point`
+/// argument, a component count other than 3, a non-numeric component — because a
+/// type failure is not a dimension failure, and staying silent matches the
+/// `affine_scale` convention of explaining only the user-correctable dimension
+/// cause. That shape half is decided by [`classify_bbox_corner`], the SAME
+/// decoder the eval gate reads, so this arm cannot speak for a corner eval
+/// accepted nor stay quiet on one eval rejected on dimension grounds.
+///
+/// The dimension half of the message goes through [`dimension_label`] (added by
+/// RULING #6126) rather than re-rolling a fourth rendering of the same thing, so an
+/// unnamed dimension prints its actual exponents instead of the uninformative word
+/// "dimensioned". DIMENSIONLESS is the one divergence and it is deliberate: the label
+/// lands in a TYPE-ARGUMENT slot (`Point3<…>`), where the spelling is `Real`, not
+/// `dimension_label`'s prose "dimensionless".
+///
+/// The message mirrors `ArgRejection::message`'s
+/// `"{builtin}: {arg_name} argument expects {expected}, got {got}"` shape
+/// (`crates/reify-eval/src/arg_acceptance.rs`). It is hand-mirrored rather than
+/// shared: reify-stdlib cannot depend on reify-eval (reify-eval → reify-expr →
+/// reify-stdlib would be a cycle), and copying the wording across that boundary
+/// is established practice (see `reify-compiler/src/conformance/mod.rs`,
+/// annotated "COPIED from ArgRejection::message").
+fn diagnose_bbox_corners(min: &Value, max: &Value) -> Option<reify_core::Diagnostic> {
+    for (arg_name, corner) in [("min", min), ("max", max)] {
+        let got = match classify_bbox_corner(corner) {
+            // Shape failure — silent, per the invariant above.
+            BboxCorner::NotACorner => continue,
+            // The one accepted corner: nothing to explain.
+            BboxCorner::Uniform(dim) if dim == DimensionVector::LENGTH => continue,
+            BboxCorner::Uniform(dim) if dim.is_dimensionless() => "Point3<Real>".to_string(),
+            BboxCorner::Uniform(dim) => format!("Point3<{}>", dimension_label(dim)),
+            // No single quantity to name, so the slot describes the fault instead
+            // of pretending to a `Point3<…>` spelling the argument does not have.
+            BboxCorner::Mixed => "a Point3 with mixed component dimensions".to_string(),
+        };
+        return Some(
+            reify_core::Diagnostic::error(format!(
+                "bbox: {arg_name} argument expects Point3<Length>, got {got} \
+                 (a bounding box is spatial by construction)"
+            ))
+            .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+        );
+    }
+    None
 }
 
 #[cfg(test)]
@@ -2722,6 +3052,107 @@ mod tests {
         assert!(eval_builtin("bbox", &[pt3, vec3]).is_undef());
     }
 
+    // ── bbox is Length-valued by construction (task 6081) ────────────────────
+    // A bounding box is spatial: both corners must be `Point3<Length>`. Agreeing
+    // non-Length corners (two Angle points, two dimensionless points) used to
+    // slip through the old `min_dim != max_dim` gate and construct a
+    // quantity-polymorphic BoundingBox; they are now rejected outright.
+
+    /// Build a `Point3<Angle>` — the polymorphism escape hatch the old gate
+    /// admitted, since `point3` is dimension-polymorphic at eval.
+    fn make_point3_angle(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(
+            [x, y, z]
+                .into_iter()
+                .map(|si_value| Value::Scalar {
+                    si_value,
+                    dimension: DimensionVector::ANGLE,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn bbox_angle_corners_returns_undef() {
+        let min = make_point3_angle(0.0, 0.0, 0.0);
+        let max = make_point3_angle(1.0, 2.0, 3.0);
+        assert!(
+            eval_builtin("bbox", &[min, max]).is_undef(),
+            "two agreeing Angle corners must be rejected: a BoundingBox is Length-valued"
+        );
+    }
+
+    #[test]
+    fn bbox_dimensionless_corners_returns_undef() {
+        let min = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let max = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert!(
+            eval_builtin("bbox", &[min, max]).is_undef(),
+            "two agreeing dimensionless corners must be rejected: a BoundingBox is Length-valued"
+        );
+    }
+
+    #[test]
+    fn bbox_length_corners_still_constructs() {
+        // Positive guard: the narrowing must not over-reject the valid case.
+        let result = eval_builtin("bbox", &[make_point3_min(), make_point3_max()]);
+        assert!(
+            matches!(result, Value::BoundingBox { .. }),
+            "metre-valued corners must still construct a BoundingBox, got {:?}",
+            result
+        );
+    }
+
+    /// A corner whose components DISAGREE is not `Point3<Length>` either, and
+    /// must be rejected AT CONSTRUCTION.
+    ///
+    /// This is the case a first-component reading of the quantity let through.
+    /// Letting it construct did not make it work: `bbox_size`/`bbox_center` read
+    /// the stored corner through `tensor_components_f64`, which rejects mixed
+    /// component dimensions, so the user got an Undef one call downstream — and,
+    /// the `bbox` call itself having SUCCEEDED, with no diagnostic at all.
+    #[test]
+    fn bbox_mixed_dimension_corner_returns_undef() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::ANGLE,
+            },
+            Value::length(3.0),
+        ]);
+        assert!(
+            eval_builtin("bbox", &[min, make_point3_max()]).is_undef(),
+            "a corner mixing Length and Angle components is not Point3<Length>"
+        );
+    }
+
+    /// The mixed-component rejection is per-corner, not min-only.
+    #[test]
+    fn bbox_mixed_dimension_max_corner_returns_undef() {
+        let max = Value::Point(vec![
+            Value::length(4.0),
+            Value::length(5.0),
+            Value::Scalar {
+                si_value: 6.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert!(eval_builtin("bbox", &[make_point3_min(), max]).is_undef());
+    }
+
+    /// A non-numeric component is a SHAPE failure, and eval rejects it too — the
+    /// gate admits only three numeric, uniformly-Length components.
+    #[test]
+    fn bbox_non_numeric_corner_component_returns_undef() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Bool(true),
+            Value::length(3.0),
+        ]);
+        assert!(eval_builtin("bbox", &[min, make_point3_max()]).is_undef());
+    }
+
     // ── bbox_size / bbox_center tests (step-11) ──────────────────────────────
 
     fn make_bbox() -> Value {
@@ -2793,9 +3224,18 @@ mod tests {
         assert!(eval_builtin("bbox_center", &[make_bbox(), make_bbox()]).is_undef());
     }
 
-    #[test]
-    fn bbox_size_dimensionless_bbox() {
-        let bbox = Value::BoundingBox {
+    // ── accessors are Length-valued in their own right (task 6081) ───────────
+    // These hand-built BoundingBox values deliberately BYPASS the `bbox`
+    // constructor gate, which now admits only Length corners. They pin that
+    // `bbox_size`/`bbox_center` emit Length components for EVERY
+    // `Value::BoundingBox` — including one produced by the kernel
+    // (`dispatch_bounding_box`, itself unconditionally Length) or hand-built —
+    // which is what makes the static rows `Vector3<Length>` / `Point3<Length>`
+    // sound. The old behaviour propagated the stored corner dimension; that
+    // was incidental generic propagation, not a designed capability.
+
+    fn make_dimensionless_bbox() -> Value {
+        Value::BoundingBox {
             min: Box::new(Value::Point(vec![
                 Value::Real(0.0),
                 Value::Real(0.0),
@@ -2806,15 +3246,69 @@ mod tests {
                 Value::Real(4.0),
                 Value::Real(6.0),
             ])),
-        };
-        let result = eval_builtin("bbox_size", &[bbox]);
+        }
+    }
+
+    fn make_angle_bbox() -> Value {
+        Value::BoundingBox {
+            min: Box::new(make_point3_angle(0.0, 0.0, 0.0)),
+            max: Box::new(make_point3_angle(2.0, 4.0, 6.0)),
+        }
+    }
+
+    #[test]
+    fn bbox_size_emits_length_components_for_dimensionless_bbox() {
+        let result = eval_builtin("bbox_size", &[make_dimensionless_bbox()]);
         match result {
             Value::Vector(ref comps) => {
-                assert_eq!(comps[0], Value::Real(2.0));
-                assert_eq!(comps[1], Value::Real(4.0));
-                assert_eq!(comps[2], Value::Real(6.0));
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(2.0));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
             }
-            other => panic!("expected Vector of Reals, got {:?}", other),
+            other => panic!("expected Vector of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_center_emits_length_components_for_dimensionless_bbox() {
+        let result = eval_builtin("bbox_center", &[make_dimensionless_bbox()]);
+        match result {
+            Value::Point(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(1.0));
+                assert_eq!(comps[1], Value::length(2.0));
+                assert_eq!(comps[2], Value::length(3.0));
+            }
+            other => panic!("expected Point of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_size_emits_length_components_for_angle_bbox() {
+        let result = eval_builtin("bbox_size", &[make_angle_bbox()]);
+        match result {
+            Value::Vector(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(2.0));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
+            }
+            other => panic!("expected Vector of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_center_emits_length_components_for_angle_bbox() {
+        let result = eval_builtin("bbox_center", &[make_angle_bbox()]);
+        match result {
+            Value::Point(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(1.0));
+                assert_eq!(comps[1], Value::length(2.0));
+                assert_eq!(comps[2], Value::length(3.0));
+            }
+            other => panic!("expected Point of Lengths, got {:?}", other),
         }
     }
 
@@ -3942,7 +4436,7 @@ mod tests {
         }
     }
 
-    /// transform_log(identity) == Map { angular=[0,0,0] ANGLE, linear=[0,0,0] LENGTH }.
+    /// transform_log(identity) == Map { angular=[0,0,0] DIMENSIONLESS, linear=[0,0,0] LENGTH }.
     #[test]
     fn transform_log_identity_is_zero_twist() {
         let id = eval_builtin("transform3_identity", &[]);
@@ -3955,7 +4449,10 @@ mod tests {
         for (i, v) in lin.iter().enumerate() {
             assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
         }
-        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::ANGLE);
+        assert_eq!(
+            map_vec3_dim(&result, "angular"),
+            DimensionVector::DIMENSIONLESS
+        );
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -3985,7 +4482,10 @@ mod tests {
             "linear[2] = {}, expected 3",
             lin[2]
         );
-        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::ANGLE);
+        assert_eq!(
+            map_vec3_dim(&result, "angular"),
+            DimensionVector::DIMENSIONLESS
+        );
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -4341,10 +4841,11 @@ mod tests {
 
     /// transform_log with MASS-dimension translation → Undef.
     ///
-    /// The gate is `t_dim != LENGTH && t_dim != DIMENSIONLESS`. MASS flows through the
-    /// same rejection branch as ANGLE, ensuring the test suite covers more than one
-    /// non-accepted dimension so a future narrowing of the gate (e.g. adding ANGLE as a
-    /// special case) cannot silently pass.
+    /// The gate is `t_dim != LENGTH` per RULING #6126 — LENGTH is the single admitted
+    /// dimension. MASS flows through the same rejection branch as ANGLE, so MASS and
+    /// ANGLE remain covered as two distinct non-admitted dimensions and no future
+    /// re-widening of the gate (e.g. re-admitting one dimension as a special case) can
+    /// silently pass.
     #[test]
     fn transform_log_mass_dim_translation_returns_undef() {
         let t = Value::Transform {
@@ -4367,14 +4868,15 @@ mod tests {
         assert!(eval_builtin("transform_log", &[t]).is_undef());
     }
 
-    /// transform_log with DIMENSIONLESS translation → accepted (non-Undef).
+    /// transform_log with DIMENSIONLESS translation → Undef.
     ///
-    /// DIMENSIONLESS is the second accepted dimension alongside LENGTH. This positive
-    /// case pins that the gate does NOT reject dimensionless translations, complementing
-    /// the `transform_exp_zero_twist_is_identity` test which already verifies the
-    /// round-trip for the DIMENSIONLESS case.
+    /// RULING #6126: a twist's `linear` half is `Vector3<Length>`, and mirrored, a
+    /// Transform's translation on the log↔exp seam carries LENGTH and only LENGTH.
+    /// DIMENSIONLESS is therefore no longer admitted — after the `Real` →
+    /// `Scalar{DIMENSIONLESS}` unification, "admits DIMENSIONLESS" means "admits bare
+    /// numbers", which is the affordance this ruling removes.
     #[test]
-    fn transform_log_dimensionless_translation_returns_non_undef() {
+    fn transform_log_dimensionless_translation_returns_undef() {
         let t = Value::Transform {
             rotation: Box::new(make_identity_orientation()),
             translation: Box::new(Value::Vector(vec![
@@ -4384,47 +4886,54 @@ mod tests {
             ])),
         };
         assert!(
-            !eval_builtin("transform_log", &[t]).is_undef(),
-            "transform_log must accept DIMENSIONLESS translation"
+            eval_builtin("transform_log", &[t]).is_undef(),
+            "RULING #6126: a Transform's translation must be Vector3<Length>; \
+             DIMENSIONLESS is no longer admitted"
         );
     }
 
     // ── transform_exp tests (step-21) ────────────────────────────────────────
 
-    /// Helper: build a twist Map with given angular & linear vectors.
+    /// Helper: build a twist Map with given angular & linear vectors, each half
+    /// carrying an explicit dimension. `DIMENSIONLESS` components are built as
+    /// `Value::Real` (not `Scalar{DIMENSIONLESS}`), matching how `.ri` bare numbers
+    /// actually reach eval.
     ///
-    /// The angular half is monomorphic ANGLE (#6080) — a rotation vector is
-    /// axis * angle — so it takes no dimension parameter. Only the linear half
-    /// is polymorphic (LENGTH | DIMENSIONLESS), which is #6126's territory.
-    fn make_twist(angular: [f64; 3], linear: [f64; 3], linear_dim: DimensionVector) -> Value {
-        let mut m = std::collections::BTreeMap::new();
-        m.insert(
-            Value::String("angular".to_string()),
-            Value::Vector(vec![
-                Value::angle(angular[0]),
-                Value::angle(angular[1]),
-                Value::angle(angular[2]),
-            ]),
-        );
-        let make_lin = |v: f64| -> Value {
-            if linear_dim.is_dimensionless() {
+    /// The angular dimension is a parameter because the classifier now DEFERS to eval's
+    /// angular gate (see `diagnose`'s transform_exp arm), which is only testable with a
+    /// non-DIMENSIONLESS angular half.
+    fn make_twist_with_dims(
+        angular: [f64; 3],
+        angular_dim: DimensionVector,
+        linear: [f64; 3],
+        linear_dim: DimensionVector,
+    ) -> Value {
+        let component = |v: f64, dim: DimensionVector| -> Value {
+            if dim.is_dimensionless() {
                 Value::Real(v)
             } else {
                 Value::Scalar {
                     si_value: v,
-                    dimension: linear_dim,
+                    dimension: dim,
                 }
             }
         };
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(angular.iter().map(|v| component(*v, angular_dim)).collect()),
+        );
         m.insert(
             Value::String("linear".to_string()),
-            Value::Vector(vec![
-                make_lin(linear[0]),
-                make_lin(linear[1]),
-                make_lin(linear[2]),
-            ]),
+            Value::Vector(linear.iter().map(|v| component(*v, linear_dim)).collect()),
         );
         Value::Map(m)
+    }
+
+    /// Helper: build a twist Map with a DIMENSIONLESS angular half (the only one eval
+    /// admits) and a given linear dimension.
+    fn make_twist(angular: [f64; 3], linear: [f64; 3], linear_dim: DimensionVector) -> Value {
+        make_twist_with_dims(angular, DimensionVector::DIMENSIONLESS, linear, linear_dim)
     }
 
     /// transform_exp(zero twist) == identity transform.
@@ -4594,18 +5103,18 @@ mod tests {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::angle(0.0); 3]),
+            Value::Vector(vec![Value::Real(0.0); 3]),
         );
         assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
     }
 
-    /// transform_exp with non-ANGLE angular dimension → Undef (#6080).
+    /// transform_exp with non-DIMENSIONLESS angular dimension → Undef.
     #[test]
     fn transform_exp_angular_wrong_dimension_returns_undef() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of ANGLE
+            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of DIMENSIONLESS
         );
         m.insert(
             Value::String("linear".to_string()),
@@ -4615,21 +5124,70 @@ mod tests {
     }
 
     /// transform_exp with non-LENGTH linear dimension → Undef.
-    ///
-    /// The angular half must be a VALID ANGLE vector, or this test would pass
-    /// on the angular gate and stop covering the linear one (#6126's).
     #[test]
     fn transform_exp_linear_wrong_dimension_returns_undef() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::angle(0.0); 3]),
+            Value::Vector(vec![Value::Real(0.0); 3]),
         );
         m.insert(
             Value::String("linear".to_string()),
             Value::Vector(vec![Value::angle(0.0); 3]), // ANGLE instead of LENGTH
         );
         assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with DIMENSIONLESS linear dimension → Undef.
+    ///
+    /// RULING #6126 closes the LAST `LENGTH | DIMENSIONLESS` admission in the transform
+    /// family: a twist's `linear` half is `Vector3<Length>`, so a dimensionless linear
+    /// is rejected exactly like ANGLE or MASS.
+    ///
+    /// This positive-acceptance path was previously UNTESTED — every existing
+    /// `transform_exp` test builds a LENGTH twist, and the comment formerly sitting on
+    /// `transform_log_dimensionless_translation_returns_non_undef` mis-cited
+    /// `transform_exp_zero_twist_is_identity` as covering the dimensionless case.
+    #[test]
+    fn transform_exp_dimensionless_linear_returns_undef() {
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+        );
+        assert!(
+            eval_builtin("transform_exp", &[twist]).is_undef(),
+            "RULING #6126: a twist's `linear` must be Vector3<Length>; \
+             DIMENSIONLESS is no longer admitted"
+        );
+    }
+
+    /// transform_exp with LENGTH linear dimension → accepted, translation stays LENGTH.
+    ///
+    /// The one-sidedness control for `transform_exp_dimensionless_linear_returns_undef`:
+    /// the narrowing must reject non-LENGTH without being "fixed" by rejecting
+    /// everything. Asserts both the accepted shape and that the emitted translation
+    /// components still carry `LENGTH`.
+    #[test]
+    fn transform_exp_length_linear_is_accepted() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        let result = eval_builtin("transform_exp", &[twist]);
+        let translation = match &result {
+            Value::Transform { translation, .. } => translation.as_ref(),
+            other => panic!("transform_exp on a LENGTH twist must yield a Transform; got {other:?}"),
+        };
+        let comps = match translation {
+            Value::Vector(items) => items,
+            other => panic!("translation must be a Vector; got {other:?}"),
+        };
+        assert_eq!(comps.len(), 3, "translation must have 3 components");
+        for (i, c) in comps.iter().enumerate() {
+            assert_eq!(
+                c.dimension(),
+                DimensionVector::LENGTH,
+                "translation component {i} must carry LENGTH; got {c:?}"
+            );
+        }
     }
 
     /// transform_exp with NaN component → Undef.
@@ -4659,150 +5217,6 @@ mod tests {
         let twist = make_twist([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
         assert!(eval_builtin("transform_exp", &[]).is_undef());
         assert!(eval_builtin("transform_exp", &[twist.clone(), twist]).is_undef());
-    }
-
-    // ── Twist.angular DIMENSION tests (#6080) ─────────────────────────────
-    //
-    // A twist's angular half is a rotation vector — axis * angle — so it
-    // carries ANGLE, exactly like `orient_log`'s output. Both ends of the
-    // transform_log / transform_exp pair are pinned here, because the pair is
-    // an identity and only moves correctly if they agree.
-    //
-    // SCOPE: the `linear` half is NOT touched by any of these. Its
-    // LENGTH|DIMENSIONLESS gate is ruled by #6126.
-
-    /// The transform_log tests above read angular through `map_vec3_components`
-    /// (i.e. `as_f64()`), which is dimension-blind; these assert per-component
-    /// dimension directly.
-    #[test]
-    fn transform_log_emits_angle_dimensioned_angular() {
-        let t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
-        let result = eval_builtin("transform_log", &[t]);
-        let map = match &result {
-            Value::Map(m) => m,
-            other => panic!("expected Map, got {other:?}"),
-        };
-        let ang = match map.get(&Value::String("angular".to_string())) {
-            Some(Value::Vector(items)) if items.len() == 3 => items,
-            other => panic!("expected Vector3 angular, got {other:?}"),
-        };
-        assert_scalar_approx!(ang[0].clone(), 0.0, DimensionVector::ANGLE);
-        assert_scalar_approx!(ang[1].clone(), 0.0, DimensionVector::ANGLE);
-        assert_scalar_approx!(
-            ang[2].clone(),
-            std::f64::consts::FRAC_PI_2,
-            DimensionVector::ANGLE
-        );
-    }
-
-    /// The zero / near-identity rotation path must not be left dimensionless.
-    #[test]
-    fn transform_log_identity_emits_angle_dimensioned_zero_angular() {
-        let id = eval_builtin("transform3_identity", &[]);
-        let result = eval_builtin("transform_log", &[id]);
-        let map = match &result {
-            Value::Map(m) => m,
-            other => panic!("expected Map, got {other:?}"),
-        };
-        let ang = match map.get(&Value::String("angular".to_string())) {
-            Some(Value::Vector(items)) if items.len() == 3 => items,
-            other => panic!("expected Vector3 angular, got {other:?}"),
-        };
-        for comp in ang.iter() {
-            assert_scalar_approx!(comp.clone(), 0.0, DimensionVector::ANGLE);
-        }
-    }
-
-    /// The widening: an ANGLE angular half is accepted.
-    #[test]
-    fn transform_exp_accepts_angle_angular() {
-        let twist = make_twist(
-            [0.0, 0.0, std::f64::consts::FRAC_PI_2],
-            [1.0, 2.0, 3.0],
-            DimensionVector::LENGTH,
-        );
-        let result = eval_builtin("transform_exp", &[twist]);
-        match result {
-            Value::Transform { rotation, .. } => {
-                let s = std::f64::consts::FRAC_1_SQRT_2;
-                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
-            }
-            other => panic!("expected Transform, got {other:?}"),
-        }
-    }
-
-    /// The narrowing: a dimensionless angular half is rejected. DIMENSIONLESS
-    /// is a SPECIFIC dimension (the zero vector), not a wildcard.
-    #[test]
-    fn transform_exp_rejects_dimensionless_angular() {
-        let mut m = std::collections::BTreeMap::new();
-        m.insert(
-            Value::String("angular".to_string()),
-            Value::Vector(vec![
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-            ]),
-        );
-        m.insert(
-            Value::String("linear".to_string()),
-            Value::Vector(vec![Value::length(0.0); 3]),
-        );
-        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
-    }
-
-    /// Regression pin: widening to ANGLE must not make the gate permissive.
-    #[test]
-    fn transform_exp_rejects_length_angular() {
-        let mut m = std::collections::BTreeMap::new();
-        m.insert(
-            Value::String("angular".to_string()),
-            Value::Vector(vec![Value::length(0.001); 3]),
-        );
-        m.insert(
-            Value::String("linear".to_string()),
-            Value::Vector(vec![Value::length(0.0); 3]),
-        );
-        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
-    }
-
-    /// Coupled-change guard: `transform_exp(transform_log(T)) ≈ T` survives
-    /// only if the emission and the gate agree on ANGLE. Also asserts the
-    /// intermediate twist's angular half is ANGLE-dimensioned.
-    #[test]
-    fn transform_log_then_exp_round_trip_angular_is_angle() {
-        let q = Value::Orientation {
-            w: 0.5,
-            x: 0.5,
-            y: 0.5,
-            z: 0.5,
-        };
-        let t = make_transform(q, 1.5, -2.5, 3.0);
-        let twist = eval_builtin("transform_log", std::slice::from_ref(&t));
-        assert_eq!(map_vec3_dim(&twist, "angular"), DimensionVector::ANGLE);
-        // The linear half is untouched by #6080 and stays LENGTH.
-        assert_eq!(map_vec3_dim(&twist, "linear"), DimensionVector::LENGTH);
-        let back = eval_builtin("transform_exp", &[twist]);
-        match back {
-            Value::Transform {
-                rotation,
-                translation,
-            } => {
-                assert_orientation_approx!(*rotation, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-10);
-                match *translation {
-                    Value::Vector(items) if items.len() == 3 => {
-                        let tx = items[0].as_f64().unwrap();
-                        let ty = items[1].as_f64().unwrap();
-                        let tz = items[2].as_f64().unwrap();
-                        assert!((tx - 1.5).abs() < 1e-10, "tx = {tx}, expected 1.5");
-                        assert!((ty - (-2.5)).abs() < 1e-10, "ty = {ty}, expected -2.5");
-                        assert!((tz - 3.0).abs() < 1e-10, "tz = {tz}, expected 3");
-                    }
-                    other => panic!("expected Vector3, got {other:?}"),
-                }
-            }
-            other => panic!("expected Transform, got {other:?}"),
-        }
     }
 
     // ── step-1/2: project(point, Frame<3>) tests ─────────────────────────────
@@ -5530,166 +5944,552 @@ mod tests {
         );
     }
 
-    // ── diagnose() transform_exp ANGULAR arm (#6080 step-7 RED; GREEN step-8) ─
-    //
-    // `Twist.angular` is a rotation vector, so it carries ANGLE (#6080).
-    // Narrowing that gate is a breaking change to a published stdlib signature,
-    // so the wrong-dimension path must surface a `Severity::Error` naming
-    // `angular` and the offending dimension instead of a silent `Undef`.
-    //
-    // SCOPE: this arm inspects ONLY the `angular` key. The `linear` convention
-    // (LENGTH | DIMENSIONLESS) is owned by #6126; a linear failure must fall
-    // through as `None` here so the angular classifier does not poach it.
+    // ── diagnose: transform_log dimension arm (RULING #6126) ──────────────────
+    // The narrowed gate must not degrade to a SILENT Undef: when a Transform's
+    // translation is not Vector3<Length>, the classifier names the offending
+    // dimension. It stays silent (None) for every NON-dimension Undef cause, so an
+    // unrelated failure is never mis-attributed to a dimension problem.
 
-    /// Build a twist `Value::Map` from an `angular` and a `linear` value.
-    fn twist_map(angular: Value, linear: Value) -> Value {
-        let mut m = std::collections::BTreeMap::new();
-        m.insert(Value::String("angular".to_string()), angular);
-        m.insert(Value::String("linear".to_string()), linear);
-        Value::Map(m)
+    /// Helper: a Transform with the given translation components.
+    fn make_transform_with_translation(components: [Value; 3]) -> Value {
+        Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(components.to_vec())),
+        }
     }
 
-    /// The newly-rejected spelling: a bare (DIMENSIONLESS) angular half.
     #[test]
-    fn diagnose_transform_exp_dimensionless_angular_errors() {
-        let tw = twist_map(
-            Value::Vector(vec![
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-            ]),
-            Value::Vector(vec![Value::length(0.0); 3]),
-        );
-        let d = super::diagnose("transform_exp", &[tw])
-            .expect("a dimensionless angular half must produce a diagnostic");
+    fn diagnose_transform_log_dimensionless_translation_names_dimension() {
+        let t = make_transform_with_translation([
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+        ]);
+        let diag = super::diagnose("transform_log", &[t])
+            .expect("a dimensionless translation must produce a diagnostic");
         assert_eq!(
-            d.severity,
+            diag.severity,
             reify_core::Severity::Error,
-            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
+            "a wrong dimension is a design-correctness fault, so RULING #6126 reports it as \
+             an Error — NEVER a Warning — and both halves of the transform_log/transform_exp \
+             family must report this fault class with the SAME exit code (#6080 plans \
+             Error/exit-1 for the angular half). Leo's severity amendment, 2026-08-19, via \
+             esc-6080-6."
         );
+        for needle in ["transform_log", "Length", "dimensionless"] {
+            assert!(
+                diag.message.contains(needle),
+                "message must contain {needle:?}, got: {}",
+                diag.message
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_log_angle_translation_names_angle() {
+        let t = make_transform_with_translation([
+            Value::angle(1.0),
+            Value::angle(2.0),
+            Value::angle(3.0),
+        ]);
+        let diag = super::diagnose("transform_log", &[t])
+            .expect("an ANGLE translation must produce a diagnostic");
         assert!(
-            d.message.contains("angular"),
-            "message must name the offending Twist field; got: {}",
-            d.message
-        );
-        assert!(
-            d.message
-                .contains(&DimensionVector::DIMENSIONLESS.to_string()),
-            "message must render the offending dimension ({}); got: {}",
-            DimensionVector::DIMENSIONLESS,
-            d.message
+            diag.message.contains("Angle"),
+            "the message must NAME the offending dimension rather than hardcode one \
+             string, got: {}",
+            diag.message
         );
     }
 
-    /// A LENGTH angular half was never accepted, but used to fail silently.
     #[test]
-    fn diagnose_transform_exp_length_angular_errors() {
-        let tw = twist_map(
-            Value::Vector(vec![Value::length(0.001); 3]),
-            Value::Vector(vec![Value::length(0.0); 3]),
-        );
-        let d = super::diagnose("transform_exp", &[tw])
-            .expect("a LENGTH angular half must produce a diagnostic");
-        assert_eq!(
-            d.severity,
-            reify_core::Severity::Error,
-            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
-        );
+    fn diagnose_transform_log_length_translation_returns_none() {
+        let t = make_transform_with_translation([
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
         assert!(
-            d.message.contains(&DimensionVector::LENGTH.to_string()),
-            "message must render the offending dimension ({}); got: {}",
-            DimensionVector::LENGTH,
-            d.message
+            super::diagnose("transform_log", &[t]).is_none(),
+            "a valid Vector3<Length> translation must not produce a diagnostic"
         );
     }
 
-    /// A valid ANGLE angular half is not diagnosed, even when asked directly.
     #[test]
-    fn diagnose_transform_exp_angle_angular_returns_none() {
-        let tw = twist_map(
-            Value::Vector(vec![
-                Value::angle(0.0),
-                Value::angle(0.0),
-                Value::angle(std::f64::consts::FRAC_PI_2),
-            ]),
-            Value::Vector(vec![Value::length(0.0); 3]),
-        );
-        assert!(
-            super::diagnose("transform_exp", &[tw]).is_none(),
-            "a valid ANGLE angular half must not produce a diagnostic"
-        );
-    }
-
-    /// Angular is valid ANGLE but LINEAR is wrong: this arm must stay silent so
-    /// #6126 owns the linear failure mode without a competing message here.
-    #[test]
-    fn diagnose_transform_exp_bad_linear_with_valid_angular_returns_none() {
-        let mass = Value::Scalar {
-            si_value: 1.0,
-            dimension: DimensionVector::MASS,
+    fn diagnose_transform_log_degenerate_quaternion_returns_none() {
+        // LENGTH translation (so the dimension is fine) but a quaternion whose squared
+        // norm is below the 1e-24 gate — eval returns Undef for a NON-dimension reason,
+        // and the classifier must not mis-attribute it.
+        let t = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1e-13,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![Value::length(1.0); 3])),
         };
-        let tw = twist_map(
-            Value::Vector(vec![
-                Value::angle(0.0),
-                Value::angle(0.0),
-                Value::angle(std::f64::consts::FRAC_PI_2),
-            ]),
-            Value::Vector(vec![mass; 3]),
+        assert!(
+            eval_builtin("transform_log", std::slice::from_ref(&t)).is_undef(),
+            "precondition: the degenerate quaternion must make eval return Undef"
         );
         assert!(
-            super::diagnose("transform_exp", &[tw]).is_none(),
-            "a linear-half failure is #6126's, not this angular classifier's"
+            super::diagnose("transform_log", &[t]).is_none(),
+            "a degenerate-quaternion Undef must not be reported as a dimension problem"
         );
     }
 
-    /// Shape errors (wrong arity, non-Map, missing `angular`, non-3d angular)
-    /// keep their existing silent-`Undef` behaviour, so a shape error is never
-    /// misattributed as a dimension error.
     #[test]
-    fn diagnose_transform_exp_shape_errors_return_none() {
+    fn diagnose_transform_log_non_transform_arg_returns_none() {
         assert!(
-            super::diagnose("transform_exp", &[]).is_none(),
-            "wrong arity must stay silent"
+            super::diagnose("transform_log", &[Value::Real(1.0)]).is_none(),
+            "a non-Transform argument is a shape failure, not a dimension failure"
         );
+    }
+
+    // ── diagnose: transform_exp dimension arm (RULING #6126) ──────────────────
+    // The mirror of the transform_log arm, on the twist's `linear` half.
+
+    #[test]
+    fn diagnose_transform_exp_dimensionless_linear_names_dimension() {
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+        );
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("a dimensionless linear must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Error,
+            "a wrong dimension is a design-correctness fault, so RULING #6126 reports it as \
+             an Error — NEVER a Warning — and both halves of the transform_log/transform_exp \
+             family must report this fault class with the SAME exit code (#6080 plans \
+             Error/exit-1 for the angular half). Leo's severity amendment, 2026-08-19, via \
+             esc-6080-6."
+        );
+        for needle in ["transform_exp", "linear", "Length", "dimensionless"] {
+            assert!(
+                diag.message.contains(needle),
+                "message must contain {needle:?}, got: {}",
+                diag.message
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_exp_mass_linear_names_mass() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::MASS);
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("a MASS linear must produce a diagnostic");
+        assert!(
+            diag.message.contains("Mass"),
+            "a second distinct dimension proves the label is DERIVED, not hardcoded, \
+             got: {}",
+            diag.message
+        );
+    }
+
+    /// An UNNAMED composite dimension must still print its actual exponents, not a
+    /// generic label — the `dimension_label` fallback branch, which every other test
+    /// here bypasses by using a NAMED dimension (Length/Angle/Mass) or DIMENSIONLESS.
+    ///
+    /// That fallback is the documented divergence from the two `reify-eval` siblings
+    /// (`value_short_label` / `scalar_got_label`), which collapse this case to the
+    /// uninformative word "dimensioned". `MONEY / MASS` is the codebase's canonical
+    /// no-canonical-name example (see `canonical_name_composite_returns_none` in
+    /// reify-core), and `Display` renders it "USD·kg^-1" — so a regression that
+    /// re-collapsed the fallback to a generic string turns this red.
+    #[test]
+    fn diagnose_transform_exp_unnamed_composite_linear_prints_exponents() {
+        let cost_per_mass = DimensionVector::MONEY.div(&DimensionVector::MASS);
+        assert!(
+            cost_per_mass.canonical_name().is_none(),
+            "premise: MONEY/MASS has no canonical name, so the message must come from \
+             the Display fallback"
+        );
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], cost_per_mass);
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("an unnamed composite linear dimension must still produce a diagnostic");
+        for needle in ["USD", "kg^-1"] {
+            assert!(
+                diag.message.contains(needle),
+                "an unnamed dimension must print its EXPONENTS (expected {needle:?}) \
+                 rather than a generic label, got: {}",
+                diag.message
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_exp_length_linear_returns_none() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        assert!(
+            super::diagnose("transform_exp", &[twist]).is_none(),
+            "a valid Vector3<Length> linear must not produce a diagnostic"
+        );
+    }
+
+    /// A twist wrong in BOTH halves must stay silent here, not blame `linear`.
+    ///
+    /// Eval gates `angular` before `linear`, so this twist is rejected by the angular
+    /// gate and the linear gate is never reached. Emitting the linear message anyway
+    /// would send the user to fix a half that is not what stopped them — and the fixed
+    /// twist (see the sibling test below) then produces NO diagnostic at all, because
+    /// this arm goes silent once `linear` is a Length. #6080 owns the angular gate and
+    /// will add the arm that explains this input.
+    #[test]
+    fn diagnose_transform_exp_bad_angular_and_bad_linear_returns_none() {
+        let twist = make_twist_with_dims(
+            [1.0, 0.0, 0.0],
+            DimensionVector::LENGTH,
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+        );
+        assert!(
+            eval_builtin("transform_exp", std::slice::from_ref(&twist)).is_undef(),
+            "premise: eval rejects this twist (at the ANGULAR gate, before linear)"
+        );
+        assert!(
+            super::diagnose("transform_exp", &[twist]).is_none(),
+            "a non-DIMENSIONLESS angular half is rejected by eval BEFORE the linear \
+             gate is reached, so blaming `linear` would mis-attribute the failure"
+        );
+    }
+
+    /// The second act of the mis-attribution, pinned: the user acts on a `linear`
+    /// message, makes `linear` a Length, and the twist is STILL Undef — on the angular
+    /// gate that was the real cause all along. This arm must be silent here too (it has
+    /// nothing true left to say), which is exactly why it must not have spoken above.
+    #[test]
+    fn diagnose_transform_exp_bad_angular_with_length_linear_returns_none() {
+        let twist = make_twist_with_dims(
+            [1.0, 0.0, 0.0],
+            DimensionVector::LENGTH,
+            [1.0, 2.0, 3.0],
+            DimensionVector::LENGTH,
+        );
+        assert!(
+            eval_builtin("transform_exp", std::slice::from_ref(&twist)).is_undef(),
+            "premise: a non-DIMENSIONLESS angular half is Undef even with a Length linear"
+        );
+        assert!(
+            super::diagnose("transform_exp", &[twist]).is_none(),
+            "the linear half is valid, so this arm has nothing to say; #6080's angular \
+             arm owns explaining it"
+        );
+    }
+
+    /// The deferral must track eval's angular gate WHEREVER #6080 moves it.
+    ///
+    /// Every other test here builds a DIMENSIONLESS angular half by literal, so all of
+    /// them would keep passing if the gate widened (say, to ANGLE) while this
+    /// classifier kept requiring DIMENSIONLESS — and the regression is silent: the arm
+    /// would simply stop emitting the #6126 linear Warning for every twist whose
+    /// angular half is newly-valid. This test builds its angular half FROM
+    /// `TWIST_ANGULAR_DIM`, the const both sites now read, so it follows the gate and
+    /// goes red the moment only one of the two sites moves.
+    #[test]
+    fn diagnose_transform_exp_deferral_tracks_evals_angular_gate() {
+        let twist = make_twist_with_dims(
+            [0.0, 0.0, 0.0],
+            super::TWIST_ANGULAR_DIM,
+            [1.0, 2.0, 3.0],
+            DimensionVector::MASS,
+        );
+        assert!(
+            eval_builtin("transform_exp", std::slice::from_ref(&twist)).is_undef(),
+            "premise: an angular half eval ADMITS plus a non-Length linear is rejected \
+             by the LINEAR gate — the one this arm speaks for"
+        );
+        let diag = super::diagnose("transform_exp", &[twist]).expect(
+            "the linear gate owns this failure, so the arm must speak; if this panics, \
+             the classifier's angular deferral has drifted from eval's angular gate",
+        );
+        assert!(
+            diag.message.contains("linear"),
+            "the surviving message must still blame `linear`, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_exp_missing_linear_key_returns_none() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::Real(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[Value::Map(m)]).is_none(),
+            "a missing `linear` key is a SHAPE failure, not a dimension failure"
+        );
+    }
+
+    /// The angular half is now read first (to defer to eval's angular gate), so its
+    /// shape failures must stay silent for the same reason the linear half's do.
+    #[test]
+    fn diagnose_transform_exp_missing_angular_key_returns_none() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::Real(1.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[Value::Map(m)]).is_none(),
+            "a missing `angular` key is a SHAPE failure, not a dimension failure — even \
+             though the `linear` half present here IS non-Length"
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_exp_non_map_arg_returns_none() {
         assert!(
             super::diagnose("transform_exp", &[Value::Real(1.0)]).is_none(),
-            "a non-Map argument must stay silent"
-        );
-        let mut only_linear = std::collections::BTreeMap::new();
-        only_linear.insert(
-            Value::String("linear".to_string()),
-            Value::Vector(vec![Value::length(0.0); 3]),
-        );
-        assert!(
-            super::diagnose("transform_exp", &[Value::Map(only_linear)]).is_none(),
-            "a missing `angular` key must stay silent"
-        );
-        let tw = twist_map(
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]),
-            Value::Vector(vec![Value::length(0.0); 3]),
-        );
-        assert!(
-            super::diagnose("transform_exp", &[tw]).is_none(),
-            "a non-3d angular half must stay silent"
+            "a non-Map argument is a shape failure, not a dimension failure"
         );
     }
 
-    /// The name families stay disjoint: this classifier declines the emitting
-    /// sibling `transform_log` and the orientation family's `orient_exp`.
     #[test]
-    fn diagnose_non_transform_exp_name_returns_none() {
-        let tw = twist_map(
-            Value::Vector(vec![Value::Real(0.0); 3]),
-            Value::Vector(vec![Value::length(0.0); 3]),
+    fn diagnose_transform_exp_wrong_arity_returns_none() {
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
         );
         assert!(
-            super::diagnose("transform_log", std::slice::from_ref(&tw)).is_none(),
-            "transform_log is an emitter, not a gate"
+            super::diagnose("transform_exp", &[twist.clone(), twist]).is_none(),
+            "wrong arity stays silent, like the affine_scale / transform3 convention"
         );
         assert!(
-            super::diagnose("orient_exp", &[Value::Vector(vec![Value::Real(0.0); 3])]).is_none(),
-            "orient_exp belongs to orientation::diagnose, not geometry::diagnose"
+            super::diagnose("transform_exp", &[]).is_none(),
+            "zero args stays silent"
         );
+    }
+
+    #[test]
+    fn diagnose_transform_log_wrong_arity_returns_none() {
+        let t = make_transform_with_translation([
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Real(1.0),
+        ]);
+        assert!(
+            super::diagnose("transform_log", &[t.clone(), t]).is_none(),
+            "wrong arity stays silent, like the affine_scale / transform3 convention"
+        );
+        assert!(
+            super::diagnose("transform_log", &[]).is_none(),
+            "zero args stays silent"
+        );
+    }
+
+    // ── bbox dimension-rejection diagnostics (task 6081) ──────────────────────
+    // `bbox` with a non-Length corner returns a bare Value::Undef; this
+    // classifier is what turns that silence into a Severity::Error naming the
+    // builtin, the offending corner and the offending dimension.
+
+    fn make_point3_dim(dimension: DimensionVector) -> Value {
+        Value::Point(
+            [0.0, 1.0, 2.0]
+                .into_iter()
+                .map(|si_value| Value::Scalar {
+                    si_value,
+                    dimension,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn diagnose_bbox_angle_corners_errors_naming_angle() {
+        let min = make_point3_angle(0.0, 0.0, 0.0);
+        let max = make_point3_angle(1.0, 2.0, 3.0);
+        let diag = super::diagnose("bbox", &[min, max])
+            .expect("Angle-cornered bbox must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Error,
+            "a bbox dimension rejection is a construction failure, not a drop-and-continue"
+        );
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "must carry the canonical runtime dimension-rejection code"
+        );
+        assert!(
+            diag.message.contains("bbox"),
+            "message must name the builtin, got: {}",
+            diag.message
+        );
+        let angle_name = DimensionVector::ANGLE
+            .canonical_name()
+            .expect("ANGLE is a named dimension");
+        assert!(
+            diag.message.contains(angle_name),
+            "message must name the offending dimension {angle_name:?}, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("Length"),
+            "message must name the expected Length quantity, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_mass_corner_errors_naming_mass() {
+        // Length min + Mass max: the max corner is the offender.
+        let min = make_point3_min();
+        let max = make_point3_dim(DimensionVector::MASS);
+        let diag = super::diagnose("bbox", &[min, max])
+            .expect("Mass-cornered bbox must produce a diagnostic");
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        );
+        let mass_name = DimensionVector::MASS
+            .canonical_name()
+            .expect("MASS is a named dimension");
+        assert!(
+            diag.message.contains(mass_name),
+            "message must name the offending dimension {mass_name:?}, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_length_corners_returns_none() {
+        assert!(
+            super::diagnose("bbox", &[make_point3_min(), make_point3_max()]).is_none(),
+            "a valid metre-valued bbox must not produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_wrong_arity_returns_none() {
+        // Arity failures stay silent, matching the affine_scale/transform3
+        // convention: only the user-correctable dimension cause is explained.
+        assert!(super::diagnose("bbox", &[]).is_none());
+        assert!(super::diagnose("bbox", &[make_point3_angle(0.0, 0.0, 0.0)]).is_none());
+        assert!(
+            super::diagnose(
+                "bbox",
+                &[
+                    make_point3_angle(0.0, 0.0, 0.0),
+                    make_point3_angle(1.0, 2.0, 3.0),
+                    make_point3_angle(4.0, 5.0, 6.0),
+                ]
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_non_point_args_return_none() {
+        // Type failures stay silent too — only the dimension cause is explained.
+        assert!(super::diagnose("bbox", &[Value::Real(1.0), Value::Real(2.0)]).is_none());
+    }
+
+    /// A mixed-component corner is a QUANTITY failure, so it is explained rather
+    /// than left as a silent Undef — the same fault class as a uniformly-Angle
+    /// corner, just without one dimension to name.
+    #[test]
+    fn diagnose_bbox_mixed_dimension_corner_errors_naming_the_corner() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::ANGLE,
+            },
+            Value::length(3.0),
+        ]);
+        let diag = super::diagnose("bbox", &[min, make_point3_max()])
+            .expect("a mixed-dimension corner must produce a diagnostic, not a silent Undef");
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        );
+        assert!(
+            diag.message.contains("min argument expects Point3<Length>"),
+            "message must name the offending corner and the expected quantity, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("mixed component dimensions"),
+            "message must say WHY, without inventing a single quantity to blame, got: {}",
+            diag.message
+        );
+    }
+
+    /// A wrong-SHAPE corner must stay silent rather than be mislabelled as a
+    /// dimension failure.
+    ///
+    /// Before the shared decoder this reported `bbox: min argument expects
+    /// Point3<Length>, got Point3<Angle>` for a `Point2` argument — naming a
+    /// Point3 that does not exist, and blaming the dimension for what is really
+    /// an arity-of-components fault.
+    #[test]
+    fn diagnose_bbox_point2_corner_returns_none() {
+        let min = Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::ANGLE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::ANGLE,
+            },
+        ]);
+        assert!(
+            super::diagnose("bbox", &[min, make_point3_min()]).is_none(),
+            "a 2-component corner is a shape failure; a shape failure is not a dimension failure"
+        );
+    }
+
+    /// A non-numeric component is a shape failure too, and stays silent — it wins
+    /// the tie against the mixed-dimension reading it would otherwise produce.
+    #[test]
+    fn diagnose_bbox_non_numeric_corner_component_returns_none() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Bool(true),
+            Value::length(3.0),
+        ]);
+        assert!(super::diagnose("bbox", &[min, make_point3_max()]).is_none());
+    }
+
+    #[test]
+    fn diagnose_affine_scale_behaviour_survives_the_bbox_arm() {
+        // Guards the restructure of `diagnose`'s early-return guard into a
+        // `match name`: the affine_scale arm must be preserved verbatim.
+        let dimensioned = super::diagnose(
+            "affine_scale",
+            &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("dimensioned scale factor must still produce a diagnostic");
+        assert_eq!(dimensioned.severity, reify_core::Severity::Warning);
+        assert!(dimensioned.message.contains("dimensionless"));
+
+        let zero = super::diagnose(
+            "affine_scale",
+            &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("zero scale factor must still produce a diagnostic");
+        assert_eq!(zero.severity, reify_core::Severity::Warning);
+        assert!(zero.message.contains("degenerate"));
+
+        assert!(
+            super::diagnose(
+                "affine_scale",
+                &[Value::Real(2.0), Value::Real(1.0), Value::Real(0.5)],
+            )
+            .is_none()
+        );
+        // Wrong arity for affine_scale still stays silent.
+        assert!(super::diagnose("affine_scale", &[Value::Real(2.0)]).is_none());
     }
 
     // ── affine_compose tests (step-3 RED / step-4 GREEN) ──────────────────────

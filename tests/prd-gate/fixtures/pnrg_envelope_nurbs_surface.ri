@@ -1,0 +1,61 @@
+// Fixture: precision-nominal α (task 6166) — NURBS SURFACE probe (non-analytic
+// class; companion to pnrg_envelope_spline.ri, which keeps a swept Bezier as
+// its subject instead for an unrelated reason — see that fixture's header).
+//
+// Copies the pnrg_envelope_sphere.ri anchor layout.  READ THAT HEADER FIRST for
+// the OK trap and the validity assertion.
+//
+// `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree,
+// v_degree)` DOES realize and measure.  The control net below is a NESTED 3x3
+// u-major grid of `point3(...)` poles with nested per-row unit weights and
+// clamped knots [0,0,0,1,1,1] in both directions (u_degree = v_degree = 2) —
+// every pole must be a `point3(...)`, never a bare `[x,y,z]` list literal.  A
+// flat 9-element list of bare triples instead decodes as 9 ROWS, whose first
+// element is then read as a bare Scalar pole and rejected with a precise
+// per-pole diagnostic (see the mechanism history below).
+//
+// Full mechanism history — why an earlier flat-encoded probe's decode
+// rejection was misread as a kernel-capability gap, and why it wasn't one —
+// is in docs/notes/precision-refine-envelope-calibration.md §1.5, which is
+// the canonical record.  The d-ladder for this class is recorded there too
+// (§1.5, §1.1, §3.1) — landed via task #6545 (ticket
+// tkt_0RSV7JNW3WXWDSFJGRDMHDT63T).
+//
+// ── Reproduction ──
+//
+//   reify check tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri
+//
+// First measured 2026-08-24 at HEAD=2306e029ec — a commit on main, so it stays
+// checkout-able — via a /tmp scratch probe carrying this same control net; the
+// command above reproduces it from this committed fixture.  No sha is cited for
+// THAT run on purpose: until this file lands it exists only on a task branch,
+// and every amend or rebase orphans a branch-local sha (which has already
+// happened twice to this header).  EXCERPT of a longer transcript (elides the
+// leading `warning: constraint expression has type PnrgNurbsSurface, expected
+// Bool` line):
+//
+//     error: RepresentationWithin: sampled facet deviation 1.713e-2 m
+//     exceeds bound 1.000e-6 m for PnrgNurbsSurfaceCheck
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_nurbs_surface
+
+#precision(20mm)
+
+// Subject: a 3x3 nested-grid NURBS surface — the measurable nurbs_surface
+// alternative to pnrg_envelope_spline.ri's swept Bezier.
+structure PnrgNurbsSurface {
+    let g = nurbs_surface([[point3(0mm,0mm,0mm),point3(500mm,0mm,300mm),point3(1000mm,0mm,0mm)],
+                           [point3(0mm,500mm,300mm),point3(500mm,500mm,800mm),point3(1000mm,500mm,300mm)],
+                           [point3(0mm,1000mm,0mm),point3(500mm,1000mm,300mm),point3(1000mm,1000mm,0mm)]],
+                          [[1.0,1.0,1.0],[1.0,1.0,1.0],[1.0,1.0,1.0]],
+                          [0.0,0.0,0.0,1.0,1.0,1.0], [0.0,0.0,0.0,1.0,1.0,1.0], 2, 2)
+}
+
+// Checker: carries the read-out assertion.  `subject : PnrgNurbsSurface`
+// supplies the type name the achieved_repr_tol scan matches.
+structure PnrgNurbsSurfaceCheck {
+    param subject : PnrgNurbsSurface
+    constraint RepresentationWithin(subject, 0.001mm)
+}

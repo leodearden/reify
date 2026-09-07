@@ -149,9 +149,13 @@ pub enum Pattern {
     ///   (the cite parses but the id is absent from the DB).
     /// - **Inverse lane (task ζ)** — for each non-terminal task in the master
     ///   task DB, each `metadata.files` path absent from the tracked-file set
-    ///   is checked for git history: if history exists the path was deleted →
-    ///   `task-cites-deleted-path` (summary carries the task id, path, and last
-    ///   commit sha). Paths that never existed (presumed to-be-created) pass.
+    ///   is checked for git history. If history exists, the last-touching
+    ///   commit decides between two kinds: it RENAMED the path to a target
+    ///   still tracked at HEAD → `task-cites-renamed-path` (summary carries
+    ///   the task id, both paths, and the commit sha); otherwise the path was
+    ///   deleted → `task-cites-deleted-path` (summary carries the task id,
+    ///   path, and last commit sha). Paths that never existed (presumed
+    ///   to-be-created) pass.
     ///
     /// The liveness and inverse lanes degrade fail-soft together (§6.7): when
     /// the task DB is missing or unreadable both are skipped with a single stderr
@@ -366,11 +370,54 @@ pub trait GitOps {
     /// returned commits' diffs and does not depend on the order; future
     /// detectors that DO care about order must rely on this contract
     /// explicitly.
-    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit>;
+    ///
+    /// Fail-safe: an empty vec on any git error, so "git found nothing" and
+    /// "git failed" are indistinguishable. Callers for whom that collapse is
+    /// unsafe must use [`GitOps::try_log_grep`] — see its note.
+    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
+        self.try_log_grep(branch, pattern).unwrap_or_default()
+    }
 
-    /// `git diff --name-only <from>..<to>`. Returns the set of paths
-    /// changed between the two refs.
+    /// Fallible variant of [`GitOps::log_grep`]: `Ok(hits)` when git ran (an
+    /// empty vec meaning it genuinely matched nothing), `Err(description)`
+    /// when it did not run or failed.
+    ///
+    /// Exists because the crate's blanket fail-safe direction INVERTS on the
+    /// P5 pre-done gate. In the sweep an empty result converges on "no
+    /// finding"; at the gate it empties the rescue candidate list and so
+    /// converges on a BLOCKING refusal, making an unreadable pack or an fd
+    /// exhaustion under orchestrator load indistinguishable from a genuine
+    /// phantom-done. The gate feeds the `Err` into its advisory channel, which
+    /// downgrades the refusal to a non-blocking `Low`.
+    fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String>;
+
+    /// `git diff --name-only --no-renames <from>..<to>`. Returns the set of
+    /// paths changed between the two refs. Renames are reported as
+    /// delete + add (both sides), for the reason given on
+    /// [`GitOps::changed_paths_in_commit`].
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String>;
+
+    /// Returns the paths changed by commit `commit` itself, i.e.
+    /// `git diff --name-only <commit>^1..<commit>`. For a standard `--no-ff`
+    /// merge commit M (first parent M^1 = pre-merge main tip, result = M) this
+    /// is exactly the task's net delta. Deletions are reported like any other
+    /// change, and renames are reported as delete + add — the diff runs
+    /// `--no-renames`, so BOTH the old and the new path appear rather than
+    /// git's default of collapsing a detected rename to the destination alone.
+    /// That is load-bearing: a corroboration leg must be able to see the old
+    /// path, or a task declaring its pre-rename deliverable is refused for work
+    /// that did land. Fail-safe: returns an empty vec on any git error —
+    /// unreachable or recycled SHA, a root commit with no `^1`, or a non-repo.
+    ///
+    /// The `--name-only` sibling of [`GitOps::diff_added_lines_in_commit`], and
+    /// it exists for the same reason. `diff_changed_paths(main, X)` is
+    /// DEGENERATE once `X` is an ancestor of main: `main..X` is a two-point
+    /// TREE diff, so the paths the two trees agree on — which, post-merge, are
+    /// exactly the paths `X` introduced — are excluded by construction, and
+    /// what comes back is the reverse-delta of whatever landed after `X`. A
+    /// leg built on it can therefore never corroborate a landed task. Post-merge
+    /// the correct question is "what did this commit change".
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String>;
 
     /// `git check-ignore <path>` — true iff `path` is gitignored
     /// (or matches a negated rule that re-ignores).
@@ -380,8 +427,26 @@ pub trait GitOps {
     /// directory containing tracked files (git does not track empty dirs),
     /// equivalent to `git ls-tree <branch> -- <path>` returning non-empty.
     /// Used by P5's deliverable-presence rescue. Fail-safe: returns `false`
-    /// on any git error (missing repo/ref, unknown path).
-    fn path_tracked_on(&self, branch: &str, path: &str) -> bool;
+    /// on any git error (missing repo/ref, unknown path) — so "not tracked"
+    /// and "could not tell" are indistinguishable. Callers for whom that
+    /// collapse is unsafe must use [`GitOps::try_path_tracked_on`].
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
+        self.try_path_tracked_on(branch, path).unwrap_or(false)
+    }
+
+    /// Fallible variant of [`GitOps::path_tracked_on`]: `Ok(false)` means git
+    /// ran and the path does not resolve on `branch`; `Err(description)` means
+    /// git did not run or failed, and the question is UNANSWERED.
+    ///
+    /// Exists for the same inverted-fail-safe reason as
+    /// [`GitOps::try_log_grep`]. At the P5 pre-done gate a `false` from a
+    /// failed `git ls-tree` is read as "the declared deliverable is absent
+    /// from main", which is the first half of a blocking refusal — so a
+    /// transient (unreadable pack, fd exhaustion, index contention) would
+    /// refuse a legitimate done-flip. The gate routes the `Err` into its
+    /// advisory channel instead, downgrading the refusal to a non-blocking
+    /// `Low`.
+    fn try_path_tracked_on(&self, branch: &str, path: &str) -> Result<bool, String>;
 
     /// Returns the added lines in `git diff <from>..<to> -- <path>` as
     /// `(new_side_line_no, content)` pairs — one entry per `+` line in the
@@ -442,12 +507,42 @@ pub trait GitOps {
     /// exit, non-UTF-8 output) returns `None` rather than propagating an
     /// error, so the caller (ζ inverse lane) can treat "no history" and
     /// "git unavailable" identically — a git failure can never manufacture a
-    /// false-positive `task-cites-deleted-path` finding.
+    /// false-positive `task-cites-deleted-path` / `task-cites-renamed-path`
+    /// finding.
     ///
     /// Implementation note: uses [`LOG_GREP_FORMAT`] (`%H%x09%s`) and the
     /// same `splitn(2, '\t')` parse as [`log_grep`], keeping the two seam
     /// methods consistent.
     fn last_commit_for_path(&self, path: &str) -> Option<GitCommit>;
+
+    /// Equivalent of `git show -M --name-status --format= <sha>`: given a
+    /// commit that touched `path`, returns `Some(new_path)` iff that commit
+    /// RENAMED `path`, i.e. its name-status output carries an `R` line whose
+    /// old side is exactly `path`. Used by the ζ inverse lane to tell a
+    /// renamed-not-deleted `metadata.files` citation from a genuine deletion,
+    /// on the commit [`last_commit_for_path`](GitOps::last_commit_for_path)
+    /// already resolved.
+    ///
+    /// Fail-safe semantics — every one of these returns `None`, and `None`
+    /// means the caller keeps the unchanged `task-cites-deleted-path`
+    /// classification:
+    ///   1. No `R` line whose old side equals `path` (a genuine delete prints
+    ///      only `D\t<path>`; a modification prints `M\t<path>`).
+    ///   2. A **merge** commit: `git show` defaults to `--cc`, which prints no
+    ///      diff for a merge at all (measured), so a rename landed directly in
+    ///      a merge degrades to the deleted kind rather than being mislabelled.
+    ///   3. Any git error — spawn failure, non-zero exit (e.g. `fatal: bad
+    ///      object` from an unreachable/recycled sha).
+    ///   4. Non-UTF-8 output.
+    ///
+    /// So a git failure can never manufacture a false `task-cites-renamed-path`
+    /// finding; it can only ever cause a MISSED reclassification.
+    ///
+    /// Implementation note: `-M` is passed explicitly rather than relying on
+    /// git's `diff.renames` default, because a user or global
+    /// `diff.renames=false` would otherwise silently disable detection. Copies
+    /// (`C` status) are deliberately not resolved — only `-M` is passed.
+    fn rename_target_for_path(&self, path: &str, sha: &str) -> Option<String>;
 }
 
 /// Production [`GitOps`] impl that shells out to `git`. Untested by the
@@ -539,6 +634,40 @@ fn parse_added_lines(stdout: &str) -> Vec<(usize, String)> {
         }
     }
     result
+}
+
+/// Extract the rename TARGET of `old_path` from `git show -M --name-status
+/// --format= <sha>` stdout: the third TAB-separated field of the `R` line
+/// whose second field is exactly `old_path`.
+///
+/// Pure (no I/O) so the parse can be unit-tested against the measured real
+/// shapes; [`RealGitOps::rename_target_for_path`] supplies the stdout.
+///
+/// The only shape that yields `Some` is a status field of `R` followed by
+/// zero or more ASCII digits (git's similarity score, e.g. `R100`) whose OLD
+/// side matches. That exactness is the safety property: a bare
+/// `starts_with('R')` would let a future status letter false-match, and
+/// requiring the old side to match keeps the relation from being inverted
+/// (querying a rename's TARGET must not resolve).
+fn parse_rename_target(stdout: &str, old_path: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        let mut fields = line.split('\t');
+        // Status: `R` + similarity score (`R100`, `R087`); reject `D`, `M`,
+        // `A`, `C…`, and any hypothetical future `R`-prefixed letter.
+        let score = fields.next()?.strip_prefix('R')?;
+        if !score.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // Old side must be the cited path; new side is the answer.
+        if fields.next()? != old_path {
+            return None;
+        }
+        let new_path = fields.next()?;
+        if new_path.is_empty() {
+            return None;
+        }
+        Some(new_path.to_string())
+    })
 }
 
 impl RealGitOps {
@@ -685,36 +814,40 @@ impl RealGitOps {
     }
 
     /// Run a git command, emitting a `reify-audit:` breadcrumb on failure and
-    /// returning `None` so callers can `else { return vec![]; }` in one line.
+    /// PRESERVING the error description for callers that must distinguish
+    /// "git answered no" from "git failed".
+    ///
     /// `label` is the human-readable git subcommand used in the breadcrumb
     /// (e.g. `"log --grep"`, `"diff --name-only"`, `"diff"`).
+    fn run_warned(&self, label: &str, args: &[&str]) -> Result<String, String> {
+        self.run(args).map_err(|e| {
+            eprintln!(
+                "reify-audit: git {} failed in {}: {}",
+                label,
+                self.project_root.display(),
+                e
+            );
+            e
+        })
+    }
+
+    /// [`RealGitOps::run_warned`] with the error discarded, so callers can
+    /// `else { return vec![]; }` in one line. The breadcrumb is identical —
+    /// only the recoverable error string is dropped.
     fn run_or_warn(&self, label: &str, args: &[&str]) -> Option<String> {
-        match self.run(args) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!(
-                    "reify-audit: git {} failed in {}: {}",
-                    label,
-                    self.project_root.display(),
-                    e
-                );
-                None
-            }
-        }
+        self.run_warned(label, args).ok()
     }
 }
 
 impl GitOps for RealGitOps {
-    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
-        let Some(stdout) = self.run_or_warn("log --grep", &[
+    fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String> {
+        let stdout = self.run_warned("log --grep", &[
             "log",
             branch,
             &format!("--grep={}", pattern),
             &format!("--format={}", LOG_GREP_FORMAT),
-        ]) else {
-            return vec![];
-        };
-        stdout
+        ])?;
+        Ok(stdout
             .lines()
             .filter_map(|l| {
                 let mut parts = l.splitn(2, '\t');
@@ -722,13 +855,56 @@ impl GitOps for RealGitOps {
                 let subject = parts.next().unwrap_or("").to_string();
                 Some(GitCommit { sha, subject })
             })
-            .collect()
+            .collect())
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
+        // `--no-renames`: see `changed_paths_in_commit` below for the full
+        // rationale. This seam has the identical exposure — it is the arm
+        // `changed_paths_for_claim` takes for the un-landed branch-tip case.
         let Some(stdout) = self.run_or_warn(
             "diff --name-only",
-            &["diff", "--name-only", &format!("{}..{}", from, to)],
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                &format!("{}..{}", from, to),
+            ],
+        ) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        // Goes through run_or_warn (not Command::output directly) so the
+        // single-RealGitOps-instance breadcrumb dedup stays intact.
+        //
+        // `--no-renames` is load-bearing, not cosmetic. `diff.renames` has
+        // defaulted to true since git 2.9 and this repo sets no override, so a
+        // detected rename collapses to the DESTINATION path alone and the
+        // source vanishes from the listing. The consumers of this seam only
+        // ever SUBTRACT from the pre-done gate's "absent from main" set, so a
+        // task declaring its pre-rename path would find that path neither
+        // tracked on main (renamed away) nor in its landing commit's delta
+        // (detection hid it) — a refused flip for work that did land. Widening
+        // a rename back to both paths cannot manufacture a refusal, and it
+        // cannot over-accept either: the rename really did touch both.
+        //
+        // Scope boundary: `diff_added_lines_in_commit` deliberately does NOT
+        // take this flag — see its own comment.
+        let Some(stdout) = self.run_or_warn(
+            "diff --name-only",
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                &format!("{}^1..{}", commit, commit),
+            ],
         ) else {
             return vec![];
         };
@@ -806,11 +982,9 @@ impl GitOps for RealGitOps {
         }
     }
 
-    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
-        match self.run_or_warn("ls-tree", &["ls-tree", branch, "--", path]) {
-            Some(stdout) => !stdout.trim().is_empty(),
-            None => false,
-        }
+    fn try_path_tracked_on(&self, branch: &str, path: &str) -> Result<bool, String> {
+        self.run_warned("ls-tree", &["ls-tree", branch, "--", path])
+            .map(|stdout| !stdout.trim().is_empty())
     }
 
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
@@ -852,6 +1026,12 @@ impl GitOps for RealGitOps {
         //   - M^1 = pre-merge main tip
         //   - M   = merged result
         // This yields exactly the task's net delta on `path`.
+        //
+        // Deliberately NOT `--no-renames`, unlike the two `--name-only` path
+        // listing seams above. This is a pathspec-scoped CONTENT diff on P2's
+        // provenance path, not on the pre-done gate path, and `--no-renames`
+        // here would re-render a pure move as a whole-file add — a behaviour
+        // change with no defect behind it. Do not "finish the job".
         let range = format!("{}^1..{}", commit, commit);
         let Some(stdout) = self.run_or_warn(
             "diff (commit)",
@@ -905,6 +1085,20 @@ impl GitOps for RealGitOps {
         let subject = parts.next().unwrap_or("").to_string();
         Some(GitCommit { sha, subject })
     }
+
+    fn rename_target_for_path(&self, path: &str, sha: &str) -> Option<String> {
+        // `git show -M --name-status --format= <sha>` prints one status line
+        // per path the commit touched, with rename detection ON. `--format=`
+        // suppresses the commit header so only status lines remain, and `-M`
+        // is explicit so a user/global `diff.renames=false` cannot silently
+        // disable detection. run_or_warn returns None on any git failure →
+        // fail-safe (the caller keeps `task-cites-deleted-path`).
+        let stdout = self.run_or_warn(
+            "show -M --name-status",
+            &["show", "-M", "--name-status", "--format=", sha],
+        )?;
+        parse_rename_target(&stdout, path)
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -921,14 +1115,23 @@ impl GitOps for RealGitOps {
 pub struct MockGitOps {
     log_grep: HashMap<(String, String), Vec<GitCommit>>,
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
+    changed_paths_in_commit: HashMap<String, Vec<String>>,
     is_gitignored: HashMap<String, bool>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
+    /// Simulated `git ls-tree` FAILURES, keyed like `path_tracked_on`. An
+    /// entry here makes `try_path_tracked_on` return `Err`, which is a
+    /// different observation from `Ok(false)` — see
+    /// [`GitOps::try_path_tracked_on`].
+    path_tracked_on_errors: HashMap<(String, String), String>,
+    /// Simulated `git log --grep` FAILURES, keyed like `log_grep`.
+    log_grep_errors: HashMap<(String, String), String>,
     is_ancestor: HashMap<(String, String), bool>,
     ls_files: Vec<String>,
     last_commit_for_path: HashMap<String, GitCommit>,
+    rename_target_for_path: HashMap<(String, String), String>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -973,6 +1176,27 @@ impl MockGitOps {
             .insert((branch.to_string(), path.to_string()), present);
     }
 
+    /// Make `git ls-tree <branch> -- <path>` FAIL rather than answer.
+    ///
+    /// Distinct from `set_path_tracked_on(.., false)`: that is git answering
+    /// "not tracked", this is git not answering at all. The P5 pre-done gate
+    /// must not build a blocking refusal on the latter.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_path_tracked_on_error(&mut self, branch: &str, path: &str, err: &str) {
+        self.path_tracked_on_errors
+            .insert((branch.to_string(), path.to_string()), err.to_string());
+    }
+
+    /// Make `git log <branch> --grep=<pattern>` FAIL rather than answer.
+    ///
+    /// Distinct from `set_log_grep(.., vec![])`: that is git answering "no
+    /// matching commits", this is git not answering at all.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_log_grep_error(&mut self, branch: &str, pattern: &str, err: &str) {
+        self.log_grep_errors
+            .insert((branch.to_string(), pattern.to_string()), err.to_string());
+    }
+
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_is_ancestor(&mut self, commit: &str, branch: &str, ancestor: bool) {
         self.is_ancestor
@@ -988,6 +1212,11 @@ impl MockGitOps {
     ) {
         self.diff_added_lines_in_commit
             .insert((commit.to_string(), path.to_string()), added);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_changed_paths_in_commit(&mut self, commit: &str, paths: Vec<String>) {
+        self.changed_paths_in_commit.insert(commit.to_string(), paths);
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -1010,20 +1239,34 @@ impl MockGitOps {
     pub fn set_last_commit_for_path(&mut self, path: &str, commit: GitCommit) {
         self.last_commit_for_path.insert(path.to_string(), commit);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_rename_target_for_path(&mut self, path: &str, sha: &str, target: &str) {
+        self.rename_target_for_path
+            .insert((path.to_string(), sha.to_string()), target.to_string());
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl GitOps for MockGitOps {
-    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
-        self.log_grep
-            .get(&(branch.to_string(), pattern.to_string()))
-            .cloned()
-            .unwrap_or_default()
+    fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String> {
+        let key = (branch.to_string(), pattern.to_string());
+        if let Some(err) = self.log_grep_errors.get(&key) {
+            return Err(err.clone());
+        }
+        Ok(self.log_grep.get(&key).cloned().unwrap_or_default())
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
         self.diff_changed_paths
             .get(&(from.to_string(), to.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        self.changed_paths_in_commit
+            .get(commit)
             .cloned()
             .unwrap_or_default()
     }
@@ -1053,11 +1296,12 @@ impl GitOps for MockGitOps {
             .unwrap_or_default()
     }
 
-    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
-        self.path_tracked_on
-            .get(&(branch.to_string(), path.to_string()))
-            .copied()
-            .unwrap_or(false)
+    fn try_path_tracked_on(&self, branch: &str, path: &str) -> Result<bool, String> {
+        let key = (branch.to_string(), path.to_string());
+        if let Some(err) = self.path_tracked_on_errors.get(&key) {
+            return Err(err.clone());
+        }
+        Ok(self.path_tracked_on.get(&key).copied().unwrap_or(false))
     }
 
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
@@ -1073,6 +1317,12 @@ impl GitOps for MockGitOps {
 
     fn last_commit_for_path(&self, path: &str) -> Option<GitCommit> {
         self.last_commit_for_path.get(path).cloned()
+    }
+
+    fn rename_target_for_path(&self, path: &str, sha: &str) -> Option<String> {
+        self.rename_target_for_path
+            .get(&(path.to_string(), sha.to_string()))
+            .cloned()
     }
 }
 
@@ -1386,4 +1636,86 @@ pub(crate) fn is_symbol_suppressed(symbol: &ChangedSymbol) -> bool {
             .g_allow_marker
             .as_deref()
             .is_some_and(|r| !r.trim().is_empty())
+}
+
+// -----------------------------------------------------------------------
+// Unit tests — pure parse helpers
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::parse_rename_target;
+
+    /// The measured single-rename shape: `git show -M --name-status --format=`
+    /// prints `R<score>\t<old>\t<new>`.
+    #[test]
+    fn parse_rename_target_matches_measured_rename_line() {
+        let stdout = "R100\told.rs\tsub/new.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "old.rs"),
+            Some("sub/new.rs".to_string()),
+            "an R line whose old side matches must yield the new side",
+        );
+    }
+
+    /// Modelled on 60be72d922, whose measured shape has the rename line NOT
+    /// first (one unrelated `A` line precedes it), so the scan must not stop at
+    /// the first non-`R` line. The preceding lines here are synthetic — the
+    /// property under test is the position of the `R` line, not the exact
+    /// neighbours that commit happens to carry.
+    #[test]
+    fn parse_rename_target_finds_rename_after_other_status_lines() {
+        let stdout = "A\tcrates/reify-compiler/tests/harness_doc_chunks/mod.rs\n\
+                      M\tcrates/reify-compiler/src/lib.rs\n\
+                      R100\tcrates/reify-compiler/tests/geometry_chunk_smoke.rs\tcrates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "crates/reify-compiler/tests/geometry_chunk_smoke.rs"),
+            Some(
+                "crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs"
+                    .to_string()
+            ),
+            "a rename line preceded by A/M lines must still be found",
+        );
+    }
+
+    /// A genuine delete prints only `D\t<path>` lines — the fail-safe path that
+    /// keeps `task-cites-deleted-path` unchanged.
+    #[test]
+    fn parse_rename_target_delete_only_output_is_none() {
+        let stdout = "D\tdoomed.rs\nD\tcrates/other.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "doomed.rs"),
+            None,
+            "a delete-only commit must not resolve a rename target",
+        );
+    }
+
+    /// An `R` line for a DIFFERENT path must not match: the old side is the
+    /// key, so the relation can never be inverted or cross-wired.
+    #[test]
+    fn parse_rename_target_other_path_rename_is_none() {
+        let stdout = "R100\tunrelated.rs\tsub/unrelated.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "old.rs"),
+            None,
+            "an R line whose old side is a different path must not match",
+        );
+        assert_eq!(
+            parse_rename_target(stdout, "sub/unrelated.rs"),
+            None,
+            "querying the rename TARGET as if it were the source must not match",
+        );
+    }
+
+    /// Empty stdout — the measured MERGE-commit shape (`git show` defaults to
+    /// `--cc`, which prints no diff for a merge) and the empty-output case in
+    /// general.
+    #[test]
+    fn parse_rename_target_empty_stdout_is_none() {
+        assert_eq!(
+            parse_rename_target("", "old.rs"),
+            None,
+            "empty stdout (e.g. a merge commit) must not resolve a rename target",
+        );
+    }
 }

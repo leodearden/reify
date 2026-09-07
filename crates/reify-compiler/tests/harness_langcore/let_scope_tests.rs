@@ -719,7 +719,7 @@ fn multiple_geometry_lets_all_produce_realizations() {
     param h: Length = 10mm
     let base = cylinder(r, h)
     let pattern = circular_pattern(base, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)
-    let mirrored = mirror(base, 0, 0, 0, 0, 1, 0)
+    let mirrored = mirror(base, 0mm, 0mm, 0mm, 0, 1, 0)
 }"#;
     let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
@@ -866,7 +866,7 @@ fn mirror_let_bound_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = mirror(hole, 0, 0, 0, 0, 1, 0)
+    let result = mirror(hole, 0mm, 0mm, 0mm, 0, 1, 0)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];

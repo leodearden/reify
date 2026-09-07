@@ -42,6 +42,39 @@ use task_json::{done_task_fixture, task_fixture};
 // Fixture helpers
 // -----------------------------------------------------------------------
 
+/// [`task_fixture`] with a caller-controlled `files` list.
+///
+/// [`task_fixture`] hardcodes `files: ["crates/reify-audit/src/lib.rs"]`, which
+/// is tracked on main and therefore always corroborates. The pre-done landing
+/// tests need the declared deliverable set to be the variable under test.
+fn task_fixture_with_files(
+    task_id: &str,
+    status: &str,
+    kind: Option<&str>,
+    commit: Option<&str>,
+    files: &[&str],
+) -> serde_json::Value {
+    let mut v = task_fixture(task_id, status, kind, commit);
+    v["files"] = serde_json::json!(files);
+    v
+}
+
+/// Absolute path to this workspace's git repository root.
+///
+/// `CARGO_MANIFEST_DIR` is `<root>/crates/reify-audit`, so two levels up is the
+/// worktree root. Tests that exercise `path_tracked_on` must point
+/// `--project-root` at a REAL git repo — a bare `tempfile::tempdir()` is not one,
+/// so every `git ls-tree` there fails and `path_tracked_on` fail-safes to
+/// `false` for every path, which would make an "absent from main" assertion
+/// vacuously true.
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("canonicalize repo root from CARGO_MANIFEST_DIR/../..")
+}
+
 /// Write tasks.json with the given task fixtures to `dir/tasks.json`.
 fn write_tasks_json(dir: &Path, tasks: &[serde_json::Value]) -> std::path::PathBuf {
     let path = dir.join("tasks.json");
@@ -269,6 +302,411 @@ mod cli {
             stdout.contains("3242"),
             "stdout summary must mention task 3242\nstdout: {}",
             stdout
+        );
+    }
+
+    /// The pre-done gate must REFUSE a done-flip whose declared deliverable is
+    /// absent from main, in the state the hook ACTUALLY sees: pre-transition
+    /// status and no persisted `done_provenance`.
+    ///
+    /// Why that is the real state: fused-memory's `task_interceptor.py` fires
+    /// the hook at step "2d" BEFORE the write, so the live `get_task` returns
+    /// "in-progress"/"review" (never "done"), and `done_provenance` is only
+    /// accumulated in the interceptor's in-memory `audit_fields` — it is not
+    /// persisted until after the hook returns. The upstream hook template
+    /// (`middleware/pre_done_hook.py`) substitutes only `{id}`, with no env
+    /// injection and no stdin, so the subprocess receives no task state beyond
+    /// the id. A gate that requires either signal is structurally unable to
+    /// fire on the transition it exists to guard.
+    ///
+    /// The control tasks pin the other two directions: a task with no declared
+    /// deliverable (research / ops / escalation work) must never be refused,
+    /// and a task whose deliverable IS on main must pass cleanly.
+    ///
+    /// Control (c) is what makes (a) non-vacuous. `path_tracked_on` fail-safes
+    /// to `false` on ANY git error, so (a)'s refusal would still be asserted if
+    /// `git ls-tree main` were broken for every path in this environment
+    /// (missing `main` ref, sanitised `GIT_DIR`, shallow checkout) — and (b)
+    /// returns before any git call at all. (c) fails loudly the moment real git
+    /// stops resolving `main`, which is the property `repo_root()`'s doc
+    /// comment claims but nothing previously pinned.
+    #[test]
+    fn pre_done_gate_refuses_unlanded_task_without_provenance() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![
+            // (a) unlanded deliverable — must be refused.
+            task_fixture_with_files(
+                "63451",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit-ghost/src/lib.rs"],
+            ),
+            // (b) control: no declared deliverable — must flip freely.
+            task_fixture_with_files("63452", "in-progress", None, None, &[]),
+            // (c) positive control: a deliverable that IS tracked on main.
+            task_fixture_with_files(
+                "63453",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit/src/lib.rs"],
+            ),
+        ];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |task_id: &str| {
+            Command::new(bin)
+                .args([
+                    "--task",
+                    task_id,
+                    "--pre-done",
+                    "--tasks-file",
+                    tasks_file.to_str().unwrap(),
+                    "--runs-db",
+                    runs_db.to_str().unwrap(),
+                    "--project-root",
+                    root.to_str().unwrap(),
+                ])
+                .output()
+                .expect("invoke reify-audit --pre-done")
+        };
+
+        // (a) The refusal.
+        let out = run("63451");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            p5_high.is_some(),
+            "pre-done gate must emit P5PhantomDone/High/63451 for a deliverable \
+             absent from main; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        let code = out.status.code().unwrap_or(1);
+        assert!(
+            code >= 1,
+            "pre-done gate must exit non-zero (refusing the done-flip); got {}\n\
+             stdout: {}\nstderr: {}",
+            code,
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (b) The control: no deliverable declared → nothing to corroborate.
+        let out = run("63452");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a task with an empty metadata.files must never be refused; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "empty-files control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (c) The positive control: this file is tracked on main, so the
+        // healthy-flip leg must close the gate WITHOUT reaching any rescue.
+        // If real git ever stops resolving `main` here, this is the assertion
+        // that fails — which is precisely what keeps (a) honest.
+        let out = run("63453");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a deliverable tracked on main must pass the pre-done gate cleanly — a \
+             finding here means `git ls-tree {} -- crates/reify-audit/src/lib.rs` did \
+             not resolve, which would also make case (a)'s refusal vacuous; got:\n{:#}",
+            "main",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "tracked-on-main control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY` is scoped to the pre-done landing
+    /// refusal ONLY — it must never mute a sweep High.
+    ///
+    /// The break-glass exists so an operator can soak a fail-closed gate
+    /// without a red-tier fused-memory restart. If it leaked into the sweep it
+    /// would become a general P5 mute, silently disarming the phantom-done
+    /// detector for every task on the box that inherits the env var.
+    #[test]
+    fn pre_done_warn_only_env_does_not_mute_sweep_high() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A done/merged task with an empty `events` table: the classic sweep
+        // High, reached through the provenance path, not the pre-done leg.
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "3242",
+                "--pattern",
+                "P5",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1")
+            .output()
+            .expect("invoke reify-audit sweep with the break-glass set");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            high.is_some(),
+            "the pre-done break-glass must not downgrade a SWEEP High — that would \
+             make it a general P5 mute; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(0) >= 1,
+            "a sweep High must still exit non-zero with the break-glass set; got {:?}\n\
+             stdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY=1` makes the pre-done refusal advisory:
+    /// the finding is still emitted, at Low, and the exit code drops to 0.
+    ///
+    /// Why the hatch exists: this gate is fail-closed production infrastructure
+    /// that had never emitted a finding before this task. Without an escape
+    /// hatch, an operator hit by a misfire must edit
+    /// `~/.config/systemd/user/fused-memory.service` and restart fused-memory —
+    /// a red-tier restart under a dirty-start guard. Mirrors the house
+    /// `REIFY_MAIN_GATE_BYPASS` / `REIFY_STASH_GUARD_BYPASS` convention.
+    ///
+    /// This must be a subprocess test, not a library one: `std::env::set_var`
+    /// is process-global and would race sibling tests under `cargo test`'s
+    /// thread-per-test model (the same hazard `tests/common/git_env.rs`
+    /// documents at length for `GIT_DIR`).
+    #[test]
+    fn pre_done_warn_only_env_downgrades_refusal_to_low() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![task_fixture_with_files(
+            "63451",
+            "in-progress",
+            None,
+            None,
+            &["crates/reify-audit-ghost/src/lib.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |warn_only: bool| {
+            let mut cmd = Command::new(bin);
+            cmd.args([
+                "--task",
+                "63451",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                root.to_str().unwrap(),
+            ]);
+            if warn_only {
+                cmd.env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1");
+            } else {
+                cmd.env_remove("REIFY_AUDIT_PREDONE_WARN_ONLY");
+            }
+            cmd.output().expect("invoke reify-audit --pre-done")
+        };
+
+        // Break-glass active: advisory.
+        let out = run(true);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let low = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        let low = low.unwrap_or_else(|| {
+            panic!(
+                "warn-only must PRESERVE the finding, only drop its blocking effect; \
+                 got:\n{:#}",
+                serde_json::Value::Array(findings.clone())
+            )
+        });
+        assert_eq!(
+            low["severity"].as_str(),
+            Some("Low"),
+            "warn-only must downgrade the refusal to Low; got:\n{:#}",
+            low
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "warn-only must exit 0 (the exit code counts Highs)\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // Default is ARMED.
+        let out = run(false);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            high.is_some(),
+            "without the env var the gate must stay ARMED (High); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(1) >= 1,
+            "armed default must exit non-zero; got {:?}",
+            out.status.code()
+        );
+    }
+
+    /// The pre-done gate must ACCEPT a task whose declared deliverable was
+    /// RENAMED away by its own landing commit.
+    ///
+    /// This is the end-to-end half of
+    /// `changed_paths_in_commit_reports_both_sides_of_a_rename`: that test pins
+    /// the seam's return value, this one pins the GATE's verdict — the thing
+    /// that was actually broken. A seam-only guard would still let a future
+    /// change reintroduce the false refusal somewhere between the seam and
+    /// `check_pre_done_landing`.
+    ///
+    /// The shape mirrors the reported reproduction exactly: `a/old.rs` on main,
+    /// a branch that `git mv`s it to `a/new.rs`, merged `--no-ff`, and a task
+    /// declaring BOTH paths with no `done_provenance`. `a/old.rs` is not tracked
+    /// on main (it was renamed away), so the deletion/rename rescue is the only
+    /// leg that can corroborate it, and with rename detection on the landing
+    /// commit's delta reports `a/new.rs` alone — producing
+    /// `[High] P5PhantomDone task=9911: … neither tracked on main nor covered by
+    /// a task-referencing commit's own delta` with evidence
+    /// `MetadataFiles { entries: ["a/old.rs"] }` and exit 1.
+    ///
+    /// Two fixture details are load-bearing. The merge subject must reference
+    /// the id with non-digit neighbours (`task/9911 ` — a `/` and a space) or
+    /// the digit-boundary filter in `task_referencing_commits` drops the hit and
+    /// the test would go red for the wrong reason. And `--project-root` must be
+    /// the temp repo — a REAL git repo, per `repo_root()`'s doc comment — or
+    /// every `git ls-tree` fails, `path_tracked_on` fail-safes to `false` for
+    /// `a/new.rs` too, and the scenario stops being a rename scenario.
+    #[test]
+    fn pre_done_gate_accepts_rename_task_via_landing_commit() {
+        let repo_tmp = tempfile::tempdir().expect("create repo tempdir");
+        let repo = repo_tmp.path();
+        let run = |args: &[&str]| {
+            let status = common::git_env::git_cmd(repo)
+                .args(args)
+                .status()
+                .expect("git command failed to spawn");
+            assert!(status.success(), "git {:?} exited {:?}", args, status.code());
+        };
+
+        run(&["init", "--initial-branch=main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+
+        std::fs::create_dir_all(repo.join("a")).expect("create a/");
+        std::fs::write(repo.join("a/old.rs"), "fn task() {}\n").expect("write a/old.rs");
+        run(&["add", "."]);
+        run(&["commit", "-m", "base: add a/old.rs"]);
+
+        run(&["checkout", "-b", "feat"]);
+        run(&["mv", "a/old.rs", "a/new.rs"]);
+        run(&["commit", "-m", "feat: move old.rs to new.rs"]);
+        run(&["checkout", "main"]);
+        run(&["merge", "--no-ff", "-m", "Merge task/9911 into main", "feat"]);
+
+        // tasks.json and runs.db live OUTSIDE the repo so the fixture repo's
+        // tree stays exactly the two commits above.
+        let data_tmp = tempfile::tempdir().expect("create data tempdir");
+        let dir = data_tmp.path();
+        let tasks = vec![task_fixture_with_files(
+            "9911",
+            "in-progress",
+            None,
+            None,
+            &["a/old.rs", "a/new.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9911",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                repo.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 9911 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5 = findings
+            .iter()
+            .find(|f| f["pattern"].as_str() == Some("P5PhantomDone"));
+        assert!(
+            p5.is_none(),
+            "a deliverable renamed away by the task's own landing commit must not be \
+             refused — the rename really did touch both paths; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the rename flip must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
         );
     }
 

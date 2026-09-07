@@ -3952,7 +3952,12 @@ describe('reify.grammar snippets — joint definitions', () => {
  * ledger movement would ever reveal it if they did not.
  */
 describe('reify.grammar snippets — `·` as unit multiplication', () => {
-  // Corpus-attested VERBATIM: tests/prd-gate/fixtures/unit_middot_mul.ri:25.
+  // Corpus-attested VERBATIM: the `torque_like` binding of
+  // tests/prd-gate/fixtures/unit_middot_mul.ri. Cited by BINDING NAME, not by
+  // line: task #5784 refreshed that fixture's header and shifted every line
+  // number, and verify.sh's _RUST_COUPLED_RI_FIXTURES comment records why the
+  // repo avoids file:line citations — nothing validates them and they rot on
+  // the first edit.
   it('parses a middot-composed unit', () => {
     const src = 'structure def S { let torque_like = 5N·m }';
     expect(countErrorNodes(src)).toBe(0);
@@ -3960,7 +3965,7 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
   });
 
   /**
-   * :26. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
+   * The `with_div` binding. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
    * so the wrong tree — one quantity divided by an identifier — would also
    * reach 0 errors and an error count alone would sail past it.
    */
@@ -3970,7 +3975,10 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
     expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
   });
 
-  // :27 — `·` composed with `^` and a negative exponent, in one literal.
+  // The `composed` binding — `·` composed with `^` and a negative exponent, in
+  // one literal. Cited by BINDING NAME for the same reason as its two siblings
+  // above: the fixture's line numbers moved under #5784 and nothing validates a
+  // file:line cite.
   it('composes middots with unit exponents', () => {
     const src = 'structure def S { let composed = 5m^2·kg·s^-2 }';
     expect(countErrorNodes(src)).toBe(0);
@@ -4757,11 +4765,13 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // WHY THE LAST THREE FILES REMAIN — one line each, because "27 short of the
 // corpus" is not a finding and "which three, and whose" is:
 //
-//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references,
-//   - stdlib_ns_qualified_type.ri  ) OWNED BY TASK #5495 (pending; verified at
-//     the time of writing). Its own file list already covers this grammar, the
-//     dedicated reifyGrammarQualifiedRef test, and both of these fixtures. Left
-//     deliberately: duplicating it here would collide with that task.
+//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references.
+//   - stdlib_ns_qualified_type.ri  ) LANDED by #5495 μ, which round 4 named as
+//     the only inheritable work IT HAD IDENTIFIED. Both are now in the ledger
+//     below. The node shapes the two new productions must produce — and the
+//     controls they must not disturb — are pinned in
+//     reifyGrammarQualifiedRef.test.ts, the file that task owns; this ledger
+//     records only that the two fixtures parse clean.
 //   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
 //     and `param` is not a top-level declaration in tree-sitter's
 //     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
@@ -4771,9 +4781,28 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //     pinned above: the member-position arrow type IS clean, and the top-level
 //     `param` MUST error.
 //
-// So the only inheritable work left in this ledger is #5495's, and it is
-// already assigned. A future round adding a family should extend the arithmetic
-// above rather than start a fresh block.
+// THE ARITHMETIC ABOVE IS INHERITED AND ITS DENOMINATOR IS STALE. Every "of
+// 330" in this block dates from an earlier round's corpus inventory; #5495 μ
+// re-measured it through this test's own walk and `countErrorNodes`, and the
+// corpus is bigger than the block assumes:
+//
+//     361 committed .ri under CORPUS_ROOTS · 358 parse clean · 329 pinned below
+//
+// So arrow_type.ri is NOT the only un-pinned file: 29 currently-clean files sit
+// outside the ratchet — examples/best_practices/angle_crossings.ri, the ten
+// tests/prd-gate/fixtures/pnrg_envelope_*.ri, compose_fn_field_resolves.ri and
+// the rest. That gap is real inheritable work and is the reason this comment no
+// longer claims completeness: a grammar change could regress any of those 29
+// and the ledger — the artifact whose whole purpose is catching exactly that —
+// would stay green.
+//
+// DO NOT RE-STATE THOSE THREE NUMBERS AS THE NEW TRUTH. They were measured on
+// 2026-08-23 and go stale the next time anyone adds a `.ri`, which is how the
+// "330" above rotted in the first place. The LIVE arithmetic is printed by this
+// test's own failure message (`measured N clean of M …; K clean files are not
+// pinned`); to see it on demand, read those three counts off a run rather than
+// off this comment. A future round adding a family should shrink the 29 and
+// leave the counting to the test.
 //
 // AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
 // reasoning for every change above — why `ekw<>` and not `kw<>`, why the
@@ -4809,8 +4838,9 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. #5950 turned that ratchet to 327 of 330; the 327 entries below
-// are now exactly the clean set, so the next gain is #5495's two fixtures.
+// addition here. #5950 turned that ratchet to 327 entries; #5495 μ added its two
+// fixtures. The entries below are a SUBSET of the clean set, not the whole of
+// it — see the re-measured arithmetic above and the 29-file gap it names.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
@@ -5130,6 +5160,8 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri',
   'tests/prd-gate/fixtures/stdlib_ns_std_nonexistent_import.ri',
   'tests/prd-gate/fixtures/stdlib_units_import_resolves.ri',
   'tests/prd-gate/fixtures/subbody_objective_ignored.ri',
@@ -5191,12 +5223,20 @@ describe('reify.grammar — corpus drift ledger', () => {
     const stillPresent = EXPECTED_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
     const regressed = stillPresent.filter((p) => !cleanSet.has(p));
 
+    // Clean but NOT pinned — the ledger's blind spot, reported alongside the
+    // regression list so the coverage gap is always a measured number rather
+    // than a prose claim that goes stale (#5495 μ; the comment block above used
+    // to assert completeness it did not have).
+    const pinnedSet = new Set(EXPECTED_CLEAN);
+    const unpinnedClean = [...cleanSet].filter((p) => !pinnedSet.has(p));
+
     expect(
       regressed,
       `These committed .ri files parsed with zero error nodes but no longer do — ` +
         `the grammar regressed:\n${regressed.map((p) => `  ${p}`).join('\n')}\n` +
         `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
-        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk)`,
+        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk; ` +
+        `${unpinnedClean.length} clean files are not pinned by this ledger)`,
     ).toEqual([]);
   }, LEDGER_TIMEOUT_MS);
 });

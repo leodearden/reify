@@ -202,10 +202,12 @@ structure def TensegritySurface {
 //   nodes           — solved node coordinates, one Point per Tensegrity node in
 //                     the original node order (anchors unchanged; free nodes at
 //                     their force-density equilibrium positions).
-//   member_forces   — per-member axial force Nᵢ = qᵢ·Lᵢ on the solved geometry.
-//                     Tension (cables) is positive, compression (struts) is
-//                     negative. Ordered struts-then-cables, matching
-//                     `tensegrity_wires` and the `force_densities` input.
+//   member_forces   — per-member axial force Nᵢ = qᵢ · Lᵢ · q_ref on the solved
+//                     geometry, where q_ref is the unit reference force density
+//                     (see "Dimensional bridge" below). Tension (cables) is
+//                     positive, compression (struts) negative. Ordered
+//                     struts-then-cables, matching `tensegrity_wires` and the
+//                     `force_densities` input.
 //   force_densities — echo of the input force densities (struts-then-cables
 //                     order), so downstream consumers need not thread the input
 //                     list separately.
@@ -221,6 +223,56 @@ structure def TensegritySurface {
 //                     (non-Undef) only when the structure carries surfaces;
 //                     otherwise an empty list (NEVER Undef) on the line-only path.
 //                     (γ / NFDM surfaces.)
+//
+// Dimensional bridge (adjudicated, task #6095):
+//
+//   `member_forces : List<Force>` sits beside `force_densities : List<Real>`:
+//   the asymmetry is deliberate, and this is what it rests on.
+//
+//   `force_densities` is genuinely DIMENSIONLESS, and that ruling stands (the
+//   dimension-checked-readers PRD's "deliberately bare" Leg B). D is linear in
+//   q, so q → λq leaves the solved geometry identical: anchored, both sides of
+//   `D_ff x_f = −D_fa x_a` pick up the same λ and it cancels; free-standing,
+//   the null-space of D is unchanged. The qᵢ are therefore nullity-invariant
+//   RELATIVE ratios, carrying no absolute scale of their own.
+//
+//   But Nᵢ = qᵢ·Lᵢ scales LINEARLY with λ. Member forces are a gauge-DEPENDENT
+//   output of a gauge-FREE input, and no such output is a Force at all until a
+//   dimensioned reference fixes the gauge.
+//
+//   The solver's gauge is the UNIT reference force density q_ref ≡ 1 N/m: the
+//   qᵢ are read as force densities in newtons per metre, so
+//
+//       Nᵢ = qᵢ · Lᵢ · q_ref
+//
+//   is Force-dimensioned and `member_forces : List<Force>` is exact.
+//   Concretely, the trampoline (crates/reify-eval/src/compute_targets/
+//   form_find.rs) tags the SI number qᵢ·Lᵢ(m) as newtons — that tagging IS the
+//   choice q_ref = 1 N/m.
+//
+//   Consequence for authors: only RELATIVE force magnitudes across members are
+//   physically meaningful. Rescaling the WHOLE gauge — every qᵢ AND every σ_T —
+//   by λ rescales every member force by λ and moves no node; on the line-only
+//   path σ is empty, so that reduces to scaling q alone. Scaling q while holding
+//   σ FIXED is not a gauge change at all: it shifts the q/σ balance in the
+//   assembly below, so the free nodes move and the forces do not merely scale.
+//   To reach a specific design force level, scale the whole gauge; there is no
+//   absolute-units knob to reach for.
+//
+//   That covariance is EXACT on the line-only path, where D is assembled once
+//   and λ cancels algebraically. On the SURFACES path it holds only
+//   APPROXIMATELY today: the geometry comes from a cotangent fixed point whose
+//   stopping rule is an ABSOLUTE residual tolerance, normalised by geometry
+//   scale but never by |D| — and |D| is linear in (q, σ). A whole-gauge rescale
+//   therefore scales the residual too, so the iteration can stop at a different
+//   iterate, and a large enough λ may not converge at all. That is a solver-side
+//   defect, not a property of the gauge; tracked as task #6119.
+//
+//   `surface_stresses` σ shares this SAME gauge, which is why it too is
+//   `List<Real>`. σ enters the assembly ADDITIVELY with q in
+//   D = CᵀQC + Σ_T σ_T·L_T, and the cotangent weights L_T are dimensionless
+//   ratios; dimensional homogeneity of that sum forces σ into exactly q's
+//   gauge. It is not a second unexplained exception — it is the same one.
 //
 // All params are required (no defaults) — a `FormFindResult` is only ever
 // constructed by the solver trampoline (or, in the never-run fallback below,
@@ -276,6 +328,8 @@ structure def FormFindResult {
 //   reference_group : Int
 //     Group id held fixed as the scale gauge during the adaptive search.
 //     Overall scaling of q is nullity-invariant, so only relative ratios matter.
+//     See "Dimensional bridge" under FormFindResult for why the resulting
+//     member forces are still Force-dimensioned (the q_ref ≡ 1 N/m gauge).
 //
 // Sign contract (hard constraint): cable groups must have positive seed ratios
 // (q > 0 tension) and strut groups must have negative seed ratios (q < 0
@@ -326,6 +380,8 @@ pub fn form_find_free(
 //     per-member q (not ratios / eigenvalue auto-scaling) is the T1a scope;
 //     the free-standing eigenvalue/ratio search is deferred to T1b.
 //     `List<Real>` is the natural type — per-member force densities are scalars.
+//     They are dimensionless ratios; the absolute force scale comes from the
+//     unit reference gauge q_ref ≡ 1 N/m ("Dimensional bridge" above).
 //
 //   anchors : List<Int>
 //     0-based indices into `structure.nodes` of the anchored (fixed) nodes.

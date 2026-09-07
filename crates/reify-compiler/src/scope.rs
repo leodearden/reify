@@ -40,12 +40,24 @@ pub(crate) struct CompilationScope<'u> {
     /// `RealizationDecl`s (and therefore have a `named_steps[name]` entry at eval
     /// time).
     ///
-    /// Only top-level geometry lets and top-level Solid params are included — guarded-group
-    /// lets and guarded Solid params are conservatively excluded because they do NOT
-    /// emit `RealizationDecl`s (entity.rs `compile_entity` realization-emission loop
-    /// skips guarded members) and would therefore have no `named_steps` entry at eval
-    /// time. Emitting `GeomRef::Sub(name)` for such a name would produce an
-    /// unresolvable sub-ref at runtime.
+    /// Only top-level geometry lets and top-level Solid params are included —
+    /// guarded-group lets and guarded Solid params are conservatively excluded.
+    ///
+    /// The exclusion is about `named_steps` REACHABILITY, not about emission.
+    /// Guarded Solid params ARE emitted: `emit_guarded_geometry_realizations`
+    /// (entity.rs) recurses into groups at any depth and pushes a
+    /// `RealizationDecl` for each (measured — a two-level `where`/`else`
+    /// fixture emits all four). What they do not get is a dependable
+    /// `named_steps[name]` entry, because whether the realization runs depends
+    /// on a guard that is only known at eval time; emitting `GeomRef::Sub(name)`
+    /// for such a name would produce an unresolvable sub-ref whenever the arm is
+    /// inactive. Guarded geometry LETS emit no realization at all — that is a
+    /// separate, unimplemented feature.
+    ///
+    /// The arm-routing contract for those guarded realizations' synthesized
+    /// constraints — and the two pre-existing properties of the guarded-
+    /// constraint mechanism it matches — are documented on
+    /// `emit_guarded_geometry_realizations` (entity.rs).
     ///
     /// Populated once in `compile_entity` before the geometry pass (while `scope`
     /// is still `let mut`); queried by the generic geometry-arg resolution loop in
@@ -338,6 +350,23 @@ impl<'u> CompilationScope<'u> {
 
     pub(crate) fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
+    }
+
+    /// The guard cell a name was registered under, if it is a guarded member.
+    ///
+    /// Reads the THIRD slot of the `names` entry, which `resolve` above reads
+    /// the first two of and discards. No new state: `register_guarded` records
+    /// the guard cell there already, from `compile_block_guard`'s sweep over a
+    /// group's `members` / `else_members` (guards.rs). For a NESTED group's
+    /// member this yields that group's OWN inner guard cell, because each
+    /// group registers only its own two member vecs.
+    ///
+    /// `None` for an unguarded name (registered via `register` /
+    /// `register_if_absent`) and for a name that is not in scope at all.
+    pub(crate) fn resolve_guard(&self, name: &str) -> Option<&ValueCellId> {
+        self.names
+            .get(name)
+            .and_then(|(_, _, guard)| guard.as_ref())
     }
 
     /// Register a match-arm `GuardedDeclGroup` under its logical name.

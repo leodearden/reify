@@ -42,20 +42,69 @@ mode-superposition transient response. Concretely:
 // examples/modal/printer_gantry_modes.ri
 let gantry = printer_gantry_part();
 let bcs = [
-    FixedSupport(at: gantry_mount_left),
-    FixedSupport(at: gantry_mount_right),
+    PinnedSupport(at: gantry_mount_left),
+    PinnedSupport(at: gantry_mount_right),
 ];
 
 let modes = modal_analysis(gantry, ModalOptions(
     n_modes: 10,
     boundary_conditions: bcs,
-    damping: RayleighDamping(alpha: 0.0, beta: 1e-4),
+    damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
 ));
 
 // modes : ModalResult — List<Mode> ordered by frequency
 let f1 = modes.modes[0].frequency;
-report("first mode = " ++ show(f1));   // expected ~120 Hz
+report("first mode = " ++ show(f1));   // expected ~53 Hz (pin-pin; ~120 Hz if the mounts were clamped)
 ```
+
+Boundary-condition realization is **per named face and kind-aware** (task
+6663): what a support constrains on its target face is decided by the
+support's `type_name`, and — for `PinnedSupport` — by which face it targets
+and how many other named faces the model carries. This path only reads
+`StructureInstance`-valued entries from `boundary_conditions`; the
+Map-valued builtins `RollerSupport`/`DisplacementSupport` are not
+`StructureInstance`s and are not read by this path at all — they
+constrain nothing here and do not count toward the face tally below.
+Every StructureInstance support kind other than `PinnedSupport`
+(`FixedSupport` included) always clamps all three translational DOFs on
+every mesh node of its named face. `PinnedSupport` pins only the
+transverse (Z) DOF, and only on a beam-axis end face (`x_min`/`x_max`) of
+a model whose supports name at least one other DISTINCT recognized face;
+a lone `PinnedSupport`, or one on a non-end face (`y_min`/`z_max`/...),
+clamps all three DOFs instead — the same `PinnedOnTetEquivalentToFixed`
+realization a pinned face gets on any tet body elsewhere in the system
+(on shells, pinned leaves the rotational DOFs free instead). That
+discriminator counts DISTINCT RECOGNIZED faces (the six names
+`x_min`..`z_max`), not raw support count: two supports naming the same
+face collapse to one, and a support whose target names no recognized
+face votes on nothing.
+
+Dropping that scoping — pinning the transverse DOF on every named face
+unconditionally — is not a simplification: it would turn
+`[PinnedSupport("x_min")]` and `[PinnedSupport("y_min"),
+PinnedSupport("y_max")]` into ≈0 Hz mechanisms reported under a mere
+Warning, which is exactly the regression the scoping guards against.
+Because the realization reads a count the author never wrote on the
+support, every pinned beam-end face also carries an
+`I_ModalPinnedFaceRealization` Info diagnostic naming what it was realized
+as and why.
+
+The gantry above rests on its two end mounts rather than being welded to
+them, so both are `PinnedSupport`. (The `at:` face selector shown above
+is the aspirational v0.4 Part-based spelling — v0.3 has no `Part`
+topology or `printer_gantry_part()` builtin, so `support_targets` cannot
+resolve it; the landed fixture, `examples/modal/printer_gantry_modes.ri`,
+spells the same mounts `PinnedSupport(target: "x_min")` /
+`PinnedSupport(target: "x_max")`, which is what actually names the two
+recognized faces and triggers what follows.) Because *both* beam-axis end
+faces are named and every support naming one is `PinnedSupport`, this is
+the simply-supported (pin-pin) special case: the two end faces are
+realized with the minimal neutral-axis anchors needed to remove
+rigid-body motion, on top of the per-face transverse pin, with no change
+to that existing pin-pin realization. Spelling the same two mounts as
+`FixedSupport` instead would describe a genuinely different, stiffer
+clamped-clamped gantry (a ≈2.27× higher fundamental for a uniform beam)
+— not this resting-mount configuration.
 
 ```reify
 // examples/modal/transient_step_response.ri
@@ -178,7 +227,7 @@ structure def Mode {
     param participation_mass : Real         // effective modal mass along
                                             //   a reference direction (set
                                             //   at modal_analysis call time)
-    param damping_ratio    : Real           // ζ_i = (αω_i² + β)/(2ω_i)
+    param damping_ratio    : Real           // ζ_i = (α + β·ω_i²)/(2·ω_i)
                                             //   for Rayleigh; 0 for undamped
 }
 
@@ -212,8 +261,8 @@ structure def NoDamping : DampingDescriptor {
 }
 
 structure def RayleighDamping : DampingDescriptor {
-    param alpha : Real    // mass-proportional coefficient (1/s)
-    param beta  : Real    // stiffness-proportional coefficient (s)
+    param alpha : Frequency    // mass-proportional coefficient
+    param beta  : Time         // stiffness-proportional coefficient
 }
 ```
 
@@ -222,6 +271,12 @@ Per-mode damping ratio derived from Rayleigh parameters:
 ```
 ζ_i = (α + β·ω_i²) / (2·ω_i)
 ```
+
+`ω_i` is the ANGULAR frequency in rad/s (= 2π·`Mode.frequency`), so both
+coefficients are consumed on the rad/s scale: a caller reading cycles/s must
+scale α by 2π and β by 1/2π. The convention lives in ω and moves α and β
+symmetrically, which is why the declared pair stays the SI typing implied by
+C = α·M + β·K (α = s⁻¹, β = s) rather than α being typed `AngularVelocity`.
 
 This preserves mode-shape orthogonality (the decoupled modal ODEs stay
 1D-second-order), so transient response stays in real arithmetic.

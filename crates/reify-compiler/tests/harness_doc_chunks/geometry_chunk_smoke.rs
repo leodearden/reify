@@ -79,6 +79,16 @@
 //! `chunk_io` needs edits to `tests/harness_doc_chunks.rs` and to both siblings,
 //! none of which is in task 5389's locked file set.
 //!
+//! STILL THREE, not four: task 5759 added `units_chunk_smoke.rs` and pointed it
+//! at THIS module's scanners (`reify_tagged_fences`, `assert_module_compiles`,
+//! `strip_reify_comments`, `call_sites`, `section_body`, `cited_source_paths`,
+//! `resolve_cited_path`, `source_files_by_basename`, all raised to
+//! `pub(crate)`) rather than copying them. That is why those helpers now take
+//! `chunk_path` / `tag` / `section_title` parameters instead of reading this
+//! module's consts — a sibling's failure must name the sibling's chunk. The
+//! extraction below is still owed; this is reuse inside the existing binary, not
+//! the shared module.
+//!
 //! Task **#5924** (filed as ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`) owns the
 //! extraction AND the axis-by-axis reconciliation contract — which heading /
 //! fence-delimiter / info-string / section-end / chunk-read behaviour the shared
@@ -102,13 +112,20 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 /// is needed because the clearance examples are multi-let `structure def`s (both
 /// the query call and its operands must be separate let bindings), which the
 /// `structure def Smoke { let g = … }` wrapper cannot express.
-fn assert_module_compiles(label: &str, module_src: &str) {
+///
+/// `chunk_path` NAMES THE CHUNK THE SOURCE CAME FROM and is threaded rather than
+/// read off this module's `CHUNK_PATH` const, because sibling chunk modules in
+/// this same harness binary call this helper for THEIR chunk (task 5759 raised
+/// it to `pub(crate)` for `units_chunk_smoke.rs`). A hardcoded const would name
+/// geometry.md in a units.md failure — a panic that sends the reader to the
+/// wrong file.
+pub(crate) fn assert_module_compiles(chunk_path: &str, label: &str, module_src: &str) {
     let compiled = compile_source_with_stdlib(module_src);
     let errors = errors_only(&compiled);
     assert!(
         errors.is_empty(),
-        "{label}: expected this module to compile with zero Error diagnostics, got: {:#?}\n\
-         --- module source ---\n{module_src}\n--- end module source ---",
+        "{chunk_path} — {label}: expected this module to compile with zero Error diagnostics, \
+         got: {:#?}\n--- module source ---\n{module_src}\n--- end module source ---",
         errors
     );
 }
@@ -120,6 +137,7 @@ fn assert_module_compiles(label: &str, module_src: &str) {
 /// immediately identifiable.
 fn assert_compiles(label: &str, geometry_expr: &str) {
     assert_module_compiles(
+        CHUNK_PATH,
         &format!("{label} (expression `{geometry_expr}`)"),
         &format!("structure def Smoke {{ let g = {} }}", geometry_expr),
     );
@@ -359,6 +377,23 @@ const ORACLE_SECTION_MARKER: &str = "<!-- ORACLE-SECTION -->";
 /// A retitle may update this for legibility but need not — no test reads it.
 const ORACLE_SECTION_TITLE: &str = "## Interference & Clearance Queries";
 
+/// Marker that OPENS the section cataloguing WHICH ARGUMENT of which geometry
+/// constructor is length-semantic. Matched BYTE-EXACTLY on the trimmed line,
+/// exactly as [`ORACLE_SECTION_MARKER`] is, and for the identical reason: the
+/// scan must be anchored to something inert so the heading's wording stays free.
+///
+/// Scoping matters here for a second reason too. This chunk mentions geometry
+/// call forms everywhere — the primitives block, the anchoring table, the oracle
+/// fences — so an UNSCOPED name scan would be satisfied by any of them and would
+/// say nothing about whether the length-argument catalogue still exists. The
+/// catalogue is what an author consults before dimensioning an unfamiliar
+/// signature, so the catalogue is what gets scanned.
+const LENGTH_ARGS_SECTION_MARKER: &str = "<!-- LENGTH-ARGS-SECTION -->";
+
+/// Human-readable name of [`LENGTH_ARGS_SECTION_MARKER`]'s section. Panic text
+/// only; nothing matches on it.
+const LENGTH_ARGS_SECTION_TITLE: &str = "### Dimensioned arguments";
+
 fn read_chunk() -> String {
     std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
         panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
@@ -397,7 +432,18 @@ fn leading_backtick_run(line: &str) -> usize {
 /// blamed), and an absent marker — the anti-vacuity guard, and the failure a
 /// reader of a gutted section should see, rather than an empty slice that makes
 /// every downstream assertion pass trivially.
-fn section_body(markdown: &str, marker: &str) -> String {
+/// `chunk_path` and `section_title` are THREADED rather than read off this
+/// module's consts, for the same reason [`assert_module_compiles`] threads its
+/// path (task 5759): this helper now scopes more than one marked section — the
+/// oracle section AND the length-arguments section — and a sibling chunk module
+/// may scope its own. A hardcoded `ORACLE_SECTION_TITLE` would make a
+/// length-section failure panic about interference queries.
+pub(crate) fn section_body(
+    markdown: &str,
+    marker: &str,
+    chunk_path: &str,
+    section_title: &str,
+) -> String {
     let mut body: Vec<&str> = Vec::new();
     let mut in_section = false;
     // `Some(n)` while inside a fence opened by a column-0 run of `n` backticks.
@@ -441,7 +487,7 @@ fn section_body(markdown: &str, marker: &str) -> String {
     // with a cause that is not the real one.
     assert!(
         fence.is_none(),
-        "{CHUNK_PATH} has an unterminated code fence: a column-0 run of {} backtick(s) is never \
+        "{chunk_path} has an unterminated code fence: a column-0 run of {} backtick(s) is never \
          closed by a bare run of at least that many. Everything after it is being read as fence \
          content, so the `{marker}` scan cannot reach the section even when the marker line is \
          present and intact. Close the fence — do not touch the marker.",
@@ -450,13 +496,13 @@ fn section_body(markdown: &str, marker: &str) -> String {
 
     assert!(
         in_section,
-        "{CHUNK_PATH} carries no `{marker}` marker — the line that opens the \
-         `{ORACLE_SECTION_TITLE}` section was removed along with (or independently of) the \
+        "{chunk_path} carries no `{marker}` marker — the line that opens the \
+         `{section_title}` section was removed along with (or independently of) the \
          section itself. That section is what the in-GUI assistant retrieves when a designer \
-         asks about interference or clearance; without it the assistant reads the oracle as a \
-         MISSING CAPABILITY and hand-rolls bbox arithmetic instead (task 5389). Restore the \
-         section WITH its marker line directly under the heading. Retitling the heading is \
-         free and needs no change here — only the marker is matched."
+         asks about the topic it covers; without it the assistant reads the capability as \
+         MISSING and hand-rolls a substitute instead (task 5389, for the oracle section). \
+         Restore the section WITH its marker line directly under the heading. Retitling the \
+         heading is free and needs no change here — only the marker is matched."
     );
     body.join("\n")
 }
@@ -530,7 +576,12 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // elsewhere in the chunk (or an incidental mention that survives the
     // section's deletion) must not satisfy this. `section_body` panics if the
     // section is gone, so gutting it is RED rather than vacuously green.
-    let section = section_body(&markdown, ORACLE_SECTION_MARKER);
+    let section = section_body(
+        &markdown,
+        ORACLE_SECTION_MARKER,
+        CHUNK_PATH,
+        ORACLE_SECTION_TITLE,
+    );
 
     // (a) COVERAGE. Each name must appear as a CALL form (`name(`) rather than a
     // bare word — geometry.md already contained the word "distance" before task
@@ -605,7 +656,21 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
 ///
 /// Callers must anti-vacuity-check the result: a dropped tag or a renamed
 /// section would otherwise empty the scan and pass trivially.
-fn reify_tagged_fences(markdown: &str) -> Vec<String> {
+///
+/// `tag` IS A PARAMETER, not the hardcoded `reify` this scanner started with
+/// (task 5759). units.md carries a deliberately-INVALID rejected-forms block
+/// tagged ```` ```reify-rejected ````, which a rejection-truth negative control
+/// must scrape and a zero-Error compile gate must never sweep in. Parameterising
+/// the tag lets both gates share this one scanner instead of the harness growing
+/// its FIFTH near-identical scraper (see "Known duplication" above). Matching
+/// stays BYTE-EXACT on the whole info string, so `reify` still excludes
+/// `reify-rejected` in both directions.
+///
+/// `chunk_path` is threaded for the same reason [`assert_module_compiles`]
+/// threads its own: a sibling chunk module's unterminated fence must be blamed
+/// on ITS chunk, not on geometry.md.
+pub(crate) fn reify_tagged_fences(markdown: &str, tag: &str, chunk_path: &str) -> Vec<String> {
+    let opener = format!("```{tag}");
     let mut fences: Vec<String> = Vec::new();
     let mut body: Vec<&str> = Vec::new();
     let mut open = false;
@@ -614,7 +679,7 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
         if !open {
             // Exact tag match: `reify-something` is a different language and
             // must not be swept in.
-            if line.trim_end() == "```reify" {
+            if line.trim_end() == opener {
                 open = true;
                 body.clear();
             }
@@ -630,7 +695,7 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
 
     assert!(
         !open,
-        "{CHUNK_PATH} has an unterminated ```reify fence — the scrape cannot be trusted"
+        "{chunk_path} has an unterminated ```{tag} fence — the scrape cannot be trusted"
     );
     fences
 }
@@ -649,7 +714,7 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
 #[test]
 fn reify_tagged_fences_in_geometry_chunk_compile() {
     let markdown = read_chunk();
-    let fences = reify_tagged_fences(&markdown);
+    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
 
     // Anti-vacuity. Without these, dropping the ```reify tags (or
     // rewriting the fences as plain prose) would leave the scan empty and the
@@ -700,10 +765,7 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
     }
 
     for (index, fence) in fences.iter().enumerate() {
-        assert_module_compiles(
-            &format!("{CHUNK_PATH} ```reify fence #{}", index + 1),
-            fence,
-        );
+        assert_module_compiles(CHUNK_PATH, &format!("```reify fence #{}", index + 1), fence);
     }
 }
 
@@ -740,7 +802,7 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
 /// on the chunk's markdown prose, where a URL would otherwise truncate its line.
 /// A mis-tracked string can only cause a comment to survive, never content to be
 /// dropped — i.e. it degrades to the un-stripped behaviour, never past it.
-fn strip_reify_comments(src: &str) -> String {
+pub(crate) fn strip_reify_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
     let mut in_string = false;
@@ -808,7 +870,7 @@ fn strip_reify_comments(src: &str) -> String {
 /// parens never balance (a call form wrapped across a markdown line), and a match
 /// preceded by an identifier character, so `min_clearance(` is not harvested out
 /// of a hypothetical `xmin_clearance(`.
-fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
+pub(crate) fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
     let needle = format!("{name}(");
     let mut out = Vec::new();
     let mut cursor = 0usize;
@@ -871,6 +933,115 @@ fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// Every DISTINCT identifier CALLED as `name(` in `text`, in document order.
+///
+/// `text` MUST already be comment-free — pass it through
+/// [`strip_reify_comments`] first.
+///
+/// Complements [`call_sites`], which answers "at what arities is THIS name
+/// called". This answers "which names are called AT ALL" — the direction a
+/// phantom-signature check needs, because a phantom name is by definition one
+/// nobody thought to ask about. `min_clearance(a, b)` was found by asking the
+/// first question; `rotate(geo, axis, angle)` and `translate(geo, vector)`
+/// (tasks #5347 / #5364) could only have been found by asking this one.
+///
+/// Each candidate is CONFIRMED through [`call_sites`] rather than trusted, so
+/// the two scanners cannot disagree about what a call is: a `name(` whose parens
+/// never balance (a call form wrapped across a markdown line) is skipped here by
+/// exactly the rule that skips it there. A run starting with a digit is a
+/// numeric literal juxtaposed with a paren, never a call.
+pub(crate) fn called_names(text: &str) -> Vec<String> {
+    fn is_ident(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '(' {
+            continue;
+        }
+        let mut start = i;
+        while start > 0 && is_ident(chars[start - 1]) {
+            start -= 1;
+        }
+        if start == i {
+            continue;
+        }
+        let name: String = chars[start..i].iter().collect();
+        if name.starts_with(|c: char| c.is_ascii_digit()) || out.contains(&name) {
+            continue;
+        }
+        if call_sites(text, &name).is_empty() {
+            continue;
+        }
+        out.push(name);
+    }
+    out
+}
+
+/// The compiler name registries a documented call form may legitimately belong
+/// to, each paired with the const name to quote in a panic so the reader is told
+/// WHERE to look rather than just that the lookup failed.
+///
+/// INCOMPLETE, AND KNOWABLY SO. `units::AFFINE_MAP_CONSTRUCTOR_NAMES` and
+/// `math_signatures::MATH_CONSTRUCTION_NAMES` (which carries the `point2` /
+/// `point3` / `vec2` / `vec3` prelude constructors geometry.md documents) are
+/// real registries but are NOT re-exported from `reify_compiler`'s crate root —
+/// `mod units` and `mod math_signatures` are both private, and lib.rs's
+/// `pub use units::{…}` omits the affine one. Reaching them needs an edit to
+/// `crates/reify-compiler/src/lib.rs`, outside task 5759's file scope. Callers
+/// therefore carry an explicit, justified allowlist for names in those two
+/// families; when the re-export lands, move those entries here and delete the
+/// allowlist rather than growing it.
+pub(crate) const CALLABLE_NAME_REGISTRIES: &[(&str, &[&str])] = &[
+    (
+        "GEOMETRY_FUNCTION_NAMES",
+        reify_compiler::GEOMETRY_FUNCTION_NAMES,
+    ),
+    (
+        "GEOMETRY_QUERY_HELPER_NAMES",
+        reify_compiler::GEOMETRY_QUERY_HELPER_NAMES,
+    ),
+    (
+        "GEOMETRY_KINEMATIC_QUERY_NAMES",
+        reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES,
+    ),
+    (
+        "GEOMETRY_TOPOLOGY_SELECTOR_NAMES",
+        reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES,
+    ),
+    ("GEOMETRY_QUERY_NAMES", reify_compiler::GEOMETRY_QUERY_NAMES),
+];
+
+/// The [`CALLABLE_NAME_REGISTRIES`] family `name` belongs to, or `None`.
+pub(crate) fn registry_family(name: &str) -> Option<&'static str> {
+    CALLABLE_NAME_REGISTRIES
+        .iter()
+        .find(|(_, names)| names.contains(&name))
+        .map(|(family, _)| *family)
+}
+
+/// Panic text shared by both chunks' registry checks, so the two cannot drift
+/// apart on what a reader is told to do about a phantom name.
+pub(crate) fn phantom_name_panic(chunk_path: &str, where_: &str, name: &str) -> String {
+    format!(
+        "{chunk_path} documents a call to `{name}(…)` in {where_}, but `{name}` is not a member \
+         of ANY compiler name registry ({:?}). Either the chunk teaches a PHANTOM signature the \
+         compiler was never shown — the failure mode that cost live probe cycles in the \
+         2026-07-24 language review (`rotate(geo, axis, angle)`, `translate(geo, vector)`; tasks \
+         #5347 / #5364) — or the name is a prelude/math constructor from one of the registries \
+         `CALLABLE_NAME_REGISTRIES` documents as unreachable, in which case add it to THIS \
+         call site's allowlist with a justification. Do not widen the allowlist to silence a \
+         name you have not looked up.",
+        CALLABLE_NAME_REGISTRIES
+            .iter()
+            .map(|(family, _)| *family)
+            .collect::<Vec<_>>()
+    )
+}
+
 /// The arities `name` is DOCUMENTED at in `section`, read off its
 /// `name(<args>) -> <Type>` signature forms.
 ///
@@ -904,8 +1075,13 @@ fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
 #[test]
 fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
     let markdown = read_chunk();
-    let section = section_body(&markdown, ORACLE_SECTION_MARKER);
-    let fences = reify_tagged_fences(&markdown);
+    let section = section_body(
+        &markdown,
+        ORACLE_SECTION_MARKER,
+        CHUNK_PATH,
+        ORACLE_SECTION_TITLE,
+    );
+    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
 
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
         let documented = documented_signature_arities(&section, name);
@@ -943,6 +1119,224 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
         }
     }
 }
+
+/// Minimum CATALOGUE ROWS the LENGTH-ARGUMENTS table must carry.
+///
+/// The EXACT live count (`translate`, `rotate_around`, `revolve`,
+/// `line_segment`, `arc`, `helix`, `interp`/`bezier`, `nurbs`, `polygon`), not a
+/// round number under it — at a lower floor a whole row could be deleted while
+/// this stayed green, which is precisely the regression the floor claims to
+/// catch. Raise it WITH the table; never lower it to go green.
+const MINIMUM_CATALOGUE_ROWS: usize = 9;
+
+/// The constructor names the LENGTH-ARGUMENTS catalogue TABLE claims a
+/// dimensioned argument for — one entry per markdown row, in document order.
+///
+/// FIRST COLUMN ONLY, and that is the whole point of the scan rather than a
+/// simplification of it. The catalogue's claim is made by the row's subject: the
+/// later columns are prose that legitimately backticks argument NAMES
+/// (`degree`, `n_points`), which are not constructors and must not be fed to a
+/// registry lookup. Taking column one keeps "every name this asserts is real" a
+/// true statement instead of one needing an allowlist to stay green.
+///
+/// A cell may name more than one constructor (the live table's
+/// ``| `interp` / `bezier` |`` row), so a row yields a Vec. Rows that yield
+/// nothing — the header, the `|---|---|---|` delimiter, any `|`-leading line
+/// without a backticked identifier — are dropped, so `.len()` counts CATALOGUE
+/// rows and nothing else.
+///
+/// A backticked span is accepted only if it is a bare identifier, optionally
+/// followed by a call form: ``` `helix` ``` and ``` `helix(radius, pitch,
+/// height)` ``` both yield `helix`. Anything else (a prose span, a unit
+/// literal) is skipped rather than guessed at.
+pub(crate) fn catalogue_table_rows(section: &str) -> Vec<Vec<String>> {
+    fn is_ident(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    for line in section.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix('|') else {
+            continue;
+        };
+        // The FIRST cell: everything up to the next `|`, or the whole remainder
+        // for a (malformed) single-column row.
+        let first_cell = rest.split('|').next().unwrap_or_default();
+
+        let mut names: Vec<String> = Vec::new();
+        for span in first_cell.split('`').skip(1).step_by(2) {
+            // Trim a trailing call form, so `helix` and
+            // `helix(radius, pitch, height)` are the same claim.
+            let head = span.split('(').next().unwrap_or_default().trim();
+            if !head.is_empty()
+                && head.chars().all(is_ident)
+                && !head.starts_with(|c: char| c.is_ascii_digit())
+                && !names.contains(&head.to_string())
+            {
+                names.push(head.to_string());
+            }
+        }
+        if !names.is_empty() {
+            rows.push(names);
+        }
+    }
+    rows
+}
+
+/// Every geometry constructor the LENGTH-ARGUMENTS section names as taking a
+/// dimensioned argument must be a REAL registry entry.
+///
+/// Twin of `units_chunk_smoke.rs`'s
+/// `documented_call_names_in_units_chunk_are_real_registry_entries`: units.md
+/// owns the RULE and the migration idiom, this chunk owns the per-position
+/// CATALOGUE, and each is registry-verified on its own side rather than one
+/// restating the other.
+///
+/// This is the phantom-NAME direction, and it is the one that has actually
+/// failed in this repo: the 2026-07-24 language review found `rotate(geo, axis,
+/// angle)` and `translate(geo, vector)` documented at signatures the compiler
+/// had never been shown (tasks #5347 / #5364). A catalogue that names a
+/// constructor which does not exist sends an author to write a call that cannot
+/// compile, and — because a `structure def` body types an unresolved call from
+/// its first argument — often will not even say so.
+///
+/// # What is actually scanned
+///
+/// TWO INDEPENDENT SETS, because [`called_names`] alone did not reach the
+/// catalogue this test is named for. That scanner harvests an identifier only
+/// where it is immediately followed by `(`, and the table writes eight of its
+/// nine constructors as a bare backticked name — so DELETING EVERY TABLE ROW
+/// left this test green, all three sentinels still satisfied by the ```reify
+/// fence below the table (measured; only the `helix(radius, pitch, height)` row
+/// was ever visible). The advertised reach was the reach a future editor would
+/// rely on, so the scan was widened rather than the docstring narrowed:
+///
+///   - [`catalogue_table_rows`] harvests the TABLE's first column, floored at
+///     [`MINIMUM_CATALOGUE_ROWS`] so deleting rows is RED;
+///   - [`called_names`] harvests the section's CALL FORMS, floored at
+///     [`MINIMUM_SECTION_CALL_NAMES`] so rewriting the fence into prose is RED.
+///
+/// Every name from either set faces the same registry assertion, and the three
+/// sentinels are asserted against BOTH — the table must NAME them and the fence
+/// must CALL them. Union-sentinels would let one half lose a constructor while
+/// the other half covered for it, which is the failure this amendment exists to
+/// close.
+///
+/// SCOPE — this checks NAMES, not arities and not argument dimensions. Arity for
+/// the oracle names is cross-checked separately by
+/// `documented_oracle_arities_are_exercised_by_a_compiling_fence`; argument
+/// DIMENSION is pinned on the eval side by the tests the section's SYNC block
+/// cites, not here.
+#[test]
+fn documented_call_names_in_the_length_section_are_real_registry_entries() {
+    let markdown = read_chunk();
+    // `section_body` panics if the marker is gone, so gutting the catalogue is
+    // RED rather than vacuously green.
+    let section = section_body(
+        &markdown,
+        LENGTH_ARGS_SECTION_MARKER,
+        CHUNK_PATH,
+        LENGTH_ARGS_SECTION_TITLE,
+    );
+
+    let table_rows = catalogue_table_rows(&section);
+    let table_names: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        for row in &table_rows {
+            for name in row {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        }
+        out
+    };
+    let called = called_names(&strip_reify_comments(&section));
+
+    // Anti-vacuity, one floor per set. The ROW floor catches a deleted or
+    // gutted catalogue table — the case that used to pass silently. The CALL
+    // floor catches a section rewritten into prose without call forms, so the
+    // worked fence stops demonstrating anything.
+    assert!(
+        table_rows.len() >= MINIMUM_CATALOGUE_ROWS,
+        "only {} catalogue row(s) found in {CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` table — \
+         expected at least {MINIMUM_CATALOGUE_ROWS}. Either rows were deleted, or the table was \
+         reformatted into a shape this scan cannot read: a catalogue row is a `|`-leading line \
+         whose FIRST cell backticks the constructor it is about. Rows seen: {table_rows:?}",
+        table_rows.len()
+    );
+    assert!(
+        called.len() >= MINIMUM_SECTION_CALL_NAMES,
+        "only {} distinct call name(s) found in {CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` \
+         section — expected at least {MINIMUM_SECTION_CALL_NAMES}. The worked forms were \
+         rewritten into prose without call forms, so the section demonstrates nothing a compiler \
+         has seen. Names seen: {called:?}",
+        called.len()
+    );
+
+    // Sentinels, against BOTH sets. `translate` is the headline case (every
+    // component length-semantic, bare `0` included); `polygon` is the one with
+    // NO dimensionless position at all; `nurbs` is the one that mixes both in a
+    // single argument list, so it is where a catalogue is load-bearing.
+    for sentinel in ["translate", "polygon", "nurbs"] {
+        assert!(
+            table_names.iter().any(|n| n == sentinel),
+            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` TABLE no longer has a row for \
+             `{sentinel}`. That position is one of the three the catalogue exists to \
+             distinguish — `translate` (every component length-semantic, bare `0` included), \
+             `polygon` (no dimensionless position at all) and `nurbs` (lengths and counts in one \
+             argument list). A worked fence below the table is NOT a substitute: the table is \
+             what an author scans to find their constructor. Table names seen: {table_names:?}"
+        );
+        assert!(
+            called.iter().any(|n| n == sentinel),
+            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section no longer CALLS `{sentinel}` \
+             outside a comment, so the row that names it is no longer demonstrated by anything \
+             the compiler has accepted. Call names seen: {called:?}"
+        );
+    }
+
+    for name in table_names.iter().chain(called.iter()) {
+        assert!(
+            registry_family(name).is_some()
+                || LENGTH_SECTION_NAME_ALLOWLIST.contains(&name.as_str()),
+            "{}",
+            phantom_name_panic(
+                CHUNK_PATH,
+                &format!("its `{LENGTH_ARGS_SECTION_TITLE}` section"),
+                name
+            )
+        );
+    }
+}
+
+/// Minimum distinct CALL names the LENGTH-ARGUMENTS section's worked forms must
+/// carry, as the anti-vacuity floor on the [`called_names`] half.
+///
+/// SEPARATE from [`MINIMUM_CATALOGUE_ROWS`], and deliberately so: this floors
+/// the FENCE, which is a different claim from the table's coverage — a section
+/// can tabulate a constructor it never demonstrates, and demonstrate one it
+/// never tabulates — so it keeps its own number instead of tracking the table's.
+///
+/// That number is the EXACT live count of 8 (`helix`, `translate`, `cylinder`,
+/// `rotate_around`, `polygon`, `interp`, `nurbs`, `scale`), under the same
+/// contract as [`MINIMUM_FN_CITES`]: at a floor under live, calls can be deleted
+/// from the worked forms while this stays green. See that constant for the
+/// re-measurement protocol.
+const MINIMUM_SECTION_CALL_NAMES: usize = 8;
+
+/// Names the length-arguments section may call that are in none of
+/// [`CALLABLE_NAME_REGISTRIES`], each with its justification.
+///
+/// EMPTY, and kept empty on purpose — every constructor the catalogue names is a
+/// `GEOMETRY_FUNCTION_NAMES` entry. The hook exists because the prelude
+/// constructors this chunk documents elsewhere (`point3`, `vec3`, …) live in
+/// `math_signatures::MATH_CONSTRUCTION_NAMES`, which is not reachable from the
+/// crate root; see [`CALLABLE_NAME_REGISTRIES`]. Adding an entry here is a claim
+/// that a name is real-but-unreachable, so write the justification next to it.
+const LENGTH_SECTION_NAME_ALLOWLIST: &[&str] = &[];
 
 /// NEGATIVE CONTROL for the fence guard — pins the part of it that discriminates.
 ///
@@ -1031,7 +1425,8 @@ fn repo_root() -> std::path::PathBuf {
 /// Build artifacts are skipped by directory name rather than by path prefix, so a
 /// nested `target/` cannot smuggle a stale duplicate into the index and make an
 /// otherwise-unique basename ambiguous.
-fn source_files_by_basename() -> std::collections::BTreeMap<String, Vec<std::path::PathBuf>> {
+pub(crate) fn source_files_by_basename()
+-> std::collections::BTreeMap<String, Vec<std::path::PathBuf>> {
     fn walk(
         dir: &std::path::Path,
         out: &mut std::collections::BTreeMap<String, Vec<std::path::PathBuf>>,
@@ -1079,7 +1474,7 @@ fn source_files_by_basename() -> std::collections::BTreeMap<String, Vec<std::pat
 /// the two SYNC blocks is written in one of the two accepted forms, and
 /// `cited_test_paths_in_the_chunk_resolve`'s floors keep it that way, so nothing
 /// the check exists for is lost by ignoring bare basenames.
-fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
+pub(crate) fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
     let mut out: Vec<(String, Option<String>)> = Vec::new();
 
     for run in markdown
@@ -1113,7 +1508,7 @@ fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
 }
 
 /// Resolve one cited path token to a real file, or explain why it did not.
-fn resolve_cited_path(
+pub(crate) fn resolve_cited_path(
     token: &str,
     index: &std::collections::BTreeMap<String, Vec<std::path::PathBuf>>,
 ) -> Result<std::path::PathBuf, String> {
@@ -1144,29 +1539,46 @@ fn resolve_cited_path(
     }
 }
 
-/// Every test the chunk cites as PINNING a runtime claim must still exist.
+/// Assert every `<path>::<fn>` cite in `markdown` resolves, and that the chunk
+/// still carries at least `min_fn` / `min_rs` / `min_ri` of them.
 ///
-/// Both halves are checked: the file resolves, and it declares the cited `fn`.
-/// A rename or deletion of a pinning test is therefore RED here rather than
-/// silently downgrading a "PINNED" row in the traps SYNC block to a false claim.
+/// SHARED BY BOTH CHUNK MODULES — this file's traps SYNC block and
+/// `units_chunk_smoke.rs`'s PINNED/UNPINNED inventory. It exists because the
+/// second copy of this loop was a ~55-line near-verbatim duplicate of the first,
+/// differing only in the chunk path, three numeric floors and the panic wording;
+/// a fix to the resolution or existence rule (a `#[cfg]`-gated fn, a `fn foo<T>(`
+/// with a generic parameter) then had to be applied twice or drift. Growing that
+/// kind of copy is exactly the tracked defect
+/// (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924) this harness binary is trying
+/// to shrink.
 ///
-/// SCOPE — this is an EXISTENCE check, not a semantic one. It cannot tell that a
-/// still-named test stopped asserting the behaviour the row claims it pins, and
-/// it deliberately says nothing about the rows marked UNPINNED. It also does not
-/// verify the fn is a `#[test]`. What it buys is that every `path::fn` cite in
-/// the chunk resolves to something real, which is precisely the rot mode the
-/// hand-maintained inventory has.
-#[test]
-fn cited_test_paths_in_the_chunk_resolve() {
-    let markdown = read_chunk();
+/// The CHUNK-SPECIFIC "why this matters" prose lives in each caller's docstring,
+/// not in the panic text here, so the shared message stays true for both. What
+/// the panics do carry is the chunk path, the floor that was missed and the full
+/// cite list, which is what a reader needs to act.
+///
+/// Floors are `>=`, so ADDING a cite is always safe; raise them WITH the chunk
+/// when one is added, and never lower one to go green — a lowered floor is a
+/// SYNC row that has quietly stopped claiming anything.
+///
+/// SCOPE — an EXISTENCE check, not a semantic one. It cannot tell that a
+/// still-named test stopped asserting what the row claims, it says nothing about
+/// rows marked UNPINNED, and it does not verify the fn is a `#[test]`.
+pub(crate) fn assert_cited_paths_resolve(
+    chunk_path: &str,
+    markdown: &str,
+    min_fn: usize,
+    min_rs: usize,
+    min_ri: usize,
+) {
     let index = source_files_by_basename();
-    let cites = cited_source_paths(&markdown);
+    let cites = cited_source_paths(markdown);
 
-    // Keyed by the RESOLVED path, not the cite token: the chunk cites several
+    // Keyed by the RESOLVED path, not the cite token: both chunks cite some
     // files two ways (bare basename with a `::fn` half, and again by full
-    // repo-relative path), so token-counting would let one of the four worked
-    // `.ri` examples the panic names disappear while the floor stays satisfied by
-    // its own duplicate — exactly the regression these floors claim to catch.
+    // repo-relative path), so token-counting would let one real reference
+    // disappear while the floor stayed satisfied by its own duplicate — exactly
+    // the regression these floors claim to catch.
     let mut rs_paths: std::collections::BTreeSet<std::path::PathBuf> =
         std::collections::BTreeSet::new();
     let mut ri_paths: std::collections::BTreeSet<std::path::PathBuf> =
@@ -1176,10 +1588,10 @@ fn cited_test_paths_in_the_chunk_resolve() {
     for (path_token, fn_name) in &cites {
         let resolved = resolve_cited_path(path_token, &index).unwrap_or_else(|why| {
             panic!(
-                "{CHUNK_PATH} cites `{path_token}`, which does not resolve: {why}. The chunk is \
-                 served verbatim to the in-GUI assistant and its SYNC blocks are written to be \
-                 read as the authority on which clearance traps are pinned by a real test — a \
-                 dangling cite is a false claim. Update the cite, or mark the row UNPINNED."
+                "{chunk_path} cites `{path_token}`, which does not resolve: {why}. The chunk is \
+                 served verbatim to the in-GUI assistant and its SYNC rows are written to be read \
+                 as the authority on which claims a real test pins — a dangling cite is a false \
+                 claim. Update the cite, or mark the row UNPINNED."
             )
         });
 
@@ -1195,58 +1607,121 @@ fn cited_test_paths_in_the_chunk_resolve() {
             .unwrap_or_else(|e| panic!("{resolved:?} must be readable ({e})"));
         assert!(
             body.contains(&format!("fn {fn_name}(")),
-            "{CHUNK_PATH} cites `{path_token}::{fn_name}` as pinning one of the \
-             clearance-query traps, but {resolved:?} declares no `fn {fn_name}(`. The test was \
-             renamed or deleted, so that SYNC row now claims a pin that does not exist. \
-             Re-point the cite, or downgrade the row to UNPINNED."
+            "{chunk_path} cites `{path_token}::{fn_name}` as pinning one of its claims, but \
+             {resolved:?} declares no `fn {fn_name}(`. The test was renamed or deleted, so that \
+             row now claims a pin that does not exist. Re-point the cite, or downgrade the row \
+             to UNPINNED."
         );
     }
 
-    // Anti-vacuity. Reformatting the SYNC block into a shape this scan cannot
-    // read (the two-column layout it replaced wrapped paths across lines, which
-    // is exactly invisible here) would otherwise empty the loop above and pass.
-    // The floor is the EXACT live count, not a round number under it. At >= 8
-    // (with 9 actually present) one whole cite could be deleted and this still
-    // passed: dropping trap 5's `single_body_self_pair_excluded` row left
-    // fn_cites=8, rs_paths=5 and ri_paths=4 all green while that row still read
-    // "PINNED by" — a SYNC row silently claiming a pin it had lost. The ninth
-    // cite is this file's own self-cite from the SYNC block, which the old
-    // enumeration below omitted; it is counted here like any other.
+    // Anti-vacuity. Reformatting a SYNC block into a shape this scan cannot read
+    // — a path wrapped across two lines, or tabulated into two columns — would
+    // otherwise empty the loop above and pass.
     assert!(
-        fn_cites >= 9,
-        "only {fn_cites} `<path>::<fn>` cite(s) were found in {CHUNK_PATH} — expected at least \
-         9 (traps 1, 2, 5 and 6, FORM A's posed/swept pair, and the SYNC block's self-cite). \
-         Either the traps SYNC block was reformatted into a shape this scan cannot read (cites \
-         must be written WHOLE on ONE line, never wrapped), or a SYNC row lost a cite while \
-         still claiming to pin it. Cites seen: {cites:?}"
+        fn_cites >= min_fn,
+        "only {fn_cites} `<path>::<fn>` cite(s) found in {chunk_path} — expected at least \
+         {min_fn}. CITES MUST BE WRITTEN WHOLE ON ONE LINE, never wrapped and never tabulated; a \
+         wrapped path is invisible to this scan. Either the chunk was reformatted into a shape it \
+         cannot read, or a row lost its cite while still claiming to pin something. Cites seen: \
+         {cites:?}"
     );
     assert!(
-        rs_paths.len() >= 5,
-        "only {} distinct `.rs` FILE(s) cited in {CHUNK_PATH} (distinct after resolution — the \
-         same file cited two ways counts once), expected at least 5 — the SYNC inventory lost \
-         its file references. Cites seen: {cites:?}",
+        rs_paths.len() >= min_rs,
+        "only {} distinct `.rs` FILE(s) cited in {chunk_path} (distinct after resolution — the \
+         same file cited two ways counts once), expected at least {min_rs}. Losing one turns a \
+         PINNED row into prose. Cites seen: {cites:?}",
         rs_paths.len()
     );
     assert!(
-        ri_paths.len() >= 4,
-        "only {} distinct `.ri` example FILE(s) cited in {CHUNK_PATH} (distinct after resolution \
-         — the same example cited both bare and by full path counts once), expected at least 4 \
-         — the worked-reference examples (clearance_oracle, vc_bolt_pattern_clearance, \
-         dock_pickup, intersects_smoke) are what a designer is sent to next, so losing them is \
-         the same discoverability regression task 5389 closed. Cites seen: {cites:?}",
+        ri_paths.len() >= min_ri,
+        "only {} distinct `.ri` example FILE(s) cited in {chunk_path} (distinct after resolution \
+         — the same example cited both bare and by full path counts once), expected at least \
+         {min_ri}. The worked examples are what a designer is sent to next, so losing a cite is a \
+         discoverability regression. Cites seen: {cites:?}",
         ri_paths.len()
+    );
+}
+
+/// Cite floors for [`cited_test_paths_in_the_chunk_resolve`].
+///
+/// The EXACT live counts, not round numbers under them: 13 `<path>::<fn>` cites,
+/// resolving to 6 distinct `.rs` files and 4 distinct `.ri` files. The 13 are
+/// three self-cites in this file, two into `units_chunk_smoke.rs`, two into
+/// `cli_vc_clearance.rs`, one into `kernel_queries_intersects_smoke.rs` and five
+/// into `mechanism_interference_smoke.rs`.
+///
+/// WHY EXACT — a measured incident, not a principle. With the cite floor one
+/// below live, dropping trap 5's `single_body_self_pair_excluded` row left
+/// fn_cites=8, rs_paths=5 and ri_paths=4 — every floor still green while that
+/// row went on reading "PINNED by", a SYNC row silently claiming a pin it had
+/// lost. Any gap between floor and live re-opens exactly that hole, which is why
+/// these track the tree rather than sitting at a round number under it.
+///
+/// The `.ri` floor covers the four worked references (clearance_oracle,
+/// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke) a designer is sent
+/// to next; losing one is the same discoverability regression task 5389 closed.
+///
+/// RE-MEASUREMENT PROTOCOL, for every `MINIMUM_*` floor in this file and in
+/// `units_chunk_smoke.rs` — stated once, here, and cross-referenced rather than
+/// copied. These floors are hand-maintained and NOTHING detects their drift:
+/// adding a SYNC row, a cite, a catalogue row or a fence call name silently
+/// widens the gap between floor and live, and the check stays green while its
+/// own docstring still claims to be exact. To re-measure one, set it to 999, run
+/// `env cargo test -p reify-compiler --test harness_doc_chunks`, read the live
+/// count out of the panic text, and restore it. Use `env cargo`, never bare
+/// `cargo`: the skim PreToolUse wrapper condenses the run to PASS/FAIL counts
+/// and swallows the panic the measurement depends on. MEASURE ONE FLOOR AT A
+/// TIME — floors inside a single test assert sequentially, so a failing early
+/// floor MASKS every later one in that test, and a batched sweep under-reports.
+/// That masking is not hypothetical: it is why a first pass over these ten
+/// floors found two of the four that had gone stale, and a one-at-a-time sweep
+/// found all four.
+const MINIMUM_FN_CITES: usize = 13;
+const MINIMUM_RS_FILES: usize = 6;
+const MINIMUM_RI_FILES: usize = 4;
+
+/// Every test the chunk cites as PINNING a runtime claim must still exist.
+///
+/// WHY THIS CHUNK NEEDS IT. geometry.md's two `<!-- SYNC ... -->` blocks
+/// hand-inventory the eval/CLI tests that pin each clearance-query trap, and
+/// that inventory is explicitly written to be read as the AUTHORITY on which
+/// traps are safe to rely on. Nothing else in this file looks at it — the guards
+/// above cover names, arities and fence compilation only — so a renamed or
+/// deleted test would silently turn a PINNED row into a false claim, a rot mode
+/// strictly worse than plain prose because the row still LOOKS load-bearing.
+///
+/// The mechanism is shared with `units_chunk_smoke.rs`'s twin; see
+/// [`assert_cited_paths_resolve`] for what it checks and, importantly, what it
+/// does NOT (an existence check, never a semantic one).
+#[test]
+fn cited_test_paths_in_the_chunk_resolve() {
+    assert_cited_paths_resolve(
+        CHUNK_PATH,
+        &read_chunk(),
+        MINIMUM_FN_CITES,
+        MINIMUM_RS_FILES,
+        MINIMUM_RI_FILES,
     );
 }
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `call_sites`, `strip_reify_comments`, `section_body` and `cited_source_paths`
-// are the hand-rolled text scanners in this file, and every doc↔fence assertion
-// above is downstream of one of them, so they are pinned directly here rather
-// than only through the chunk. Mirrors the posture of
-// `stdlib_chunk_geometry_ops_smoke.rs`, whose `documented_geometry_op_forms`
-// scanner carries its own `_extracts_exact_arity` / `_zero_arg_span_is_exact_zero` /
-// `_skips_unbalanced_parens_without_panicking` unit tests.
+// `call_sites`, `strip_reify_comments`, `section_body`, `cited_source_paths`,
+// `called_names` and `catalogue_table_rows` are the hand-rolled text scanners in
+// this file, and every doc↔fence assertion above is downstream of one of them,
+// so they are pinned directly here rather than only through the chunk. Mirrors
+// the posture of `stdlib_chunk_geometry_ops_smoke.rs`, whose
+// `documented_geometry_op_forms` scanner carries its own `_extracts_exact_arity`
+// / `_zero_arg_span_is_exact_zero` / `_skips_unbalanced_parens_without_panicking`
+// unit tests.
+//
+// THE FAILURE THESE CLOSE IS SELF-CONCEALING. `called_names` is the sole
+// extraction path for BOTH chunks' phantom-name gates, and `catalogue_table_rows`
+// for geometry.md's catalogue floor — but every anti-vacuity floor and sentinel
+// above is drawn from those same scanners' OWN output. A regression that made one
+// of them over-skip would weaken the gate while leaving every floor and sentinel
+// satisfied, because both sides of the comparison would shrink together. Only a
+// direct test over a known input can see that.
 
 #[test]
 fn call_sites_counts_a_nested_call_as_one_argument() {
@@ -1392,7 +1867,7 @@ fn section_body_reads_a_shorter_fence_run_as_content_of_a_longer_one() {
               not in the body\n";
 
     assert_eq!(
-        section_body(md, ORACLE_SECTION_MARKER),
+        section_body(md, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE),
         "body line",
         "the inner ``` run is shorter than the ```` that opened the fence, so it is CONTENT — \
          only a bare run of >= 4 closes"
@@ -1411,7 +1886,7 @@ fn section_body_keeps_a_fenced_heading_out_of_the_section_boundary() {
               ## Real heading\n\
               gone\n";
 
-    let body = section_body(md, ORACLE_SECTION_MARKER);
+    let body = section_body(md, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
     assert!(body.contains("// ## not a heading"), "got {body:?}");
     assert!(body.contains("tail"), "got {body:?}");
     assert!(!body.contains("gone"), "got {body:?}");
@@ -1427,7 +1902,7 @@ fn section_body_blames_an_unterminated_fence_rather_than_the_marker() {
               let g = box(1mm, 1mm, 1mm)\n\
               <!-- ORACLE-SECTION -->\n\
               body\n";
-    let _ = section_body(md, ORACLE_SECTION_MARKER);
+    let _ = section_body(md, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
 }
 
 #[test]
@@ -1479,5 +1954,131 @@ fn cited_source_paths_leaves_a_cxx_cite_alone() {
     assert!(
         cited_source_paths("BRepExtrema_DistShapeShape::InnerSolution()").is_empty(),
         "a C++ `Type::method()` cite is not a source-file cite"
+    );
+}
+
+/// A digit-prefixed run juxtaposed with `(` is a numeric literal, not a call.
+///
+/// The discriminator `called_names` documents, asserted directly. Without the
+/// skip, `2(x + 1)` would feed `2` to `registry_family` and every registry gate
+/// downstream would fail on a name no author ever wrote.
+#[test]
+fn called_names_skips_a_numeric_literal_juxtaposed_with_a_paren() {
+    assert_eq!(
+        called_names("let scaled = 2(x) + box(1mm, 1mm, 1mm)"),
+        vec!["box".to_string()],
+        "`2(` is a literal juxtaposed with a paren; only `box` is a call"
+    );
+}
+
+/// A `name(` whose parens never balance is skipped, matching `call_sites`.
+///
+/// The two scanners CONFIRM each other by construction — `called_names` runs
+/// every candidate back through `call_sites` — and this pins that the
+/// confirmation actually discriminates. A call form wrapped across a markdown
+/// line is the live shape this protects against: half a call is not a call, and
+/// counting it would let a fence "demonstrate" a form it never compiled.
+///
+/// The skip is PER NAME, not per line, which is the behaviour the assertion
+/// below fixes in place: in `translate(box(1mm, 1mm, 1mm),` the OUTER
+/// `translate(` never closes and is dropped, while the INNER `box(…)` closes on
+/// its own and is kept. That is the right call — `box` really is demonstrated
+/// here — and it is worth pinning precisely because the coarser "drop the whole
+/// unbalanced line" reading is the one a reader assumes.
+#[test]
+fn called_names_skips_a_call_whose_parens_never_balance() {
+    assert_eq!(
+        called_names("let wrapped = translate(box(1mm, 1mm, 1mm),"),
+        vec!["box".to_string()],
+        "`translate(` never closes so it is not a call; the nested `box(…)` does, so it is"
+    );
+    // Control: the same text, closed, yields BOTH in document order — so the
+    // assertion above is about `translate` being unbalanced, not about the
+    // scanner being unable to see an outer call at all.
+    assert_eq!(
+        called_names("let ok = translate(box(1mm, 1mm, 1mm), 0mm, 0mm, 0mm)"),
+        vec!["translate".to_string(), "box".to_string()]
+    );
+}
+
+/// Repeated calls collapse to ONE entry, and the order is the order of first
+/// appearance.
+///
+/// Both halves matter to the callers: the registry loops assert per DISTINCT
+/// name, and every anti-vacuity floor above counts `names.len()`, so a scanner
+/// that stopped deduping would inflate a floor into passing on one repeated
+/// constructor.
+#[test]
+fn called_names_dedups_and_preserves_document_order() {
+    assert_eq!(
+        called_names("polygon(0mm, 0mm) ; nurbs(1, 2) ; polygon(1mm, 1mm) ; nurbs(3, 4)"),
+        vec!["polygon".to_string(), "nurbs".to_string()]
+    );
+}
+
+/// A call appearing ONLY inside a `//` comment is absent once the input is
+/// comment-stripped.
+///
+/// `called_names` documents "`text` MUST already be comment-free" as a
+/// PRECONDITION, not a behaviour — it does no stripping of its own. This pins
+/// the contract from the caller's side, which is how every call site above uses
+/// it: `called_names(&strip_reify_comments(&section))`. The hazard is live, not
+/// hypothetical — geometry.md's FORM A fence carries a commented call at exactly
+/// the documented arity (see `strip_reify_comments`), and a commented-out call
+/// is not a call.
+#[test]
+fn called_names_does_not_see_a_call_that_only_appears_in_a_comment() {
+    let src = "// let old = helix(10mm, 2mm, 50mm)\nlet spine = interp(0mm, 0mm, 0mm)";
+    assert_eq!(
+        called_names(&strip_reify_comments(src)),
+        vec!["interp".to_string()],
+        "the commented `helix(` must not count once the input is stripped"
+    );
+    // Control: UNSTRIPPED, the scanner does see it — so the assertion above is
+    // about the precondition being honoured, not about the input being inert.
+    assert!(called_names(src).contains(&"helix".to_string()));
+}
+
+/// The catalogue scan reads the FIRST cell only, and takes both spellings of a
+/// constructor name.
+///
+/// The first-column rule is what keeps "every name this asserts is real" true:
+/// `n_points` here is a backticked ARGUMENT name in a later column, and feeding
+/// it to a registry lookup would force an allowlist entry for a name that is not
+/// a constructor at all.
+#[test]
+fn catalogue_table_rows_reads_the_first_cell_and_strips_a_call_form() {
+    let table = "\
+| Constructor | Length-semantic arguments | Stays dimensionless |
+|---|---|---|
+| `helix` | **all three** — `helix(radius, pitch, height)` | — |
+| `nurbs` | the control points | leading `n_points` counts |
+";
+    assert_eq!(
+        catalogue_table_rows(table),
+        vec![vec!["helix".to_string()], vec!["nurbs".to_string()]],
+        "the header, the delimiter row, the trailing call form and the later-column \
+         `n_points` must all be absent"
+    );
+}
+
+/// A cell naming two constructors yields both, and a `|`-leading line with no
+/// backticked identifier yields no ROW at all.
+///
+/// The row count is a floor in `documented_call_names_in_the_length_section_are_
+/// real_registry_entries`, so what counts as a row is load-bearing: a header or
+/// delimiter line that slipped into the count would let a real catalogue row be
+/// deleted while the floor stayed satisfied.
+#[test]
+fn catalogue_table_rows_splits_a_shared_cell_and_drops_a_rowless_line() {
+    let table = "\
+|---|---|
+| `interp` / `bezier` | every argument |
+| no backticks here | so this is not a catalogue row |
+prose, not a table row at all
+";
+    assert_eq!(
+        catalogue_table_rows(table),
+        vec![vec!["interp".to_string(), "bezier".to_string()]]
     );
 }

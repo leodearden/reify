@@ -620,7 +620,7 @@ tasks:
       kind: grep
       pattern: best_practices
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
   - name: index-consistency-test-exists-by-the-cited-name
     binding: crates/reify-compiler/tests/examples_smoke.rs:548 fn best_practices_index_matches_corpus_directory().
@@ -630,7 +630,7 @@ tasks:
       kind: grep
       pattern: fn best_practices_index_matches_corpus_directory
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
   - name: three-index-sites-exist
     binding: examples/best_practices/INDEX.md present; .claude/skills/reify-design/SKILL.md
