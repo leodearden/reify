@@ -427,7 +427,7 @@ pub fn form_find_free_surfaces(
                     d_trial[(i, j)] += trial_surface_mat[(i, j)];
                 }
             }
-            let trial_resid = all_node_equilibrium_residual(&d_trial, &trial_nodes);
+            let trial_resid = all_node_equilibrium_residual_relative(&d_trial, &trial_nodes);
             if trial_resid <= resid {
                 current = trial_nodes;
             }
