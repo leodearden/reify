@@ -2747,23 +2747,38 @@ impl OcctKernel {
                 ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            // The three binary booleans return EARLY rather than falling
+            // through to the shared `Ok(self.store(shape))` tail below, which
+            // hardcodes `BRepKind::Solid`. Since task 7054 the C++ side
+            // normalizes every boolean result (`normalize_boolean_result`), so
+            // a fuse of disjoint operands genuinely yields a COMPSOLID and a
+            // hardcoded Solid would be a lie to any `repr_of()` consumer that
+            // trusts it to tell a single solid from a multi-body aggregate.
+            // Classified through the SAME `brep_kind_of_shape` helper `fuse_all`
+            // already uses — deliberately not a second classifier.
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
-                ffi::ffi::boolean_fuse(l, r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let fused = ffi::ffi::boolean_fuse(l, r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let repr = brep_kind_of_shape(&fused)?;
+                return Ok(self.store_with_repr(fused, repr));
             }
             GeometryOp::Difference { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
-                ffi::ffi::boolean_cut(l, r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let cut = ffi::ffi::boolean_cut(l, r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let repr = brep_kind_of_shape(&cut)?;
+                return Ok(self.store_with_repr(cut, repr));
             }
             GeometryOp::Intersection { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
-                ffi::ffi::boolean_common(l, r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let common = ffi::ffi::boolean_common(l, r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let repr = brep_kind_of_shape(&common)?;
+                return Ok(self.store_with_repr(common, repr));
             }
             GeometryOp::Fillet {
                 target,

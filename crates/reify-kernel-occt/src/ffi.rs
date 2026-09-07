@@ -220,6 +220,24 @@ pub mod ffi {
         fn make_half_space(px: f64, py: f64, pz: f64, nx: f64, ny: f64, nz: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
+
+        /// Fuse / cut / intersect two shapes.
+        ///
+        /// The returned shape is NORMALIZED, not the raw
+        /// `BRepAlgoAPI_*::Shape()`: BRepAlgoAPI always wraps its answer in a
+        /// bare `TopoDS_COMPOUND`, which fails the SOLID|COMPSOLID|SHELL guard
+        /// in `is_watertight`/`is_closed` and defeats
+        /// `BRepExtrema_DistShapeShape`'s inner-solution test in
+        /// `query_distance`/`min_clearance`. All three ops route through the
+        /// shared `normalize_boolean_result`, which tightens the wrapper to the
+        /// topology-preserving type the result actually is — one solid → bare
+        /// SOLID, several → COMPSOLID, none → the compound untouched
+        /// (task 7054).
+        ///
+        /// Consequence for the Rust side: stamp the stored `BRepKind` via
+        /// `brep_kind_of_shape` (which reads `shape_type_name`), never a
+        /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
+        /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_cut(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_common(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;

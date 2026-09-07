@@ -644,6 +644,77 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
     });
 }
 
+// --- Shared boolean-result normalization (task 7054) ---
+
+// Normalize a raw `BRepAlgoAPI_*::Shape()` to the tightest topology-preserving
+// type before it is stored on an `OcctShape`.
+//
+// Every BRepAlgoAPI boolean — the binary `Fuse`/`Cut`/`Common` constructors as
+// well as the general SetArguments/SetTools path — wraps its answer in a bare
+// `TopoDS_COMPOUND`, whether or not the operands actually merged. Storing that
+// wrapper verbatim is user-visible in two ways:
+//
+//   * `is_watertight` / `is_closed` guard on SOLID|COMPSOLID|SHELL, so a
+//     genuinely closed body reports NOT watertight.
+//   * `BRepExtrema_DistShapeShape` (behind `query_distance` / `min_clearance`)
+//     only runs its inner-solution / SolidTreatment test when a top-level
+//     operand IS a `TopAbs_SOLID`, so a fully-contained probe silently reads
+//     the boundary-to-boundary distance instead of 0.
+//
+// The unwrap rule below is task 5213's reviewed treatment, lifted here verbatim
+// so every boolean entry point inherits exactly one semantics:
+//
+//   - exactly one solid  → the bare SOLID (operands merged into a single body).
+//     Returning a COMPSOLID here would misclassify one solid as a multi-body
+//     aggregate.
+//   - two or more solids → a COMPSOLID (disjoint multi-body result) which,
+//     unlike a bare COMPOUND, passes the SOLID|COMPSOLID|SHELL guard and
+//     reports the correct per-solid component count.
+//   - no solids          → leave the compound untouched (nothing to tighten).
+//
+// Any non-COMPOUND input is returned unchanged.
+TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
+    if (raw.ShapeType() != TopAbs_COMPOUND) {
+        return raw;
+    }
+    TopTools_ListOfShape solids;
+    for (TopExp_Explorer ex(raw, TopAbs_SOLID); ex.More(); ex.Next()) {
+        solids.Append(ex.Current());
+    }
+    if (solids.Extent() == 1) {
+        return TopoDS::Solid(solids.First());
+    }
+    if (solids.Extent() > 1) {
+        TopoDS_CompSolid cs;
+        BRep_Builder builder;
+        builder.MakeCompSolid(cs);
+        for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
+            builder.Add(cs, TopoDS::Solid(sit.Value()));
+        }
+        return cs;
+    }
+    return raw;
+}
+
+// The single normalization entry point shared by `boolean_fuse`,
+// `boolean_cut`, `boolean_common` and `fuse_shape_list`.
+//
+// Deliberately uniform across all four ops: an asymmetry in which, say,
+// `intersection()` returned a fragmented COMPOUND while `union()` returned a
+// clean SOLID would make `is_watertight`, containment and STEP export depend on
+// which operator produced the body, with nothing in the type system to signal
+// it.
+//
+// CALLER CONTRACT: assign the returned shape to `OcctShape::shape` BEFORE
+// anything queries that `OcctShape`. occt_wrapper.h documents an IMMUTABLE
+// POST-CONSTRUCTION INVARIANT under which the three lazy topology-map caches
+// (`face_map`, `edge_map`, `edge_face_map`) are populated once and never
+// invalidated — there is no version counter, no guard and no assert, so
+// assigning `shape` after a map has been built silently stales it.
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
+    return unwrap_boolean_compound(raw);
+}
+
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
 
 // Fuse every member of `shapes` into a single result in ONE BOP pass.
@@ -692,37 +763,10 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     }
     // One completed boolean pass, regardless of instance count (task 5213).
     t_boolean_pass_count += 1;
-    TopoDS_Shape result = fuse.Shape();
-    // The general BOP path (SetArguments/SetTools) always wraps its output in a
-    // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
-    // preserves the union's topology so downstream repr/query code sees the
-    // true kind:
-    //   - exactly one solid  → the bare SOLID (overlapping inputs merged into a
-    //     single body).  Returning a COMPSOLID here would misclassify one solid
-    //     as a multi-body aggregate (task 5213 repr-coherence amendment).
-    //   - two or more solids → a COMPSOLID (disjoint multi-body union) which,
-    //     unlike a bare COMPOUND, passes the is_watertight SOLID|COMPSOLID|SHELL
-    //     guard and reports the correct per-solid component count.
-    //   - no solids          → leave the compound untouched.
-    if (result.ShapeType() == TopAbs_COMPOUND) {
-        TopTools_ListOfShape solids;
-        for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
-            solids.Append(ex.Current());
-        }
-        if (solids.Extent() == 1) {
-            return TopoDS::Solid(solids.First());
-        }
-        if (solids.Extent() > 1) {
-            TopoDS_CompSolid cs;
-            BRep_Builder builder;
-            builder.MakeCompSolid(cs);
-            for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
-                builder.Add(cs, TopoDS::Solid(sit.Value()));
-            }
-            return cs;
-        }
-    }
-    return result;
+    // Behaviour-identical to the inline block this replaced (task 5213): the
+    // unwrap rule now lives once, in `normalize_boolean_result`, shared with the
+    // three binary boolean ops (task 7054).
+    return normalize_boolean_result(fuse.Shape());
 }
 
 std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
@@ -765,7 +809,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = fuse.Shape();
+        result->shape = normalize_boolean_result(fuse.Shape());
         return result;
     });
 }
@@ -779,7 +823,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = cut.Shape();
+        result->shape = normalize_boolean_result(cut.Shape());
         return result;
     });
 }
@@ -793,7 +837,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = common.Shape();
+        result->shape = normalize_boolean_result(common.Shape());
         return result;
     });
 }
