@@ -1786,12 +1786,16 @@ mod tests {
     /// behavior (task #5831 review).
     ///
     /// What IS specific to this layer: `get_let_expr_in_template` matches on
-    /// `id.member` alone, so a template with two cells sharing a member name
-    /// under different entities is ambiguous. This test pins that the first
-    /// match in `value_cells` order wins, per the doc comment above the
-    /// function.
+    /// `id.member` alone, so a template holding two value cells that share a
+    /// member name under different entities is unresolvable by member name
+    /// alone — there is no principled way to pick between them. This pins
+    /// that the lookup aborts rather than silently returning one of the two
+    /// (task #7295; superseded the former first-match-wins pin of the same
+    /// fixture — see the doc comment above `get_let_expr_in_template` for
+    /// the full rationale and the realistic producer of such a collision).
     #[test]
-    fn test_get_let_expr_in_template_matches_member_ignoring_entity() {
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
         use reify_core::Type;
         use reify_ir::{CompiledExpr, Value};
 
@@ -1813,15 +1817,84 @@ mod tests {
             )
             .build();
 
-        let expr = super::get_let_expr_in_template(&template, "x");
-        assert_eq!(
-            expr.result_type,
-            Type::dimensionless_scalar(),
-            "get_let_expr_in_template matches by member name alone (ignoring id.entity); \
-             expected the FIRST cell named 'x' (entity 'First', dimensionless_scalar), \
-             got result_type {:?}",
-            expr.result_type
+        let _ = super::get_let_expr_in_template(&template, "x");
+    }
+
+    /// Pins that the ambiguity panic is actionable: it enumerates the
+    /// colliding `id.entity` values, in `value_cells` order, in its message.
+    /// Without this, a maintainer hitting the panic from
+    /// `test_get_let_expr_in_template_panics_on_ambiguous_member` learns only
+    /// that a collision occurred, not which entities collided — forcing them
+    /// to reproduce it by hand before they can disambiguate.
+    #[test]
+    #[should_panic(expected = "[\"First\", \"Second\"]")]
+    fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build();
+
+        let _ = super::get_let_expr_in_template(&template, "x");
+    }
+
+    /// The realistic producer of a same-member collision is a scoped
+    /// sub/connect `Auto` cell (`id.entity = "Parent.sub"`, `default_expr:
+    /// None`) sitting alongside the parent's own same-named `let`/defaulted
+    /// `param` cell — real `.ri` source produces exactly this with zero
+    /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
+    /// `let area = ...`.
+    ///
+    /// Before this task this was worse than "silently wrong value": with the
+    /// `sub` declared first (as below), `get_let_expr_in` used to panic
+    /// `"value cell 'area' in 'Manifold' has no default expr"` — naming the
+    /// right member but the wrong cell, while a perfectly good
+    /// `Manifold.area` (default `2mm`) sat one slot later in the very same
+    /// `value_cells` vector, with nothing in that message hinting a second
+    /// `area` existed. Swapping the two declarations used to silently flip
+    /// the result instead of erroring at all. This pins that the ambiguity
+    /// check now fires FIRST — before the `default_expr` deref — turning
+    /// that misleading wrong-cell panic into an accurate one.
+    ///
+    /// The zero-diagnostics assertion below is a precondition guard, not
+    /// incidental: if the compiler ever stops producing the scoped
+    /// `Manifold.v` cell, this test must fail loudly on that assumption
+    /// rather than silently passing (or failing) for an unrelated reason —
+    /// mirrors the precondition guard in
+    /// `test_get_let_expr_in_panics_on_missing_default_expr`.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
+        let source = r#"
+            structure def Vent { param area : Length = 1mm }
+            structure def Manifold {
+                sub v : Vent { area = auto }
+                let area = 2mm
+            }
+        "#;
+        let module = super::compile_source(source);
+        assert!(
+            super::errors_only(&module).is_empty(),
+            "expected zero diagnostics compiling the Vent/Manifold fixture, got {:?}",
+            super::errors_only(&module)
         );
+
+        let _ = super::get_let_expr_in(&module, "Manifold", "area");
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
