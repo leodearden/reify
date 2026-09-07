@@ -155,9 +155,17 @@ fn tessellated_cylinder_shape_volume_and_extent() {
         "enclosed volume of the cylinder fixture vs its closed form",
     );
 
-    // Vertex 0 sits at angle 0 and N is even, so the ring has vertices at 0°,
-    // 90°, 180° and 270°: the XY AABB is exactly the circumscribing 2r x 2r
-    // square, with no tessellation shortfall to tolerate.
+    // PRECONDITION for the exact-extent claim below: `N % 4 == 0`. Vertex 0
+    // sits at angle 0 and the ring is walked in equal 360/n steps, so the ring
+    // lands on all four axis directions (0°, 90°, 180°, 270°) only when 4
+    // divides n — merely-even n gives 0° and 180° but not 90°/270°, and the Y
+    // extent then falls short of r by the tessellation shortfall
+    // `r * (1 - cos(pi/n))`. Do not copy these assertions to an n that is not a
+    // multiple of 4; assert a shortfall-tolerant bound there instead.
+    const _: () = assert!(
+        N.is_multiple_of(4),
+        "exact 2r x 2r XY extent requires n % 4 == 0"
+    );
     let (min, max) = mesh_aabb(&mesh);
     assert_eq!(min[0], -(R as f32), "cylinder min x");
     assert_eq!(max[0], R as f32, "cylinder max x");
@@ -165,6 +173,38 @@ fn tessellated_cylinder_shape_volume_and_extent() {
     assert_eq!(max[1], R as f32, "cylinder max y");
     assert_eq!(min[2], 0.0, "cylinder base sits on z = 0");
     assert_eq!(max[2], H as f32, "cylinder top sits on z = h");
+}
+
+/// The mesh still matches its closed form in the COARSE regime, where the
+/// n-gon prism is furthest from the circular cylinder it approximates.
+///
+/// The fixture's doc comment makes small `n` the load-bearing case — that is
+/// where the lateral facet normals turn by more than the 45° feature-angle
+/// threshold, which is the whole reason the segment count is a parameter. It is
+/// also where a WRONG closed form is easiest to catch: at `n = 6` the inscribed
+/// hexagon holds only `3*sqrt(3)/(2*pi)` ~ 0.827 of the circle's area, so a
+/// `pi r^2 h` stand-in would miss by ~17% — a gap the smooth `n = 24` case
+/// above (~0.9886, a 1.1% gap) is far weaker at separating.
+///
+/// Volume only: `n = 6` is not a multiple of 4, so the exact `2r x 2r` XY
+/// extent asserted above does NOT hold here (the Y extent falls short by
+/// `r * (1 - cos(pi/6))`), and `n = 5` additionally breaks the `2r` X extent.
+#[test]
+fn tessellated_cylinder_matches_its_closed_form_at_coarse_segment_counts() {
+    const R: f64 = 0.5;
+    const H: f64 = 1.0;
+
+    for n in [5usize, 6, 8] {
+        let mesh = tessellated_cylinder_mesh(R as f32, H as f32, n);
+        assert_eq!(mesh.vertices.len(), (2 * n + 2) * 3, "2n + 2 vertices");
+        assert_eq!(mesh.indices.len(), 4 * n * 3, "4n triangles");
+        assert_rel(
+            enclosed_volume(&mesh),
+            tessellated_cylinder_volume(R, H, n),
+            F32_STORAGE_REL,
+            &format!("enclosed volume of the n = {n} cylinder vs its closed form"),
+        );
+    }
 }
 
 /// The fixture's own `n >= 3` precondition is a hard assert, not a silent
@@ -179,12 +219,14 @@ fn tessellated_cylinder_rejects_fewer_than_three_segments() {
 // The tolerance helper itself
 // ---------------------------------------------------------------------------
 
-/// [`F32_STORAGE_REL`] is 1e-6 — pinned so a consumer's stated error budget
-/// cannot be loosened out from under it by an edit to the constant.
-#[test]
-fn f32_storage_rel_is_one_part_per_million() {
-    assert_eq!(F32_STORAGE_REL, 1e-6);
-}
+// [`F32_STORAGE_REL`] deliberately has no `assert_eq!(F32_STORAGE_REL, 1e-6)`
+// test. Restating a constant's literal value cannot detect a defect: any edit
+// to the constant fails such a test mechanically and the fix is to edit the
+// test, which adds a step rather than protection. The tolerance is already
+// load-bearing in the three geometry tests above — each measures a real
+// enclosed volume against an independent closed form through this band — so
+// loosening it enough to matter reds them, and tightening it below the ~3.6e-7
+// f32 storage ceiling derived in its doc comment reds them too.
 
 /// `assert_rel` is INCLUSIVE at its boundary: `err == rel` passes.
 ///
@@ -206,4 +248,34 @@ fn assert_rel_accepts_error_exactly_equal_to_the_tolerance() {
 fn assert_rel_rejects_error_one_ulp_past_the_tolerance() {
     let just_over = f64::from_bits(1.5f64.to_bits() + 1);
     assert_rel(just_over, 1.0, 0.5, "one ulp outside");
+}
+
+/// A zero `expected` does not divide by zero, and `0.0 == 0.0` passes even at
+/// `rel = 0.0`.
+///
+/// `assert_rel`'s denominator is `expected.abs().max(f64::MIN_POSITIVE)`, which
+/// is the single non-obvious line in the helper. Pinning it matters because
+/// consumers really do hand it near-zero expectations — `fill_metrics_tests.rs`
+/// carries `surface_match_ratio_is_finite_for_a_zero_reference_volume` and
+/// `empty_surface_encloses_zero_volume` — so this is a contract, not a
+/// hypothetical. Here the numerator is exactly 0, so `0 / MIN_POSITIVE` is 0
+/// and any tolerance clears it.
+#[test]
+fn assert_rel_accepts_an_exact_zero_against_a_zero_expectation() {
+    assert_rel(0.0, 0.0, 0.0, "exact zero");
+}
+
+/// The other side of that guard: against `expected == 0.0` the denominator is
+/// `MIN_POSITIVE` rather than the numerator's own magnitude, so ANY non-zero
+/// `actual` is an astronomically large RELATIVE error and panics.
+///
+/// `f64::MIN_POSITIVE` is the smallest NORMAL double, 2.225e-308, so `1e-300`
+/// — minuscule in absolute terms — yields a relative error of ~4.5e7, thirteen
+/// orders of magnitude outside the 1e-6 band. The consequence worth knowing at a call
+/// site: `assert_rel` against a zero expectation is an exact-equality check,
+/// not a tolerance check — a near-zero result needs an absolute bound instead.
+#[test]
+#[should_panic(expected = "relative error")]
+fn assert_rel_rejects_any_non_zero_actual_against_a_zero_expectation() {
+    assert_rel(1e-300, 0.0, F32_STORAGE_REL, "near-zero against exact zero");
 }
