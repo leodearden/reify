@@ -2093,23 +2093,80 @@ assert "DS-neg: plan lacks test_verify_compile_gate glob (unmapped doc, no selec
 # ---------------------------------------------------------------------------
 # Scenario GEC-* (task 6281): docs/gui-event-channels.md is policed by two
 # automated consumers that both read it directly —
-# scripts/check_event_inventory.sh (RUN_RUST-gated) and
+# scripts/check_event_inventory.sh and
 # gui/src/__tests__/eventChannelConsumerCoverage.test.ts (RUN_GUI-gated,
 # task 6236) — neither of which ran on a doc-only diff before this carve-out,
 # since decide_scope's docs/*|*.md catch-all classified it as no-heavy-checks.
-# GEC-pos pins the fix; GEC-neg is the control proving the carve-out is
-# narrow (an unrelated docs/*.md file keeps the old no-heavy-checks path).
+#
+# GEC-pos pins the fix AND its outcome (review round 2 point 4): RUN_RUST=1
+# alone would not prove check_event_inventory.sh runs (that leaf also needs
+# INCLUDE_INFRA=1/DO_LINT=1) — and here it isn't even the mechanism in play,
+# since the Rust-side consumer is reached via the infra-test map instead (see
+# the decide_scope comment). GEC-neg/-neg2 are controls proving the carve-out
+# stays narrow. GEC-RENAME (review round 2 point 2) pins the rename gap.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario GEC-pos: docs/gui-event-channels.md only -> RUN_RUST=1 RUN_GUI=1 (task 6281) ---"
+echo "--- Scenario GEC-pos: docs/gui-event-channels.md only -> RUN_RUST=0 RUN_GUI=1 (task 6281) ---"
 plan_for staged docs/gui-event-channels.md
-assert "GEC-pos: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
-    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "GEC-pos: scope decision RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "GEC-pos: Rust-side consumer selected via the infra-test map (independent of RUN_RUST)" \
+    plan_has 'tests/infra/test_check_event_inventory.sh'
+assert "GEC-pos: GUI npm block present (carries eventChannelConsumerCoverage.test.ts)" \
+    plan_has 'cd gui &&'
 
 echo ""
 echo "--- Scenario GEC-neg: unrelated docs/*.md file -> stays no heavy checks (control) ---"
 plan_for staged docs/some-other-doc.md
 assert "GEC-neg: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+echo ""
+echo "--- Scenario GEC-neg2: docs/gui-event-channels/solver-progress.md (per-channel spec page) -> stays no heavy checks (control) ---"
+# Pins the "exact leaf, not docs/gui-event-channels/*" boundary the arm's
+# comment claims: neither consumer reads the per-channel spec pages under
+# docs/gui-event-channels/ (8 files today) — only prose cites them. A future
+# widening to a `gui-event-channels*` glob would drag the full gate onto
+# every one of those pages; this scenario only stays green while the
+# carve-out is scoped to the single top-level doc.
+plan_for staged docs/gui-event-channels/solver-progress.md
+assert "GEC-neg2: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+# ---------------------------------------------------------------------------
+# Scenario GEC-RENAME (task 6281 review round 2): a git mv of
+# docs/gui-event-channels.md itself. `git diff --name-only` prints only a
+# rename's DESTINATION (same measured behaviour as PG-RENAME above), so
+# without decide_scope's rename-source recovery this falls through to the
+# docs/*|*.md catch-all and skips both consumers — worse than the plain-edit
+# gap this task closes, since check_event_inventory.sh hard-exits when
+# docs/gui-event-channels.md goes missing.
+#
+# Needs its own fixture: a rename requires the source to exist at HEAD (see
+# the PG-RENAME comment above for why this can't reuse the shared FIX).
+# ---------------------------------------------------------------------------
+FIX_GECR=""
+make_fixture FIX_GECR
+mkdir -p "$FIX_GECR/docs"
+printf 'seed\n' > "$FIX_GECR/docs/gui-event-channels.md"
+git -C "$FIX_GECR" add docs/gui-event-channels.md
+git -C "$FIX_GECR" commit -q -m "seed GEC-RENAME source"
+
+# plan_for_gec_rename <src> <dst> — stage a rename in FIX_GECR, capture the
+# plan for --scope staged, then restore the index and worktree. Mirrors
+# plan_for_staged_rename above.
+plan_for_gec_rename() {
+    git -C "$FIX_GECR" mv "$1" "$2"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$FIX_GECR" || true
+    git -C "$FIX_GECR" reset -q --hard HEAD
+}
+
+echo ""
+echo "--- Scenario GEC-RENAME: git mv of docs/gui-event-channels.md -> RUN_RUST=1 RUN_GUI=1 (source recovered from the R entry) ---"
+plan_for_gec_rename docs/gui-event-channels.md docs/gui-event-channels-v2.md
+assert "GEC-RENAME: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (rename source forces rust=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 
 test_summary
