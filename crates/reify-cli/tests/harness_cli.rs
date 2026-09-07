@@ -67,6 +67,8 @@ mod cli_check_connect_undeclared_member;
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
 mod cli_check_parametric_vec3;
+#[path = "harness_cli/cli_check_qualified_ref_positions.rs"]
+mod cli_check_qualified_ref_positions;
 #[path = "harness_cli/cli_check_relate_family_exit.rs"]
 mod cli_check_relate_family_exit;
 #[path = "harness_cli/cli_check_result_prelude.rs"]
