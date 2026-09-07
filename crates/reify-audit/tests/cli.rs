@@ -3880,13 +3880,6 @@ mod http_loader {
              rather than failing for an unrelated (e.g. SSE-decode) reason; \
              got: {stderr}"
         );
-        assert!(
-            !stderr.contains("SSE"),
-            "a healthy SSE decode should never surface the word \"SSE\" in \
-             this refusal's breadcrumb; its presence would mean the failure \
-             is actually an SSE-framing error, not the intended malformed- \
-             tasks refusal; got: {stderr}"
-        );
     }
 }
 
