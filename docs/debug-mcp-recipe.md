@@ -88,8 +88,35 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown |
+| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown. Caveat: an UNSCOPED wait is not proof about any one pane in either direction — see [wait_for_selector: the unscoped-wait trap](#wait_for_selector-the-unscoped-wait-trap) below |
 | `list_console_errors` | `{}` | `{errors:[{message,stack}], count}` |
+
+#### wait_for_selector: the unscoped-wait trap
+
+An unscoped wait resolves the testid to the FIRST element in document order and
+evaluates the state on THAT one — not on the first element that SATISFIES the
+wait. The selection happens BEFORE the state is consulted, which gives the trap
+three faces, one per arm of the predicate:
+
+1. it goes green off a pane you did not mean, and the response carries no pane
+   keys to say which;
+2. `state:'visible'` times out on a hidden first match while a visible copy sits
+   in a LATER pane;
+3. `state:'gone'` goes green off a first match that is merely HIDDEN while a
+   visible copy is still mounted in a later pane — a teardown reported that did
+   not happen.
+
+Face 3 is the one to fear: face 2 fails loudly (a timeout the caller has to look
+at), while face 3 hands back a green for a teardown that never happened. Scope
+the wait whenever the follow-up action is scoped.
+
+This subsection is the canonical enumeration — the tool's own `viewportId` schema
+description and `buildSelectorPredicate` in `gui/src/debug/bridge.ts` each carry
+the one-line rule and point here. The three faces are pinned as behaviour by
+cases (h)/(i)/(j) of `gui/src/__tests__/waitFor.test.ts`. Known limitation rather
+than intended behaviour — the fix (quantify the unscoped predicate over ALL
+matches, on the observe path only; the drive tools stay first-match by #5891's
+back-compat contract) is tracked by #6564.
 
 ### I1 — Editor interaction
 
