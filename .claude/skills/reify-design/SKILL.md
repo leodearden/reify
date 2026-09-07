@@ -68,7 +68,9 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   `box_centered` is an op-identical alias for `box`.) → `hollow_primitives.ri`
 - **Symmetric parts**: `mirror` returns a reflected copy — `let twin = union(g, mirror(g, plane_yz(0mm)))`.
   Plane ctors take exactly one offset arg; the 7-arg scalar form needs a *dimensioned*
-  origin (`0mm`, never bare `0`), and `reify check` will not tell you when it doesn't.
+  origin (`0mm`, never bare `0`), and `reify check` now rejects the bare-`0` form outright
+  (exit 1, one error per origin component, no verdict line). A wrong-arity datum ctor is
+  the one that stays quiet: it yields `undef` silently and only the consuming op complains.
   → `symmetry_mirror.ri`
 - **Bolt circles**: `circular_pattern(hole, axis_z(point3(…)), n, 360deg)` — angle is the TOTAL
   sweep (step = total/count). Never construct geometry inside `generate` lambdas: silent `undef`
@@ -95,11 +97,19 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   (declares `rad`, computes `rad^2`) — unannotated, or inside the call as `atan((o/a) * 1rad)`,
   it is silent instead. Both readings typecheck, so the wrong one is silent. `omega = 2*pi * f * 1rad` is a
   separate class (2π rad/cycle; no `cycle` unit). → `angle_crossings.ri`
+- **Why a part came out 1000× too big — what units geometry arguments take**: every
+  length-semantic argument carries one (`box(20mm, 20mm, 10mm)`, never `box(20, 20, 10)`;
+  bare `0` is not exempt), while axis components, `scale` factors and counts stay bare.
+  → `dimensioned_arguments.ri`
 
-A green `reify check` is weaker than it looks: geometry-argument dimension errors and
-wrong-arity datum constructors (`plane_yz(0mm, 0mm)`, `axis_z(vec3(…))`) produce no
-check-time diagnostic at all — the first silently fails at build, the second evaluates to
-`undef`. Run `reify eval` before believing a geometry expression is right.
+A green `reify check` is weaker than it looks — but read its stderr, because the failure
+mode is the EXIT CODE, not silence. Measured 2026-09-07: statically-visible length slots
+(`box`, `translate`, `fillet`, the 7-arg `mirror` pivot) exit **1** under `check`. The
+eval-only constructors (`helix`, `polygon`, …), the decoded-value routes
+(`mirror(g, plane_yz(0))`) and the wrong-arity datum constructors (`plane_yz(0mm, 0mm)`,
+`axis_z(vec3(…))`) all **print `error:` lines** — yet `check` exits **0** and still prints
+"All constraints satisfied." underneath them. So gate on `reify eval`, and never on
+`check`'s exit status alone.
 
 ## Workflow
 
