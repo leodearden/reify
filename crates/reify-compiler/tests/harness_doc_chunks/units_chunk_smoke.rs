@@ -110,19 +110,31 @@ const ROW_SEPARATOR: &str = "-->";
 /// byte-exact tags cost the same and stay inert.
 const EVAL_ONLY_TAG: &str = "reify-rejected-at-eval";
 
-/// Minimum rows the eval-only block must carry. The exact live set: `mirror`,
-/// `helix` and `polygon`, the three constructors with no compile-layer LENGTH
-/// slot that the chunk names by hand.
-const MINIMUM_EVAL_ONLY_ROWS: usize = 3;
+/// Minimum rows the eval-only block must carry. The exact live set: `helix` and
+/// `polygon`, the two constructors with no compile-layer LENGTH slot that the
+/// chunk names by hand.
+///
+/// WAS 3. `mirror` was the third until its arity-7 pivot triple gained a
+/// compile-layer LENGTH slot (`builtin_signatures.rs`, `#5662`); this test's own
+/// panic message is what demanded the row move to the ```` ```reify-rejected ````
+/// block, and the floor came down with it in the same commit. That is the
+/// intended lifecycle of this constant, NOT a "lower it to go green" — every
+/// remaining row is still an exact, named member. Raise it again only by adding
+/// a row; lower it again only by moving one to the compile-layer block.
+const MINIMUM_EVAL_ONLY_ROWS: usize = 2;
 
 /// Minimum rows the rejected-forms block must carry, and the anti-vacuity floor.
 ///
 /// The EXACT set the chunk is required to document, not a round number under it:
-/// bare dimensions, the D1 bare-zero row, the mirror row that doubles as the
-/// legitimately-bare illustration, and a modify-op row. At a lower floor any one
-/// of those could be deleted while this still passed — the regression these
-/// floors exist to catch. Raise it with the block; never lower it to go green.
-const MINIMUM_REJECTED_ROWS: usize = 4;
+/// bare dimensions, the D1 bare-zero row, a `translate` row, a modify-op
+/// (`fillet`) row, and the `mirror` row that doubles as the legitimately-bare
+/// illustration. At a lower floor any one of those could be deleted while this
+/// still passed — the regression these floors exist to catch. Raise it with the
+/// block; never lower it to go green.
+///
+/// WAS 4, raised when `mirror` moved here from the eval-only block (see
+/// [`MINIMUM_EVAL_ONLY_ROWS`]).
+const MINIMUM_REJECTED_ROWS: usize = 5;
 
 /// The bare-zero form PRD decision D1 refuses to special-case. Pinned by name so
 /// deleting that row from the chunk is RED at the doc surface, not merely
@@ -579,12 +591,21 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
 /// INVISIBLE to the compile layer.
 ///
 /// The complement of `documented_rejected_forms_are_actually_rejected`, and the
-/// executable half of the chunk's check-visibility note. `mirror`, `helix` and
-/// `polygon` have no `CheckableArg` LENGTH slot — `polygon` deliberately so, per
+/// executable half of the chunk's check-visibility note. `helix` and `polygon`
+/// have no `CheckableArg` LENGTH slot — `polygon` deliberately so, per
 /// `builtin_signatures.rs`'s own
 /// `polygon_stays_slot_free_because_its_positions_are_arity_open` — so a bare
 /// number in one of them compiles CLEAN and is rejected later, which is why
 /// `reify check` prints `error:` for these and still exits 0.
+///
+/// `mirror` USED TO BE A THIRD MEMBER and no longer is: its arity-7 pivot triple
+/// gained `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so a bare origin is now a
+/// COMPILE error and `reify check` exits 1 on it (pinned at the CLI seam by
+/// `crates/reify-cli/tests/harness_cli/cli_check.rs`'s
+/// `check_rejects_bare_scalar_mirror_origin_before_reaching_build`). This test
+/// went red exactly as its panic message promised, and the row moved to the
+/// ```` ```reify-rejected ```` block in the commit that recorded the move — the
+/// lifecycle "WHY PIN THE NEGATIVE" below describes, actually exercised.
 ///
 /// WHY PIN THE NEGATIVE. The chunk tells an author to gate on `reify eval`
 /// rather than `reify check`, and that advice is only worth following while the
@@ -605,7 +626,7 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
     assert!(
         rows.len() >= MINIMUM_EVAL_ONLY_ROWS,
         "only {} eval-only row(s) scraped from {UNITS_CHUNK_PATH} — expected at least \
-         {MINIMUM_EVAL_ONLY_ROWS} (`mirror`, `helix`, `polygon`). Either the \
+         {MINIMUM_EVAL_ONLY_ROWS} (`helix`, `polygon`). Either the \
          ```{EVAL_ONLY_TAG} block was deleted or retagged, or a row was removed while the \
          check-visibility note still names the constructor. Rows seen: {rows:?}",
         rows.len()
