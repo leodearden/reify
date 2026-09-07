@@ -1258,14 +1258,19 @@ impl<'a> Lowering<'a> {
     /// `sub_structure_name_whitespace_is_normalised` in
     /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
     ///
-    /// **Pre-ν loudness is per-POSITION, not blanket** — measured on this
-    /// branch with `target/debug/reify check`:
+    /// **Pre-ν loudness is per-POSITION, not blanket** — pinned end-to-end
+    /// (the exit status a user observes AND the diagnostic text) by the
+    /// `reify check` regression cases in
+    /// `crates/reify-cli/tests/harness_cli/cli_check_qualified_ref_positions.rs`
+    /// (task #6499). Read those before softening either diagnostic here:
     ///
     /// - TYPE position is loud on its own: `param p : obj.width` answers
-    ///   `error: unresolved type: obj.width` (exit 1).
+    ///   `error: unresolved type: obj.width` (exit 1). Pinned by
+    ///   `check_unbound_qualified_ref_in_type_position_is_loud`.
     /// - `sub` structure_name is loud on its own: `sub s = obj.width()` answers
     ///   `error: sub-component "s" references unknown structure "obj.width"`
-    ///   (exit 1).
+    ///   (exit 1). Pinned by
+    ///   `check_unbound_qualified_ref_in_sub_position_is_loud`.
     /// - EXPRESSION position is NOT, because the compiler has no unknown-function
     ///   diagnostic behind `ExprKind::FunctionCall`. Loudness there is delivered
     ///   by `lower_namespaced_call`'s import-binding guard for an undeclared
