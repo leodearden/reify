@@ -2543,17 +2543,21 @@ mod cli {
 // the header but does not police it — see
 // [`write_response_with_session`] for why enforcement is off the table.
 //
-// Dual wire framing: every spawner comes in a JSON- and an SSE-framed
-// variant (`spawn_mock_mcp*` vs `spawn_mock_mcp_sse*`), selected by
-// [`Framing`] and threaded through [`write_response_framed`]. JSON drives
-// `FusedMemoryClient::post`'s bare-body `else` branch; SSE drives its
+// Dual wire framing: every JSON-framed test has an SSE-framed sibling that
+// calls [`spawn_mock_mcp_shaped`] directly with an explicit [`Framing`] and
+// [`ResultShape`] (e.g. `spawn_mock_mcp_shaped(Framing::Sse,
+// ResultShape::ContentText, ...)`), threaded through
+// [`write_response_framed`]. JSON drives `FusedMemoryClient::post`'s
+// bare-body `else` branch; [`Framing::Sse`] drives its
 // `ctype.contains("text/event-stream")` branch, and the mock wraps the
 // body as a realistic `event: message\ndata: <json>\n\n` frame rather
 // than a bare `data:` line so the client's line-scan is genuinely
 // exercised rather than getting lucky on a single-line body.
-// [`Framing::SseNoData`] is the SSE branch's other failure mode: a
-// data-less keep-alive-shaped frame, for locking `post()`'s "no SSE data
-// line" refusal. The `notifications/initialized` leg always answers 202
+// [`Framing::SseNoData`] and [`Framing::SseMalformedData`] are the SSE
+// branch's two failure modes — a data-less keep-alive-shaped frame, and a
+// `data:` line whose payload isn't valid JSON — for locking `post()`'s
+// "no SSE data line in response" and "SSE data parse" refusals
+// respectively. The `notifications/initialized` leg always answers 202
 // with an empty body under ALL framings: that matches real MCP, and
 // `post()` short-circuits on status 202 before it ever sniffs
 // content-type, so SSE-framing that leg would be untestable fiction.
@@ -2564,10 +2568,10 @@ mod cli {
 // All of this is purely additive: `spawn_mock_mcp`, `spawn_mock_mcp_on`,
 // `write_response` and `write_response_with_session` keep their exact
 // pre-existing signatures and just delegate into the framing/shape-aware
-// cores (`spawn_mock_mcp_on_shaped`, `write_response_framed`). That is
-// deliberate — those four helpers have 13 call sites elsewhere in this
-// file, in suites unrelated to this SSE work, and a signature change
-// would have dragged all of them into this diff.
+// cores (`spawn_mock_mcp_on_shaped`, `write_response_framed`,
+// `spawn_mock_mcp_shaped`). That is deliberate — those four helpers have 13
+// call sites elsewhere in this file, in suites unrelated to this SSE work,
+// and a signature change would have dragged all of them into this diff.
 
 /// A single HTTP request the mock's accept loop observed, captured so
 /// tests can assert on it (e.g. session-id-on-every-POST). Header names
@@ -2650,12 +2654,22 @@ enum Framing {
     /// A degenerate SSE frame carrying no `data:` line at all — just
     /// `event: message\n\n`, as a keep-alive/comment-only chunk might
     /// look. Exercises `post()`'s "no SSE data line in response"
-    /// refusal, the SSE branch's other failure mode alongside a
-    /// malformed `data:` payload (which is the raw-decode layer's own
-    /// coverage — out of scope here). The `body` argument passed to
-    /// [`write_response_framed`] is ignored under this variant: there is
-    /// by definition no data to carry.
+    /// refusal — one of the SSE branch's two failure modes; see
+    /// [`Framing::SseMalformedData`] for the other. The `body` argument
+    /// passed to [`write_response_framed`] is ignored under this
+    /// variant: there is by definition no data to carry.
     SseNoData,
+    /// An SSE frame WITH a `data:` line, but whose payload is not valid
+    /// JSON — `event: message\ndata: {not json\n\n`. Exercises `post()`'s
+    /// "SSE data parse" refusal, the SSE branch's other failure mode
+    /// alongside [`Framing::SseNoData`]. Verified uncovered anywhere else
+    /// in the crate: `fused_memory_client.rs`'s own `mod tests` never
+    /// constructs a `FusedMemoryClient` or exercises `post()` at all. As
+    /// with `SseNoData`, the `body` argument passed to
+    /// [`write_response_framed`] is ignored under this variant: the
+    /// payload is fixed garbage regardless of what the caller asked to
+    /// send.
+    SseMalformedData,
 }
 
 /// Which JSON-RPC `result` envelope shape the mock's `tools/call` arm
@@ -2709,9 +2723,9 @@ fn write_response_with_session(
 /// matter: they prove the client's `post()` SSE branch's `body.lines()`
 /// scan actually skips a non-`data:` line rather than getting lucky on a
 /// single-line body. `Content-Length` is computed over the WRAPPED bytes,
-/// matching what a real server would send. [`Framing::SseNoData`] instead
-/// wraps as a data-less frame regardless of `body` — see its own doc
-/// comment.
+/// matching what a real server would send. [`Framing::SseNoData`] and
+/// [`Framing::SseMalformedData`] instead ignore `body` entirely and wrap a
+/// fixed, framing-specific payload — see their own doc comments.
 fn write_response_framed(
     stream: &mut TcpStream,
     status: u16,
@@ -2726,7 +2740,7 @@ fn write_response_framed(
     };
     let content_type = match framing {
         Framing::Json => "application/json",
-        Framing::Sse | Framing::SseNoData => "text/event-stream",
+        Framing::Sse | Framing::SseNoData | Framing::SseMalformedData => "text/event-stream",
     };
     let framed_body = match framing {
         Framing::Json => body.to_vec(),
@@ -2739,6 +2753,7 @@ fn write_response_framed(
             framed
         }
         Framing::SseNoData => b"event: message\n\n".to_vec(),
+        Framing::SseMalformedData => b"event: message\ndata: {not json\n\n".to_vec(),
     };
     let mut header = format!(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -2782,61 +2797,27 @@ where
     spawn_mock_mcp_on(listener, task_responder)
 }
 
-/// Spawn a one-shot mock MCP server that answers every leg with
-/// `Content-Type: text/event-stream` framing (see [`Framing::Sse`]) rather
-/// than bare JSON, binding an OS-assigned ephemeral port. SSE counterpart
-/// to [`spawn_mock_mcp`]; result shape is [`ResultShape::StructuredContent`]
-/// (see [`spawn_mock_mcp_sse_content_text`] for the other shape). See
-/// [`spawn_mock_mcp_on_shaped`] for exactly which leg stays JSON-shaped
-/// regardless (the `notifications/initialized` 202).
-fn spawn_mock_mcp_sse<F>(task_responder: F) -> MockServer
+/// Spawn a one-shot mock MCP server on an OS-assigned ephemeral port with
+/// an explicit wire `framing` and `tools/call` result `shape`. The single
+/// entry point for every SSE scenario in this suite — call sites name the
+/// framing/shape combination directly, e.g.
+/// `spawn_mock_mcp_shaped(Framing::Sse, ResultShape::ContentText, ...)`,
+/// rather than through a differently-named wrapper per combination. See
+/// [`spawn_mock_mcp_on_shaped`] for the accept-loop details, including
+/// exactly which leg stays JSON-shaped regardless (the
+/// `notifications/initialized` 202).
+///
+/// `spawn_mock_mcp` and `spawn_mock_mcp_on` are deliberately NOT built on
+/// this: they have 13 call sites elsewhere in this file predating this
+/// task's SSE work (see the harness section doc comment above), and this
+/// function exists precisely so those two can keep their exact
+/// pre-existing signatures untouched.
+fn spawn_mock_mcp_shaped<F>(framing: Framing, shape: ResultShape, task_responder: F) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    spawn_mock_mcp_on_shaped(
-        listener,
-        Framing::Sse,
-        ResultShape::StructuredContent,
-        task_responder,
-    )
-}
-
-/// Spawn a one-shot mock MCP server, SSE-framed, whose `tools/call` result
-/// uses the `content[0].text` shape (see [`ResultShape::ContentText`])
-/// instead of `structuredContent`. The only spawner in the harness that
-/// exercises `FusedMemoryClient::call_tool`'s `content[].text` fallback
-/// branch.
-fn spawn_mock_mcp_sse_content_text<F>(task_responder: F) -> MockServer
-where
-    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
-{
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    spawn_mock_mcp_on_shaped(
-        listener,
-        Framing::Sse,
-        ResultShape::ContentText,
-        task_responder,
-    )
-}
-
-/// Spawn a one-shot mock MCP server whose `initialize` response is a
-/// degenerate, data-less SSE frame (see [`Framing::SseNoData`]). The MCP
-/// handshake fails while decoding that very response, so `task_responder`
-/// is never invoked and no later leg is ever sent — reusing
-/// [`spawn_mock_mcp_on_shaped`]'s general accept loop here (rather than a
-/// bespoke no-responder listener) is harmless for exactly that reason.
-fn spawn_mock_mcp_sse_no_data<F>(task_responder: F) -> MockServer
-where
-    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
-{
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    spawn_mock_mcp_on_shaped(
-        listener,
-        Framing::SseNoData,
-        ResultShape::StructuredContent,
-        task_responder,
-    )
+    spawn_mock_mcp_on_shaped(listener, framing, shape, task_responder)
 }
 
 /// Spawn a one-shot mock MCP server on an already-bound `listener`, speaking
@@ -3152,7 +3133,7 @@ mod http_loader {
         // Seed the runs.db corroboration leg.
         insert_completed_event(&runs_db, "9998");
 
-        let mock = spawn_mock_mcp_sse(|args| {
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |args| {
             assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9998"));
             // Files=[] → P5's git-diff check trivially passes; the runs.db
             // task_completed event corroborates the done-flip.
@@ -3276,7 +3257,7 @@ mod http_loader {
         let runs_db = write_empty_runs_db(dir);
         insert_completed_event(&runs_db, "9997");
 
-        let mock = spawn_mock_mcp_sse_content_text(|args| {
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::ContentText, |args| {
             assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9997"));
             Some(serde_json::json!({
                 "id": "9997",
@@ -3429,7 +3410,8 @@ mod http_loader {
         let dir = tmp.path();
         let runs_db = write_empty_runs_db(dir);
 
-        let mock = spawn_mock_mcp_sse(|_args| None);
+        let mock =
+            spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |_args| None);
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -3473,9 +3455,9 @@ mod http_loader {
     /// comment-only chunk, no `data:` line at all) on the `initialize`
     /// leg must be refused rather than silently treated as an empty or
     /// successful response. Exercises `post()`'s "no SSE data line in
-    /// response" refusal — the SSE branch's other failure mode, sibling
-    /// to the malformed-`data:`-payload case that the raw decode layer
-    /// (not this task) owns.
+    /// response" refusal — one of the SSE branch's two failure modes; see
+    /// [`pre_done_via_http_loader_sse_malformed_data_exits_125`] below for
+    /// the other (a `data:` line whose payload isn't valid JSON).
     #[test]
     fn pre_done_via_http_loader_sse_no_data_line_exits_125() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3483,13 +3465,21 @@ mod http_loader {
         let runs_db = write_empty_runs_db(dir);
 
         // `initialize` fails to decode before any later leg is ever sent,
-        // so this responder must never run.
-        let mock = spawn_mock_mcp_sse_no_data(|_args| {
-            panic!(
-                "tools/call must never be reached — the handshake fails \
-                 while decoding `initialize`"
-            );
-        });
+        // so this responder must never run. A panic inside the mock's
+        // accept thread would NOT by itself fail this test —
+        // `MockServer::stop()` discards the accept thread's join result —
+        // so the guard here is this flag, read back after `stop()` (which
+        // joins the thread and is therefore the race-free read barrier).
+        let reached = Arc::new(AtomicBool::new(false));
+        let reached_clone = Arc::clone(&reached);
+        let mock = spawn_mock_mcp_shaped(
+            Framing::SseNoData,
+            ResultShape::StructuredContent,
+            move |_args| {
+                reached_clone.store(true, Ordering::Relaxed);
+                None
+            },
+        );
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -3509,6 +3499,11 @@ mod http_loader {
 
         mock.stop();
 
+        assert!(
+            !reached.load(Ordering::Relaxed),
+            "tools/call must never be reached — the handshake fails while \
+             decoding `initialize`"
+        );
         assert_eq!(
             out.status.code(),
             Some(125),
@@ -3519,6 +3514,73 @@ mod http_loader {
         assert!(
             stderr.contains("no SSE data line"),
             "stderr should breadcrumb the missing-data-line refusal; got: {stderr}"
+        );
+    }
+
+    /// Negative SSE lock: an SSE `data:` line whose payload is not valid
+    /// JSON must be refused rather than silently treated as an empty or
+    /// successful response. Exercises `post()`'s "SSE data parse" refusal
+    /// — the SSE branch's other failure mode, sibling to
+    /// [`pre_done_via_http_loader_sse_no_data_line_exits_125`] above.
+    /// Verified uncovered anywhere else in the crate before this test:
+    /// `fused_memory_client.rs`'s own `mod tests` only covers
+    /// `parse_iso8601_to_epoch`, `days_from_civil` and
+    /// `task_metadata_from_wire` — it never constructs a
+    /// `FusedMemoryClient` or exercises `post()` at all.
+    #[test]
+    fn pre_done_via_http_loader_sse_malformed_data_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // `initialize` fails to decode before any later leg is ever sent,
+        // so this responder must never run — see the sibling no-data-line
+        // test above for why a bare in-thread `panic!()` would not by
+        // itself fail this test.
+        let reached = Arc::new(AtomicBool::new(false));
+        let reached_clone = Arc::clone(&reached);
+        let mock = spawn_mock_mcp_shaped(
+            Framing::SseMalformedData,
+            ResultShape::StructuredContent,
+            move |_args| {
+                reached_clone.store(true, Ordering::Relaxed);
+                None
+            },
+        );
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9993",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert!(
+            !reached.load(Ordering::Relaxed),
+            "tools/call must never be reached — the handshake fails while \
+             decoding `initialize`"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed SSE data line must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("SSE data parse"),
+            "stderr should breadcrumb the SSE data-parse refusal; got: {stderr}"
         );
     }
 
@@ -3783,7 +3845,9 @@ mod http_loader {
         // Responder returns an empty object — well-formed envelope,
         // missing `tasks` field. Same shape as the JSON sibling, just
         // delivered as an SSE `data:` frame.
-        let mock = spawn_mock_mcp_sse(|_args| Some(serde_json::json!({})));
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |_args| {
+            Some(serde_json::json!({}))
+        });
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
