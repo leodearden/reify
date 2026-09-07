@@ -1,0 +1,116 @@
+module dimensioned_arguments
+
+// dimensioned_arguments.ri — IDIOM: every length-semantic geometry argument
+// carries a unit. A bare number in a length slot is REJECTED, never read as
+// metres and never read as millimetres.
+//
+//     let plate   = box(20mm, 20mm, plate_h)      // not box(20, 20, 10)
+//     let centred = translate(plate, 0mm, 0mm, -plate_h / 2)
+//     let twice   = scale(plate, 2)               // dimensionless slot: BARE
+//
+// ANTI-PATTERN this replaces:
+//
+//     let plate = box(20, 20, 10)     // don't — written hoping bare means mm
+//
+// WHY THE REJECTION IS THE FEATURE. There is exactly one sane thing a bare
+// number could silently mean, and it is the SI base unit: metres. So a `20`
+// written by an author who meant `20mm` would build a 20-METRE plate — a 1000x
+// scale error that nothing downstream catches, because the model stays
+// perfectly self-consistent at the wrong size. `scale_error` below makes that
+// factor executable rather than rhetorical: it is `20m / 20mm`, pinned at 1000.
+//
+// WHAT LEGITIMATELY STAYS BARE. Not every geometry argument is a length.
+// Unit-vector and axis-direction components, `scale` factors, repeat counts,
+// NURBS weights and indices are dimensionless by construction, and a unit on
+// one of them says something the author does not mean. That half is an
+// authoring rule you uphold, NOT one the compiler enforces — the gate runs in
+// one direction only, so `scale(g, 2mm)` is accepted. `twice` below is the
+// idiom written the way you mean it.
+//
+// WHERE THE TABLES LIVE — deliberately NOT restated here. The rejected-form /
+// migration table, the per-argument diagnostic wording (the
+// `pass a dimensioned length such as `5mm`` tail is
+// `reify-core::units::LENGTH_MIGRATION_HINT`), the bare-`0`-is-not-special-cased
+// case, and the `reify check` EXIT-CODE split all live in one place:
+// `crates/reify-mcp/src/tools/chunks/units.md`, section
+// "Dimensioned Geometry Arguments" — topic `units` of `reify_language_reference`.
+// That section's tables are gated byte-exactly by
+// `crates/reify-compiler/tests/harness_doc_chunks/units_chunk_smoke.rs`, which
+// runs the real compiler over both columns. Re-quoting them here would be a
+// second copy to keep in sync — exactly the rot this corpus exists to avoid.
+// Which ARGUMENT of which constructor is length-semantic is catalogued per
+// position in the `geometry` chunk, under "Dimensioned arguments".
+//
+// THE ONE THING WORTH CARRYING HERE, because it decides how you gate a design:
+// `reify eval` and `reify build` reject every bare-length form, exit 1, every
+// time. `reify check` is NOT equivalent — it prints the same `error:` lines,
+// but its exit code depends on which layer owns the slot: 1 for the
+// compile-layer constructors (`box`, `translate`, `fillet`, the 7-arg `mirror`
+// pivot), 0 for the eval-only ones (`helix`, `polygon`, ...) even though the
+// errors are right there on stderr. Measured 2026-09-07. So read check's
+// STDERR, and gate on `reify eval`, never on check's exit status alone.
+//
+// Verified contracts:
+//
+//   ONE LENGTH, THREE SPELLINGS. `20mm`, `2cm` and `0.02m` are the same value,
+//   not three approximations of it — all three converge on the identical f64,
+//   which is why the two equalities below are EXACT `==` rather than the bands
+//   the rest of this file uses. A unit suffix is a conversion at parse time,
+//   not a tag carried alongside a number.
+//
+//   THE 1000x, MADE EXECUTABLE. `bare_reading` is what a bare `20` WOULD have
+//   meant had the compiler accepted it, spelled explicitly as `20m`.
+//   `scale_error = bare_reading / plate_w` is dimensionless and pinned in a
+//   999..1001 band, so the magnitude of the mistake is asserted by the
+//   constraint gate rather than asserted in this comment.
+//
+//   DIMENSIONED ARITHMETIC COMPOSES. A dimensionless ratio times a Length is a
+//   Length (`web_t = web_frac * plate_h`), and a Length divided by a bare
+//   number stays a Length — which is why the hand-centring idiom needs no extra
+//   unit on `-plate_h / 2`. Each `: Length` annotation below is an assertion:
+//   drop the unit from the initializer and the binding stops compiling.
+//
+// Bands, not sign guards: `web_t > 0mm` would survive a regression that
+// preserved dimensions but moved magnitudes. These bands fail instead.
+
+structure def DimensionedArguments {
+    param plate_w  : Length = 20mm
+    param plate_h  : Length = 10mm
+    param web_frac : Real   = 0.4
+
+    // One length, three spellings — exact, not approximate.
+    let w_cm : Length = 2cm
+    let w_m  : Length = 0.02m
+
+    // What a bare `20` would have meant, had it been accepted.
+    let bare_reading : Length = 20m
+    let scale_error  = bare_reading / plate_w      // 1000, dimensionless
+
+    // Ratio * Length -> Length. The annotation is the assertion.
+    let web_t : Length = web_frac * plate_h        // 0.004 m
+
+    // THE IDIOM: every length slot carries a unit...
+    let plate   = box(plate_w, plate_w, plate_h)
+    let centred = translate(plate, 0mm, 0mm, -plate_h / 2)   // Length/bare stays Length
+
+    // ...and every dimensionless slot stays bare. `scale`'s factor is a
+    // multiplier, not a length; `2mm` here would be accepted and would mean
+    // nothing.
+    let twice = scale(plate, 2)
+
+    // Exact: all three spellings are the same f64.
+    constraint plate_w == w_cm
+    constraint plate_w == w_m
+
+    // The 1000x that a silently-accepted bare `20` would have cost.
+    constraint scale_error > 999.0
+    constraint scale_error < 1001.0
+
+    // Derived length keeps its dimension and its magnitude.
+    constraint web_t > 3.9mm
+    constraint web_t < 4.1mm
+
+    // A ratio is a ratio — no unit belongs on it.
+    constraint web_frac > 0.0
+    constraint web_frac < 1.0
+}
