@@ -831,6 +831,13 @@ echo "-- Pair E: emitted-gate plan-line derivation --"
 # anti-drift net. Mirrors Pair B's REAL-LIB-loop + GROUND-TRUTH split and Pair
 # C's (a)/(b) split for the same reason.
 #
+# THAT RATIONALE STILL HOLDS — and is why this tier was not replaced by a
+# derivation when task 6296 arrived. What CHANGED is what keeps it honest.
+# Hand-maintained is exactly how it rotted: it sat at ten entries while
+# verify.sh's plan grew to thirteen. It is now pinned by (a-bis)'s SET-EQUALITY
+# assertion against the live derivation, so this list stays the anti-vacuity net
+# it was written to be while no longer being the thing that silently goes stale.
+#
 # RED until step-2 adds the emitted-gate derivation clause for the first SEVEN
 # entries (measured exit 1 at HEAD fee75336ca); the last two are already GREEN
 # via their task-6243 rows in scripts/verify-pipeline-paths.txt.
@@ -855,6 +862,29 @@ _PAIR_E_PLAN_LEAF_GROUND_TRUTH=(
     scripts/check-nan-safe-ordering.sh
     scripts/check-compute-trampoline-registration.sh
     tests/sync_comments_test.sh
+    # The three below were added by task 6296, each for a DIFFERENT reason. The
+    # notes are not decoration: two of them look odd enough that a future reader
+    # would otherwise be tempted to "clean them up" out of the list, which would
+    # red (a-bis) and invite editing the assertion instead of the array.
+    #
+    # THE DRIFT ITSELF. Emitted twice by verify.sh's plan — once as `ensure`,
+    # once as `check`. Landed with task #5629 and was never added here, which is
+    # the gap task 6296 was filed for; this file did not mention it at all.
+    # Covered by the guard's emitted-gate clause, so it needs NO
+    # verify-pipeline-paths.txt row.
+    scripts/tree-sitter-freshness.sh
+    # verify.sh invokes ITSELF as a plan leaf (the psi-gate and compile-gate
+    # sub-invocations). Its exit-0 verdict is OVER-DETERMINED — it is also the
+    # guard's clause-1 anchor, asserted directly in Pair A — so it proves
+    # nothing new about the guard. It is listed because it IS a plan leaf and
+    # set equality against the live derivation demands it; dropping it to tidy
+    # the "redundant" entry breaks (a-bis).
+    scripts/verify.sh
+    # Emitted by the infra-test plan line. Also over-determined: separately
+    # covered BOTH by the guard's in-code tests/infra/*.sh glob clause and by an
+    # explicit verify-pipeline-paths.txt row. Same reasoning as above — listed
+    # because the derivation sees it, not because this is its only coverage.
+    tests/infra/run_all.sh
 )
 
 for _gate in "${_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]}"
