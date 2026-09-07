@@ -214,6 +214,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: 'Turn 261: grep exits with code 2 (''No such file or directory'') when probing src/__tests__/debugBridge.test.tsx; path error correctly surfaced but indicates file expected at wrong location'
+  - date: '2026-09-06'
+    project: reify
+    session: 5989826f-eae5-4965-8949-7282e4edd4b5
+    origin_phase: implement
+    manifested_phase: implement
+    note: 'Turn 41: grep exit 2 with 2>/dev/null. Turns 82–88: agent retried with different sed/perl approaches and grep variants, each hitting exit 2 again. Pattern matches: exit-code-2 (path/IO error) misdiagnosed as pattern-not-found, retried by varying only the search string.'
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -770,6 +776,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Warm-lanes orchestrated-task agent encountered 'not_found' signal; possible TaskOutput polling against a task_id no longer in registry, but evidence too vague (only '(turn 48) does not exist') to confirm
+  - date: '2026-09-06'
+    project: reify
+    session: 32a99f20-e280-4716-9055-cf8bb799b453
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lanes task attempted to access a resource (turn artifact) no longer available in the registry/filesystem
 - id: entry-cand-20260731-1
   title: Blocked sleep+tail poll fallback into repeated-Read retry loop
   severity: medium
@@ -908,6 +920,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Turn 19 shows agent assumed .task/iterations.jsonl would exist; file not found, revealing unmet presence assumption for iteration state
+  - date: '2026-09-06'
+    project: reify
+    session: 81ecf064-3136-4327-9ea8-34bbe88a6cf7
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Warm-lane task-meta iteration state (likely iterations.jsonl) assumed present but absent; starvation watchdog fires when task cannot resolve task-meta state
 - id: entry-cand-20260720-3
   title: Sleep-chain polling of background task output blocked by guard
   severity: medium
@@ -1711,6 +1729,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: Verify subprocess produces empty (0-byte) log file; orchestrated agent attempts process diagnostics (pgrep, log wc inspection) to investigate, consistent with background task output polling pattern
+  - date: '2026-09-06'
+    project: reify
+    session: 32a99f20-e280-4716-9055-cf8bb799b453
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: If agent was polling background task output via sleep+tail, the output file for turn 33 does not exist
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -1893,6 +1917,12 @@ entries:
     manifested_phase: merge
     invariant_violated: Heredoc-wrapped commit message arguments safely accommodate parentheses in message text
     note: 'Commit message `fix(6387): use is_multiple_of...` contains literal `(` at position 3, triggering bash parse error in `$(cat <<''EOF''...''EOF'')` wrapper. Exit code 127 (command not found) due to syntax error near unexpected token `(`. Agent (Claude Opus 5) constructed heredoc without escaping message content.'
+  - date: '2026-09-06'
+    project: reify
+    session: 3f6a932e-79de-4cca-99bc-a14b44304f8c
+    origin_phase: implement
+    manifested_phase: implement
+    note: Heredoc commit message containing literal parentheses 'RED — generated-output manifest primitives (steps 1)' breaks under eval-wrapped bash execution, producing exit 127 with 'syntax error near unexpected token `('
 - id: entry-cand-20260725-4
   title: Concurrent background commit retries collide on git index.lock with no serialization
   severity: medium
@@ -2901,6 +2931,12 @@ entries:
     origin_phase: architect
     manifested_phase: ops
     note: Two MCP resolve_issue timeouts coincide with escalation-watcher operation; missing DARK_FACTORY_ROOT may force expensive filesystem searches during session setup
+  - date: '2026-09-06'
+    project: reify
+    session: 81ecf064-3136-4327-9ea8-34bbe88a6cf7
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Escalation esc-5791-6 filed for warm-lanes task; if escalation-watcher spawned without DARK_FACTORY_ROOT, it may fail to resolve dark-factory tooling paths needed for context assembly
 - id: entry-cand-20260728-7
   title: Warm-lane .task-meta path assumed at warm-lanes root instead of under worktrees/
   severity: medium
@@ -3084,6 +3120,19 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Read fails for .task/metadata.json in warm-lane worktree _lane-27; path assumption error or incorrect directory structure in expected location
+  - date: '2026-09-06'
+    project: reify
+    session: 979123e6-b49e-4be3-aea5-f5232bec1528
+    origin_phase: unknown
+    manifested_phase: verify
+    invariant_violated: warm-lane task-meta directory structure assumption
+    note: 'turn 14: cat /home/leo/src/warm-lanes/worktrees/_lane-26/.task/metadata.json exits 2 (file not found); .task/plan.json exists but .task/metadata.json absent, suggesting path-location confusion specific to warm-lane worktree .task-meta structure'
+  - date: '2026-09-06'
+    project: reify
+    session: 81ecf064-3136-4327-9ea8-34bbe88a6cf7
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Warm-lane .task-meta path resolution failure in worktree /home/leo/src/warm-lanes/worktrees/_lane-0; agent likely assumes path at warm-lanes root rather than worktrees/ subdirectory
 - id: entry-cand-20260728-8
   title: Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees)
   severity: medium
@@ -4361,6 +4410,25 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Orchestrated task in warm-lane worktree (_lane-2) encountered multiple file-not-found errors, consistent with probing undocumented .task-meta path
+  - date: '2026-09-06'
+    project: reify
+    session: 979123e6-b49e-4be3-aea5-f5232bec1528
+    origin_phase: unknown
+    manifested_phase: verify
+    invariant_violated: undocumented .task-meta path resolution
+    note: 'turns 14, 63: Bash exit code 2 (ENOENT) when probing .task/.../metadata.json and .task/reviews; agent diagnosis of warm-lane task state encounters expected-but-missing paths'
+  - date: '2026-09-06'
+    project: reify
+    session: cfd2f029-59f6-42d3-a5d6-a79b192f2b9c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Session in warm-lanes worktree exhibits 3 sequential 'not found' errors; agent probing undocumented .task-meta/<lane>/ path structure in warm-lanes context matches entry precisely.
+  - date: '2026-09-06'
+    project: reify
+    session: 81ecf064-3136-4327-9ea8-34bbe88a6cf7
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 4 'not_found' signals from warm-lanes worktree; exit code 2 (ENOENT) consistent with missing .task-meta/<lane>/iterations.jsonl during reconcile_sweep lock-acquisition loop
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -4755,6 +4823,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Per-lane task-meta iterations.jsonl or related bootstrap files missing in warm-lane worktree context, triggering not-found signals across multiple turns
+  - date: '2026-09-06'
+    project: reify
+    session: 81ecf064-3136-4327-9ea8-34bbe88a6cf7
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Per-lane task-meta iterations.jsonl missing at expected path; warm-lanes worktree unable to find required metadata across 71 reconcile_sweep passes
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -16350,3 +16424,107 @@ candidates:
     origin_phase: implement
     manifested_phase: review
     evidence_quote: The new per-mode expression `plan.zeta_material + rayleigh_damping_ratio(...)` adds the MSE term OUTSIDE the near-zero-omega guard that `rayleigh_damping_ratio` applies internally... a rigid-body/spurious mode... η/2 is not the correct answer. No test in the new suite covers an ω ≈ 0 mode under `MaterialDamping`; both... test fixtures assert `f > 1.0 Hz` in a physical-band guard, so the case is structurally excluded from coverage.
+- id: cand-20260906-1
+  title: Changing working directory breaks git repository context for subsequent operations
+  cause: Agent executed cd /tmp before running git show HEAD:scripts/..., causing immediate 'not a git repository' failure; attempting git operations outside repository context
+  area: git operations, working directory management
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: 47e46f5c-bbb8-4c48-80d9-1c06da69a9d8
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'cd /tmp && rm -rf pdv_pre && mkdir pdv_pre && git show HEAD:scripts/prd-decompose-verify.py (exit 128: ''not a git repository'')'
+- id: cand-20260906-2
+  title: Interactive session with zero user turns; tool rejection attributed to absent user
+  cause: Session labeled agent_class='interactive' contradicts n_user_turns=0. Turn 306 rejection message uses user language ('The user doesn't want to proceed') but no user participated in the session.
+  area: session classification / tool rejection logging
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: 55694193-f3a2-45b3-ba05-7c533e43c7e6
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'agent_class: ''interactive'', n_user_turns: 0 ... (turn 306) ''The user doesn''t want to proceed with this tool use'''
+- id: cand-20260906-3
+  title: Three not-found signals correlate with per-lane task-meta path probes in warm-lanes worktree
+  cause: Agent probes for task-metadata files (.task-meta/<lane>/iterations.jsonl or similar) that are missing or at wrong path in warm-lanes per-lane worktree structure.
+  area: task metadata / warm-lanes bootstrap
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: 55694193-f3a2-45b3-ba05-7c533e43c7e6
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'not_found: 3 ... (turn 59) ''not found in'', (turn 181) ''no such file or directory'', (turn 270) ''does not exist'''
+- id: cand-20260906-4
+  title: Autonomous subagent spawning within interactive warm-lanes sessions without user input
+  cause: Interactive agent session spawning background/subagent operations (encoded_dir='subagents') in warm-lanes worktree with zero user turns—unclear whether this is a legitimate autonomous pattern or a detection artifact.
+  area: warm-lanes session lifecycle
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: cfd2f029-59f6-42d3-a5d6-a79b192f2b9c
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'agent_class: ''interactive'', n_user_turns: 0, encoded_dir: ''subagents'', cwd: ''/home/leo/src/warm-lanes/worktrees/_lane-48'', size_bytes: 469'
+- id: cand-20260906-5
+  title: Warm-lane agent references missing turn artifact by ordinal
+  cause: Agent in warm-lanes worktree attempted to access turn artifact (output, intermediate state, or metadata) keyed by turn number that doesn't exist, was deleted, or lives at wrong path
+  area: warm-lanes task bootstrap / iteration tracking
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: 32a99f20-e280-4716-9055-cf8bb799b453
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: (turn 33) does not exist in /home/leo/src/warm-lanes/worktrees/_lane-26; orchestrated-task session with 457 bytes, score 1.0
+- id: cand-20260906-6
+  title: MCP envelope markup serialized into structured-field content during memory write
+  cause: Agent constructing fused-memory add_memory payload included raw MCP closing tag `</content>` in the content string itself, violating envelope framing. Rejection included recovered_params and repaired_call showing the intended content was recoverable but the serialization crossed MCP envelope boundaries.
+  area: cross-project memory writes from orchestrated tasks
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: 5989826f-eae5-4965-8949-7282e4edd4b5
+    origin_phase: implement
+    manifested_phase: unknown
+    evidence_quote: 'Tool call rejected: it carries raw MCP envelope markup in ''content'', which means the caller serialized part of its own tool-call envelope into the payload. (turn 205, add_memory on task #6388)'
+- id: cand-20260906-7
+  title: Guard condition generalization missed — contribution check omitted from outlier operator
+  cause: Implementation replicated an edge-case guard pattern but failed to apply the established precedent for masking the guard on contribution (seen in min/max/clamp). The abs kink guard rejects valid cases where the argument is a seed-independent constant, while sibling operators correctly condition on tangent presence.
+  area: robustness
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: 031b9507-d0dd-4697-af2e-1efd4a3e7106
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: The `abs` kink guard is NOT masked by argument contribution, unlike the smooth-builtin finiteness guard 250 lines above it... min/max/clamp/mod/floor all handle the constant case correctly (via select/combine), so abs is the lone outlier.
+- id: cand-20260906-8
+  title: Comment citation in referential-integrity correction points to wrong function, contradicting the fix's purpose
+  cause: Agent understood the general intent to fix false cross-references but failed to verify that replacement citations accurately mapped to the intended locations in other files. The diff was supposed to retire a false cross-reference, but instead introduced a new one with a misdirected comment citation pointing to a function with 4 entries instead of the 2 actually being corrected.
+  area: code-correctness
+  first_seen: '2026-09-06'
+  disposition: pending
+  sightings:
+  - date: '2026-09-06'
+    project: reify
+    session: d6c87574-6211-4bb0-8f2a-30458f077995
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: 'The newly added parenthetical reads: ''(These are the same two entries `arg_type_is_unverifiable` lists in `conformance/mod.rs`; the two lists must stay consistent.)'' `arg_type_is_unverifiable` (crates/reify-compiler/src/conformance/mod.rs:1300) lists FOUR entries — none of which is the erasure route the sentence is about. The two-entry erasure list actually lives in `general_leaf_param_family_is_validated` (conformance/mod.rs:2025-2035).'
