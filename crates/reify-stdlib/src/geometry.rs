@@ -192,28 +192,36 @@ const TWIST_LINEAR_DIM: DimensionVector = DimensionVector::LENGTH;
 
 /// The dimension admitted on the ANGULAR half of a twist.
 ///
-/// NOT ruled by #6126 — **#6080 owns the angular half**, including whether this value
-/// stays DIMENSIONLESS or widens (to ANGLE, or to a set). This const exists purely so
-/// that the value has ONE spelling instead of two, because two co-dependent sites read
-/// it and they are 1000 lines apart:
+/// RULING #6080: a twist's `angular` half is `Vector3<Angle>` — and ONLY `Angle`. A
+/// rotation vector is `axis * angle`, a dimensionless unit axis scaled by an angle, so
+/// its magnitude IS an angle in radians; that is what makes d/dt of one an
+/// ANGULAR_VELOCITY rather than a FREQUENCY, and what makes `transform_log`'s angular
+/// half agree with the `orient_log` it is the SE(3) lift of.
+///
+/// DIMENSIONLESS was the previously-admitted spelling and is now rejected like any
+/// other wrong dimension. It is NOT tolerated for back-compat: DIMENSIONLESS is a
+/// SPECIFIC dimension (the zero exponent vector), not a wildcard, so admitting it as a
+/// tolerant alias would re-open the hole PRD #5747 decision D11 closed for this very
+/// family — the same grounds on which #6126 narrowed the linear half. The breaking
+/// change is carried by a diagnostic rather than by silence; see [`diagnose`].
+///
+/// The const exists so that the value has ONE spelling instead of two, because two
+/// co-dependent sites read it and they are 1000 lines apart:
 ///
 /// 1. the `transform_exp` EVAL gate, which rejects a non-admitted angular half; and
-/// 2. [`diagnose`]'s `transform_exp` arm, which DEFERS (stays silent) exactly when that
-///    eval gate is the one that owns the failure, so a twist wrong in both halves is
-///    not mis-attributed to `linear`.
+/// 2. [`diagnose`]'s `transform_exp` arm, which now EXPLAINS exactly the rejection that
+///    eval gate performs (it used to defer to it in silence, when #6080 had not yet
+///    ruled), so a twist wrong in both halves is not mis-attributed to `linear`.
 ///
-/// The deferral is only correct while it agrees with the gate. Re-spelling the literal
-/// at both sites made that agreement unenforced, and the failure is SILENT in the
-/// dangerous direction: widen the eval gate alone and the classifier keeps requiring
-/// DIMENSIONLESS, so it stops emitting the #6126 linear Error for every twist whose
-/// angular half is newly-valid — a diagnostic regression no test that hardcodes
-/// DIMENSIONLESS can see. `diagnose_transform_exp_deferral_tracks_evals_angular_gate`
-/// is the behavioural pin: it builds its angular half FROM this const, so it follows
-/// the gate wherever #6080 moves it and goes red if only one site moves.
-///
-/// #6080 therefore changes this ONE line (plus, if the gate becomes a set rather than a
-/// single dimension, both readers together — which the pin will force it to notice).
-const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::DIMENSIONLESS;
+/// That agreement is only correct while both sites move together. Re-spelling the
+/// literal at both sites made it unenforced, and the failure is SILENT in the dangerous
+/// direction: move the eval gate alone and the classifier keeps testing for the old
+/// dimension, so it mis-classifies every twist whose angular half is newly-valid — a
+/// diagnostic regression no test that hardcodes a dimension can see.
+/// `diagnose_transform_exp_deferral_tracks_evals_angular_gate` is the behavioural pin:
+/// it builds its angular half FROM this const, so it follows the gate wherever the gate
+/// moves and goes red if only one site moves.
+const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::ANGLE;
 
 /// Decompose one half of a twist — `Map { angular: Vector3<…>, linear: Vector3<…> }` —
 /// into its three finite components and their single shared dimension.
@@ -671,21 +679,25 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 1 {
                 return Some(Value::Undef);
             }
-            let map = match &args[0] {
-                Value::Map(m) => m,
-                _ => return Some(Value::Undef),
-            };
-            let angular_val = match map.get(&Value::String("angular".to_string())) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
-            // Extract angular: must be Vector3<DIMENSIONLESS>.
+            // Extract angular: must be Vector3<Angle>.
             //
-            // The gate is spelled via `TWIST_ANGULAR_DIM` — NOT because #6126 rules the
-            // angular half (it does not; #6080 does), but because `diagnose`'s
-            // transform_exp arm defers to THIS gate and must not drift from it. See
+            // Twist angular convention (RULING #6080): a rotation vector is
+            // `axis * angle`, so `angular` carries ANGLE. Every other dimension —
+            // DIMENSIONLESS included — returns Undef here AND is explained by
+            // `diagnose`, which names the offending dimension rather than leaving a
+            // bare OpContractViolation note. `transform_log` emits ANGLE on the same
+            // half, so both ends of the log↔exp seam agree on what they admit.
+            //
+            // The gate is spelled via `TWIST_ANGULAR_DIM` because `diagnose`'s
+            // transform_exp arm reads the SAME const and must not drift from it; see
             // that const's doc for the co-dependence.
-            let (ang_comps, ang_dim) = match decompose_vec3(angular_val) {
+            //
+            // The shape (Map + field key) is read through `decompose_twist_component`,
+            // the SAME helper the linear half and `diagnose` use — the restructure the
+            // helper's doc reserved for #6080. Every shape failure it folds into `None`
+            // (non-Map arg, missing key, not a 3-Vector, mixed or non-finite
+            // components) was already Undef here.
+            let (ang_comps, ang_dim) = match decompose_twist_component(&args[0], "angular") {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
@@ -858,9 +870,17 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             let mut m = BTreeMap::new();
+            // The angular half is the rotation vector theta * n_hat, whose magnitude is
+            // an angle in radians, so it carries `TWIST_ANGULAR_DIM` (RULING #6080) —
+            // built through the SAME helper the linear half uses, so both halves of the
+            // emitted twist are constructed the same way.
             m.insert(
                 Value::String("angular".to_string()),
-                Value::Vector(vec![Value::Real(wx), Value::Real(wy), Value::Real(wz)]),
+                Value::Vector(vec![
+                    make_dimensioned_component(TWIST_ANGULAR_DIM, wx),
+                    make_dimensioned_component(TWIST_ANGULAR_DIM, wy),
+                    make_dimensioned_component(TWIST_ANGULAR_DIM, wz),
+                ]),
             );
             m.insert(
                 Value::String("linear".to_string()),
@@ -4893,9 +4913,9 @@ mod tests {
     /// `Value::Real` (not `Scalar{DIMENSIONLESS}`), matching how `.ri` bare numbers
     /// actually reach eval.
     ///
-    /// The angular dimension is a parameter because the classifier now DEFERS to eval's
-    /// angular gate (see `diagnose`'s transform_exp arm), which is only testable with a
-    /// non-DIMENSIONLESS angular half.
+    /// The angular dimension is a parameter because both eval and the classifier gate on
+    /// it (see `diagnose`'s transform_exp arm), which is only testable by building a
+    /// NON-default angular half.
     fn make_twist_with_dims(
         angular: [f64; 3],
         angular_dim: DimensionVector,
@@ -4924,10 +4944,10 @@ mod tests {
         Value::Map(m)
     }
 
-    /// Helper: build a twist Map with a DIMENSIONLESS angular half (the only one eval
-    /// admits) and a given linear dimension.
+    /// Helper: build a twist Map with an ANGLE angular half (the only one eval admits,
+    /// RULING #6080) and a given linear dimension.
     fn make_twist(angular: [f64; 3], linear: [f64; 3], linear_dim: DimensionVector) -> Value {
-        make_twist_with_dims(angular, DimensionVector::DIMENSIONLESS, linear, linear_dim)
+        make_twist_with_dims(angular, DimensionVector::ANGLE, linear, linear_dim)
     }
 
     /// transform_exp(zero twist) == identity transform.
