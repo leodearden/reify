@@ -1099,11 +1099,22 @@ is_occt_crate() {
 # Deliberately NO file:line citations: nothing validates them and they rot on
 # the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
 # tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
-# set from the real repo (`git grep -o 'tests/prd-gate/fixtures/*.ri' over ALL
-# tracked *.rs`) and asserts each still classifies RUN_RUST=1, so adding a new
-# Rust reference without listing it here goes RED; a companion assertion there
+# set from the real repo (a full-LINE `git grep` for
+# tests/prd-gate/fixtures/<name>.ri over ALL tracked *.rs, minus the lines
+# carrying a reviewed `pg-drift:allow` marker, then projected to the matched
+# paths) and asserts each still classifies RUN_RUST=1, so adding a new Rust
+# reference without listing it here goes RED; a companion assertion there
 # also fails if any *.rs names the fixtures DIRECTORY rather than a single
 # <name>.ri leaf, which would void this arm's premise outright (see below).
+# THE OTHER HALF OF THAT RED (task 6986): when what tripped it is a PROSE
+# mention of a genuinely UNCOUPLED fixture — a doc comment naming a file no
+# compiled target reads — the fix is NOT a row here, which would be FALSE, and
+# NOT rewording the prose to avoid spelling the path (the #5540/#5371
+# workaround). Mark the MATCHED line `pg-drift:allow — <reason>`; a marker on
+# the line above suppresses nothing. Same convention as the
+# `pg-drift-dir:allow` companion just named. Grammar, gotchas and the worked
+# example live in that PG-DRIFT contract block — cross-referenced here, not
+# copied.
 # Space sentinels give whole-token matching
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
@@ -1210,13 +1221,32 @@ decide_scope() {
             return
         fi
     fi
-    _rsrc="$(grep -E '^tests/prd-gate/fixtures/.*\.ri$' <<< "$_rsrc" || true)"
+    _rsrc="$(grep -E '^tests/prd-gate/fixtures/.*\.ri$|^docs/gui-event-channels\.md$' <<< "$_rsrc" || true)"
     # Classify over files + recovered rename sources, but leave CHANGED_FILES_RAW
     # (below) built from _files alone, so Phase-2 narrowing / infra-test
     # selection see the byte-identical list they saw before this arm existed.
     _classify="$_files"
     if [ -n "$_rsrc" ]; then
         _classify="$(printf '%s\n%s' "$_files" "$_rsrc")"
+    fi
+    # A rename/move of docs/gui-event-channels.md itself (task 6281 review
+    # round 2): the recovered source above still reaches the docs/gui-event-
+    # channels.md case arm below via _classify and sets gui=1, but
+    # CHANGED_FILES_RAW is deliberately _files-only (comment above) — so
+    # select_infra_tests() never sees the old literal path and can't select
+    # tests/infra/test_check_event_inventory.sh the way it does for an
+    # in-place edit (that selection is an exact-path match against
+    # CHANGED_FILES_RAW, independent of RUN_RUST — see the case arm's
+    # comment). A rename is therefore the one shape where the arm's normal
+    # free ride on the infra-test map doesn't apply, and the ONLY reachable
+    # Rust-side coverage is the RUN_RUST-gated direct lint invocation of
+    # check_event_inventory.sh (INCLUDE_INFRA && RUN_RUST && DO_LINT, below)
+    # — which matters because that script hard-exits when
+    # docs/gui-event-channels.md is missing. Force rust=1 explicitly, scoped
+    # to exactly this rename (rust is a monotone OR accumulator, so setting it
+    # here ahead of the loop below is equivalent to setting it after).
+    if grep -qxF 'docs/gui-event-channels.md' <<< "$_rsrc"; then
+        rust=1
     fi
     while IFS= read -r f; do
         [ -z "$f" ] && continue
@@ -1300,6 +1330,48 @@ decide_scope() {
                         esac
                         ;;
                 esac
+                ;;
+            docs/gui-event-channels.md)
+                # Targeted carve-out (task 6281) ahead of the docs/*|*.md
+                # catch-all below: this one doc is policed by two automated
+                # consumers that both read it directly —
+                # scripts/check_event_inventory.sh (keys on column 1, the
+                # backticked channel name) and
+                # gui/src/__tests__/eventChannelConsumerCoverage.test.ts
+                # (RUN_GUI-gated, task 6236; guards column 4, the Consumer
+                # cell, against deleted gui/src/bridge.ts exports).
+                #
+                # Only gui=1 is set here (review round 2). The Rust-side
+                # consumer does NOT need rust=1 to run for an in-place edit:
+                # verify-pipeline-infra-tests.txt:227 maps this exact path to
+                # tests/infra/test_check_event_inventory.sh, which
+                # select_infra_tests() (above) selects whenever this file is
+                # in CHANGED_FILES_RAW — gated only on DO_TEST and a
+                # non-merge/background role (the SELECTED_INFRA_GLOBS leaf),
+                # NOT on RUN_RUST. That test's Check 1 smoke-runs
+                # check_event_inventory.sh against the real worktree (exit 0 +
+                # no orphan lines), plus a --bidirectional pass and a
+                # --print-registered diff against this doc — strictly
+                # stronger than the warning-mode, non-bidirectional lint
+                # invocation that rust=1 would additionally unlock at the
+                # INCLUDE_INFRA/RUN_RUST/DO_LINT leaf. Setting rust=1
+                # unconditionally here would instead escalate a docs-only
+                # staged commit to the full Rust gate (clippy +
+                # add_test_passes' workspace nextest — the expensive
+                # long-pole) on exactly the hook-gated docs-on-main path
+                # CLAUDE.md relies on staying seconds-long, for coverage this
+                # file already gets for free.
+                #
+                # RENAME of this file is the one shape exact-path match can't
+                # see (CHANGED_FILES_RAW stays _files-only even after rename-
+                # source recovery) — handled separately above, where rust=1 is
+                # forced only for that case.
+                #
+                # Scoped to this exact leaf, not docs/gui-event-channels/* —
+                # the per-channel spec pages under that directory are not
+                # read by either consumer, so folding them in here would
+                # widen the heavy-check surface with no matching benefit.
+                gui=1
                 ;;
             docs/*|*.md|*.yaml|*.yml)
                 : # no heavy checks

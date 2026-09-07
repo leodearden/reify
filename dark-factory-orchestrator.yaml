@@ -838,6 +838,22 @@ verify_drift_check_every_n_lands: 20
 # remote green are real.
 # REVERT THIS (back to true) once dark_factory:4579 lands and reify redeploys.
 verify_cross_check_remote_green: false
+
+# Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
+# applied to reify after the same ruling on dark-factory). workflow.py's merge
+# phase rebases the task branch onto main and runs a full task-role scoped
+# verify (admission-gated) BEFORE submitting to the merge queue; the stock loop
+# repeats that whole cycle up to max_pre_merge_retries times whenever main moved
+# during the verify. MEASURED on the shared workstation 2026-09-06: the
+# "main moved during pre-merge rebase, retrying" line fired 29 times in one day
+# for dark-factory alone, each retry a 40-90 min verify under load. With 1 the
+# loop runs one rebase+verify; if main moved meanwhile the task submits anyway
+# with pre_rebased=False and the merge queue's own rebase + post-merge verify
+# (which happens regardless) is the one that lands it. NOT in RELOADABLE_FIELDS
+# -- takes effect at the next orchestrator restart. Follow-up lever (dark_factory
+# task 5098, the dispatch/speculation policy PRD): whether the pre-merge verify
+# should run at all when the queue re-verifies on landing.
+max_pre_merge_retries: 1
 #
 # sccache shared backend (κ): both hosts share a redis cache so the laptop free-rides
 # the workstation's warm compilation artifacts. ENABLED 2026-06-10 alongside the C enable.

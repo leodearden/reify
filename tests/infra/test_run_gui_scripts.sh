@@ -23,6 +23,24 @@ RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
 
+# Hermetic display axis (#7290). reify-gui is a GTK/WebKit app and both
+# launchers refuse to build with no display (lib_gui_launch.sh's
+# gui_launch_preflight_display, #7254), so a behavioural test that does not
+# establish a display passes on a developer box and fails on a headless
+# verify host — exactly the split that made Test 25 red only some of the
+# time (esc-7014-1). Pin one here, unconditionally, so a future test that
+# forgets its own DISPLAY=:99 still behaves identically on both.
+# gui_launch_preflight_display() passes if EITHER DISPLAY or WAYLAND_DISPLAY
+# is non-empty, so pinning DISPLAY alone would leave this axis half
+# host-dependent on a Wayland dev box (ambient WAYLAND_DISPLAY non-empty
+# there, empty on a headless verify host) — scrub WAYLAND_DISPLAY too so
+# both halves of the gate are hermetic.
+# A test that must drive the NO-display gate scrubs both for its CHILD only,
+# via `env -u DISPLAY -u WAYLAND_DISPLAY` (Test 27) — never at suite scope;
+# Test 32 at the end of this file guards that.
+export DISPLAY=:99
+unset WAYLAND_DISPLAY
+
 echo "=== run-gui.sh launcher tests ==="
 
 # -- Test 1: file exists + is executable -------------------------------------
@@ -571,8 +589,11 @@ chmod +x "$_t25_tmpdir/bin/curl"
 # output + rc in one shot. REIFY_VITE_PORT is set to an ephemeral free port so
 # the script's polling loop targets a port unlikely to collide with another
 # worktree's vite on :1420 (task 2308). The curl stub above is a redundant
-# secondary guard for the same class of failure.
-_t25_out=$(REIFY_VITE_PORT="$_t25_port" PATH="$_t25_tmpdir/bin:$PATH" \
+# secondary guard for the same class of failure. The ambient display is
+# scrubbed and then re-pinned for this child process (task 7290) so this test
+# can never again silently depend on whether the verify host has one.
+_t25_out=$(env -u DISPLAY -u WAYLAND_DISPLAY DISPLAY=:99 \
+    REIFY_VITE_PORT="$_t25_port" PATH="$_t25_tmpdir/bin:$PATH" \
     bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
     && _t25_rc=0 || _t25_rc=$?
 
@@ -1156,5 +1177,27 @@ else
     echo "  SKIP: Test 31 needs a controlling terminal to be observable at all;"
     echo "  SKIP: the text drift-guard above still ran."
 fi
+
+# -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
+echo ""
+echo "--- Test 32: suite-level DISPLAY=:99 pin still holds at end of suite ---"
+
+# Placed LAST deliberately: this asserts the hermetic pin (a suite-level
+# `export DISPLAY=:99` plus `unset WAYLAND_DISPLAY`, task 7290) still holds
+# after every preceding test has run. A test that must drive the NO-display
+# gate scrubs both vars for its CHILD process only (env -u DISPLAY -u
+# WAYLAND_DISPLAY, as Test 27's `_t27_run_dev` / `_t27_run_rel` helpers do)
+# — never at suite scope with a bare `unset DISPLAY` / `export DISPLAY=`. A
+# suite-scope scrub would silently re-break every later behavioural launcher
+# test on a headless verify host, and nothing else in this suite would
+# notice. Asserting the exact value `:99` for DISPLAY (not mere
+# non-emptiness) and emptiness for WAYLAND_DISPLAY keeps this guard
+# host-independent on both halves of the gate: gui_launch_preflight_display()
+# passes if EITHER var is non-empty, so a future edit that scrubs only
+# DISPLAY at suite scope would still pass vacuously on a Wayland dev box
+# (ambient WAYLAND_DISPLAY non-empty) while reproducing the esc-7014-1 split
+# on a headless host — recreated on the other variable.
+assert "suite: the hermetic DISPLAY/WAYLAND_DISPLAY pin survives every preceding test" \
+    bash -c '[ "${1:-}" = ":99" ] && [ -z "${2:-}" ]' _ "${DISPLAY:-}" "${WAYLAND_DISPLAY:-}"
 
 test_summary

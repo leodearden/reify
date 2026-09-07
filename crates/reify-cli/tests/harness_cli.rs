@@ -45,6 +45,8 @@ mod cli_build_verbose;
 mod cli_build_voxel_to_mesh;
 #[path = "harness_cli/cli_cache.rs"]
 mod cli_cache;
+#[path = "harness_cli/cli_cache_concurrent_writers.rs"]
+mod cli_cache_concurrent_writers;
 #[path = "harness_cli/cli_check.rs"]
 mod cli_check;
 #[path = "harness_cli/cli_check_cfg.rs"]

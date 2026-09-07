@@ -2,32 +2,45 @@ module mirror_bare_origin
 
 // mirror_bare_origin.ri — task 5748 (PRD docs/prds/v0_6/check-diagnostic-truthfulness.md, leaf β).
 //
-// Reproduces the canonical `mirror(...)` bare-origin anti-pattern documented at
-// examples/best_practices/symmetry_mirror.ri:27 (`// WRONG — bare-0 origin`):
-// the 7-arg scalar form requires DIMENSIONED Length origin components while the
-// normal components stay bare dimensionless numbers.  Passing bare `0` for the
-// origin is a hard geometry-compile error at realization time.
+// Reproduces the `mirror(...)` bare-origin anti-pattern in its DECODED-VALUE
+// form: `plane_yz(0)` takes a bare-Int offset where a dimensioned `0mm` is
+// required, so the plane it produces carries a non-Length ox and the geometry
+// op fails to compile at realization time.
 //
-// Verified baselines with the pre-change binary (task 5748, before D1/D2):
+// WHY THIS ROUTE AND NOT THE 7-ARG SCALAR ONE (task 5662).  This fixture's job
+// for leaf β is to be a BUILD-ONLY diagnostic — one that `check` can only
+// surface by reaching build() — and the 7-arg scalar form no longer qualifies.
+// The full argument (why the arity guard is load-bearing, and why the
+// decoded-value route is a STRUCTURAL exclusion from the compile slot table) is
+// stated once, on the `mirror` / `circular_pattern` arms of `builtin_arg_slots`
+// in `crates/reify-compiler/src/builtin_signatures.rs`.  Read it there.
+// The fixture stays deliberately BARE either way — only the route changed.
 //
-//   reify check <this file>
-//     stdout: "All constraints satisfied."   exit 0
-//     stderr: EMPTY — the compile-geometry-op error is entirely ABSENT, because
-//             `check` never realizes geometry for a module carrying no
-//             Conforms / RepresentationWithin / DFMRule constraint.
+// Verified baselines, MEASURED on this file at task 5662 (binary built from
+// task/5662 with the two new slots NOT yet landed; re-measured unchanged after
+// they land — the value form is unaffected by them, which is the point):
 //
-//   reify eval <this file>
-//     stderr: warning: mirror: ox argument expects Length, got Int; ...
-//             error: failed to compile geometry operation: missing or
-//                    non-Length argument 'ox' for mirror     [emitted TWICE]
+//   reify check <this file>                                          exit 0
+//     stdout: "  OK MirrorBareOrigin#constraint[0]"
+//             "All constraints satisfied."
+//     stderr: error: mirror: ox argument expects Length, got Int; pass a
+//                    dimensioned length such as `5mm`
+//             error: mirror: oy argument expects Length, got Real; ...
+//             error: mirror: oz argument expects Length, got Real; ...
+//             error: failed to compile geometry operation: mirror: missing or
+//                    non-Length argument 'ox' for mirror        [exactly ONCE]
 //             error: failed to compile geometry operation: unresolvable
-//                    GeomRef::Step(1) ...
-//     exit 1
+//                    GeomRef::Step(1) — index out of bounds or INVALID handle
 //
-// The `check` half of that baseline is exactly what leaf β makes truthful: after
-// D1 (geometry routing) + D2 (build-diagnostic merge), `reify check` reports the
-// geometry-compile error too — exactly ONCE, thanks to D2's accumulating dedup.
-// The exit code stays 0 until leaf γ (#5403) lands the Severity::Error gate.
+//   (oy/oz read `Real`, not `Int`, because only the offset argument is the
+//   bare literal; `plane_yz` fills the other two origin components with 0.0.)
+//
+// Before leaf β, that stderr was EMPTY — `check` never realized geometry for a
+// module carrying no Conforms / RepresentationWithin / DFMRule constraint.  Leaf
+// β (D1 geometry routing + D2 build-diagnostic merge) is what makes it truthful,
+// and D2's accumulating dedup is what pins the 'ox' line at exactly one
+// occurrence.  The exit code stays 0 until leaf γ (#5403) lands the
+// Severity::Error gate.
 
 structure MirrorBareOrigin {
     param arm_len       : Length = 40mm
@@ -36,8 +49,8 @@ structure MirrorBareOrigin {
 
     let arm = box(arm_len, arm_width, arm_thickness)
 
-    // WRONG on purpose — bare-Int origin components (should be `0mm`).
-    let reflected = mirror(arm, 0, 0, 0, 1, 0, 0)
+    // WRONG on purpose — bare-Int plane offset (should be `0mm`).
+    let reflected = mirror(arm, plane_yz(0))
 
     param geometry : Solid = union(arm, reflected)
 
