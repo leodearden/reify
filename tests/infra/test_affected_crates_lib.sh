@@ -30,9 +30,12 @@
 #      delegate to — is exercised directly: its output equals
 #      occt_touching_set and contains the seed crate
 #  15. (task 6292) cold registry cache: with CARGO_HOME redirected to an
-#      empty dir, affected_crates fails FAST (wall-clock bounded) into the
-#      C5 fail-wide ALL path and emits the fallback diagnostic on stderr —
-#      i.e. _reverse_closure's `cargo metadata` performs no network I/O
+#      empty dir, affected_crates fails wide into the C5 ALL path and emits
+#      the fallback diagnostic on stderr — i.e. _reverse_closure's
+#      `cargo metadata` performs no network I/O — and does so inside a 5s
+#      wall-clock bound that separately guards the pre-commit-hook stall
+#      hazard (the ALL/diagnostic pair is what discriminates; see the
+#      "WHAT PROVES WHAT" note on that block)
 #  16. (task 6292) argv coverage: _reverse_closure invokes cargo metadata
 #      with --offline alongside task 6277's --locked
 
@@ -55,6 +58,31 @@ source "$REPO_ROOT/scripts/affected-crates-lib.sh"
 source "$REPO_ROOT/scripts/occt-scope-lib.sh"
 
 echo "=== affected-crates-lib drift tests ==="
+
+# ---------------------------------------------------------------------------
+# Preflight (review follow-up, task 6292): warm-registry-cache dependency.
+#
+# Every real-cargo closure assertion below (#4-#14) needs `cargo metadata
+# --format-version 1 --locked --offline` — the exact invocation
+# _reverse_closure makes — to SUCCEED. On a genuinely cold ~/.cargo (fresh
+# container, new host, a setup-dev.sh that never ran) it cannot, so
+# affected_crates fails wide to ALL and all ~10 of those assertions fail
+# pointing at the closure logic rather than at the missing cache. Assertion
+# #15 is the only one that EXPECTS ALL; it passes in that environment.
+#
+# Advisory, never fatal: this changes no pass/fail semantics, it only makes a
+# cold-cache environment emit one legible CAUSE line instead of ten
+# misleading SYMPTOMS. Re-emitted just before test_summary so the explanation
+# lands next to the FAIL tally rather than scrolled off the top. Costs one
+# extra `cargo metadata` (~2s warm) on top of a suite that already makes a
+# dozen.
+# ---------------------------------------------------------------------------
+_COLD_REGISTRY_PREFLIGHT=""
+if ! ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline ) >/dev/null 2>&1; then
+    _COLD_REGISTRY_PREFLIGHT="COLD REGISTRY CACHE: \`cargo metadata --locked --offline\` fails in $REPO_ROOT, so every real-cargo closure assertion below fails wide to ALL. This is an environment problem, not a closure-logic bug — warm it with \`cargo fetch --locked\` (or run scripts/setup-dev.sh) and re-run."
+    echo ""
+    echo "!!! $_COLD_REGISTRY_PREFLIGHT"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: C4 global-force — Cargo.lock forces ALL
@@ -303,10 +331,23 @@ assert "affected_crates leaves Cargo.lock byte-for-byte unchanged" _check_cargo_
 # left untouched (it is independent of CARGO_HOME), so toolchain resolution
 # still works and cargo fails for the intended offline-resolution reason.
 #
-# The elapsed bound is what turns "performs no network I/O" into a checkable
-# runtime property: measured ~0.4s with --offline, versus a cold sparse-index
-# fetch plus manifest downloads for this workspace's ~700-package graph,
-# which cannot complete inside 20s.
+# WHAT PROVES WHAT (corrected in review). The ALL and stderr-diagnostic
+# assertions below are the discriminators, and they are binary and
+# timing-independent: with --offline a cold registry cannot resolve, so the
+# closure fails wide to the ALL sentinel; without it, cargo fetches the index
+# and returns the real narrowed closure instead.
+#
+# The elapsed bound is a SECONDARY guard on the stall hazard that motivated
+# the flag — NOT the no-network proof it was originally documented as.
+# Measured on this host, two runs each: 0.15-0.35s with --offline, versus
+# 12.3-12.7s for the same cold probe with --offline stripped from
+# _reverse_closure's argv and the network reachable. The original 20s bound
+# sat above BOTH and so passed identically either way, i.e. it asserted
+# nothing. 5s sits between them — ~14x over the slowest measured offline run,
+# ~2.4x under the fastest measured networked one — so it now fails on a
+# revert as well, and still catches an offline path that regresses into
+# something slow enough to stall a pre-commit hook. Re-measure both endpoints
+# before retuning it.
 #
 # `timeout` wraps the WHOLE affected_crates call, not just cargo: wrapping
 # only cargo would let _reverse_closure's `|| { echo ALL; return 0; }`
@@ -326,22 +367,29 @@ echo "--- Amendment (task 6292): cold registry cache fails fast into ALL ---"
 _COLD_CACHE_RC=""
 _COLD_CACHE_OUT=""
 _COLD_CACHE_ERR=""
-_COLD_CACHE_ELAPSED=""
+_COLD_CACHE_ELAPSED_MS=""
+
+# Bound in milliseconds; see the "WHAT PROVES WHAT" note above for the two
+# measured endpoints this sits between, and re-measure before changing it.
+_COLD_CACHE_MAX_MS=5000
 
 _cold_cache_probe_once() {
     [ -n "$_COLD_CACHE_RC" ] && return 0
     local cold errfile t0 t1
     cold="$(mktemp -d "${TMPDIR:-/tmp}/reify-cold-cargo-home.XXXXXX")" || return 1
     errfile="$(mktemp "${TMPDIR:-/tmp}/reify-cold-cargo-err.XXXXXX")" || { rm -rf "$cold"; return 1; }
-    t0="$(date +%s)"
+    # Millisecond clock (date +%s%N, as tests/infra/test_cpu_admit.sh and
+    # test_lane_x_flock.sh already use): integer `date +%s` cannot express a
+    # bound anywhere near the sub-second offline path this is measuring.
+    t0="$(date +%s%N)"
     _COLD_CACHE_OUT="$(CARGO_HOME="$cold" timeout 60 bash -c '
         cd "$1" || exit 1
         # shellcheck source=scripts/affected-crates-lib.sh
         source "$1/scripts/affected-crates-lib.sh" || exit 1
         affected_crates crates/reify-core/src/lib.rs
     ' _ "$REPO_ROOT" 2>"$errfile")" && _COLD_CACHE_RC=0 || _COLD_CACHE_RC=$?
-    t1="$(date +%s)"
-    _COLD_CACHE_ELAPSED=$(( t1 - t0 ))
+    t1="$(date +%s%N)"
+    _COLD_CACHE_ELAPSED_MS=$(( (t1 - t0) / 1000000 ))
     _COLD_CACHE_ERR="$(cat "$errfile" 2>/dev/null)"
     rm -rf "$cold" "$errfile"
     return 0
@@ -352,7 +400,7 @@ _cold_cache_probe_once() {
 # probe alone would be dropped whenever the first checker to trigger it
 # happens to pass. Dumped only on FAIL; an all-green run stays silent.
 _cold_cache_report() {
-    echo "cold-cache probe: rc=$_COLD_CACHE_RC elapsed=${_COLD_CACHE_ELAPSED}s out=[$_COLD_CACHE_OUT]"
+    echo "cold-cache probe: rc=$_COLD_CACHE_RC elapsed=${_COLD_CACHE_ELAPSED_MS}ms out=[$_COLD_CACHE_OUT]"
     echo "cold-cache probe stderr: $_COLD_CACHE_ERR"
 }
 
@@ -374,9 +422,9 @@ assert "cold CARGO_HOME: closure fails wide to ALL (C5)" _check_cold_cache_is_AL
 _check_cold_cache_fast() {
     _cold_cache_probe_once || return 1
     _cold_cache_report
-    [ -n "$_COLD_CACHE_ELAPSED" ] && [ "$_COLD_CACHE_ELAPSED" -lt 20 ]
+    [ -n "$_COLD_CACHE_ELAPSED_MS" ] && [ "$_COLD_CACHE_ELAPSED_MS" -lt "$_COLD_CACHE_MAX_MS" ]
 }
-assert "cold CARGO_HOME: fails fast (<20s) — proxy for 'reached no network'" \
+assert "cold CARGO_HOME: fails fast (<${_COLD_CACHE_MAX_MS}ms) — bounds the hook-tier stall hazard" \
     _check_cold_cache_fast
 
 # Pins only the stable `falling back to ALL` substring, NOT the parenthetical
@@ -476,5 +524,14 @@ _check_cargo_invoked_with_offline() {
     esac
 }
 assert "_reverse_closure invokes cargo metadata with --offline" _check_cargo_invoked_with_offline
+
+# Re-emit the cold-cache cause line adjacent to the FAIL tally (see the
+# preflight near the top of this file for why). Deliberately an `if` and not
+# `[ -n "$x" ] && echo ...`: at top level under `set -e` the latter exits the
+# script with status 1 on the healthy path, where the test is false.
+if [ -n "$_COLD_REGISTRY_PREFLIGHT" ]; then
+    echo ""
+    echo "!!! $_COLD_REGISTRY_PREFLIGHT"
+fi
 
 test_summary
