@@ -184,12 +184,22 @@ provision_fixture_parser_c() {
 # run_guarded_cargo_check <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
 # Returns a tri-state code safe under `set -euo pipefail`:
-#   0 — success     (caller continues to parser.c existence checks)
-#   1 — hard fail   (diagnostic already printed; caller returns 1)
-#   2 — timeout     (SKIP message printed; caller returns 0 to skip asserts)
+#   0 — success              (caller continues to parser.c existence checks)
+#   1 — hard fail            (diagnostic already printed; caller returns 1)
+#   2 — timeout / env gap    (SKIP message printed; caller returns 0 to skip asserts)
 #
 # Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
 # `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
+#
+# DEPENDENCY RESOLUTION IS AN ENVIRONMENT GAP, NOT A DEFECT (#6992 amendment
+# pass). mk_ts_build_fixture writes a standalone crate outside the workspace,
+# with no Cargo.lock and `cc = "1"` as a build-dependency, and builds it
+# --offline — so resolution succeeds only if the host's shared registry cache
+# already holds a compatible cc 1.x. Mapping only exit 124 to SKIP made such a
+# host report a defect in this pipeline, which is exactly the inconsistency
+# require_tree_sitter_cli and the `SKIP: no hasher` arms exist to avoid. The
+# patterns below are cargo resolver/registry diagnostics; a compile error from
+# build.rs cannot produce them, so this cannot mask a real failure.
 run_guarded_cargo_check() {
     local out_file="$1"; shift
     local rc=0
@@ -198,6 +208,9 @@ run_guarded_cargo_check() {
         return 0
     elif [ "$rc" -eq 124 ]; then
         echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
+        return 2
+    elif grep -qE 'no matching package|failed to select a version|registry index was not found|not found in registry|failed to download|attempting to make an HTTP request' "$out_file"; then
+        echo "  SKIP: cargo could not resolve dependencies offline (host registry cache lacks them)"
         return 2
     else
         echo ""
@@ -511,12 +524,19 @@ ts_generate_grammar_stamp() {
     printf '%s' "$1/tree-sitter-reify/src/.grammar_hash.stamp"
 }
 
-# mk_ts_build_fixture <grammar-variant-file>
+# mk_ts_build_fixture <grammar-variant-file> [crate-subdir]
 #
 # A STANDALONE cargo crate that runs the REAL build.rs and build_support.rs
 # against a tiny throwaway grammar, so a genuine `cargo build` can be driven end
 # to end without touching the lane's tree or paying 5.8 MB of parser.c
 # compilation. Prints the crate root; registers its own cleanup.
+#
+# With [crate-subdir], the crate is placed at <tmp>/<crate-subdir> instead of at
+# <tmp> itself. Passing `tree-sitter-reify` reproduces the repo layout
+# scripts/tree-sitter-generate.sh resolves against (it derives TS_DIR as
+# "$SCRIPT_DIR/../tree-sitter-reify"), so a caller that also drops scripts/ in
+# beside it can drive BOTH halves of the stamp contract over one tree — see
+# test_shell_written_manifest_satisfies_build_rs.
 #
 # The grammar is deliberately NOT reify's. What is under test is build.rs's
 # staleness logic, which is grammar-agnostic — and a two-rule grammar compiles in
@@ -528,9 +548,10 @@ ts_generate_grammar_stamp() {
 # --offline against the shared registry (cc is already vendored for the real
 # workspace).
 mk_ts_build_fixture() {
-    local variant="$1" dir
-    dir="$(mktemp -d)" || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    local variant="$1" subdir="${2:-}" root dir
+    root="$(mktemp -d)" || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$root'")
+    dir="$root${subdir:+/$subdir}"
     mkdir -p "$dir/src" || return 1
     cp "$TS_DIR/build.rs" "$dir/build.rs" || return 1
     cp "$TS_DIR/build_support.rs" "$dir/build_support.rs" || return 1
@@ -2311,6 +2332,22 @@ test_build_rs_watches_all_compiled_inputs() {
         return 1
     fi
 
+    # build_support.rs, since #6992. It holds the staleness predicates and is
+    # include!d rather than depended on as a crate, so cargo does not learn about
+    # it from the module graph — this directive is the ONLY thing that makes an
+    # edit to `needs_generate` / `shell_stamp_is_current` re-run them. Asserted
+    # HERE, on cargo's verbatim capture, rather than by grepping build.rs: a
+    # source scan is satisfied by a comment or a commented-out line, so a
+    # refactor that deletes the println! but keeps the explanatory comment above
+    # it passes green (#6992 amendment pass).
+    if [[ "$directives" != *"cargo:rerun-if-changed=build_support.rs"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=build_support.rs' in $run_dir/output"
+        echo "  build_support.rs is include!d by build.rs, so cargo cannot infer the dependency."
+        echo "  Without this directive an edit to the staleness predicates never re-runs them."
+        return 1
+    fi
+
     # ATTESTATION: the stamp must sit beside the archive it describes, and must be
     # byte-identical to what the shell computes. If these two manifests can drift,
     # every `check` verdict is meaningless.
@@ -3552,6 +3589,86 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
         echo "  ASSERTION FAILED: parser.c matches neither variant after the build"
         echo "  expected (variant A): $hash_a"
         echo "  actual:               $after"
+        return 1
+    fi
+}
+
+test_shell_written_manifest_satisfies_build_rs() {
+    # CROSS-IMPLEMENTATION AGREEMENT (#6992 amendment pass). The generated-output
+    # manifest now has TWO independent renderers and TWO independent verifiers —
+    # `_render_outputs_manifest` in scripts/tree-sitter-generate.sh
+    # (`printf '%s  %s\n'` over $OUTPUTS) and `outputs_manifest_render` in
+    # build_support.rs — and until this case, nothing tested them against each
+    # other: the Rust tests round-trip Rust output, the shell tests re-hash shell
+    # output.
+    #
+    # A divergence (one space instead of two, unsorted order, CRLF, a trailing
+    # blank line) would fail NO test. It would not fail LOUDLY either: build.rs's
+    # shell_stamp_is_current would simply return false forever, so every cargo
+    # build of tree-sitter-reify would re-run `tree-sitter generate` — a silent
+    # ~60 s per-build regression on the merge gate, in the direction that looks
+    # like everything working.
+    #
+    # Asserted BEHAVIOURALLY rather than by comparing format strings: the shell
+    # script writes the manifest, then a real cargo build must take the fast path
+    # over it. parser.c's mtime is the signal — every file is stamped 2020-01-01
+    # first, so a regeneration necessarily bumps it to now, and an unchanged
+    # timestamp means build.rs read the shell's manifest and believed it.
+    require_tree_sitter_cli || return 0
+
+    local va
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+
+    # Repo-shaped layout: <root>/scripts + <root>/tree-sitter-reify, which is
+    # what tree-sitter-generate.sh resolves TS_DIR against.
+    local crate root
+    crate=$(mk_ts_build_fixture "$va" tree-sitter-reify) || return 1
+    root=$(dirname "$crate")
+    cp -r "$REPO_ROOT/scripts" "$root/scripts" || return 1
+
+    # The SHELL half writes both stamps and all three outputs.
+    if ! bash "$root/scripts/tree-sitter-generate.sh" --force >/dev/null 2>&1; then
+        echo ""
+        echo "  ASSERTION FAILED: scripts/tree-sitter-generate.sh --force failed in the fixture"
+        return 1
+    fi
+    assert_file_exists "$crate/src/parser.c" || return 1
+    assert_file_exists "$(ts_generate_outputs_stamp "$root")" || return 1
+
+    # Keep the SHELL-rendered bytes: a build that regenerates overwrites the
+    # manifest with the Rust-rendered one, so the diagnostic below would
+    # otherwise print the very bytes that are not in dispute.
+    local shell_manifest
+    shell_manifest=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$shell_manifest'")
+    cp "$(ts_generate_outputs_stamp "$root")" "$shell_manifest" || return 1
+
+    # Warm-lane mtimes: nothing after this point can be decided by "newer than".
+    ts_normalize_lane_mtimes "$root"
+    local before_mtime
+    before_mtime=$(stat -c %Y "$crate/src/parser.c") || return 1
+
+    local cargo_out guard_rc=0
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    run_guarded_cargo_check "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$crate/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local after_mtime
+    after_mtime=$(stat -c %Y "$crate/src/parser.c") || return 1
+    if [ "$after_mtime" != "$before_mtime" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: build.rs regenerated over a manifest the shell script had"
+        echo "  just written, so the two implementations of the manifest format disagree."
+        echo "  --- shell-rendered manifest, as written by tree-sitter-generate.sh (cat -A) ---"
+        cat -A "$shell_manifest"
+        echo "  --- Rust-rendered manifest, as left by the regenerating build (cat -A) ---"
+        cat -A "$(ts_generate_outputs_stamp "$root")" 2>/dev/null || echo "  (absent)"
+        echo "  --- end ---"
+        echo "  Nothing else can explain it: the grammar hash matches, all three outputs"
+        echo "  exist, and every mtime was 2020-01-01, so only outputs_manifest_matches()"
+        echo "  can have returned false. Each build now pays a full tree-sitter generate."
         return 1
     fi
 }

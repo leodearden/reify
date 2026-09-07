@@ -305,14 +305,14 @@ fn test_generated_parser_c_is_watched() {
     let build_rs = std::fs::read_to_string(BUILD_RS)
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
-    // The staleness logic is include!d rather than a crate dependency, so cargo
-    // learns about it ONLY from an explicit directive.
-    assert!(
-        build_rs.contains("cargo:rerun-if-changed=build_support.rs"),
-        "build.rs must emit 'cargo:rerun-if-changed=build_support.rs' — the \
-         predicates deciding whether to regenerate are include!d, so an edit to \
-         them is invisible to cargo without this line."
-    );
+    // NOTE: build_support.rs is watched too (it is include!d, so cargo cannot
+    // infer the dependency), but that is pinned BEHAVIOURALLY in
+    // tests/infra/test_tree_sitter_pipeline.sh ::
+    // test_build_rs_watches_all_compiled_inputs, which reads the directives
+    // cargo ACTUALLY captured in target/*/build/tree-sitter-reify-*/output. The
+    // source scan that used to live here was satisfied by a comment or a
+    // commented-out line, so deleting the real println! while keeping its
+    // explanation above passed green (#6992 amendment pass).
 
     // src/parser.c must be IN the enumeration the watch loop iterates...
     let inputs = extract_top_level_fn(&build_rs, "fn compilation_inputs()")
@@ -354,8 +354,12 @@ fn test_regeneration_branch_writes_both_shell_stamps() {
         .split_once("run_tree_sitter_generate();")
         .expect("main() must call run_tree_sitter_generate()")
         .1;
+    // Match the CALL, not its argument text: `verify_outputs(&src_dir)` or a
+    // local rebinding is the same contract, and pinning the spelling turns a
+    // benign rename into a red test (#6992 amendment pass). The ORDER — verify
+    // before attest — is what matters, and it is what the split above pins.
     assert!(
-        after_generate.contains("verify_outputs(src_dir)"),
+        after_generate.contains("verify_outputs("),
         "the regeneration branch must still verify the outputs exist before \
          attesting them. Branch:\n{}",
         after_generate
