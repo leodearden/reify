@@ -12,14 +12,12 @@
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_syntax/` subdir — mirroring crates/reify-eval/tests/harness_geometry.rs.
 //!
-//! WHY THE LOWERING FAMILY LEFT. Measured before the split, this unit stood at 18957 lines
-//! = 94.8% of `tests/infra/test_harness_kloc_cap.sh`'s 20000-line rule (a) cap, leaving
-//! 1043 lines of headroom, with `module_lines` (18739) dominating the breakdown. §7 of the
-//! PRD resolves that pressure by SPLIT, never by raising the cap, and the
-//! `module_lines`-dominant remedy is exactly "split the module dir into a second
-//! `harness_<subsystem2>.rs`". After the split this unit measures 14576 lines (72.9% of
-//! cap, 5424 lines of headroom) over 49 modules; see `harness_syntax_lowering.rs` for the
-//! full rationale and the measured before/after in the guard's own field order.
+//! WHY THE LOWERING FAMILY LEFT. This unit was nearing
+//! `tests/infra/test_harness_kloc_cap.sh`'s rule (a) cap with `module_lines` dominating the
+//! breakdown, which §7 of the PRD resolves by SPLIT rather than by raising the cap.
+//! `harness_syntax_lowering.rs` carries the full rationale and the one copy of the measured
+//! before/after for both units; the guard re-derives the live numbers on demand, so they are
+//! deliberately not restated here.
 //!
 //! `common` (the shared tree-sitter CST helper module under `tests/common/`) is declared
 //! exactly once here, at the crate root, rather than once per dependent submodule. Ten of
@@ -32,13 +30,8 @@
 //! not affect any `<file>::<test>` module path.
 //!
 //! The split did not change where `common` is charged, and must not: it is compiled into
-//! THIS binary and no other. All ten of its `crate::common` consumers are grammar/parser-
-//! side modules that stayed here — not one `*_lowering_tests` module referenced it — so
-//! `harness_syntax_lowering.rs` declares no `mod common;`. That matters because rustc
-//! compiles a separate copy of a `tests/common/` helper into every binary that includes it,
-//! so a second declaration would duplicate the 70-line helper's compile cost, which is the
-//! opposite of what a cap-relief split is for. The kLOC guard measures this directly as the
-//! `external`/`external_files` fields: 70/1 here, 0/0 on the sibling.
+//! THIS binary and no other, and `harness_syntax_lowering.rs` declares no `mod common;`.
+//! See that root for why a second declaration would work against a cap-relief split.
 #[path = "common/mod.rs"]
 mod common;
 #[path = "harness_syntax/ad_hoc_selector_tests.rs"]

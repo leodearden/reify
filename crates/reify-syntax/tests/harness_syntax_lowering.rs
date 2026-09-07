@@ -24,7 +24,7 @@
 //! one of the seven nextest override binaries (refused — task #6461). Measured outcome,
 //! in the guard's own `total root module module_files external external_files` order:
 //!
-//!   harness_syntax           18957 148 18739 63 70 1  ->  14576 141 14365 49 70 1
+//!   harness_syntax           18957 148 18739 63 70 1  ->  14569 134 14365 49 70 1
 //!   harness_syntax_lowering      0   0     0  0  0 0  ->   4468  94  4374 14  0 0
 //!
 //! THIS UNIT INCLUDES NOTHING FROM OUTSIDE ITS OWN MODULE DIRECTORY — that is the
