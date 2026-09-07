@@ -688,7 +688,10 @@ module.exports = grammar({
     // alternatives have disjoint FIRST sets: `named_argument` starts
     // `identifier ':'`; `auto_seed` starts AUTO_TOKEN; and `_expression` can
     // never start with AUTO_TOKEN, because the external scanner emits
-    // AUTO_TOKEN regardless of valid_symbols (src/scanner.c:437-505) — the
+    // AUTO_TOKEN regardless of valid_symbols (src/scanner.c's
+    // `auto_token_block` label — cited by LABEL, not by line range, because
+    // the previous `src/scanner.c:437-505` citation rotted within ten days:
+    // task 5784's U+00B7 unit-operator work shifted that block to 459-529) — the
     // very mechanism that makes `auto` an ERROR at operand positions. So
     // `auto` never lexes as an `identifier` here and the arms cannot collide.
     // `tree-sitter generate` reports no new conflict for this rule (measured);
