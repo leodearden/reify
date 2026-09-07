@@ -97,7 +97,7 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   (declares `rad`, computes `rad^2`) — unannotated, or inside the call as `atan((o/a) * 1rad)`,
   it is silent instead. Both readings typecheck, so the wrong one is silent. `omega = 2*pi * f * 1rad` is a
   separate class (2π rad/cycle; no `cycle` unit). → `angle_crossings.ri`
-- **Why a part came out 1000× too big — what units geometry arguments take**: every
+- **Why a part came out 1000x too big — what units geometry arguments take**: every
   length-semantic argument carries one (`box(20mm, 20mm, 10mm)`, never `box(20, 20, 10)`;
   bare `0` is not exempt), while axis components, `scale` factors and counts stay bare.
   → `dimensioned_arguments.ri`
