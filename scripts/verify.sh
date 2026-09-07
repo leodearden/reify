@@ -1312,6 +1312,25 @@ decide_scope() {
                         ;;
                 esac
                 ;;
+            docs/gui-event-channels.md)
+                # Targeted carve-out (task 6281) ahead of the docs/*|*.md
+                # catch-all below: this one doc is policed by two automated
+                # consumers that both read it directly and neither of which
+                # otherwise runs on a doc-only diff —
+                # scripts/check_event_inventory.sh (RUN_RUST-gated; keys on
+                # column 1, the backticked channel name) and
+                # gui/src/__tests__/eventChannelConsumerCoverage.test.ts
+                # (RUN_GUI-gated, task 6236; guards column 4, the Consumer
+                # cell, against deleted gui/src/bridge.ts exports). Setting
+                # both flags here runs both consumers instead of letting a
+                # rename/rewrite land with a green "no heavy checks" gate and
+                # redden `main` for the next unrelated GUI or Rust change.
+                # Scoped to this exact leaf, not docs/gui-event-channels/* —
+                # the per-channel spec pages under that directory are not
+                # read by either consumer, so folding them in here would
+                # widen the heavy-check surface with no matching benefit.
+                rust=1; gui=1
+                ;;
             docs/*|*.md|*.yaml|*.yml)
                 : # no heavy checks
                 ;;

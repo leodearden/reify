@@ -2090,4 +2090,26 @@ plan_for_noinfra staged docs/note.md
 assert "DS-neg: plan lacks test_verify_compile_gate glob (unmapped doc, no selection)" \
     plan_lacks 'test_verify_compile_gate'
 
+# ---------------------------------------------------------------------------
+# Scenario GEC-* (task 6281): docs/gui-event-channels.md is policed by two
+# automated consumers that both read it directly —
+# scripts/check_event_inventory.sh (RUN_RUST-gated) and
+# gui/src/__tests__/eventChannelConsumerCoverage.test.ts (RUN_GUI-gated,
+# task 6236) — neither of which ran on a doc-only diff before this carve-out,
+# since decide_scope's docs/*|*.md catch-all classified it as no-heavy-checks.
+# GEC-pos pins the fix; GEC-neg is the control proving the carve-out is
+# narrow (an unrelated docs/*.md file keeps the old no-heavy-checks path).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario GEC-pos: docs/gui-event-channels.md only -> RUN_RUST=1 RUN_GUI=1 (task 6281) ---"
+plan_for staged docs/gui-event-channels.md
+assert "GEC-pos: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+echo ""
+echo "--- Scenario GEC-neg: unrelated docs/*.md file -> stays no heavy checks (control) ---"
+plan_for staged docs/some-other-doc.md
+assert "GEC-neg: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
 test_summary
