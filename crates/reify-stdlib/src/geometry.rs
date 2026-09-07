@@ -1600,6 +1600,13 @@ fn eval_frame_at(args: &[Value]) -> Value {
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
 
+// The `E_RotationVectorDimension` message is built by ONE shared constructor (#6080) so
+// this module's `transform_exp` angular arm and `orientation::diagnose`'s `orient_exp`
+// arm cannot drift apart in token, severity or recommended fix. Their only cross-module
+// pin would otherwise be the CLI tests' bare `contains("E_RotationVectorDimension")`,
+// which stays green through exactly that drift.
+use crate::orientation::rotation_vector_dimension_error;
+
 /// Human-readable name for a dimension, for use in diagnostic messages.
 ///
 /// `DimensionVector::canonical_name()` yields `"Length"` / `"Angle"` / `"Mass"` from
@@ -1642,11 +1649,21 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   - *zero factor* → degenerate (det=0, non-invertible) map.
 /// - **`transform_log`** (exactly 1 arg) — a `Transform` whose translation is not
 ///   `Vector3<Length>` (RULING #6126).
-/// - **`transform_exp`** (exactly 1 arg) — a twist whose `linear` half is not
-///   `Vector3<Length>` (RULING #6126), AND whose `angular` half passed eval's own
-///   gate. A twist wrong in both halves is rejected by eval's angular gate before the
-///   linear one is reached, so this arm stays silent there and leaves the explaining
-///   to #6080, which owns that gate.
+/// - **`transform_exp`** (exactly 1 arg) — BOTH halves of the twist, checked in eval's
+///   own order:
+///   - an `angular` half that is not `Vector3<Angle>` (RULING #6080) — a rotation
+///     vector is `axis * angle`. `DIMENSIONLESS` used to be the accepted spelling and
+///     is now rejected like any other wrong dimension, so this diagnostic is the
+///     migration mechanism for that breaking change. Its message is built by
+///     [`crate::orientation::rotation_vector_dimension_error`], SHARED with that
+///     module's `orient_exp` arm, so one fault class reports one way across the whole
+///     builtin family.
+///   - otherwise, a `linear` half that is not `Vector3<Length>` (RULING #6126).
+///
+///   Angular is checked FIRST because eval gates it first: a twist wrong in both
+///   halves is rejected by the angular gate before the linear one is reached, so
+///   blaming `linear` would mis-attribute the failure. This arm used to uphold that by
+///   staying silent (it did not own the angular gate); it now upholds it by ORDER.
 /// - **`bbox`** (exactly 2 args) — a corner that is not `Point3<Length>`
 ///   (task 6081: a BoundingBox is spatial by construction), including one whose
 ///   components carry MIXED dimensions. Every SHAPE failure stays silent — a
@@ -1654,10 +1671,10 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   component — like the arity convention above: a type failure is not a
 ///   dimension failure.
 ///
-/// Invariant: the two RULING #6126 dimension arms consult [`TWIST_LINEAR_DIM`] —
-/// the SAME const the eval gates use — and read the twist shape through
-/// [`decompose_twist_component`] — the SAME helper the eval arm uses — so the
-/// classifier cannot drift away from what eval actually rejects, in either the
+/// Invariant: the twist dimension arms consult [`TWIST_LINEAR_DIM`] and
+/// [`TWIST_ANGULAR_DIM`] — the SAME consts the eval gates use — and read BOTH twist
+/// halves through [`decompose_twist_component`] — the SAME helper the eval arm uses —
+/// so the classifier cannot drift away from what eval actually rejects, in either the
 /// dimension or the shape dimension of that drift. The `bbox` arm holds the same
 /// property the same way: it decodes both corners through
 /// [`classify_bbox_corner`] — the SAME helper its own eval gate reads, which is
@@ -1675,20 +1692,21 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///
 /// - The `affine_scale` arms are `Warning`, mirroring the existing degenerate-scale
 ///   rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
-/// - The two RULING #6126 dimension arms (`transform_log`, `transform_exp`) are
-///   `Severity::Error`, per Leo's severity amendment (2026-08-19, via esc-6080-6): a
-///   wrong dimension is a design-correctness fault, so `reify eval` must EXIT 1 rather
-///   than print and continue. `cmd_eval` gates its exit code on
+/// - The twist dimension arms — `transform_log` and both halves of `transform_exp` —
+///   are `Severity::Error`, per Leo's severity amendment (2026-08-19, via esc-6080-6):
+///   a wrong dimension is a design-correctness fault, so `reify eval` must EXIT 1
+///   rather than print and continue. `cmd_eval` gates its exit code on
 ///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
-///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
-///   half, so one fault class does not report two ways across one builtin family.
+///   the exit code here. The angular half (#6080) landed at that same severity, so one
+///   fault class does NOT report two ways across one builtin family.
 /// - The `bbox` arm is `Severity::Error` for the same reason (task 6081): a
 ///   non-Length corner is an outright CONSTRUCTION failure — no BoundingBox is
 ///   produced at all — rather than a drop-and-continue like `affine_scale`,
 ///   where the offending factor is discarded and evaluation proceeds.
 ///
-/// `DiagnosticCode` is deliberately NOT uniform across the arms. The two RULING
-/// #6126 arms stay code-less because MINTING
+/// `DiagnosticCode` is deliberately NOT uniform across the arms. The twist dimension
+/// arms — the two RULING #6126 ones and the #6080 angular one, which is code-less for
+/// the same reason — stay code-less because MINTING
 /// `DiagnosticCode::ArgDimensionMismatch` is owned by
 /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
 /// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
@@ -1745,28 +1763,36 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if args.len() != 1 {
                 return None;
             }
-            // Speak only when the LINEAR gate is the one eval actually reached. Eval
-            // checks `angular` BEFORE `linear`, so a twist wrong in both halves is
-            // rejected by the angular gate and never reaches the linear one. Blaming
-            // `linear` there is a mis-attribution with a nasty second act: the user
-            // makes `linear` a Length, still gets Undef, and now gets NO diagnostic at
-            // all — this arm having gone silent. So decline whenever the angular gate
-            // owns the failure.
+            // Check the halves in EVAL'S OWN ORDER — angular, then linear — so the arm
+            // blames the half eval actually rejected. Eval gates `angular` BEFORE
+            // `linear`, so a twist wrong in both halves never reaches the linear gate,
+            // and blaming `linear` there would be a mis-attribution.
             //
-            // This keeps the arm independent of #6080 (which owns the angular gate and
-            // will add its own arm to explain it) in the only way that is actually
-            // independent: by declining to speak for it, rather than by speaking over
-            // it. `TWIST_ANGULAR_DIM` below is eval's angular gate, not this ruling's —
-            // #6126 governs the linear half only. It is read from the const rather than
-            // re-spelled so widening the gate cannot silently mute this arm; see that
-            // const's doc, and the `..._deferral_tracks_evals_angular_gate` pin.
+            // #6126 upheld that invariant by SILENCE, because it did not own the
+            // angular gate and had nothing true to say about it — and documented the
+            // resulting hazard: the user acts on a `linear` message, makes `linear` a
+            // Length, is STILL Undef, and now gets NO diagnostic at all. #6080 owns the
+            // angular gate, so that hazard is now CLOSED rather than merely avoided:
+            // the arm names the angular half both times. This is exactly the
+            // substitution #6126's comment anticipated ("#6080 … will add its own arm
+            // to explain it").
+            //
+            // `TWIST_ANGULAR_DIM` is read from the const rather than re-spelled, so the
+            // gate and this arm cannot drift; see that const's doc and the
+            // `..._deferral_tracks_evals_angular_gate` pin.
             //
             // Shape failures on the angular half — a non-Map argument, a missing
             // `angular` key, a non-3-Vector — fold into `None` here for the same
-            // no-mis-attribution reason they do on the linear half.
+            // no-mis-attribution reason they do on the linear half. It is the SAME
+            // helper the eval arm now reads the angular shape through, so this arm
+            // cannot go quiet while eval keeps rejecting.
             let (_, ang_dim) = decompose_twist_component(&args[0], "angular")?;
             if ang_dim != TWIST_ANGULAR_DIM {
-                return None;
+                return Some(rotation_vector_dimension_error(
+                    "transform_exp",
+                    Some("angular"),
+                    ang_dim,
+                ));
             }
             // As on the transform_log arm, `decompose_twist_component` returning None
             // covers every non-dimension cause (non-Map arg, missing `linear` key — a
