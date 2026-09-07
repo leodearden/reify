@@ -1854,7 +1854,12 @@ mod tests {
     fn test_assert_error_code_present_passes_when_code_present() {
         let diags = vec![
             Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
-            Diagnostic::error("dimension mismatch in comparison: Scalar[kg] vs Scalar[m]")
+            // Message text is parenthesized, not colon-introduced. The
+            // `corpus_no_bare_scalar` corpus guard scans every string literal
+            // in `crates/**/*.rs` for bare `: Scalar` inline-DSL annotations
+            // and cannot distinguish one from a quoted diagnostic message.
+            // Only the CODE is asserted on here, so the wording is free.
+            Diagnostic::error("dimension mismatch in comparison (Scalar[kg] vs Scalar[m])")
                 .with_code(DiagnosticCode::DimensionMismatch),
         ];
         super::assert_error_code_present(
