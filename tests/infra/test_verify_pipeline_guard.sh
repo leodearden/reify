@@ -838,9 +838,14 @@ echo "-- Pair E: emitted-gate plan-line derivation --"
 # assertion against the live derivation, so this list stays the anti-vacuity net
 # it was written to be while no longer being the thing that silently goes stale.
 #
-# RED until step-2 adds the emitted-gate derivation clause for the first SEVEN
-# entries (measured exit 1 at HEAD fee75336ca); the last two are already GREEN
-# via their task-6243 rows in scripts/verify-pipeline-paths.txt.
+# HISTORICAL (task 6320's TDD note, kept for provenance): this list was RED
+# until 6320's own step-2 added the emitted-gate derivation clause, for the
+# seven entries from check-manifold-deps.sh through test_pm_standardization.sh
+# (measured exit 1 at HEAD fee75336ca). check-nan-safe-ordering.sh and
+# check-compute-trampoline-registration.sh were already GREEN via their
+# task-6243 rows in scripts/verify-pipeline-paths.txt. Named rather than
+# described by POSITION, because task 6296 appended three more entries below and
+# a positional reference ("the last two") silently retargeted.
 #
 # AMENDMENT (reviewer_comprehensive completeness): tests/sync_comments_test.sh
 # is the TENTH emitted gate and shares the identical ambush class -- verify.sh
@@ -887,15 +892,6 @@ _PAIR_E_PLAN_LEAF_GROUND_TRUTH=(
     tests/infra/run_all.sh
 )
 
-for _gate in "${_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]}"
-do
-    assert_exit "GROUND-TRUTH: $_gate is load-bearing (emitted by verify.sh's plan; exit 0)" 0 \
-        run_guard requires-full-gate "$_gate"
-    assert "--list includes $_gate (emitted gate; hard-coded ground truth)" \
-        bash -c 'bash "$1" --list | grep -qxF "$2"' \
-        _ "$GUARD_SH" "$_gate"
-done
-
 # (a-bis) COMPLETENESS SWEEP (task 6296) — assert SET EQUALITY between the
 # hard-coded ground truth above and the LIVE plan-leaf set derived from
 # verify.sh by derive_plan_leaves (see that helper for why the test derives its
@@ -941,6 +937,74 @@ assert_plan_leaf_ground_truth_complete() {
 }
 assert "COMPLETENESS: Pair E (a)'s ground truth is SET-EQUAL to verify.sh's live plan leaves" \
     assert_plan_leaf_ground_truth_complete
+
+# THE LOAD-BEARING SWEEP — every leaf verify.sh actually emits is classified
+# load-bearing by the guard. This is the assertion task 6296 item (c) asks for.
+#
+# ORDERING IS LOAD-BEARING: the equality assertion above MUST run BEFORE this
+# loop, and must not be moved below it or folded into it. A loop over a silently
+# empty derivation asserts nothing while reporting green, which is the exact
+# vacuity failure Pair E (a) warns about; equality-against-a-fixed-list run
+# FIRST is the only thing standing between this sweep and that. Do not "tidy"
+# the two into one pass.
+#
+# HONESTLY: this loop is a REGRESSION GUARD and was GREEN ON ARRIVAL — all
+# thirteen live leaves already measured exit 0 when it was written, because
+# clauses 4a/4b derive them automatically. It is not a bug fix, and its value is
+# entirely in the next regression, not this commit. That is also why the
+# NEGATIVE CONTROL below exists: auto-derivation makes every real leaf
+# load-bearing BY CONSTRUCTION, so without a case proving the sweep can still
+# say NO, a green loop here would be indistinguishable from a tautology.
+#
+# EFFICIENCY: `--list` is captured ONCE and grepped per leaf, rather than forked
+# per leaf. Every --list run pays clause 4b's --print-plan fork (~0.4-1.4s), so
+# per-entry invocation would add ~15s to a suite whose own header budgets
+# 21-53s. The `requires-full-gate` calls stay in the loop: they all exit 0 via
+# the source-text floor, which is the LAZY route that never forks 4b at all
+# (~0.09s each, pinned by the LAZY case in (c-bis)).
+_PAIR_E_LIST_CAPTURE="$(bash "$GUARD_SH" --list)"
+while IFS= read -r _gate; do
+    [ -z "$_gate" ] && continue
+    assert_exit "SWEEP: $_gate is load-bearing (derived from verify.sh's plan; exit 0)" 0 \
+        run_guard requires-full-gate "$_gate"
+    assert "SWEEP: --list includes $_gate (derived plan leaf)" \
+        bash -c 'printf "%s\n" "$1" | grep -qxF "$2"' \
+        _ "$_PAIR_E_LIST_CAPTURE" "$_gate"
+done < <(derive_plan_leaves)
+
+# NEGATIVE CONTROL for the sweep's DISCRIMINATING POWER. The pair below shows
+# the sweep would actually RED on a plan leaf the guard cannot see, rather than
+# passing because auto-derivation makes every real leaf load-bearing anyway.
+#
+# The two halves are asserted against DIFFERENT verify.sh files, which is the
+# whole point: the derivation reads a copy that HAS the new plan line, while the
+# guard reads one that does NOT. A leaf visible to the former and invisible to
+# the latter is precisely the drift shape the sweep is meant to catch, so if the
+# sweep had no teeth, the second half would come back exit 0.
+#
+# Only READABILITY is needed here (derive_plan_leaves greps; it never executes),
+# so a plain copy suffices — no runnable-fixture tree.
+_NEGCTL_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_NEGCTL_DIR")
+_NEGCTL_VERIFY="$_NEGCTL_DIR/verify.sh"
+cp "$REPO_ROOT/scripts/verify.sh" "$_NEGCTL_VERIFY"
+printf '\nadd_tool "./scripts/zzz-unregistered-leaf.sh"\n' >> "$_NEGCTL_VERIFY"
+
+# Checked via a function, not `bash -c`: derive_plan_leaves is a shell function
+# of THIS shell and is not exported, so a subshell would not have it. `assert`
+# runs its command directly in this shell, so a function works as-is.
+_negctl_derivation_sees_new_leaf() {
+    derive_plan_leaves "$_NEGCTL_VERIFY" | grep -qxF scripts/zzz-unregistered-leaf.sh
+}
+assert "NEGATIVE CONTROL: derive_plan_leaves SEES a newly-emitted leaf (zzz-unregistered-leaf.sh)" \
+    _negctl_derivation_sees_new_leaf
+
+# run_guard_nofork, not run_guard: this is an exit-1 assertion and therefore the
+# forking route, which the suite header directs to the nofork helper. Safe here
+# for the documented reason — clause 4b is MONOTONE, so dropping it can only
+# turn exit 0 into exit 1, never the reverse.
+assert_exit "NEGATIVE CONTROL: the guard does NOT consider that leaf load-bearing (exit 1)" 1 \
+    run_guard_nofork requires-full-gate scripts/zzz-unregistered-leaf.sh
 
 # (b) DIFF-SHAPE coverage, mirroring Pair A / Pair D, driven through
 # scripts/check-manifold-deps.sh -- an emitted gate that is NOT in any
