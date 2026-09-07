@@ -301,7 +301,26 @@ pub(crate) fn phase_auto_type_param_resolution(
                     // sees the truth. A non-`StructureRef` slot (e.g. an
                     // enclosing generic's own `TypeParam`) is left unseeded
                     // and falls through to the partial-coverage skip below.
-                    if let Some(Type::StructureRef(name)) = sub.type_args.get(position) {
+                    //
+                    // When the position carries NO type-arg at all, fall back
+                    // to the type parameter's DECLARED DEFAULT (shape D,
+                    // #6854 review round 3). This mirrors `effective_arg` in
+                    // `check_type_param_bounds` (entity.rs), which treats an
+                    // omitted arg with a default as supplied rather than
+                    // missing — `TypeParam::default` is a supported language
+                    // feature, so `Widget<U: Gasket, T: Seal = SealA>`
+                    // instantiated as `Widget<auto: Gasket>()` is a VALID
+                    // use-site with T already resolved to `SealA`. Without
+                    // this fallback such a use-site reaches residual-partial
+                    // coverage and is rejected by the un-seedable diagnostic
+                    // below, whose message ("an explicitly-supplied
+                    // type-argument that is not a concrete structure") does
+                    // not even describe what happened — the arg was omitted.
+                    // A default is already-resolved information exactly like
+                    // an explicit arg, so seeding it is the correct remedy.
+                    let effective_arg: Option<&Type> =
+                        sub.type_args.get(position).or(tp.default.as_ref());
+                    if let Some(Type::StructureRef(name)) = effective_arg {
                         sigma.insert(tp.name.clone(), Type::StructureRef(name.clone()));
                         candidates_by_position.push((position, name.clone()));
                     }
@@ -339,8 +358,9 @@ pub(crate) fn phase_auto_type_param_resolution(
             // round 2).
             //
             // On residual PARTIAL coverage — a genuinely unbound `auto:`
-            // param (shapes A/B), or an explicitly-supplied type-arg that is
-            // not a concrete `Type::StructureRef` and so could not be seeded
+            // param (shapes A/B), or a non-`auto:` position whose effective
+            // type-arg (explicit arg, else declared default) is not a
+            // concrete `Type::StructureRef` and so could not be seeded
             // — synthesis must still be skipped: the block below clears
             // `mono.type_params` — advertising the clone as fully concrete —
             // while any cell whose type-param was NOT in `sigma` keeps its
@@ -361,8 +381,9 @@ pub(crate) fn phase_auto_type_param_resolution(
             // shape A/B, which already carries its own `NoCandidate` /
             // `Ambiguous` error and must not be double-reported), yet full
             // `target.type_params` coverage is still not reached — meaning
-            // an explicitly-supplied position held something other than a
-            // concrete `Type::StructureRef` (e.g. an enclosing generic's own
+            // a non-`auto:` position's EFFECTIVE type-arg (its explicit arg,
+            // else its declared default) was something other than a concrete
+            // `Type::StructureRef` (e.g. an enclosing generic's own
             // `TypeParam`, #6854) and the seeding loop above could not bind
             // it. Gating on "the resolver bound everything it was asked to
             // bind" rather than scanning `diagnostics` for newly-pushed
@@ -386,11 +407,11 @@ pub(crate) fn phase_auto_type_param_resolution(
                 let target_name = req.target_name.as_str();
                 diagnostics.push(Diagnostic::error(format!(
                     "sub-component '{sub_name}' of '{owner_structure}' instantiates \
-                     generic '{target_name}' with an explicitly-supplied \
-                     type-argument that is not a concrete structure (type \
-                     parameter(s) {unbound:?} could not be bound), so no monomorph \
-                     can be synthesized; the sub-component would retain \
-                     unsubstituted type parameters at evaluation time"
+                     generic '{target_name}' with a non-`auto:` type-argument that \
+                     does not resolve to a concrete structure (type parameter(s) \
+                     {unbound:?} could not be bound), so no monomorph can be \
+                     synthesized; the sub-component would retain unsubstituted type \
+                     parameters at evaluation time"
                 )));
             }
 

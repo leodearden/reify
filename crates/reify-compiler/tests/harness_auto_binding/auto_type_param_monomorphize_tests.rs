@@ -1480,3 +1480,120 @@ fn shape_a_and_shape_b_partial_resolution_emit_no_additional_diagnostic() {
         cross_product_errors
     );
 }
+
+/// Shape D (#6854 review round 3): a type parameter with a DECLARED DEFAULT
+/// whose type-arg the use-site legitimately OMITS.
+///
+/// `reify_ir::TypeParam::default` is a supported language feature, and
+/// `check_type_param_bounds` (entity.rs) honours it via its `effective_arg`
+/// fallback: when `type_args.get(i)` is `None` it uses `tp.default` rather
+/// than reporting a missing type-argument. The α-phase seeding loop must
+/// mirror that fallback, or a use-site that omits a defaulted trailing
+/// type-arg lands in residual-partial coverage: synthesis is refused AND the
+/// un-seedable diagnostic fires, rejecting a previously-valid program over a
+/// type-argument the user never had to supply in the first place.
+///
+/// The default is already-resolved information, exactly like an explicit
+/// type-arg, so seeding it is the correct remedy — not a workaround.
+#[test]
+fn omitted_defaulted_type_arg_seeds_from_default_and_synthesizes_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<U: Gasket, T: Seal = SealA> { param slot_u : U  param slot_t : T }
+        structure def WidgetAssembly { sub w = Widget<auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) No errors at all — this program was valid before #6854 and must stay valid.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        0,
+        "a use-site that omits a DEFAULTED type-arg must compile cleanly, got: {:?}",
+        errors
+    );
+
+    // (2) The monomorph is synthesized with BOTH slots substituted — slot_u
+    // from the resolver, slot_t seeded from the type parameter's default.
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget$GasketA$SealA")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected monomorph 'Widget$GasketA$SealA' in compiled.templates, got: {:?}",
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        monomorph.type_params.is_empty(),
+        "monomorph must have no type_params, got: {:?}",
+        monomorph.type_params
+    );
+    let slot_u = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_u")
+        .expect("expected 'slot_u' value cell");
+    assert_eq!(
+        slot_u.cell_type,
+        Type::StructureRef("GasketA".to_string()),
+        "'slot_u' must be StructureRef(\"GasketA\"), got: {:?}",
+        slot_u.cell_type
+    );
+    let slot_t = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_t")
+        .expect("expected 'slot_t' value cell");
+    assert_eq!(
+        slot_t.cell_type,
+        Type::StructureRef("SealA".to_string()),
+        "'slot_t' must be StructureRef(\"SealA\") — seeded from the type \
+         parameter's DEFAULT, got: {:?}",
+        slot_t.cell_type
+    );
+
+    // (3) The use-site points at the monomorph, not the generic.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w'");
+    assert_eq!(
+        sub_w.structure_name, "Widget$GasketA$SealA",
+        "sub 'w' must reference the synthesized monomorph, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (4) Eval-level: the program hydrates cleanly (no Type::TypeParam reaches
+    // `assert_value_cell_types_representable`).
+    let result = check_source_with_stdlib(source);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected clean evaluation, got: {:?}",
+        eval_errors
+    );
+}
