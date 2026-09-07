@@ -1238,6 +1238,45 @@ pub fn solve_elastic_static_trampoline(
     // loop's own "bit-stable per-iteration solves" invariant (see
     // `solve_and_estimate`'s `deterministic: true` comment) for iteration 1
     // only. Deferred rather than risking that subtlety in a focused amendment.
+    //
+    // PERF NOTE, LOCALIZED lane (reviewer_comprehensive/performance, task 4909
+    // amendment). The gmsh-realized lane selected below carries four costs the
+    // note above (written for 4902's uniform lane) does not cover:
+    //
+    //  1. Double coarse solve, the same shape as the uniform lane's: the
+    //     localized lane's FIRST `solve_and_estimate` re-solves the very
+    //     realized mesh the single-shot `fea` above just computed. Not
+    //     eliminated for the same reason given above — `AdaptiveProblem` /
+    //     `run_adaptive_refinement` live in `reify_solver_elastic::adaptive`,
+    //     outside this task's locked scope, and cannot accept a pre-computed
+    //     first estimate.
+    //  2. Serialized remeshes: `RealizedAdaptiveProblem` forces
+    //     `deterministic: true`, which sets `General.NumThreads = 1` in
+    //     `refine_volume_with_size_field`, and every remesh additionally
+    //     serializes on the process-global `reify_kernel_gmsh::init::GMSH_LOCK`.
+    //     Load-bearing, not incidental: it is what makes the loop's
+    //     per-iteration output bit-stable.
+    //  3. `max_dofs` bounds whether a FURTHER refine happens, not how large a
+    //     single remesh may grow the mesh — `run_adaptive_refinement` evaluates
+    //     it only after `solve_and_estimate` returns. A sliver element yields a
+    //     near-zero `(6V)^(1/3)` characteristic size that `dorfler_size_hints`
+    //     halves again, and the resulting mesh is fully solved before the cap
+    //     can fire. Clamping the per-element hints to a floor derived from the
+    //     mesh's own size distribution would fix this, but it changes the
+    //     meaning of the size field handed to gmsh and would need its own RED
+    //     test against a real sliver mesh; deliberately NOT done as a
+    //     drive-by amendment.
+    //  4. Each refine is a FULL remesh from the extracted boundary surface, not
+    //     an incremental subdivision, and the size field's surface projection
+    //     (`project_volume_to_surface_vertices`) is O(n_surf x n_vol). Both are
+    //     properties of the landed `reify-solver-elastic` primitive and are
+    //     surfaced to callers in the lane's post-loop Info diagnostic.
+    //
+    // Cancellation IS handled: `RealizedAdaptiveProblem::solve_and_estimate`
+    // polls the ambient cancel handle on every CG iteration and the post-loop
+    // check below returns `ComputeOutcome::Cancelled`, so a long adaptive body
+    // solve is interruptible at CG granularity (the gmsh remesh itself is an
+    // FFI call and is not).
     let adaptive_params = extract_adaptive_params(options_vi);
     let aposteriori_fields: [(String, Value); 3] =
         if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
@@ -1303,15 +1342,34 @@ pub fn solve_elastic_static_trampoline(
                     None
                 } else {
                     match reify_solver_elastic::boundary_surface_mesh(vm) {
-                        Ok(surface) => Some(RealizedAdaptiveProblem::new(
-                            *iso,
-                            vm.clone(),
-                            surface,
-                            reify_solver_elastic::MeshingOptions::default(),
-                            tip_force,
-                            pressures.clone(),
-                            body_force,
-                        )),
+                        Ok(surface) => {
+                            // `new` returns `None` for a mesh this crate cannot
+                            // widen. Unreachable from HERE — `realized_handle`
+                            // was selected by `realized_solver_mesh_with_handle`,
+                            // which already ran the same
+                            // `volume_mesh_to_solver_mesh` gate — but the
+                            // constructor is `pub(crate)` and must not be
+                            // trusted to be called only from this one site, so
+                            // the ladder handles it rather than unwrapping.
+                            let seeded = RealizedAdaptiveProblem::new(
+                                *iso,
+                                vm.clone(),
+                                surface,
+                                reify_solver_elastic::MeshingOptions::default(),
+                                tip_force,
+                                pressures.clone(),
+                                body_force,
+                            );
+                            if seeded.is_none() {
+                                route_diagnostics.push(Diagnostic::warning(
+                                    "adaptive refinement: the realized volume mesh is not a \
+                                     widenable P1 tet mesh, so the localized lane cannot solve \
+                                     on it; falling back to uniform (non-mark-consuming) \
+                                     refinement",
+                                ));
+                            }
+                            seeded
+                        }
                         Err(e) => {
                             route_diagnostics.push(Diagnostic::warning(format!(
                                 "adaptive refinement: could not extract a boundary surface from \
@@ -1374,17 +1432,42 @@ pub fn solve_elastic_static_trampoline(
                             // is a FULL remesh from surface (not an
                             // incremental subdivision), and the size field's
                             // surface projection is O(n_surf x n_vol).
-                            let diag = Diagnostic::info(format!(
-                                "adaptive refinement finished at {} DOFs; refinement was \
-                                 LOCALIZED and mark-driven (a gmsh-realized size-field remesh \
-                                 consuming the Dörfler-marked set): elements {n_elements_before} \
-                                 -> {n_elements_after}. Cost note: each refinement iteration is \
-                                 a FULL remesh from the extracted boundary surface, not an \
-                                 incremental subdivision, and the per-element size field is \
-                                 projected onto that surface by an O(n_surf x n_vol) \
-                                 nearest-vertex scan",
-                                problem.last_n_dofs
-                            ));
+                            //
+                            // Phrased on `refine_count`, NOT on lane selection
+                            // (reviewer_comprehensive amendment):
+                            // `run_adaptive_refinement` can return without ever
+                            // calling `refine` — `max_refinement_iterations: 0`
+                            // (documented as legitimate), or a first estimate
+                            // already within `target_accuracy` — and claiming a
+                            // mark-driven remesh in those cases would be a false
+                            // statement that callers (including the step-19 e2e,
+                            // which parses this string) read as evidence the
+                            // refine ran. Both wordings keep the same
+                            // `elements N -> M` tail so the parse contract holds
+                            // either way.
+                            let diag = Diagnostic::info(if problem.refine_count == 0 {
+                                format!(
+                                    "adaptive refinement finished at {} DOFs; the gmsh-realized \
+                                     LOCALIZED lane was selected but the budget terminated \
+                                     before any mark-driven remesh ran (0 refinement \
+                                     iterations): elements {n_elements_before} -> \
+                                     {n_elements_after}",
+                                    problem.last_n_dofs
+                                )
+                            } else {
+                                format!(
+                                    "adaptive refinement finished at {} DOFs; refinement was \
+                                     LOCALIZED and mark-driven (a gmsh-realized size-field \
+                                     remesh consuming the Dörfler-marked set, {} refinement \
+                                     iteration(s)): elements {n_elements_before} -> \
+                                     {n_elements_after}. Cost note: each refinement iteration \
+                                     is a FULL remesh from the extracted boundary surface, not \
+                                     an incremental subdivision, and the per-element size field \
+                                     is projected onto that surface by an O(n_surf x n_vol) \
+                                     nearest-vertex scan",
+                                    problem.last_n_dofs, problem.refine_count
+                                )
+                            });
                             (status, problem.last_global_indicator, diag)
                         }
                         Err(e) => {
@@ -1405,6 +1488,18 @@ pub fn solve_elastic_static_trampoline(
                 }
                 None => run_uniform_lane(),
             };
+            // Post-loop cancel check (reviewer_comprehensive amendment), the
+            // exact shape of §6b above and for the same compute-node-contract
+            // §2 reason: a cancel raised DURING the refinement loop makes every
+            // CG solve from that point on bail early (see
+            // `RealizedAdaptiveProblem::solve_and_estimate`'s cancel poll), so
+            // the a-posteriori triple below would be computed from partial
+            // displacements. §6b fires before this branch and cannot see a
+            // cancel raised after it. Returning `Cancelled` leaves the output VC
+            // `Freshness::Pending` rather than caching a bogus partial result.
+            if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return ComputeOutcome::Cancelled;
+            }
             route_diagnostics.push(lane_diagnostic);
             // task 4910: build the Pa-valued error_indicator Field from the
             // COARSE seed solve (`fea` above — the SAME mesh that produced
@@ -3401,6 +3496,15 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
     type Error = std::convert::Infallible;
 
     fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+        // The refinement loop is interruptible at CG granularity: a cancel
+        // raised mid-loop bails out of the current solve and is turned into
+        // `ComputeOutcome::Cancelled` by the wiring site's post-loop check. A
+        // gmsh remesh is an FFI call and stays uninterruptible.
+        let mut cancel_poll = ambient_cg_cancel_poll();
+        let progress_opt: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl> = cancel_poll
+            .as_mut()
+            .map(|c| c as &mut dyn FnMut(usize, f64) -> CgIterationControl);
+
         let model = MaterialModel::Isotropic(self.material);
         let (fea, _fresh_warm) = solve_cantilever_fea(
             &model,
@@ -3420,7 +3524,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             self.body_force,
             true, // deterministic: bit-stable per-iteration solves.
             None,
-            None,
+            progress_opt,
             self.bc_override.clone(),
             Some(self.grid),
         );
@@ -3468,6 +3572,39 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         Ok(())
     }
 }
+/// A CG per-iteration callback that ONLY polls the ambient cancel handle.
+///
+/// `None` when no cancel handle is installed in the current dispatch context,
+/// so a caller passes `progress: None` and the solver takes its no-callback
+/// entry point exactly as before.
+///
+/// Why both adaptive lanes need one (reviewer_comprehensive/performance
+/// amendment): the trampoline's §6b cancel check fires ONCE, before the
+/// adaptive branch, so without this a single `adaptive: true` request runs its
+/// whole refinement budget — up to `DEFAULT_MAX_REFINEMENT_ITERATIONS`
+/// refinements plus that many + 1 full CG solves, each on a strictly larger
+/// mesh — with no way to interrupt it. Cancellation rides the ambient
+/// `solver_progress` dispatch context rather than the trampoline's
+/// (deliberately unused) `_cancellation` parameter, so nothing has to be
+/// threaded through the `AdaptiveProblem` trait, whose signature this task does
+/// not own.
+///
+/// Cancel-poll ONLY, no `SolverProgressSink` emission: the sink reports a
+/// single "cg" solve's iteration/residual stream, and interleaving one stream
+/// per refinement iteration would make the residual sequence read as a
+/// diverging solve. The seed solve already feeds the sink.
+fn ambient_cg_cancel_poll() -> Option<impl FnMut(usize, f64) -> CgIterationControl> {
+    let cancel = crate::solver_progress::current_solve_dispatch_context()
+        .and_then(|(_sink, cancel)| cancel)?;
+    Some(move |_iter: usize, _residual: f64| -> CgIterationControl {
+        if cancel.is_cancelled() {
+            CgIterationControl::Cancel
+        } else {
+            CgIterationControl::Continue
+        }
+    })
+}
+
 // ── RealizedAdaptiveProblem (task 4909) ──────────────────────────────────────
 
 /// One characteristic size per element of `(coords, tets)`, in element order:
@@ -3478,13 +3615,22 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
 /// [`refine_marked_elements`]'s `current_sizes` argument wants a
 /// characteristic *size* per element, not a volume.
 ///
-/// This is the SINGLE SOURCE of the convention, deliberately identical to
-/// `characteristic_size_from_volume` / `current_sizes_from_nodes_conns` in
-/// `reify-solver-elastic`'s `tests/aposteriori_validation.rs` harness. It is
-/// used BOTH to seed `current_sizes` at construction and to recompute it after
-/// every remesh (step-14): the same definition must be used both times or
+/// Within THIS crate it is the single definition of the convention: it is used
+/// BOTH to seed `current_sizes` at construction and to recompute it after every
+/// remesh (step-14). The same definition must be used both times or
 /// `current_sizes` stops being comparable across a refine, and the size field
 /// handed to gmsh silently changes meaning.
+///
+/// It is NOT, however, the single source workspace-wide — an independent copy of
+/// the same `(6*V)^(1/3)` scalar lives as `characteristic_size_from_volume` /
+/// `current_sizes_from_nodes_conns` in `reify-solver-elastic`'s
+/// `tests/aposteriori_validation.rs` harness (pinned there by its own
+/// `characteristic_size_from_volume_recovers_cube_root_edge_proxy_for_known_tet_volume`
+/// test), and nothing makes the two drift loudly. Hoisting one scalar
+/// `characteristic_size_from_volume` into `reify_solver_elastic::adaptive` next
+/// to `dorfler_size_hints` (which consumes the convention) and calling it from
+/// both sites is the real fix; it is deferred because `adaptive.rs` and that
+/// harness are outside this task's locked scope.
 fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vec<f64> {
     tets.iter()
         .map(|conn| {
@@ -3493,25 +3639,6 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
             (6.0 * tet_volume_p1(&phys)).cbrt()
         })
         .collect()
-}
-
-/// Median of `values`, or `None` when empty. Used to seed the remesher's
-/// baseline `mesh_size` from the realized mesh's own element sizes.
-///
-/// Median rather than mean: a gmsh tet mesh has a long right tail of
-/// sliver-adjacent elements, and a mean would be dragged by it into asking
-/// for a finer baseline than the mesh actually is.
-fn median(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut sorted = values.to_vec();
-    // `total_cmp` rather than `partial_cmp(..).unwrap_or(Equal)` (INV-FEA-3): these
-    // sizes come from `(6 * V).cbrt()` over realized-mesh coordinates, so a NaN is not
-    // structurally excluded, and a NaN-as-equal fallback would yield an unstable sort
-    // and a meaningless baseline `mesh_size`.
-    sorted.sort_by(f64::total_cmp);
-    Some(sorted[sorted.len() / 2])
 }
 
 /// The **gmsh-realized** [`AdaptiveProblem`]: a-posteriori refinement that
@@ -3587,6 +3714,15 @@ pub(crate) struct RealizedAdaptiveProblem {
     /// The most recent `solve_and_estimate()`'s DOF count. Surfaced in the
     /// post-loop diagnostic so a caller can see the achieved mesh cost.
     pub(crate) last_n_dofs: usize,
+    /// How many times `refine` has run to completion.
+    ///
+    /// `run_adaptive_refinement` can return WITHOUT ever calling `refine` — a
+    /// `max_refinement_iterations: 0` budget (documented as legitimate: "one
+    /// solve, zero refinements"), or a first estimate already at or under
+    /// `target_accuracy`. The post-loop diagnostic reads this so it never
+    /// claims a mark-driven remesh that did not happen
+    /// (reviewer_comprehensive amendment).
+    pub(crate) refine_count: usize,
 }
 
 impl RealizedAdaptiveProblem {
@@ -3595,10 +3731,24 @@ impl RealizedAdaptiveProblem {
     ///
     /// `current_sizes` is computed fresh from each element's volume, so it is
     /// correct from the very first solve — not just after the first `refine`.
-    /// `meshing_options.mesh_size` is seeded to the MEDIAN characteristic size
-    /// of that initial mesh: the remesher's baseline should be the mesh it is
-    /// starting from, so that the mark-driven per-element sizes are what
-    /// actually differentiate the refined region.
+    ///
+    /// `meshing_options.mesh_size` is deliberately left EXACTLY as the caller
+    /// passed it, including `None` (reviewer_comprehensive amendment). An
+    /// earlier revision seeded it to the median characteristic size of the
+    /// initial mesh; that was inert and is removed rather than documented as
+    /// future-proofing. `refine_marked_elements` →
+    /// `refine_with_size_field_validated` →
+    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads ONLY
+    /// `options.deterministic` and `options.threads`; the per-vertex size field
+    /// supersedes any baseline, and that function's own comment says its
+    /// `Mesh.MeshSizeMax` is "deliberately NOT `options.mesh_size`". Two things
+    /// must be settled before any future revision wires it through: the units
+    /// (`MeshingOptions::mesh_size` is documented in millimetres, while these
+    /// characteristic sizes are in the model's own coordinate units — metres in
+    /// the `.ri` fixtures, a 1000x error if crossed), and whether re-introducing
+    /// a baseline would re-create the very clamp `refine_volume.rs` defends
+    /// against. This struct's `meshing_options` therefore carries only
+    /// `deterministic`/`threads` to the remesher today.
     ///
     /// `deterministic: true` is load-bearing, not decorative — it forces
     /// `General.NumThreads = 1` in the remesher, which is what makes the
@@ -3607,7 +3757,12 @@ impl RealizedAdaptiveProblem {
     /// Returns `None` when `volume_mesh` is not a widenable P1 tet mesh (the
     /// same `volume_mesh_to_solver_mesh` gate the solve itself runs), so the
     /// wiring site can fall back rather than construct a problem that would
-    /// fail on its first solve.
+    /// fail on its first solve. Making that promise real in the SIGNATURE (an
+    /// earlier revision returned `Self` and swallowed the rejection into an
+    /// empty `current_sizes`) is what keeps `solve_and_estimate` free of a
+    /// degenerate arm that would have reported `global_indicator: 0.0` — read
+    /// by `run_adaptive_refinement` as "converged with zero error" on a mesh
+    /// that was never solved.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         material: IsotropicElastic,
@@ -3617,15 +3772,11 @@ impl RealizedAdaptiveProblem {
         tip_force: [f64; 3],
         pressures: Vec<PressureSpec>,
         body_force: [f64; 3],
-    ) -> Self {
-        let current_sizes = volume_mesh_to_solver_mesh(&volume_mesh)
-            .map(|(coords, tets)| characteristic_sizes_from_solver_mesh(&coords, &tets))
-            .unwrap_or_default();
-        if meshing_options.mesh_size.is_none() {
-            meshing_options.mesh_size = median(&current_sizes);
-        }
+    ) -> Option<Self> {
+        let (coords, tets) = volume_mesh_to_solver_mesh(&volume_mesh)?;
+        let current_sizes = characteristic_sizes_from_solver_mesh(&coords, &tets);
         meshing_options.deterministic = true;
-        Self {
+        Some(Self {
             material,
             volume_mesh,
             surface,
@@ -3636,7 +3787,8 @@ impl RealizedAdaptiveProblem {
             body_force,
             last_global_indicator: 0.0,
             last_n_dofs: 0,
-        }
+            refine_count: 0,
+        })
     }
 
     /// Element count of the CURRENT mesh.
@@ -3670,21 +3822,29 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         // gate AND the orphan-vertex compaction that real gmsh output demands
         // (an element-unreferenced node gets no stiffness contribution,
         // inflating n_dofs and panicking in apply_dirichlet_row_elimination).
-        let (coords, tet_connectivity) = match volume_mesh_to_solver_mesh(&self.volume_mesh) {
-            Some(mesh) => mesh,
-            // `new` already rejected a non-widenable seed, and `refine` rejects
-            // a non-widenable remesh result, so this arm is unreachable in
-            // practice. Degrade honestly rather than panicking mid-loop.
-            None => {
-                self.last_global_indicator = 0.0;
-                self.last_n_dofs = 0;
-                return AdaptiveEstimate {
-                    global_indicator: 0.0,
-                    per_element: Vec::new(),
-                    n_dofs: 0,
-                };
-            }
-        };
+        // Widenability is a CONSTRUCTION invariant, not a runtime condition:
+        // `new` returns `None` for a non-widenable seed and `refine` raises a
+        // `RefineError` for a non-widenable remesh result, so `self.volume_mesh`
+        // is always widenable here. An earlier revision carried a "degrade
+        // honestly" arm returning `global_indicator: 0.0`; that was the opposite
+        // of honest — `run_adaptive_refinement` tests
+        // `est.global_indicator <= budget.target_accuracy` FIRST, so 0.0 reads as
+        // `Converged { final_indicator: 0.0 }` and the caller is told the solve
+        // converged perfectly on a mesh that was never solved
+        // (reviewer_comprehensive amendment).
+        let (coords, tet_connectivity) = volume_mesh_to_solver_mesh(&self.volume_mesh).expect(
+            "RealizedAdaptiveProblem holds a widenable P1 tet mesh by construction: \
+             `new` gates the seed and `refine` gates every remesh result",
+        );
+
+        // The refinement loop is interruptible at CG granularity: a cancel
+        // raised mid-loop bails out of the current solve and is turned into
+        // `ComputeOutcome::Cancelled` by the wiring site's post-loop check. A
+        // gmsh remesh is an FFI call and stays uninterruptible.
+        let mut cancel_poll = ambient_cg_cancel_poll();
+        let progress_opt: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl> = cancel_poll
+            .as_mut()
+            .map(|c| c as &mut dyn FnMut(usize, f64) -> CgIterationControl);
 
         let model = MaterialModel::Isotropic(self.material);
         let (fea, _fresh_warm) = solve_cantilever_fea(
@@ -3707,7 +3867,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
             // Bit-stable per-iteration solves — the loop's stability invariant.
             true,
             None,
-            None,
+            progress_opt,
             // Coordinate BC selection, re-derived per solve. See the struct doc:
             // node indices do not survive a remesh, so an index-based override
             // cannot be carried across an iteration.
@@ -3789,6 +3949,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
 
         self.current_sizes = characteristic_sizes_from_solver_mesh(&coords, &tets);
         self.volume_mesh = refined;
+        self.refine_count += 1;
         Ok(())
     }
 }
@@ -11760,7 +11921,8 @@ mod tests {
             [0.0, 0.0, -1000.0],
             vec![],
             [0.0; 3],
-        );
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
 
         let est = problem.solve_and_estimate();
 
@@ -11864,6 +12026,7 @@ mod tests {
             vec![],
             [0.0; 3],
         )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem")
     }
 
     /// step-13 RED (task 4909): `refine` genuinely CONSUMES the Dörfler-marked
@@ -12261,24 +12424,33 @@ mod tests {
             None,
             &cancellation,
         );
-        assert_fell_back_to_uniform(outcome_a, "selector-resolved", "(a) bc_override present");
+        assert_fell_back_to_uniform(
+            outcome_a,
+            expected_fallback_marker("selector-resolved"),
+            "(a) bc_override present",
+        );
 
         // ── (b) A realized mesh whose boundary cannot be extracted. ──
         let (_, diags_b) = {
             let outcome = run_adaptive_trampoline_outcome(&[vm_read_handle(non_manifold_tet_mesh())]);
             assert_fell_back_to_uniform(
                 outcome,
-                "boundary surface",
+                expected_fallback_marker("boundary surface"),
                 "(b) non-manifold realized mesh",
             )
         };
-        assert!(
-            diags_b
-                .iter()
-                .any(|d| d.message.contains("non-manifold")),
-            "the boundary-extraction warning must carry the RefineError's own \
-             Display text so the caller can see WHY, got: {diags_b:?}",
-        );
+        if reify_solver_elastic::GMSH_AVAILABLE {
+            // Only reachable in a gmsh build: without libgmsh the selector
+            // short-circuits before boundary extraction is ever attempted, so
+            // no `RefineError` Display text exists to be carried.
+            assert!(
+                diags_b
+                    .iter()
+                    .any(|d| d.message.contains("non-manifold")),
+                "the boundary-extraction warning must carry the RefineError's own \
+                 Display text so the caller can see WHY, got: {diags_b:?}",
+            );
+        }
 
         // ── (b2) A Hex realized mesh must also never Fail. ──
         //
@@ -12365,9 +12537,33 @@ mod tests {
         )
     }
 
+    /// The Warning marker a fallback case must carry IN THIS BUILD.
+    ///
+    /// The lane selector tests `GMSH_AVAILABLE` FIRST — before `bc_override`
+    /// and before boundary extraction — so in a stub build EVERY realized-mesh
+    /// case falls back for the same reason ("libgmsh is not available in this
+    /// build") and none of the downstream markers is ever emitted. Pinning the
+    /// gmsh-build wording unconditionally would red this test on any host
+    /// without `/opt/reify-deps`'s libgmsh, which the design explicitly
+    /// supports (the whole lane is gated on a RUNTIME const precisely so stub
+    /// builds behave, and case (d) below runs only in one). Selecting the
+    /// expected marker on the same runtime const keeps the assertion
+    /// load-bearing in both builds rather than merely skipping it in one.
+    fn expected_fallback_marker(gmsh_build_marker: &str) -> &str {
+        if reify_solver_elastic::GMSH_AVAILABLE {
+            gmsh_build_marker
+        } else {
+            "libgmsh"
+        }
+    }
+
     /// Assert the SAME two outcomes every fallback trigger must produce:
     /// `Completed` with a real uniform-lane a-posteriori triple, and a
     /// Warning whose message contains `reason_marker`.
+    ///
+    /// The Completed-plus-real-triple half is the load-bearing, unconditional
+    /// claim (an `adaptive: true` request must never regress to `Failed`); the
+    /// reason marker is chosen per build by `expected_fallback_marker`.
     fn assert_fell_back_to_uniform(
         outcome: ComputeOutcome,
         reason_marker: &str,
@@ -12444,7 +12640,8 @@ mod tests {
             [0.0, 0.0, -1000.0],
             vec![],
             [0.0; 3],
-        );
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
         // Desynchronise the size field from the mesh.
         problem.current_sizes.truncate(1);
 
