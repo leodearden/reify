@@ -118,18 +118,37 @@ _reverse_closure() {
     # Collect metadata once; guard failure -> ALL.
     #
     # --locked stops cargo from REWRITING Cargo.lock: it refuses to resolve a
-    # stale/missing lock instead of silently updating it (the tracked-file
-    # mid-commit-mutation risk this task closes). It does NOT imply
-    # --offline: on a cold registry/index cache, cargo can still perform
-    # network I/O to read dependency manifests even against a valid,
-    # unchanged lock. Fully closing that (--frozen/--offline) is deliberately
-    # out of scope for this change — it trades a cold-cache network hit for
-    # cold-cache closures unconditionally widening to ALL, a separate
-    # tradeoff left to a follow-up rather than folded into this single-flag
-    # change.
+    # stale/missing lock instead of silently updating it, closing the
+    # tracked-file mid-commit-mutation risk. --offline adds the guarantee
+    # --locked does NOT imply — no network I/O at all: even against a valid,
+    # unchanged lock, a cold registry/index cache would otherwise let cargo
+    # fetch dependency manifests. Together they make this call hermetic,
+    # which matters because it now runs on the pre-commit-hook tier and under
+    # verify.sh --print-plan, where an unbounded index fetch is a hook-stall
+    # hazard. (--frozen is exactly this pair spelled as one flag; the two-flag
+    # form is kept so each guarantee stays legible at the call site.)
+    #
+    # Accepted tradeoff: a genuinely cold registry cache no longer stalls, it
+    # fails fast (measured 0.15-0.35s) into the C5 fail-wide ALL path just
+    # below. docs/prds/verify-scope-contract.md §3 C5 already specifies ALL as
+    # the answer to "cannot compute the affected set", so the failure only
+    # ever WIDENS the verify scope and can never produce a false PASS. That is
+    # the whole containment argument, and it holds unconditionally.
+    #
+    # Two weaker claims are deliberately NOT made (both were asserted here and
+    # corrected in review). C4 does NOT make the cold case unreachable: it
+    # returns ALL only when Cargo.lock is in THIS run's changed-file set, so a
+    # dev who pulls a Cargo.lock bump and then commits only a source file
+    # reaches here with a cache that is cold relative to the lock, C4 never
+    # having fired. And the widening does not self-heal by elapsed time: what
+    # repopulates the registry is the `cargo check` / `cargo clippy` passes a
+    # RUN_RUST=1 verify goes on to run, neither of which passes --offline. A
+    # --print-plan probe or a RUN_RUST=0 docs-tier commit never shells out to
+    # a networked cargo, so it keeps reporting ALL — harmlessly, per C5 —
+    # until a real build runs.
     local meta
-    meta="$(cargo metadata --format-version 1 --locked 2>/dev/null)" || {
-        echo "affected-crates-lib.sh: cargo metadata --locked failed (stale/missing Cargo.lock?) — falling back to ALL" >&2
+    meta="$(cargo metadata --format-version 1 --locked --offline 2>/dev/null)" || {
+        echo "affected-crates-lib.sh: cargo metadata --locked --offline failed (stale/missing Cargo.lock, or a cold registry cache) — falling back to ALL" >&2
         echo ALL
         return 0
     }

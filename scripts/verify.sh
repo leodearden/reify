@@ -1683,15 +1683,21 @@ select_cheap_ptodo_gate
 #
 # COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
 # here rather than adding a second call site), and RUN_RUST=0 (a docs-only
-# hook-gated commit) skips it entirely. The call shells out to an UNGUARDED
-# `cargo metadata --format-version 1` in affected-crates-lib.sh's
-# _reverse_closure: 0.53s warm, but on a cold cache or a stale Cargo.lock it
-# performs dependency resolution, can reach the network, and can rewrite
-# Cargo.lock — now on the pre-commit-hook tier and under --print-plan, neither
-# of which previously shelled out to cargo on the staged path. Mitigated because
-# a RUN_RUST=1 hook run goes on to invoke cargo clippy/check anyway. Passing
-# --locked/--offline there is the real fix and is filed as follow-up; the
-# existing `|| { echo ALL; return 0; }` already fails wide if it errors.
+# hook-gated commit) skips it entirely. The call shells out to
+# `cargo metadata --format-version 1 --locked --offline` in
+# affected-crates-lib.sh's _reverse_closure: ~1.2s warm, and both guards are
+# now in place — it cannot rewrite Cargo.lock (--locked, task 6277) and cannot
+# reach the network (--offline, task 6292). That matters because this runs on
+# the pre-commit-hook tier and under --print-plan, neither of which previously
+# shelled out to cargo on the staged path: a stale Cargo.lock or a cold
+# registry cache fails FAST (0.15-0.35s measured) into _reverse_closure's
+# existing `|| { echo ALL; return 0; }` rather than stalling on an unbounded
+# index fetch. The cost of that fail-wide is one full-workspace verify, which
+# is safe by construction — C5 widening can never produce a false PASS — but
+# it is NOT self-healing by elapsed time. What repopulates the registry is the
+# `cargo check` / `cargo clippy` passes this very run goes on to schedule
+# (neither passes --offline), so a RUN_RUST=1 run narrows again next time,
+# while a --print-plan probe keeps reporting ALL until a real build runs.
 #
 # REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
 # separated crate names). When set AND the closure is eligible, used verbatim in
