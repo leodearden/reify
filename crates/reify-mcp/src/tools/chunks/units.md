@@ -118,7 +118,7 @@ axis direction `1, 0, 0` stays exactly as it was. One call, both halves of the r
 Every rejection reads the same way — one diagnostic per offending argument, so a `box` with three
 bare dimensions reports three:
 
-```
+```text
 box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`
 ```
 

@@ -1810,6 +1810,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("geometry", 2),
     ("purposes", 1),
     ("traits", 3),
+    ("units", 1),
 ];
 
 /// The corpus-wide floor on ```` ```reify-invalid ```` fences.
