@@ -53,3 +53,33 @@ fn check_unbound_qualified_ref_in_type_position_is_loud() {
         "stderr should contain 'unresolved type: obj.width' — the load-bearing assertion: it pins that the undeclared qualifier is rejected at all, that the dotted form (not a bare 'obj') reached the diagnostic, and that a missing/renamed fixture fails here instead of passing vacuously.\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// `sub` structure_name position: `sub s = obj.width()` where `obj` is
+/// undeclared.
+///
+/// Emitted by `crates/reify-compiler/src/conformance/sub_component_validation.rs`.
+/// Anchored on two substrings rather than the whole formatted line: the phrase
+/// `references unknown structure "…"` is deliberately frozen byte-identical to
+/// the eval-time backstop (see that module's header), so it is the stable half,
+/// and pinning the DOTTED `obj.width` inside the quotes proves μ's dot-join
+/// reached the diagnostic rather than a bare `obj`.
+#[test]
+fn check_unbound_qualified_ref_in_sub_position_is_loud() {
+    let (status, stdout, stderr) = common::run_subcommand(
+        "check",
+        &common::fixture_path("qualified_ref_undeclared_sub.ri"),
+    );
+
+    assert!(
+        !status.success(),
+        "reify check should exit non-zero for an unbound qualified ref in `sub` position.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("references unknown structure \"obj.width\""),
+        "stderr should contain 'references unknown structure \"obj.width\"' — the load-bearing assertion: the frozen phrase plus the DOTTED qualified name, which is what a missing/renamed fixture fails on instead of passing vacuously.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("sub-component \"s\""),
+        "stderr should name the offending sub-component 's'.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
