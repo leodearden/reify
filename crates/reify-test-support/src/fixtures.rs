@@ -1235,6 +1235,25 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
 // a dev-dependency there. `crates/reify-kernel-manifold/tests/
 // cube_fixture_agreement.rs` is the executable guard that keeps the two
 // honest.
+//
+// KNOWN WART, tracked as follow-up ticket `tkt_0RTBP1ZERTVFV61Z7VWAMFMTMK`
+// (escalation id `agent-followup-6387-glob`): this block does not really belong
+// in `fixtures.rs`. Two reasons. (1) Domain — the rest of this file is
+// compiler/module fixtures (`reify_compiler`, `reify_ast`, `reify_core`);
+// f32 triangle soup is a different domain and belongs beside
+// `helpers::mesh_aabb` or in its own `mesh_fixtures` module, matching the
+// crate's per-domain layout. (2) Namespace — `lib.rs` glob-re-exports this
+// module (`pub use fixtures::*;`), so `assert_rel`, `unit_cube_mesh`,
+// `prismatic_box_mesh`, `unwelded_prismatic_box_mesh` and `F32_STORAGE_REL` are
+// hoisted to the crate root that ~50 test files pull in via
+// `use reify_test_support::*;`. Those names are generic enough to collide (see
+// `assert_rel_close` in reify-stdlib/reify-cli, a private `unit_cube_mesh` in
+// reify-ir), and `lib.rs` already keeps `git_env` out of the glob for exactly
+// this reason. Nothing breaks today — no consumer uses the crate-root path;
+// every one spells `reify_test_support::fixtures::…`, which is what makes the
+// eventual move mechanical. The fix belongs in `lib.rs`, outside #6387's locked
+// file set, which is why it is filed rather than applied here. Meanwhile: do
+// NOT start importing these from the crate root.
 
 // --- Shared tolerance -------------------------------------------------------
 
