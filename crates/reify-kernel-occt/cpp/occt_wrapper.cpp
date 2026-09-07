@@ -5930,6 +5930,34 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
     });
 }
 
+std::unique_ptr<OcctShape> make_empty_compound_for_test() {
+    // An empty TopoDS_Compound: the ONLY shape reachable from Rust for which
+    // BRepGProp::VolumeProperties returns mass EXACTLY 0.0 (bitwise) while
+    // ShapeType() (COMPOUND == 0) is <= TopAbs_SOLID (2) — i.e. the only
+    // constructible input that takes query_volume's tessellation fallback
+    // (see compute_volume_arm / query_volume). Measured on OCCT 7.8.1:
+    // Mass() == 0.0 bitwise, IsNull() == false, CentreOfMass == the origin,
+    // MatrixOfInertia all-zero, and BRepMesh_IncrementalMesh completes with
+    // 0 faces (so mesh_based_volume sums nothing and returns 0.0).
+    //
+    // make_nonmanifold_compound_for_test() is NOT usable for this purpose:
+    // its three coplanar-with-origin faces integrate to
+    // -6.6174449004242214e-24 (deterministic over 3 repeat runs), which MISSES
+    // the exact `vol == 0.0` guard, so it never takes the fallback.
+    //
+    // Production make_compound refuses empty input, hence this test-only
+    // fixture (same convention as make_null_shape_for_test /
+    // make_nonmanifold_compound_for_test).
+    return wrap_occt_call("make_empty_compound", [&]() {
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = compound;
+        return result;
+    });
+}
+
 // Shared box-construction helper for test fixtures.
 // Centralises the 0.01 m size constant and the IsDone() check used by all three
 // box-based fixtures (malformed solid, compsolid, closed shell).

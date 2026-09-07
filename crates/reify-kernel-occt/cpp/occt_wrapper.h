@@ -1528,6 +1528,18 @@ bool shape_is_null(const OcctShape& shape);
 /// The shared edge has 3 incident faces, making the compound non-manifold.
 std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test();
 
+/// Build an EMPTY `TopoDS_Compound` (a compound with no children).
+/// The only shape reachable from Rust whose `BRepGProp::VolumeProperties` mass
+/// is EXACTLY 0.0 (bitwise) while `ShapeType()` (COMPOUND == 0) is
+/// <= `TopAbs_SOLID` (2) — i.e. the only constructible input that takes
+/// `query_volume`'s tessellation fallback. Measured on OCCT 7.8.1: mass 0.0
+/// bitwise, `IsNull() == false`, CentreOfMass at the origin, MatrixOfInertia
+/// all-zero, and `BRepMesh_IncrementalMesh` completes with 0 faces.
+/// `make_nonmanifold_compound_for_test()` is NOT usable for this: it measures
+/// -6.6174449004242214e-24 (deterministic), missing the exact `vol == 0.0`
+/// guard. Production `make_compound` rejects empty input, hence this fixture.
+std::unique_ptr<OcctShape> make_empty_compound_for_test();
+
 /// Build a 10×10×10 mm box with one face removed, wrapped in a solid.
 /// The resulting open shell causes BRepCheck_Analyzer::IsValid() to return false.
 std::unique_ptr<OcctShape> make_malformed_solid_for_test();

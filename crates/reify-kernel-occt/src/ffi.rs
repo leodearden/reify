@@ -1307,6 +1307,18 @@ pub mod ffi {
         /// Three faces sharing one edge → non-manifold compound.
         fn make_nonmanifold_compound_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// EMPTY `TopoDS_Compound` (no children) → the only Rust-reachable
+        /// shape whose exact volume integral returns mass EXACTLY 0.0 (bitwise)
+        /// while `ShapeType()` (COMPOUND = 0) is <= `TopAbs_SOLID` (2) — i.e.
+        /// the only constructible input that takes `query_volume`'s
+        /// tessellation fallback. Measured on OCCT 7.8.1: mass 0.0 bitwise,
+        /// `IsNull() == false`, centre of mass at the origin, all-zero inertia
+        /// matrix, and `BRepMesh_IncrementalMesh` completes with 0 faces.
+        /// `make_nonmanifold_compound_for_test` is NOT usable here: it measures
+        /// -6.6174449004242214e-24 (deterministic), missing the exact
+        /// `vol == 0.0` guard. Production `make_compound` refuses empty input.
+        fn make_empty_compound_for_test() -> Result<UniquePtr<OcctShape>>;
+
         /// 10×10×10 mm box missing one face → open shell inside a solid.
         fn make_malformed_solid_for_test() -> Result<UniquePtr<OcctShape>>;
 
