@@ -118,18 +118,28 @@ _reverse_closure() {
     # Collect metadata once; guard failure -> ALL.
     #
     # --locked stops cargo from REWRITING Cargo.lock: it refuses to resolve a
-    # stale/missing lock instead of silently updating it (the tracked-file
-    # mid-commit-mutation risk this task closes). It does NOT imply
-    # --offline: on a cold registry/index cache, cargo can still perform
-    # network I/O to read dependency manifests even against a valid,
-    # unchanged lock. Fully closing that (--frozen/--offline) is deliberately
-    # out of scope for this change — it trades a cold-cache network hit for
-    # cold-cache closures unconditionally widening to ALL, a separate
-    # tradeoff left to a follow-up rather than folded into this single-flag
-    # change.
+    # stale/missing lock instead of silently updating it, closing the
+    # tracked-file mid-commit-mutation risk. --offline adds the guarantee
+    # --locked does NOT imply — no network I/O at all: even against a valid,
+    # unchanged lock, a cold registry/index cache would otherwise let cargo
+    # fetch dependency manifests. Together they make this call hermetic,
+    # which matters because it now runs on the pre-commit-hook tier and under
+    # verify.sh --print-plan, where an unbounded index fetch is a hook-stall
+    # hazard. (--frozen is exactly this pair spelled as one flag; the two-flag
+    # form is kept so each guarantee stays legible at the call site.)
+    #
+    # Accepted tradeoff: a genuinely cold registry cache no longer stalls, it
+    # fails fast (measured ~0.4s) into the C5 fail-wide ALL path just below.
+    # docs/prds/verify-scope-contract.md §3 C5 already specifies ALL as the
+    # answer to "cannot compute the affected set", so this only ever widens
+    # and can never produce a false PASS. It is cheap for two reasons: the
+    # realistic way the cache goes cold relative to the lock is a Cargo.lock
+    # bump, and Cargo.lock is a C4 global that returns ALL in
+    # affected_crates() before execution ever reaches here; and the widening
+    # lasts exactly one run — the next run, cache warm, narrows normally.
     local meta
-    meta="$(cargo metadata --format-version 1 --locked 2>/dev/null)" || {
-        echo "affected-crates-lib.sh: cargo metadata --locked failed (stale/missing Cargo.lock?) — falling back to ALL" >&2
+    meta="$(cargo metadata --format-version 1 --locked --offline 2>/dev/null)" || {
+        echo "affected-crates-lib.sh: cargo metadata --locked --offline failed (stale/missing Cargo.lock, or a cold registry cache) — falling back to ALL" >&2
         echo ALL
         return 0
     }
