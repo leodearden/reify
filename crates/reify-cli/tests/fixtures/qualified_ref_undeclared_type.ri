@@ -1,0 +1,13 @@
+// Fixture (task #6499): an UNBOUND qualified reference in TYPE position.
+// `obj` is not a declared import binding, so `obj.width` must not resolve.
+// Read by harness_cli/cli_check_qualified_ref_positions.rs; deliberately
+// fails `reify check` (exit 1) — that rejection IS the observation.
+// Complements task #5495's expression-position import-binding gate; guards
+// the TYPE half of the per-position loudness claim on `namespaced_name_text`
+// against task #5505 (ν)'s resolution-side rewrite.
+
+module qualified_ref_undeclared_type
+
+structure def P {
+    param p : obj.width = 5mm
+}
