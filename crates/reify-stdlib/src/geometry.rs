@@ -6427,8 +6427,6 @@ mod tests {
         );
     }
 
-    /// The angular half must be a VALID ANGLE vector (#6080), or this test would take
-    /// the angular arm and stop covering the missing-key SHAPE path it is named for.
     // ── diagnose: transform_exp ANGULAR arm (#6080) ──────────────────────────
     //
     // `Twist.angular` is a rotation vector, so it carries ANGLE. Narrowing that gate is
@@ -6595,6 +6593,8 @@ mod tests {
         );
     }
 
+    /// The angular half must be a VALID ANGLE vector (#6080), or this test would take
+    /// the angular arm and stop covering the missing-key SHAPE path it is named for.
     #[test]
     fn diagnose_transform_exp_missing_linear_key_returns_none() {
         let mut m = std::collections::BTreeMap::new();
