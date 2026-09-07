@@ -306,15 +306,112 @@ assert "PG-RENAME-b: renaming an uncoupled fixture stays RUN_RUST=0 RUN_GUI=0 RU
 # verify.sh, so it survives any refactor of how the list is stored. (a) is
 # deliberately comment-inclusive (a doc-comment mention counts): no
 # code-vs-comment discrimination needed, and it always errs conservative.
-# Today (a) derives 11 paths and (b) is empty.
+#
+#  (a) ESCAPE HATCH — `pg-drift:allow`, the leaf-level sibling of half (b)'s
+#      `pg-drift-dir:allow` (task 6986). GRAMMAR: an inline
+#      `pg-drift:allow — <reason>` ON THE MATCHED LINE drops that line from the
+#      derived set; the reason is required.
+#
+#      WHY IT EXISTS. Erring conservative has one perverse case, and it is the
+#      case BOTH real incidents were: documentation prose that NAMES a
+#      genuinely UNCOUPLED fixture. Comment-inclusiveness makes that sentence
+#      the only thing telling the checker a compiled target reads the file — so
+#      the more carefully an author documents "nothing reads this", the more
+#      likely they are to red the gate. #5540 reddened post-merge verify that
+#      way while documenting solver_unification_tangent_silent_accept.ri; #5371
+#      derived 13 paths against a 12-entry list at branch HEAD a6be4e30a7. The
+#      marker is therefore usable on a line with NO reading test target at all,
+#      which is exactly the point.
+#
+#      REMEDY ORDER when this half reds: FIRST decide whether a compiled target
+#      really reads the fixture. If it does, add <name>.ri to verify.sh's
+#      _RUST_COUPLED_RI_FIXTURES. If it does NOT, mark the line — do not add a
+#      row that is FALSE, and do not reword the prose to avoid spelling the
+#      path (the #5540/#5371 workaround, which degrades the documentation and
+#      is invisible to anyone who has not read the incident).
+#
+#      GOTCHA: the marker must sit ON the matched line. One line above
+#      suppresses nothing, because the filter drops matched LINES.
+#
+#      RESIDUAL, stated as honestly as (b) states its own: the filter drops the
+#      WHOLE line, so a marked line that ALSO names a genuinely coupled fixture
+#      would drop that one too. Accepted — the same granularity
+#      `pg-drift-dir:allow` already has.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PG-DRIFT: every *.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
-_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -o -E 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri' -- '*.rs' | sort -u || true)"
+# The fixture-LEAF pattern, named like its sibling _PG_DIR_PAT below so the two
+# halves read as one convention.
+_PG_FIX_PAT='tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri'
+# The SINGLE derivation that both the real-repo run below and the synthetic
+# self-tests go through: full matched LINES in, sorted-unique fixture paths out.
+# `-o` lives here rather than on `git grep` so the helper still sees whole
+# lines — the self-tests therefore exercise the production pipeline instead of
+# restating it, and the reviewed-marker filter has somewhere to stand.
+# That filter runs FIRST, before `-o` projects the line away. Its literal is the
+# EXACT `pg-drift:allow`: a shortened `pg-drift` would also swallow half (b)'s
+# reviewed `pg-drift-dir:allow` walks (pinned by the cross-suppression self-test
+# below). Callers keep the `|| true` the surrounding code already uses — under
+# `set -euo pipefail` a `grep` that suppresses every line exits 1, which is now
+# a legitimate outcome rather than a fault.
+_pg_derive() { grep -v 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u; }
+_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' | _pg_derive || true)"
 # Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
 # must fail loudly here instead of vacuously passing an empty loop.
 assert "PG-DRIFT: derived coupled-fixture set is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PG_COUPLED"
+# INJECTION self-tests for the reviewed 'pg-drift:allow' escape hatch. All four
+# drive synthetic lines through the SAME _pg_derive helper the real run above
+# uses, so they can never drift from the production pipeline; they live in this
+# '.sh' file while the pathspec is '*.rs', so they can never leak into the real
+# derived set either — the same safety PG-DRIFT-DIR's self-tests below rely on.
+# The worked example throughout is the case BOTH real incidents were:
+# documentation prose asserting that a fixture is UNCOUPLED (#5540, #5371).
+assert "PG-DRIFT: marker self-test — an UNMARKED prose mention IS still derived (the guard must keep biting: this is #5540's 19->20 and #5371's 12->13 delta)" \
+    test "$(printf '%s\n' \
+        '//! see tests/prd-gate/fixtures/pg_drift_marker_probe.ri for the silent-accept case' \
+        | _pg_derive | wc -l || true)" -eq 1
+assert "PG-DRIFT: marker self-test — the SAME line carrying an inline 'pg-drift:allow — <reason>' is NOT derived (reviewed prose about an uncoupled fixture must not force a FALSE _RUST_COUPLED_RI_FIXTURES row)" \
+    test "$(printf '%s\n' \
+        '//! tests/prd-gate/fixtures/pg_drift_marker_probe.ri (pg-drift:allow — reviewed: prose only, no compiled target reads it)' \
+        | _pg_derive | wc -l || true)" -eq 0
+assert "PG-DRIFT: marker self-test — a marker on the PRECEDING line suppresses NOTHING (the filter drops MATCHED lines, so the marker must ride on the matched line itself)" \
+    test "$(printf '%s\n' \
+        '//! pg-drift:allow — reviewed, see below' \
+        '//! see tests/prd-gate/fixtures/pg_drift_marker_probe.ri' \
+        | _pg_derive | wc -l || true)" -eq 1
+assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT cross-suppress half (a) (forces the filter literal to be the exact 'pg-drift:allow'; a shortened 'pg-drift' would silently mute every reviewed directory walk here too)" \
+    test "$(printf '%s\n' \
+        '//! tests/prd-gate/fixtures/pg_drift_marker_probe.ri // pg-drift-dir:allow — reviewed walk' \
+        | _pg_derive | wc -l || true)" -eq 1
+# The allow-marker must not become a blanket mute — the same obligation
+# PG-DRIFT-DIR carries for its own marker below. Two assertions bound it.
+#
+# (A) LEDGER PIN. Count the reviewed mentions, so silently deleting the marked
+# line (or its required reason) is itself a change this guard notices. The
+# count comes from `| grep … | wc -l` on a PIPE, never from `git grep -c`,
+# which prints `path:count` rather than a bare number.
+_PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
+    | grep 'pg-drift:allow' | wc -l || true)"
+assert "PG-DRIFT: exactly one reviewed 'pg-drift:allow' fixture mention is expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence); found $_PG_ALLOWED_MENTIONS" \
+    test "$_PG_ALLOWED_MENTIONS" -eq 1
+# (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
+# this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
+# classifier. A marked basename that IS in _RUST_COUPLED_RI_FIXTURES would mean
+# the marker is hiding a genuinely coupled fixture from the one guard that
+# keeps that list honest, and a later deletion of the row would go unnoticed.
+# The hatch is therefore unusable as a mute in EITHER direction: mark a truly
+# coupled fixture and this reds; leave a stale row behind and this reds.
+# Non-vacuity is supplied by (A) — it guarantees at least one marked line —
+# so do NOT add a redundant `test -n` here.
+_PG_MARKED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
+    | grep 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u || true)"
+while IFS= read -r _pg_marked_path; do
+    [ -n "$_pg_marked_path" ] || continue
+    plan_for staged "$_pg_marked_path"
+    assert "PG-DRIFT: $_pg_marked_path is 'pg-drift:allow'-marked -> RUN_RUST=0 (the marker says nothing compiled reads it; if that is false the marker is muting a real coupling, and if it is true the fixture must NOT be in verify.sh's _RUST_COUPLED_RI_FIXTURES)" \
+        plan_has 'RUN_RUST=0'
+done <<< "$_PG_MARKED"
 while IFS= read -r _pg_path; do
     [ -n "$_pg_path" ] || continue
     plan_for staged "$_pg_path"

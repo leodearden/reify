@@ -1099,11 +1099,22 @@ is_occt_crate() {
 # Deliberately NO file:line citations: nothing validates them and they rot on
 # the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
 # tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
-# set from the real repo (`git grep -o 'tests/prd-gate/fixtures/*.ri' over ALL
-# tracked *.rs`) and asserts each still classifies RUN_RUST=1, so adding a new
-# Rust reference without listing it here goes RED; a companion assertion there
+# set from the real repo (a full-LINE `git grep` for
+# tests/prd-gate/fixtures/<name>.ri over ALL tracked *.rs, minus the lines
+# carrying a reviewed `pg-drift:allow` marker, then projected to the matched
+# paths) and asserts each still classifies RUN_RUST=1, so adding a new Rust
+# reference without listing it here goes RED; a companion assertion there
 # also fails if any *.rs names the fixtures DIRECTORY rather than a single
 # <name>.ri leaf, which would void this arm's premise outright (see below).
+# THE OTHER HALF OF THAT RED (task 6986): when what tripped it is a PROSE
+# mention of a genuinely UNCOUPLED fixture — a doc comment naming a file no
+# compiled target reads — the fix is NOT a row here, which would be FALSE, and
+# NOT rewording the prose to avoid spelling the path (the #5540/#5371
+# workaround). Mark the MATCHED line `pg-drift:allow — <reason>`; a marker on
+# the line above suppresses nothing. Same convention as the
+# `pg-drift-dir:allow` companion just named. Grammar, gotchas and the worked
+# example live in that PG-DRIFT contract block — cross-referenced here, not
+# copied.
 # Space sentinels give whole-token matching
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
