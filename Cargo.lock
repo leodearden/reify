@@ -4458,6 +4458,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
  "reify-ir",
  "reify-stdlib",
  "reify-syntax",

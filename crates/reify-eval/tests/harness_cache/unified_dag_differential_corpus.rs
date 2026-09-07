@@ -8,10 +8,10 @@
 //! `docs/prds/v0_6/engine-unified-build-dag.md` §6, decomposition §8-ζ).
 //!
 //! The §6 boundary cases a plain legacy-vs-unified diff cannot surface live in
-//! the sibling binary `unified_dag_boundary_cases.rs`.
+//! the sibling module `unified_dag_boundary_cases.rs`.
 //!
-//! The shared harness is `#[path]`-included (NOT via `tests/common/mod.rs`) so
-//! this safety-gate lands with zero edits to existing shared test files.
+//! Shared `differential` helpers come from the `harness_cache` root — see its
+//! "Shared `differential` module" section for the wiring.
 
 use crate::differential::{
     CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS, assert_cell_definite,

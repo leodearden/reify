@@ -17,8 +17,9 @@
 // Full mechanism history — why an earlier flat-encoded probe's decode
 // rejection was misread as a kernel-capability gap, and why it wasn't one —
 // is in docs/notes/precision-refine-envelope-calibration.md §1.5, which is
-// the canonical record.  Pending d-ladder work this fixture exists to
-// populate: #6545 (ticket tkt_0RSV7JNW3WXWDSFJGRDMHDT63T).
+// the canonical record.  The d-ladder for this class is recorded there too
+// (§1.5, §1.1, §3.1) — landed via task #6545 (ticket
+// tkt_0RSV7JNW3WXWDSFJGRDMHDT63T).
 //
 // ── Reproduction ──
 //

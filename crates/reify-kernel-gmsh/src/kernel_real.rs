@@ -120,6 +120,26 @@ impl GmshKernel {
     /// `options`: user-tunable knobs (see [`MeshingOptions`](crate::MeshingOptions)).
     /// `element_order`: P1 (4-node) or P2 (10-node) tets.
     ///
+    /// # Global mesh-size clamp: leaves nothing
+    ///
+    /// Since task #6298 this function **leaves the
+    /// `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pair at gmsh's documented
+    /// defaults on every exit path**, early `?`-returns included, via
+    /// [`crate::mesh_size_clamp::MeshSizeClampReset`]. Gmsh's option table is
+    /// process-global and `gmshClear()` does not reset it, so without that
+    /// restore the resolved size written below would outlive the call and pin
+    /// every later *defaults-relying* gmsh call in the process to a size
+    /// nobody requested.
+    ///
+    /// The claim is enforced, not asserted:
+    /// `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
+    /// straddles one of these calls with two runs of the same
+    /// `mesh_plane_2d(_, _, None, …)` probe and requires them to be equal.
+    ///
+    /// This is the outbound direction only. Inbound, the clamp writes are
+    /// skipped when the resolved size is `0.0`, so such a call still inherits
+    /// whatever is in the table — task #6212 owns that hole.
+    ///
     /// # Errors
     ///
     /// Returns `GeometryError::OperationFailed` annotated with the gmsh
@@ -182,6 +202,40 @@ impl GmshKernel {
         // permanently disable meshing for the rest of the process lifetime.
         let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init::ensure_initialized();
+
+        // --- Mesh-size clamp: leave nothing behind (task #6298) ---
+        //
+        // Gmsh's option table is process-global and `ffi::clear()` clears
+        // MODELS, not OPTIONS, so the `Mesh.MeshSizeMin`/`MeshSizeMax` pair
+        // written below survives this call for the life of the process. Any
+        // later caller that deliberately writes no clamp of its own —
+        // `mesh_plane_2d(_, _, None, …)`, reached in production whenever
+        // `reify_solver_elastic::mesher`'s `auto_mesh_size_from_boundary`
+        // returns 0.0 and it falls through to "gmsh's own default" — would
+        // otherwise inherit it and be pinned to a size nobody requested.
+        //
+        // Armed HERE, not next to the two writes further down, so it covers
+        // every `?` early-return in the body as well as the success path.
+        //
+        // Drop order is what makes it correct: `_clamp_reset` is declared
+        // AFTER `_guard`, so it drops FIRST and its two FFI writes land while
+        // `GMSH_LOCK` is still held. The `PhantomData<&'g MutexGuard>` borrow
+        // makes that structural rather than a comment a refactor can violate —
+        // see `mesh_size_clamp`'s "Why it borrows the lock guard".
+        //
+        // The pair is restored to gmsh's DEFAULTS, not to the values found on
+        // entry: this crate's FFI surface has no `option_get_number`, so "as
+        // found" is not observable here, and defaults are what a
+        // defaults-relying caller expects anyway.
+        //
+        // This closes the OUTBOUND direction only. The remaining INBOUND hole
+        // — when `resolved_size <= 0.0` the two writes below are skipped and
+        // this call inherits whatever a sibling left in the table — is
+        // deliberately out of #6298's scope and owned by name by task #6212,
+        // which also owns the still-unshared `Mesh.MeshSizeFromPoints` /
+        // `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio.
+        let _clamp_reset = crate::mesh_size_clamp::MeshSizeClampReset::armed(&_guard);
+
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.
         ffi::option_set_number("General.Terminal", 0.0)?;

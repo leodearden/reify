@@ -5174,10 +5174,13 @@ mod merge_build_diagnostics_tests {
     /// appended copy — membership is tested against the ACCUMULATING merged
     /// list, not only against check()'s original one.
     ///
-    /// Empirically measured on the `mirror(...)` bare-origin fixture this task
-    /// adds: `reify eval` emits
-    /// `failed to compile geometry operation: missing or non-Length argument
-    /// 'ox' for mirror` TWICE for a single call site. Deduping against check()'s
+    /// Empirically measured on the `mirror(...)` bare-origin fixture task 5748
+    /// adds, RE-MEASURED at task 5662 after it moved to the decoded-value form
+    /// `mirror(arm, plane_yz(0))`: `reify eval` emits
+    /// `failed to compile geometry operation: mirror: missing or non-Length
+    /// argument 'ox' for mirror` TWICE for a single call site — the duplication
+    /// is unchanged by the retarget; only the message gained the `mirror: `
+    /// builtin prefix the decoded-value route carries. Deduping against check()'s
     /// list alone would print it twice on `check`'s stderr; PRD D2 only requires
     /// "at least once", and collapsing matches `check`'s existing output
     /// discipline.

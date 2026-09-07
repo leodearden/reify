@@ -2013,13 +2013,102 @@ assert "(i-f) a bare MERGE_RR in the main dir is NOT reported (noise floor)" \
     bash "$GUARD" scan-locks "$NOWT_REPO"
 
 # ==============================================================================
-# (wiring) setup-dev.sh must have an UNCOMMENTED call to the guard.
+# (wiring) / (wiring-lane) — the guard must actually be INVOKED, at BOTH cadences.
 #
-# This is a BEHAVIOURAL pin, not a documentation assertion: without it the guard
-# is dead code, and the invariant it enforces would silently revert the first
-# time anything rewrote the shared .git/config.  Mirrors the (wiring) block in
-# tests/infra/test_main_gate_worktree_config.sh.
+# These are BEHAVIOURAL pins, not documentation assertions: without them the
+# guard is dead code, and the invariant it enforces would silently revert the
+# first time anything rewrote the shared .git/config.  Mirrors the (wiring)
+# block in tests/infra/test_main_gate_worktree_config.sh.
+#
+# THE DETECTOR ANCHORS ON THE EXECUTED COMMAND SHAPE, NOT A FILENAME MENTION.
+# The first cut of these blocks grepped for the bare string `git-rerere-guard.sh`
+# and for `git-rerere-guard\.sh["'[:space:]]+arm`.  Both were VACUOUS — measured,
+# not theorised: with the ENTIRE seed-side invocation block commented out, both
+# still exited 0, satisfied by non-comment PROSE elsewhere in the same files:
+#   * scripts/seed-warm-lane.sh:330 — the _usage heredoc line
+#     "REIFY_WARM_LANE_RERERE_ARM=0  Skip the shared-store `git-rerere-guard.sh
+#     arm`", which the old arm-regex literally printed as its match;
+#   * scripts/seed-warm-lane.sh:1677 and scripts/setup-dev.sh:370 — the failure
+#     warnings, `warn "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc)"`.
+# None of those lines starts with `#`, so the comment prefilter never stripped
+# them, and the asserts could not detect the exact regression their own comments
+# claimed they existed to catch.
+#
+# $_RERERE_CALL_RE below instead demands a path-prefixed, variable-rooted, QUOTED
+# invocation followed by the `arm` subcommand — a shape prose cannot accidentally
+# take, since both decoys begin with `REIFY_…` / `warn ` rather than `"$`.
+# MEASURED in both directions on each script: exactly one matching line, exit 1
+# once that line is commented out, and exit 1 if `arm` is downgraded to `check`.
+#
+# WHY `arm` AND NOT `check`: a bare `check` would REPORT the drift while leaving
+# all ~253 lanes armed.  Only `arm` makes the invariant self-healing.
+#
+# WHY LANE CADENCE IS THE POINT (the second block): setup-dev.sh runs at
+# DEVELOPER-SETUP cadence — between two setup runs nothing re-pins the shared
+# config, so the store can sit armed for as long as a developer goes without
+# re-running setup.  The re-arm rate measured on the live store makes that window
+# unacceptable: /home/leo/src/reify's shared .git/config was found ARMED TWICE in
+# a single day, 2026-08-30 07:06:11 and 11:44:46, both 2508 bytes (the armed
+# size; the guard's own disarm write leaves 2509, so the one-byte delta
+# discriminates a third-party write from the guard's).  seed-warm-lane.sh
+# --fresh-checkout runs on EVERY lane ACQUIRE, narrowing the exposure window from
+# "since the last developer setup" to "since the last acquire".
 # ==============================================================================
+
+# Matches the INVOCATION and nothing else.  Kept behind the `grep -Ev
+# '^[[:space:]]*#'` prefilter belt-and-braces: the `^[[:space:]]*"?\$` anchor
+# already breaks under a `# ` prefix, but the prefilter costs nothing and keeps
+# both blocks reading the same way.
+_RERERE_CALL_RE='^[[:space:]]*"?\$.*/git-rerere-guard\.sh"[[:space:]]+arm([[:space:]]|$)'
+
+# _guard_call_present <script> — the detector under test.  Exit 0 iff <script>
+# carries an uncommented, correctly-shaped `"$…/git-rerere-guard.sh" arm …` call.
+_guard_call_present() {
+    local _n
+    # `grep -Ec`, deliberately NOT `grep -Eq`: -q exits at the FIRST match and
+    # closes the pipe, so the upstream `grep -Ev` dies of SIGPIPE (141) and
+    # `set -o pipefail` turns a genuine MATCH into a non-zero return.  That is
+    # not theoretical — the -q form was written first and produced a spurious
+    # FAIL of the setup-dev assert during this block's own mutation testing,
+    # racily, on a file where the assert had just passed.  -c reads all input.
+    _n="$(grep -Ev '^[[:space:]]*#' "$1" | grep -Ec "$_RERERE_CALL_RE")" || true
+    [ "${_n:-0}" -ge 1 ]
+}
+
+_guard_call_absent() {
+    ! _guard_call_present "$1"
+}
+
+# _without_guard_call <script> — print the path of a throwaway copy of <script>
+# with its guard invocation commented out, for use as a NEGATIVE CONTROL.
+#
+# The line is located BY MATCHING IT, never by line number: hard-coded numbers
+# drift on every later edit to these 700/1700-line scripts and would silently
+# turn the negative control into a no-op.
+#
+# `%` as the s/// delimiter, NOT `|`: $_RERERE_CALL_RE contains a literal `|`
+# (the `([[:space:]]|$)` alternation), so a `s|…|…|` form ends the regex early
+# and sed dies with "Unmatched ( or \(" — leaving an EMPTY output file, which
+# "differs from the original" and makes the detector exit 1 for the wrong
+# reason, i.e. a vacuously-passing negative control.  Hit for real while
+# building this block; the caller-side liveness assert below is the backstop.
+_without_guard_call() {
+    local out
+    out="$(mktemp "$_SUITE_TMP/nocall.XXXXXX")"
+    sed -E "s%$_RERERE_CALL_RE%# &%" "$1" > "$out"
+    echo "$out"
+}
+
+# _mutation_is_live <orig> <mutated> — the negative control's own control.
+# The mutation only PREFIXES one line, so the copy must (a) still exist with the
+# same line count — catching an empty/truncated sed failure — and (b) actually
+# differ — catching a regex that matched nothing.
+_mutation_is_live() {
+    [ -s "$2" ] || return 1
+    [ "$(wc -l < "$1")" -eq "$(wc -l < "$2")" ] || return 1
+    ! cmp -s "$1" "$2"
+}
+
 echo ""
 echo "--- (wiring) setup-dev.sh calls git-rerere-guard.sh ---"
 
@@ -2028,13 +2117,34 @@ SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 assert "(wiring) scripts/setup-dev.sh exists" \
     test -f "$SETUP_DEV"
 
-assert "(wiring) setup-dev.sh calls git-rerere-guard.sh (uncommented)" \
-    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -q 'git-rerere-guard.sh'"
+assert "(wiring) setup-dev.sh invokes '\"\$…/git-rerere-guard.sh\" arm' (uncommented)" \
+    _guard_call_present "$SETUP_DEV"
 
-# The call must be `arm`, not `check`: setup-dev's job is to make the invariant
-# self-healing on the existing setup path, and a bare `check` would merely
-# report the drift while leaving the fleet armed.
-assert "(wiring) setup-dev.sh invokes the 'arm' subcommand" \
-    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -E 'git-rerere-guard\.sh[\"'\''[:space:]]+arm'"
+SETUP_DEV_NOCALL="$(_without_guard_call "$SETUP_DEV")"
+
+assert "(wiring) negative-control fixture is live (one line commented, nothing else)" \
+    _mutation_is_live "$SETUP_DEV" "$SETUP_DEV_NOCALL"
+
+assert "(wiring) detector FAILS when setup-dev.sh's guard call is commented out" \
+    _guard_call_absent "$SETUP_DEV_NOCALL"
+
+echo ""
+echo "--- (wiring-lane) seed-warm-lane.sh calls git-rerere-guard.sh ---"
+
+SEED_WARM_LANE="$REPO_ROOT/scripts/seed-warm-lane.sh"
+
+assert "(wiring-lane) scripts/seed-warm-lane.sh exists" \
+    test -f "$SEED_WARM_LANE"
+
+assert "(wiring-lane) seed-warm-lane.sh invokes '\"\$…/git-rerere-guard.sh\" arm' (uncommented)" \
+    _guard_call_present "$SEED_WARM_LANE"
+
+SEED_NOCALL="$(_without_guard_call "$SEED_WARM_LANE")"
+
+assert "(wiring-lane) negative-control fixture is live (one line commented, nothing else)" \
+    _mutation_is_live "$SEED_WARM_LANE" "$SEED_NOCALL"
+
+assert "(wiring-lane) detector FAILS when seed-warm-lane.sh's guard call is commented out" \
+    _guard_call_absent "$SEED_NOCALL"
 
 test_summary

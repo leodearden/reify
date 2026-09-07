@@ -25,3 +25,5 @@ mod enums_chunk_option_smoke;
 mod geometry_chunk_smoke;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]
 mod stdlib_chunk_geometry_ops_smoke;
+#[path = "harness_doc_chunks/units_chunk_smoke.rs"]
+mod units_chunk_smoke;

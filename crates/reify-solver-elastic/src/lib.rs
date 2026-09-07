@@ -669,6 +669,7 @@ pub use error_estimator::{ZzIndicator, compute_zz_indicator};
 pub use eigensolve::{
     EigenSolverOptions, EigenSolverResult, MetricOp, SparseMetricOp, SparseStiffnessOp,
     StiffnessOp, lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
+    try_solve_eigen_shift_invert,
 };
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.

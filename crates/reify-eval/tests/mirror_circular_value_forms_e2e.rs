@@ -10,11 +10,41 @@
 //! RED state for circular_pattern tests (step-7): circular_pattern(box, axis_z(...), 4, 60deg)
 //! fails compile with "expects 9 arguments" — parse_and_compile panics.
 //! GREEN after step-8: compiler accepts 4-arg form; eval decodes the Axis value.
+//!
+//! # THREE layers now guard these two builtins (task 5662)
+//!
+//! Task 5662 gave the 7-arg `mirror` and 9-arg `circular_pattern` SCALAR origin
+//! triples a COMPILE-layer LENGTH slot in
+//! `crates/reify-compiler/src/builtin_signatures.rs`, so a bare scalar origin is
+//! now caught three times over:
+//!
+//! 1. compile — `DiagnosticCode::ArgTypeMismatch`, before anything is built;
+//! 2. eval — `DiagnosticCode::DimensionedArgRejected` (tasks 5214 / 5350 / 5745);
+//! 3. the op is DROPPED, so nothing reaches the kernel.
+//!
+//! The two layers keep DISTINCT codes ON PURPOSE — PRD decision D2, two-layer
+//! observability: a caller must be able to tell "the compiler rejected this
+//! statically" from "the evaluator rejected it while building", because only the
+//! second implies the design was actually evaluated. They share the C1 message
+//! template and the `5mm` migration hint (D9), so the wording is the same even
+//! though the code is not.
+//!
+//! The consequence for THIS file is mechanical: the two rows whose sources carry
+//! a deliberately bare SCALAR origin can no longer use the strict
+//! `parse_and_compile`, which hard-asserts zero Error diagnostics. They route
+//! through `compile_bare_origin` instead — a TIGHTENING, not a loosening; see
+//! that helper. Every dimensioned row and every VALUE-form row stays on the
+//! strict helper: the value form is structurally excluded from the compile slot
+//! table and so still compiles clean. Why that exclusion is structural rather
+//! than a gap is stated once, on the `mirror` / `circular_pattern` arms of
+//! `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
 
-use reify_core::Severity;
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{BuildResult, Engine};
 use reify_ir::{ExportFormat, GeometryOp};
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
+use reify_test_support::{
+    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+};
 
 // ── step-5: mirror consumer tests ─────────────────────────────────────────────
 
@@ -105,7 +135,7 @@ fn mirror_value_form_plane_xy_builds_and_emits_correct_mirror_op() {
     }
 }
 
-/// (b) Back-compat: legacy 7-arg scalar form mirror(box, 0,0,0, 1,0,0) still builds
+/// (b) Back-compat: legacy 7-arg scalar form mirror(box, 0mm,0mm,0mm, 1,0,0) still builds
 /// without errors and emits Mirror with plane_normal ≈ [1,0,0].
 ///
 /// GREEN before and after step-6 (back-compat must hold).
@@ -411,7 +441,77 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
 /// Modelled on `pattern_spacing_units_e2e.rs`'s `build_and_count`, but returns
 /// the ops themselves so the positive control can inspect `axis_origin`.
 fn build_circular_ops(source: &str) -> (usize, Vec<GeometryOp>) {
-    let compiled = parse_and_compile(source);
+    build_circular_ops_compiled(parse_and_compile(source))
+}
+
+/// The BARE-source counterpart of [`build_circular_ops`] (task 5662).
+///
+/// Task 5662 gave the 9-arg scalar `circular_pattern` origin triple a
+/// compile-layer LENGTH slot, so the bare source below no longer compiles clean
+/// and the strict `parse_and_compile` — which hard-asserts zero Error
+/// diagnostics — would panic before eval ever ran.
+fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
+    build_circular_ops_compiled(compile_bare_origin(source))
+}
+
+/// Compile a source whose `mirror` / `circular_pattern` ORIGIN components are
+/// deliberately BARE (task 5662).
+///
+/// Modelled on `compile_bare_spacing` in
+/// `crates/reify-eval/tests/pattern_spacing_units_e2e.rs` (task 5652) and
+/// `compile_bare_length` in
+/// `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
+/// (task 5750), which the two preceding leaves had to introduce for exactly this
+/// reason.
+///
+/// Swapping the lenient `compile_source` in for the strict `parse_and_compile`
+/// is a TIGHTENING, not a loosening, because this helper re-asserts BOTH halves
+/// of what the strict one used to guarantee:
+///
+/// (i) the compile-layer `ArgTypeMismatch` really IS emitted, so this file
+///     cannot silently stop noticing if task 5662's slots regress; and
+/// (ii) it is the ONLY Error-severity compile diagnostic, so an unrelated
+///     compile Error cannot make a caller's "no op reached the kernel"
+///     assertion hold for the wrong reason.
+///
+/// The eval-layer assertions still run afterwards because
+/// `check_builtin_arg_types` is anti-cascade: it touches only `diagnostics` and
+/// never lowering, so the op is still emitted and must still be DROPPED at build
+/// by the eval gate — which is the thing these rows actually test.
+fn compile_bare_origin(source: &str) -> reify_compiler::CompiledModule {
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a bare scalar mirror/circular_pattern origin must ALSO be rejected at \
+         compile time (task 5662 ArgTypeMismatch), not only at eval; got no Error \
+         diagnostics in: {:?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
+         callers' \"no op reached the kernel\" assertions could pass because \
+         compilation broke rather than because the eval gate dropped the op; \
+         unexpected errors: {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
+            .collect::<Vec<_>>()
+    );
+    compiled
+}
+
+/// The kernel half of [`build_circular_ops`], shared with its bare counterpart.
+fn build_circular_ops_compiled(
+    compiled: reify_compiler::CompiledModule,
+) -> (usize, Vec<GeometryOp>) {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
@@ -442,9 +542,15 @@ fn build_circular_ops(source: &str) -> (usize, Vec<GeometryOp>) {
 /// The unit tests in `geometry_ops/tests.rs` hand-build `CompiledExpr` fixtures;
 /// this drives the real parser and unit system, so it would catch a regression
 /// introduced anywhere between the `.ri` surface and the kernel call.
+///
+/// Routed through [`build_circular_ops_bare`] since task 5662 gave this same
+/// origin a COMPILE-layer slot: the strict `parse_and_compile` would now panic on
+/// the ArgTypeMismatch before eval ran. The eval-layer assertions below are
+/// unchanged and still run — see [`compile_bare_origin`] for why that is a
+/// tightening.
 #[test]
 fn circular_pattern_scalar_bare_origin_drops_op_with_error() {
-    let (error_count, circular_ops) = build_circular_ops(
+    let (error_count, circular_ops) = build_circular_ops_bare(
         r#"
         structure def BareOriginRing {
             let b = box(2mm, 2mm, 2mm)
@@ -551,7 +657,23 @@ fn build_value_form(
     source: &str,
     want: fn(&GeometryOp) -> bool,
 ) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    let compiled = parse_and_compile(source);
+    build_value_form_compiled(parse_and_compile(source), want)
+}
+
+/// The BARE-source counterpart of [`build_value_form`], narrowed to `Mirror`
+/// ops (task 5662) — see [`compile_bare_origin`] for why the strict helper can
+/// no longer be used on a bare SCALAR origin.
+fn build_mirror_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
+    build_value_form_compiled(compile_bare_origin(source), |op| {
+        matches!(op, GeometryOp::Mirror { .. })
+    })
+}
+
+/// The kernel half of [`build_value_form`], shared with its bare counterpart.
+fn build_value_form_compiled(
+    compiled: reify_compiler::CompiledModule,
+    want: fn(&GeometryOp) -> bool,
+) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
@@ -697,9 +819,15 @@ fn mirror_value_form_dimensioned_plane_origin_builds_unchanged() {
 /// Its three `ox`/`oy`/`oz` rejections keep their exact pre-δ wording — this is
 /// what proves the decoded-value route joined the shared chokepoint rather than
 /// forking a second copy of the text.
+///
+/// Routed through [`build_mirror_bare`] since task 5662 gave this same origin a
+/// COMPILE-layer slot. The EVAL-layer assertions below are deliberately
+/// untouched, and they are what makes the two-layer split observable: the
+/// compile diagnostic carries `ArgTypeMismatch` while these carry
+/// `DimensionedArgRejected`, with byte-identical wording (PRD D2 + D9).
 #[test]
 fn mirror_scalar_bare_origin_rejections_are_unchanged_by_delta() {
-    let (diagnostics, mirror_ops) = build_mirror(
+    let (diagnostics, mirror_ops) = build_mirror_bare(
         r#"
         structure def BareScalarMirror {
             let b = box(10mm, 10mm, 10mm)

@@ -22,6 +22,17 @@ scripts/run-gui-dev.sh path/to/fixture.ri
 
 The debug server accepts MCP `tools/call` JSON-RPC on `http://127.0.0.1:${REIFY_DEBUG_PORT:-3939}/mcp`.
 
+The launcher now self-defends against a hostile environment, so the
+`env -u LD_LIBRARY_PATH WEBKIT_DISABLE_DMABUF_RENDERER=1 scripts/run-gui-dev.sh ...`
+prefix that used to be required is no longer needed: it preserves an inherited
+`LD_LIBRARY_PATH` but prepends `/opt/reify-deps/tbb-pin` ahead of it (the loader
+searches `LD_LIBRARY_PATH` before `DT_RUNPATH`, so an inherited `/usr/lib` path
+would otherwise bind system libtbb 12.11 over the deps 12.18), and it defaults
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` itself. It also preflights the display and
+the vite port *before* the build, so a headless shell or a port another worktree
+already serves fails in milliseconds instead of after a multi-minute cargo
+build — set `REIFY_GUI_SKIP_PREFLIGHT=1` to bypass those two checks.
+
 ---
 
 ## 2. Run the e2e value-assertion suite
@@ -36,6 +47,23 @@ The suite boots reify-gui automatically via `scripts/run-gui-dev.sh`, runs all
 `VALUE_SCENARIOS` from `gui/test/visual/assertions.ts`, and exits 0 (all pass) /
 1 (any fail) / 2 (fatal harness error). **Not CI-gated** — needs a live GUI per
 PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
+
+> **Concurrency: the e2e smoke needs an unoccupied `:1420`, so two lanes cannot
+> run it at once.** Since #7254 the launcher refuses (exit 1, before any build)
+> when something already answers on the vite port, and neither
+> `gui/test/visual/run.ts` nor `gui/test/visual/lib_e2e_smoke.sh` sets
+> `REIFY_VITE_PORT` — nor could they usefully: reify-gui's `devUrl` is baked to
+> `http://localhost:1420` at compile time (`gui/src-tauri/tauri.conf.json`), so
+> moving vite would leave the GUI loading the *foreign* listener. The refusal is
+> the correct behaviour — previously the second run silently attached to the
+> first lane's vite and asserted against another worktree's build — but the
+> consequence is a real serialisation constraint: **serialise concurrent e2e
+> smokes across lanes, or free `:1420` first** (the error names the listener pid
+> and `ls -l /proc/<pid>/cwd` shows which worktree it serves). Lifting it needs
+> the GUI-side half — a build-time `devUrl` override via `TAURI_CONFIG`, or
+> reading the env var in the Rust shell — as noted in `scripts/run-gui-dev.sh`'s
+> `REIFY_VITE_PORT` comment. `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses the check but
+> restores the silent-wrong-vite behaviour, so it is not a fix.
 
 ---
 
@@ -60,8 +88,35 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown |
+| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown. Caveat: an UNSCOPED wait is not proof about any one pane in either direction — see [wait_for_selector: the unscoped-wait trap](#wait_for_selector-the-unscoped-wait-trap) below |
 | `list_console_errors` | `{}` | `{errors:[{message,stack}], count}` |
+
+#### wait_for_selector: the unscoped-wait trap
+
+An unscoped wait resolves the testid to the FIRST element in document order and
+evaluates the state on THAT one — not on the first element that SATISFIES the
+wait. The selection happens BEFORE the state is consulted, which gives the trap
+three faces, one per arm of the predicate:
+
+1. it goes green off a pane you did not mean, and the response carries no pane
+   keys to say which;
+2. `state:'visible'` times out on a hidden first match while a visible copy sits
+   in a LATER pane;
+3. `state:'gone'` goes green off a first match that is merely HIDDEN while a
+   visible copy is still mounted in a later pane — a teardown reported that did
+   not happen.
+
+Face 3 is the one to fear: face 2 fails loudly (a timeout the caller has to look
+at), while face 3 hands back a green for a teardown that never happened. Scope
+the wait whenever the follow-up action is scoped.
+
+This subsection is the canonical enumeration — the tool's own `viewportId` schema
+description and `buildSelectorPredicate` in `gui/src/debug/bridge.ts` each carry
+the one-line rule and point here. The three faces are pinned as behaviour by
+cases (h)/(i)/(j) of `gui/src/__tests__/waitFor.test.ts`. Known limitation rather
+than intended behaviour — the fix (quantify the unscoped predicate over ALL
+matches, on the observe path only; the drive tools stay first-match by #5891's
+back-compat contract) is tracked by #6564.
 
 ### I1 — Editor interaction
 

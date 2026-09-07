@@ -55,7 +55,7 @@ use reify_ir::CompiledExpr;
 /// - **BodyId** (1): `body_id_of` → `BodyId`.
 /// - **SweepDim** (1): `dim` → `SweepDim`.
 /// - **JointBinding** (1): `bind` → `JointBinding`.
-/// - **Twist** (1): `joint_jacobian` → `Twist`.
+/// - **JacobianColumn** (1): `joint_jacobian` → `JacobianColumn`.
 ///
 /// NOTE: `sweep` is deliberately EXCLUDED — it has a geometry (arity-2 CSG)
 /// overload that must keep its geometry result type; γ (task 4310) already
@@ -90,7 +90,7 @@ pub const JOINT_TYPED_FN_NAMES: &[&str] = &[
     "dim",
     // Joint binding (1): → JointBinding
     "bind",
-    // Joint Jacobian / Twist (1): → Twist
+    // Joint Jacobian column (1): → JacobianColumn
     "joint_jacobian",
 ];
 
@@ -117,7 +117,8 @@ pub(crate) fn is_joint_typed_fn(name: &str) -> bool {
 /// The nominal tags match the PascalCase structure definitions in
 /// `crates/reify-compiler/stdlib/kinematic.ri` (task 3845 + task 4310/γ):
 /// `Prismatic`/`Revolute`/`Cylindrical`/`Planar`/`Spherical`/`Coupling`/
-/// `Fixed`/`Mechanism`/`Snapshot`/`BodyId`/`SweepDim`/`JointBinding`/`Twist`.
+/// `Fixed`/`Mechanism`/`Snapshot`/`BodyId`/`SweepDim`/`JointBinding`/
+/// `JacobianColumn`.
 ///
 /// Note: runtime values stay `Value::Map`/`Int`/`List` (esc-3845-91); the
 /// cell TYPE is the enforced nominal tag.
@@ -182,11 +183,15 @@ pub(crate) fn joint_ctor_result_type(name: &str, args: &[CompiledExpr]) -> Type 
         // ── Joint binding (1) ─────────────────────────────────────────────────
         "bind" => Type::StructureRef("JointBinding".to_string()),
 
-        // ── Joint Jacobian / Twist (1) ────────────────────────────────────────
+        // ── Joint Jacobian column (1) ─────────────────────────────────────────
         // joint_jacobian evaluates to Value::Map (prismatic/revolute/fixed) or
         // Value::List (planar/spherical/cylindrical) at runtime (esc-3845-91);
-        // the cell TYPE is the nominal Twist tag.
-        "joint_jacobian" => Type::StructureRef("Twist".to_string()),
+        // the cell TYPE is the nominal JacobianColumn tag.
+        //
+        // NOT Twist (task 6102): a Jacobian column is dpose/dq — a partial
+        // derivative with respect to a joint coordinate — while a twist is
+        // dpose/dt, a spatial velocity. They do not share a nominal type.
+        "joint_jacobian" => Type::StructureRef("JacobianColumn".to_string()),
 
         // Unreachable in practice — the caller gates on is_joint_typed_fn.
         _ => Type::dimensionless_scalar(),
@@ -397,11 +402,26 @@ mod tests {
             "bind must map to StructureRef(JointBinding)"
         );
 
-        // joint_jacobian → Twist.
+        // joint_jacobian → JacobianColumn.
         assert_eq!(
             joint_ctor_result_type("joint_jacobian", &[]),
+            Type::StructureRef("JacobianColumn".to_string()),
+            "joint_jacobian must map to StructureRef(JacobianColumn)"
+        );
+
+        // Ratchet (task 6102): joint_jacobian must NEVER be typed as a Twist.
+        // A Jacobian column is dpose/dq — a partial derivative with respect to a
+        // joint coordinate — not dpose/dt, a spatial velocity. The two were
+        // shape-punned onto one nominal tag; the pun breaks outright under the
+        // Twist narrowings (task 6080 angular : Vector3<Angle>, task 6126
+        // linear : Vector3<Length>). This negative assertion is what stops the
+        // pun being reintroduced, here or by the builtin-signature registry
+        // that supersedes this module.
+        assert_ne!(
+            joint_ctor_result_type("joint_jacobian", &[]),
             Type::StructureRef("Twist".to_string()),
-            "joint_jacobian must map to StructureRef(Twist)"
+            "joint_jacobian must NOT map to StructureRef(Twist): a Jacobian column \
+             is dpose/dq, not a spatial velocity"
         );
     }
 

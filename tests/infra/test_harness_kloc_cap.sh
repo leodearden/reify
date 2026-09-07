@@ -109,6 +109,14 @@
 #       the 7 override binaries instead is likewise refused — see the clause
 #       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #6461).
 #
+#       SUBJECT: harness compile units ONLY. Every OTHER top-level
+#       `tests/*.rs` in these 5 crates — the 7 override binaries and the 348
+#       grandfathered baseline standalones — is UNCAPPED BY DESIGN, not by
+#       omission: the cap is a consolidation-SIZING parameter, and neither is
+#       a consolidation product. Rationale and measured headroom: the clause
+#       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #7004).
+#       Pinned non-vacuously by Section 3c below.
+#
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
 #       `tests/common/` helpers. rustc compiles a SEPARATE COPY of such a file
@@ -344,7 +352,13 @@ harness_layout_violations() {
     # below.
 
     # The 7 override binaries (I1) are allow-listed by file stem — never
-    # re-accretion violations. Build the lookup set once per call.
+    # re-accretion violations. Reaching the `continue` below via this set
+    # also means rule (a)'s cap arm above was never reached for this file at
+    # all (its base didn't match `harness_*.rs)`) — so an override stem is
+    # never cap-checked, not merely found under threshold. That is a
+    # deliberate exemption (task #7004; rationale beside `_HL_OVERRIDE_STEMS`
+    # in harness-layout-lib.sh), pinned non-vacuously by Section 3c below.
+    # Build the lookup set once per call.
     local -A _override_set=()
     local _ov
     for _ov in "${OVERRIDE_BINARIES[@]}"; do
@@ -357,6 +371,15 @@ harness_layout_violations() {
         base="$(basename "$f")"
 
         # rule (a): kLOC cap governs the harness_<subsystem>.rs compile units.
+        # The `harness_*.rs)` pattern below is the cap's ONLY gate: a file
+        # whose base does not match it skips this arm entirely and is never
+        # measured against cap_lines, however large it is. The arm's own
+        # `continue` then confines rule (b) below to non-harness files — a
+        # harness root, once cap-checked here, is never also re-accretion-
+        # checked. Section 3c pins the arm's complement non-vacuously: an
+        # over-cap OVERRIDE stem, which never reaches this arm, contributes
+        # zero cap violations in the same scan where an over-cap harness
+        # fires.
         case "$base" in
             harness_*.rs)
                 IFS=' ' read -r lines root_lines module_lines module_files external_lines external_files \
@@ -1430,6 +1453,71 @@ assert "3b: a missing tests dir fires (returns 1, never a silent pass)" \
     test "$_s3b_rc" -eq 1
 assert "3b: missing dir emitted as a structured FAIL line (reason=missing-tests-dir)" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate dir=.*does-not-exist reason=missing-tests-dir' "$_s3b_out"
+
+# ===========================================================================
+# Section 3c: rule (a)'s "uncapped by design" claim, pinned NON-VACUOUSLY for
+# BOTH halves — an over-cap OVERRIDE stem AND an over-cap GRANDFATHERED
+# standalone each contribute ZERO violations in the SAME scan where an
+# over-cap harness DOES fire (task #7004). rule (a)'s cap governs
+# harness_<subsystem>.rs compile units ONLY; neither an override binary (I1)
+# nor a grandfathered baseline row (rule b) is a merge product or a sanctioned
+# cap-overflow destination (the clause beside `_HL_OVERRIDE_STEMS` in
+# harness-layout-lib.sh, task #6461/#7004).
+#
+# WHY THIS SECTION EXISTS. Section 3's own override and grandfathered fixtures
+# (tensegrity_t0a.rs and grand.rs above) are each a ONE-LINE file — vacuous
+# against a 20000 cap, since a 1-line file passes whether or not rule (a)
+# applies to either set at all. Without a fixture that puts BOTH an override
+# stem AND a grandfathered row OVER the cap, silently widening rule (a) to
+# either one would leave every assertion in this suite green. Section 3c
+# closes that gap: it proves the cap machinery is live in this exact scan (the
+# harness_over.rs assertion below), then proves the over-cap override AND the
+# over-cap grandfathered standalone are both silent anyway — so the silence is
+# attributable to the exemptions, not to a dead scan or an under-sized
+# fixture.
+# ===========================================================================
+echo ""
+echo "--- Section 3c: an over-cap override stem AND an over-cap grandfathered standalone are exempt from the kLOC cap (non-vacuous) ---"
+
+_s3c_dir="$(mktemp -d)"; _TMPDIRS+=("$_s3c_dir")
+_s3c_baseline="$(mktemp)"; _TMPDIRS+=("$_s3c_baseline")
+# Sole row is grand.rs's OWN grandfather entry (written below) — the override
+# stem's row is deliberately absent, so rule (b) grandfathering cannot
+# account for the override's silence: only the I1 stem allow-list can.
+printf 'crates/synthcrate/tests/grand.rs\n' > "$_s3c_baseline"
+
+# An over-cap harness root in the SAME dir/scan, so the cap machinery is
+# demonstrably live at this size (non-vacuity witness shared by both
+# exemptions checked below — not a restatement of Section 1's own pin).
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/harness_over.rs"
+# An over-cap OVERRIDE stem. A different stem from Section 3's
+# tensegrity_t0a.rs, so the two sections do not co-vary on one stem.
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/analytical_validation.rs"
+# An over-cap GRANDFATHERED standalone (rule (b), not I1) — the other half of
+# rule (a)'s "uncapped by design" claim: a baseline row never reaches rule
+# (a)'s cap arm either, since that arm gates on `harness_*.rs)` alone.
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/grand.rs"
+
+_s3c_out="$(mktemp)"; _TMPDIRS+=("$_s3c_out")
+_s3c_rc=0
+harness_layout_violations synthcrate "$_s3c_dir" "$_s3c_baseline" 20000 \
+    > "$_s3c_out" 2>/dev/null || _s3c_rc=$?
+
+assert "3c: the scan fires (returns 1) — a violation was detected in this dir" \
+    test "$_s3c_rc" -eq 1
+assert "3c: NON-VACUITY — the over-cap harness DOES fire (cap machinery is live at this size)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_over\.rs reason=exceeds-cap lines=21000 cap=20000' "$_s3c_out"
+assert "3c: the over-cap override stem emits NO line naming it at all (exempt, not merely under threshold)" \
+    bash -c '! grep -qE "analytical_validation" "$1"' _ "$_s3c_out"
+assert "3c: the over-cap grandfathered standalone emits NO line naming it at all (exempt, not merely under threshold)" \
+    bash -c '! grep -qE "grand\.rs" "$1"' _ "$_s3c_out"
+
+# `|| true`: grep -c exits 1 on zero matches, which would otherwise abort this
+# script under `set -e` before the assert below gets to judge pass/fail (the
+# `run_harness_layout_scan` / Section 4 `_s4_summary_count` idiom).
+_s3c_fail_count="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s3c_out" || true)"
+assert "3c: EXACTLY ONE FAIL line total — both the override and the grandfathered standalone contributed zero violations" \
+    test "$_s3c_fail_count" -eq 1
 
 # ===========================================================================
 # Section 4: rule (c) — the aggregate SUMMARY line is machine-parseable, and

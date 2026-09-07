@@ -34,15 +34,21 @@ use crate::graph::EvaluationGraph;
 /// eligibility.
 ///
 /// The conservative default is `Structural` — anything that is not clearly a
-/// dimensioned scalar, real, or integer is treated as structural. This biases
+/// dimensioned scalar, real, or integer, or a `Type::Geometry` realization
+/// reference (the task-6635 exception), is treated as structural. This biases
 /// Stage A toward false-rejection (one extra remesh) rather than
 /// false-eligibility (a topology-changing edit slipping through to Stage B).
+///
+/// The canonical rationale for the whitelist — including the `Type::Geometry`
+/// exception and its measured evidence — lives in ONE place: the
+/// `## Type::Geometry and Rule 4` note on [`classify_cell`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterClass {
-    /// The cell holds a dimensioned or numeric quantity whose change cannot
-    /// affect feature topology. Includes `Type::Scalar { .. }`, `Type::dimensionless_scalar()`,
-    /// and `Type::Int` (subject to the `structure_controlling` and
-    /// `collection_subs` overrides in [`classify_cell`]).
+    /// The cell holds a quantity whose change cannot by itself affect feature
+    /// topology: `Type::Scalar { .. }`, `Type::dimensionless_scalar()`,
+    /// `Type::Int`, and `Type::Geometry`. All of these remain subject to the
+    /// `structure_controlling` and `collection_subs` overrides in
+    /// [`classify_cell`].
     Dimensional,
     /// The cell controls topology — feature suppression toggles, pattern
     /// counts, enum-typed mode selectors, or any type not whitelisted as
@@ -98,7 +104,124 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    because entity.rs does not backfill `count_cell` for keyed subs. Correct
 ///    by construction and unit-tested; wiring the backfill path activates it.
 /// 4. **Type dispatch** — `Type::Scalar { .. } | Type::dimensionless_scalar() | Type::Int`
-///    → `Dimensional`; everything else → `Structural`.
+///    → `Dimensional`; `Type::Geometry` → `Dimensional` (task 6635, see below);
+///    everything else → `Structural`.
+///
+/// ## Type::Geometry and Rule 4
+///
+/// A `Type::Geometry` cell's value is *produced by realization* — a handle to a
+/// computed B-rep. No production caller edits such a cell directly;
+/// `Engine::edit_param` is driven at the numeric leaves. Its value therefore
+/// necessarily changes whenever **any** upstream cell changes: a dimensional
+/// leaf tick recomputes it just as surely as a topology-changing one does.
+/// Classifying it `Structural` via Rule
+/// 4's conservative `_` default meant [`stage_a_eligible`]'s union-walk hit the
+/// derived geometry cell on *every* real edit and rejected, so the engine's
+/// morph arm was 100% dormant in production — measured as
+/// `ineligible_structural_change: 1` on every tick, with the morph arm never
+/// once reaching Stage B.
+///
+/// This contradicted the PRD. `docs/prds/v0_3/mesh-morphing.md` line 33 scopes
+/// Stage A to **leaf** parameters ("classify each leaf parameter ... the only
+/// differing leaves are dimensional"), and line 34 makes Stage B the gate for
+/// value-driven topology changes ("Even when Stage A passes, continuous
+/// parameter changes can cross topology-changing thresholds").
+///
+/// ### The arm keys on the TYPE, not on derivedness
+///
+/// Rule 4 matches `Type::Geometry` regardless of `ValueCellNode::kind`. Most
+/// `Type::Geometry` cells are `ValueCellKind::Let` — `reify-compiler`'s
+/// `entity.rs` geometry-*let* path — but a solid-typed param with a
+/// geometry-call default (`param body: Geometry = box(...)`) is registered
+/// `Type::Geometry` + `ValueCellKind::Param` by the same file's param path, and
+/// is therefore Dimensional here too. That is deliberate, not an oversight:
+/// entity.rs itself treats such a param "symmetrically to geometry lets", in
+/// practice its value within a fixed graph diverges only via upstream recompute
+/// (`Engine::edit_param` is driven at the numeric leaves, not at the realization
+/// handle — but see "convention, not invariant" below), and narrowing the arm to
+/// `kind == Let` would re-introduce the every-tick veto for any design that
+/// authors its body as a param. Stage B is the net either way — see (iii) below.
+/// Do not read this arm as "derived cells are Dimensional"; read it as "a
+/// `Type::Geometry` value is realization output, which carries no independent
+/// structural signal".
+///
+/// ### Convention, not invariant: nothing forbids editing a Geometry cell
+///
+/// "No production caller edits a Geometry-typed cell directly" is an observed
+/// convention, NOT something the type system or the engine enforces. Verified:
+/// `Engine::edit_param` (`engine_edit.rs`) validates an override only for
+/// type-kind/dimension compatibility via `validate_param_override`, so an API
+/// caller *can* assign a different `Value::GeometryHandle` to a `Type::Geometry`
+/// param cell. After this relaxation Stage A admits such a whole-body swap as
+/// "dimensional", leaving Stage B and the morph quality gate as the only nets.
+/// The residual risk is low — a genuinely different B-rep will almost always
+/// fail the naming bijection — but it is a real gap, so reason from the
+/// enforceable claim (Stage B is the net), not from the convention.
+///
+/// Nothing is lost by the relaxation:
+///
+/// (i)   [`stage_a_eligible`]'s shape-hash gate still catches every feature
+///       added, removed, or reordered — that is a graph-shape change, not a
+///       value change, and it short-circuits before any per-cell work.
+/// (ii)  Any structure-controlling, collection-count, or keyed-count leaf
+///       feeding the geometry is still classified `Structural`, either by Rules
+///       2/3/3b above or by Rule 4 on its OWN cell (an `Enum` mode selector, a
+///       `Bool` suppression toggle). The relaxation widens the whitelist by
+///       exactly one type; it does not make the cells *behind* the geometry
+///       invisible.
+/// (iii) Stage B's persistent-naming bijection check remains the safety net for
+///       a dimensional tick that crosses a topology threshold. What is MEASURED
+///       about the `cut_z` structural fixture in
+///       `reify-eval/tests/morph_arm_e2e.rs` is the Stage A half: after this
+///       change it no longer vetoes (`ineligible_structural_change: 0`) and the
+///       reject moves downstream to Stage B. Read no more than that into it —
+///       the bucket it lands in is `ineligible_naming_error: 1`, i.e. Stage B
+///       could not EVALUATE the bijection on that fixture's boolean-cut B-rep
+///       (`NamingLayerErrorReason` is only `Imported`/`Partial`), so it is not a
+///       demonstration that the topology-threshold net fires. That
+///       demonstration is the in-crate fixture test
+///       `reify_mesh_morph::eligibility::tests::`
+///       `morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch`,
+///       where Stage A admits a differing Geometry cell and Stage B rejects with
+///       a real `BijectionFailure::CountMismatch`.
+///
+/// Placement is load-bearing: the `Type::Geometry` arm lives inside Rule 4,
+/// *after* the Rule 1/2/3/3b early-returns, so a structure-controlling or
+/// count-cell Geometry cell still classifies `Structural`. Do not hoist it to
+/// an early `if node.cell_type == Type::Geometry { return Dimensional }` — the
+/// mutation guards `classify_cell_geometry_in_structure_controlling_returns_structural`,
+/// `classify_cell_geometry_as_collection_count_returns_structural` and
+/// `stage_a_eligible_structure_controlling_geometry_diff_returns_false` exist to
+/// catch exactly that.
+///
+/// ### KNOWN GAP — the dormancy class is NOT closed: `List<Geometry>`
+///
+/// This relaxation covers the BARE `Type::Geometry` variant only. Handle-LIST
+/// cells — `Type::List(Box::new(Type::Geometry))` — still fall into Rule 4's
+/// `_ => Structural` default, so for any design that uses one, Stage A still
+/// vetoes 100% of ticks exactly as it did for bare Geometry before task 6635.
+/// That is the common "fillet the selected edges" shape, so the gap is not
+/// hypothetical.
+///
+/// Verified reach (2026-08-29): `adjacent_faces`, `shared_edges`,
+/// `siblings_of_face`, `ancestor_faces_of_edge` and `split` are typed
+/// `List<Geometry>` in `reify-compiler/src/units.rs`, and so is any `Selector`
+/// cell wrapped in `ResolveSelector` (`single(...)`, index access). Their values
+/// are `Value::List`s of `Value::GeometryHandle` built by
+/// `topology_selectors::make_sub_handle`, whose `upstream_values_hash` is
+/// composed from the PARENT's hash; since `Value::GeometryHandle`'s `PartialEq`
+/// keys on `(realization_ref, upstream_values_hash)`, those cells differ on
+/// every tick. Bare `Type::Selector` cells are NOT affected — `SelectorValue`
+/// equality is content-hash based and excludes `kernel_handle`.
+///
+/// Deliberately left for a follow-up rather than folded in here, because it is
+/// not a pure restatement of the bare-Geometry argument: a `List<Geometry>`
+/// carries one signal a bare handle does not — its LENGTH — and whether a
+/// length change should stay Structural (finer rule) or defer to Stage B like
+/// everything else (widen `classify_by_type` to
+/// `Type::List(inner) if **inner == Type::Geometry`) is a design decision that
+/// wants its own measured RED→GREEN, not a drive-by amendment. Do not read this
+/// note's absence of a fix as evidence the question was overlooked.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
     // Rule 1: missing cell → Structural.
     let Some(node) = graph.value_cells.get(cell_id) else {
@@ -147,9 +270,31 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
         return ParameterClass::Structural;
     }
 
-    // Rule 4: type-based dispatch.
-    match &node.cell_type {
-        Type::Scalar { .. } | Type::Int => ParameterClass::Dimensional,
+    // Rule 4: type-based dispatch (shared with `classify_cell_with_count_cache`).
+    classify_by_type(&node.cell_type)
+}
+
+/// Rule 4 in isolation: the type-only half of the classification, with no
+/// graph context.
+///
+/// Extracted so [`classify_cell`] and [`classify_cell_with_count_cache`] cannot
+/// drift — the two classifiers differ only in how they evaluate Rules 1/2/3/3b
+/// (linear scan vs. pre-computed count-cell set), never in the type whitelist.
+/// Widening the whitelist is therefore a one-site edit.
+///
+/// `Type::Geometry` is on the whitelist as of task 6635; the `_ => Structural`
+/// conservative default is unchanged — note in particular that
+/// `Type::List(Type::Geometry)` is still caught by it, which is a KNOWN,
+/// still-open dormancy gap. Rationale, measured evidence and that gap: the
+/// `## Type::Geometry and Rule 4` note on [`classify_cell`].
+///
+/// This is deliberately NOT a public entry point: callers must go through
+/// [`classify_cell`], which applies the `structure_controlling` /
+/// `collection_subs` / `keyed_subs` overrides FIRST. Rule 4 alone would
+/// misclassify a structure-controlling or count cell.
+fn classify_by_type(cell_type: &Type) -> ParameterClass {
+    match cell_type {
+        Type::Scalar { .. } | Type::Int | Type::Geometry => ParameterClass::Dimensional,
         _ => ParameterClass::Structural,
     }
 }
@@ -181,11 +326,9 @@ fn classify_cell_with_count_cache(
         return ParameterClass::Structural;
     }
 
-    // Rule 4: type-based dispatch.
-    match &node.cell_type {
-        Type::Scalar { .. } | Type::Int => ParameterClass::Dimensional,
-        _ => ParameterClass::Structural,
-    }
+    // Rule 4: type-based dispatch — the SAME [`classify_by_type`] the public
+    // `classify_cell` calls, so the whitelist cannot drift between the two.
+    classify_by_type(&node.cell_type)
 }
 
 /// Stage A top-level eligibility predicate.
@@ -329,6 +472,17 @@ mod tests {
     fn classify_cell_int_returns_dimensional() {
         let id = ValueCellId::new("Part", "sides");
         let g = graph_with_cell(&id, Type::Int);
+        assert_eq!(classify_cell(&g, &id), ParameterClass::Dimensional);
+    }
+
+    #[test]
+    fn classify_cell_geometry_returns_dimensional() {
+        // Task 6635: a `Type::Geometry` cell is a *derived* reference to a
+        // realization, never an authored leaf parameter. Classifying it
+        // Structural via Rule 4's conservative default vetoed every real
+        // dimensional edit. See `classify_cell`'s "Type::Geometry and Rule 4".
+        let id = ValueCellId::new("Part", "body");
+        let g = graph_with_cell(&id, Type::Geometry);
         assert_eq!(classify_cell(&g, &id), ParameterClass::Dimensional);
     }
 
@@ -657,6 +811,74 @@ mod tests {
         );
     }
 
+    // ── Task 6635: derived Type::Geometry cells must not veto a tick ───────
+
+    #[test]
+    fn stage_a_eligible_dimensional_tick_with_derived_geometry_diff_returns_true() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::{GeometryHandleId, Value, ValueMap};
+
+        // Reproduces the measured production shape from
+        // `reify-eval/tests/morph_arm_e2e.rs`: a dimensional leaf (`width`)
+        // ticks, and the DERIVED `Type::Geometry` cell (`body`) is recomputed
+        // downstream, so its value necessarily differs too. The tick must stay
+        // Stage-A eligible.
+        let width_id = ValueCellId::new("MorphBox", "width");
+        let body_id = ValueCellId::new("MorphBox", "body");
+        // The dimensional leaf, via the file's shared builder.
+        let mut g1 = graph_with_cell(&width_id, Type::length());
+        // …plus the derived geometry cell it feeds. `ValueCellKind::Let` is the
+        // kind `reify-compiler`'s `entity.rs` geometry-*let* path registers, so
+        // the fixture matches the production shape this test's narrative claims
+        // (`graph_with_cell` hardcodes `Param`, which is why the body cell is
+        // inserted explicitly rather than through it). Rule 4 is deliberately
+        // kind-blind — see `classify_cell`'s "The arm keys on the TYPE, not on
+        // derivedness" — and pinning the production kind here is what makes that
+        // claim exercised rather than merely asserted in prose.
+        g1.value_cells.insert(
+            body_id.clone(),
+            ValueCellNode {
+                id: body_id.clone(),
+                kind: ValueCellKind::Let,
+                cell_type: Type::Geometry,
+                default_expr: None,
+                content_hash: ContentHash::of_str(&format!("{}", body_id)),
+            },
+        );
+        // Clone so the shape hashes match and the shape gate passes.
+        let g2 = g1.clone();
+
+        let mut v1 = ValueMap::new();
+        v1.insert(width_id.clone(), Value::length(0.010));
+        v1.insert(
+            body_id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("MorphBox", 0),
+                upstream_values_hash: [1u8; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+
+        let mut v2 = ValueMap::new();
+        v2.insert(width_id.clone(), Value::length(0.0105)); // the dimensional tick
+        v2.insert(
+            body_id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("MorphBox", 0),
+                upstream_values_hash: [2u8; 32], // recomputed downstream
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+
+        assert!(
+            stage_a_eligible(&g1, &g2, &v1, &v2),
+            "task 6635: a dimensional-only tick must stay Stage-A eligible even \
+             though the derived Type::Geometry cell's value also changed — a \
+             derived geometry cell is a realization reference, never an authored \
+             leaf, and carries no independent structural signal"
+        );
+    }
+
     // ── Step-9: stage_a_eligible – identical graph and values ─────────────
 
     #[test]
@@ -956,6 +1178,91 @@ mod tests {
             classify_cell(&g, &id),
             ParameterClass::Structural,
             "structure_controlling must override the Dimensional type dispatch"
+        );
+    }
+
+    // ── Task 6635: the Type::Geometry relaxation is SUBORDINATE to Rules 2/3 ──
+    //
+    // These three guard the ORDERING, not the relaxation itself. The single
+    // most likely way a future refactor silently reopens the Stage A hole is by
+    // hoisting the Geometry arm to an early
+    // `if node.cell_type == Type::Geometry { return Dimensional }` above the
+    // structural overrides. Mutating in that hoisted form must fail all three.
+
+    #[test]
+    fn classify_cell_geometry_in_structure_controlling_returns_structural() {
+        // Mirrors classify_cell_structure_controlling_overrides_dimensional_type
+        // for Type::Geometry: Rule 2 must still win over Rule 4.
+        let id = ValueCellId::new("Part", "gated_body");
+        let mut g = graph_with_cell(&id, Type::Geometry);
+        g.structure_controlling.insert(id.clone());
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 6635: structure_controlling (Rule 2) must override the \
+             Type::Geometry → Dimensional dispatch (Rule 4)"
+        );
+    }
+
+    #[test]
+    fn classify_cell_geometry_as_collection_count_returns_structural() {
+        // Contrived by design: the point is that Rule 3 wins over Rule 4 for
+        // EVERY type, not just Type::Int.
+        let id = ValueCellId::new("Part", "__count_bodies");
+        let mut g = graph_with_cell(&id, Type::Geometry);
+        g.collection_subs.push(CollectionSubInfo {
+            parent_entity: "Part".to_string(),
+            sub_name: "bodies".to_string(),
+            structure_name: "Body".to_string(),
+            count_cell: id.clone(),
+            child_value_cells: vec![],
+        });
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 6635: a collection count_cell (Rule 3) must be Structural for \
+             every cell type, including Type::Geometry"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_structure_controlling_geometry_diff_returns_false() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::{GeometryHandleId, Value, ValueMap};
+
+        // Covers `classify_cell_with_count_cache`, the private twin
+        // `stage_a_eligible` actually calls. Without this, a future edit that
+        // relaxes ONLY the twin would pass the two `classify_cell` guards above
+        // and still be broken.
+        let id = ValueCellId::new("Part", "gated_body");
+        let mut g1 = graph_with_cell(&id, Type::Geometry);
+        g1.structure_controlling.insert(id.clone());
+        let g2 = g1.clone();
+
+        let mut v1 = ValueMap::new();
+        v1.insert(
+            id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Part", 0),
+                upstream_values_hash: [1u8; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+        let mut v2 = ValueMap::new();
+        v2.insert(
+            id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Part", 0),
+                upstream_values_hash: [2u8; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "task 6635: a structure-controlling Type::Geometry cell must still \
+             veto the tick end-to-end through stage_a_eligible — the Rule 2 \
+             override must hold in classify_cell_with_count_cache too"
         );
     }
 }

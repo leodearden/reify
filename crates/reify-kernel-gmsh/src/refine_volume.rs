@@ -23,10 +23,16 @@
 //!   behind, so its output is a function of its own arguments alone and not of
 //!   call order within the process; and
 //! * **outbound**: restores that same option pair to gmsh's documented
-//!   defaults before returning (see `MeshSizeClampReset` below), so a later
-//!   *defaults-relying* call — e.g. `mesh_plane_2d` with no requested size,
-//!   which deliberately writes no clamp — is not silently pinned to a fine
-//!   `MeshSizeMax` left over from an adaptive-refinement iteration.
+//!   defaults before returning (via [`crate::mesh_size_clamp::MeshSizeClampReset`]),
+//!   so a later *defaults-relying* call — e.g. `mesh_plane_2d` with no
+//!   requested size, which deliberately writes no clamp — is not silently
+//!   pinned to a fine `MeshSizeMax` left over from an adaptive-refinement
+//!   iteration.
+//!
+//! That guard now lives in [`crate::mesh_size_clamp`] rather than in this
+//! file: since task #6298 it is shared infrastructure with a second consumer,
+//! `kernel_real::GmshKernel::mesh_to_volume`, and one implementation cannot
+//! drift from itself the way two hand-written resets could.
 //!
 //! Each half has its own guard in `tests/refine_volume_tests.rs`, so neither
 //! can rot into a comment: inbound is
@@ -40,10 +46,11 @@
 //! only. The `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
 //! `MeshSizeExtendFromBoundary` writes below are still left behind for a later
 //! caller to inherit — the same defect class in the same direction, tracked as
-//! task #6212 because closing it means a shared save/restore discipline across
-//! the four entry points that write those options (and an `option_get_number`
-//! FFI getter to restore *as found* rather than to defaults), not a change
-//! local to this file. See the inline rationale at the option writes below.
+//! task #6212 because closing it means extending the `mesh_size_clamp` seam to
+//! those three across every entry point that writes them (and an
+//! `option_get_number` FFI getter to restore *as found* rather than to
+//! defaults), not a change local to this file. See the inline rationale at the
+//! option writes below.
 //!
 //! # Cost basis: full remesh from surface
 //!
@@ -63,65 +70,10 @@ use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeM
 
 use crate::options::MeshingOptions;
 
-/// Gmsh's documented default for `Mesh.MeshSizeMin` — no floor.
-///
-/// `pub` (like [`crate::init::GMSH_LOCK`], and for the same reason) so this
-/// crate's `tests/` binaries — separate compilation units — can restore the
-/// process-global clamp to gmsh's defaults without re-declaring the literal.
-/// A test-local copy could drift silently away from the value this module
-/// actually writes, which would quietly weaken the "from gmsh's defaults"
-/// leg of `refine_volume_tests.rs`'s inbound-hermeticity assertion rather
-/// than fail it.
 #[cfg(has_gmsh)]
-pub const GMSH_MESH_SIZE_MIN_DEFAULT: f64 = 0.0;
-
-/// Gmsh's documented default for `Mesh.MeshSizeMax` — effectively no cap.
-///
-/// `pub` for the same reason as [`GMSH_MESH_SIZE_MIN_DEFAULT`].
-#[cfg(has_gmsh)]
-pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
-
-/// RAII reset of the process-global `Mesh.MeshSizeMin`/`MeshSizeMax` pair to
-/// gmsh's defaults, covering the early-`?`-return paths as well as success.
-///
-/// Restores DEFAULTS rather than the values found on entry: gmsh's C API
-/// exposes no reader for a numeric option in this crate's FFI surface, so
-/// "as found" is not observable here. Defaults are the right target anyway —
-/// they are what a caller that writes no clamp of its own expects to get, so
-/// leaving them behind means no downstream path inherits state from this one
-/// (task #6211).
-///
-/// # Why it borrows the lock guard
-///
-/// The two FFI writes in `drop` mutate gmsh's process-global option table and
-/// must therefore happen while `init::GMSH_LOCK` is held. The
-/// `PhantomData<&'g MutexGuard<'g, ()>>` makes that structural rather than a
-/// comment a refactor can quietly violate: [`Self::armed`] can only be called
-/// with a live guard in hand, so the binding cannot be hoisted above the
-/// `let _guard = …` line, and because this type has a `Drop` impl (no
-/// `#[may_dangle]`) dropck requires the borrow to still be live when it drops
-/// — which forces the writes to land *before* the lock is released.
-#[cfg(has_gmsh)]
-struct MeshSizeClampReset<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
-
-#[cfg(has_gmsh)]
-impl<'g> MeshSizeClampReset<'g> {
-    /// Arm the reset. Takes the live `GMSH_LOCK` guard by reference purely for
-    /// its lifetime — the guard itself is never touched.
-    fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
-        Self(std::marker::PhantomData)
-    }
-}
-
-#[cfg(has_gmsh)]
-impl Drop for MeshSizeClampReset<'_> {
-    fn drop(&mut self) {
-        // Best-effort, like the trailing `ffi::clear()`: a failure here cannot
-        // be reported from `drop` and must not mask the real result.
-        let _ = crate::ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT);
-        let _ = crate::ffi::option_set_number("Mesh.MeshSizeMax", GMSH_MESH_SIZE_MAX_DEFAULT);
-    }
-}
+use crate::mesh_size_clamp::{
+    GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeClampReset,
+};
 
 /// Remesh the volume enclosed by `surface` using per-vertex size hints.
 ///
@@ -301,12 +253,20 @@ pub fn refine_volume_with_size_field(
     //
     // INVARIANT: `vertex_sizes` alone decides element size here. Gmsh's option
     // table is process-global and is NOT reset by `gmshClear()`, and the
-    // sibling entry points `kernel_real::GmshKernel::mesh_to_volume`,
-    // `mesh_profile_2d::mesh_plane_2d` and `mesh_boundary`'s surface remesh all
-    // write `Mesh.MeshSizeMin`/`MeshSizeMax` without restoring them. Without
-    // the two writes below, any of those running earlier in the process pins
-    // every element of THIS remesh to ITS size and the per-vertex field becomes
+    // sibling entry points `mesh_profile_2d::mesh_plane_2d` and
+    // `mesh_boundary`'s surface remesh still write
+    // `Mesh.MeshSizeMin`/`MeshSizeMax` without restoring them. Without the two
+    // writes below, either of those running earlier in the process pins every
+    // element of THIS remesh to ITS size and the per-vertex field becomes
     // inert (task #6211: one identical tet count for every hint).
+    //
+    // `kernel_real::GmshKernel::mesh_to_volume` used to belong on that list and
+    // no longer does — since task #6298 it arms the same
+    // `mesh_size_clamp::MeshSizeClampReset` on entry. These two writes stay
+    // load-bearing regardless: the other two entry points are still open, and
+    // an inbound clamp that depends on no sibling's outbound discipline is the
+    // only form that makes this function's output a pure function of its own
+    // arguments.
     //
     // Both writes are load-bearing, not belt-and-braces: with a leaked
     // Min == Max, lowering only Max leaves Min > Max (gmsh still floors at the

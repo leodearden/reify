@@ -224,6 +224,7 @@ make_runnable_verify_fixture() {
         lib_clock_stop.sh \
         cpu-admit.sh \
         lib_proc_reaper.sh \
+        lib_git_env_scrub.sh \
         gen-nextest-config.sh \
         heavy-test-filter-lib.sh \
         verify-pipeline-infra-tests.txt
@@ -238,6 +239,47 @@ make_runnable_verify_fixture() {
     # plan" failure further down.
     assert_source_closure_copied "$REPO_ROOT/scripts" "$_dir/scripts" verify.sh || return 1
     printf -v "$_outvar" '%s' "$_dir/scripts/verify.sh"
+}
+
+# derive_plan_leaves [verify.sh-path] (task 6296) — the LIVE plan-leaf set of
+# <verify.sh-path> (default: the real tree's): every directory-qualified,
+# repo-relative *.sh path named by a plan-emission statement, one per line,
+# sort -u'd. Takes the path as a parameter so (a-bis)'s NEGATIVE CONTROL can
+# drive it against a fixture rather than the real tree.
+#
+# THIS IS AN INDEPENDENT REIMPLEMENTATION of the guard's clause-4a extraction,
+# deliberately NOT a call into `--list` or `--list-plan-derived`. Sourcing the
+# leaf list FROM the guard in order to test the guard is circular: if clause
+# 4a/4b's extraction ever regresses, a guard-sourced list shrinks in LOCKSTEP
+# and every "is this leaf load-bearing" assertion below passes VACUOUSLY —
+# precisely the silent-vacuity failure this sweep exists to prevent. Two
+# independent derivations must AGREE, so any divergence reds.
+#
+# The duplicated regex is bounded and deliberate. It is modelled on the guard's
+# shared _SH_PATH_ERE / _SH_PATH_NORMALIZE_SED pair (scripts/verify-pipeline-
+# guard.sh; the boundary rationale lives with them and is not restated here):
+# the same '^[[:space:]]*add(_tool)?[[:space:]]+' STATEMENT anchor, which is
+# what excludes '#'-prefixed comment mentions; the same '(^|[^A-Za-z0-9_./-])'
+# LEFT and '([^A-Za-z0-9_.-]|$)' RIGHT boundaries, which stop the
+# 'other/scripts/x.sh' tail and 'scripts/x.sha256sums' over-matches; and the
+# same directory-qualified '+(/…)+' shape, which keeps a bare basename inside a
+# diagnostic string out of the set. Those properties are pinned from the GUARD's
+# side by Pair E (c); this copy is kept honest from the TEST's side by (a-bis)'s
+# set-equality assertion against the hard-coded ground truth, so the duplication
+# is self-checking in both directions rather than a second thing to maintain
+# blind.
+#
+# The trailing `|| true` is load-bearing under `set -euo pipefail`: grep exits 1
+# on no match, which is a LEGITIMATE EMPTY RESULT here (the guard documents the
+# same at its own call sites), and an empty derivation must red LOUDLY at
+# (a-bis)'s equality assertion rather than abort the suite mid-file.
+derive_plan_leaves() {
+    local _vsh="${1:-$REPO_ROOT/scripts/verify.sh}"
+    grep -E '^[[:space:]]*add(_tool)?[[:space:]]+' "$_vsh" \
+        | grep -oE '(^|[^A-Za-z0-9_./-])(\./)?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh([^A-Za-z0-9_.-]|$)' \
+        | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|' \
+        | sort -u \
+        || true
 }
 
 # ---------------------------------------------------------------------------
@@ -789,9 +831,21 @@ echo "-- Pair E: emitted-gate plan-line derivation --"
 # anti-drift net. Mirrors Pair B's REAL-LIB-loop + GROUND-TRUTH split and Pair
 # C's (a)/(b) split for the same reason.
 #
-# RED until step-2 adds the emitted-gate derivation clause for the first SEVEN
-# entries (measured exit 1 at HEAD fee75336ca); the last two are already GREEN
-# via their task-6243 rows in scripts/verify-pipeline-paths.txt.
+# THAT RATIONALE STILL HOLDS — and is why this tier was not replaced by a
+# derivation when task 6296 arrived. What CHANGED is what keeps it honest.
+# Hand-maintained is exactly how it rotted: it sat at ten entries while
+# verify.sh's plan grew to thirteen. It is now pinned by (a-bis)'s SET-EQUALITY
+# assertion against the live derivation, so this list stays the anti-vacuity net
+# it was written to be while no longer being the thing that silently goes stale.
+#
+# HISTORICAL (task 6320's TDD note, kept for provenance): this list was RED
+# until 6320's own step-2 added the emitted-gate derivation clause, for the
+# seven entries from check-manifold-deps.sh through test_pm_standardization.sh
+# (measured exit 1 at HEAD fee75336ca). check-nan-safe-ordering.sh and
+# check-compute-trampoline-registration.sh were already GREEN via their
+# task-6243 rows in scripts/verify-pipeline-paths.txt. Named rather than
+# described by POSITION, because task 6296 appended three more entries below and
+# a positional reference ("the last two") silently retargeted.
 #
 # AMENDMENT (reviewer_comprehensive completeness): tests/sync_comments_test.sh
 # is the TENTH emitted gate and shares the identical ambush class -- verify.sh
@@ -802,24 +856,248 @@ echo "-- Pair E: emitted-gate plan-line derivation --"
 # Listing it HERE, in the prefix-agnostic ground truth, is what keeps the
 # clause honest about covering the whole emitted-gate class rather than one
 # directory of it.
-for _gate in \
-    scripts/check-manifold-deps.sh \
-    scripts/check-infra-classification-manifest.sh \
-    scripts/check-harness-baseline-registration.sh \
-    scripts/tree-sitter-generate.sh \
-    scripts/ensure-gui-sidecar-placeholder.sh \
-    scripts/check_event_inventory.sh \
-    scripts/test_pm_standardization.sh \
-    scripts/check-nan-safe-ordering.sh \
-    scripts/check-compute-trampoline-registration.sh \
+_PAIR_E_PLAN_LEAF_GROUND_TRUTH=(
+    scripts/check-manifold-deps.sh
+    scripts/check-infra-classification-manifest.sh
+    scripts/check-harness-baseline-registration.sh
+    scripts/tree-sitter-generate.sh
+    scripts/ensure-gui-sidecar-placeholder.sh
+    scripts/check_event_inventory.sh
+    scripts/test_pm_standardization.sh
+    scripts/check-nan-safe-ordering.sh
+    scripts/check-compute-trampoline-registration.sh
     tests/sync_comments_test.sh
-do
-    assert_exit "GROUND-TRUTH: $_gate is load-bearing (emitted by verify.sh's plan; exit 0)" 0 \
+    # The three below were added by task 6296, each for a DIFFERENT reason. The
+    # notes are not decoration: two of them look odd enough that a future reader
+    # would otherwise be tempted to "clean them up" out of the list, which would
+    # red (a-bis) and invite editing the assertion instead of the array.
+    #
+    # THE DRIFT ITSELF. Emitted twice by verify.sh's plan — once as `ensure`,
+    # once as `check`. Landed with task #5629 and was never added here, which is
+    # the gap task 6296 was filed for; this file did not mention it at all.
+    # Covered by the guard's emitted-gate clause, so it needs NO
+    # verify-pipeline-paths.txt row.
+    scripts/tree-sitter-freshness.sh
+    # verify.sh invokes ITSELF as a plan leaf (the psi-gate and compile-gate
+    # sub-invocations). Its exit-0 verdict is OVER-DETERMINED — it is also the
+    # guard's clause-1 anchor, asserted directly in Pair A — so it proves
+    # nothing new about the guard. It is listed because it IS a plan leaf and
+    # set equality against the live derivation demands it; dropping it to tidy
+    # the "redundant" entry breaks (a-bis).
+    scripts/verify.sh
+    # Emitted by the infra-test plan line. Also over-determined: separately
+    # covered BOTH by the guard's in-code tests/infra/*.sh glob clause and by an
+    # explicit verify-pipeline-paths.txt row. Same reasoning as above — listed
+    # because the derivation sees it, not because this is its only coverage.
+    tests/infra/run_all.sh
+)
+
+# (a-bis) COMPLETENESS SWEEP (task 6296) — assert SET EQUALITY between the
+# hard-coded ground truth above and the LIVE plan-leaf set derived from
+# verify.sh by derive_plan_leaves (see that helper for why the test derives its
+# own rather than asking the guard).
+#
+# WHY EQUALITY AND NOT CONTAINMENT, and why the hard-coded tier survives.
+# Task 6296 observed that restating the leaf list by hand is how the drift it
+# was filed for arose: scripts/tree-sitter-freshness.sh became a plan leaf with
+# task #5629 (verify.sh emits it as `ensure` and again as `check`) and was
+# simply never added here — this file did not mention it AT ALL. But (a)'s own
+# rationale above is also right that a derivation-driven loop ALONE goes
+# silently VACUOUS, not red, if a future plan-emission refactor breaks the
+# extraction. Set equality satisfies both at once and is the reason neither tier
+# can be dropped: an empty or broken derivation FAILS equality against a
+# hard-coded list and reds immediately, so vacuity is impossible; and a leaf
+# REMOVED from verify.sh leaves a stale ground-truth entry, which mere
+# containment in either direction would never catch.
+#
+# The failure message prints a TWO-WAY delta and names the list to edit. A bare
+# "sets differ" is what gets a guard of this class disabled rather than fixed.
+assert_plan_leaf_ground_truth_complete() {
+    local _derived _ground _only_derived _only_ground
+    _derived="$(derive_plan_leaves)"
+    _ground="$(printf '%s\n' "${_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]}" | sort -u)"
+    [ "$_derived" = "$_ground" ] && return 0
+
+    _only_derived="$(comm -23 <(printf '%s\n' "$_derived") <(printf '%s\n' "$_ground"))"
+    _only_ground="$(comm -13 <(printf '%s\n' "$_derived") <(printf '%s\n' "$_ground"))"
+    echo "PLAN-LEAF DRIFT: verify.sh's live plan leaves and Pair E (a)'s hard-coded"
+    echo "ground truth have diverged (derived $(printf '%s\n' "$_derived" | grep -c .), ground truth $(printf '%s\n' "$_ground" | grep -c .))."
+    if [ -n "$_only_derived" ]; then
+        echo "  EMITTED BY verify.sh BUT MISSING FROM THE GROUND TRUTH (new plan leaves):"
+        printf '    + %s\n' $_only_derived
+    fi
+    if [ -n "$_only_ground" ]; then
+        echo "  IN THE GROUND TRUTH BUT NO LONGER EMITTED (stale entries):"
+        printf '    - %s\n' $_only_ground
+    fi
+    echo "  FIX: update the _PAIR_E_PLAN_LEAF_GROUND_TRUTH array in this file"
+    echo "  (tests/infra/test_verify_pipeline_guard.sh, Pair E (a)) to match, adding a"
+    echo "  one-line note for each entry saying WHY it is a plan leaf."
+    return 1
+}
+assert "COMPLETENESS: Pair E (a)'s ground truth is SET-EQUAL to verify.sh's live plan leaves" \
+    assert_plan_leaf_ground_truth_complete
+
+# THE LOAD-BEARING SWEEP — every leaf verify.sh actually emits is classified
+# load-bearing by the guard. This is the assertion task 6296 item (c) asks for.
+#
+# ORDERING IS LOAD-BEARING: the equality assertion above MUST run BEFORE this
+# loop, and must not be moved below it or folded into it. A loop over a silently
+# empty derivation asserts nothing while reporting green, which is the exact
+# vacuity failure Pair E (a) warns about; equality-against-a-fixed-list run
+# FIRST is what licenses the loop to assert anything at all. Do not "tidy" the
+# two into one pass. (The iteration-count assertion AFTER the loop is a second,
+# independent net over the same property — it catches a loop that was drained
+# part-way rather than one that started empty. Two nets, not a duplicate.)
+#
+# HONESTLY: this loop is a REGRESSION GUARD and was GREEN ON ARRIVAL — all
+# thirteen live leaves already measured exit 0 when it was written, because
+# clauses 4a/4b derive them automatically. It is not a bug fix, and its value is
+# entirely in the next regression, not this commit. That is also why the
+# NEGATIVE CONTROL below exists: auto-derivation makes every real leaf
+# load-bearing BY CONSTRUCTION, so without a case proving the sweep can still
+# say NO, a green loop here would be indistinguishable from a tautology.
+#
+# EFFICIENCY: each guard SET is captured ONCE and matched per leaf IN-PROCESS,
+# never forked per leaf. Every --list / --list-plan-derived run pays clause 4b's
+# --print-plan fork (measured warm at 0.35s and 0.43s; up to ~1.4s cold), so
+# per-entry invocation would add ~10s to a suite whose own header budgets
+# 21-53s. The membership test is a pure-bash function for the same reason: a
+# `bash -c 'printf | grep -qxF'` per leaf is 26 more forks bought for nothing.
+# The `requires-full-gate` calls stay in the loop — they all exit 0 via the
+# source-text floor, which is the LAZY route that never forks 4b at all
+# (~0.09s each, pinned by the LAZY case in (c-bis)).
+#
+# CAPTURED WITH `|| true`, NOT BARE, under `set -euo pipefail`. A bare
+# `_x="$(...)"` whose command exits non-zero aborts the suite mid-file with no
+# PASS/FAIL line at all — the opaque-failure mode (c-bis)'s PRECONDITION
+# assertions were added to avoid. Both captures are instead pinned NON-EMPTY by
+# named preconditions below, so a broken subcommand reds BY NAME.
+_PAIR_E_LIST_CAPTURE=""
+_PAIR_E_LIST_CAPTURE="$(bash "$GUARD_SH" --list)" || true
+_PAIR_E_PD_CAPTURE=""
+_PAIR_E_PD_CAPTURE="$(bash "$GUARD_SH" --list-plan-derived)" || true
+
+# Exact-line membership without a fork. The `*` wildcards are UNQUOTED (glob)
+# while the needle is QUOTED, so `$1` is matched LITERALLY — a leaf name
+# containing a glob metacharacter cannot turn this into a pattern match. The
+# newline sentinels on both sides give `grep -qxF` semantics (whole line),
+# which is what keeps `scripts/x.sh` from matching `other/scripts/x.sh`.
+_pair_e_list_has() { [[ $'\n'"$_PAIR_E_LIST_CAPTURE"$'\n' == *$'\n'"$1"$'\n'* ]]; }
+_pair_e_pd_has() { [[ $'\n'"$_PAIR_E_PD_CAPTURE"$'\n' == *$'\n'"$1"$'\n'* ]]; }
+
+assert "PRECONDITION: the guard's --list capture is non-empty (if THIS fails, every SWEEP --list assertion below is expected to fail too — fix the subcommand, not the sweep)" \
+    test -n "$_PAIR_E_LIST_CAPTURE"
+
+# The plan-derived capture has a SECOND way to come back empty that is not a
+# bug: the guard's documented fail-soft route when the live tree's --print-plan
+# hard-fails (the usual cause is a present-but-failing cargo-nextest probe).
+# (c-bis)(a)'s PRECONDITION assertion is the one that distinguishes the two —
+# consult it FIRST if this reds, before suspecting the derivation.
+assert "PRECONDITION: the guard's --list-plan-derived capture is non-empty (an empty one is ALSO the documented --print-plan fail-soft — see (c-bis)(a)'s PRECONDITION before blaming clause 4b)" \
+    test -n "$_PAIR_E_PD_CAPTURE"
+
+# WHY BOTH SETS ARE CHECKED, and why --list alone was not enough. --list is the
+# UNION of every clause — the clause-1 anchor, the manifests, doc-sync, the
+# sourced-lib clause and the emitted-gate clause — so union membership does not
+# pin the emitted-gate clause at all. Two of the thirteen leaves are
+# over-determined by construction and prove it: scripts/verify.sh is the
+# clause-1 anchor, and tests/infra/run_all.sh has BOTH a verify-pipeline-
+# paths.txt row and the tests/infra/*.sh glob. A regression that broke the
+# emitted-gate derivation for those two would leave a --list-only sweep fully
+# green. --list-plan-derived prints clause 4b in ISOLATION, so it is the
+# assertion that actually pins the derivation this task is about, and it is
+# what finally makes good on derive_plan_leaves' header claim that two
+# independent derivations must AGREE.
+#
+# CONTAINMENT, NOT EQUALITY — deliberate, do not "tighten" it. The two sets are
+# byte-identical on this tree today (measured 13/13), but they are derived
+# differently: derive_plan_leaves reads verify.sh's SOURCE TEXT, clause 4b reads
+# the RESOLVED --print-plan output. A future variable-assembled plan line is
+# exactly the residual gap 4b exists to close, and it would legitimately make
+# 4b a strict SUPERSET. Equality would red on that correct change; containment
+# still reds on a broken or empty 4b, which is the failure this guards.
+_PAIR_E_SWEEP_COUNT=0
+while IFS= read -r -u 3 _gate; do
+    [ -z "$_gate" ] && continue
+    _PAIR_E_SWEEP_COUNT=$((_PAIR_E_SWEEP_COUNT + 1))
+    assert_exit "SWEEP: $_gate is load-bearing (derived from verify.sh's plan; exit 0)" 0 \
         run_guard requires-full-gate "$_gate"
-    assert "--list includes $_gate (emitted gate; hard-coded ground truth)" \
-        bash -c 'bash "$1" --list | grep -qxF "$2"' \
-        _ "$GUARD_SH" "$_gate"
-done
+    assert "SWEEP: --list includes $_gate (derived plan leaf, union verdict)" \
+        _pair_e_list_has "$_gate"
+    assert "SWEEP: --list-plan-derived includes $_gate (pins the emitted-gate clause in ISOLATION, not the union)" \
+        _pair_e_pd_has "$_gate"
+# THE LEAF LIST IS ON FD 3, AND THE BODY'S STDIN IS /dev/null. Both halves are
+# load-bearing; neither is style. `done < <(derive_plan_leaves)` would leave the
+# pipe as the loop body's STDIN, and `requires-full-gate` falls back to reading
+# paths from stdin when it gets zero positional args — which is why the guard's
+# own header tells callers to close stdin with `< /dev/null`. Today the
+# non-empty `$_gate` keeps that fallback unreachable, so nothing drains the
+# pipe; but a guard change, or any future asserted command in this body that
+# reads stdin, would swallow the remaining leaves and the loop would still
+# report GREEN with silently fewer assertions. That is the exact vacuity the
+# paragraphs above spend their length preventing, so it is closed structurally
+# rather than left resting on an argument.
+done 3< <(derive_plan_leaves) < /dev/null
+
+# Belt-and-braces against the loop being drained anyway: the iteration count
+# must match the ground truth the equality assertion above already pinned. A
+# sweep that ran zero or three times instead of thirteen is caught HERE by name
+# rather than showing up as a quietly shorter PASS list nobody counts.
+assert "NON-VACUITY: the SWEEP iterated once per ground-truth leaf (${#_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]} expected, $_PAIR_E_SWEEP_COUNT seen)" \
+    test "$_PAIR_E_SWEEP_COUNT" -eq "${#_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]}"
+
+# NEGATIVE CONTROL for the sweep's DISCRIMINATING POWER — the proof that the
+# loop above is not a tautology. Auto-derivation makes every REAL leaf
+# load-bearing by construction, so a green sweep cannot by itself distinguish
+# "the guard covers these thirteen" from "this loop cannot say NO to anything".
+#
+# WHAT THE PAIR DOES AND DOES NOT SHOW, stated precisely because the obvious
+# reading overstates it. The halves are asserted against DIFFERENT verify.sh
+# files: the derivation reads a fixture that HAS the new plan line, while the
+# guard (via run_guard_nofork) reads $_NOFORK_VERIFY — a pristine, byte-identical
+# copy of the real verify.sh — which does not. Half one shows the derivation grows
+# when verify.sh does; half two shows the guard answers NO for a leaf its
+# clauses cannot see. The PAIR — not either half — is the control: it shows the
+# sweep's two components are INDEPENDENT and CAN disagree, which is the entire
+# basis for the loop asserting anything.
+#
+# Half two does NOT show the guard reasoning about the injected line; it never
+# sees it. Taken as a statement about the guard ALONE it is the same property
+# the (c) case "PRECISION: scripts/zzz-not-emitted.sh never emitted ->
+# fast-path-safe" pins in isolation further down. It is restated here only
+# because the pair needs both halves to mean anything.
+#
+# A MINIMAL SYNTHETIC FIXTURE, not `cp scripts/verify.sh`: derive_plan_leaves
+# only GREPS its argument (it never executes it), so copying the ~3k-line real
+# file bought nothing and coupled this control to verify.sh's contents. Two
+# lines exercise the derivation identically and buy a STRONGER assertion a copy
+# could not support — on this fixture the whole derived set is the one injected
+# leaf, so exact-set equality also pins that derive_plan_leaves HONOURS its path
+# parameter instead of silently falling back to the real tree's default.
+_NEGCTL_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_NEGCTL_DIR")
+_NEGCTL_VERIFY="$_NEGCTL_DIR/verify.sh"
+cat > "$_NEGCTL_VERIFY" <<'NEGCTL_FIXTURE_EOF'
+# Synthetic plan-emission fixture (task 6296 negative control). Read, never run.
+add_tool "./scripts/zzz-unregistered-leaf.sh"
+NEGCTL_FIXTURE_EOF
+
+# Checked via a function, not `bash -c`: derive_plan_leaves is a shell function
+# of THIS shell and is not exported, so a subshell would not have it. `assert`
+# runs its command directly in this shell, so a function works as-is.
+_negctl_derivation_sees_new_leaf() {
+    [ "$(derive_plan_leaves "$_NEGCTL_VERIFY")" = "scripts/zzz-unregistered-leaf.sh" ]
+}
+assert "NEGATIVE CONTROL: derive_plan_leaves on the fixture derives EXACTLY the newly-emitted leaf (also pins that the path parameter is honoured)" \
+    _negctl_derivation_sees_new_leaf
+
+# run_guard_nofork, not run_guard: this is an exit-1 assertion and therefore the
+# forking route, which the suite header directs to the nofork helper. Safe here
+# for the documented reason — clause 4b is MONOTONE, so dropping it can only
+# turn exit 0 into exit 1, never the reverse.
+assert_exit "NEGATIVE CONTROL: the guard, reading the REAL verify.sh, does NOT consider that leaf load-bearing (exit 1)" 1 \
+    run_guard_nofork requires-full-gate scripts/zzz-unregistered-leaf.sh
 
 # (b) DIFF-SHAPE coverage, mirroring Pair A / Pair D, driven through
 # scripts/check-manifold-deps.sh -- an emitted gate that is NOT in any

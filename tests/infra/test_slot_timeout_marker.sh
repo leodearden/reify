@@ -733,13 +733,14 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # D_MEMBERS below is NO LONGER the source of truth for "which suites can leak"
 # -- task 6255 made it the BEHAVIOURAL SUBSET of the deadline-capable roster
 # Section F derives (D_ROSTER -- direct call sites, plus their transitive
-# invocation closure since task 6291). D_ROSTER also lists EIGHT static-only
+# invocation closure since task 6291). D_ROSTER also lists NINE static-only
 # members (test_run_all.sh, test_slot_event_log.sh, test_verify_semaphore_e2e.sh
-# and the five transitive members 6291 added). Their per-SITE stderr diversion
-# IS machine-checked now, by SECTION G at the end of this file (task 6278):
-# G1 proves every deadline-capable site in each of the eight diverts stderr off
-# the inherited fd 2, G3 that no member passes vacuously, and G0 that those
-# eight remain the WHOLE static-only slice as the roster grows.
+# and the six transitive members -- five from 6291, one from 7106). Their
+# per-SITE stderr diversion IS machine-checked now, by SECTION G at the end of
+# this file (task 6278): G1 proves every deadline-capable site in each of the
+# nine diverts stderr off the inherited fd 2, G3 that no member passes
+# vacuously, and G0 that those nine remain the WHOLE static-only slice as the
+# roster grows.
 # D4 deliberately stays what it is -- the SECTION-SLICED, EVIDENCE-PRESERVING
 # arm over the three behavioural D_MEMBERS. Section G asserts the weaker LEAK
 # property over whole files, and Section G's own preamble records why the two
@@ -1301,7 +1302,7 @@ echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocat
 # what used to stand here: a suite that reaches a deadline only by invoking
 # tests/infra/run_all.sh (whose pool worker calls slot_acquire with the finite
 # default REIFY_RUN_ALL_POOL_WAIT=1800, run_all.sh:1361), or by invoking
-# another suite that does, IS derived now, and five such members are declared
+# another suite that does, IS derived now, and six such members are declared
 # below. What closed it was a CAPABILITY edge grammar, not a path-MENTION
 # one. Adding a bare `run_all` alternation to F_BIND_RE/F_EXEC_RE was measured
 # and REJECTED because it got BOTH directions wrong -- it ADMITTED
@@ -1406,6 +1407,7 @@ echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocat
 # this list, so it lives next to the check rather than next to Section D's
 # unrelated behavioural machinery.
 D_ROSTER=(
+    test_infra_git_env_isolation.sh
     test_lane_x_flock.sh
     test_occt_flock_gate.sh
     test_run_all_ambient_isolation.sh
@@ -1464,10 +1466,42 @@ D_ROSTER=(
 #   including it behaviourally would force weakening that grammar for the
 #   existing three members.
 #
-#   THE FIVE TRANSITIVE MEMBERS (task 6291). None is in D_MEMBERS, so all
-#   five come out static-only and Section D's concurrent arm and its wall
+#   THE SIX TRANSITIVE MEMBERS (five from task 6291; the sixth added by task
+#   7106 and marked as such below -- the count is kept accurate rather than
+#   frozen at the task that introduced the block). None is in D_MEMBERS, so all
+#   six come out static-only and Section D's concurrent arm and its wall
 #   clock are untouched. Each is recorded with its derived ROUTE and its
 #   MEASURED leak-channel state -- the honest state, not a blanket "clean".
+#   test_infra_git_env_isolation.sh (task 7106, NOT 6291) -- bucket
+#   intra-run-serial (run-all-classification.manifest:106 -- it re-enters the
+#   infra harness twice over: arm F3 spawns a nested run_all.sh on a fixture
+#   INFRA_DIR, and arm G re-invokes test_host_global_unit_pinning.sh). That
+#   classification is the SECOND, independent reason it must stay static-only,
+#   and it is the stronger one: exactly as for test_verify_semaphore_e2e.sh
+#   below, Section D forks its members CONCURRENTLY while THIS file is bucket
+#   pool, so contending an intra-run-serial member from here would violate the
+#   run_all classification partition -- a CORRECTNESS hazard, not merely the
+#   nested-run_all wall clock it would add.
+#   Route run_all.sh (RUN_ALL bound :397, `bash "$RUN_ALL" "$F3_FIX"
+#   >/dev/null 2>&1` :444, inside arm F3's hostile-env subshell -- the
+#   end-to-end proof that a run_all.sh member spawn really is scrubbed, which
+#   F1/F2's counting arms cannot give). Measured CLEAN on the SITE channel: stdout goes to /dev/null
+#   and stderr merges into that ALREADY-diverted stdout, so neither reaches the
+#   inherited fd 2. Section G scores it 1 site / 0 unredirected, and that zero
+#   is MUTATION-TESTED rather than assumed -- dropping the `>/dev/null`,
+#   dropping both redirects, and reversing the pair to `2>&1 >/dev/null` each
+#   flip it to 1 unredirected, so it is a property of the site and not a blind
+#   spot in the scanner (this is the stdout-precondition branch of the merge
+#   rule, the same one G2d2/G2d3 pin, reached here via the `>` rather than via
+#   an enclosing `$(` or a pipe -- a fourth real shape for it).
+#   Measured CLEAN on the DESCRIPTION channel too, and for a structural reason
+#   worth stating: run_all.sh's own output is DISCARDED at the site, so no
+#   member sentinel is ever in this file's hands. The one capture F3b does
+#   interpolate ($_F3_REPORT_TEXT, assigned :448, interpolated :452) is the
+#   fixture PROBE's own report file, whose entire vocabulary this file
+#   generates itself (`LEAK <var>=<val>` :428 and `PROBE_RAN` :430, both
+#   printf'd into the probe). So this member is not a third instance of the
+#   still-open bare-variable channel recorded for the two entries below.
 #   test_run_all_clock_marker_sanitize.sh -- bucket pool; route run_all.sh
 #   (RUN_ALL bound :31, `bash "$RUN_ALL"` :96). Measured CLEAN on both
 #   channels: the child is captured to $RA_OUT_FILE (:92-96) and only
@@ -1519,11 +1553,11 @@ D_ROSTER=(
 # D_ROSTER). Produces the identical behavioural/static-only split the
 # hand-typed array previously declared verbatim: test_lane_x_flock.sh,
 # test_occt_flock_gate.sh, test_test_run_semaphore.sh (D_MEMBERS' three
-# entries) come out `behavioural`; the other EIGHT -- test_run_all.sh,
-# test_slot_event_log.sh, test_verify_semaphore_e2e.sh and the five
-# transitive members added by task 6291 -- come out `static-only`, which is
-# why growing D_ROSTER needed no edit here and left Section D's concurrent
-# arm and its wall clock untouched. See the measured justification for each
+# entries) come out `behavioural`; the other NINE -- test_run_all.sh,
+# test_slot_event_log.sh, test_verify_semaphore_e2e.sh and the six
+# transitive members (task 6291's five plus task 7106's) -- come out
+# `static-only`, which is why growing D_ROSTER needed no edit here and left
+# Section D's concurrent arm and its wall clock untouched. See the measured justification for each
 # static-only entry in the comment block above.
 D_ROSTER_MODE=()
 for _frm_entry in "${D_ROSTER[@]}"; do
@@ -2510,8 +2544,8 @@ F_FC7_DELTA_BIND="$(grep -cE '^[[:blank:]]*ACT_RUN_ALL=[^[:blank:]]*/run_all\.sh
     "$SCRIPT_DIR/test_verify_release_delta_skip.sh" 2>/dev/null || true)"
 F_FC7_DELTA_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_verify_release_delta_skip.sh)"
 # REAL-TREE NON-VACUITY PIN. run_all.sh being a DIRECT seed is what makes
-# three of the five transitive members capable at all. If it silently stopped
-# seeding, those three would vanish from the derivation -- and F1 would stay
+# four of the six transitive members capable at all. If it silently stopped
+# seeding, those four would vanish from the derivation -- and F1 would stay
 # green against a correspondingly shrunken declaration, which is exactly the
 # failure mode D4a's own non-vacuity assert exists to catch one level down.
 F_FC7_RUNALL_ROUTE="$(_f_route_of "$SCRIPT_DIR" run_all.sh)"
@@ -2575,9 +2609,9 @@ echo "=== G: every deadline-capable SITE inside a static-only roster member dive
 #
 # Section F derives the roster of deadline-capable suites; D_ROSTER_MODE splits
 # it into the three BEHAVIOURAL members Section D actually forks and contends,
-# and the EIGHT STATIC-ONLY ones it does not. For the behavioural three, D4
+# and the NINE STATIC-ONLY ones it does not. For the behavioural three, D4
 # already reads the member's SOURCE and proves the deadline-forcing invocation
-# still captures stderr. For the static-only eight, nothing did -- Section F's
+# still captures stderr. For the static-only nine, nothing did -- Section F's
 # SCOPE (1) recorded that as a deliberate, tracked gap. Section G closes it:
 # for each static-only member, EVERY deadline-capable site in the file it
 # actually execs from must divert its stderr away from the inherited fd 2.
@@ -2588,7 +2622,7 @@ echo "=== G: every deadline-capable SITE inside a static-only roster member dive
 #   needs, and `2>&1` merges the sentinel back into the stream run_all Phase 3
 #   re-emits. Those three members are the ones whose OWN failures this suite
 #   must be able to diagnose, so the stricter property is the right one there.
-#   Section G (static-only eight) asserts only the LEAK property: the
+#   Section G (static-only nine) asserts only the LEAK property: the
 #   invocation's stderr does not reach the inherited fd 2. `2>/dev/null` and a
 #   `2>&1` whose stdout is itself diverted both satisfy that, and both are
 #   shapes the real members use -- six of test_slot_event_log.sh's seven sites
@@ -2614,6 +2648,13 @@ echo "=== G: every deadline-capable SITE inside a static-only roster member dive
 # "$RUN_ALL"` or a `case` pattern. Each entry carries the member's derived
 # route and why that token IS its deadline-capable invocation.
 G_MEMBERS=(
+    # Route run_all.sh: RUN_ALL bound :397, `bash "$RUN_ALL" "$F3_FIX"
+    # >/dev/null 2>&1` :444 -- arm F3's end-to-end proof that a member spawned
+    # by the real run_all.sh comes up with the git env scrubbed. Its capture is
+    # the merge shape with stdout diverted by a `>` in the SAME segment, which
+    # is the stdout-precondition branch G2d2/G2d3 pin (measured 1 site / 0
+    # unredirected; see the mutation test recorded beside D_ROSTER_MODE).
+    test_infra_git_env_isolation.sh
     # Second-order route via test_run_all.sh (TARGET bound :93). The site that
     # must divert is NOT in this file -- see G_SCAN below.
     test_run_all_ambient_isolation.sh
@@ -2649,6 +2690,7 @@ G_MEMBERS=(
 )
 # Index-aligned with G_MEMBERS.
 G_SITE=(
+    '"\$RUN_ALL"'
     '"\$_target"'
     '"\$RUN_ALL"'
     '"\$RUN_ALL"'
@@ -2660,7 +2702,7 @@ G_SITE=(
 )
 # Index-aligned with G_MEMBERS: the file whose SOURCE actually holds that
 # member's deadline-capable invocation. EMPTY means "the member itself", which
-# is the case for seven of the eight.
+# is the case for eight of the nine.
 #
 # THE ONE INDIRECTION, and why it is not optional.
 # test_run_all_ambient_isolation.sh reaches its deadline SECOND-ORDER: TARGET is
@@ -2682,6 +2724,7 @@ G_SITE=(
 # vacuously) -- the same two guards that make the whole declared table
 # acceptable.
 G_SCAN=(
+    ''
     run_all_ambient_isolation_lib.sh
     '' '' '' '' '' '' ''
 )
@@ -2691,7 +2734,7 @@ G_SCAN=(
 # Section G's per-member checks below run off a hand-declared table (G_MEMBERS
 # and its index-aligned site targets). A hand-declared table over a DERIVED
 # roster is exactly the silent-drift shape task 6255 was filed to close, one
-# level down: Section F can start deriving a ninth static-only member and
+# level down: Section F can start deriving a tenth static-only member and
 # Section G would simply never look at it, staying green while its coverage
 # quietly stopped being total. G0 is what makes that growth LOUD -- it compares
 # the members Section G declares coverage for against the static-only slice of
@@ -3341,7 +3384,7 @@ echo "--- G3/G1: every static-only roster member, over its own source ---"
 
 for _g_i in "${!G_MEMBERS[@]}"; do
     _g_m="${G_MEMBERS[$_g_i]}"
-    # Empty G_SCAN entry means "scan the member itself" (seven of eight).
+    # Empty G_SCAN entry means "scan the member itself" (eight of nine).
     _g_f="${G_SCAN[$_g_i]:-$_g_m}"
     # Shown in both descriptions only when it differs, so a RED names the file
     # a reader must actually open. Basenames, so this stays safe to print.

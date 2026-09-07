@@ -4,10 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
-// `reify-expr` is an optional dependency enabled by `eval-helpers`; see the
-// rationale on its entry in Cargo.toml. Only the ContainmentQuery double below
-// needs it, so both the import and that double carry the same gate.
-#[cfg(feature = "eval-helpers")]
+// `reify-expr` is an optional dependency enabled by `containment-doubles`
+// (which `eval-helpers` includes); see the rationale on its entry in
+// Cargo.toml. Only the ContainmentQuery double below needs it, so both the
+// import and that double carry the same gate.
+#[cfg(feature = "containment-doubles")]
 use reify_expr::ContainmentQuery;
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
@@ -2208,7 +2209,8 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
 /// A [`ContainmentQuery`] that answers every query with a pre-programmed
 /// `Option<bool>`, ignoring the region and point it is handed.
 ///
-/// Requires the `eval-helpers` feature (which is what supplies `reify-expr`).
+/// Requires the `containment-doubles` feature (which is what supplies
+/// `reify-expr`; `eval-helpers` includes it).
 ///
 /// The trivial stub for tests that do not exercise real `restrict`/`sample`
 /// containment resolution but must still supply the capability: constructing
@@ -2229,19 +2231,17 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
 ///   `Some(false)` yields, but for a different reason — so a test that means
 ///   "outside" must say `Some(false)`, not `None`.
 ///
-/// Name, field and body are deliberately identical to the hand-rolled double
-/// in `crates/reify-expr/tests/field_op_dispatch_tests.rs`, which cannot reach
-/// this one under the `eval-helpers` gate (see the `reify-expr` entry in this
-/// crate's Cargo.toml for the measured reason the gate stays). Re-pointing
-/// that file once the gate allows it is then an import swap, not a call-site
-/// rewrite.
-#[cfg(feature = "eval-helpers")]
+/// `crates/reify-expr/tests/field_op_dispatch_tests.rs` imports this double
+/// directly (task #6322, follow-up to #6216) rather than hand-rolling its
+/// own copy — see the `reify-expr` entry in this crate's Cargo.toml for the
+/// measured reason the `containment-doubles`/`eval-helpers` split exists.
+#[cfg(feature = "containment-doubles")]
 pub struct MockContainmentQuery {
     /// The answer returned for every `(region, point)` pair.
     pub result: Option<bool>,
 }
 
-#[cfg(feature = "eval-helpers")]
+#[cfg(feature = "containment-doubles")]
 impl ContainmentQuery for MockContainmentQuery {
     fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
         self.result

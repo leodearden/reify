@@ -807,6 +807,69 @@ fn twist_is_empty_marker_structure() {
     );
 }
 
+// ─── JacobianColumn structure (task 6102) ─────────────────────────────────────
+
+/// `joint_jacobian` returns its own nominal structure, `JacobianColumn` — NOT
+/// `Twist`. A Jacobian column is the partial derivative of pose with respect to
+/// a joint coordinate (dpose/dq); a twist is a spatial velocity. The two were
+/// shape-punned onto one nominal tag; task 6102 splits them.
+///
+/// Unlike `Twist`, `JacobianColumn` DECLARES its two members, because compile-time
+/// member access is gated on a structure's declared params: against an empty
+/// marker, `joint_jacobian(rev).angular` fails with
+/// `structure 'Twist' has no member 'angular'`.
+#[test]
+fn jacobian_column_declares_angular_and_linear_params() {
+    let template = find_structure("JacobianColumn");
+    let params = param_cells(template);
+
+    let mut names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["angular", "linear"],
+        "JacobianColumn should declare exactly (angular, linear) — the two keys the \
+         runtime `Value::Map` actually carries on every joint arm"
+    );
+
+    // Both components are carried unit-tagless today: measured, every arm
+    // (prismatic / revolute / screw / gear / rack_and_pinion / cylindrical)
+    // emits a bare untagged `vec(...)`. The TRUE dpose/dq dimensions are
+    // heterogeneous across joint kinds (revolute: linear is m/rad; prismatic:
+    // angular is rad/m), so no monomorphic field type can be true for every
+    // arm — see the declaration's doc comment in kinematic.ri.
+    for param in &params {
+        assert_eq!(
+            param.cell_type,
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS
+            }),
+            "JacobianColumn.{} should be Type::vec3(Dimensionless) — the components \
+             are carried unit-tagless because dpose/dq dimensions differ per joint kind",
+            param.id.member
+        );
+    }
+
+    assert!(
+        template.trait_bounds.is_empty(),
+        "JacobianColumn should NOT conform to Joint or DrivingJoint \
+         (it is a dpose/dq partial-derivative column marker, not a joint kind \
+         and not a spatial velocity); got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    // Regression: `Twist` is NOT renamed, deleted, or repurposed by task 6102.
+    // It stays the `transform_log` / `transform_exp` type, and is the subject of
+    // the separate narrowings in tasks 6080 (angular : Vector3<Angle>) and
+    // 6126 (linear : Vector3<Length>) — narrowings that are exactly what would
+    // make the old `joint_jacobian -> Twist` claim false.
+    let twist = find_structure("Twist");
+    assert_eq!(
+        twist.name, "Twist",
+        "Twist must survive alongside JacobianColumn (transform_log / transform_exp type)"
+    );
+}
+
 // ─── Top-level types exist and do not conform ─────────────────────────────────
 
 #[test]

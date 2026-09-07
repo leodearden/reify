@@ -206,7 +206,7 @@ fn compile_isosurface_produces_realization_for_operand_and_result() {
 fn compile_mirror_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let mirrored = mirror(w, 0, 0, 0, 1, 0, 0)
+    let mirrored = mirror(w, 0mm, 0mm, 0mm, 1, 0, 0)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_mirror"));
     assert!(

@@ -103,6 +103,7 @@ test_heavy_filter_atoms.sh pool
 test_hooks_call_verify.sh pool
 test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
+test_infra_git_env_isolation.sh intra-run-serial
 test_jcodemunch_index_reify.sh pool
 test_jobserver_acceptance.sh pool
 test_jobserver_balancer.sh pool
@@ -159,6 +160,7 @@ test_reify_audit_freshness.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
+test_reify_audit_ptodo_ratchet_superset.sh pool
 test_reify_audit_ptodo_ratchet_vacuity.sh pool
 test_reify_bin_freshness.sh pool
 test_reify_overlap_deploy_smoke.sh pool
@@ -185,6 +187,7 @@ test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
 test_slot_event_log.sh pool
 test_slot_timeout_marker.sh pool
+test_smoke_predone_hook.sh pool
 test_sn_gate.sh pool
 test_spec_anchor_lint.sh pool
 test_stash_guard.sh pool

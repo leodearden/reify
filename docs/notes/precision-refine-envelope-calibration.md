@@ -64,10 +64,21 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 | torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
 | cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
 | fillet blend | `fillet_r/feature` | 0.925 | 0.49, `d/R` = 6e-4 | supremum |
+| nurbs surface | `d/span` † | 0.9975 | `d/span` = 1.2e-4 | **lower bound** |
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
 | spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound** |
 | loft | — | **no datum** | — | blocked at realization |
+
+† Two caveats, distinct from the other lower-bound rows. First, `d/span` reflects the
+committed **1000 mm × 1000 mm control net** only (§1.5) — unlike cone/torus/fillet, whose
+shape regime (`top/bottom`, `minor/major`, `r/feature`) was independently walked, this
+task scoped a d-ladder only, and the net shape itself was not walked. Second, unlike
+pipe/sweep/spline, this class is not budget-limited: an initial ladder read a fall from
+0.996 at 0.5 mm as a turnover and entered it here as a supremum, but a deeper walk
+following review found a **higher** value, 0.9975 at 0.12 mm, inside a dense, unresolved
+oscillation — so `lower bound` here means the oscillation's period was not resolved
+within this task, not that a wall was hit.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
@@ -148,7 +159,9 @@ class where the intuition "small feature ⇒ worse ratio" is backwards.
 
 Every class shows a **floor** at coarse `d`: achieved stops falling because the
 tessellator has hit its minimum facet count. Sphere is pinned at `6.006e-2` for all
-`d ≥ 50 mm`; cone is identical at 100 mm and 20 mm; torus identical at 40 mm and 20 mm.
+`d ≥ 50 mm`; cone is identical at 100 mm and 20 mm; torus identical at 40 mm and 20 mm;
+nurbs_surface identical at 400 mm, 200 mm and 100 mm (§1.5), so its topmost mandated rung
+sits inside the floor as well.
 In the floor regime `a/d < 1` **trivially**, so a coarse sweep reports a falsely
 comfortable envelope. This is the trap the non-analytic classes could not escape (§2.4).
 
@@ -159,14 +172,32 @@ comfortable envelope. This is the trap the non-analytic classes could not escape
 | sweep | `sweep(circle(100mm), interp(…))` | 10 mm | 0.534 |
 | pipe | `pipe(helix(100mm,80mm,300mm), 20mm)` | 5 mm | 0.598 |
 | spline | `sweep(circle(100mm), bezier(…))` | 20 mm | 0.013 |
+| nurbs surface | `nurbs_surface(3x3 point3 net, …)` | 0.1 mm ‡ | 0.9975 @ 0.12 mm ‡ |
+
+‡ Unlike the other three rows, 0.1 mm is not where the 90 s budget stopped this class —
+it is merely where this task stopped walking it (see Not-budget-limited below). And the
+a/d quoted is not the value at that finest rung (0.1 mm itself reads 0.934): it is the
+highest value found anywhere on the full ladder, at 0.12 mm. See the full ladder below.
 
 sweep: 100 mm 0.148 (floor) · 50 mm 0.296 (floor) · 20 mm 0.379 · **10 mm 0.534**.
 pipe (shape-shrunk): 20 mm 0.135 · 10 mm 0.258 · **5 mm 0.598**; 2 mm timed out.
 pipe (full size `pipe(helix(300mm,200mm,900mm), 60mm)`): 100 mm 0.123, 20 mm 0.580.
 spline: 100 mm 0.003 · 50 mm 0.007 · **20 mm 0.013**; 10 mm timed out.
 
-All three were still **rising** at their finest rung. Their entries in §1.1 are lower
-bounds, not suprema — see §2.4.
+Sweep, pipe and spline were each still **rising** at their finest affordable rung —
+every attempt to go finer timed out at 90 s (§0 Caveat 1), so the rung set each stops at
+is a property of the **budget**, not of these three classes. Their entries in §1.1 are
+lower bounds, not suprema — see §2.4.
+
+nurbs_surface is different again: nothing in its ladder timed out even down to 0.1 mm
+(see Not-budget-limited below), so unlike the three classes above, its rung set is not a
+property of the budget — it is affordable far past the mandated 100/50/20/10 mm spine,
+which the extended ladder below demonstrates. Its §1.1 entry is nonetheless a **lower
+bound, not a supremum**, for the opposite reason: an initial pass read a two-rung fall as
+a turnover and entered `sup K = 0.996` as confirmed, but review correctly challenged that
+call, and a deeper walk (below) found a **higher** value, 0.9975 at 0.12 mm, in a dense,
+unresolved oscillation this task did not fully resolve. Full account — the original
+reading, why review challenged it, and the amended ladder — is under "Amendment" below.
 
 Not measurable, recorded honestly:
 
@@ -222,12 +253,100 @@ measurement is identical. No commit sha is cited for that run on purpose — unt
 fixture lands it exists only on a task branch, and every amend or rebase orphans a
 branch-local sha.
 
+**Full d-ladder, measured 2026-09-01** (task #6545), reproducing the fixture above at
+twenty-two rungs from the mandated 100/50/20/10 mm spine down to 0.1 mm. Each rung was
+produced by editing `#precision(...)` in a scratch copy of the committed fixture and
+re-running `reify check`; the committed file itself stays pinned at 20 mm:
+
+| d | a (m) | a/d | note |
+|---|---|---|---|
+| 100 mm | 6.518e-2 | 0.6518 | floor |
+| 50 mm | 2.494e-2 | 0.4988 | |
+| 20 mm | 1.713e-2 | 0.8565 | |
+| 10 mm | 6.974e-3 | 0.6974 | |
+| 5 mm | 4.107e-3 | 0.8214 | |
+| 3 mm | 2.854e-3 | 0.9513 | |
+| 1 mm | 8.419e-4 | 0.8419 | |
+| 0.8 mm | 7.658e-4 | 0.9573 | |
+| 0.6 mm | 5.867e-4 | 0.9778 | |
+| 0.5 mm | 4.980e-4 | 0.9960 | initial apparent peak — superseded below |
+| 0.4 mm | 3.930e-4 | 0.9825 | |
+| 0.3 mm | 2.875e-4 | 0.9583 | |
+| 0.25 mm | 2.405e-4 | 0.9620 | |
+| 0.2 mm | 1.949e-4 | 0.9745 | |
+| 0.18 mm | 1.795e-4 | 0.9972 | |
+| 0.17 mm | 1.686e-4 | 0.9918 | |
+| 0.16 mm | 1.595e-4 | 0.9969 | |
+| 0.15 mm | 1.495e-4 | 0.9967 | |
+| 0.14 mm | 1.376e-4 | 0.9829 | |
+| 0.13 mm | 1.287e-4 | 0.9900 | |
+| **0.12 mm** | 1.197e-4 | **0.9975** | ← highest measured |
+| 0.1 mm | 9.342e-5 | 0.9342 | |
+
+The 20 mm row reproduces the `1.713e-2` excerpted above exactly, confirming this ladder
+measures the same committed fixture.
+
+**Amendment, same day, post-review.** The first pass stopped at 0.3 mm (the twelve rows
+down to there) and read the fall from 0.996 at 0.5 mm to 0.958 at 0.3 mm as a turnover,
+entering `sup K = 0.996` as a genuine supremum in §1.1 and §3.1. Review correctly
+challenged this: that two-rung fall (0.038) is smaller than the oscillation amplitude
+already visible earlier in the same ladder (0.16 between the 20 mm and 10 mm rows; 0.11
+between the 3 mm and 1 mm rows), so it cannot by itself distinguish a turnover from a
+trough — exactly the trap §1.2's sphere staircase demonstrates, where branches alternate
+between a ~0.76 and a ~2.07 band over a period of only ~0.006 mm, and a coarse sweep lands
+on one branch and misses the other entirely.
+
+Ten more rungs, 0.25 mm down to 0.1 mm, were walked to test this (all affordable — see
+Not-budget-limited below). They found a **higher** value: **0.9975 at 0.12 mm**, sitting
+in a dense, unresolved cluster of near-ties (0.9972 at 0.18 mm, 0.9969 at 0.16 mm, 0.9967
+at 0.15 mm) that alternates sharply with lower rows in between (0.9918 at 0.17 mm, 0.9829
+at 0.14 mm) — the same staircase shape as the sphere, not a clean turnover. This falsifies
+the original supremum claim directly: the true envelope is not `0.996`.
+
+Unlike the sphere, this ladder has **not** resolved the oscillation's period — the sphere
+pinned its period by dense 0.006 mm sampling bracketing a suspected peak (§1.2); the
+analogous exercise here would need sub-0.01 mm sampling that this task did not attempt. So
+the highest value actually found, 0.9975 at 0.12 mm, is presented as exactly that — the
+best lower bound this ladder reaches — and **not** as a confirmed supremum. §1.1 and §3.1
+are corrected accordingly: this class's status changes from `supremum` to `lower bound`,
+joining sweep/pipe/spline as a fourth class whose §1.1 entry is not exhaustive, but for a
+different reason: unresolved oscillation, not the 90 s budget wall.
+
+**Floor.** Achieved is pinned at `6.518e-2` for all `d ≥ 100 mm`: probed additionally at
+200 mm and 400 mm, both return the identical `6.518e-2`. The 100 mm row above sits inside
+that floor, mirroring how §1.4 phrases the sphere's pin.
+
+**Deterministic.** The original fourteen rungs (the twelve 100 mm→0.3 mm rows tabulated
+above plus the 200 mm and 400 mm floor probes) returned byte-identical achieved values
+across 3 consecutive full-ladder repetitions. The ten rungs added below 0.3 mm (0.25 mm
+down to 0.1 mm) returned byte-identical achieved values across 2 repetitions each,
+including the three highest candidates (0.18 mm, 0.16 mm, 0.12 mm). Wall clocks varied
+under load, per §0 Caveat 1; no achieved value did, at either rep count.
+
+**Not budget-limited.** No rung timed out, all the way down to 0.1 mm: one timed rep gave
+14.8 s (0.25 mm), 16.7 s (0.2 mm), 20.7 s (0.15 mm) and 40.8 s (0.1 mm) — still comfortably
+inside the 90 s wall, unlike sweep, pipe and spline above, whose ladders were cut short by
+the wall, not by the geometry. Per the 1/deflection cost scaling (§2.1), another halving
+to 0.05 mm would cost roughly 80 s and start to approach that wall — the reason this
+amendment's walk stopped at 0.1 mm rather than going finer still.
+
+**Provenance for this block** — own stamp, a different binary/HEAD/session than §0's
+identity table:
+
+| | |
+|---|---|
+| binary | `target/release/reify`, built 2026-09-01 01:27 (newer than every `crates/` commit reachable from HEAD, including the task/5784 merge `cb8b55d3fa` landed 01:08 that same morning — no rebuild needed for either the original 14-rung round or this amendment) |
+| HEAD | `01c1e3e445` (branch `task/6545`) for the original 14-rung round; `b8042b4880` (same branch, after this task's own doc commits) for the twenty-two-rung amendment — neither moves the binary |
+| kernel | OCCT 7.8 (53 `libTK*.so.7.8` linked; `has_occt` live, confirmed functionally — all 42 original runs (14 rungs × 3 reps) plus 20 amendment runs (10 new rungs × 2 reps) realized and passed the §0 Caveat-2 datum gate) |
+| machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0) |
+| load | 88.85 – 118.40 1-min loadavg across the original 3 reps; 90.65 during the amendment |
+
 `Operation::SurfaceNurbs` remains genuinely absent from `occt_capability_descriptor()`
 (`crates/reify-kernel-occt/src/register.rs`) — that fact still holds. What was wrong was
 the inference that the absence prevents realization: it resolves instead via the
 `DEFAULT_KERNEL_NAME` fallback, which is exactly how the corrected call above realizes.
-No d-ladder row exists yet for this class — one measurement is not a ladder — tracked as
-follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
+The full d-ladder for this class is recorded above and summarized in §1.1 and §3.1,
+closing out follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
 
 ### 1.6 Loft is unreachable from the source language
 
@@ -392,15 +511,28 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 | torus | 0.978 | 0 |
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
+| nurbs surface | ≥ 0.9975 † | 0 † |
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
 | loft | no datum | — |
 
 **No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
-Cap 4 covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
+nurbs_surface's highest measured value, 0.9975 (§1.1, §1.5), is the closest any class
+comes to the K = 1 boundary that would flip `required n` from 0 to 1 — and per the † note
+below it is a lower bound, not a confirmed value, so a true supremum fractionally above 1
+is not excluded. Even so this changes nothing at the cap level: `n = 1` is nowhere near
+the cap-4 budget, and no plausible reading of this class's data approaches K ≈ 16. Cap 4
+covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
 unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justified by
 **headroom**, not by a claim of exhaustive coverage.
+
+† Lower bound for a different reason than the row above: nurbs_surface is not
+budget-limited (§1.5) — every rung tried, down to 0.1 mm, completed well under the 90 s
+wall. An amendment to this task's own ladder found a higher value than an earlier apparent
+peak and left the oscillation's period unresolved, so `required n = 0` holds only while
+the true K ≤ 1; a true K fractionally above 1 would make it 1, which — as above — does not
+change §3.3's decision either way.
 
 ### 3.2 Cost
 
@@ -423,8 +555,10 @@ counting the initial pass so they are comparable:
 ### 3.3 Decision — keep the cap at 4
 
 *Buys over 3*: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the worst measured class. With
-three classes known only as lower bounds and one (loft) with no datum at all, the extra
-doubling is cheap insurance against a class this session could not reach.
+four classes known only as lower bounds (sweep, pipe, spline and nurbs_surface) and one
+(loft) with no datum at all, the extra doubling is cheap insurance against classes this
+session could not fully pin down — three by the 90 s budget wall, one (nurbs_surface) by
+an unresolved oscillation.
 
 *Costs*: worst-case ~6.0 min instead of ~2.9 min on the re-baselined sphere — a worst
 case reached only when **every** attempt fails. The measured classes converge at

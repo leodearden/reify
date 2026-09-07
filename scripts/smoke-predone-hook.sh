@@ -12,6 +12,8 @@
 #      to --help.
 #   (2.5) The env var value contains the required template tokens:
 #          --task, {id}, and --pre-done (per design §11.1).
+#   (2.6) That first token is the pre-done WRAPPER, not the raw reify-audit
+#          binary — only the wrapper runs the REFUSE-mode freshness guard.
 #   3. The fused-memory MCP endpoint at :8002 is responsive.
 #
 # Exits 0 on success (all assertions pass).
@@ -43,8 +45,11 @@ Usage: scripts/smoke-predone-hook.sh [-h|--help]
 Activation smoke test for the FUSED_MEMORY_PREDONE_HOOK_REIFY pre-done hook.
 Asserts: (1) env var set in fused-memory service, (2) binary executable,
          (2.5) env value contains --task {id} --pre-done template tokens,
+         (2.6) hook first token is reify-audit-predone-wrapper.sh (not the
+               raw binary, which bypasses the freshness guard),
          (3) fused-memory MCP endpoint responsive,
-         (4a/4b) binary round-trip with seeded fixtures (known-pass + known-fail).
+         (4a/4b) RAW binary round-trip with seeded fixtures (known-pass +
+               known-fail), against $REIFY_AUDIT_BIN rather than the hook target.
 Exits 0 on success, 1 on failure.
 USAGE
 }
@@ -58,6 +63,13 @@ SERVICE="fused-memory"
 ENV_VAR="FUSED_MEMORY_PREDONE_HOOK_REIFY"
 MCP_URL="http://localhost:8002/mcp"
 MCP_TIMEOUT=5
+
+# Raw reify-audit binary used by assertion 4's fixture round-trips. Deliberately
+# NOT derived from the hook env var — see the assertion-4 comment block below.
+# Reuses the same env-var name and default as the constants block of
+# scripts/reify-audit-predone-wrapper.sh, so operators get ONE override across
+# both scripts rather than two.
+RAW_BIN="${REIFY_AUDIT_BIN:-/home/leo/.cargo/bin/reify-audit}"
 
 # ── Assertion 1: env var is set in the live service environment ──────────────
 echo "smoke-predone-hook: checking $ENV_VAR in $SERVICE service environment..."
@@ -126,6 +138,42 @@ if [[ "$env_value" != *"--pre-done"* ]]; then
     exit 1
 fi
 
+# ── Assertion 2.6: hook first token is the WRAPPER, not the raw binary ───────
+# The hook MUST route through scripts/reify-audit-predone-wrapper.sh. Only the
+# wrapper (a) runs the REFUSE-mode freshness guard from
+# scripts/reify-audit-freshness.sh and (b) materializes the TaskMetadata
+# snapshot from the fused-memory MCP. Wiring the env var straight at
+# /home/leo/.cargo/bin/reify-audit is executable, survives --help and carries
+# every template token — so assertions 1, 2 and 2.5 all stay green while the
+# freshness guard is silently bypassed. That is exactly how the raw-binary
+# wiring shipped live, unnoticed, for ~3 months (design §11.1.3).
+#
+# Checked by BASENAME, not by absolute path: the invariant is "the hook routes
+# through the wrapper", not "which checkout hosts it" — an absolute pin would
+# false-fail if the deploy is ever repointed at a different main checkout, and
+# false-failing a gate is how a gate gets disabled. Assertion 2 above already
+# requires this same token to be executable and to survive --help, so a
+# same-named impostor cannot pass silently.
+#
+# Placed BEFORE assertion 3 so a mis-wired host fails fast without touching the
+# network, keeping the diagnostic from being buried behind a connection error.
+echo "smoke-predone-hook: checking ${ENV_VAR} first token is the pre-done wrapper..."
+
+WRAPPER_BASENAME="reify-audit-predone-wrapper.sh"
+
+if [[ "$(basename "$binary")" != "$WRAPPER_BASENAME" ]]; then
+    echo "FAIL: hook first token is not the pre-done wrapper." >&2
+    echo "      observed: $binary" >&2
+    echo "      expected a path ending in: $WRAPPER_BASENAME" >&2
+    echo "      Invoking the raw reify-audit binary directly BYPASSES the" >&2
+    echo "      REFUSE-mode freshness guard in scripts/reify-audit-freshness.sh," >&2
+    echo "      so a stale detector runs silently on every done-flip." >&2
+    echo "      Re-deploy with: bash scripts/deploy-reify-audit-predone-hook.sh" >&2
+    echo "      (idempotent; backs up the unit and re-probes end-to-end)." >&2
+    echo "      Do NOT hand-edit /home/leo/.config/systemd/user/$SERVICE.service." >&2
+    exit 1
+fi
+
 # ── Assertion 3: fused-memory MCP endpoint is responsive ─────────────────────
 echo "smoke-predone-hook: probing MCP endpoint at $MCP_URL..."
 
@@ -160,8 +208,26 @@ rm -f /tmp/smoke-predone-mcp-resp.json
 # binary (not via the wrapper) to catch re-introduction of the dead
 # .taskmaster/tasks/tasks.json default and output-format regressions.
 #
+# The target is $RAW_BIN and MUST NOT follow the hook env var, even though the
+# two were the same path historically. Routing 4a/4b through the wrapper would:
+#   - inject the wrapper's OWN --tasks-file/--runs-db/--project-root ahead of
+#     the seeded fixture's, leaving the fixture to win only by clap's last-wins
+#     argument precedence — so the round-trip would stop proving that an
+#     explicit --tasks-file is honoured, which is the whole point; and
+#   - make a self-contained fixture round-trip depend on a live fused-memory
+#     MCP, since the wrapper materializes a snapshot before invoking.
+# Assertion 2.6 above already covers the hook target's identity; this assertion
+# covers the binary's behaviour. Keeping the two decoupled is deliberate.
+#
 # Design ref: task 3731 Part B; docs/architecture-audit/f-infra-design.md §11.
 echo "smoke-predone-hook: running seeded fixture round-trips (assertions 4a, 4b)..."
+
+if [[ ! -x "$RAW_BIN" ]]; then
+    echo "FAIL (4-setup): raw reify-audit binary '$RAW_BIN' is not executable (or does not exist)." >&2
+    echo "  Install via: cargo install --path crates/reify-audit --root ~/.cargo --force" >&2
+    echo "  Override the path with REIFY_AUDIT_BIN=<path> if it lives elsewhere." >&2
+    exit 1
+fi
 
 SMOKE_TMPDIR=$(mktemp -d /tmp/smoke-predone-XXXXXX)
 trap 'rm -rf "$SMOKE_TMPDIR"' EXIT
@@ -207,7 +273,7 @@ fi
 
 # ── Sub-assertion 4a: known-pass → expect exit 0 ─────────────────────────────
 set +e
-"$binary" \
+"$RAW_BIN" \
     --task smoke-pass-99991 \
     --pre-done \
     --tasks-file "$SMOKE_TMPDIR/tasks.json" \
@@ -220,6 +286,7 @@ set -e
 
 if [[ "$pass_exit" -ne 0 ]]; then
     echo "FAIL (4a): known-pass task exited $pass_exit (expected 0)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stdout: $(cat "$SMOKE_TMPDIR/pass.stdout")" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/pass.stderr")" >&2
     exit 1
@@ -233,6 +300,7 @@ fi
 if ! awk 'BEGIN{p=0} /^\[/{p=1} p{print}' "$SMOKE_TMPDIR/pass.stderr" \
         | jq -e 'type == "array"' >/dev/null 2>&1; then
     echo "FAIL (4a): known-pass stderr trailing block is not a JSON array (output-format regression)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/pass.stderr")" >&2
     exit 1
 fi
@@ -241,7 +309,7 @@ echo "smoke-predone-hook: assertion 4a OK (known-pass → exit 0, stderr JSON ar
 
 # ── Sub-assertion 4b: known-fail → expect non-zero AND not 125 ───────────────
 set +e
-"$binary" \
+"$RAW_BIN" \
     --task smoke-fail-99992 \
     --pre-done \
     --tasks-file "$SMOKE_TMPDIR/tasks.json" \
@@ -254,6 +322,7 @@ set -e
 
 if [[ "$fail_exit" -eq 0 ]]; then
     echo "FAIL (4b): known-fail task exited 0 (expected non-zero High-finding count)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/fail.stderr")" >&2
     exit 1
 fi
@@ -261,6 +330,7 @@ fi
 if [[ "$fail_exit" -eq 125 ]]; then
     echo "FAIL (4b): known-fail task exited 125 (infrastructure error — likely missing" >&2
     echo "  --tasks-file or output-format-parser regression)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/fail.stderr")" >&2
     exit 1
 fi
@@ -268,4 +338,4 @@ fi
 echo "smoke-predone-hook: assertion 4b OK (known-fail → exit $fail_exit, not 125)"
 
 # ── All assertions passed ─────────────────────────────────────────────────────
-echo "smoke-predone-hook: OK  binary=$binary  service=active"
+echo "smoke-predone-hook: OK  hook=$binary  raw-binary=$RAW_BIN  service=active"
