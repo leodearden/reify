@@ -12347,6 +12347,66 @@ mod tests {
         }
     }
 
+    /// A realized P1 tet mesh gmsh CANNOT remesh: two DISJOINT boxes.
+    ///
+    /// The trigger for the runtime-failure arm (reviewer_comprehensive
+    /// amendment). Every earlier precondition passes — it widens (P1, stride-4,
+    /// in-range indices, so a handle IS selected), its boundary extracts
+    /// cleanly (two closed, manifold, correctly-wound shells: 72 triangles),
+    /// and it solves (both components span x in [0, 1.0], so the realized arm's
+    /// coordinate BC selection clamps and loads BOTH and the stiffness is
+    /// non-singular). Only the remesh fails, which is exactly the arm under
+    /// test: `refine_volume_with_size_field` builds ONE surface loop from the
+    /// classified dim=2 entities, and two disjoint shells do not bound one
+    /// volume. Measured here on libgmsh 4.15.2:
+    /// `RefineError::Gmsh(OperationFailed("gmshModelMeshGenerate: ierr=1
+    /// (HXT 3D mesh failed)"))`.
+    ///
+    /// The assertions below deliberately do NOT pin that message — they pin
+    /// the WIRING behaviour (Completed, the runtime-failure Warning, the
+    /// uniform-grid Info, no localized Info), so nothing here is coupled to a
+    /// gmsh version's error text. If a future gmsh learns to mesh two disjoint
+    /// shells this test reds at "expected a Warning naming the specific
+    /// reason", which correctly means THE FIXTURE stopped triggering the arm:
+    /// the fix is a new gmsh-hostile fixture, never a weakened assertion.
+    ///
+    /// A single tet was tried first and REJECTED as a fixture: gmsh does not
+    /// error on it, it HANGS (>20 minutes, measured), which would wedge the
+    /// merge gate rather than red it.
+    fn two_disjoint_boxes_tet_mesh() -> reify_ir::VolumeMesh {
+        let a = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+        let b = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+        let n_a = (a.vertices.len() / 3) as u32;
+        // Offset the second box in +y so the two never touch: a shared face or
+        // vertex would make it one component (or non-manifold), and the
+        // boundary extractor would reject it before the remesh is ever tried.
+        let mut vertices = a.vertices.clone();
+        vertices.extend(
+            b.vertices
+                .iter()
+                .enumerate()
+                .map(|(i, v)| if i % 3 == 1 { v + 0.5 } else { *v }),
+        );
+        let (
+            reify_ir::VolumeConnectivity::Tet { indices: ia, .. },
+            reify_ir::VolumeConnectivity::Tet { indices: ib, .. },
+        ) = (&a.connectivity, &b.connectivity)
+        else {
+            unreachable!("make_box_tet_volume_mesh always emits Tet connectivity")
+        };
+        let mut indices = ia.clone();
+        indices.extend(ib.iter().map(|i| i + n_a));
+        reify_ir::VolumeMesh {
+            vertices,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices,
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
     /// step-17 RED (task 4909): when the gmsh-realized lane cannot run, the
     /// solve must FALL BACK to 4902's uniform lane — never fail.
     ///
@@ -12501,6 +12561,40 @@ mod tests {
             "(b2) a Hex mesh must not reach the localized lane, got: {diags_b2:?}",
         );
 
+        // ── (c) libgmsh IS linked, but the remesh fails at RUNTIME. ──
+        //
+        // The one arm that reaches `run_uniform_lane()` AFTER the localized
+        // lane has already run and mutated `route_diagnostics`, and the arm
+        // that carries the never-regress-to-`Failed` claim in its hardest
+        // form: the lane was entered, a real gmsh call was made, and it
+        // failed mid-loop. Unreachable in a stub build, where the selector
+        // short-circuits on `GMSH_AVAILABLE` long before any remesh.
+        if reify_solver_elastic::GMSH_AVAILABLE {
+            let outcome_c =
+                run_adaptive_trampoline_outcome(&[vm_read_handle(two_disjoint_boxes_tet_mesh())]);
+            let (_, diags_c) = assert_fell_back_to_uniform(
+                outcome_c,
+                "failed at runtime",
+                "(c) runtime RefineError",
+            );
+            // What separates (c) from (a)/(b)/(d): the lane was genuinely
+            // ENTERED. None of the FOUR selector-level refusals may have
+            // fired — if one did, the fixture stopped exercising the runtime
+            // arm and the case above would be passing vacuously.
+            for refused in [
+                "libgmsh is not available",
+                "selector-resolved",
+                "could not extract a boundary surface",
+                "is not a widenable P1 tet mesh",
+            ] {
+                assert!(
+                    !diags_c.iter().any(|d| d.message.contains(refused)),
+                    "(c) the localized lane must have been ENTERED and failed at RUNTIME, \
+                     but a selector-level refusal ({refused:?}) fired instead, got: {diags_c:?}",
+                );
+            }
+        }
+
         // ── (d) The lane is gated by the RUNTIME const, not a cfg. ──
         //
         // Verified in a stub build and skipped-as-satisfied in a gmsh build:
@@ -12602,8 +12696,10 @@ mod tests {
         assert!(
             !diagnostics
                 .iter()
-                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER)),
-            "{case}: the localized lane must NOT have run, got: {diagnostics:?}",
+                .any(|d| d.severity == reify_core::Severity::Info
+                    && d.message.contains(LOCALIZED_LANE_MARKER)),
+            "{case}: the localized lane's post-loop Info must NOT have been emitted, \
+             got: {diagnostics:?}",
         );
         assert!(
             diagnostics.iter().any(|d| d.severity
