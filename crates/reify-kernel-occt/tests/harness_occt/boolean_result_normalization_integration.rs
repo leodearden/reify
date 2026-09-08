@@ -68,6 +68,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common;
 use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
 
@@ -291,5 +292,199 @@ fn fully_buried_probe_reads_zero_distance_through_fuse_derived_container() {
         d, 0.0,
         "a fully-buried probe must read distance 0 through a fuse-derived \
          container (measured RED: {BURIED_PROBE_RED_DISTANCE})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Symptom 3 — coplanar seam fragmentation in a multi-body fuse chain.
+//
+// A `rounded_box` is not a kernel primitive: the compiler desugars it
+// (`emit_rounded_union_compose`, reify-compiler geometry.rs) into a LEFT-FOLDED
+// chain of five binary fuses over two boxes and four corner cylinders. Every
+// fuse in that chain leaves the coplanar seam where its operands met, so the
+// six logical faces of the prism arrive as dozens of same-domain fragments —
+// and a bbox-based edge selector then picks up every phantom seam edge.
+// ---------------------------------------------------------------------------
+
+/// `rounded_box(width=100, depth=60, height=20, corner_r=10)`.
+const RB_WIDTH: f64 = 100.0;
+const RB_DEPTH: f64 = 60.0;
+const RB_HEIGHT: f64 = 20.0;
+const RB_CORNER_R: f64 = 10.0;
+
+/// Analytic volume of that rounded box: the plan-view area is
+/// `w*d - 4*(r² - πr²/4)` = 6000 - 4(100 - 25π) = 5914.159265 mm², times the
+/// 20 mm height. INVARIANT across the fix — unification merges faces, it never
+/// moves material — so this is a sanity guard, not the RED signal.
+const RB_VOLUME: f64 = 118283.18530717959;
+
+/// Volume after a 1 mm fillet of the 8 top-rim edges. Also invariant across the
+/// fix: the 40 phantom seam edges of the un-unified rim sweep exactly the same
+/// material as the 8 real ones (measured identical to 6 decimal places in both
+/// probe runs). Anchoring the RED signal on volume would be a FALSE GREEN.
+const RB_FILLETED_VOLUME: f64 = 118218.498221;
+
+/// Build the compiler's `rounded_box` desugar directly on the kernel: box A
+/// (`width` × `depth-2r` × `height`), box B (`width-2r` × `depth` × `height`),
+/// and four `cylinder(r, height)` corner posts translated to
+/// `(±(w/2-r), ±(d/2-r), -height/2)`, left-folded through FIVE successive
+/// `Union`s in the emitter's own order: A∪B, then ∪(+,+), (+,-), (-,+), (-,-).
+///
+/// `make_box` centres its output on the origin and `make_cylinder` grows from
+/// z=0, which is why the corner posts carry the `-height/2` dz the emitter
+/// gives them.
+fn rounded_box_fuse_chain(kernel: &mut OcctKernel) -> GeometryHandleId {
+    let body_a = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(RB_WIDTH),
+            height: Value::Real(RB_DEPTH - 2.0 * RB_CORNER_R),
+            depth: Value::Real(RB_HEIGHT),
+        })
+        .expect("rounded_box body A should build")
+        .id;
+    let body_b = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(RB_WIDTH - 2.0 * RB_CORNER_R),
+            height: Value::Real(RB_DEPTH),
+            depth: Value::Real(RB_HEIGHT),
+        })
+        .expect("rounded_box body B should build")
+        .id;
+
+    let mut acc = kernel
+        .execute(&GeometryOp::Union {
+            left: body_a,
+            right: body_b,
+        })
+        .expect("A union B should succeed")
+        .id;
+
+    // Emitter's corner order: (+,+), (+,-), (-,+), (-,-).
+    for (sx, sy) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        let post = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(RB_CORNER_R),
+                height: Value::Real(RB_HEIGHT),
+            })
+            .expect("corner cylinder should build")
+            .id;
+        let placed = translated(
+            kernel,
+            post,
+            sx * (RB_WIDTH / 2.0 - RB_CORNER_R),
+            sy * (RB_DEPTH / 2.0 - RB_CORNER_R),
+            -RB_HEIGHT / 2.0,
+        );
+        acc = kernel
+            .execute(&GeometryOp::Union {
+                left: acc,
+                right: placed,
+            })
+            .expect("corner union should succeed")
+            .id;
+    }
+    acc
+}
+
+/// Edges whose bbox z-extents BOTH sit within `tol` of `z` — the exact
+/// bbox-only predicate `reify_eval::topology_selectors::edges_at_height` uses,
+/// reproduced here so the kernel-level test measures the same thing the
+/// designer-facing selector does without depending on reify-eval.
+fn edges_at_height(
+    kernel: &mut OcctKernel,
+    shape: GeometryHandleId,
+    z: f64,
+    tol: f64,
+) -> Vec<GeometryHandleId> {
+    let edges = kernel.extract_edges(shape).expect("extract_edges");
+    edges
+        .into_iter()
+        .filter(|e| {
+            let bb = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(*e)));
+            (bb.zmin - z).abs() <= tol && (bb.zmax - z).abs() <= tol
+        })
+        .collect()
+}
+
+#[test]
+fn rounded_box_fuse_chain_unifies_to_a_ten_face_prism() {
+    let mut kernel = OcctKernel::new();
+    let body = rounded_box_fuse_chain(&mut kernel);
+
+    let faces = kernel.extract_faces(body).expect("extract_faces").len();
+    let edges = kernel.extract_edges(body).expect("extract_edges").len();
+    let volume = real_query(&kernel, GeometryQuery::Volume(body));
+
+    // Top face sits at z = +height/2; 0.5 tolerance mirrors the designer idiom
+    // `edges_at_height(body, 20mm, 0.5mm)` on the translated-up form.
+    let rim = edges_at_height(&mut kernel, body, RB_HEIGHT / 2.0, 0.5);
+    let rim_count = rim.len();
+
+    // The fillet may or may not survive the fragmented rim — the architect
+    // probe measured it SUCCEEDING with 66 faces on this fixture, and the
+    // task records symptom 3's hard failure as fixture-dependent. So record
+    // the outcome instead of asserting that today's behaviour is an error.
+    let filleted = kernel
+        .fillet_edges_with_history(body, 1.0, &rim)
+        .map(|(h, _records)| h.id);
+    let filleted_report = match filleted {
+        Ok(id) => {
+            let f = kernel.extract_faces(id).expect("extract_faces on fillet").len();
+            let v = real_query(&kernel, GeometryQuery::Volume(id));
+            format!("faces={f} volume={v:.6}")
+        }
+        Err(e) => format!("FAILED: {e:?}"),
+    };
+
+    // One combined report so a RED run shows every discriminator at once
+    // rather than stopping at the first.
+    let summary = format!(
+        "measured: fuse-chain faces={faces} edges={edges} volume={volume:.6}; \
+         rim edges selected={rim_count}; after 1mm rim fillet: {filleted_report}\n\
+         expected GREEN: faces=10 edges=24 volume={RB_VOLUME:.6}; rim=8; \
+         fillet faces=18 volume={RB_FILLETED_VOLUME:.6}\n\
+         measured RED (OCCT 7.8, un-unified): faces=50 edges=88; rim=40; fillet faces=66"
+    );
+
+    assert_eq!(
+        faces, 10,
+        "the fuse chain must unify to the prism's 10 real faces \
+         (6 planes + 4 corner cylinders); every extra face is a same-domain \
+         seam fragment left by one of the five fuses. {summary}"
+    );
+    assert_eq!(
+        edges, 24,
+        "the fuse chain must unify to the prism's 24 real edges. {summary}"
+    );
+    assert!(
+        (volume - RB_VOLUME).abs() <= 1e-3,
+        "unification must not move material — the analytic volume is invariant \
+         across the fix. {summary}"
+    );
+    assert_eq!(
+        rim_count, 8,
+        "the top rim has exactly 8 real edges (4 straight + 4 corner arcs); a \
+         larger count is the bbox selector picking up phantom seam edges — THIS \
+         is the designer-visible half of symptom 3. {summary}"
+    );
+
+    let filleted = kernel
+        .fillet_edges_with_history(body, 1.0, &rim)
+        .expect("1mm rim fillet over the unified selection must succeed")
+        .0
+        .id;
+    let filleted_faces = kernel
+        .extract_faces(filleted)
+        .expect("extract_faces on fillet")
+        .len();
+    let filleted_volume = real_query(&kernel, GeometryQuery::Volume(filleted));
+    assert_eq!(
+        filleted_faces, 18,
+        "10 unified faces + 8 rim-fillet faces = 18. {summary}"
+    );
+    assert!(
+        (filleted_volume - RB_FILLETED_VOLUME).abs() <= 1e-3,
+        "the filleted volume is IDENTICAL with and without unification — this \
+         assertion guards against material loss, it is NOT the RED signal. {summary}"
     );
 }
