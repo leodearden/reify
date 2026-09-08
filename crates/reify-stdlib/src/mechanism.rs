@@ -1468,6 +1468,11 @@ mod tests {
         );
 
         let (path_a, path_b) = only_closure_paths(&m2);
+        // Task 7186 review fix 2: this is the PIN that stops the path_a
+        // deletion from over-reaching. Review fix 2 removes the path_a pose
+        // link; the closing call's OWN pose on path_b is the correct half and
+        // must survive unchanged — it is the transform of the rigid 0-DOF tie
+        // `parent --pose--> at` that the residual now encodes.
         assert_eq!(
             path_b,
             Value::List(vec![world.clone(), j_b.clone(), expected_pose_link(&pose)]),
@@ -1586,6 +1591,73 @@ mod tests {
             path_b,
             Value::List(vec![world.clone(), j_b.clone()]),
             "path_b is unchanged — the closing call's pose is identity"
+        );
+    }
+
+    /// **Task 7186 review fix 2.** The FIRST-recorded body's pose must stay
+    /// OUT of `path_a`. This directly inverts
+    /// `first_recorded_body_pose_enters_path_a` (step-5/6), which step-12
+    /// deletes as stale.
+    ///
+    /// Why the link never belonged there. The residual constrains JOINT
+    /// frames: `path_a` descends the spanning tree and terminates at the
+    /// closing joint's OUTPUT frame. `first_body_pose(&bodies, &at)` returns
+    /// the pose of the FIRST-RECORDED body at `at` — in general a DIFFERENT
+    /// body from the closing one (in the `p4_platform` fixture it is "post2",
+    /// not "closing"). That pose places THAT body's own solid; where a third
+    /// body's solid sits has no bearing on where the two joint frames must
+    /// coincide. Composing it made chain_a's terminal a body-solid frame
+    /// while chain_b's terminal is a joint frame plus an edge offset — two
+    /// different things equated. It was inert in-tree only because every
+    /// fixture's first-recorded body carries the default identity pose.
+    ///
+    /// The single meaning that replaces it: a closing edge is a rigid 0-DOF
+    /// TIE from `parent` to `at` whose transform is the CLOSING call's own
+    /// `pose`, so the residual is `T_tree(at) == T(parent) ∘ pose` — one
+    /// pose, on `path_b`, and none on `path_a`.
+    #[test]
+    fn first_recorded_body_pose_stays_out_of_path_a() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let pose = pose_translate_1mm_x();
+
+        let m0 = eval_builtin("mechanism", &[]);
+        // First-recorded body at j_x carries a NON-identity pose — the case
+        // that previously leaked a rigid link onto path_a.
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+                pose,
+            ],
+        );
+        // Closing edge with the default identity pose.
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+
+        let (path_a, path_b) = only_closure_paths(&m2);
+        assert_eq!(
+            path_a,
+            Value::List(vec![world.clone(), j_a, j_x]),
+            "path_a must be joint-only — the first-recorded body's pose places a \
+             DIFFERENT body's solid and must not enter the joint-frame residual"
+        );
+        assert_eq!(
+            path_b,
+            Value::List(vec![world, j_b]),
+            "path_b is unchanged — the closing call's own pose is identity here"
         );
     }
 

@@ -2993,14 +2993,23 @@ mod tests {
         assert!(ty_1.abs() < 1e-6, "body 1 ty must be 0, got {ty_1}");
         assert!(tz_1.abs() < 1e-6, "body 1 tz must be 0, got {tz_1}");
 
-        // Body 3 (closing-edge, at=jX, parent=jB): the FK walk uses
-        // joint_parents (which records jX → jA), so its world transform
-        // is computed via path_a (jA + jX).  The closure constraint
-        // demands path_a's value == path_b's value within 1e-6 m;
-        // verify by comparing body 3's stored translation against the
-        // path_b expectation jB_solved + jX_value (with jX projecting
-        // onto +X via its initial frame, the translation contribution
-        // from jX is zero — its contribution is purely rotational).
+        // Body 3 (closing-edge, at=jX, parent=jB): the closure constraint
+        // demands path_a's terminal frame == path_b's within 1e-6 m; body 3's
+        // stored translation is checked against the path_b expectation
+        // jB_solved + jX_value (jX projects onto +X via its initial frame, so
+        // its translation contribution is zero — purely rotational).
+        //
+        // **Task 7186 review fix 2 — what this assertion now measures.**
+        // Before that fix the FK walk read `joint_parents` (which records
+        // jX → jA) for EVERY body, so body 3's transform came from chain_a
+        // (jA ∘ jX). Now a parent-conflict CLOSING body is composed from
+        // `body.parent` instead: T(jB) — chain_b's terminal frame, which is
+        // the frame the tie actually enforces. The 0.5 m expectation is
+        // unchanged because the two are EQUAL exactly when the closure
+        // converged, so this assertion has become a convergence CROSS-CHECK
+        // rather than a plain chain_a readback. If it ever drifts beyond
+        // 1e-6 m, the closure did not converge — diagnose that; do NOT
+        // retune the tolerance.
         let body_3 = match &bodies[3] {
             Value::Map(b) => b,
             other => panic!("expected body 3 record Map, got {:?}", other),
@@ -3330,6 +3339,57 @@ mod tests {
             (tz - 0.250).abs() < 1e-6,
             "platform tz must be 0.250 m, got {tz}"
         );
+
+        // ── task 7186 review fix 2: the OTHER two bodies ─────────────────
+        //
+        // Asserting body 0 alone is exactly the gap that hid the defect:
+        // `walk_fk` read `pose` as an offset from the body's OWN `at` frame
+        // while `append_body` wrote it into the residual as an offset from
+        // the closing edge's `parent` frame, so the closing body had its
+        // pose applied a SECOND time and landed 206.2 mm (= |(0.2, 0, 0.05)|)
+        // off the frame the solve had just enforced. Measured before the fix:
+        //   body[0] "platform" → (0.000, 0.000, 0.250)
+        //   body[1] "post2"    → (0.200, 0.000, 0.300)   ← the enforced pivot
+        //   body[2] "closing"  → (0.400, 0.000, 0.350)   ← pose applied twice
+        // Snapshot world transforms feed distance/interference queries, so
+        // that is wrong geometry, not a cosmetic difference.
+        //
+        // Derivation, exact and algebraic — not a fitted threshold. The
+        // closure enforces `T(j2, d2) == T(j1, d1) ∘ pose` with d2 = 0.300
+        // bound, giving d1 = 0.250 and a shared deck frame at
+        // (0.200, 0, 0.300). Under the single meaning now in force — a
+        // closing edge is a rigid 0-DOF TIE from `parent` to `at` — the
+        // closing body rides at `T(parent) ∘ pose`, i.e. at exactly that
+        // shared frame. So bodies 1 and 2 must COINCIDE, as a rigid tie
+        // between coincident frames must. 1e-6 m is `NewtonConfig::default()`
+        // `tol_pos_m`, the solver's own convergence tolerance.
+        const DECK: [f64; 3] = [0.200, 0.0, 0.300];
+        // body 1 "post2" (at=j2, pose=identity) — the pivot the closure
+        // enforced. Passes both before and after the fix; it is the
+        // reference frame body 2 is checked against.
+        let (_, post2) = decompose_transform_for_assert(body_world_transform(&s, 1));
+        for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+            assert!(
+                (post2[i] - DECK[i]).abs() < 1e-6,
+                "post2 t{axis} must be {} m, got {}",
+                DECK[i],
+                post2[i]
+            );
+        }
+        // body 2 "closing" — the assertion whose absence hid the defect.
+        // Under the tie reading it rides on chain_b's terminal frame
+        // `T(j1) ∘ pose`, which IS the deck frame once the closure holds.
+        let (_, closing) = decompose_transform_for_assert(body_world_transform(&s, 2));
+        for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+            assert!(
+                (closing[i] - DECK[i]).abs() < 1e-6,
+                "closing body t{axis} must be {} m (coincident with post2 — a rigid \
+                 tie), got {} (pre-fix the pose was applied twice, yielding \
+                 (0.400, 0, 0.350))",
+                DECK[i],
+                closing[i]
+            );
+        }
     }
 
     // ── Snapshot Map carries `free_values` (task 2678 step-5) ─────────────
