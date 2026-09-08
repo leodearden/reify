@@ -14,7 +14,11 @@
 //!   [`ParameterClass::Dimensional`] or [`ParameterClass::Structural`].
 //! * [`stage_a_eligible`] — the top-level predicate: `true` iff (a) the
 //!   graph shape is unchanged, (b) every differing leaf is dimensional,
-//!   and (c) no feature was added, removed, or reordered.
+//!   and (c) no feature was added, removed, or reordered. Clause (b)
+//!   described the PRD's *intent* rather than the code until task 6643:
+//!   before it, the type whitelist was applied to every differing cell,
+//!   leaf or derived. It is literally true as of that change — see
+//!   [`stage_a_eligible`]'s "# The value-diff walk is LEAF-SCOPED".
 //!
 //! ## Purity
 //!
@@ -108,6 +112,24 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    → `Dimensional`; `Type::Geometry` → `Dimensional` (task 6635, see below);
 ///    everything else → `Structural`.
 ///
+/// ## Leaf scoping lives in the walk, not here (task 6643)
+///
+/// This function still classifies a cell **in isolation**, and it still applies
+/// Rule 4 to a cell of ANY [`reify_compiler::ValueCellKind`] — so a derived
+/// (`Let`) cell of a non-whitelisted type still returns `Structural` here. That
+/// is DELIBERATE, not an oversight: task 2952's `stage_a_diff_report`
+/// diagnostic uses this function to NAME the cell that would have vetoed a
+/// tick, and a classifier that reported such a cell as `Dimensional` would lose
+/// exactly the signal the diagnostic exists to surface.
+///
+/// The composed Stage A contract is therefore NOT "run `classify_cell` over
+/// every differing cell". [`stage_a_eligible`]'s value-diff walk applies Rules
+/// 1/2/3/3b to every differing cell but consults Rule 4's whitelist only for
+/// LEAF cells (`Param` / `Auto`), per PRD line 33. Read that function's
+/// "# The value-diff walk is LEAF-SCOPED" note for the rationale, the
+/// guard-cell safety evidence, and the Stage B backstop — it is the single
+/// canonical statement of the composed contract.
+///
 /// ## Type::Geometry and Rule 4
 ///
 /// A `Type::Geometry` cell's value is *produced by realization* — a handle to a
@@ -145,6 +167,13 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// Do not read this arm as "derived cells are Dimensional"; read it as "a
 /// `Type::Geometry` value is realization output, which carries no independent
 /// structural signal".
+///
+/// That `param body: Geometry = box(...)` case is precisely why this arm stays
+/// load-bearing after task 6643's leaf scoping: such a cell IS a leaf, so
+/// [`stage_a_eligible`]'s walk still runs Rule 4 over it, and only the
+/// `Type::Geometry` whitelist entry keeps it Dimensional. Leaf scoping covers
+/// the `Let`-kind geometry cells; it does not cover this one. Do not remove the
+/// arm on the theory that 6643 subsumed it.
 ///
 /// ### Convention, not invariant: nothing forbids editing a Geometry cell
 ///
@@ -195,14 +224,26 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// `stage_a_eligible_structure_controlling_geometry_diff_returns_false` exist to
 /// catch exactly that.
 ///
-/// ### KNOWN GAP — the dormancy class is NOT closed: `List<Geometry>`
+/// ### PARTIALLY-OPEN GAP — `List<Geometry>` (#7016)
 ///
-/// This relaxation covers the BARE `Type::Geometry` variant only. Handle-LIST
-/// cells — `Type::List(Box::new(Type::Geometry))` — still fall into Rule 4's
-/// `_ => Structural` default, so for any design that uses one, Stage A still
-/// vetoes 100% of ticks exactly as it did for bare Geometry before task 6635.
-/// That is the common "fillet the selected edges" shape, so the gap is not
-/// hypothetical.
+/// The task-6635 whitelist relaxation covers the BARE `Type::Geometry` variant
+/// only. Handle-LIST cells — `Type::List(Box::new(Type::Geometry))` — still
+/// fall into Rule 4's `_ => Structural` default, so `classify_cell` still
+/// reports one as `Structural`.
+///
+/// SCOPE CORRECTION (task 6643). This note previously said Stage A "still
+/// vetoes 100% of ticks for any design that uses one". That is no longer true.
+/// [`stage_a_eligible`]'s walk consults Rule 4 only for LEAF cells, and the
+/// overwhelmingly common `List<Geometry>` shape — `let faces =
+/// adjacent_faces(...)`, a resolved selector — is `ValueCellKind::Let`, i.e.
+/// derived. Those no longer veto. What #7016 still owns is:
+///
+/// * a `Param`-kind `List<Geometry>` cell, which IS a leaf and so still meets
+///   Rule 4's whitelist and still vetoes; and
+/// * the undecided design question below — whether a change to the list's
+///   LENGTH should stay Structural.
+///
+/// Task 6643 did NOT close #7016; it removed the `Let`-kind half of its reach.
 ///
 /// Verified reach (2026-08-29): `adjacent_faces`, `shared_edges`,
 /// `siblings_of_face`, `ancestor_faces_of_edge` and `split` are typed
@@ -221,8 +262,11 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// length change should stay Structural (finer rule) or defer to Stage B like
 /// everything else (widen `classify_by_type` to
 /// `Type::List(inner) if **inner == Type::Geometry`) is a design decision that
-/// wants its own measured RED→GREEN, not a drive-by amendment. Do not read this
-/// note's absence of a fix as evidence the question was overlooked.
+/// wants its own measured RED→GREEN, not a drive-by amendment. Task 6643 left
+/// it open for the same reason: leaf scoping is orthogonal to the length
+/// question, and answering it by side effect would have been the drive-by this
+/// note warns against. Do not read this note's absence of a fix as evidence the
+/// question was overlooked.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
     // Rule 1: missing cell → Structural.
     let Some(node) = graph.value_cells.get(cell_id) else {
@@ -286,8 +330,20 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
 /// `Type::Geometry` is on the whitelist as of task 6635; the `_ => Structural`
 /// conservative default is unchanged — note in particular that
 /// `Type::List(Type::Geometry)` is still caught by it, which is a KNOWN,
-/// still-open dormancy gap. Rationale, measured evidence and that gap: the
+/// partially-open dormancy gap. Rationale, measured evidence and that gap: the
 /// `## Type::Geometry and Rule 4` note on [`classify_cell`].
+///
+/// # WHO consults this whitelist differs between the two callers (task 6643)
+///
+/// [`classify_cell`] applies it to a cell of ANY
+/// [`reify_compiler::ValueCellKind`] — it classifies a cell in isolation.
+/// [`stage_a_cell_vetoes`], the predicate [`stage_a_eligible`]'s walk actually
+/// runs, consults it only for LEAF cells (`Param` / `Auto`) and never for a
+/// derived (`Let`) cell. So "is this type on the whitelist?" and "does a
+/// differing cell of this type veto a tick?" are no longer the same question,
+/// and this function answers only the first. The two callers still share the
+/// whitelist itself, which is why it stays extracted: widening it remains a
+/// one-site edit that cannot drift between them.
 ///
 /// This is deliberately NOT a public entry point: callers must go through
 /// [`classify_cell`], which applies the `structure_controlling` /
@@ -311,43 +367,26 @@ fn classify_by_type(cell_type: &Type) -> ParameterClass {
 /// them is a performance detail:
 ///
 /// * Rules 3/3b are an O(1) set lookup instead of a linear scan (performance).
-/// * Rule 4 is **LEAF-SCOPED** (task 6643, semantics). See below.
+/// * Rule 4 is **LEAF-SCOPED** — consulted only for `ValueCellKind::Param` and
+///   `ValueCellKind::Auto`, never for a derived `Let` cell (task 6643,
+///   semantics).
 ///
-/// # Rules 1/2/3/3b are kind-agnostic BY CONSTRUCTION
+/// # Rationale lives in ONE place
 ///
-/// They are evaluated BEFORE the `node.kind` match, so a derived
-/// (`ValueCellKind::Let`) cell that is a guard, a collection count or a keyed
-/// count still vetoes. That ordering is the safety property, not a convention:
-/// the compiler's block/where `__guard_N` feature-suppression cells are
-/// constructed as `kind: Let` + `cell_type: Type::Bool`
-/// (`crates/reify-eval/src/graph.rs:599-605`, allocated in
-/// `reify-compiler/src/guards.rs:297,667,700`), so a naive "skip all `Let`
-/// cells" would make every guarded design's suppression toggles invisible to
-/// Stage A. Rule 2 firing first is what prevents that.
+/// Why Rule 4 is leaf-scoped, why Rules 1/2/3/3b must stay kind-agnostic (the
+/// compiler-guard-cell evidence), why `Auto` counts as a leaf, the Stage B
+/// backstop, and the soundness of reading `kind` from `new_graph`: all of it is
+/// the "# The value-diff walk is LEAF-SCOPED" note on [`stage_a_eligible`], the
+/// public entry point this predicate implements. Do not restate it here.
 ///
-/// # Rule 4 is consulted only for LEAF cells
+/// Two implementation facts that belong with the code rather than the contract:
 ///
-/// PRD `docs/prds/v0_3/mesh-morphing.md` line 33 scopes Stage A to **leaf**
-/// parameters ("classify each leaf parameter … the only differing leaves are
-/// dimensional"). A derived cell's value is a pure function of its upstream
-/// leaves, so it necessarily changes on every dimensional tick — running the
-/// conservative type whitelist over it vetoed 100% of ticks for any design
-/// containing one non-whitelisted derived cell. Task 6635 closed that for bare
-/// `Type::Geometry` by widening the whitelist; task 6643 closes the whole class
-/// (`StructureRef`, `List<Geometry>`, `Bool`, `String`, `Enum`, …) by scoping
-/// Rule 4 to leaves instead.
-///
-/// `ValueCellKind::Auto { .. }` counts as a LEAF: an `auto` param is a
-/// *declared* leaf whose value the constraint solver supplies, not a derived
-/// expression, so the whitelist still applies to it in full.
-///
-/// The `match` on `node.kind` is deliberately EXHAUSTIVE — no `_` arm — so a
-/// future `ValueCellKind` variant forces an explicit leaf/derived ruling here
-/// rather than silently defaulting.
-///
-/// Reading `node.kind` from `new_graph` introduces no assumption beyond the
-/// pre-existing one for `node.cell_type`: the walk runs only after the shape
-/// gate has established the two graphs are structurally identical.
+/// * The Rule 1/2/3/3b early-returns are ORDERED BEFORE the `node.kind` match.
+///   That ordering is what makes those rules kind-agnostic *by construction*
+///   rather than by convention; do not reorder it.
+/// * The `match` on `node.kind` is deliberately EXHAUSTIVE — no `_` arm — so a
+///   future `ValueCellKind` variant forces an explicit leaf/derived ruling here
+///   rather than silently defaulting.
 fn stage_a_cell_vetoes(
     graph: &EvaluationGraph,
     cell_id: &ValueCellId,
@@ -389,10 +428,67 @@ fn stage_a_cell_vetoes(
 ///
 /// 2. **Value diff** — walk the union of cell IDs in `old_values` and
 ///    `new_values`. For each cell where the old and new values differ (or the
-///    cell is present on only one side), classify it via [`classify_cell`]
-///    using `new_graph` (which equals `old_graph` structurally after the shape
-///    gate passes). A [`ParameterClass::Dimensional`] diff is allowed; any
-///    [`ParameterClass::Structural`] diff makes the edit ineligible → `false`.
+///    cell is present on only one side), ask the private `stage_a_cell_vetoes`
+///    predicate against `new_graph` (which equals `old_graph` structurally
+///    after the shape gate passes). The first vetoing cell makes the edit
+///    ineligible → `false`.
+///
+/// # The value-diff walk is LEAF-SCOPED (task 6643)
+///
+/// The walk does **not** simply run [`classify_cell`] over every differing
+/// cell. Its rules split into two groups, and the split is the whole contract:
+///
+/// * **Rules 1/2/3/3b apply to EVERY differing cell, regardless of
+///   [`reify_compiler::ValueCellKind`]** — an unknown cell, a
+///   `structure_controlling` cell, a collection count cell, a keyed-sub count
+///   cell. Kind-agnostic *by construction*: they are evaluated before the kind
+///   match, not by convention.
+/// * **Rule 4's type whitelist is consulted only for LEAF cells** —
+///   `ValueCellKind::Param` and `ValueCellKind::Auto { .. }`. This is what PRD
+///   `docs/prds/v0_3/mesh-morphing.md` line 33 actually says: "classify each
+///   **leaf parameter** … the only differing **leaves** are dimensional". A
+///   derived (`Let`) cell's value is a pure function of its upstream leaves, so
+///   it necessarily changes on every dimensional tick; classifying it by type
+///   vetoed 100% of ticks for any design holding one non-whitelisted derived
+///   cell. Task 6635 closed that for bare `Type::Geometry` by widening the
+///   whitelist; task 6643 closed the whole class — `StructureRef`,
+///   `List<Geometry>`, `Bool`, `String`, `Enum`, … — by scoping the rule.
+///
+/// `Auto { .. }` is classified as a LEAF, not as derived: an `auto` param is a
+/// *declared* leaf whose value the constraint solver supplies, not a derived
+/// expression, so the whitelist still applies to it in full.
+///
+/// ## Why this is not "skip all `Let` cells" — the evidence
+///
+/// The compiler's block/where `__guard_N` feature-suppression cells are
+/// constructed as `kind: ValueCellKind::Let` + `cell_type: Type::Bool`
+/// (`crates/reify-eval/src/graph.rs:599-605`; allocated in
+/// `reify-compiler/src/guards.rs:297,667,700`) and inserted into
+/// `structure_controlling` at the same site. A naive "skip all `Let` cells"
+/// would therefore have made every guarded design's suppression toggles
+/// invisible to Stage A — a real regression, reachable in every guarded design,
+/// not a hypothetical one. Rule 2 firing before the kind match is what prevents
+/// it; likewise a `let n = base + extra` pattern count stays Structural via
+/// Rules 3/3b. Both are pinned by
+/// `tests::stage_a_eligible_derived_let_guard_cell_diff_returns_false` and its
+/// two count-cell siblings.
+///
+/// Beyond those overrides, Stage B's persistent-naming bijection remains the
+/// net for a dimensional tick that crosses a topology threshold — PRD line 34
+/// assigns it exactly that role, and
+/// `reify_mesh_morph::eligibility::tests::morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch`
+/// demonstrates the composition.
+///
+/// ## Soundness of reading `kind` from `new_graph`
+///
+/// The walk already read `node.cell_type` from `new_graph` on the stated
+/// grounds that the two graphs are structurally identical once the shape gate
+/// passes; reading `node.kind` from the same node adds no new assumption.
+///
+/// Recorded caveat, PRE-EXISTING and unchanged by task 6643:
+/// `ValueCellNode::content_hash` is `id_hash.combine(expr_hash)` — it covers
+/// neither `kind` nor `cell_type` — so the shape gate would not by itself catch
+/// a cell whose kind or type flipped between the two graphs.
 ///
 /// # Why four arguments?
 ///
