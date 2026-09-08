@@ -427,6 +427,7 @@ gate.
      Chunk-side guards (all in that one file, cited whole on one line each):
        geometry_chunk_smoke.rs::measurement_query_family_documented_in_geometry_chunk
        geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile
+       geometry_chunk_smoke.rs::documented_measurement_arities_are_exercised_by_a_compiling_fence
 
      RUNTIME claims below (which names resolve to real numbers, and when they do not) are pinned
      separately, on the eval side:

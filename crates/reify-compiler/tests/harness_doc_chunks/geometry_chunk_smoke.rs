@@ -1971,11 +1971,12 @@ pub(crate) fn assert_cited_paths_resolve(
 
 /// Cite floors for [`cited_test_paths_in_the_chunk_resolve`].
 ///
-/// The EXACT live counts, not round numbers under them: 13 `<path>::<fn>` cites,
-/// resolving to 6 distinct `.rs` files and 4 distinct `.ri` files. The 13 are
-/// three self-cites in this file, two into `units_chunk_smoke.rs`, two into
-/// `cli_vc_clearance.rs`, one into `kernel_queries_intersects_smoke.rs` and five
-/// into `mechanism_interference_smoke.rs`.
+/// The EXACT live counts, not round numbers under them: 22 `<path>::<fn>` cites,
+/// resolving to 11 distinct `.rs` files and 6 distinct `.ri` files. Task 5581's
+/// two new sections raised all three (from 13/6/4) by citing their own chunk
+/// guards, the eval tests that pin the measurement family's runtime behaviour,
+/// and the two worked `.ri` walks a reader is sent to next. Re-measure rather
+/// than trusting this sentence — the protocol is below.
 ///
 /// WHY EXACT — a measured incident, not a principle. With the cite floor one
 /// below live, dropping trap 5's `single_body_self_pair_excluded` row left
@@ -1984,9 +1985,10 @@ pub(crate) fn assert_cited_paths_resolve(
 /// lost. Any gap between floor and live re-opens exactly that hole, which is why
 /// these track the tree rather than sitting at a round number under it.
 ///
-/// The `.ri` floor covers the four worked references (clearance_oracle,
-/// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke) a designer is sent
-/// to next; losing one is the same discoverability regression task 5389 closed.
+/// The `.ri` floor covers the six worked references (clearance_oracle,
+/// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke, and task 5581's
+/// all_queries_walk and all_topology_selectors_wiring) a designer is sent to
+/// next; losing one is the same discoverability regression task 5389 closed.
 ///
 /// RE-MEASUREMENT PROTOCOL, for every `MINIMUM_*` floor in this file and in
 /// `units_chunk_smoke.rs` — stated once, here, and cross-referenced rather than
@@ -2003,9 +2005,9 @@ pub(crate) fn assert_cited_paths_resolve(
 /// That masking is not hypothetical: it is why a first pass over these ten
 /// floors found two of the four that had gone stale, and a one-at-a-time sweep
 /// found all four.
-const MINIMUM_FN_CITES: usize = 13;
-const MINIMUM_RS_FILES: usize = 6;
-const MINIMUM_RI_FILES: usize = 4;
+const MINIMUM_FN_CITES: usize = 22;
+const MINIMUM_RS_FILES: usize = 11;
+const MINIMUM_RI_FILES: usize = 6;
 
 /// Every test the chunk cites as PINNING a runtime claim must still exist.
 ///
