@@ -86,6 +86,18 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+// How many times `morph_probe_capture_fn` has been invoked on this thread.
+// Same per-thread lifetime as `MORPH_PROBE_CAPTURED`, and read as a DELTA across
+// a build so a stale count cannot leak between phases. This is what makes "the
+// probe did not re-fire" an assertable fact rather than an inference from an
+// unchanged capture — the slot is written with `=`, so a build that never
+// dispatches the node leaves the PREVIOUS build's handle in place and reads back
+// identically to a genuine re-capture.
+#[cfg(has_gmsh)]
+thread_local! {
+    static MORPH_PROBE_INVOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Probe [`reify_eval::ComputeFn`] for the morph e2e: captures
 /// `realization_inputs` (the body's projected `RealizationReadHandle`) into
 /// [`MORPH_PROBE_CAPTURED`], then returns `Completed`. Purity-preserving — only
@@ -102,6 +114,7 @@ fn morph_probe_capture_fn(
     MORPH_PROBE_CAPTURED.with(|slot| {
         *slot.borrow_mut() = realization_inputs.to_vec();
     });
+    MORPH_PROBE_INVOCATIONS.with(|n| n.set(n.get() + 1));
     reify_eval::ComputeOutcome::Completed {
         result: reify_ir::Value::Undef,
         new_warm_state: None,
@@ -138,8 +151,8 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
     })
 }
 
-/// `cfg(has_gmsh)`: a NON-structural parameter tick morphs the prior mesh onto
-/// the new BRep, preserving connectivity, and records exactly one `morphed`.
+/// `cfg(has_gmsh)`: a NON-structural parameter tick runs the morph arm to a
+/// successful `morphed` outcome.
 ///
 /// 1. Cold `build()` → from-scratch source VolumeMesh (remesh; the attributed
 ///    path is forced on when a morph producer is registered, so it carries a
@@ -149,40 +162,36 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
 /// 3. Warm `build_snapshot()` → the morph-or-remesh arm probes the stashed
 ///    source, builds a MorphRequest over the new OCCT kernel, and the installed
 ///    producer morphs the prior mesh IN PLACE (Laplacian quick-pass for the tiny
-///    displacement) — same `tet_indices`, deformed vertices.
+///    displacement).
 ///
-/// Asserts the terminal `volume_mesh().tet_indices` are IDENTICAL across the
-/// tick (connectivity preserved — the defining property of a morph) AND
-/// `reify_mesh_morph::diagnostics::snapshot().morphed == 1` (the morph_stats RPC
-/// data source).
+/// # What this test asserts, and what it deliberately does NOT (#7332)
 ///
-/// Gated `#[ignore]` on #6637: post-task-6635 the whole eligibility chain now
-/// PASSES (Stage A and Stage B both clear, the boundary projection succeeds and
-/// the morph solve runs), but the morphed mesh hard-fails the quality gate on an
-/// element inversion and falls back to remesh, so `morphed` stays 0. See the
-/// `#[ignore]` reason below for the measured snapshot. The morph logic is
-/// otherwise validated by the reify-mesh-morph + reify-eval unit tests; this
-/// end-to-end assertion un-gates when #6637 fixes the boundary-displacement data
-/// reaching the morph solve.
+/// It asserts `reify_mesh_morph::diagnostics::snapshot().morphed == 1` — the
+/// morph_stats RPC data source, and the arm's actual end-to-end signal.
+///
+/// It does NOT compare the pre-tick and post-tick `tet_indices`, because on the
+/// `build_snapshot()` path THE CONSUMER IS NEVER RE-DISPATCHED, so there is no
+/// post-tick capture to compare against. `redispatch_geometry_consuming_compute_nodes`'
+/// Phase-1 candidate filter (`engine_build.rs:10022`) admits only compute nodes
+/// whose `realization_inputs` is still empty, and its own doc calls that "a
+/// ONE-SHOT LATCH" (`engine_build.rs:10234`). `build_snapshot()` reuses
+/// `eval_state.snapshot.graph` verbatim (`engine_build.rs:3443`) and never calls
+/// `eval()`, so the latch — set during the cold build's redispatch — closes the
+/// only dispatch surface this path has. That is task **#7332**.
+///
+/// MEASURED 2026-09-08 (release, real OCCT + gmsh): the probe fires exactly
+/// twice, BOTH inside the cold `build()` (the original `Undef`-bodied dispatch
+/// plus its redispatch), and ZERO times during the warm `build_snapshot()`,
+/// while `morphed` reaches 1. A `tet_indices` comparison across the tick would
+/// therefore read the SAME thread-local slot twice and compare the cold capture
+/// against itself — true exactly when the cold capture succeeded, and blind to
+/// every property it names. That assertion was deleted rather than kept green.
+///
+/// The invocation-count pin below records the latch as MEASURED STATE. When
+/// #7332 lands it goes RED, and the correct response is to TIGHTEN it back into
+/// a real pre-morph-vs-post-morph connectivity comparison — not to widen it.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #6637 — task 6635 fixed the Stage A Geometry-cell \
-            misclassification, so Stage A AND Stage B now both PASS, the boundary \
-            projection succeeds and the morph solve runs. The morphed mesh then \
-            fails the quality gate on an element inversion and the arm falls back \
-            to remesh, so `morphed` stays 0. MEASURED snapshot at this assertion: \
-            { morphed: 0, remeshed_quality_hard_fail: 1, \
-            ineligible_structural_change: 0, ineligible_bijection_failure: 0, \
-            ineligible_naming_error: 0, panicked: 0 }. The tick under test is a \
-            uniform single-axis box scale (width 10mm → 10.5mm), so an inverted \
-            element on this input is a real bug, not a degenerate-input artifact. \
-            Un-gates when #6637 fixes the BoundaryAssociation / \
-            boundary-displacement data reaching the morph solve so the morph \
-            survives quality_check. The morph arm itself is fully wired \
-            (engine_build.rs dispatch + source-bundle stash) and validated by the \
-            reify-mesh-morph compose_morph/register_morph_producer unit tests and \
-            the reify-eval morph_producer decision-helper tests, none of which \
-            need the real-OCCT attributed producer."]
 fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     use reify_core::ValueCellId;
     use reify_ir::{ExportFormat, Value};
@@ -213,8 +222,8 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     // BRep. Only the 4092 attributed path threads one. Plain VolumeMesh demand
     // would leave boundary == None and honestly degrade to remesh (morphed would
     // stay 0) — so this registration is what lets the morph solve run at all.
-    // The solve DOES run today; it is the resulting mesh that hard-fails the
-    // quality gate, which is what gates this test on #6637 (see the #[ignore]).
+    // The solve DOES run today and reaches `morphed == 1` (measured 2026-09-08);
+    // an earlier quality-gate hard-fail on this fixture is no longer reproducible.
     engine.register_volume_mesh_boundary_demand("test::vm-demand-probe");
     assert!(
         engine.ensure_gmsh_kernel(),
@@ -224,6 +233,7 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
 
     // Defensive clear against thread reuse.
     MORPH_PROBE_CAPTURED.with(|slot| slot.borrow_mut().clear());
+    MORPH_PROBE_INVOCATIONS.with(|n| n.set(0));
 
     // (1) Cold build → from-scratch source VolumeMesh. `build()` establishes
     //     the eval_state snapshot internally (the redispatch + a later
@@ -232,6 +242,7 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     //     compute node with non-empty realization_inputs so `build()`'s
     //     redispatch skips it (capturing nothing).
     engine.build(&compiled, ExportFormat::Step);
+    let fires_after_cold = MORPH_PROBE_INVOCATIONS.with(|n| n.get());
     let source_tets = captured_tet_indices("first build (source)");
     assert!(
         !source_tets.is_empty() && source_tets.len().is_multiple_of(4),
@@ -253,14 +264,37 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
 
     // (3) Warm rebuild → the morph arm fires.
     engine.build_snapshot(&compiled, ExportFormat::Step);
-    let morphed_tets = captured_tet_indices("warm rebuild (morphed)");
+    let fires_across_tick = MORPH_PROBE_INVOCATIONS.with(|n| n.get()) - fires_after_cold;
 
-    // Connectivity preserved: identical tet_indices is the defining property of
-    // a morph (vertices deformed in place; the topology is reused, not rebuilt).
+    // ── The #7332 latch pin ────────────────────────────────────────────────
+    //
+    // Premise first: the cold build MUST have dispatched the probe, or the
+    // delta below is trivially 0 and pins nothing. Two fires — the original
+    // `Undef`-bodied dispatch, then the post-hydration redispatch.
     assert_eq!(
-        morphed_tets, source_tets,
-        "a non-structural tick must MORPH (reuse connectivity) — the terminal \
-         tet_indices must be identical to the source, not a from-scratch remesh"
+        fires_after_cold, 2,
+        "premise: the cold build() must dispatch the probe twice (original \
+         Undef-bodied dispatch + post-hydration redispatch), else the \
+         zero-refire pin below is vacuous"
+    );
+
+    // MEASURED STATE, NOT A DESIRED CONTRACT. The one-shot Phase-1 candidate
+    // latch (engine_build.rs:10022/:10234) means build_snapshot() — which
+    // reuses eval_state.snapshot.graph verbatim and never calls eval() — has no
+    // remaining dispatch surface for this node. So the probe cannot observe the
+    // morphed mesh, and the pre/post `tet_indices` comparison this test used to
+    // make read one thread-local slot twice.
+    //
+    // WHEN #7332 LANDS THIS GOES RED. Tighten it back into a genuine
+    // pre-morph-vs-post-morph connectivity comparison (`source_tets` is still
+    // captured above for exactly that purpose) — do NOT widen it to accept a
+    // re-fire, and do NOT delete it.
+    assert_eq!(
+        fires_across_tick, 0,
+        "#7332: the redispatch candidate gate is a one-shot latch, so the warm \
+         build_snapshot() must not re-invoke the geometry-consuming @optimized \
+         consumer. A non-zero count here means #7332 landed — restore the \
+         connectivity assertion (see this test's doc comment)"
     );
     // Exactly one successful morph recorded (the morph_stats RPC data source).
     // Snapshot-bound so a failure names the BUCKET, not just `left: 0, right: 1`.
