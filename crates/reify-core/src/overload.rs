@@ -110,9 +110,13 @@ pub fn type_carries_trait_object(t: &Type) -> bool {
         Type::List(inner) => type_carries_trait_object(inner),
         Type::Set(inner) => type_carries_trait_object(inner),
         Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
-        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
-        // Added explicitly (not compiler-forced) to stay verbatim-synced with
-        // the reify-expr copy (esc-4231-120/126) and for §5 substrate correctness.
+        // Applied — recurse into type args; Projection — recurse into base.
+        // Both arms are DELIBERATE, not compiler-forced: the `_` catch-all below
+        // would silently answer `false` for them instead of failing to compile.
+        // They are required for §5 substrate correctness — drop either one and a
+        // trait object nested under an `Applied`/`Projection` stops making its
+        // param a resolution wildcard. Historical provenance (not a live
+        // instruction): task 4602 β, esc-4231-120/126.
         Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
         Type::Projection { base, .. } => type_carries_trait_object(base),
         _ => false,
