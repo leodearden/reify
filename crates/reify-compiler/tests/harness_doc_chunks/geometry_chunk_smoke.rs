@@ -943,12 +943,22 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
     // loop below would iterate zero times — GREEN, protecting nothing. The
     // sentinels additionally prove the scan reaches BOTH documented forms, not
     // just whichever fence happens to come first.
+    //
+    // FOUR, not the three this floor would need to name the new fence, because
+    // the floor was ALREADY one below live when task 5581 came to raise it: the
+    // chunk carried three ```reify fences (the length-arguments worked example,
+    // plus the FORM B and FORM A clearance examples) against a floor of two, so
+    // the FORM A fence could have been deleted wholesale and this stayed green.
+    // Set to the EXACT live count per the re-measurement protocol on
+    // [`MINIMUM_FN_CITES`] — a floor under live is the measured incident that
+    // protocol exists to prevent, not a safety margin.
     assert!(
-        fences.len() >= 2,
-        "the ```reify fence scan found only {} fence(s) in {CHUNK_PATH} — expected at least 2 \
-         (one FORM B raw-geometry example, one FORM A mechanism-snapshot example). The scan is \
-         vacuous (fence tags dropped, or the examples rewritten as untagged prose) and gives NO \
-         protection.",
+        fences.len() >= 4,
+        "the ```reify fence scan found only {} fence(s) in {CHUNK_PATH} — expected at least 4 \
+         (the length-arguments worked example, the FORM B raw-geometry clearance example, the \
+         FORM A mechanism-snapshot example, and the measurement / mass-property example). The \
+         scan is vacuous (fence tags dropped, or the examples rewritten as untagged prose) and \
+         gives NO protection.",
         fences.len()
     );
     // ALL FIVE oracle names, so coverage is symmetric. Before task 5389's
@@ -968,6 +978,14 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
     // otherwise satisfies the `min_clearance(` sentinel by itself, so deleting
     // the fence's real call would leave this green while the panic text below
     // still promised the form was compile-verified. See `strip_reify_comments`.
+    //
+    // The whole-handle measurement four join the list for a reason specific to
+    // them (task 5581): `volume`, `area` and `centroid` are the names this chunk
+    // corpus previously carried only as HAND-COMPUTED parameter arithmetic
+    // (`structures.md`'s `let volume = thickness * width * width`), so a
+    // documented call form that the compiler rejects would be indistinguishable,
+    // to a reader, from the arithmetic it is meant to replace. Requiring each
+    // inside a COMPILING fence is what makes the replacement credible.
     let code: Vec<String> = fences.iter().map(|f| strip_reify_comments(f)).collect();
     for sentinel in [
         "min_clearance(",
@@ -975,6 +993,10 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
         "interferes_with(",
         "intersects(",
         "distance(",
+        "volume(",
+        "area(",
+        "centroid(",
+        "bounding_box(",
     ] {
         assert!(
             code.iter().any(|fence| fence.contains(sentinel)),
