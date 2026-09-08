@@ -266,6 +266,19 @@ const LENGTH_GATED_EXAMPLES: &[(&str, &str)] = &[
     ("ellipse", "ellipse(10mm, 5mm)"),
 ];
 
+/// The qualifier `builtin_doc_with_length_gate_note` appends to
+/// `half_space`'s served documentation — the one row in
+/// [`LENGTH_GATED_EXAMPLES`] whose signature mixes a LENGTH-gated slot group
+/// with a legitimately dimensionless one, so the general units clause would
+/// otherwise read as covering its outward-normal args too. This is the SPOT
+/// for the qualifier's wording: both the renderer and
+/// `tests::gated_length_builtins_advertise_their_dimension_requirement` read
+/// this const, so a reword can never silently leave the test's negative arm
+/// (every non-`half_space` row must NOT carry this qualifier) passing
+/// vacuously.
+const DIMENSIONLESS_NORMAL_NOTE: &str =
+    " Its outward normal (`nx`/`ny`/`nz`) is a dimensionless direction and stays bare.";
+
 /// Render a builtin's popup documentation, appending a units clause built
 /// from the shared [`LENGTH_MIGRATION_HINT`] const for entries in
 /// [`LENGTH_GATED_EXAMPLES`]. `doc` cannot carry this baked in as a
@@ -279,11 +292,11 @@ const LENGTH_GATED_EXAMPLES: &[(&str, &str)] = &[
 /// not "is read as ... and rejected": under the gate a bare number is never
 /// actually read as metres, it is rejected outright — the 1000×-metres
 /// misreading is the historical hazard Contract C closes, so asserting both
-/// in one breath would be self-contradictory. `half_space` gets an extra
-/// qualifier because it is the one row in [`LENGTH_GATED_EXAMPLES`] whose
-/// signature mixes a LENGTH-gated slot group with a legitimately
-/// dimensionless one, so the general clause would otherwise read as
-/// covering its outward-normal args too.
+/// in one breath would be self-contradictory. `half_space` gets
+/// [`DIMENSIONLESS_NORMAL_NOTE`] appended because it is the one row in
+/// [`LENGTH_GATED_EXAMPLES`] whose signature mixes a LENGTH-gated slot group
+/// with a legitimately dimensionless one, so the general clause would
+/// otherwise read as covering its outward-normal args too.
 fn builtin_doc_with_length_gate_note(info: &BuiltinFunctionInfo) -> String {
     match LENGTH_GATED_EXAMPLES
         .iter()
@@ -291,8 +304,7 @@ fn builtin_doc_with_length_gate_note(info: &BuiltinFunctionInfo) -> String {
     {
         Some((_, example)) => {
             let qualifier = if info.name == "half_space" {
-                " Its outward normal (`nx`/`ny`/`nz`) is a dimensionless \
-                 direction and stays bare."
+                DIMENSIONLESS_NORMAL_NOTE
             } else {
                 ""
             };
@@ -1516,15 +1528,15 @@ mod tests {
             // or mis-attaching it to the wrong builtin, reds here.
             if name == "half_space" {
                 assert!(
-                    doc_text.contains("stays bare"),
-                    "{name}: served documentation should qualify that its \
-                     outward normal is dimensionless and stays bare, got: {doc_text}"
+                    doc_text.contains(DIMENSIONLESS_NORMAL_NOTE),
+                    "{name}: served documentation should contain \
+                     DIMENSIONLESS_NORMAL_NOTE, got: {doc_text}"
                 );
             } else {
                 assert!(
-                    !doc_text.contains("stays bare"),
+                    !doc_text.contains(DIMENSIONLESS_NORMAL_NOTE),
                     "{name}: served documentation should not carry \
-                     half_space's dimensionless-normal qualifier, got: {doc_text}"
+                     half_space's DIMENSIONLESS_NORMAL_NOTE qualifier, got: {doc_text}"
                 );
             }
         }
