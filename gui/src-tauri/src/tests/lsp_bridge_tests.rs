@@ -1229,12 +1229,22 @@ async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
 
 /// (n) An AWAITED sequence still observes its own edits, across the lane split.
 ///
-/// This is the cross-lane ordering guard the split must not break, and it is
-/// driven exactly as `gui/src/editor/lspClient.ts` drives it: each `invoke`
+/// This is the cross-lane ordering guard the split must not break, driven the
+/// way `gui/src/editor/lspClient.ts` drives a single request: each `invoke`
 /// awaited before the next is issued. The sequence spans BOTH destinations —
 /// `initialize` / `initialized` / `didOpen` / `didChange` travel the ordered
 /// lane, and the `hover` that reads the result travels the POOL, on a different
 /// OS thread.
+///
+/// It pins the AWAITING client, which is not the whole of the shipped app, and
+/// the scope is worth stating so this test is not read as covering more than it
+/// does: `Editor.tsx` fires `didChange` from a debounced `setTimeout` that
+/// nothing sequences on, and CodeMirror issues completion/hover/highlight from
+/// independent sources, so a real query CAN overtake a real `didChange`. That
+/// interleaving is disclosed on [`crate::large_stack::Lane`] as reachable
+/// staleness; it is deliberately not asserted here, because the only property
+/// available to assert about it — that neither answer is self-inconsistent — is
+/// weaker than what (n) already establishes and would race on the scheduler.
 ///
 /// What it pins is a happens-before that survives only because the client awaits
 /// AND because `LSP_LANE` stays single-consumer: the `didChange` job has
@@ -1597,10 +1607,11 @@ async fn an_abandoned_request_does_not_occupy_a_lane_consumer() {
 ///
 /// Not a lost notification. A lost DOCUMENT. If the queued `didOpen` is
 /// discarded, `InProcessLsp` never learns the URI exists; a subsequent
-/// `didChange` then takes `RwState::did_change`'s `didChange for unknown URI`
-/// branch and silently applies nothing
-/// (`crates/reify-lsp/src/server.rs:226`), and every query handler answers
-/// `Ok(None)` for that URI (server.rs:272, :295, :372, :395, :415). The pane
+/// `didChange` then takes `ReifyLanguageServer::did_change`'s `didChange for
+/// unknown URI` branch and silently applies nothing, and every query handler —
+/// `hover`, `goto_definition`, `completion`, `document_symbol`,
+/// `document_highlight`, `prepare_rename`, `rename`, `references` — returns
+/// `Ok(None)` from its `documents.get(&uri)` miss arm. The pane
 /// stays dark to hover, completion and diagnostics for the rest of the session,
 /// with no error anywhere. Asserting the PUBLISH (a real server-side effect)
 /// rather than "the lane recovered" is what distinguishes that outcome from a

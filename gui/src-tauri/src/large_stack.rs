@@ -141,9 +141,9 @@
 //!    an edge one — a single cursor move issues hover, `documentHighlight` and
 //!    completion against ONE uri. Measured in `reify-lsp`:
 //!    `DocumentState::parsed_module` holds a `std::sync::Mutex` across the whole
-//!    `parse_with_stdlib` call (`crates/reify-lsp/src/document.rs:65`), and
+//!    `parse_with_stdlib` call (`crates/reify-lsp/src/document.rs`), and
 //!    `DocumentStore::update` replaces the entire `DocumentState` — its parse
-//!    cache included — on every `didChange` (`document.rs:111`, the stated
+//!    cache included — on every `didChange` (same file, and the stated
 //!    invalidation point). So immediately after each keystroke that document's
 //!    cache is COLD, and the pool consumers that reach it concurrently
 //!    serialize on a blocking lock, each holding one 256 MiB consumer while
@@ -204,19 +204,22 @@
 //! Task 6517's brief predicted a shutdown edge — that a lane job outliving its
 //! runtime would hit an `unwrap`/`expect` on a `spawn_blocking` `JoinHandle` in
 //! `reify-lsp` and turn into a job panic. It was checked against the source and
-//! is REFUTED. Each of the four arms handles its `JoinError` with
-//! `tracing::error!` plus `None`: `crates/reify-lsp/src/server.rs` lines
-//! 355-361 (`goto_definition`), 489-492 (`prepare_rename`), 550-553 (`rename`)
-//! and 612-615 (`references`). There is no `unwrap` or `expect` on any of those
-//! `JoinHandle`s — the only `unwrap`-family calls anywhere in that span are two
-//! `unwrap_or_else`es on an `Option<PathBuf>` (`stdlib_path`, server.rs:322 and
-//! :464), both INSIDE a blocking closure and neither of them fallible. So the
-//! observed behaviour is: those arms log and answer `None`, and the predicted
-//! job panic does not occur.
+//! is REFUTED. In `crates/reify-lsp/src/server.rs`, each of
+//! `ReifyLanguageServer`'s `goto_definition`, `prepare_rename`, `rename` and
+//! `references` handles its `JoinError` with `tracing::error!` plus `None`.
+//! There is no `unwrap` or `expect` on any of those `JoinHandle`s — the only
+//! `unwrap`-family calls in those four bodies are `goto_definition`'s and
+//! `prepare_rename`'s `stdlib_path.unwrap_or_else(..)` on an
+//! `Option<PathBuf>`, both INSIDE a blocking closure and neither fallible. So
+//! the observed behaviour is: those arms log and answer `None`, and the
+//! predicted job panic does not occur.
 //!
-//! Recorded as the measurement it is, naming the lines, rather than as a
-//! reassurance: it is true of `reify-lsp` as of task 6517, and a future change
-//! there could make it false without anything here noticing.
+//! Cited by SYMBOL rather than by line, deliberately: these citations are what
+//! makes this section a measurement rather than a reassurance, and a line number
+//! in a file this crate does not own is invalidated by any `use` added above it,
+//! leaving the claim reading as verified when it is not. It is true of
+//! `reify-lsp` as of task 6517, and a future change there could make it false
+//! without anything here noticing.
 
 /// Stack size for the large-stack compile thread: 256 MiB.
 ///
@@ -478,13 +481,14 @@ type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 /// `reply_tx` is closed is discarded, on every lane. That is wrong for a
 /// destination carrying STATE-MUTATING work, and unrecoverably so: discarding a
 /// queued `textDocument/didOpen` means `InProcessLsp` never learns the document
-/// exists, after which `RwState::did_change` takes its `didChange for unknown
-/// URI` branch and returns without applying anything
-/// (`crates/reify-lsp/src/server.rs:226`) and every query handler answers
-/// `Ok(None)` for an unknown URI (server.rs:272, :295, :372, :395, :415). The
-/// file stays permanently dark to hover/completion/diagnostics until it is
-/// closed and reopened — a silent, unbounded loss produced by an optimisation
-/// whose entire benefit is skipping work nobody is waiting for.
+/// exists, after which `ReifyLanguageServer::did_change` takes its `didChange
+/// for unknown URI` branch and returns without applying anything, and every
+/// query handler — `hover`, `goto_definition`, `completion`, `document_symbol`,
+/// `document_highlight`, `prepare_rename`, `rename`, `references` — returns
+/// `Ok(None)` from its `documents.get(&uri)` miss arm. The file stays
+/// permanently dark to hover/completion/diagnostics until it is closed and
+/// reopened — a silent, unbounded loss produced by an optimisation whose entire
+/// benefit is skipping work nobody is waiting for.
 ///
 /// The parity argument that licensed the blanket rule does not survive contact
 /// with that: pre-task-5772 drop-cancellation could only take effect at an
@@ -718,9 +722,20 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// query may now read text older than a concurrently-processing `didChange`.
 /// That is STALENESS, never corruption — `reify-lsp`'s own `RwLock`/`Mutex`
 /// serialise the accesses for safety — and it is exactly the pre-task-5772
-/// behaviour on the multi-threaded tauri runtime. An awaited client sequence
-/// still reads its own writes, because the awaited `didChange` job has returned
-/// before the next request is submitted at all.
+/// behaviour on the multi-threaded tauri runtime.
+///
+/// A client that AWAITS each request before issuing the next still reads its own
+/// writes, because the awaited `didChange` job has returned before the next
+/// request is submitted at all (`lsp_bridge_tests`' (n)). Reify's own frontend
+/// is NOT such a client, and saying so is the difference between a disclosure
+/// and a reassurance: `gui/src/editor/Editor.tsx` fires `lspClient.didChange`
+/// from a debounced `setTimeout` with only a `.catch()` — nothing sequences on
+/// it — while completion, hover and occurrence highlights are issued by their
+/// own independent CodeMirror sources on their own triggers. So a query
+/// submitted after a debounced `didChange` CAN overtake it on the pool, and the
+/// staleness above is reachable in the shipped app rather than only in a
+/// hypothetical non-awaiting client. It self-corrects on the next request, which
+/// is why it is disclosed here rather than fixed here.
 ///
 /// One consequence of that staleness is worth naming rather than leaving
 /// implicit: `rename` returns an unversioned `WorkspaceEdit.changes` map, so a
@@ -975,20 +990,32 @@ impl Lane {
     /// total did not stop existing; the same standard says the realised bound
     /// should be observable.
     ///
-    /// # Why `Relaxed`, and why it is 0 before initialisation
+    /// # Why the read goes through the `OnceLock`, and why `Relaxed` then
+    /// suffices
     ///
     /// The store happens inside [`std::sync::OnceLock::get_or_init`]'s closure,
-    /// and the `OnceLock` itself publishes with the acquire/release pair every
-    /// reader necessarily goes through — so a caller that has obtained a
-    /// [`JobSender`] from this lane already happens-after the store, and no
-    /// stronger ordering here would add anything. A caller that has NOT called
-    /// [`Lane::sender`] reads 0, which is the truth: no consumer has started,
-    /// because the lane has not been created.
+    /// so the ONLY thing that synchronises a reader with it is that `OnceLock`'s
+    /// acquire/release pair. A bare `Relaxed` load would therefore be
+    /// well-defined but not meaningful on a thread that has never called
+    /// [`Lane::sender`]: with no happens-before against another thread's
+    /// `get_or_init`, it could report 0 for a lane whose consumers are already
+    /// running — a wrong answer that reads exactly like the true one.
+    ///
+    /// So the `get()` below is the synchronisation, not a fast path. `Some`
+    /// means this thread happens-after the initialiser, and the store precedes
+    /// that release, so the `Relaxed` load is guaranteed to observe it and no
+    /// stronger ordering here would add anything. `None` means the lane genuinely
+    /// has not been created yet, and 0 is then the truth rather than a stale
+    /// read. The accessor is therefore meaningful on ANY thread, which is what
+    /// its callers assume.
     ///
     /// Read only by tests, with the same `not(test)`-scoped `allow` and for the
     /// same stated reason as [`Lane::size`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn started(&self) -> usize {
+        if self.queue.get().is_none() {
+            return 0;
+        }
         self.started.load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -1493,10 +1520,9 @@ where
 /// `#[tauri::command]` is resolved through `InvokeResolver::respond_async` /
 /// `respond_async_serialized_inner`, and BOTH do
 /// `crate::async_runtime::spawn(async move { .. })` as a statement, DISCARDING
-/// the returned handle (`tauri-2.11.2/src/ipc/mod.rs:329` and `:375`).
-/// `tauri::async_runtime::JoinHandle` is a thin enum over
+/// the returned handle. `tauri::async_runtime::JoinHandle` is a thin enum over
 /// `tokio::task::JoinHandle` with no `Drop` impl of its own
-/// (`src/async_runtime.rs:138-160`), and dropping a tokio `JoinHandle` DETACHES
+/// (`tauri::async_runtime`), and dropping a tokio `JoinHandle` DETACHES
 /// the task rather than cancelling it. So the command future runs to completion
 /// no matter what the webview does — a closed window, a navigated-away pane, a
 /// keystroke's request superseded by the next one. That was true before task

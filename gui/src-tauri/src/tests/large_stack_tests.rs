@@ -1788,7 +1788,7 @@ fn a_pool_job_may_submit_to_another_lane() {
 // previously dropped the Tauri command's future; against the pinned `tauri`
 // 2.11.2 that premise is false. `InvokeResolver::respond_async` /
 // `respond_async_serialized_inner` both `async_runtime::spawn(..)` and discard
-// the returned handle (`src/ipc/mod.rs:329`, `:375`), and dropping a tokio
+// the returned handle, and dropping a tokio
 // `JoinHandle` detaches rather than cancels — so the command future ran to
 // completion before 5772 too. On the shipped app the only thing that closes the
 // receiver is runtime/app teardown, which is why every test below MANUFACTURES
@@ -1989,9 +1989,9 @@ async fn a_live_submission_is_still_driven() {
 ///
 /// What it stands in for is not hypothetical. The ordered LSP lane carries
 /// `textDocument/didOpen`; discarding one unrun means `InProcessLsp` never
-/// learns the document exists, `RwState::did_change` then takes its `didChange
-/// for unknown URI` branch and applies nothing, and every query handler answers
-/// `Ok(None)` for that URI. The file is permanently dark until it is closed and
+/// learns the document exists, `ReifyLanguageServer::did_change` then takes its
+/// `didChange for unknown URI` branch and applies nothing, and every query
+/// handler answers `Ok(None)` for that URI. The file is permanently dark until it is closed and
 /// reopened. `lsp_bridge_tests`' (o2) pins that end-to-end through the real
 /// composition; this pins the primitive underneath it.
 #[tokio::test]

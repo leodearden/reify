@@ -147,8 +147,8 @@ pub async fn lsp_request_impl(
 /// 6517 revisited that disclosure and found HALF of it false. Measured against
 /// the pinned `tauri` 2.11.2: an async `#[tauri::command]` is resolved by
 /// `InvokeResolver::respond_async` / `respond_async_serialized_inner`, both of
-/// which `crate::async_runtime::spawn(..)` and DISCARD the returned handle
-/// (`src/ipc/mod.rs:329`, `:375`), and dropping a tokio `JoinHandle` detaches
+/// which `crate::async_runtime::spawn(..)` and DISCARD the returned handle,
+/// and dropping a tokio `JoinHandle` detaches
 /// rather than cancels. A frontend `invoke` that is abandoned — window closed,
 /// pane navigated away, keystroke superseded — therefore did NOT stop the LSP
 /// work before task 5772 either. The command future was already detached and
@@ -254,7 +254,7 @@ pub async fn lsp_request_on_worker(
 ///
 /// Said here rather than left to read as just another read-only query. The
 /// classification is correct — `ReifyLanguageServer::rename`
-/// (`crates/reify-lsp/src/server.rs:503`) takes `state.read().await`, clones
+/// (`crates/reify-lsp/src/server.rs`) takes `state.read().await`, clones
 /// what it needs and drops the guard before its `spawn_blocking`, mutating
 /// nothing server-side — so `rename` belongs in the concurrency-safe set by
 /// this function's stated key. Its CONSEQUENCE, however, differs in kind from
@@ -281,9 +281,9 @@ pub async fn lsp_request_on_worker(
 /// The ordered lane can only guarantee that a `didChange` the server has
 /// already been HANDED is processed first. It cannot order text the server has
 /// not received — and the frontend debounces `didChange` by
-/// `EDITOR_DEBOUNCE_MS = 300` (`gui/src/editor/Editor.tsx:40`, applied at
-/// `:538`), so the client can be holding up to 300 ms of unsent edits at the
-/// moment it issues the rename. Against those the ordered lane offers nothing.
+/// `EDITOR_DEBOUNCE_MS = 300` (`gui/src/editor/Editor.tsx`, applied to the
+/// `lspClient.didChange` timer in its `updateListener`), so the client can be
+/// holding up to 300 ms of unsent edits at the moment it issues the rename. Against those the ordered lane offers nothing.
 /// Only the client-side version check closes that half, which is exactly why
 /// #7118 specifies BOTH halves and not just the server one.
 ///
@@ -311,7 +311,8 @@ pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stac
             | "textDocument/documentSymbol"
             | "textDocument/documentHighlight"
             | "textDocument/prepareRename"
-            // Read-only server-side like the rest (server.rs:503), but its
+            // Read-only server-side like the rest
+            // (`ReifyLanguageServer::rename`), but its
             // result is APPLIED rather than displayed — see "`rename` is in
             // this set, and its staleness costs more than the other seven"
             // above, and task #7118. It is here deliberately, not by
