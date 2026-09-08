@@ -24,8 +24,8 @@
 //! which share the identical criterion.
 
 use reify_solver_elastic::{
-    AnisotropicSurfaceStress, MemberKind, form_find_anchored_surfaces,
-    form_find_anchored_surfaces_aniso,
+    AnisoFormFindSolve, AnisotropicSurfaceStress, FormFindSolve, MemberKind,
+    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
 
 // ---------------------------------------------------------------------------
@@ -33,6 +33,21 @@ use reify_solver_elastic::{
 // at the cheap 8-azimuthal × 2-axial resolution) plus ring line-members so
 // `q` genuinely enters `D_ff` — a pure-membrane fixture would leave the line
 // contribution trivially zero and under-test the gauge argument.
+//
+// DUPLICATION, tracked not silent (task 6119 review): `C` / `H` /
+// `catenoid_radius` / `jitter` and the ring+triangulation body below are a
+// SECOND copy of `tensegrity_gamma_membrane_form_find.rs:56-130`, differing
+// only by the added ring members. The two copies are coupled — that file is
+// where `SURFACE_EQUILIBRIUM_REL_TOL`'s `d_scale ≈ 8.95/8.52/9.71`
+// calibration was measured, and this one is the covariance lock on the same
+// constant — so a mesh change in either silently decorrelates them.
+// WHAT BLOCKS THE COLLAPSE HERE: hoisting the mesh (to a shared `tests/`
+// module or to `reify-test-support`) is only a net win if the γ golden's copy
+// is DELETED in the same change, and that file is outside task 6119's locked
+// module set. Adding a third copy in a new shared file without removing it
+// would raise the drift surface, not lower it — the same reasoning that left
+// #6152 owning its own fixture collapse. Filed as a follow-up (agent-followup
+// escalation id `agent-followup-6119`), with both files in ITS scope.
 // ---------------------------------------------------------------------------
 
 /// Catenoid waist parameter `c` in `r(z) = c·cosh(z/c)`.
@@ -192,19 +207,28 @@ fn max_coord_rel_diff(a: &[[f64; 3]], b_ref: &[[f64; 3]]) -> f64 {
     num / (1.0 + scale)
 }
 
-/// Max relative difference between `scaled` and `λ·base`:
-/// `max|λ·base − scaled| / (1 + max|λ·base|)`. Used to check that member
-/// forces / force-density echoes / principal-stress echoes all scale by
-/// exactly `λ` under a gauge change.
+/// Max relative difference between `scaled` and `λ·base`, measured at the BASE
+/// gauge's own magnitude — `max|base − scaled/λ| / max|base|` — so the number
+/// means the same thing at every `λ`. Dividing `λ` out is exact for the
+/// power-of-two gauges used here.
+///
+/// Normalising the raw `λ·base` difference by `1 + max|λ·base|` instead would
+/// silently degrade to an ABSOLUTE check whenever `λ·base ≪ 1`: at
+/// [`LAMBDA_SMALL`] the `1 +` term dominates and [`GAUGE_REL_TOL`] would
+/// tolerate a ~4e-7 *relative* deviation, ~6 orders looser than the identical
+/// assertion at [`LAMBDA`] (task 6119 review).
+///
+/// PRECONDITION: `base` has already cleared [`assert_all_non_vacuous`], so the
+/// bare relative denominator is above [`NON_VACUOUS_FLOOR`] and cannot be zero.
+/// [`assert_scales_by_lambda`] is the only caller, and it enforces that.
 fn max_rel_diff_scaled(base: &[f64], scaled: &[f64], lambda: f64) -> f64 {
     let mut num = 0.0_f64;
     let mut scale = 0.0_f64;
     for (&nb, &ns) in base.iter().zip(scaled.iter()) {
-        let expected = lambda * nb;
-        num = num.max((expected - ns).abs());
-        scale = scale.max(expected.abs());
+        num = num.max((nb - ns / lambda).abs());
+        scale = scale.max(nb.abs());
     }
-    num / (1.0 + scale)
+    num / scale
 }
 
 /// Per-element floor below which a base-gauge quantity would make its own ×λ
@@ -229,6 +253,24 @@ fn assert_all_non_vacuous(label: &str, values: &[f64]) {
     }
 }
 
+/// Asserts `scaled` is the `lambda`-rescale of `base` to within
+/// [`GAUGE_REL_TOL`], after first proving the comparison is not vacuous. Pairs
+/// the non-vacuity guard with the check it protects so the
+/// [`max_rel_diff_scaled`] precondition cannot be forgotten at a call site.
+fn assert_scales_by_lambda(context: &str, label: &str, lambda: f64, base: &[f64], scaled: &[f64]) {
+    assert_all_non_vacuous(&format!("[{context}] {label}"), base);
+    assert_eq!(
+        base.len(),
+        scaled.len(),
+        "[{context}] {label}: both gauges must report the same element count",
+    );
+    let err = max_rel_diff_scaled(base, scaled, lambda);
+    assert!(
+        err < GAUGE_REL_TOL,
+        "[{context}] λ={lambda:e}: {label} must scale by exactly λ: rel err = {err:e}, expected < {GAUGE_REL_TOL:e}",
+    );
+}
+
 /// Floor for "the base-gauge solve actually moved off the seed geometry",
 /// comparable to [`PERTURB`] but well below it (task 6119 review). Without
 /// this check, a regression that made the convergence criterion trivially
@@ -244,6 +286,41 @@ const MIN_SOLVE_DISPLACEMENT: f64 = 1e-3;
 // Shared assertion body
 // ---------------------------------------------------------------------------
 
+/// One gauge's worth of solve outputs, as [`assert_gauge_covariant`] reads
+/// them. Naming the base and scaled runs (rather than passing six interleaved
+/// slices positionally) is what makes the two roles untransposable:
+/// [`max_rel_diff_scaled`] is NOT symmetric in `base`/`scaled`, so a silent
+/// swap would invert the assertion's meaning while still compiling
+/// (task 6119 review).
+struct GaugeRun<'a> {
+    converged: bool,
+    nodes: &'a [[f64; 3]],
+    member_forces: &'a [f64],
+    force_densities: &'a [f64],
+}
+
+impl<'a> From<&'a FormFindSolve> for GaugeRun<'a> {
+    fn from(s: &'a FormFindSolve) -> Self {
+        Self {
+            converged: s.converged,
+            nodes: &s.nodes,
+            member_forces: &s.member_forces,
+            force_densities: &s.force_densities,
+        }
+    }
+}
+
+impl<'a> From<&'a AnisoFormFindSolve> for GaugeRun<'a> {
+    fn from(s: &'a AnisoFormFindSolve) -> Self {
+        Self {
+            converged: s.converged,
+            nodes: &s.nodes,
+            member_forces: &s.member_forces,
+            force_densities: &s.force_densities,
+        }
+    }
+}
+
 /// Shared assertion body for a single gauge-covariance check: both solves
 /// converged, the base-gauge solve actually moved off the seed geometry,
 /// solved geometry agrees, and each `(label, base, scaled)` quantity in
@@ -252,38 +329,32 @@ const MIN_SOLVE_DISPLACEMENT: f64 = 1e-3;
 /// out so the four covariance tests (iso/aniso × [`LAMBDA`]/[`LAMBDA_SMALL`])
 /// share one assertion body instead of duplicating it a third and fourth time
 /// (task 6119).
-#[allow(clippy::too_many_arguments)]
 fn assert_gauge_covariant(
     context: &str,
     lambda: f64,
-    base_converged: bool,
-    scaled_converged: bool,
     seed_nodes: &[[f64; 3]],
-    base_nodes: &[[f64; 3]],
-    scaled_nodes: &[[f64; 3]],
-    base_member_forces: &[f64],
-    scaled_member_forces: &[f64],
-    base_force_densities: &[f64],
-    scaled_force_densities: &[f64],
+    base: &GaugeRun,
+    scaled: &GaugeRun,
     extra_echoes: &[(&str, &[f64], &[f64])],
 ) {
     eprintln!(
-        "[{context}] λ={lambda:e} base.converged={base_converged} scaled.converged={scaled_converged}",
+        "[{context}] λ={lambda:e} base.converged={} scaled.converged={}",
+        base.converged, scaled.converged,
     );
 
     assert!(
-        base_converged,
+        base.converged,
         "[{context}] λ={lambda:e}: base-gauge solve must converge",
     );
     assert!(
-        scaled_converged,
+        scaled.converged,
         "[{context}] λ={lambda:e}: λ-gauge solve must converge — the criterion must be gauge-invariant (task 6119)",
     );
 
     // Vacuity guard (task 6119 review): pin that the base-gauge solve
     // actually moved off the seed geometry before trusting any agreement
     // check below — see [`MIN_SOLVE_DISPLACEMENT`] for why.
-    let moved = max_coord_rel_diff(base_nodes, seed_nodes);
+    let moved = max_coord_rel_diff(base.nodes, seed_nodes);
     assert!(
         moved > MIN_SOLVE_DISPLACEMENT,
         "[{context}] λ={lambda:e}: base-gauge solve barely moved off the seed \
@@ -292,33 +363,29 @@ fn assert_gauge_covariant(
          as converged' failure mode (task 6119)",
     );
 
-    let node_err = max_coord_rel_diff(base_nodes, scaled_nodes);
+    let node_err = max_coord_rel_diff(base.nodes, scaled.nodes);
     assert!(
         node_err < GAUGE_REL_TOL,
         "[{context}] λ={lambda:e}: solved geometry must be gauge-invariant: rel err = {node_err:e}, expected < {GAUGE_REL_TOL:e}",
     );
 
-    assert_all_non_vacuous(&format!("[{context}] member_forces"), base_member_forces);
-    let force_err = max_rel_diff_scaled(base_member_forces, scaled_member_forces, lambda);
-    assert!(
-        force_err < GAUGE_REL_TOL,
-        "[{context}] λ={lambda:e}: member forces must scale by exactly λ: rel err = {force_err:e}, expected < {GAUGE_REL_TOL:e}",
+    assert_scales_by_lambda(
+        context,
+        "member_forces",
+        lambda,
+        base.member_forces,
+        scaled.member_forces,
     );
-
-    assert_all_non_vacuous(&format!("[{context}] force_densities"), base_force_densities);
-    let q_echo_err = max_rel_diff_scaled(base_force_densities, scaled_force_densities, lambda);
-    assert!(
-        q_echo_err < GAUGE_REL_TOL,
-        "[{context}] λ={lambda:e}: force_densities echo must scale by exactly λ: rel err = {q_echo_err:e}",
+    assert_scales_by_lambda(
+        context,
+        "force_densities echo",
+        lambda,
+        base.force_densities,
+        scaled.force_densities,
     );
 
     for (label, base_vals, scaled_vals) in extra_echoes {
-        assert_all_non_vacuous(&format!("[{context}] {label}"), base_vals);
-        let err = max_rel_diff_scaled(base_vals, scaled_vals, lambda);
-        assert!(
-            err < GAUGE_REL_TOL,
-            "[{context}] λ={lambda:e}: {label} echo must scale by exactly λ: rel err = {err:e}",
-        );
+        assert_scales_by_lambda(context, label, lambda, base_vals, scaled_vals);
     }
 }
 
@@ -353,17 +420,11 @@ fn check_iso_surfaces_gauge_covariance(lambda: f64) {
     assert_gauge_covariant(
         "ISO",
         lambda,
-        base.converged,
-        scaled.converged,
         &nodes,
-        &base.nodes,
-        &scaled.nodes,
-        &base.member_forces,
-        &scaled.member_forces,
-        &base.force_densities,
-        &scaled.force_densities,
+        &(&base).into(),
+        &(&scaled).into(),
         &[(
-            "surface_stresses",
+            "surface_stresses echo",
             &base.surface_stresses,
             &scaled.surface_stresses,
         )],
@@ -440,15 +501,9 @@ fn check_aniso_surfaces_gauge_covariance(lambda: f64) {
     assert_gauge_covariant(
         "ANISO",
         lambda,
-        base.converged,
-        scaled.converged,
         &nodes,
-        &base.nodes,
-        &scaled.nodes,
-        &base.member_forces,
-        &scaled.member_forces,
-        &base.force_densities,
-        &scaled.force_densities,
+        &(&base).into(),
+        &(&scaled).into(),
         &[
             ("principal major-stress", &major_base, &major_scaled),
             ("principal minor-stress", &minor_base, &minor_scaled),
