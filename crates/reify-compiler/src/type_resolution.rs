@@ -5355,59 +5355,41 @@ mod tests {
 
     // ── Orientation type-name resolution (task 6384) ─────────────────────────
     //
-    // CANONICAL RATIONALE for `resolve_type_name`'s
-    // `"Orientation" | "Orientation3"` arm. The arm comment, the tests below,
-    // the (b′) header in `tests/harness_modules_ports/standard_joint_library_tests.rs`
-    // and the note in `stdlib/joints.ri` all CITE this block instead of
-    // re-arguing it. This is the block to update if the anti-cascade gate, the
-    // resolver precedence or the lint predicate changes.
+    // Two facts about `resolve_type_name`'s `"Orientation" | "Orientation3"`
+    // arm that the tests below cannot state themselves. Everything else about
+    // the arm is in the test names and assertion messages.
     //
-    // DEFECT CHAIN IT CLOSES. `Type::Orientation(3)` was already inhabited from
-    // .ri source (the `orient_*` constructors) but had no ANNOTATION surface:
-    // `resolve_type_name("Orientation")` returned None →
-    // `resolve_type_expr_with_aliases` returns None for an unknown bare name
-    // WITHOUT a diagnostic → the DOF type becomes `Type::Error` → the §7.1
-    // verdict gate in `compile_builder::entities_phase` treats a `Type::Error`
-    // DOF as already-diagnosed, sets `skip_verdict` and emits nothing
-    // (anti-cascade). So `stdlib/joints.ri`'s `with orientation: Orientation`
-    // silently disabled the self-check, and `dof_kind_of`'s `Type::Orientation(3)`
-    // arm was unreachable from source. The silence is TOTAL — an `Orientation`
-    // DOF was byte-identical to a `Blorp` one — which is why the integration
-    // companions must use a positive/mutation oracle, never zero-diagnostics.
+    // 1. WHY THE DEFECT WAS SILENT, and so why the integration companions in
+    //    `standard_joint_library_tests.rs` use a positive/mutation oracle
+    //    rather than zero-diagnostics: an unresolved bare name returns None
+    //    from `resolve_type_expr_with_aliases` WITHOUT a diagnostic → the joint
+    //    DOF type becomes `Type::Error` → the §7.1 verdict gate in
+    //    `compile_builder::entities_phase` reads that as already-diagnosed,
+    //    sets `skip_verdict` and emits nothing (anti-cascade). So an
+    //    `Orientation` DOF was byte-identical in output to a `Blorp` one, and
+    //    `stdlib/joints.ri`'s `with orientation: Orientation` silently disabled
+    //    the self-check for every orientation-bearing joint.
     //
-    // BOTH SPELLINGS. Bare `Orientation` is what joints.ri writes, and takes
-    // arity 3 per the `"Frame" => Type::Frame(3)` precedent since
-    // `Orientation<3>` is not surface syntax (hence its exclusion from
-    // `is_parameterized_builtin_name`). `Orientation3` is accepted so the
-    // Display/resolver round-trip holds — a name copied out of a compiler
-    // message must resolve, the convention task 4577 pinned for `Transform3`.
-    // `Frame` is the sole exception, only because `Frame3` collides with the
-    // `structure Frame3` in ports.ri.
+    // 2. THE TRADE THIS ARM ACCEPTS. Like every builtin arm it SHADOWS a
+    //    same-named alias, structure def and enum: the declaration keeps
+    //    compiling but every annotation naming it changes meaning, silently at
+    //    the USE site. Accepted because nothing in any tracked .ri file binds
+    //    either spelling and the surface is load-bearing (without it the joint
+    //    DOF self-check cannot run at all); the residual exposure is
+    //    out-of-repo models, bounded by `compile_builder::reserved_name_lint`,
+    //    whose predicate is `resolve_type_name(name).is_some()` — so this arm
+    //    also WIDENED that lint onto those three declaration forms. Both halves
+    //    are pinned below, being a behaviour change rather than an accident.
     //
-    // PRECEDENCE / SHADOWING — the accepted cost. `resolve_type_with_aliases`
-    // falls through builtins → type params → alias registry → structure names →
-    // trait names (enums chain after builtin resolution via `resolve_enum_type`),
-    // so this arm wins over a same-named alias, structure def and enum alike:
-    // the declaration keeps compiling, but every annotation naming it changes
-    // meaning, silently at the USE site. Accepted on two grounds — a grep over
-    // all tracked .ri files finds nothing in stdlib or examples binding either
-    // spelling, and this surface is load-bearing (without it the joint DOF
-    // self-check cannot run at all). Residual exposure is out-of-repo user
-    // models; adding a further name here is a compatibility decision on the
-    // same terms, not a free win.
-    //
-    // LINT CONSEQUENCE. `compile_builder::reserved_name_lint` uses
-    // `resolve_type_name(name).is_some()` as its collision predicate — this
-    // function as the single source of truth — so this arm WIDENED that lint:
-    // the three declaration forms above were silent before task 6384 and draw
-    // an advisory `W_RESERVED_TYPE_NAME` from it on. Intended: it is what keeps
-    // the shadowing visible to the author, bounding the residual exposure to
-    // "an author who ignores the warning".
+    // Arity: bare `Orientation` takes 3 per the `"Frame" => Type::Frame(3)`
+    // precedent. Parameterised `Orientation<N>` is not DISTINGUISHED — the
+    // argument is discarded and any N yields `Type::Orientation(3)`, the
+    // pre-existing behaviour of every non-`is_parameterized_builtin_name` name
+    // (`Frame<7>`, `Transform3<9>`), which matters here because the language
+    // spec and stdlib reference both spell this type `Orientation<3>`.
 
-    /// (a) `resolve_type_name("Orientation")` must return `Some(Type::Orientation(3))`.
-    ///
-    /// This is the direct unit lock on the arm; the integration companions in
-    /// `standard_joint_library_tests.rs` only observe it through a whole compile.
+    /// (a) The direct unit lock on the arm; the integration companions in
+    /// `standard_joint_library_tests.rs` reach it only through a whole compile.
     #[test]
     fn resolve_type_name_recognises_orientation() {
         assert_eq!(
@@ -5417,9 +5399,8 @@ mod tests {
         );
     }
 
-    /// (b) `resolve_type_with_aliases("Orientation", …)` must inherit the builtin
-    /// arm so that `param : Orientation` and `with orientation: Orientation`
-    /// annotations resolve without a registry entry.
+    /// (b) The alias-aware entry point must inherit the builtin arm, so
+    /// annotations resolve with no registry entry.
     #[test]
     fn resolve_type_with_aliases_inherits_orientation() {
         let reg = TypeAliasRegistry::new();
@@ -5437,8 +5418,10 @@ mod tests {
         );
     }
 
-    /// (c) Display round-trip — see BOTH SPELLINGS above. Same convention
-    /// `transform3_display_matches_resolver_spelling` pins for Transform3.
+    /// (c) A name copied out of a compiler message must resolve — the
+    /// Display/resolver round-trip convention task 4577 pinned for Transform3
+    /// (`transform3_display_matches_resolver_spelling`), and the only reason
+    /// the arm carries the `Orientation3` spelling at all.
     #[test]
     fn orientation3_display_matches_resolver_spelling() {
         assert_eq!(
@@ -5454,16 +5437,10 @@ mod tests {
         );
     }
 
-    /// (d) PRECEDENCE lock — see PRECEDENCE / SHADOWING above; this test is
-    /// what makes that trade a decision on record rather than an accident. The
-    /// declaration-site half is pinned by
-    /// `orientation_declaration_draws_reserved_type_name_warning` below.
-    ///
-    /// Same shape as
-    /// `builtin_dimension_shadows_same_named_alias_with_different_dimension`
-    /// (task #5892). The `"Rotor"` negative controls stop a regression that
-    /// broke the alias or structure-name arm entirely from leaving this test
-    /// green for the wrong reason.
+    /// (d) The use-site half of trade 2 above; the declaration-site half is
+    /// `orientation_declaration_draws_reserved_type_name_warning` below. Same
+    /// shape as `builtin_dimension_shadows_same_named_alias_with_different_dimension`
+    /// (task #5892).
     #[test]
     fn builtin_orientation_shadows_same_named_alias_and_structure() {
         for spelling in ["Orientation", "Orientation3"] {
@@ -5537,12 +5514,8 @@ mod tests {
 
     /// The resolved `cell_type` of `param o` in the probe's `structure S`.
     ///
-    /// Panics with the available cells listed if the template or param is
-    /// missing, so a compile that silently dropped the declaration is
-    /// attributable rather than a bare `unwrap`. Mirrors
-    /// `reserved_name_lint_tests.rs`'s `find_template` / `find_param_cell`
-    /// pair, which pins the same "assert the ACTUAL resolved type, not just
-    /// error-absence" contract for `Direction`.
+    /// Panics with the available cells listed rather than a bare `unwrap`, so a
+    /// compile that silently dropped the declaration is attributable.
     fn probe_param_o_type(module: &crate::CompiledModule) -> &Type {
         let template = module
             .templates
@@ -5571,28 +5544,20 @@ mod tests {
             })
     }
 
-    /// (f) LINT-SURFACE consequence — see LINT CONSEQUENCE above. A behaviour
-    /// change, so pinned rather than left emergent.
+    /// (f) The declaration-site half of trade 2 above: each row asserts BOTH
+    /// that the declaration draws exactly one `ReservedTypeName` warning AND
+    /// that the annotation still resolves to the builtin — the lint is
+    /// advisory, so it must not let the user declaration win in type position.
     ///
-    /// Each row asserts both independent halves: the declaration draws exactly
-    /// one `ReservedTypeName` warning, AND the annotation still resolves to the
-    /// builtin (the lint is advisory — it must not let the user declaration win
-    /// in type position).
-    ///
-    /// HOME — tracked, not aspirational. This test and
-    /// `orientation_annotations_compile_clean` below are full-prelude COMPILE
-    /// tests living in a unit-test module, which is the wrong altitude, and
-    /// `compile_orientation_probe` / `probe_param_o_type` duplicate the shape of
-    /// `reserved_name_lint_tests.rs`'s `find_template` / `find_param_cell`. Both
-    /// belong in that file, beside
+    /// HOME. This test and `orientation_annotations_compile_clean` below are
+    /// full-prelude COMPILE tests in a unit-test module, and their two helpers
+    /// re-derive `reserved_name_lint_tests.rs`'s `find_template` /
+    /// `find_param_cell`. Both belong in that file beside
     /// `structure_named_frame_emits_reserved_type_name_warning` and
-    /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`, which
-    /// pin these same two contracts for `Frame` / `Direction`. They are here only
-    /// because that file was outside task 6384's module-lock scope. The fold-over
-    /// is FILED as a follow-up (ticket tkt_0RT78SRSYNTFC60Z0FJ9RKS448, from 6384),
-    /// which also drops both helpers; no inline `TODO(#NNNN)` cite accompanies it
-    /// because the PTODO fingerprint ratchet reds on any new marker absent from
-    /// `crates/reify-audit/ptodo-baseline.txt`, itself out of that task's scope.
+    /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`,
+    /// which pin these same contracts for `Frame` / `Direction`; they are here
+    /// only because that file was outside task 6384's module locks. The
+    /// fold-over, including deleting both helpers, is task #7196.
     #[test]
     fn orientation_declaration_draws_reserved_type_name_warning() {
         for (label, source) in [
@@ -5676,17 +5641,15 @@ mod tests {
         );
     }
 
-    /// (e) ANNOTATION-SURFACE coverage, end to end through a real compile.
+    /// (e) Annotation-surface coverage end to end through a real compile:
     /// (a)–(d) call the resolver directly and the integration companions reach
     /// it only through a joint's `with` DOF record, so a regression confined to
     /// ordinary annotation positions would otherwise go unnoticed.
     ///
-    /// Each row asserts zero Error-severity diagnostics AND that `param o`
-    /// resolves to `Type::Orientation(3)`. The second oracle is load-bearing
-    /// for the alias row: zero-errors alone would stay green if `Rot` resolved
-    /// to any wrong-but-compatible type, leaving the alias→builtin hop — the
-    /// whole point of that row — untested. (`Undef` / unused-binding warnings
-    /// are irrelevant and not filtered on.)
+    /// The resolved-type oracle is what makes the alias and `Orientation<3>`
+    /// rows mean anything: zero-errors alone stays green if either resolves to
+    /// some wrong-but-compatible type. (`Undef` / unused-binding warnings are
+    /// irrelevant and not filtered on.)
     #[test]
     fn orientation_annotations_compile_clean() {
         for (label, source) in [
@@ -5702,6 +5665,19 @@ mod tests {
                 "param annotation via a type alias bound to the name",
                 "pub type Rot = Orientation\n\
                  structure S {\n    param o : Rot = orient_identity()\n}",
+            ),
+            // The documented spelling: docs/reify-language-spec.md and
+            // docs/reify-stdlib-reference.md both write `Orientation<3>` /
+            // `Orientation<N>`, so a user copying either lands on the
+            // argument-discarding path (Arity, header above) rather than on a
+            // diagnostic. On record here, not left emergent.
+            (
+                "documented parameterised spelling — the arg is discarded",
+                "structure S {\n    param o : Orientation<3> = orient_identity()\n}",
+            ),
+            (
+                "any arity discards identically — no arity check exists",
+                "structure S {\n    param o : Orientation<7> = orient_identity()\n}",
             ),
         ] {
             let module = compile_orientation_probe(source);
