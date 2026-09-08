@@ -56,10 +56,12 @@ Harness exit codes:
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -173,33 +175,100 @@ _CACHE_HOME_OVERRIDE_ENV = "REIFY_TS_CACHE_HOME"
 def _grammar_fingerprint(repo_root: str) -> str:
     """Return a short CONTENT fingerprint of the generated grammar, or "".
 
-    Prefers the .grammar_hash.stamp that scripts/tree-sitter-generate.sh already
-    writes (a sha256 of grammar.js) — reading it keeps the cache key consistent
-    with the repo's own notion of grammar staleness and costs one 64-byte read
-    instead of a re-hash.  Falls back to hashing the generated grammar.json, and
-    to "" when neither exists.
+    Hashes the GENERATED ARTIFACT — tree-sitter-reify/src/grammar.json — and
+    nothing else.  grammar.json is what `tree-sitter parse` actually compiles,
+    and every generator rewrites it.
 
-    Never raises.  A lane that has not generated the grammar (parser.c is
-    gitignored and absent in a fresh warm lane) must still get a cache path:
-    grammar_substrate_usable() runs at test-harness import time, where an
+    DELIBERATELY NOT src/.grammar_hash.stamp, which an earlier revision of this
+    function preferred for its cheaper 64-byte read.  That stamp is written ONLY
+    by scripts/tree-sitter-generate.sh.  tree-sitter-reify/build.rs regenerates
+    the grammar through its own run_tree_sitter_generate() — a direct
+    `tree-sitter generate` — and writes its staleness stamp to $OUT_DIR instead,
+    never refreshing src/.grammar_hash.stamp.  So the ordinary sequence
+    `edit grammar.js` -> `cargo build` -> run the PRD gate rewrites parser.c and
+    grammar.json while leaving a STALE stamp behind, which would leave the cache
+    key unchanged and hand this lane the reify.so compiled from the PREVIOUS
+    grammar.  That is precisely the stale hit this key exists to make impossible
+    — and it cannot be left to tree-sitter's own mtime backstop, since warm-lane
+    seeding stamps mtimes (see _grammar_cache_home).  Hashing the artifact
+    removes a branch rather than adding one.
+
+    Cost is a sha256 over ~170 KB (sub-millisecond), against a subprocess launch.
+
+    Returns "" when grammar.json does not exist.  Never raises: a lane that has
+    not generated the grammar (parser.c and grammar.json are gitignored, and so
+    absent in a fresh warm lane) must still get a cache path, because
+    grammar_substrate_usable() runs at test-harness import time where an
     exception costs the whole suite instead of one skip.  Only OSError is
     swallowed, so a genuine programming error still surfaces.
     """
     src = os.path.join(repo_root, "tree-sitter-reify", "src")
 
     try:
-        with open(os.path.join(src, ".grammar_hash.stamp")) as fh:
-            stamp = fh.read().strip()
-        if stamp:
-            return stamp
-    except OSError:
-        pass
-
-    try:
         with open(os.path.join(src, "grammar.json"), "rb") as fh:
             return hashlib.sha256(fh.read()).hexdigest()
     except OSError:
         return ""
+
+
+def _assert_cache_dir_trustworthy(path: str) -> None:
+    """Raise unless `path` is a directory we own that nobody else can write.
+
+    WHY THIS IS NOT PARANOIA.  The DERIVED cache lives at a fully PREDICTABLE
+    path in world-writable /tmp, and `tree-sitter parse` LOADS AND EXECUTES
+    <cache>/tree-sitter/lib/reify.so out of it.  os.makedirs(exist_ok=True)
+    silently accepts a directory another uid pre-created, so without this check a
+    foreign uid could plant its own reify.so at the derived path and this gate
+    would dlopen it.  The sibling case — the path pre-created as a plain FILE —
+    is already fail-closed because makedirs raises FileExistsError; this closes
+    the strictly worse DIRECTORY case with the same disposition.
+
+    Three dispositions, in order:
+      * NOT A DIRECTORY by lstat — notably a SYMLINK, even one resolving to a
+        directory we do own.  RAISE: a symlink is exactly how the ownership check
+        below would otherwise be aimed at a dir the attacker cannot write but can
+        point at.
+      * OWNED BY ANOTHER UID — RAISE.  Not repairable: we cannot chown it, and
+        whatever is already inside it is untrusted.
+      * OURS BUT GROUP/OTHER-WRITABLE — REPAIRED in place with chmod 0o700, then
+        re-checked.  Repair rather than raise because this host's default umask
+        is 0002, so every cache dir created before this check existed is 0775; a
+        bare raise there would wedge an existing lane's gate rather than protect
+        it.
+
+    Applies to the DERIVED dir only.  A REIFY_TS_CACHE_HOME override is an
+    operator's deliberate choice of dir — possibly a shared one — and is left
+    alone; the operator owns that decision.
+
+    Raises OSError, which run_probe() already represents as exit 127 +
+    _BINARY_NOT_FOUND_SENTINEL: the same fail-closed, loud outcome as the
+    uncreatable-derived-dir case, and never a silent degradation to the ambient
+    host-global cache.
+    """
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise NotADirectoryError(
+            errno.ENOTDIR,
+            "grammar cache path is not a directory (a symlink?); refusing to "
+            "load a compiled grammar out of it",
+            path,
+        )
+    if st.st_uid != os.getuid():
+        raise PermissionError(
+            errno.EACCES,
+            f"grammar cache directory is owned by uid {st.st_uid}, not "
+            f"uid {os.getuid()}; refusing to load a compiled grammar out of it",
+            path,
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        os.chmod(path, 0o700)
+        if os.lstat(path).st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise PermissionError(
+                errno.EACCES,
+                "grammar cache directory stayed group/other-writable after "
+                "chmod 0o700; refusing to load a compiled grammar out of it",
+                path,
+            )
 
 
 def _grammar_cache_home(repo_root: str) -> str:
@@ -223,14 +292,24 @@ def _grammar_cache_home(repo_root: str) -> str:
         trustworthy in this pool; a content-derived key makes a changed grammar
         a NEW directory by construction rather than a stale hit.
 
-    Stable rather than per-process, so the cold reify.so compile (~2s measured)
-    is amortised across every probe in a process and every process in a lane.
-    Under $TMPDIR, which reify's landlock grants wholesale, and which
-    systemd-tmpfiles age-cleaning garbage-collects.
+    Stable rather than per-process, so the cold reify.so compile (measured on
+    this host at 1.7-1.9 s, against ~0.01 s warm) is amortised across every probe
+    in a process and every process in a lane.
 
-    Deliberately NOT memoized: the cost is one 64-byte read plus a sha256 of a
-    short string — microseconds against a subprocess launch — while an
-    lru_cache would go stale within a process if the grammar were regenerated.
+    Under $TMPDIR, which reify's landlock grants wholesale.  GARBAGE COLLECTION
+    is systemd's, not this repo's, and the rule was verified rather than assumed:
+    /usr/lib/tmpfiles.d/tmp.conf carries `D /tmp 1777 root root 30d` and
+    systemd-tmpfiles-clean.timer is active here (checked 2026-09-08, when 38 such
+    dirs existed host-wide, the oldest 9 days old — i.e. inside the window, not
+    accumulating past it).  Growth is bounded at one dir per
+    (lane x grammar revision).  A self-GC pass over sibling dirs was considered
+    and rejected: sibling keys are opaque hashes, and deleting one races a
+    concurrent process in the same lane that may be compiling into it.
+
+    Deliberately NOT memoized: the cost is a sha256 over the ~170 KB grammar.json
+    plus one over a short string — sub-millisecond against a subprocess launch —
+    while an lru_cache would go stale within a process if the grammar were
+    regenerated.
 
     The directory is created before returning, because tree-sitter does not
     reliably create a missing cache root and a non-existent one degrades into a
@@ -272,11 +351,15 @@ def _grammar_cache_home(repo_root: str) -> str:
         .encode("utf-8")
     ).hexdigest()[:16]
     path = os.path.join(tempfile.gettempdir(), f"reify-ts-cache-{key}")
-    # TIER 2 — an uncreatable DERIVED dir is left to RAISE, and run_probe()
-    # represents it as exit 127 + _BINARY_NOT_FOUND_SENTINEL.  Deliberately not
-    # an ambient fallback: a silent run against the shared cache is exactly the
-    # cross-lane false PASS this module exists to prevent.
-    os.makedirs(path, exist_ok=True)
+    # TIER 2 — an uncreatable or UNTRUSTWORTHY derived dir is left to RAISE, and
+    # run_probe() represents it as exit 127 + _BINARY_NOT_FOUND_SENTINEL.
+    # Deliberately not an ambient fallback: a silent run against the shared cache
+    # is exactly the cross-lane false PASS this module exists to prevent.
+    # mode=0o700 so a dir we create here is private from the start; the check
+    # then covers the case makedirs(exist_ok=True) waves through — a dir someone
+    # else pre-created at this predictable, world-writable path.
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    _assert_cache_dir_trustworthy(path)
     return path
 
 

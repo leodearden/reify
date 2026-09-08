@@ -8,6 +8,7 @@ CLI main() in hermetic golden tests — real subprocess probes are skip-guarded.
 """
 
 import functools
+import hashlib
 import importlib.util
 import io
 import json
@@ -15,6 +16,7 @@ import os
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -863,10 +865,23 @@ class TestGrammarCacheIsolation(unittest.TestCase):
     The assertions deliberately go beyond "XDG_CACHE_HOME is set" — "is set" is
     satisfied by the ambient value and would enshrine the bug.  Each case pins
     that the child's cache is neither the ambient one nor ``~/.cache``.
+
+    setUp clears REIFY_TS_CACHE_HOME for the WHOLE class, which is load-bearing
+    rather than tidiness.  Every case here sets only TREE_SITTER_BIN /
+    XDG_CACHE_HOME, so an ambient override — which
+    .claude/skills/prd/references/grammar-gate.md actively encourages an operator
+    to export — would silently divert every case onto the OVERRIDE branch instead
+    of the derived one, and they would all still pass: exactly the vacuous green
+    the class docstring above says these assertions exist to avoid.  (It could
+    also fail spuriously, if the exported override happened to equal ~/.cache.)
     """
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_test_")
+        env_patch = unittest.mock.patch.dict(os.environ, {})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
 
     def tearDown(self):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
@@ -1133,6 +1148,148 @@ class TestGrammarCacheIsolation(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# amend: the cache key must track the GENERATED grammar, not a stale stamp
+# ---------------------------------------------------------------------------
+
+class TestGrammarFingerprint(unittest.TestCase):
+    """Pins pcc._grammar_fingerprint(repo_root).  Hermetic: no subprocess.
+
+    The fingerprint is half the cache key, so anything that makes it go stale
+    silently restores the stale-hit this whole seam exists to kill — and does so
+    at exactly the moment a developer has just changed the grammar and most needs
+    a fresh compile.  TestGrammarCacheHome pins the derivation that CONSUMES this
+    value; this class pins the value itself, which had no direct coverage at all.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_fingerprint_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _repo(self, name: str, grammar: str = None, stamp: str = None) -> str:
+        """A synthetic repo root carrying any subset of the fingerprint sources."""
+        root = os.path.join(self._tmpdir, name)
+        src = os.path.join(root, "tree-sitter-reify", "src")
+        os.makedirs(src, exist_ok=True)
+        if grammar is not None:
+            with open(os.path.join(src, "grammar.json"), "w") as f:
+                f.write(grammar)
+        if stamp is not None:
+            with open(os.path.join(src, ".grammar_hash.stamp"), "w") as f:
+                f.write(stamp)
+        return root
+
+    # -- (a) it hashes the artifact tree-sitter actually compiles ------------
+
+    def test_hashes_the_generated_grammar_json(self):
+        """The fingerprint is sha256(src/grammar.json), asserted by EQUALITY.
+
+        Equality rather than "non-empty": a derivation that keyed on the file's
+        SIZE or mtime would satisfy non-emptiness while reintroducing exactly the
+        mtime-shaped staleness that warm-lane seeding defeats.
+        """
+        body = '{"name": "reify", "rules": {}}'
+        root = self._repo("lane_a", grammar=body)
+        self.assertEqual(
+            pcc._grammar_fingerprint(root),
+            hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        )
+
+    def test_changed_grammar_json_changes_the_fingerprint(self):
+        """Regenerating the grammar must move the key."""
+        root = self._repo("lane_a", grammar='{"v": 1}')
+        before = pcc._grammar_fingerprint(root)
+        with open(os.path.join(root, "tree-sitter-reify", "src",
+                               "grammar.json"), "w") as f:
+            f.write('{"v": 2}')
+        self.assertNotEqual(before, pcc._grammar_fingerprint(root))
+
+    # -- (b) THE regression pin: a stale stamp must not mask a new grammar ---
+
+    def test_stale_stamp_does_not_mask_a_changed_grammar(self):
+        """A stale src/.grammar_hash.stamp must NOT pin the key.
+
+        THE REACHABLE DEFECT this closes: `edit grammar.js` -> `cargo build` ->
+        run the PRD gate.  tree-sitter-reify/build.rs regenerates grammar.json
+        and parser.c through its OWN run_tree_sitter_generate() (a direct
+        `tree-sitter generate`) and writes its staleness stamp to $OUT_DIR;
+        src/.grammar_hash.stamp is refreshed ONLY by
+        scripts/tree-sitter-generate.sh.  So after a cargo build the stamp is
+        stale by construction.  A fingerprint that PREFERRED it — as an earlier
+        revision of _grammar_fingerprint() did — would be unchanged across that
+        edit, leaving the cache key unchanged and handing the lane the reify.so
+        compiled from the PREVIOUS grammar.  tree-sitter's own mtime backstop
+        cannot be relied on to catch it: warm-lane seeding stamps mtimes, which
+        is why a content key exists here at all.
+        """
+        stale = "a" * 64
+        root = self._repo("lane_a", grammar='{"v": 1}', stamp=stale)
+        before = pcc._grammar_fingerprint(root)
+
+        with open(os.path.join(root, "tree-sitter-reify", "src",
+                               "grammar.json"), "w") as f:
+            f.write('{"v": 2}')
+        # Deliberately NOT refreshed — this is exactly the state cargo leaves.
+        with open(os.path.join(root, "tree-sitter-reify", "src",
+                               ".grammar_hash.stamp")) as f:
+            self.assertEqual(f.read(), stale,
+                             "precondition: the stamp must still be the stale one")
+
+        after = pcc._grammar_fingerprint(root)
+        self.assertNotEqual(
+            before, after,
+            "a regenerated grammar.json must move the fingerprint even when "
+            "src/.grammar_hash.stamp is stale, which is what cargo leaves behind",
+        )
+        self.assertNotIn(
+            stale, (before, after),
+            "the stamp's contents must not be the key at all",
+        )
+
+    def test_stamp_without_grammar_json_yields_empty(self):
+        """A stamp alone is not a fingerprint source.
+
+        The other half of the pin above: a lane carrying a stamp but no generated
+        grammar has nothing to compile, so it belongs in the empty-fingerprint
+        bucket rather than keyed on a hash of a grammar that is not there.
+        """
+        root = self._repo("lane_a", stamp="c" * 64)
+        self.assertEqual(pcc._grammar_fingerprint(root), "")
+
+    # -- (c) never raises, whatever the lane looks like ----------------------
+
+    def test_missing_sources_yield_empty_and_never_raise(self):
+        """A fresh warm lane (no tree-sitter-reify/ at all) gets "" , not a raise.
+
+        grammar_substrate_usable() runs at test-harness IMPORT time, where a raise
+        costs the whole suite instead of one skip.
+        """
+        root = os.path.join(self._tmpdir, "never_generated")
+        os.makedirs(root, exist_ok=True)
+        self.assertEqual(pcc._grammar_fingerprint(root), "")
+
+    def test_unreadable_grammar_json_yields_empty_and_never_raises(self):
+        """An unreadable grammar.json degrades to "" rather than propagating."""
+        root = self._repo("lane_a", grammar='{"v": 1}')
+        target = os.path.join(root, "tree-sitter-reify", "src", "grammar.json")
+        os.chmod(target, 0o000)
+        try:
+            try:
+                with open(target, "rb"):
+                    pass
+            except OSError:
+                pass
+            else:
+                self.skipTest("chmod 0o000 did not deny the read (running as root?)")
+            self.assertEqual(pcc._grammar_fingerprint(root), "")
+        finally:
+            # Restored here, not via addCleanup: cleanups run AFTER tearDown, by
+            # which point rmtree has removed the file and the chmod would ENOENT.
+            os.chmod(target, 0o600)
+
+
+# ---------------------------------------------------------------------------
 # task-5925 (RED): the cache-dir DERIVATION contract
 # ---------------------------------------------------------------------------
 
@@ -1164,14 +1321,21 @@ class TestGrammarCacheHome(unittest.TestCase):
         for path in self._made:
             shutil.rmtree(path, ignore_errors=True)
 
-    def _fake_repo(self, name: str, fingerprint: str = None) -> str:
-        """A synthetic repo root, optionally carrying a grammar-hash stamp."""
+    def _fake_repo(self, name: str, grammar: str = None) -> str:
+        """A synthetic repo root, optionally carrying a generated grammar.json.
+
+        Seeds src/grammar.json — the GENERATED ARTIFACT the fingerprint actually
+        hashes — rather than src/.grammar_hash.stamp.  Seeding the stamp would
+        make these cases exercise a branch the derivation no longer has, and
+        would keep passing even if the fingerprint stopped tracking the grammar
+        at all; see TestGrammarFingerprint for why the stamp is not trustworthy.
+        """
         root = os.path.join(self._tmpdir, name)
         src = os.path.join(root, "tree-sitter-reify", "src")
         os.makedirs(src, exist_ok=True)
-        if fingerprint is not None:
-            with open(os.path.join(src, ".grammar_hash.stamp"), "w") as f:
-                f.write(fingerprint + "\n")
+        if grammar is not None:
+            with open(os.path.join(src, "grammar.json"), "w") as f:
+                f.write(grammar + "\n")
         return root
 
     def _cache_home(self, repo_root: str) -> str:
@@ -1222,7 +1386,7 @@ class TestGrammarCacheHome(unittest.TestCase):
         root = self._fake_repo("lane_a", "a" * 64)
         before = self._cache_home(root)
         with open(os.path.join(root, "tree-sitter-reify", "src",
-                               ".grammar_hash.stamp"), "w") as f:
+                               "grammar.json"), "w") as f:
             f.write("b" * 64 + "\n")
         after = self._cache_home(root)
         self.assertNotEqual(
@@ -1281,6 +1445,7 @@ class TestGrammarCacheHome(unittest.TestCase):
             os.environ, {"REIFY_TS_CACHE_HOME": override}
         ):
             path = pcc._grammar_cache_home(root)
+        self._made.append(path)
         self.assertEqual(path, override, "override must be used verbatim")
         self.assertTrue(os.path.isdir(path), "override dir must be created")
 
@@ -1405,6 +1570,76 @@ class TestGrammarCacheHome(unittest.TestCase):
                 with self.assertRaises(OSError):
                     pcc._grammar_cache_home(root)
 
+
+    # ── (j) the derived dir is PRIVATE, and an untrusted one is refused ───────
+
+    def _derived(self, root: str) -> str:
+        """Derive under a tempdir we own, with no override in effect."""
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            with unittest.mock.patch.dict(os.environ, {}):
+                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+                return pcc._grammar_cache_home(root)
+
+    def test_new_derived_dir_is_private(self):
+        """A dir this function creates grants nothing to group or other.
+
+        `tree-sitter parse` LOADS AND EXECUTES <cache>/tree-sitter/lib/reify.so,
+        and the derived path is fully predictable inside world-writable /tmp — so
+        a default-umask dir (0775 on this host, umask 0002) would let any member
+        of the group drop a reify.so the gate then dlopens.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        derived = self._derived(root)
+        self.assertEqual(
+            stat.S_IMODE(os.lstat(derived).st_mode) & 0o077, 0,
+            f"derived cache dir must not be group/other accessible: {derived!r}",
+        )
+
+    def test_loose_mode_derived_dir_is_repaired(self):
+        """A group/other-writable dir we OWN is tightened in place, not refused.
+
+        Repair rather than raise is deliberate: this host's umask is 0002, so
+        every cache dir created before the check existed is 0775, and a bare
+        raise would wedge those lanes' gates rather than protect them.  The
+        returned path must still be the same usable derived dir.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        derived = self._derived(root)
+        os.chmod(derived, 0o777)
+        self.assertTrue(
+            os.lstat(derived).st_mode & 0o022,
+            "precondition: the dir must actually be group/other-writable",
+        )
+        again = self._derived(root)
+        self.assertEqual(again, derived, "repair must not relocate the cache")
+        self.assertFalse(
+            os.lstat(derived).st_mode & 0o022,
+            "a group/other-writable cache dir must be tightened before use",
+        )
+        self.assertTrue(os.path.isdir(derived), "and must remain usable")
+
+    def test_symlinked_derived_dir_raises(self):
+        """A SYMLINK at the derived path is refused, even pointing somewhere we own.
+
+        os.makedirs(exist_ok=True) waves a symlink-to-a-directory straight
+        through, and os.stat() would then report the TARGET's ownership — so an
+        ownership check alone is redirectable by anyone who can create a name in
+        /tmp.  Fail-closed here, same disposition as the pre-created-FILE case:
+        run_probe() represents it as exit 127 + the launch-failure sentinel.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        elsewhere = os.path.join(self._tmpdir, "attacker_controlled")
+        os.makedirs(elsewhere, exist_ok=True)
+
+        derived = self._derived(root)
+        shutil.rmtree(derived, ignore_errors=True)
+        os.symlink(elsewhere, derived)
+        self.assertTrue(
+            os.path.islink(derived) and os.path.isdir(derived),
+            "precondition: a symlink RESOLVING to a real directory",
+        )
+        with self.assertRaises(OSError):
+            self._derived(root)
 
 
 # ---------------------------------------------------------------------------
