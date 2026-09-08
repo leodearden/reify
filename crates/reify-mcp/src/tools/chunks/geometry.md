@@ -407,3 +407,102 @@ gate.
    Scoped to **OCCT** — Manifold's answer on a strictly nested pair is unmeasured (task #6475).
 6. **`intersects` is `d <= 0.0`.** Face-touching parts therefore read `true`, and there is no
    tolerance argument at any layer. For a tolerance band, write `distance(a, b) > tol` yourself.
+
+
+## Measurement & Mass-Property Queries
+<!-- MEASUREMENT-SECTION -->
+
+<!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs verifies that
+     this section documents EVERY member of reify_compiler::GEOMETRY_QUERY_NAMES as a call form.
+     That test iterates the registry DIRECTLY rather than a list copied into the test, so a query
+     added to the compiler and not to this section is RED on the next run — there is no second
+     list to forget.
+
+     FORMAT IS LOAD-BEARING in one place only: for `volume` / `area` / `centroid` /
+     `bounding_box`, the literal `-> <Type>` after the call form is what marks the form as a
+     SIGNATURE whose arity is cross-checked against the worked fence. Tabulating those four into
+     a table with the return type in its own column is RED even though nothing regressed.
+     Everything else here — bolding, wrapping, ordering, the heading's wording — is free.
+
+     Chunk-side guards (all in that one file, cited whole on one line each):
+       geometry_chunk_smoke.rs::measurement_query_family_documented_in_geometry_chunk
+       geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile
+
+     RUNTIME claims below (which names resolve to real numbers, and when they do not) are pinned
+     separately, on the eval side:
+       crates/reify-eval/tests/harness_kernel_realization/kernel_queries_integration.rs::all_queries_walk_evals_top_level_helpers_to_non_undef
+       crates/reify-eval/tests/harness_kernel_realization/kernel_queries_integration.rs::multi_feature_part_sub_handle_queries_return_non_undef
+       crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs::whole_handle_geometry_query_oracle_parity
+       crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs::compile_inline_volume_torus_hoists_into_realization
+     The OCCT-absence claim in "When a query yields `undef`" is UNPINNED prose — verified by
+     reading the gate in crates/reify-kernel-occt/src/lib.rs, not by a test in this harness.
+
+     The `<!-- MEASUREMENT-SECTION -->` marker on the line above is what scopes the guard's scan,
+     matched byte-exactly — NOT this heading's wording. Keep it directly under the heading it
+     opens; the scan runs from it to the next `##` heading. -->
+
+Reify measures **realized geometry**. Never hand-compute a volume, an area, a centroid or an
+inertia from the parameters that built the part — ask the kernel. Parameter arithmetic
+(`thickness * width * width`) is a *different number*: it silently stops describing the part the
+moment a fillet, a shell, a boolean or a pattern changes it, and nothing flags the divergence. The
+family below is the supported way to ask.
+
+**Measurement.** `volume(solid) -> Scalar<Volume>`, `area(surface) -> Scalar<Area>` (also
+`area(solid) -> Scalar<Area>`, total surface area), `length(curve) -> Scalar<Length>`,
+`perimeter(surface) -> Scalar<Length>`.
+
+**Mass properties.** `centroid(solid) -> Point3<Length>` is the purely geometric centre — no
+density argument, no material. `bounding_box(geometry) -> BoundingBox` is the axis-aligned extent.
+For the *density-weighted* pair, `center_of_mass(solid, density)` and
+`moment_of_inertia(solid, density)`, see the Topology Selectors table below: they are registered in
+the topology-selector family, not this one, and both take a **dimensioned** `Density` (a bare
+number yields a warning and `undef`).
+
+**Predicates.** `contains(solid, point) -> Bool`, `intersects(a, b) -> Bool`,
+`geo_equiv(a, b, tolerance) -> Bool` (tolerance must carry a Length unit).
+
+> `contains(solid, point)` is the free-function GEOMETRY query documented here. It is a different
+> thing from the `contains` **method** on `List` / `Set` / `Range` in the `collections` chunk — same
+> word, unrelated dispatch. Reaching for the collection method on a solid, or this query on a list,
+> gets you a type error at best and `undef` at worst.
+
+**Analysis.** `distance(a, b) -> Scalar<Length>` (true minimum surface gap — see the
+interference/clearance section above, which owns it), `normal(surface, at) -> Vector3<Dimensionless>`,
+`curvature(curve, at) -> Scalar<Curvature>` (the surface overload is
+`curvature(surface, at) -> Matrix<2, 2, Curvature>`), `angle(a, b) -> Angle` — note `angle` takes two
+dimensionless **vectors**, not two surfaces; the surface form is `angle_between_surfaces` in the
+topology-selector family. `max_deviation(actual, nominal) -> Scalar<Length>` compares a realized
+geometry against a nominal one.
+
+**Provenance.** `feature(geometry) -> Feature` is the explicit projection from a realized handle to
+the feature that produced it. It returns a `Feature`, not selectable geometry — it is the *input* to
+the provenance selectors (`created_by_feature`, `split_by_feature`) in the table below.
+
+### Eval status, and when a query yields `undef`
+
+Every one of these fifteen names has live eval dispatch. There is **no** "compile-time typed but
+never evaluated" subset in this family, whatever older comments in `units.rs` still say. What there
+is, is a resolution *stage*: these are kernel-bearing consumers, resolved during `reify build`
+against a realized handle. Under kernel-less `reify eval` / `reify check` they stay `Value::Undef`,
+and a constraint over one reads `INDETERMINATE` while the process still exits 0 (`--strict` flips
+that). This is the same stage split the interference/clearance section documents at length.
+
+Two things make a query silently `undef` even under `reify build`, and both are worth knowing before
+you debug the number:
+
+1. **Arg shape.** A geometry operand must be a **let-bound** reference. An inline call
+   (`volume(box(10mm, 10mm, 10mm))`) is not resolved against the named-step map and yields `undef`
+   with no diagnostic. The one carve-out is the four whole-handle queries — `volume`, `area`,
+   `centroid`, `bounding_box` — where the compiler hoists an inline geometry argument into a
+   synthetic let for you. Every other query in the family requires the let-bound form, so write
+   let-bound everywhere and the rule never bites.
+2. **No OCCT.** The kernel gate is all-or-nothing, not per-query: with OCCT unavailable the whole
+   geometry pipeline is skipped, every query cell stays `undef`, and the exit code is still 0. There
+   is no per-query fallback to a cheaper representation, so do not write code that expects one.
+
+**Worked reference:** `examples/kernel_queries/all_queries_walk.ri` calls the family end-to-end over
+a multi-feature part. Read it as a runnable example, not as normative prose — its own header is
+partly stale about selector result types. The normative signature tables are
+`docs/reify-stdlib-reference.md` §3.9 (`std.geometry.query`), which this section deliberately does
+not restate. `max_deviation` is the one member §3.9 does not yet list; its signature above comes
+from the compiler registry in `crates/reify-compiler/src/units.rs`.
