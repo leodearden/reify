@@ -16,7 +16,7 @@
 //! `Field<D, Tensor<2,3,Q>>` — the shape `ElasticResult.stress` carries — and
 //! there eval does NOT reduce: `crates/reify-expr/src/lib.rs` intercepts the
 //! call and returns a lazily-wrapped `Value::Field`
-//! (`crates/reify-expr/src/analysis.rs:132-224`). The compile-time result must
+//! (`crates/reify-expr/src/analysis.rs:205-302`). The compile-time result must
 //! therefore be a `Type::Field` too, because `value_type_kind_matches`
 //! (`crates/reify-eval/src/lib.rs:330`) maps `Value::Field` only onto
 //! `Type::Field`. [`field_tensor_arg`] mirrors eval's shape gate and each arm
@@ -82,10 +82,10 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 ///
 /// | name | arity | result | mirrors |
 /// |---|---|---|---|
-/// | `von_mises` | 1 | `Field<D, scalar_or_real(Q)>` | `compute_von_mises` → `wrap_tensor_field` (`analysis.rs:132-157`) |
-/// | `max_shear` | 1 | `Field<D, scalar_or_real(Q)>` | `compute_max_shear` → `wrap_tensor_field` (`analysis.rs:186-191`) |
-/// | `principal_stresses` | 1 | `Field<D, List(scalar_or_real(Q))>` | `compute_principal_stresses` (`analysis.rs:167-183`) — a `List` because sampling yields 3 eigenvalues |
-/// | `safety_factor` | 2 | `Field<D, Real>` | `compute_safety_factor` (`analysis.rs:201-224`) — dimensionless, yield/von_mises cancels |
+/// | `von_mises` | 1 | `Field<D, scalar_or_real(Q)>` | `compute_von_mises` → `wrap_tensor_field` (`analysis.rs:205-231`) |
+/// | `max_shear` | 1 | `Field<D, scalar_or_real(Q)>` | `compute_max_shear` → `wrap_tensor_field` (`analysis.rs:263-265`) |
+/// | `principal_stresses` | 1 | `Field<D, List(scalar_or_real(Q))>` | `compute_principal_stresses` (`analysis.rs:239-256`) — a `List` because sampling yields 3 eigenvalues |
+/// | `safety_factor` | 2 | `Field<D, Real>` | `compute_safety_factor` (`analysis.rs:273-302`) — dimensionless, yield/von_mises cancels |
 /// | `stress_invariants` | — | *(unchanged `StructureRef`)* | eval has NO Field arm for this name |
 ///
 /// Anything outside that table — a non-3x3 codomain, a mismatched arity — falls
@@ -96,7 +96,7 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 /// The result is a **`Type::Field`, not a `Type::Scalar`**: eval does not reduce
 /// a field eagerly, it wraps it LAZILY and hands back a `Value::Field`
 /// (`crates/reify-expr/src/lib.rs` dispatch → `analysis::compute_von_mises` /
-/// `compute_max_shear` → `wrap_tensor_field`, `crates/reify-expr/src/analysis.rs:132-157`).
+/// `compute_max_shear` → `wrap_tensor_field`, `crates/reify-expr/src/analysis.rs:205-231`).
 /// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) maps a
 /// `Value::Field` ONLY onto a `Type::Field`, and the mismatch is enforced in
 /// production at `engine_admin.rs:124` as `EngineError::TypeKindMismatch` — so a
@@ -111,7 +111,7 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 /// and returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
     // Field-argument forms (task #6577). Eval wraps the field LAZILY and returns a
-    // `Value::Field` (crates/reify-expr/src/analysis.rs:132-224), so the compile-time
+    // `Value::Field` (crates/reify-expr/src/analysis.rs:205-302), so the compile-time
     // type must also be a `Type::Field` — `value_type_kind_matches`
     // (crates/reify-eval/src/lib.rs:330) maps `Value::Field` only onto `Type::Field`.
     // Each arm's arity gate mirrors eval's own dispatch condition, so the compiler's
@@ -181,11 +181,21 @@ fn tensor_quantity(args: &[CompiledExpr], i: usize) -> DimensionVector {
 /// codomain is a 3x3 tensor/matrix of scalars. `None` otherwise.
 ///
 /// Deliberately mirrors eval's gate — `analysis::tensor_element_dimension`
-/// (`crates/reify-expr/src/analysis.rs:25-43`), reached via `validate_tensor_field`
-/// (`:60-112`) — so the compile-time type and the `Value::Field` eval produces
+/// (`crates/reify-expr/src/analysis.rs:71-89`), reached via `validate_tensor_field`
+/// (`:133-184`) — so the compile-time type and the `Value::Field` eval produces
 /// agree under `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`).
 /// The `Type::Int` quantity branch is carried over for the same reason:
 /// `tensor_element_dimension` maps it to `DIMENSIONLESS`.
+///
+/// The mirror covers eval's SHAPE gate only. `validate_tensor_field` also gates
+/// on the `(source, lambda)` pair, admitting `(Analytical | Composed, Lambda)`
+/// and — since task #7129 landed — `(Sampled, SampledField)`, which is the
+/// backing `solve_elastic_static` hands back as `.stress`. A field's source kind
+/// is not a type-level concept, so there is deliberately no counterpart to that
+/// half here. It errs in the safe direction anyway: when the shape matches but
+/// eval declines the pair, eval yields `Value::Undef`, which
+/// `value_type_kind_matches` accepts for ANY type
+/// (`crates/reify-eval/src/lib.rs:313`), so the `Type::Field` claim still holds.
 ///
 /// Distinct from [`tensor_quantity`], which handles the CONCRETE tensor/matrix
 /// arg forms and is deliberately left untouched by task #6577: teaching it to
@@ -435,13 +445,13 @@ mod tests {
 
     // ── Field-argument result-type resolution (task #6577) ───────────────────
     // Each expectation below mirrors the `Value::Field` eval actually returns
-    // for that name (crates/reify-expr/src/analysis.rs:132-224), so the
+    // for that name (crates/reify-expr/src/analysis.rs:205-302), so the
     // compile-time type and the runtime value agree under
     // `value_type_kind_matches` (crates/reify-eval/src/lib.rs:330).
 
     /// Helper: a `CompiledExpr` typed as `Field<Point3<LENGTH>, Tensor<2,3,Scalar<PRESSURE>>>`
     /// — the exact shape `ElasticResult.stress` resolves to, pinned in
-    /// `tests/harness_geometry_solver/solver_elastic_tests.rs:1301-1315`.
+    /// `tests/harness_geometry_solver/solver_elastic_tests.rs:1301-1313`.
     fn pressure_tensor_field_arg() -> CompiledExpr {
         CompiledExpr::literal(
             Value::Undef,
@@ -481,7 +491,7 @@ mod tests {
     }
 
     /// `von_mises(Field<D, Tensor<PRESSURE>>)` → `Field<D, Scalar<PRESSURE>>`.
-    /// Mirrors `compute_von_mises` → `wrap_tensor_field` (analysis.rs:132-157).
+    /// Mirrors `compute_von_mises` → `wrap_tensor_field` (analysis.rs:205-231).
     #[test]
     fn von_mises_over_pressure_tensor_field_is_pressure_field() {
         let arg = pressure_tensor_field_arg();
@@ -499,7 +509,7 @@ mod tests {
     }
 
     /// `max_shear(Field<D, Tensor<PRESSURE>>)` → `Field<D, Scalar<PRESSURE>>`.
-    /// Mirrors `compute_max_shear` → `wrap_tensor_field` (analysis.rs:186-191).
+    /// Mirrors `compute_max_shear` → `wrap_tensor_field` (analysis.rs:263-265).
     #[test]
     fn max_shear_over_pressure_tensor_field_is_pressure_field() {
         let arg = pressure_tensor_field_arg();
@@ -516,7 +526,7 @@ mod tests {
     }
 
     /// `von_mises(Field<D, Tensor<dimensionless>>)` → `Field<D, Real>`.
-    /// Mirrors `scalar_type_for_dim` (analysis.rs:117-123), which is bit-identical
+    /// Mirrors `scalar_type_for_dim` (analysis.rs:189-195), which is bit-identical
     /// to the compiler's `scalar_or_real`.
     #[test]
     fn von_mises_over_dimensionless_tensor_field_is_real_field() {
@@ -535,7 +545,7 @@ mod tests {
     ///
     /// The codomain is a `List`, NOT a bare scalar: sampling the wrapped field
     /// produces a `Value::List` of 3 eigenvalues, so `compute_principal_stresses`
-    /// stamps `Type::List(Box::new(scalar_ty))` (analysis.rs:167-183).
+    /// stamps `Type::List(Box::new(scalar_ty))` (analysis.rs:239-256).
     #[test]
     fn principal_stresses_over_pressure_tensor_field_is_list_field() {
         let arg = pressure_tensor_field_arg();
@@ -571,7 +581,7 @@ mod tests {
     /// `safety_factor(Field<D, Tensor<PRESSURE>>, yield)` → `Field<D, Real>`.
     ///
     /// Dimensionless regardless of the stress quantity (yield / von_mises cancels),
-    /// mirroring `compute_safety_factor` (analysis.rs:201-224). Takes TWO args —
+    /// mirroring `compute_safety_factor` (analysis.rs:273-302). Takes TWO args —
     /// eval's dispatch gate for this name is `evaluated_args.len() == 2`.
     #[test]
     fn safety_factor_over_pressure_tensor_field_is_real_field() {
@@ -617,7 +627,7 @@ mod tests {
 
     /// A non-tensor codomain falls through: `Field<D, Vector3<LENGTH>>` is not a
     /// 3x3 tensor, so `tensor_element_dimension` returns `None` and eval yields
-    /// `Value::Undef` (crates/reify-expr/src/analysis.rs:25-43).
+    /// `Value::Undef` (crates/reify-expr/src/analysis.rs:71-89).
     #[test]
     fn von_mises_over_non_tensor_codomain_field_falls_through() {
         let arg = CompiledExpr::literal(
