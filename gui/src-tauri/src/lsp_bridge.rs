@@ -298,7 +298,10 @@ pub async fn lsp_request_on_worker(
 ///
 /// So the window is disclosed and tracked rather than half-closed. Revisit this
 /// arm when #7118 lands — not to move `rename`, but to delete these two
-/// sections.
+/// sections. That obligation is carried by a cited `TODO(#7118)` on the arm
+/// itself rather than by this sentence: the cite reds the PTODO gate the moment
+/// #7118 goes terminal, which is the only mechanism here that can outlive a
+/// reader who does not happen to scroll this far.
 pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stack::JobSender> {
     let concurrency_safe = matches!(
         method,
@@ -315,8 +318,17 @@ pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stac
             // (`ReifyLanguageServer::rename`), but its
             // result is APPLIED rather than displayed — see "`rename` is in
             // this set, and its staleness costs more than the other seven"
-            // above, and task #7118. It is here deliberately, not by
-            // resemblance to its neighbours.
+            // above. It is here deliberately, not by resemblance to its
+            // neighbours.
+            //
+            // TODO(#7118): once the versioned `documentChanges` and the
+            // client-side version check land, delete this arm's two disclosure
+            // sections from the docs above — they describe a window that will
+            // no longer exist. The cite is the ENFORCEMENT, not a note: it
+            // resolves to a live task today and becomes an orphaned PTODO
+            // finding the moment #7118 reaches a terminal status, so the
+            // disclosure cannot quietly outlive its reason the way prose alone
+            // would let it.
             | "textDocument/rename"
             | "textDocument/references"
     );
