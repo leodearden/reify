@@ -75,6 +75,25 @@
 //! eval-side, needing `arg.result_type`). Per-slot over `&Type` is the widest
 //! contract both can share.
 //!
+//! # Why the public predicates are `#[inline]`
+//!
+//! Before #5689 the three `type_carries_*` were crate-private `fn`s inside
+//! both consumers, and the two tier predicates were not functions at all —
+//! their disjunctions were written out inline in the resolution closures.
+//! Either shape let LLVM inline them into those loops. The workspace
+//! configures no `lto` (there is no `[profile.release]` block at all), and a
+//! non-generic `pub fn` without the attribute is not cross-crate inlinable —
+//! so the hoist alone would have turned each one into an opaque call on a
+//! path that runs once per param slot, per arity-matching candidate, per call
+//! evaluated. The attribute restores the pre-hoist opportunity. It is a
+//! codegen hint only: nothing here depends on it for correctness, and the
+//! recursive walks below are still walks.
+//!
+//! `heads_unifiable` is deliberately left without it — a large recursive match
+//! reached only on the head tier's generic branch, so instantiating it in every
+//! consumer codegen unit is a code-size cost with no cheap-leaf case to repay
+//! it.
+//!
 //! # Consumers
 //!
 //! `reify_compiler::type_compat::resolve_function_overload` (compile time) and
@@ -103,6 +122,7 @@ use crate::ty::Type;
 /// behaviour and must be preserved, not "fixed"; widening it widens overload
 /// resolution for every call site. The boundary is pinned by
 /// `type_carries_trait_object_covers_its_narrower_walk` in this module's tests.
+#[inline]
 pub fn type_carries_trait_object(t: &Type) -> bool {
     match t {
         Type::TraitObject(_) => true,
@@ -149,6 +169,7 @@ pub fn type_carries_trait_object(t: &Type) -> bool {
 /// kept separate because dimension params are a distinct kind (D7) — they are
 /// NOT substituted by type-param logic. The overload-resolution wildcard ORs
 /// them together at two sites.
+#[inline]
 pub fn type_carries_type_param(t: &Type) -> bool {
     match t {
         // The type-parameter leaf itself.
@@ -234,6 +255,7 @@ pub fn type_carries_type_param(t: &Type) -> bool {
 /// Wired into the generic-candidate wildcard tier (OR'd with
 /// [`type_carries_type_param`]) so that a `Scalar<Q>` parameter is recognised
 /// as a generic wildcard slot (task 4235 ζ / D8).
+#[inline]
 pub fn type_carries_dim_param(t: &Type) -> bool {
     match t {
         // The dimension-parameter leaf itself.
@@ -490,6 +512,7 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// argument type — and on the eval hot path this predicate runs for every
 /// arity-matching non-exact candidate in the merged prelude table. Reordering
 /// (or adding) disjuncts is therefore free; do not read meaning into it.
+#[inline]
 pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
     type_carries_trait_object(param_ty)
         || (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
@@ -545,6 +568,7 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
 /// this tier's arg-side disjunct is an O(1) `matches!` rather than a recursive
 /// walk, so there is nothing to hoist `param_ty == arg_ty` ahead of. See that
 /// function's cost-heuristic note.
+#[inline]
 pub fn slot_matches_head_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
     type_carries_trait_object(param_ty)
         || (is_generic && (heads_unifiable(param_ty, arg_ty) || type_carries_dim_param(param_ty)))

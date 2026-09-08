@@ -7,10 +7,14 @@ use reify_ir::EnumDef;
 // `reify_core::overload`'s module doc for the normative tier contract.
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
 
-// Facade re-export: `crate::expr`, `crate::compile_builder::entities_phase`
-// and `crate::variant_construct` import these three from `crate::type_compat`.
-// Their real home is `reify_core::overload`; keeping the re-export here means
-// those call sites need no edit.
+// Facade re-export, and NOT an ownership claim: `reify_core::overload` is the
+// normative home of these three, alongside the two tier predicates imported
+// above. It survives only because `crate::expr`,
+// `crate::compile_builder::entities_phase` and `crate::variant_construct`
+// still reach them through `crate::type_compat`, and those three modules were
+// outside #5689's scope. A NEW call site should import from
+// `reify_core::overload` directly; the alias is expected to be retired once
+// the three modules can be edited.
 pub(crate) use reify_core::overload::{
     type_carries_dim_param, type_carries_trait_object, type_carries_type_param,
 };
