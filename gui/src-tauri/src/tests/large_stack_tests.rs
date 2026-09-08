@@ -725,22 +725,34 @@ fn lsp_lane_runs_jobs_on_its_own_named_thread() {
 /// A runtime assertion for it cannot fail in any build that exists, so carrying
 /// one was dead weight; the const asserts are the real guard.
 ///
-/// EXTENDED for task 6517 to cover [`crate::large_stack::LSP_POOL_THREAD_PREFIX`].
-/// The query pool is the first name here that is a PREFIX rather than a whole
-/// thread name, which makes distinctness sharper, not looser: a prefix that
-/// merely differed in a suffix — say `reify-lsp-w` against a pool prefixed
-/// `reify-lsp-w` — would produce consumers named `reify-lsp-w0`, and a
-/// `top -H` filter or profiler alert keyed on the ordered lane would then match
-/// pool rows too. Pairwise inequality over the raw strings is the check that
-/// rules that out at its root.
+/// EXTENDED for task 6517 to cover the query pool, in TWO halves, because the
+/// pool's names are the only ones here that are realised rather than declared.
+/// [`crate::large_stack::LSP_POOL_THREAD_PREFIX`] is a PREFIX, so what reaches
+/// `top -H` is `{prefix}{i}`, and inequality over the five raw constants cannot
+/// see the regressions this docstring claims to rule out —
+/// [`crate::large_stack::LSP_WORKER_THREAD_NAME`] changed to `reify-lsp-p0`
+/// would be distinct from the prefix and identical to a realised pool name, and
+/// a pool prefix equal to another tier's whole name would yield `reify-lsp-w0`
+/// and make a filter keyed on the ordered lane match pool rows. So the second
+/// half asserts PREFIX-FREEDOM between each realised pool name and every other
+/// tier: a pool row is naturally selected by prefix, and that selector must
+/// catch nothing else.
+///
+/// Prefix-freedom is deliberately NOT asserted across the whole-name tiers, and
+/// the reason is measured rather than assumed: `ENGINE_THREAD_NAME`
+/// (`reify-engine`) already prefixes `WORKER_THREAD_NAME` (`reify-engine-w`).
+/// Those two are distinct whole names selected by exact match, the containment
+/// predates pools, and renaming a shipped thread is precisely what
+/// [`crate::large_stack::Lane`]'s naming rule promises not to do — so it is
+/// recorded here rather than asserted away.
 #[test]
 fn large_stack_thread_names_are_pairwise_distinct() {
     use crate::large_stack::{
-        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, LSP_POOL_THREAD_PREFIX, LSP_WORKER_THREAD_NAME,
-        WORKER_THREAD_NAME,
+        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, LSP_POOL_SIZE, LSP_POOL_THREAD_PREFIX,
+        LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME,
     };
 
-    let names = [
+    let declared = [
         (COMPILE_THREAD_NAME, "the per-call compile thread"),
         (ENGINE_THREAD_NAME, "the fire-and-forget engine thread"),
         (WORKER_THREAD_NAME, "the persistent ENGINE lane"),
@@ -748,12 +760,29 @@ fn large_stack_thread_names_are_pairwise_distinct() {
         (LSP_POOL_THREAD_PREFIX, "the LSP query pool's consumer prefix"),
     ];
 
-    for (i, (name, what)) in names.iter().enumerate() {
-        for (other, other_what) in &names[i + 1..] {
+    for (i, (name, what)) in declared.iter().enumerate() {
+        for (other, other_what) in &declared[i + 1..] {
             assert_ne!(
                 name, other,
                 "{what} and {other_what} must be distinguishable in a backtrace \
                  or profiler row"
+            );
+        }
+    }
+
+    // The names `Lane::sender` will actually give the pool's consumers — the
+    // strings a capture shows, which is what the prefix half is about.
+    let realised: Vec<String> = (0..LSP_POOL_SIZE)
+        .map(|index| format!("{LSP_POOL_THREAD_PREFIX}{index}"))
+        .collect();
+    for consumer in &realised {
+        for (other, other_what) in &declared[..declared.len() - 1] {
+            assert!(
+                !consumer.starts_with(other) && !other.starts_with(consumer.as_str()),
+                "the realised query-pool consumer {consumer:?} and {other_what} \
+                 ({other:?}) must be distinguishable: neither may equal or PREFIX \
+                 the other, or a `top -H` filter or profiler alert keyed on one \
+                 would match the other's rows"
             );
         }
     }
@@ -1387,6 +1416,15 @@ fn deep_recurse_if_on_lane(prefix: &'static str, depth: u32) -> Result<u64, Stri
 /// Factored out because it is the measurement BOTH (aa) and (ae) need: (aa)
 /// establishes the concurrency, (ae) re-establishes it after a panic to prove no
 /// consumer was lost. Writing it twice would let the two drift.
+///
+/// The non-vacuity guard is load-bearing HERE rather than in either caller,
+/// because the degraded lane is invisible from the `Vec<bool>` this returns: a
+/// lane with no consumers makes `dispatch` run every closure INLINE on its
+/// submitter, each submitter is its own thread, so all `n` closures would run
+/// concurrently anyway and every one would report `true` with ZERO consumers
+/// started. That is the exact head-of-line-blocking property task 6517 exists to
+/// establish, asserted over a lane that never ran — so it is ruled out before a
+/// single job is submitted.
 fn observe_concurrent_arrivals(lane: &'static crate::large_stack::Lane, n: usize) -> Vec<bool> {
     use crate::large_stack::dispatch;
     use std::sync::Arc;
@@ -1396,6 +1434,13 @@ fn observe_concurrent_arrivals(lane: &'static crate::large_stack::Lane, n: usize
     /// serialization can exhaust it. It is a liveness BACKSTOP, not the
     /// property under test — see the section header.
     const ARRIVAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+    assert!(
+        lane.sender().is_some(),
+        "precondition: the pool must have started its consumers. With no lane \
+         every job runs inline on its own submitter thread, all {n} observe each \
+         other regardless, and the measurement below is vacuous."
+    );
 
     let arrived = Arc::new(AtomicUsize::new(0));
     let submitters: Vec<_> = (0..n)
