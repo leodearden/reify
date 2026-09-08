@@ -478,6 +478,30 @@ geometry against a nominal one.
 the feature that produced it. It returns a `Feature`, not selectable geometry — it is the *input* to
 the provenance selectors (`created_by_feature`, `split_by_feature`) in the table below.
 
+```reify
+structure def MeasuredBracket {
+    // Let-bind the geometry FIRST. That is the arg-shape contract, not style.
+    let plate = box(60mm, 40mm, 8mm)
+
+    // Ask the kernel. Never re-derive these from 60mm * 40mm * 8mm: the moment a
+    // fillet or a pocket lands, the arithmetic silently stops describing the part
+    // and the queries keep up.
+    let v = volume(plate)
+    let a = area(plate)
+    let c = centroid(plate)
+    let bb = bounding_box(plate)
+
+    // These four whole-handle queries are the only ones that ALSO accept an
+    // inline geometry argument -- `volume(box(60mm, 40mm, 8mm))` works, because
+    // the compiler hoists the inline call into a synthetic let for you. Every
+    // other query in the family needs the let-bound form above, so writing
+    // let-bound everywhere is the one rule that never bites.
+
+    // A measured scalar driving a real gate, not a dangling let.
+    constraint v < 25000mm^3
+}
+```
+
 ### Eval status, and when a query yields `undef`
 
 Every one of these fifteen names has live eval dispatch. There is **no** "compile-time typed but
