@@ -415,6 +415,22 @@ const MEASUREMENT_SECTION_MARKER: &str = "<!-- MEASUREMENT-SECTION -->";
 /// only; nothing matches on it.
 const MEASUREMENT_SECTION_TITLE: &str = "## Measurement & Mass-Property Queries";
 
+/// Marker that OPENS the TOPOLOGY-SELECTOR catalogue section — the one that
+/// documents [`reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES`] as a table.
+/// Matched BYTE-EXACTLY on the trimmed line, as every other marker here is.
+///
+/// Scoping is what makes the scan mean anything for THIS family in particular:
+/// `edges` and `faces` already appear all over this chunk as the fillet / chamfer
+/// / shell ARGUMENT name (`fillet(solid, edges, radius)`), where they say nothing
+/// about the selector that produces such a list. The catalogue is the one place
+/// they are documented as callable selectors, so the catalogue is what is
+/// scanned.
+const TOPOLOGY_SECTION_MARKER: &str = "<!-- TOPOLOGY-SECTION -->";
+
+/// Human-readable name of [`TOPOLOGY_SECTION_MARKER`]'s section. Panic text
+/// only; nothing matches on it.
+const TOPOLOGY_SECTION_TITLE: &str = "## Topology Selectors";
+
 fn read_chunk() -> String {
     std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
         panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
@@ -719,6 +735,132 @@ fn measurement_query_family_documented_in_geometry_chunk() {
              `{name}` from reify_compiler::GEOMETRY_QUERY_NAMES, which is iterated directly here \
              and is the sole source of this list."
         );
+    }
+}
+
+/// Minimum CATALOGUE ROWS the TOPOLOGY-SELECTOR table must carry.
+///
+/// The EXACT live length of `reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES`
+/// (31 today), not a round number under it. The coverage half of
+/// [`topology_selector_family_documented_in_geometry_chunk`] cannot catch a
+/// gutted table on its own — reformatting the table into prose bullets empties
+/// [`catalogue_table_rows`] and the coverage loop then compares against an empty
+/// set. The floor is what makes that RED.
+///
+/// A DERIVED value would be better and is deliberately not used: asserting
+/// `rows.len() >= GEOMETRY_TOPOLOGY_SELECTOR_NAMES.len()` reads as tighter but is
+/// strictly weaker as a floor, because a row documenting one selector under two
+/// names (the shared-cell shape `catalogue_table_rows` supports) legitimately
+/// makes rows FEWER than names. Keeping the number literal keeps the two claims
+/// independent, which is the point of having both.
+///
+/// RE-MEASUREMENT PROTOCOL: see [`MINIMUM_FN_CITES`], which states it once for
+/// every `MINIMUM_*` floor in this file. Raise this WITH the table; never lower
+/// it to go green.
+const MINIMUM_TOPOLOGY_CATALOGUE_ROWS: usize = 31;
+
+/// Every member of the topology-selector registry must have a CATALOGUE ROW, and
+/// every catalogue row must name a real selector.
+///
+/// BOTH DIRECTIONS, because each catches a different rot. Coverage (registry →
+/// table) catches a selector landing in `units.rs` that the chunk never learns
+/// about — the in-GUI assistant then cannot reach it and falls back to indexing
+/// `faces(...)` by hand. Registry truth (table → registry) catches the failure
+/// that has actually happened in this repo: the 2026-07-24 language review found
+/// `rotate(geo, axis, angle)` and `translate(geo, vector)` documented at
+/// signatures the compiler had never been shown (tasks #5347 / #5364). A phantom
+/// selector is worse than a missing one, because the reader has no reason to
+/// doubt it.
+///
+/// A TABLE rather than the measurement section's call-form prose, and that is a
+/// scanner decision rather than a style one: [`catalogue_table_rows`] already
+/// exists to read exactly this shape (it backs the length-argument catalogue),
+/// and a 31-entry family rendered as prose is unreadable for the human as well as
+/// unscannable for the test. The registry is iterated DIRECTLY here for the same
+/// reason `measurement_query_family_documented_in_geometry_chunk` iterates its
+/// own: at 31 names a hand-copied mirror is a bigger drift surface than the thing
+/// it guards.
+#[test]
+fn topology_selector_family_documented_in_geometry_chunk() {
+    let markdown = read_chunk();
+    // Panics if the marker is gone, so deleting the section is RED rather than
+    // vacuously green — the same anti-vacuity guarantee the oracle scan relies on.
+    let section = section_body(
+        &markdown,
+        TOPOLOGY_SECTION_MARKER,
+        CHUNK_PATH,
+        TOPOLOGY_SECTION_TITLE,
+    );
+
+    let rows = catalogue_table_rows(&section);
+    assert!(
+        rows.len() >= MINIMUM_TOPOLOGY_CATALOGUE_ROWS,
+        "only {} catalogue row(s) found in {CHUNK_PATH}'s `{TOPOLOGY_SECTION_TITLE}` table — \
+         expected at least {MINIMUM_TOPOLOGY_CATALOGUE_ROWS}. Either rows were deleted, or the \
+         table was reformatted into a shape this scan cannot read: a catalogue row is a \
+         `|`-leading line whose FIRST cell backticks the selector it is about. Without the rows \
+         the coverage check below compares against an empty set and protects nothing. Rows seen: \
+         {rows:?}",
+        rows.len()
+    );
+
+    let table_names: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        for row in &rows {
+            for name in row {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        }
+        out
+    };
+
+    // (a) COVERAGE — registry → table.
+    for name in reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES {
+        assert!(
+            table_names.iter().any(|n| n == name),
+            "{CHUNK_PATH}'s `{TOPOLOGY_SECTION_TITLE}` catalogue has no row for the topology \
+             selector `{name}`. The chunk is what the in-GUI assistant retrieves, so a selector \
+             missing from this table reads to it as a MISSING CAPABILITY: it will index \
+             `faces(...)` positionally, or hand-roll a filter, instead of calling the selector \
+             that exists (task 5581). Add a row whose FIRST cell backticks `{name}`, or — if the \
+             builtin itself is gone — remove it from \
+             reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES, which is iterated directly here \
+             and is the sole source of this list. Names the table does carry: {table_names:?}"
+        );
+    }
+
+    // (b) REGISTRY TRUTH — table → registry. A row naming something that is not
+    // a selector sends an author to write a call the compiler will not accept,
+    // and — because a `structure def` body types an unresolved call from its
+    // first argument — often will not even say so.
+    for name in &table_names {
+        if reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        // Split by WHY it is not a selector, so the panic names the actual
+        // remedy. `phantom_name_panic` is the shared voice for "no registry has
+        // this name at all"; a name that IS real but lives in a sibling family
+        // is a different (and more confusing) mistake, and gets told so.
+        match registry_family(name) {
+            None => panic!(
+                "{}",
+                phantom_name_panic(
+                    CHUNK_PATH,
+                    "the topology-selector catalogue table's first column",
+                    name
+                )
+            ),
+            Some(family) => panic!(
+                "{CHUNK_PATH}'s `{TOPOLOGY_SECTION_TITLE}` catalogue has a row for `{name}`, \
+                 which is a real builtin but belongs to {family}, NOT \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES. The families are disjoint by construction and \
+                 dispatch differently, so documenting one here teaches a reader the wrong \
+                 result type and the wrong resolution stage. Move the row to the section that \
+                 owns {family}, or drop it."
+            ),
+        }
     }
 }
 
