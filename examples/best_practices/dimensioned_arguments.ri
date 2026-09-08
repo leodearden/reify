@@ -42,13 +42,13 @@ module dimensioned_arguments
 // position in the `geometry` chunk, under "Dimensioned arguments".
 //
 // THE ONE THING WORTH CARRYING HERE, because it decides how you gate a design:
-// `reify eval` and `reify build` reject every bare-length form, exit 1, every
-// time. `reify check` is NOT equivalent — it prints the same `error:` lines,
-// but its exit code depends on which layer owns the slot: 1 for the
-// compile-layer constructors (`box`, `translate`, `fillet`, the 7-arg `mirror`
-// pivot), 0 for the eval-only ones (`helix`, `polygon`, ...) even though the
-// errors are right there on stderr. Measured 2026-09-07. So read check's
-// STDERR, and gate on `reify eval`, never on check's exit status alone.
+// `reify eval` and `reify build` reject every bare number in a length ARGUMENT
+// slot, exit 1, every time. `reify check` is NOT equivalent — it prints the
+// same `error:` lines, but its exit code depends on which layer owns it: 1 for
+// the compile-layer constructors (`box`, `translate`, `fillet`, the 7-arg
+// `mirror` pivot), 0 for the eval-only ones (`helix`, `polygon`, ...) even
+// though the errors are right there on stderr. Measured 2026-09-07. So read
+// check's STDERR, and gate on `reify eval`, never on check's exit status alone.
 //
 // Verified contracts:
 //
@@ -67,8 +67,17 @@ module dimensioned_arguments
 //   DIMENSIONED ARITHMETIC COMPOSES. A dimensionless ratio times a Length is a
 //   Length (`web_t = web_frac * plate_h`), and a Length divided by a bare
 //   number stays a Length — which is why the hand-centring idiom needs no extra
-//   unit on `-plate_h / 2`. Each `: Length` annotation below is an assertion:
-//   drop the unit from the initializer and the binding stops compiling.
+//   unit on `-plate_h / 2`. Honest scope on the `: Length` annotations below,
+//   which are easy to over-read: over a bare LITERAL an annotation is
+//   documentation, not a gate — `let w : Length = 2` evaluates to `2` and exits
+//   0 with no diagnostic, and the `param` spelling only warns. What makes these
+//   bindings load-bearing is that something dimensioned CONSUMES them: respell
+//   `2cm` as a bare `2` and it is the equality constraint that fails —
+//   `error: incompatible types in comparison: Scalar[m] vs Int`, exit 1 under
+//   both `check` and `eval`. The annotation itself bites when the initializer
+//   is an EXPRESSION whose type disagrees with it, which is `web_t` below:
+//   `web_frac * 10` in its place is rejected at the binding rather than
+//   downstream. Measured 2026-09-08.
 //
 // Bands, not sign guards: `web_t > 0mm` would survive a regression that
 // preserved dimensions but moved magnitudes. These bands fail instead.
