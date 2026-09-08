@@ -29,12 +29,14 @@
 // BucklingOptions' param list by name, and any unlabelled args fill the
 // remaining slots in declaration order — declaration order no longer
 // determines binding for labelled args. The real trap is a MISSPELLED label:
-// an unknown name is appended leniently as `__arg{i}` with NO diagnostic
-// (only a DUPLICATE label is diagnosed), so the intended param silently
-// falls back to its default. The 6 preceding params are therefore spelled
+// an unknown name emits `E_CTOR_UNKNOWN_FIELD` — a Warning today, an Error
+// at δ — and is STILL appended leniently as `__arg{i}`, so the intended param
+// falls back to its default WITHOUT failing the build, which for
+// `element_order` means a silent return to the `ElementOrder.P1` bending lock
+// this fixture exists to avoid. The 6 preceding params are therefore spelled
 // out at their BucklingOptions defaults for review visibility, not because
 // it is required for correctness. Mirrors the cantilever_beam_modes.ri
-// pattern (examples/modal/cantilever_beam_modes.ri:80-89).
+// pattern (examples/modal/cantilever_beam_modes.ri:80-90).
 
 structure BucklingColumnP2 {
     // Geometry: 800 mm tall column, 20×20 mm cross-section.
