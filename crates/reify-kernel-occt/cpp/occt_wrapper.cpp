@@ -28,6 +28,7 @@
 #include <BRepAlgoAPI_Common.hxx>
 
 // OCCT fillet / chamfer
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <TopExp.hxx>
@@ -712,7 +713,35 @@ TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
 // invalidated — there is no version counter, no guard and no assert, so
 // assigning `shape` after a map has been built silently stales it.
 TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
-    return unwrap_boolean_compound(raw);
+    TopoDS_Shape unwrapped = unwrap_boolean_compound(raw);
+
+    // Merge same-domain faces and edges. A boolean leaves the seam where its
+    // operands met even when both sides lie on ONE surface, so a fuse chain
+    // (e.g. the compiler's `rounded_box` desugar — five successive fuses)
+    // hands back each logical planar face as many coplanar fragments. That is
+    // invisible in volume but very visible to a designer: a bbox-based edge
+    // selector picks up every phantom seam edge, and a curated fillet over
+    // that selection either explodes the face count or fails outright.
+    //
+    // SetSafeInputMode is deliberately left at its OCCT default of TRUE
+    // (documented at ShapeUpgrade_UnifySameDomain.hxx). With safe-input mode
+    // OFF, OCCT is permitted to modify the INPUT shape in place — and this
+    // kernel shares and caches operand `OcctShape`s across handles under
+    // occt_wrapper.h's IMMUTABLE POST-CONSTRUCTION INVARIANT, where the three
+    // lazy topology-map caches are populated once and never invalidated (no
+    // version counter, no guard, no assert). An in-place operand mutation
+    // would silently stale caches other handles are already reading, yielding
+    // wrong face/edge indices with no error anywhere. Do not turn it off as
+    // an optimisation.
+    ShapeUpgrade_UnifySameDomain unifier(
+        unwrapped,
+        /*UnifyEdges=*/Standard_True,
+        /*UnifyFaces=*/Standard_True,
+        /*ConcatBSplines=*/Standard_False);
+    unifier.Build();
+
+    // Unification can re-wrap its output in a compound, so tighten once more.
+    return unwrap_boolean_compound(unifier.Shape());
 }
 
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
