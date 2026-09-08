@@ -30,7 +30,7 @@
 //! would leave the table empty).
 
 use reify_compiler::compile_with_stdlib;
-use reify_core::{ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::ExportFormat;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
@@ -337,5 +337,97 @@ fn engine_build_records_topology_attributes_for_tube_realization() {
         "topology_attribute_table must hold 4 face + ≥4 edge + 1 solid-representative \
          entries after a tube realization, got {}",
         table.len()
+    );
+}
+
+/// AMENDMENT PIN (reviewer_comprehensive, task #6550): a selector-bearing
+/// module containing a tube collects exactly two Info
+/// `TopologyAttributeLocalIndexReassigned` diagnostics, and BOTH are false
+/// positives that this task deliberately did not fix.
+///
+/// # Why they fire
+///
+/// `detect_local_index_reassignment_diagnostics` groups a realization's
+/// entries by `(feature_id, role)` and reports the first distinct-`local_index`
+/// pair whose CENTROIDS are within `LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`
+/// (1 nm). A tube produces two such groups:
+///
+/// - `Side` — the outer wall and the bore are both full 360° revolutions about
+///   the z axis, so `BRepGProp::SurfaceProperties` puts both area centroids at
+///   the same on-axis point. Distance 0.
+/// - `NewEdge` — each annulus contributes a pair of CONCENTRIC circles that
+///   likewise share a centroid.
+///
+/// The `Cap(Top)` / `Cap(Bottom)` groups are singletons, so they are skipped.
+///
+/// # Why they are wrong, and why they are pinned rather than fixed
+///
+/// The message says "selector resolution may shuffle after edits". For the two
+/// walls that is precisely backwards: their `local_index` is derived from bbox
+/// RADIAL EXTENT (outer wall 0, bore 1), not from centroid position or TopExp
+/// enumeration order, which is the whole reason the ordering survives an OCCT
+/// upgrade. Teaching the tie scan to fall back to a non-centroid discriminator
+/// is the real fix, and it lives in `topology_attribute_propagation.rs` —
+/// outside this task's module scope. Pinning the current output here means the
+/// false positive is a documented, observable fact: whoever does implement that
+/// fallback will see this test go red and update it deliberately, and any
+/// reader who meets the diagnostic in the wild can find it explained.
+///
+/// The `let fs = faces(body)` binding is load-bearing: it is what opens the
+/// task #5196 L2 selector-presence gate that the tie scan sits behind. Without
+/// it the scan never runs and this fixture emits nothing.
+///
+/// Severity is Info and the build still succeeds — attribute-fragility
+/// detection is auxiliary metadata and never regresses a realization to Failed.
+#[test]
+fn engine_build_tube_trips_the_centroid_tie_scan_false_positive() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled =
+        compile_no_errors("structure A { let body = tube(10mm, 5mm, 20mm) let fs = faces(body) }");
+    let mut engine = engine_with_occt();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&build_result);
+
+    // Filter by CODE only, never severity — the L3 Warning→Info downgrade
+    // (task #5196) would make a severity filter vacuous.
+    let ties: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned))
+        .collect();
+
+    // The scan emits AT MOST ONE diagnostic per (feature_id, role) group, and
+    // this single-realization fixture has exactly two groups that can tie, so
+    // the count is structural rather than an OCCT accident.
+    let by_role = |role: &str| -> usize {
+        ties.iter()
+            .filter(|d| d.message.contains(&format!("role '{role}'")))
+            .count()
+    };
+    assert_eq!(
+        (by_role("Side"), by_role("NewEdge"), ties.len()),
+        (1, 1, 2),
+        "expected exactly one tie diagnostic for the two on-axis Side walls and one for the \
+         concentric NewEdge cap circles, and nothing else; got:\n{ties:#?}"
+    );
+    for d in &ties {
+        assert_eq!(
+            d.severity,
+            Severity::Info,
+            "tie diagnostics are advisory and must stay Info: {d:?}"
+        );
+    }
+
+    // The tied local_index values are deliberately NOT pinned: the Side pair is
+    // always {0, 1}, but which NewEdge indices collide depends on OCCT's seam
+    // ordering, and that variance is not part of any contract.
+    assert!(
+        ties.iter()
+            .all(|d| d.message.contains("A#realization[0]")),
+        "every tie diagnostic must name the tube's own realization: {ties:#?}"
     );
 }

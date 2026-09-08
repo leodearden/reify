@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 
 use reify_core::RealizationNodeId;
+use reify_eval::primitive_attribute_seed::parse_bbox_radial_extent;
 use reify_eval::{seed_primitive_attributes, seed_primitive_attributes_for_handle};
 use reify_ir::{
     AxisSign, CapKind, FeatureId, GeometryOp, GeometryQuery, KernelHandle, KernelId, Role,
@@ -1254,38 +1255,6 @@ fn seed_primitive_attributes_cone_pointed_has_no_top_cap() {
 
 // ─── task-6550: Tube → 1×Cap(Top) + 1×Cap(Bottom) + 2×Side (outer wall + bore) ─
 
-/// Parse the radial extent of a face's bounding box: `max(|xmin|, |ymin|)`.
-///
-/// Format (same as everywhere else `GeometryQuery::BoundingBox` is consumed):
-/// `{"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}`.
-///
-/// Reading the MIN corner alone is sound here because both of a tube's lateral
-/// walls are full 360° revolutions centred on the z axis, so
-/// `|xmin| == |ymin| == r` up to `Bnd_Box`'s symmetric ~1e-7 tolerance gap.
-/// This mirrors what the seeder itself does with its `parse_bbox_xyz_min`
-/// helper (which is `pub(crate)` and therefore not reachable from an
-/// integration test).
-fn parse_bbox_radial_extent(s: &str) -> f64 {
-    let mut xmin = f64::NAN;
-    let mut ymin = f64::NAN;
-    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
-    for pair in trimmed.split(',') {
-        let mut parts = pair.splitn(2, ':');
-        let key = parts.next().unwrap().trim().trim_matches('"');
-        let val: f64 = parts.next().unwrap().trim().parse().unwrap();
-        match key {
-            "xmin" => xmin = val,
-            "ymin" => ymin = val,
-            _ => {}
-        }
-    }
-    assert!(
-        xmin.is_finite() && ymin.is_finite(),
-        "BoundingBox payload missing xmin/ymin: {s:?}"
-    );
-    xmin.abs().max(ymin.abs())
-}
-
 /// A tube is `boolean_cut(cylinder(outer_r), cylinder(inner_r))` at the kernel
 /// layer, and OCCT 7.8 emits exactly 4 analytic faces for it: the outer wall,
 /// the top annulus, the bottom annulus, and the bore.
@@ -1447,13 +1416,15 @@ fn seed_primitive_attributes_tube_classifies_annuli_and_orders_walls_by_radius()
     let mut extent_by_local_index: Vec<(u32, f64)> = side_faces
         .iter()
         .map(|&(face_id, local_index)| {
+            // The seeder's OWN extent derivation, not a re-implementation of
+            // it: a private copy here could drift from `max(|xmin|, |ymin|)`
+            // and quietly stop testing the ordering the seeder actually makes.
             let bbox = kernel
                 .query(&GeometryQuery::BoundingBox(face_id))
                 .expect("BoundingBox on a tube wall face should succeed");
-            let Value::String(s) = bbox else {
-                panic!("BoundingBox should return a JSON string, got {bbox:?}")
-            };
-            (local_index, parse_bbox_radial_extent(&s))
+            let extent = parse_bbox_radial_extent(&bbox)
+                .expect("the tube wall's BoundingBox payload must parse");
+            (local_index, extent)
         })
         .collect();
     extent_by_local_index.sort_by_key(|&(local_index, _)| local_index);
