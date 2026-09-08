@@ -10,11 +10,17 @@
 //! rather than rejecting them — see `make_loop_closure_record` for the
 //! per-entry shape. Open-chain mechanisms carry an empty list.
 //!
-//! On a `duplicate_solid` error the Map additionally carries `error`,
-//! `error_path1`, `error_path2`, and `error_message` fields (`error_path1`
-//! and `error_path2` are empty Lists for `duplicate_solid` — they were
-//! used by the v0.1 `closed_chain` error which is no longer emitted).
-//! See plan §"Mechanism Map shape".
+//! On a `duplicate_solid` or `world_parented_closure` error the Map
+//! additionally carries `error`, `error_path1`, `error_path2`, and
+//! `error_message` fields (`error_path1` and `error_path2` are empty Lists
+//! for both — they were used by the v0.1 `closed_chain` error which is no
+//! longer emitted). See plan §"Mechanism Map shape".
+//!
+//! `world_parented_closure` (task 7186) rejects a CLOSING edge whose
+//! `parent` is the world sentinel: such a closure has no joint on the
+//! closing side, so the loop-closure solver has no free variable to satisfy
+//! it. A plain OPEN edge parented to `world()` is the common case and is
+//! unaffected.
 //!
 //! Diagnostic emission via `EvalResult.diagnostics` is deferred to the
 //! snapshot/eval-pipeline integration (`DiagnosticCode::KinematicClosedChain`
@@ -426,6 +432,36 @@ fn make_duplicate_solid_error(mech_map: &BTreeMap<Value, Value>, message: String
     Value::Map(new_map)
 }
 
+/// Decorate an existing Mechanism Map with `world_parented_closure` error
+/// fields. Direct analogy of [`make_duplicate_solid_error`] — same four-key
+/// decoration (`error`, `error_message`, empty-List `error_path1` /
+/// `error_path2`), same preserve-everything-else contract — stamped with this
+/// error's own discriminator rather than a second error vocabulary.
+///
+/// The sole caller is the world-parent guard in `append_body`'s
+/// parent-conflict branch (task 7186 review fix 1); the WHY lives at that
+/// call site.
+fn make_world_parented_closure_error(mech_map: &BTreeMap<Value, Value>, message: String) -> Value {
+    let mut new_map = mech_map.clone();
+    new_map.insert(
+        Value::String("error".to_string()),
+        Value::String("world_parented_closure".to_string()),
+    );
+    new_map.insert(
+        Value::String("error_message".to_string()),
+        Value::String(message),
+    );
+    new_map.insert(
+        Value::String("error_path1".to_string()),
+        Value::List(Vec::new()),
+    );
+    new_map.insert(
+        Value::String("error_path2".to_string()),
+        Value::List(Vec::new()),
+    );
+    Value::Map(new_map)
+}
+
 /// Build a single loop-closure record `Value::Map` with the five-key shape:
 /// `{ body_id, closing_joint, kind="loop_closure", path_a, path_b }`.
 ///
@@ -491,7 +527,11 @@ fn make_loop_closure_record(
 ///
 /// Duplicate-solid detection still produces an error Map (unchanged
 /// from v0.1). Closed-chain edges are now recorded as loop closures
-/// (v0.2 behaviour — no error emitted).
+/// (v0.2 behaviour — no error emitted), with ONE exception: a closing
+/// edge whose `parent` is the world sentinel produces a
+/// `world_parented_closure` error Map (task 7186 — see the guard's own
+/// comment in the parent-conflict branch for why rejection beats every
+/// softer remedy).
 fn append_body(
     mech_map: &BTreeMap<Value, Value>,
     solid: Value,
@@ -565,6 +605,56 @@ fn append_body(
     let skip_jp_insert = if let Some(existing_parent) = joint_parents.get(&at)
         && existing_parent != &parent
     {
+        // Task 7186 review fix 1: reject a CLOSING edge parented to the world
+        // sentinel at build time, before any loop-closure record is built.
+        //
+        // Why this shape and no other: `path_b` below is
+        // `[world] ++ walk_to_world(joint_parents, parent)`, and
+        // `walk_to_world` returns an EMPTY vec iff `is_world(parent)` — it
+        // breaks before pushing only for the world sentinel, whereas a
+        // non-world parent with no recorded ancestor still yields `[parent]`.
+        // So `path_b == [world]` (len 1) IFF `is_world(&parent)`; the guard is
+        // exact and cannot over-reject (pinned by the negative control
+        // `non_world_parented_closing_edge_still_records`).
+        //
+        // Why a loud rejection and not a softer repair. Both softer remedies —
+        // relaxing `strip_world_sentinel` to admit `[world]`, or pushing an
+        // identity anchor link so `path_b` reaches len 2 — produce a
+        // WELL-FORMED but structurally UNSOLVABLE record: with `parent ==
+        // world`, chain_b holds no joints; `is_zero_dof_joint`
+        // (loop_closure.rs) correctly keeps the 0-DOF link out of `free_b`, so
+        // `free_b == []` for ANY bindings; `validate_loop_closure_inputs`
+        // iterates `free_b` only, so an empty one validates; and `newton_solve`
+        // at n = 0 returns `NotConverged { x: [] }`, which snapshot.rs accepts
+        // on the same arm as `Converged`. Measured on the 5-arg form (which
+        // already reaches that state today via the pose link): bodies at
+        // 0.5 / 1.5 / 1.7 m carrying a residual twist of [0,0,0,-1.3,0,0] — a
+        // 1.3 m unsatisfied closure returned as a normal Snapshot Map with no
+        // diagnostic. Both remedies would therefore trade a loud
+        // whole-mechanism `Undef` for a SILENT wrong answer. The solver varies
+        // only the CLOSING side's joints; a world-parented closing edge is a
+        // GROUNDING constraint whose only candidate free variables live on
+        // chain_a, so making it solvable is a solver redesign, not a fix here.
+        //
+        // Scope: only this world-parent subcase is closed, because it is
+        // decidable from the path shape alone and step-2 (dropping `at` from
+        // `path_b`) made it newly reachable. The GENERAL `free_b.is_empty()`
+        // case — every chain_b joint directly bound — has the same structural
+        // unsolvability but is not statically decidable here; it is the
+        // verdict-integrity surface owned by #7185.
+        //
+        // The guard is inside the parent-conflict arm on purpose: a plain OPEN
+        // edge `body(m, s, j, world)` is the common case and is untouched.
+        if is_world(&parent) {
+            return make_world_parented_closure_error(
+                mech_map,
+                "closing edge parented to world(): a loop closure whose closing edge attaches \
+                 to world() has no joint on the closing side, so the loop-closure solver has \
+                 no free variable to satisfy it. Parent the closing edge to a joint on the \
+                 other branch of the loop instead."
+                    .to_string(),
+            );
+        }
         let world = make_world_sentinel();
         let mut path_a = vec![world.clone()];
         path_a.extend(walk_to_world(&joint_parents, existing_parent));
@@ -1380,11 +1470,7 @@ mod tests {
         let (path_a, path_b) = only_closure_paths(&m2);
         assert_eq!(
             path_b,
-            Value::List(vec![
-                world.clone(),
-                j_b.clone(),
-                expected_pose_link(&pose)
-            ]),
+            Value::List(vec![world.clone(), j_b.clone(), expected_pose_link(&pose)]),
             "path_b must carry the closing call's own pose as a trailing 0-DOF link"
         );
         assert_eq!(
@@ -1502,7 +1588,6 @@ mod tests {
             "path_b is unchanged — the closing call's pose is identity"
         );
     }
-
 
     // ── world-parented closing edge is rejected (task 7186 review fix 1) ──
 
