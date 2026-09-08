@@ -488,3 +488,196 @@ fn rounded_box_fuse_chain_unifies_to_a_ten_face_prism() {
          assertion guards against material loss, it is NOT the RED signal. {summary}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Repr coherence for the *_with_history variants.
+//
+// `extract_boolean_history` is the single shared body behind
+// `boolean_fuse_with_history`, `boolean_cut_with_history` and
+// `boolean_common_with_history`. It stores `op.Shape()` RAW and then builds
+// `face_map()` / `edge_map()` from it, so the with-history path hands back a
+// fragmented COMPOUND while the plain path returns a clean unified SOLID — an
+// incoherent kernel contract, and the reason the eval realization path (which
+// routes every boolean through `execute_with_history`) still sees the
+// un-normalized topology.
+//
+// Normalizing there is not enough on its own: unification RE-IDENTIFIES faces.
+// When it merges two coplanar faces the survivor is a new TShape that
+// `BRepAlgoAPI::Modified()` never reported, so a naive "normalize, then look up
+// the old children" would miss every `result_map.FindIndex` and blow
+// `silent_drop_count` past the `== 0` that `boolean_op_history_integration.rs`
+// and `topology_diagnostic_denoise_e2e.rs` both depend on. The boolean history
+// must be COMPOSED with `ShapeUpgrade_UnifySameDomain::History()`.
+// ---------------------------------------------------------------------------
+
+/// Two abutting 10×10×10 cubes — the same fixture
+/// `topology_selectors_integration.rs` uses, so the face count is
+/// independently corroborated there.
+fn two_abutting_cubes(kernel: &mut OcctKernel) -> (GeometryHandleId, GeometryHandleId) {
+    let a = cube(kernel, 10.0);
+    let b_raw = cube(kernel, 10.0);
+    let b = translated(kernel, b_raw, 10.0, 0.0, 0.0);
+    (a, b)
+}
+
+/// Collect the result-side indices each parent maps onto, as
+/// `(parent_index, result_subshape_index)` pairs drawn from BOTH the Modified
+/// and Generated records.
+fn result_indices(records: &[reify_ir::HistoryRecord]) -> Vec<(u8, u32)> {
+    records
+        .iter()
+        .map(|r| (r.parent_index, r.result_subshape_index))
+        .collect()
+}
+
+/// Shared well-formedness checks for a normalized boolean history: no silent
+/// drops, and every result index inside the LIVE face/edge maps of the shape
+/// actually stored on the handle. Bounds are computed from the result rather
+/// than hard-coded — this is what catches a history captured against the
+/// PRE-unification numbering.
+fn assert_history_indices_are_in_the_stored_result(
+    kernel: &mut OcctKernel,
+    result: GeometryHandleId,
+    records: &reify_ir::BooleanOpHistoryRecords,
+    what: &str,
+) -> (usize, usize) {
+    let n_faces = kernel.extract_faces(result).expect("extract_faces").len();
+    let n_edges = kernel.extract_edges(result).expect("extract_edges").len();
+
+    assert_eq!(
+        records.silent_drop_count, 0,
+        "{what}: silent_drop_count must stay 0 — a child the result map cannot \
+         resolve. Composing the unify history is what keeps this at 0; a naive \
+         normalize-then-lookup would blow it up, and \
+         boolean_op_history_integration.rs / topology_diagnostic_denoise_e2e.rs \
+         both depend on the 0"
+    );
+
+    for (label, recs, bound) in [
+        ("face_modified", &records.face_modified, n_faces),
+        ("face_generated", &records.face_generated, n_faces),
+        ("edge_modified", &records.edge_modified, n_edges),
+        ("edge_generated", &records.edge_generated, n_edges),
+    ] {
+        for (parent, idx) in result_indices(recs) {
+            assert!(
+                (idx as usize) < bound,
+                "{what}: {label} record (parent {parent}) points at result index \
+                 {idx}, outside the stored result's {bound} sub-shapes — the \
+                 history was captured against the pre-unification numbering"
+            );
+        }
+    }
+    (n_faces, n_edges)
+}
+
+#[test]
+fn fuse_with_history_on_abutting_boxes_records_indices_into_the_unified_result() {
+    let mut kernel = OcctKernel::new();
+    let (a, b) = two_abutting_cubes(&mut kernel);
+    let (handle, records) = kernel
+        .boolean_fuse_with_history(a, b)
+        .expect("fuse with history should succeed");
+    let result = handle.id;
+
+    // The stored shape must be the unified SOLID, not the raw COMPOUND.
+    // `IsWatertight` is the discriminator here, NOT `repr_of`: the Rust
+    // with-history arms stamp a hardcoded `BRepKind::Solid` today, so the repr
+    // would agree even while the shape underneath is a COMPOUND.
+    assert!(
+        bool_query(&kernel, GeometryQuery::IsWatertight(result)),
+        "the with-history result must be the normalized SOLID; a raw COMPOUND \
+         fails the SOLID|COMPSOLID|SHELL guard"
+    );
+    assert_eq!(
+        kernel.repr_of(result),
+        Some(BRepKind::Solid),
+        "the with-history arms must stamp the repr from the real shape, like \
+         the plain arms already do"
+    );
+
+    let (n_faces, n_edges) =
+        assert_history_indices_are_in_the_stored_result(&mut kernel, result, &records, "fuse");
+
+    assert_eq!(
+        n_faces, 6,
+        "two abutting 10mm cubes fuse into a 20x10x10 prism: 6 faces \
+         (RED today: a COMPOUND with 10, the count topology_selectors_integration.rs \
+         independently pinned before this fix)"
+    );
+    assert_eq!(n_edges, 12, "...and 12 edges");
+
+    // Each of the four coplanar face PAIRS that unification merges (top,
+    // bottom, front, back — each split either side of the X=10 seam) must
+    // still resolve from BOTH parents, onto the SAME surviving result index.
+    // Many-to-one is legitimate; a MISSING record is not.
+    let from_left: std::collections::HashSet<u32> = records
+        .face_modified
+        .iter()
+        .filter(|r| r.parent_index == 0)
+        .map(|r| r.result_subshape_index)
+        .collect();
+    let from_right: std::collections::HashSet<u32> = records
+        .face_modified
+        .iter()
+        .filter(|r| r.parent_index == 1)
+        .map(|r| r.result_subshape_index)
+        .collect();
+    let shared: Vec<u32> = {
+        let mut v: Vec<u32> = from_left.intersection(&from_right).copied().collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(
+        shared.len(),
+        4,
+        "exactly 4 result faces must be reported as Modified by BOTH parents — \
+         the top/bottom/front/back pairs unification merged across the X=10 \
+         seam. Got {shared:?} (left→{from_left:?}, right→{from_right:?}). \
+         A pair collapsing to one record means the merged parent lost its \
+         provenance"
+    );
+
+    // Every face of the result must be reachable from some record: a merged
+    // survivor with no record at all is exactly the correspondence loss this
+    // composition exists to prevent.
+    let covered: std::collections::HashSet<u32> = records
+        .face_modified
+        .iter()
+        .chain(records.face_generated.iter())
+        .map(|r| r.result_subshape_index)
+        .collect();
+    let missing: Vec<u32> = (0..n_faces as u32).filter(|i| !covered.contains(i)).collect();
+    assert!(
+        missing.is_empty(),
+        "result face(s) {missing:?} have no Modified/Generated record; every \
+         face of the unified result must trace back to a parent"
+    );
+}
+
+#[test]
+fn cut_with_history_on_notched_box_records_indices_into_the_unified_result() {
+    let mut kernel = OcctKernel::new();
+    let block = cube(&mut kernel, 10.0); // [-5, +5]^3
+    let notch_raw = cube(&mut kernel, 4.0);
+    let notch = translated(&mut kernel, notch_raw, 5.0, 5.0, 5.0); // corner bite
+    let (handle, records) = kernel
+        .boolean_cut_with_history(block, notch)
+        .expect("cut with history should succeed");
+    let result = handle.id;
+
+    assert!(
+        bool_query(&kernel, GeometryQuery::IsWatertight(result)),
+        "the with-history cut result must be the normalized SOLID"
+    );
+    assert_eq!(
+        kernel.repr_of(result),
+        Some(BRepKind::Solid),
+        "the with-history cut arm must stamp the repr from the real shape"
+    );
+
+    // Counts are deliberately NOT hard-coded here — the assertion is that
+    // every recorded index lands inside the LIVE maps of the shape actually
+    // stored, which is what a stale pre-unification numbering violates.
+    assert_history_indices_are_in_the_stored_result(&mut kernel, result, &records, "cut");
+}
