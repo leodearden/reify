@@ -675,8 +675,57 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
 //   - no solids          → leave the compound untouched (nothing to tighten).
 //
 // Any non-COMPOUND input is returned unchanged.
+//
+// LOSSLESSNESS PRECONDITION (amendment, esc review #2): the rule above collects
+// only `TopAbs_SOLID` sub-shapes, so applying it to a MIXED compound — one that
+// also carries a free SHELL / FACE / EDGE / VERTEX, which `BRepAlgoAPI_Common`
+// and `BRepAlgoAPI_Cut` do legitimately emit when operands touch tangentially
+// or the result degenerates — would silently DISCARD that geometry. That was
+// tolerable while the rule was confined to `fuse_shape_list` (n-ary fuse of
+// solid instances); it is not, now that every boolean in the system routes
+// through it, and `extract_boolean_history` builds its result face/edge maps
+// from the returned shape, so a child living on a dropped free face would stop
+// resolving and inflate `silent_drop_count`. `compound_holds_only_solids`
+// therefore gates the whole unwrap: a mixed compound is returned VERBATIM,
+// accepting the (pre-existing) COMPOUND symptoms for that shape rather than
+// losing geometry to fix them.
+//
+// MEASURED (OCCT 7.8, through the kernel's own API — see
+// `empty_boolean_results_stay_untouched_compounds`): no solid-solid boolean in
+// this kernel reaches the mixed case TODAY. `BRepAlgoAPI_Common` on cubes that
+// touch at a face or an edge returns an EMPTY compound rather than the free
+// contact face, and a boolean whose operand is a free FACE is rejected before
+// it reaches OCCT. So this gate is defense-in-depth for a non-solid operand
+// becoming reachable — not a live path — and it costs one direct-children walk.
+//
+// Descends through nested COMPOUNDs so a compound-of-compounds-of-solids — the
+// shape the general SetArguments/SetTools BOP path can produce — is still
+// unwrappable. An empty compound trivially satisfies the predicate and then
+// falls out of the `solids.Extent() == 0` arm untouched.
+bool compound_holds_only_solids(const TopoDS_Shape& shape) {
+    for (TopoDS_Iterator it(shape); it.More(); it.Next()) {
+        const TopAbs_ShapeEnum child_type = it.Value().ShapeType();
+        if (child_type == TopAbs_SOLID || child_type == TopAbs_COMPSOLID) {
+            continue;
+        }
+        if (child_type == TopAbs_COMPOUND) {
+            if (!compound_holds_only_solids(it.Value())) {
+                return false;
+            }
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
     if (raw.ShapeType() != TopAbs_COMPOUND) {
+        return raw;
+    }
+    if (!compound_holds_only_solids(raw)) {
+        // Mixed compound: unwrapping would drop the free lower-dimensional
+        // children. Preserve the topology exactly as OCCT handed it over.
         return raw;
     }
     TopTools_ListOfShape solids;
@@ -696,6 +745,77 @@ TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
         return cs;
     }
     return raw;
+}
+
+// True iff `shape`'s top-level solids are PAIRWISE bbox-disjoint — i.e. no two
+// of them can touch, so `ShapeUpgrade_UnifySameDomain` provably has nothing to
+// merge across them and can be skipped (see the call site for why that matters).
+//
+// Returns false for anything with fewer than two top-level solids: a single
+// solid is exactly the case unification exists for, and must never be skipped.
+//
+// Boxes are enlarged by OCCT's own `Bnd_Box` gap only (`BRepBndLib::Add`
+// already inflates by the shape tolerance); `Bnd_Box::IsOut` is then the exact
+// separation test. Any doubt resolves to "not disjoint", which just means the
+// unification pass runs — i.e. the conservative direction.
+bool boolean_result_solids_are_pairwise_disjoint(const TopoDS_Shape& shape) {
+    std::vector<Bnd_Box> boxes;
+    for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+        Bnd_Box box;
+        BRepBndLib::Add(ex.Current(), box);
+        if (box.IsVoid()) {
+            return false;
+        }
+        boxes.push_back(box);
+    }
+    if (boxes.size() < 2) {
+        return false;
+    }
+    for (std::size_t i = 0; i + 1 < boxes.size(); ++i) {
+        for (std::size_t j = i + 1; j < boxes.size(); ++j) {
+            if (!boxes[i].IsOut(boxes[j])) {
+                // First overlap wins: the abutting case exits here immediately.
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// True iff `unified` encloses the same volume as `before` to within a relative
+// tolerance — the fail-soft acceptance test for a `ShapeUpgrade_UnifySameDomain`
+// pass (see `normalize_boolean_result`).
+//
+// Vacuously true when `before` carries no solids: there is no volume to compare
+// and the check cannot discriminate.
+bool unify_history_preserves_volume(const TopoDS_Shape& before, const TopoDS_Shape& unified) {
+    // Relative, not absolute: the same predicate has to hold for a 1 mm³ detail
+    // and a 10⁹ mm³ enclosure. 1e-9 is ~three orders above f64 round-off on the
+    // O(faces) Gauss sum and far below any real topological loss (the cheapest
+    // possible corruption — dropping one face of a cube — is a 100% error).
+    constexpr double kVolumeRelTol = 1.0e-9;
+    bool has_solid = false;
+    for (TopExp_Explorer ex(before, TopAbs_SOLID); ex.More(); ex.Next()) {
+        has_solid = true;
+        break;
+    }
+    if (!has_solid) {
+        return true;
+    }
+    GProp_GProps before_props;
+    BRepGProp::VolumeProperties(before, before_props);
+    GProp_GProps after_props;
+    BRepGProp::VolumeProperties(unified, after_props);
+    const double v_before = before_props.Mass();
+    const double v_after = after_props.Mass();
+    if (!std::isfinite(v_before) || !std::isfinite(v_after)) {
+        return false;
+    }
+    const double scale = std::abs(v_before);
+    if (scale == 0.0) {
+        return std::abs(v_after) == 0.0;
+    }
+    return std::abs(v_after - v_before) <= kVolumeRelTol * scale;
 }
 
 // The single normalization entry point shared by `boolean_fuse`,
@@ -723,6 +843,50 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
                                       Handle(BRepTools_History)& out_unify_history) {
     TopoDS_Shape unwrapped = unwrap_boolean_compound(raw);
 
+    // PAIRWISE-DISJOINT SHORT-CIRCUIT (amendment, esc review #4).
+    //
+    // Unification is a full topology rebuild whose cost scales with the FACE
+    // COUNT of the whole shape, and `fuse_shape_list` is the shared tail of all
+    // four pattern realizers — so a 1000-instance pattern would otherwise pay a
+    // rebuild over every face of every instance. When the unwrapped result's
+    // top-level solids are pairwise bbox-disjoint, no two of them share a single
+    // point, so no face of one can be same-domain-CONTIGUOUS with a face of
+    // another and there is provably nothing to merge ACROSS solids. (Faces
+    // internal to one solid are untouched by this short-circuit; every operand
+    // reaching a boolean is itself either a primitive or an already-normalized
+    // boolean result, so an un-merged internal seam cannot originate here.)
+    //
+    // Cost of the check is O(N²) cheap bbox overlap tests with an early exit on
+    // the FIRST overlap, so the abutting case — where unification is the point —
+    // bails out almost immediately; the disjoint case pays the full N²
+    // (≈500k six-float comparisons at N=1000, microseconds) to save the rebuild.
+    // The single-solid case, which is the overwhelmingly common binary boolean
+    // and the one unification exists for, never takes this branch.
+    //
+    // MEASURED (release build, OCCT 7.8, `fuse_all` over N unit boxes, 3 reps;
+    // the host was concurrently loaded, hence the spread — the disjoint-arm
+    // ratio is stable across every rep):
+    //
+    //   disjoint N=100   unify-always 182 / 382 / 378 ms   short-circuit  94 / 100 / 191 ms
+    //   disjoint N=1000  unify-always 2.30 / 3.91 / 2.93 s short-circuit 1.20 / 1.27 / 1.25 s
+    //   abutting N=1000  unify-always 5.86 / 8.19 / 6.07 s short-circuit 4.75 / 10.9 / 4.84 s
+    //
+    // i.e. the pass roughly DOUBLED disjoint pattern realization (~2.3× at the
+    // medians) for zero topological benefit, and the abutting control — which
+    // does not take this branch — shows no systematic difference. Face counts
+    // were bit-identical across both arms (600 at N=100, 6000 at N=1000
+    // disjoint; 6 abutting), which is the correctness-neutrality evidence:
+    // `disjoint_pattern_fuse_merges_nothing_and_abutting_one_does` in
+    // `boolean_result_normalization_integration.rs` pins it as a standing guard,
+    // since the existing `boolean_pass_count()` perf guard counts BOP passes
+    // only and is structurally blind to this cost.
+    if (boolean_result_solids_are_pairwise_disjoint(unwrapped)) {
+        // NULL history — callers must read that as "every child survived
+        // unchanged", which is exactly true when no unification pass ran.
+        out_unify_history = Handle(BRepTools_History)();
+        return unwrapped;
+    }
+
     // Merge same-domain faces and edges. A boolean leaves the seam where its
     // operands met even when both sides lie on ONE surface, so a fuse chain
     // (e.g. the compiler's `rounded_box` desugar — five successive fuses)
@@ -746,17 +910,55 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
         /*UnifyEdges=*/Standard_True,
         /*UnifyFaces=*/Standard_True,
         /*ConcatBSplines=*/Standard_False);
-    unifier.Build();
-    // ShapeUpgrade_UnifySameDomain provides a history place holder and collects
-    // into it BY DEFAULT (documented at ShapeUpgrade_UnifySameDomain.hxx), so
-    // this is non-null after Build().
-    out_unify_history = unifier.History();
+    TopoDS_Shape unified;
+    Handle(BRepTools_History) unify_history;
+    try {
+        unifier.Build();
+        unified = unifier.Shape();
+        // ShapeUpgrade_UnifySameDomain provides a history place holder and
+        // collects into it BY DEFAULT (documented at
+        // ShapeUpgrade_UnifySameDomain.hxx), so this is non-null after Build().
+        unify_history = unifier.History();
+    } catch (const Standard_Failure&) {
+        // Fall through to the fail-soft check below with a null `unified`.
+        unified = TopoDS_Shape();
+    }
+
+    // FAIL-SOFT ACCEPTANCE (amendment, esc review #3).
+    //
+    // `ShapeUpgrade_UnifySameDomain` has NO `IsDone()`, raises nothing on a bad
+    // merge, and is known to occasionally produce a degenerate or invalid face
+    // on tangent / periodic surfaces. Since this pass now sits on the single
+    // chokepoint every boolean flows through, accepting its output blind would
+    // let ONE bad unification corrupt the stored shape for every downstream
+    // consumer (volume, mass, STEP export, selectors) with no error anywhere:
+    // `is_watertight` would go false, but volume / mass / export would silently
+    // use the bad body.
+    //
+    // Volume is the cheap discriminator (O(faces), the same order as the pass
+    // itself, versus a full `BRepCheck_Analyzer` sweep) and it is exactly what
+    // unification must NOT change: merging same-domain faces re-describes the
+    // boundary, it does not move it. So: if the unified body's volume drifts
+    // from the unwrapped one's, or the shape came back null/empty, discard the
+    // unification and return `unwrapped` with a NULL history — which callers
+    // already treat as "every child survived unchanged", keeping
+    // `extract_boolean_history` correct on the fallback path too.
+    //
+    // The check is skipped when the unwrapped shape carries no volume (no
+    // solids), where it cannot discriminate; that shape has nothing for the
+    // unifier to get wrong at the solid level either.
+    const bool unified_usable = !unified.IsNull() && unify_history_preserves_volume(unwrapped, unified);
+    if (!unified_usable) {
+        out_unify_history = Handle(BRepTools_History)();
+        return unwrapped;
+    }
+    out_unify_history = unify_history;
 
     // Unification can re-wrap its output in a compound, so tighten once more.
     // Unwrapping never changes any sub-shape's identity — it only re-wraps the
     // solids — so indices taken from the unify history stay valid against the
     // returned shape's face/edge maps.
-    return unwrap_boolean_compound(unifier.Shape());
+    return unwrap_boolean_compound(unified);
 }
 
 // Convenience overload for the callers that do not track provenance
@@ -783,7 +985,10 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
 // The result is normalized by the shared `normalize_boolean_result` above,
 // exactly as the three binary boolean ops are (task 7054): the COMPOUND the
 // general BOP path always wraps its output in is tightened to the tightest
-// topology-preserving type, and same-domain faces/edges are merged.  See that helper for the full contract; the short version is that a
+// topology-preserving type, and same-domain faces/edges are merged — the
+// latter skipped when the result's solids are pairwise bbox-disjoint and there
+// is provably nothing to merge, which is the common pattern-realization case
+// and where that skip recovers the whole cost of the pass.  See that helper for the full contract; the short version is that a
 // bare COMPOUND is not watertight-queryable (`is_watertight` excludes it),
 // whereas the SOLID / COMPSOLID it unwraps to preserves total volume and
 // per-solid component count while passing the SOLID|COMPSOLID|SHELL guard.

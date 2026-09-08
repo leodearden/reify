@@ -758,3 +758,266 @@ fn cut_with_history_on_notched_box_indexes_into_the_unified_result() {
     );
     assert_history_indices_are_in_the_stored_result(&mut kernel, result, &records, "corner notch");
 }
+
+#[test]
+fn common_with_history_records_indices_into_the_unified_result() {
+    let mut kernel = OcctKernel::new();
+    // Two 10mm cubes with a +5mm X offset: the intersection is the single
+    // 5x10x10 slab [0,5]x[-5,5]x[-5,5]. Mirrors `cut_with_history_...` above so
+    // the third `*_with_history` arm — the one `extract_boolean_history` shares
+    // with the other two — is exercised rather than assumed.
+    let a = cube(&mut kernel, 10.0);
+    let b_raw = cube(&mut kernel, 10.0);
+    let b = translated(&mut kernel, b_raw, 5.0, 0.0, 0.0);
+    let (handle, records) = kernel
+        .boolean_common_with_history(a, b)
+        .expect("common with history should succeed");
+    let result = handle.id;
+
+    assert!(
+        bool_query(&kernel, GeometryQuery::IsWatertight(result)),
+        "the with-history common result must be the normalized SOLID"
+    );
+    assert_eq!(
+        kernel.repr_of(result),
+        Some(BRepKind::Solid),
+        "the with-history common arm must stamp the repr from the real shape, \
+         not the hardcoded BRepKind::Solid it used before task 7054 (which \
+         happened to agree here, and would NOT for a disjoint result)"
+    );
+    assert_eq!(
+        records.silent_drop_count, 0,
+        "silent_drop_count must stay 0 on the common arm too — the unify \
+         history is composed in `extract_boolean_history`, which all three \
+         *_with_history variants share"
+    );
+
+    assert_history_indices_are_in_the_stored_result(&mut kernel, result, &records, "common");
+}
+
+/// The `Compound` branch of the CHANGED with-history arms. `binary_fuse_of_
+/// disjoint_boxes_is_a_watertight_compsolid` pins it on the plain path only;
+/// the with-history arms took their repr from a separate hardcoded
+/// `BRepKind::Solid` until task 7054, so the branch needs its own coverage here.
+#[test]
+fn disjoint_fuse_with_history_is_a_watertight_compsolid() {
+    let mut kernel = OcctKernel::new();
+    let a = cube(&mut kernel, 10.0); // [-5, +5]
+    let b_raw = cube(&mut kernel, 10.0);
+    let b = translated(&mut kernel, b_raw, 40.0, 0.0, 0.0); // [35, 45] — disjoint
+    let (handle, records) = kernel
+        .boolean_fuse_with_history(a, b)
+        .expect("disjoint fuse with history should succeed");
+    let result = handle.id;
+
+    assert_eq!(
+        kernel.repr_of(result),
+        Some(BRepKind::Compound),
+        "a disjoint with-history fuse must classify from the real shape like \
+         the plain arm does; the pre-7054 hardcoded BRepKind::Solid was a lie \
+         here, and `run_local_feature_with_history` REJECTS on this value"
+    );
+    assert!(
+        bool_query(&kernel, GeometryQuery::IsWatertight(result)),
+        "a disjoint with-history fuse must be rewrapped as a COMPSOLID, which \
+         passes the SOLID|COMPSOLID|SHELL guard"
+    );
+    assert_history_indices_are_in_the_stored_result(&mut kernel, result, &records, "disjoint fuse");
+}
+
+/// The reach of the `BRepKind::Solid` guard in `run_local_feature_with_history`,
+/// pinned deliberately rather than left as an incidental consequence.
+///
+/// Task 7054 made the binary boolean arms stamp the TRUE repr, so a disjoint
+/// `union` is now `BRepKind::Compound` and the curated-fillet path — the exact
+/// `fillet(body, edges, r)` designer idiom — rejects it up front instead of
+/// handing a multi-body aggregate to `BRepFilletAPI_MakeFillet`. The n-ary
+/// `fuse_all` path has behaved this way since task 5213; this is the binary
+/// path catching up, not a new class of failure.
+#[test]
+fn curated_fillet_over_a_disjoint_fuse_is_rejected_as_non_solid() {
+    let mut kernel = OcctKernel::new();
+    let a = cube(&mut kernel, 10.0);
+    let b_raw = cube(&mut kernel, 10.0);
+    let b = translated(&mut kernel, b_raw, 40.0, 0.0, 0.0); // disjoint
+    let fused = kernel
+        .execute(&GeometryOp::Union { left: a, right: b })
+        .expect("disjoint union should succeed")
+        .id;
+    let edges = kernel.extract_edges(fused).expect("extract_edges");
+    assert!(
+        !edges.is_empty(),
+        "the disjoint fuse must still expose its edges; the rejection below has \
+         to be about the SHAPE KIND, not an empty selection"
+    );
+
+    let err = kernel
+        .fillet_edges_with_history(fused, 0.5, &edges[..1])
+        .expect_err("a curated fillet over a multi-body aggregate must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("requires a BRepKind::Solid input shape") && msg.contains("Compound"),
+        "the rejection must name the Solid-input requirement and the actual \
+         kind, so a designer can act on it; got: {msg}"
+    );
+
+    // ...and the single-body case must still be accepted, so the guard is
+    // discriminating on the repr rather than rejecting every boolean result.
+    let c_raw = cube(&mut kernel, 10.0);
+    let c = translated(&mut kernel, c_raw, 5.0, 0.0, 0.0); // overlapping
+    let merged = kernel
+        .execute(&GeometryOp::Union { left: a, right: c })
+        .expect("overlapping union should succeed")
+        .id;
+    let merged_edges = kernel.extract_edges(merged).expect("extract_edges");
+    kernel
+        .fillet_edges_with_history(merged, 0.5, &merged_edges[..1])
+        .expect("a curated fillet over a single-body fuse must still succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Losslessness and cost of the normalization itself.
+// ---------------------------------------------------------------------------
+
+/// The `no solids → leave the compound untouched` branch of
+/// `unwrap_boolean_compound`, reachable through every boolean whose result is
+/// EMPTY: a `Common` of solids that do not overlap in a volume, and a `Cut`
+/// whose tool fully contains its argument.
+///
+/// This is the one branch where `brep_kind_of_shape` returns `Compound` where
+/// the pre-7054 code stamped a hardcoded `Solid` — and therefore exactly what
+/// `run_local_feature_with_history` now rejects (see
+/// `curated_fillet_over_a_disjoint_fuse_is_rejected_as_non_solid`). The empty
+/// compound must survive verbatim: there is nothing to tighten, and there is
+/// certainly nothing to unify.
+///
+/// MEASURED here, and the reason the LOSSLESSNESS PRECONDITION added to
+/// `unwrap_boolean_compound` is defense-in-depth rather than a live path: OCCT's
+/// solid-solid BOPs never hand back a MIXED compound. A `Common` of face- or
+/// edge-touching cubes yields an EMPTY compound (0 faces, 0 edges — not the free
+/// contact face), and the kernel refuses a boolean whose operand is a free face
+/// outright (`BRepAlgoAPI_Fuse failed`). So no solid-solid boolean in this
+/// kernel can currently reach the mixed case the gate exists to protect; the
+/// gate is what keeps that true if a non-solid operand ever becomes reachable.
+#[test]
+fn empty_boolean_results_stay_untouched_compounds() {
+    let mut kernel = OcctKernel::new();
+    let a = cube(&mut kernel, 10.0); // [-5, +5]^3
+    let touching_raw = cube(&mut kernel, 10.0);
+    let touching = translated(&mut kernel, touching_raw, 10.0, 0.0, 0.0); // [5, 15] — face contact
+    let far_raw = cube(&mut kernel, 10.0);
+    let far = translated(&mut kernel, far_raw, 40.0, 0.0, 0.0); // [35, 45] — no contact
+    let engulfing = cube(&mut kernel, 40.0); // [-20, +20]^3 — strictly contains `a`
+
+    for (what, op) in [
+        (
+            "common of face-touching cubes",
+            GeometryOp::Intersection {
+                left: a,
+                right: touching,
+            },
+        ),
+        (
+            "common of disjoint cubes",
+            GeometryOp::Intersection {
+                left: a,
+                right: far,
+            },
+        ),
+        (
+            "cut by a fully engulfing tool",
+            GeometryOp::Difference {
+                left: a,
+                right: engulfing,
+            },
+        ),
+    ] {
+        let empty = kernel
+            .execute(&op)
+            .unwrap_or_else(|e| panic!("{what} must succeed with an empty result, got {e}"))
+            .id;
+        assert_eq!(
+            kernel.repr_of(empty),
+            Some(BRepKind::Compound),
+            "{what}: an empty boolean result has no solid to tighten to, so it \
+             must stay a COMPOUND — and be CLASSIFIED as one. The pre-7054 arms \
+             stamped a hardcoded BRepKind::Solid here, which is the lie that \
+             let a void body reach `BRepFilletAPI_MakeFillet`"
+        );
+        assert!(
+            !bool_query(&kernel, GeometryQuery::IsWatertight(empty)),
+            "{what}: an empty compound is not a closed body and must not claim to be"
+        );
+        assert_eq!(
+            real_query(&kernel, GeometryQuery::Volume(empty)),
+            0.0,
+            "{what}: an empty boolean result encloses no volume"
+        );
+        assert!(
+            kernel
+                .extract_faces(empty)
+                .expect("extract_faces")
+                .is_empty(),
+            "{what}: an empty boolean result has no faces"
+        );
+    }
+}
+
+/// Standing guard for the pairwise-disjoint short-circuit in
+/// `normalize_boolean_result` (see the measured numbers at that call site: the
+/// unification pass roughly DOUBLED disjoint pattern realization for zero
+/// topological benefit).
+///
+/// Asserts the property that makes the short-circuit correctness-neutral —
+/// disjoint bodies have nothing to merge, so skipping unification must leave the
+/// face count exactly as the sum of the parts — alongside the ABUTTING control,
+/// which does take the unification path and must still merge. A wall-clock
+/// assertion would be flaky on a shared host; this pins the discriminator the
+/// existing `boolean_pass_count()` guard is structurally blind to.
+#[test]
+fn disjoint_fuse_merges_nothing_and_the_abutting_control_still_merges() {
+    let mut kernel = OcctKernel::new();
+    let a = cube(&mut kernel, 10.0); // [-5, +5]
+    let single_faces = kernel.extract_faces(a).expect("extract_faces").len();
+    assert_eq!(single_faces, 6, "a box has 6 faces");
+
+    let b_raw = cube(&mut kernel, 10.0);
+    let disjoint = translated(&mut kernel, b_raw, 40.0, 0.0, 0.0); // [35, 45]
+    let disjoint_fused = kernel
+        .execute(&GeometryOp::Union {
+            left: a,
+            right: disjoint,
+        })
+        .expect("disjoint union should succeed")
+        .id;
+    assert_eq!(
+        kernel
+            .extract_faces(disjoint_fused)
+            .expect("extract_faces")
+            .len(),
+        2 * single_faces,
+        "two bbox-disjoint bodies cannot share a surface, so the fuse must keep \
+         every face of both — this is what makes skipping the unification pass \
+         correctness-neutral (measured identical face counts, 600 at N=100 and \
+         6000 at N=1000, with and without the pass)"
+    );
+
+    let c_raw = cube(&mut kernel, 10.0);
+    let abutting = translated(&mut kernel, c_raw, 10.0, 0.0, 0.0); // shares the x=5 face
+    let abutting_fused = kernel
+        .execute(&GeometryOp::Union {
+            left: a,
+            right: abutting,
+        })
+        .expect("abutting union should succeed")
+        .id;
+    assert_eq!(
+        kernel
+            .extract_faces(abutting_fused)
+            .expect("extract_faces")
+            .len(),
+        6,
+        "the abutting control must NOT take the short-circuit: two touching \
+         cubes unify into a genuine 20x10x10 prism with 6 faces"
+    );
+}

@@ -1834,6 +1834,25 @@ impl OcctKernel {
         // Passing a Face / Edge / Wire / Shell / Compound would either crash inside
         // OCCT or silently produce a misclassified result.  Guard up-front so both
         // `fillet_with_history` and `chamfer_with_history` receive the check for free.
+        //
+        // REACH (task 7054 amendment): this is the shared body of the ALL-edge
+        // variants (`fillet_with_history`, `chamfer_with_history`) AND the
+        // curated-edge ones (`fillet_edges_with_history`,
+        // `chamfer_edges_with_history`, `chamfer_asymmetric_edges_with_history`),
+        // so it is the guard the designer-facing `fillet(body, edges_at_height(..), r)`
+        // idiom hits. Task 7054 made the binary-boolean arms stamp the TRUE repr
+        // instead of an unconditional `BRepKind::Solid`, which means a
+        // `union(a, b)` of DISJOINT operands now classifies as `BRepKind::Compound`
+        // (a COMPSOLID underneath) and is REJECTED here where it previously fell
+        // through on the strength of a false Solid stamp. That is deliberate, not
+        // incidental: the n-ary `fuse_all` path has classified from the real shape
+        // since task 5213, so `fillet(pattern(...))` over disjoint instances
+        // already errored the same way — the binary path now merely agrees with
+        // it, and the alternative is handing a multi-body aggregate to an API that
+        // assumes one. `apply_transform_to_handle` propagates the repr, so
+        // `fillet(translate(union(a, b)), ...)` is rejected too. Pinned by
+        // `curated_fillet_over_a_disjoint_fuse_is_rejected_as_non_solid` in
+        // `boolean_result_normalization_integration.rs`.
         match self.repr_of(shape_id) {
             Some(BRepKind::Solid) => {}
             Some(other) => {
@@ -2776,6 +2795,12 @@ impl OcctKernel {
             // trusts it to tell a single solid from a multi-body aggregate.
             // Classified through the SAME `brep_kind_of_shape` helper `fuse_all`
             // already uses — deliberately not a second classifier.
+            //
+            // One consumer does more than READ the repr: `run_local_feature_with_history`
+            // REJECTS anything that is not `BRepKind::Solid`, so a disjoint
+            // `union` that now classifies as `Compound` can no longer be filleted
+            // or chamfered. See the reach note on that guard for why that is the
+            // intended outcome rather than a regression.
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
