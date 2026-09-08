@@ -2104,7 +2104,7 @@ pub(crate) fn assert_cited_paths_resolve(
 /// That masking is not hypothetical: it is why a first pass over these ten
 /// floors found two of the four that had gone stale, and a one-at-a-time sweep
 /// found all four.
-const MINIMUM_FN_CITES: usize = 22;
+const MINIMUM_FN_CITES: usize = 24;
 const MINIMUM_RS_FILES: usize = 11;
 const MINIMUM_RI_FILES: usize = 6;
 
