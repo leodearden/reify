@@ -505,6 +505,11 @@ STUB_TREESITTER
 # REIFY_PSI_GATE_DISABLE=1: skip the ./scripts/verify.sh psi-gate subprocess
 # (CPU-pressure wait) — safe and correct in a hermetic test harness with no
 # real compute load.
+#
+# REIFY_TS_FRESHNESS_TARGET_DIR: a per-run throwaway target tree, so the
+# tree-sitter freshness guard's ensure/check leaves are clean no-ops under a
+# stubbed cargo and never read or mutate the lane's real ./target (see the
+# rationale at the export below).
 apply_hermetic_env() {
     local stubdir="$1"
     local lock_base="$2"
@@ -523,6 +528,36 @@ apply_hermetic_env() {
     # CPU-pressure admission noise with no real compute load in a stubbed hermetic
     # harness; disabling it is safe and correct here.
     export REIFY_COMPILE_GATE_DISABLE=1
+    # Redirect the tree-sitter freshness guard (task 5629) at a throwaway,
+    # per-run target tree instead of this lane's real ./target.
+    #
+    # WHY: verify.sh runs ./scripts/tree-sitter-freshness.sh `ensure` before the
+    # cargo wave and `check` after it, and `check`'s post-condition is "every
+    # archive rebuilt inside this run's window matches the sources on disk".
+    # Here cargo is STUBBED, so nothing is ever compiled and the real target/'s
+    # archives keep whatever provenance the last genuine build left behind — a
+    # post-condition asserted against archives this run never touched.  In a lane
+    # whose archive is legitimately stale (or merely unattested) that is an
+    # unconditional RED with no relation to the semaphore behaviour under test.
+    #
+    # Pointing the knob at an empty per-run dir makes BOTH leaves clean no-ops
+    # ("no built archive under <dir>; nothing to force/check", exit 0).  It also
+    # keeps `ensure`'s repair path from bumping mtimes on the worktree's tracked
+    # tree-sitter sources — in a CoW-seeded warm lane those mtimes are exactly
+    # the signal that mechanism reads.  Both halves are pinned by
+    # test_freshness_target_dir_override_is_a_clean_noop and
+    # test_semaphore_e2e_harness_isolates_the_freshness_guard in
+    # tests/infra/test_tree_sitter_pipeline.sh.
+    #
+    # Harness-side, not gate-side: verify.sh cannot distinguish a stubbed cargo
+    # from a real one, so any relaxation inside the guard would weaken the real
+    # merge gate — precisely the post-condition that closes this defect class.
+    # Mirrors how this helper already neutralizes the PSI and compile gates.
+    #
+    # Derived from $stubdir (which every call site places inside its own
+    # `mktemp -d`), so the path is per-run and is reclaimed by _TMPDIRS cleanup.
+    # The guard mkdir -p's it on demand; this helper stays exports-only.
+    export REIFY_TS_FRESHNESS_TARGET_DIR="$stubdir.ts-freshness-target"
     export REIFY_TEST_SEMAPHORE_CONCURRENCY=1
     export REIFY_TEST_SEMAPHORE_LOCK="$lock_base"
     export REIFY_TEST_SEMAPHORE_WAIT="$wait"

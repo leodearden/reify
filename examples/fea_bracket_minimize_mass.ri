@@ -152,29 +152,30 @@ structure FeaBracketMinimizeMass {
     // single worst scalar in it.
     //
     // That reduction is read here through the result's own `max_von_mises`
-    // member rather than spelled out as `max(von_mises(result.stress))`. The two
-    // compute the identical quantity — `max_von_mises` is the element-max von
-    // Mises over exactly the same solid stress field — so the reduction still
-    // genuinely happens; only the spelling differs.
+    // member rather than spelled out as `max(von_mises(result.stress))`. Both
+    // are genuine peak-von-Mises reductions of the same solve, but they are not
+    // the identical number: `max_von_mises` is the raw ELEMENT-max, while
+    // `.stress` is that same field volume-weighted-averaged onto nodes and then
+    // barycentrically resampled onto a Regular3D grid. Von Mises is convex and
+    // both resamplings are convex combinations, so the field reduction is `<=`
+    // the element max. Either is a sound design predicate against yield; the
+    // element max is the more conservative of the two.
     //
-    // The COMPILE-TIME TYPING GAP that originally forced this spelling is now
-    // FIXED (task #6577): `analysis_fn_result_type` gained a `Type::Field` arm,
-    // so `von_mises(.stress)` types as `Field<Point3<Length>, Scalar<Pressure>>`
-    // and `max(...)` reduces that codomain to `Scalar<Pressure>`. The old
-    // "dimension mismatch in comparison: Real vs Scalar[kg·m^-1·s^-2]" Error is
-    // gone, and the explicit form now COMPILES clean.
+    // The eval-side half of the explicit spelling is now CLOSED. Until task
+    // #7129, `von_mises` refused a `FieldSourceKind::Sampled` backing — which is
+    // exactly what `solve_elastic_static` returns as `.stress` — so
+    // `von_mises(result.stress)` evaluated to `Undef` and any reduction of it
+    // silently followed. That is fixed: the wrapper now constructs over a
+    // Sampled stress field and `max`/`min`/`argmax`/`argmin` reduce it for real.
     //
-    // It still must NOT be adopted here, because the remaining blocker is an
-    // EVAL-SIDE one that would silently break this constraint at runtime:
-    // `validate_tensor_field` (crates/reify-expr/src/analysis.rs:80-88) accepts
-    // only `FieldSourceKind::Analytical | Composed`, but the FEA solver builds
-    // `.stress` as `FieldSourceKind::Sampled`
-    // (crates/reify-eval/src/compute_targets/elastic_static.rs:1840, 1869, 1893,
-    // 1966, 6680). `von_mises(result.stress)` on a real solve therefore
-    // evaluates to `Value::Undef` — which `value_type_kind_matches` accepts for
-    // ANY type, so nothing would flag it — and this constraint would stop
-    // constraining while still compiling and running green. Tracked as #7129;
-    // do not migrate the spelling until that lands.
+    // What remains is a COMPILE-TIME TYPING GAP only: `analysis_fn_result_type`
+    // derives von_mises's dimension via `tensor_quantity`, which matches
+    // `Type::Tensor`/`Type::Matrix` but has no `Type::Field` arm. A Field-valued
+    // argument therefore falls to the DIMENSIONLESS default,
+    // `von_mises(.stress)` types as `Real`, and `< yield_limit` fails with
+    // "dimension mismatch in comparison: Real vs Scalar[kg·m^-1·s^-2]" — an
+    // Error, so the zero-Error examples gate rejects it. Tracked as #6577; when
+    // that lands, this constraint can move to the explicit form.
     //
     // The FEA call is INLINED here rather than bound to a top-level
     // `let fea = solve_elastic_static(...)`. That is not a style choice. A

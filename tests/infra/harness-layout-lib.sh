@@ -137,6 +137,26 @@ declare -ga _HL_CRATES=(reify-cli reify-syntax reify-kernel-occt reify-eval reif
 # OWN thematic content (largest today: analytical_validation); what is
 # refused is importing a module FOREIGN to a stem's own focus for cap relief.
 #
+#   VERDICT (task #7004): unbounded own-growth is DELIBERATE, not an
+#   oversight. The cap is a consolidation-SIZING parameter bounding the
+#   PRODUCT of a merge (PRD merge-gate-compile-cost.md §3 W1 / §5 C1,
+#   ~10-20 kLOC); an override is never a merge product (I1) or destination
+#   (above), so it has no subject here — growth here raises only its own
+#   recompile, exactly as before the program.
+#   NOT OVERRIDE-SPECIFIC: rule (a) caps harness units only, so all 355
+#   non-harness top-level units are uncapped — these 7 stems AND the 348
+#   grandfathered baseline rows, 11 of which are LARGER than the largest
+#   override (struct_ctor_field_conformance_tests.rs, 4393 vs 2473 lines).
+#   Capping just the 7 would leave 11 bigger files untouched — a new
+#   asymmetry, not a fix — so #7004 rejected extending rule (a) here.
+#   MEASURED on 9bb655c043: largest override (analytical_validation) is
+#   2473 lines = 12.4% of CAP_LINES, none with mod/#[path] — vs. the
+#   harness side's live pressure (harness_fea_solver_e2e, 19429 lines).
+#   REVISIT TRIGGER: rests on the 7 staying small/single-focus — if one
+#   nears the cap, reopen the question HERE, treating the 348 grandfathered
+#   rows as part of the same question, never the 7 alone.
+#   Pinned non-vacuously: test_harness_kloc_cap.sh Section 3c.
+#
 # WHY:
 #   - rule (a) already names its remedy — SPLIT into a second
 #     `harness_<subsystem2>.rs`, "never accommodated by raising the cap" —

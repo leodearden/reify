@@ -325,9 +325,12 @@ type Twist = Map { angular: Vector3<Dimensionless>, linear: Vector3<Length> }
 
 A `Map` shape (rather than a 6-component `Vector`) is required because
 `Vector` enforces a single shared dimension across components; a twist mixes
-dimensionless rotation and `Length` translation. The same `Map` shape is
-returned by `joint_jacobian` (§13.1) so that solver code can compose twists
-and Jacobian columns uniformly.
+dimensionless rotation and `Length` translation. `joint_jacobian` (§13.1) does
+**not** return a `Twist`: its columns are partial derivatives of pose with
+respect to a joint coordinate (dpose/dq), not spatial velocities (dpose/dt), and
+they have their own type, `JacobianColumn`. The two happen to share the
+`angular`/`linear` key names; they are not interchangeable, and a Jacobian column
+must not be fed to `transform_exp`.
 
 **Linear-component dimension convention.** `transform_log` requires the input
 `Transform`'s translation to be `Vector3<Length>` and emits `linear` as
@@ -1789,7 +1792,7 @@ structure def Fixed : Joint {}  // 0-DOF rigid sub-assembly grouping; no motion 
 
 This hierarchy is enforced via nominal conformance, not merely declared: `bind`/`sweep`/`dim` (§13.3–§13.4) carry a `DrivingJoint` bound checked at both the runtime (L1) and compile-time (L2) layers and reject `Coupling`/`Fixed` arguments with `error[E_MECHANISM_NONDRIVING_JOINT]`.
 
-`JointBinding` (the `bind()` return type, §13.3) and `Twist` (the `joint_jacobian` return type, below) are likewise declared marker structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`Twist` values rather than bare `Map`s, even though neither structure yet declares member fields (field layout is a follow-on, not part of this reconciliation).
+`JointBinding` (the `bind()` return type, §13.3) and `JacobianColumn` (the `joint_jacobian` return type, below) are likewise declared structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`JacobianColumn` values rather than bare `Map`s. `JointBinding` is still a field-less marker (its field layout is a follow-on, not part of this reconciliation); `JacobianColumn` does declare its members, `angular` and `linear`, so a column's parts are readable from user code.
 
 The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
 
@@ -1823,17 +1826,22 @@ fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
 **Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
-`joint_jacobian_value` at `:776`) that returns the analytic SE(3) twist column
+`joint_jacobian_value` at `:777`) that returns the analytic Jacobian column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
-returned `Twist` shape (`Map { angular, linear }`) is the same one used by
-`transform_log` / `transform_exp` (§3.1), so solver code can compose joint
-Jacobian columns and twists uniformly.
+returned type is `JacobianColumn`: the partial derivative of pose with respect
+to the joint's own coordinate, dpose/dq, whose `angular`/`linear` components
+carry per-joint-kind *rates* — for a revolute joint `linear` is m/rad, for a
+prismatic joint `angular` is rad/m. That is why a column is deliberately **not**
+a `Twist` (§3.1), which is a spatial velocity, dpose/dt, and why a column must
+not be fed to `transform_exp`. The two types share the `angular`/`linear` key
+names and nothing else; multiplying a column by a joint rate is the consumer's
+job.
 
 ```
-fn joint_jacobian(j: Prismatic) -> Twist          // angular = 0,        linear  = unit(axis)
-fn joint_jacobian(j: Revolute)  -> Twist          // angular = unit(axis), linear = 0
-fn joint_jacobian(j: Coupling<P>) -> Twist        // ratio * joint_jacobian(parent)
+fn joint_jacobian(j: Prismatic) -> JacobianColumn    // angular = 0,        linear  = unit(axis)
+fn joint_jacobian(j: Revolute)  -> JacobianColumn    // angular = unit(axis), linear = 0
+fn joint_jacobian(j: Coupling<P>) -> JacobianColumn  // ratio * joint_jacobian(parent)
 ```
 
 The axis is unit-normalized in the return value (matching `transform_at`'s

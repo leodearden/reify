@@ -3,23 +3,33 @@ module mirror_bare_origin_purpose
 // mirror_bare_origin_purpose.ri — task 5748 (PRD docs/prds/v0_6/check-diagnostic-truthfulness.md,
 // leaf β), the `--purpose` (sub-path (c)) twin of `mirror_bare_origin.ri`.
 //
-// Same bare-Int-origin `mirror(...)` anti-pattern (examples/best_practices/
-// symmetry_mirror.ri:27, `// WRONG — bare-0 origin`), plus a purpose block
-// modelled structurally on `gdt_illegal_modifier_purpose.ri`: the purpose
+// Same bare-origin `mirror(...)` anti-pattern in its DECODED-VALUE form —
+// `plane_yz(0)` takes a bare-Int offset where `0mm` is required — plus a purpose
+// block modelled structurally on `gdt_illegal_modifier_purpose.ri`: the purpose
 // constraint is deliberately SATISFIABLE, so the only new observable under
 // leaf β is the geometry-compile diagnostic — never a constraint violation and
 // never a purpose-activation failure.
 //
-// Verified baseline with the pre-change binary (before D1/D2):
+// Task 5662 moved this fixture off the 7-arg scalar form, exactly as it moved
+// its non-purpose twin; the reason is stated once, on the `mirror` /
+// `circular_pattern` arms of `builtin_arg_slots` in
+// `crates/reify-compiler/src/builtin_signatures.rs`.
 //
-//   reify check --purpose mfg_ready=MirrorBareOriginPurpose <this file>
-//     stdout: the `purpose:mfg_ready@…` injected-constraint verdict + satisfied
-//             summary
-//     stderr: does NOT contain "failed to compile geometry operation"
-//     exit 0
+// Verified baseline, MEASURED at task 5662:
 //
-// After leaf β the geometry-compile error appears on stderr exactly once; the
-// exit code stays 0 until leaf γ (#5403) lands the Severity::Error gate.
+//   reify check --purpose mfg_ready=MirrorBareOriginPurpose <this file>   exit 0
+//     stdout: "  OK purpose:mfg_ready@MirrorBareOriginPurpose#constraint[0]"
+//             "All constraints satisfied."
+//     stderr: error: mirror: ox argument expects Length, got Int; pass a
+//                    dimensioned length such as `5mm`   (+ oy/oz as Real)
+//             error: failed to compile geometry operation: mirror: missing or
+//                    non-Length argument 'ox' for mirror        [exactly ONCE]
+//             (the ox/oy/oz triple then repeats once — it is emitted per
+//              realization pass — followed by the unresolvable-GeomRef error)
+//
+// Before leaf β the stderr did NOT contain "failed to compile geometry
+// operation" at all.  After it, the error appears exactly once; the exit code
+// stays 0 until leaf γ (#5403) lands the Severity::Error gate.
 
 structure MirrorBareOriginPurpose {
     param width         : Length = 80mm
@@ -28,8 +38,8 @@ structure MirrorBareOriginPurpose {
 
     let arm = box(width, arm_width, arm_thickness)
 
-    // WRONG on purpose — bare-Int origin components (should be `0mm`).
-    let reflected = mirror(arm, 0, 0, 0, 1, 0, 0)
+    // WRONG on purpose — bare-Int plane offset (should be `0mm`).
+    let reflected = mirror(arm, plane_yz(0))
 
     param geometry : Solid = union(arm, reflected)
 }

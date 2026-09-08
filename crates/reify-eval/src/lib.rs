@@ -2217,10 +2217,14 @@ mod tests {
     // ── Engine structure_registry prelude population (task 3540 / step-11) ───
 
     /// `Engine::new()` must populate `structure_registry` from the prelude
-    /// modules. `Steel_AISI_1045` is a `structure def : ElasticMaterial` in
-    /// `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
-    /// it must be interned with its declared trait bound, default version 1,
+    /// modules. `Steel_AISI_1045` is a `structure def : DampedMaterial + Visual`
+    /// in `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
+    /// it must be interned with its DECLARED trait bounds, default version 1,
     /// and a declaration-order `field_layout`. Unknown names resolve to `None`.
+    ///
+    /// `declared_trait_bounds` is declared-only: `ElasticMaterial` is absent
+    /// from the vec after task α (#6877) even though the preset still satisfies
+    /// it transitively via `DampedMaterial : ElasticMaterial + Damped`.
     #[test]
     fn engine_new_populates_structure_registry_from_prelude() {
         use reify_test_support::mocks::MockConstraintChecker;
@@ -2239,8 +2243,8 @@ mod tests {
         );
         assert_eq!(
             meta.declared_trait_bounds,
-            vec!["ElasticMaterial".to_string(), "Visual".to_string()],
-            "structure def Steel_AISI_1045 : ElasticMaterial + Visual (Visual added by task γ #4762)"
+            vec!["DampedMaterial".to_string(), "Visual".to_string()],
+            "structure def Steel_AISI_1045 : DampedMaterial + Visual (Damped mixin added by task α #6877)"
         );
 
         // field_layout preserves materials_fea.ri declaration order.

@@ -64,6 +64,13 @@ export interface MeshData {
    * The renderer (MeshManager) aliases this buffer directly into a
    * `BufferAttribute` — callers must not mutate the `Uint32Array` after
    * passing it to `sync()`.
+   *
+   * The alias is bidirectional in principle, so the renderer holds up the other
+   * half of the contract: it does not mutate this buffer either, and in
+   * particular preserves face order. That is why the BVH is built in
+   * three-mesh-bvh's indirect mode (see `BVH_OPTIONS` in
+   * `viewport/meshManager.ts`) — the default builder permutes the index array
+   * in place, desynchronising every per-face side array below (#6813).
    */
   indices: Uint32Array;
   /**
@@ -105,12 +112,16 @@ export interface MeshData {
    * Per-face element kind for shell-extract meshes (task 3597).
    * Byte-value enum: `0` = tet face, `1` = shell triangle.
    * Length equals `indices.length / 3` (one byte per face).
+   * Positionally keyed to `indices` face order — entry `f` describes the face
+   * at `indices[3f .. 3f+2]`, and the renderer preserves that order (#6813).
    * Omitted from the wire when absent (`None` on the Rust side).
    */
   element_kind?: Uint8Array;
   /**
    * Per-face stable region labels for shell-extract meshes (task 3597).
    * One `u32` label per face; length equals `indices.length / 3`.
+   * Positionally keyed to `indices` face order — entry `f` labels the face at
+   * `indices[3f .. 3f+2]`, and the renderer preserves that order (#6813).
    * Labels are stable across incremental re-tessellations within a single
    * eval generation. Omitted from the wire when absent.
    */
@@ -119,6 +130,10 @@ export interface MeshData {
    * Per-face element id mapping each surface face back to its originating
    * volume element id, or the per-face shell element id for shell bodies
    * (task #4883). One `u32` per face; length equals `indices.length / 3`.
+   * Positionally keyed to `indices` face order — entry `f` maps the face at
+   * `indices[3f .. 3f+2]`, and the renderer preserves that order, so a
+   * `faceIndex` from a raycast against the rendered geometry indexes this array
+   * directly (#6813).
    * Absent (`undefined`) when the Rust side serializes `None` — field omitted
    * from the wire. When present, the FEA diagnostic overlay uses this to
    * outline only the faces whose element id appears in `ProblemElements.ids`
