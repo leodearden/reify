@@ -1192,10 +1192,16 @@ pub mod ffi {
 
         /// Return the canonical name of `shape`'s top-level TopAbs shape type
         /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-        /// "Vertex", or "Shape"). Lets `OcctKernel::fuse_all` classify a
-        /// single-pass fuse result — SOLID (overlapping), COMPSOLID (disjoint),
-        /// or the sole input's kind (identity) — into the right BRepKind
-        /// instead of assuming Solid (task 5213 amendment).
+        /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
+        /// every boolean path uses to stamp the right `BRepKind` instead of
+        /// assuming Solid:
+        ///   - `OcctKernel::fuse_all` — SOLID (overlapping), COMPSOLID
+        ///     (disjoint), or the sole input's kind (identity), task 5213;
+        ///   - all six binary boolean arms — the three plain
+        ///     `Union`/`Difference`/`Intersection` arms of `execute` and the
+        ///     three `boolean_*_with_history` variants, task 7054. Since every
+        ///     boolean result is normalized, a disjoint fuse really is a
+        ///     multi-body COMPSOLID and the old hardcoded Solid was a lie.
         fn shape_type_name(shape: &OcctShape) -> Result<String>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;

@@ -780,16 +780,15 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
 //   - 1 element  → returned as-is (no BOP; identity)
 //   - N elements → single-pass fuse
 //
-// The general BOP path (SetArguments/SetTools) always wraps its output in a
-// TopoDS_COMPOUND, regardless of whether the inputs merged.  We normalize that
-// wrapper to the tightest topology-preserving type: a COMPOUND holding one
-// solid (overlapping inputs merged into a single body) is unwrapped to that
-// bare SOLID, while a COMPOUND holding multiple solids (fully-DISJOINT inputs)
-// is rewrapped as a TopoDS_COMPSOLID — a bare compound is not
-// watertight-queryable (`is_watertight` excludes COMPOUND), whereas a COMPSOLID
-// preserves total volume and per-solid component count while passing the
-// SOLID|COMPSOLID|SHELL type guard.  Defined here — ahead of the four pattern
-// realizers below — so they can share this one helper.
+// The result is normalized by the shared `normalize_boolean_result` above,
+// exactly as the three binary boolean ops are (task 7054): the COMPOUND the
+// general BOP path always wraps its output in is tightened to the tightest
+// topology-preserving type, and same-domain faces/edges are merged.  See that helper for the full contract; the short version is that a
+// bare COMPOUND is not watertight-queryable (`is_watertight` excludes it),
+// whereas the SOLID / COMPSOLID it unwraps to preserves total volume and
+// per-solid component count while passing the SOLID|COMPSOLID|SHELL guard.
+// Defined here — ahead of the four pattern realizers below — so they can share
+// this one helper.
 TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     if (shapes.IsEmpty()) {
         throw std::runtime_error("fuse_shape_list: input shape list must not be empty");
