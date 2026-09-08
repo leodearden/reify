@@ -125,15 +125,18 @@
 #       surfacing the squeeze in routine gate output while there is still
 #       headroom to act. Advisory means EXACTLY that: no exit-code change, no
 #       `violations=` increment. The gating half of the signal is the shrinking
-#       `_KLOC_WARN_KNOWN` subset ratchet (Section 5d) — a unit may LEAVE the
-#       warn set freely, but a unit ARRIVING in it is red and must be
-#       acknowledged in the same diff. Free departure has a cost, though: the
-#       departed unit's row lingers as a permanently-permissive entry that
-#       would wave the unit back through if it ever grew over the line again.
-#       So Section 5d also prints a NON-GATING `PRUNE:` note for any known row
-#       that did not WARN this run, and DOES red on a row whose file no longer
-#       exists on disk at all — that one is dead by construction, not merely
-#       stale, and can only be produced by the very diff that moved the file.
+#       `_KLOC_WARN_KNOWN` subset ratchet — a unit may LEAVE the warn set
+#       freely, but a unit ARRIVING in it is red and must be acknowledged in
+#       the same diff. Free departure has a cost, though: the departed unit's
+#       row lingers as a permanently-permissive entry that would wave the unit
+#       back through if it ever grew over the line again. So the ratchet also
+#       emits a NON-GATING `PRUNE:` note for any known row that did not WARN
+#       this run, and DOES red on a row whose file no longer exists on disk at
+#       all — that one is dead by construction, not merely stale, and can only
+#       be produced by the very diff that moved the file. Implemented by
+#       `harness_warn_ratchet_violations`, pinned must-fire/must-not-fire
+#       against hermetic fixtures in Section 4c and driven over the real tree
+#       in Section 5d.
 #
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
@@ -1052,6 +1055,130 @@ harness_layout_malformed_rows() {
         "$baseline_file" _harness_layout_row_in_scope
 }
 
+# ---------------------------------------------------------------------------
+# harness_warn_ratchet_violations <scan_output> <root_dir> [known_row]...
+#
+# The CLASSIFIER behind the WARN-set shrinking ratchet: given one scan
+# transcript and the checked-in allow-list of units already known to WARN,
+# decide which rows are red, which are merely stale, and whether the WARN
+# extraction saw anything at all.
+#
+# EXTRACTED so hermetic fixtures can drive it (Section 4c) exactly as the live
+# tree drives it — the same parameterize-on-(dir, data) discipline every other
+# detector in this file already follows, and the reason Sections 1/1b/4/4b can
+# pin must-fire AND must-not-fire behaviour instead of only observing whatever
+# the real tree happens to contain today. That gap was not hypothetical: this
+# rule's gating branches are reachable ONLY when the live tree is already
+# broken, so before this extraction the only way to exercise them was to
+# hand-break a copy of the guard. The exposure grows in exactly the direction
+# the design intends — the moment _KLOC_WARN_KNOWN empties (the stated healthy
+# end state, since a unit may LEAVE the set freely), the subset check goes
+# vacuous and its own non-vacuity pair is satisfied by 0 == 0, so a later
+# regression in the file=/<root_dir> normalisation would leave an ARRIVING unit
+# silently unratcheted behind a green gate.
+#
+# <scan_output> is a run_harness_layout_scan / harness_layout_violations
+# transcript; its WARN lines carry ABSOLUTE file= paths, because the detector is
+# driven with absolute tests dirs. <root_dir> is the prefix stripped to recover
+# the repo-relative form the rows are checked in as, which is what keeps them
+# stable across worktrees. Each <known_row> is one such repo-relative path.
+#
+# Prints one classification line per finding, in this grammar:
+#
+#   UNKNOWN <path>   a unit WARNed and is NOT a known row           GATING
+#   DEAD    <path>   a known row's file is not on disk              GATING
+#   STALE   <path>   a known row is on disk but did not WARN        advisory
+#   PARSED  <n>      file= values recovered from the WARN lines     (non-vacuity)
+#   EMITTED <n>      WARN lines present in <scan_output>            (non-vacuity)
+#
+# Returns 1 if any UNKNOWN or DEAD was emitted (the two GATING classes), else 0.
+# A STALE row alone NEVER fails: gating it would land on whoever shrank a unit
+# rather than on whoever curates the list — the same punish-progress red an
+# equality pin on `warnings=<n>` was rejected for. Section 5d's banner carries
+# the full severity split and the reasoning behind it.
+#
+# DEAD BEATS STALE: a row whose file is missing cannot WARN, so reporting it as
+# merely "no longer warning" would understate it. Existence is checked first.
+#
+# PARSED/EMITTED are REPORTED, not compared here. They are the non-vacuity pair,
+# and they are deliberately derived by two independent passes over the same
+# input (the read loop vs. a fresh `grep -c`) so that a future regression which
+# breaks one and not the other shows up as a mismatch. Which of the two is
+# authoritative is the caller's assert to make, not the classifier's — this
+# function has no opinion about whether zero WARNs is healthy.
+#
+# NOTE the deliberate asymmetry in what touches the disk: the UNKNOWN class is
+# pure string work over <scan_output>, while DEAD/STALE stat <root_dir>/<row>.
+# That is why <root_dir> is a parameter and not $REPO_ROOT — a fixture points it
+# at a tmpdir and gets both halves hermetically.
+# ---------------------------------------------------------------------------
+harness_warn_ratchet_violations() {
+    local scan_output="$1"
+    local root_dir="$2"
+    shift 2
+    local known_rows=()
+    local _r
+    for _r in "$@"; do known_rows+=("$_r"); done
+
+    local warn_lines line f
+    warn_lines="$(printf '%s\n' "$scan_output" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+
+    local live_files=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        f="${line#* file=}"
+        f="${f%% *}"
+        live_files+=("${f#"$root_dir/"}")
+    done <<<"$warn_lines"
+
+    local known_set="" live_set=""
+    for _r in ${known_rows[@]+"${known_rows[@]}"}; do known_set="$known_set|$_r|"; done
+    for _r in ${live_files[@]+"${live_files[@]}"}; do live_set="$live_set|$_r|"; done
+
+    local rc=0
+
+    # (a) SUBSET: every live WARN file must be a known member.
+    for _r in ${live_files[@]+"${live_files[@]}"}; do
+        case "$known_set" in
+            *"|$_r|"*) ;;
+            *) printf 'UNKNOWN %s\n' "$_r"; rc=1 ;;
+        esac
+    done
+
+    # (c) PRUNE DIRECTION: dead rows are gating, stale rows are advisory.
+    for _r in ${known_rows[@]+"${known_rows[@]}"}; do
+        if [ ! -f "$root_dir/$_r" ]; then
+            printf 'DEAD %s\n' "$_r"
+            rc=1
+            continue
+        fi
+        case "$live_set" in
+            *"|$_r|"*) ;;
+            *) printf 'STALE %s\n' "$_r" ;;
+        esac
+    done
+
+    # (b) NON-VACUITY pair — see the header for why these are reported, not
+    # compared, and why the two counts are derived by independent passes.
+    printf 'PARSED %s\n' "${#live_files[@]}"
+    printf 'EMITTED %s\n' \
+        "$(printf '%s\n' "$scan_output" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
+
+    return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# _warn_ratchet_rows <classification_output> <CLASS>
+#
+# Print the <path> field of every `<CLASS> <path>` line of a
+# harness_warn_ratchet_violations transcript. One place that knows the
+# classification grammar's shape, shared by the hermetic Section 4c and the live
+# Section 5d so the two cannot drift into reading it differently.
+# ---------------------------------------------------------------------------
+_warn_ratchet_rows() {
+    printf '%s\n' "$1" | sed -n "s/^$2 //p"
+}
+
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
 
 # Collect every mktemp -d / mktemp path for a SINGLE EXIT cleanup (the
@@ -1765,6 +1892,170 @@ assert "4b: at cap=10000 the 19000-line unit emits no WARN line" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN .*harness_warn\.rs" "$1"' _ "$_s4b_cap10_out"
 
 # ===========================================================================
+# Section 4c: the WARN-set shrinking RATCHET, hermetically.
+#
+# Section 4b pins the WARN LINE (when a unit warns). This section pins what is
+# DONE with those warns: harness_warn_ratchet_violations, the classifier behind
+# Section 5d — the GATING half of an otherwise advisory tier.
+#
+# WHY IT NEEDS ITS OWN FIXTURES rather than riding on Section 5d's live run:
+# 5d's two RED branches are reachable only when the real tree is already broken,
+# so on a healthy tree the live call exercises neither. Everything else in this
+# guard (Sections 1, 1b, 4, 4b, 10) carries must-fire fixtures for exactly that
+# reason, and the ratchet was the one rule that did not. Worse, the exposure
+# GROWS as the design succeeds: once _KLOC_WARN_KNOWN empties — the stated
+# healthy end state, since departure from the warn set is free — the subset
+# check is vacuous and its non-vacuity pair reads 0 == 0, so a regression in the
+# file=/<root_dir> normalisation would let an ARRIVING unit through unratcheted
+# behind a green gate. These fixtures are what keeps the rule pinned in that
+# end state.
+#
+# Fixtures are synthetic SCAN TRANSCRIPTS (not scans): the classifier's input is
+# text plus a root dir, so there is nothing to gain from generating 19000-line
+# files here — Section 4b already owns the line->WARN half of the contract, and
+# these cases are about what happens AFTER a WARN line exists.
+# ===========================================================================
+echo ""
+echo "--- Section 4c: WARN-set shrinking ratchet (hermetic) ---"
+
+# A synthetic repo root: two harness files that EXIST, and one path deliberately
+# never created (the DEAD case).
+_s4c_root="$(mktemp -d)"; _TMPDIRS+=("$_s4c_root")
+mkdir -p "$_s4c_root/crates/synthcrate/tests"
+: > "$_s4c_root/crates/synthcrate/tests/harness_a.rs"
+: > "$_s4c_root/crates/synthcrate/tests/harness_b.rs"
+_s4c_a="crates/synthcrate/tests/harness_a.rs"
+_s4c_b="crates/synthcrate/tests/harness_b.rs"
+_s4c_gone="crates/synthcrate/tests/harness_gone.rs"
+
+# One canonical WARN line for an ABSOLUTE path — the shape the detector really
+# emits (it is driven with absolute tests dirs), which is what makes the
+# <root_dir>-stripping half of the classifier load-bearing rather than cosmetic.
+_s4c_warn() {
+    printf 'HARNESS_KLOC_CAP WARN crate=synthcrate file=%s reason=approaching-cap lines=19000 cap=20000 warn_at=18000 pct=95 root_lines=19000 module_lines=0 module_files=0 external_lines=0 external_files=0\n' "$1"
+}
+
+# Drive the classifier over $_s4c_scan with the given known rows, capturing both
+# the classification transcript and the rc.
+_s4c_run() {
+    _s4c_rc=0
+    _s4c_out="$(harness_warn_ratchet_violations "$_s4c_scan" "$_s4c_root" "$@")" || _s4c_rc=$?
+}
+
+# Exact-set comparison for one classification class (empty string == no rows).
+_s4c_rows_are() {
+    test "$(_warn_ratchet_rows "$_s4c_out" "$1")" = "$2"
+}
+
+# --- (i) a live WARN absent from the known set is RED ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
+_s4c_run
+assert "4c: a WARNing unit that is not a known row is classified UNKNOWN (repo-relative)" \
+    _s4c_rows_are UNKNOWN "$_s4c_a"
+assert "4c: an UNKNOWN row makes the ratchet GATING (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- must-not-fire: the SAME warn, acknowledged in the known set, is green.
+# This is also the normalisation assert: the WARN line carries an ABSOLUTE path
+# and the known row is repo-relative, so it can only match if <root_dir> was
+# actually stripped. ---
+_s4c_run "$_s4c_a"
+assert "4c: the same WARN is silent once its repo-relative row is in the known set" \
+    _s4c_rows_are UNKNOWN ""
+assert "4c: an acknowledged WARN leaves the ratchet green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: an acknowledged, still-warning row is not reported STALE" \
+    _s4c_rows_are STALE ""
+
+# --- normalisation, the other direction: a WARN whose file= is NOT under
+# <root_dir> cannot be silently absorbed — it stays absolute and is still RED,
+# so a broken prefix strip surfaces as an unmatchable path rather than as a
+# vacuous pass. ---
+_s4c_scan="$(_s4c_warn "/elsewhere/$_s4c_a")"
+_s4c_run "$_s4c_a"
+assert "4c: a WARN file= outside <root_dir> keeps its absolute path and stays UNKNOWN" \
+    _s4c_rows_are UNKNOWN "/elsewhere/$_s4c_a"
+assert "4c: the out-of-root WARN is gating (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- (ii) a known row whose path does not exist is RED ---
+_s4c_scan=""
+_s4c_run "$_s4c_gone"
+assert "4c: a known row whose file is not on disk is classified DEAD" \
+    _s4c_rows_are DEAD "$_s4c_gone"
+assert "4c: a DEAD row makes the ratchet GATING (rc 1)" \
+    test "$_s4c_rc" -eq 1
+assert "4c: DEAD BEATS STALE — a missing row is not ALSO reported as merely stale" \
+    _s4c_rows_are STALE ""
+
+# --- (iii) a known row that exists but did not WARN is ADVISORY ---
+_s4c_scan=""
+_s4c_run "$_s4c_a"
+assert "4c: a known row that exists but emitted no WARN is classified STALE" \
+    _s4c_rows_are STALE "$_s4c_a"
+assert "4c: a STALE row alone NEVER gates (rc 0) — gating it would punish progress" \
+    test "$_s4c_rc" -eq 0
+assert "4c: a STALE row is not also reported DEAD" \
+    _s4c_rows_are DEAD ""
+
+# --- severity mixing: one gating class plus one advisory class in a single run.
+# The advisory row must still be REPORTED (it is the only prune signal there is)
+# while the rc is decided by the gating one alone. ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_b")"
+_s4c_run "$_s4c_a"
+assert "4c: a mixed run reports the arriving unit UNKNOWN" \
+    _s4c_rows_are UNKNOWN "$_s4c_b"
+assert "4c: a mixed run STILL reports the departed row STALE (advisory output is not suppressed by a red)" \
+    _s4c_rows_are STALE "$_s4c_a"
+assert "4c: a mixed run is gating on the UNKNOWN alone (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- (iv) the healthy END STATE: empty known set, zero WARNs. The subset check
+# is vacuous here BY FACT, and the non-vacuity pair must say so honestly (0 ==
+# 0) rather than by silence. ---
+_s4c_scan="$(printf 'HARNESS_KLOC_CAP PASS crate=synthcrate\nHARNESS_KLOC_CAP SUMMARY crates=1 violations=0 warnings=0\n')"
+_s4c_run
+assert "4c: an empty known set with zero WARNs is green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: the end state emits no classification rows at all" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "^(UNKNOWN|DEAD|STALE) "' _ "$_s4c_out"
+assert "4c: the end state reports PARSED 0" \
+    test "$(_warn_ratchet_rows "$_s4c_out" PARSED)" -eq 0
+assert "4c: the end state reports EMITTED 0" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)" -eq 0
+
+# --- NON-VACUITY PAIR: the two counts are derived by independent passes, so
+# pin them against a transcript where the WARN lines are OUTNUMBERED by
+# non-WARN noise. A grep that broadened to `^HARNESS_KLOC_CAP ` would read 5
+# here, and a read loop that dropped entries would read fewer than 2. ---
+# NOTE the explicit `\n` after EVERY field: `$(_s4c_warn …)` loses its trailing
+# newline to command substitution, so a `%s%s` here would splice two WARN lines
+# into one and make this fixture read 1 where it must read 2.
+_s4c_scan="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+    'HARNESS_KLOC_CAP PASS crate=synthcrate' \
+    'HARNESS_KLOC_CAP FAIL crate=synthcrate file=/x/harness_z.rs reason=exceeds-cap lines=20001 cap=20000' \
+    "$(_s4c_warn "$_s4c_root/$_s4c_a")" \
+    "$(_s4c_warn "$_s4c_root/$_s4c_b")" \
+    'HARNESS_KLOC_CAP SUMMARY crates=1 violations=1 warnings=2')"
+_s4c_run "$_s4c_a" "$_s4c_b"
+assert "4c: PARSED counts only WARN lines (2), not the PASS/FAIL/SUMMARY noise around them" \
+    test "$(_warn_ratchet_rows "$_s4c_out" PARSED)" -eq 2
+assert "4c: EMITTED agrees with PARSED on the same mixed transcript (non-vacuity pair)" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)" -eq 2
+assert "4c: both WARNing units are acknowledged, so the mixed transcript is green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+
+# --- SHRINKING, not equality: a known set LARGER than the live warn set is
+# green (that is the whole point of a subset ratchet), and the surplus row is
+# surfaced as STALE rather than swallowed. ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
+_s4c_run "$_s4c_a" "$_s4c_b"
+assert "4c: a known set larger than the live warn set is green (SUBSET, never equality)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: the surplus known row is surfaced as STALE, not silently tolerated" \
+    _s4c_rows_are STALE "$_s4c_b"
+
+# ===========================================================================
 # Section 5: LIVE scan — the guard is GREEN on the real pre-consolidation tree
 # (the headline user-observable signal). Also guard integrity: a missing
 # baseline must never let the scan vacuously pass.
@@ -1986,6 +2277,13 @@ assert "5c: at least one live harness attributes an out-of-module-dir include (e
 #     one is the diff that renamed or deleted the harness, which is precisely
 #     where the row's removal belongs.
 #
+# All three rules above are implemented by harness_warn_ratchet_violations
+# (defined with the other detectors, pinned must-fire/must-not-fire against
+# hermetic fixtures in Section 4c). This section is the LIVE DRIVER only: it
+# supplies the real inputs and renders the operator-facing remedy prose an
+# ARCHIVED merge-verify log has to be readable from. Nothing that decides a
+# verdict lives below this banner.
+#
 # Reuses Section 5's ALREADY-CAPTURED $_live_out — no second live scan. Same
 # one-scan-feeds-two-sections discipline Sections 5b/5c use, and for the same
 # reason: this guard runs on the merge gate and each live unit measured costs
@@ -1994,32 +2292,20 @@ assert "5c: at least one live harness attributes an out-of-module-dir include (e
 echo ""
 echo "--- Section 5d: live WARN-set shrinking ratchet ---"
 
-# Extract each live WARN line's file= value and normalise it to a repo-relative
-# path (the detector emits absolute paths, since it is driven with absolute
-# tests dirs; _KLOC_WARN_KNOWN is checked in as repo-relative so it stays
-# stable across worktrees).
+_s5d_class_rc=0
+_s5d_class="$(harness_warn_ratchet_violations "$_live_out" "$REPO_ROOT" \
+    ${_KLOC_WARN_KNOWN[@]+"${_KLOC_WARN_KNOWN[@]}"})" || _s5d_class_rc=$?
+
+mapfile -t _s5d_unknown < <(_warn_ratchet_rows "$_s5d_class" UNKNOWN)
+mapfile -t _s5d_dead    < <(_warn_ratchet_rows "$_s5d_class" DEAD)
+mapfile -t _s5d_stale   < <(_warn_ratchet_rows "$_s5d_class" STALE)
+_s5d_parsed="$(_warn_ratchet_rows "$_s5d_class" PARSED)"
+_s5d_emitted="$(_warn_ratchet_rows "$_s5d_class" EMITTED)"
+
+# Kept for the verbatim dumps below: an operator needs the WHOLE offending WARN
+# line (lines=/pct=/the five breakdown fields), not just the path the classifier
+# returns.
 _s5d_live_warn_lines="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
-_s5d_live_files=()
-while IFS= read -r _s5d_line; do
-    [ -n "$_s5d_line" ] || continue
-    _s5d_f="${_s5d_line#* file=}"
-    _s5d_f="${_s5d_f%% *}"
-    _s5d_live_files+=("${_s5d_f#"$REPO_ROOT/"}")
-done <<<"$_s5d_live_warn_lines"
-
-_s5d_known_set=""
-for _s5d_k in "${_KLOC_WARN_KNOWN[@]}"; do
-    _s5d_known_set="$_s5d_known_set|$_s5d_k|"
-done
-
-# (a) SUBSET: every live WARN file must be a known member.
-_s5d_unknown=()
-for _s5d_f in ${_s5d_live_files[@]+"${_s5d_live_files[@]}"}; do
-    case "$_s5d_known_set" in
-        *"|$_s5d_f|"*) ;;
-        *) _s5d_unknown+=("$_s5d_f") ;;
-    esac
-done
 
 # On failure, dump the offending WARN lines verbatim using the Section 5 idiom,
 # so an operator reading an ARCHIVED merge-verify log sees the exact unit and
@@ -2043,33 +2329,12 @@ assert "5d: every live WARNing unit is a member of the checked-in _KLOC_WARN_KNO
 # Pin that the parsed count matches the emitted WARN count — including the
 # healthy zero-warn end state, where both are 0 and (a) is vacuous BY FACT, not
 # by parser breakage.
-_s5d_emitted="$(printf '%s\n' "$_live_out" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
 assert "5d: the WARN file= extraction parsed exactly as many entries as the live scan emitted (non-vacuity)" \
-    test "${#_s5d_live_files[@]}" -eq "$_s5d_emitted"
+    test "$_s5d_parsed" -eq "$_s5d_emitted"
 
 # (c) PRUNE DIRECTION: report known rows that did not WARN this run (advisory)
 # and fail on known rows whose file is gone (gating). See the banner above for
 # why the two are split by severity.
-_s5d_live_set=""
-for _s5d_f in ${_s5d_live_files[@]+"${_s5d_live_files[@]}"}; do
-    _s5d_live_set="$_s5d_live_set|$_s5d_f|"
-done
-
-_s5d_dead=()
-_s5d_stale=()
-for _s5d_k in "${_KLOC_WARN_KNOWN[@]}"; do
-    # Dead beats stale: a missing file cannot WARN, so reporting it as merely
-    # "no longer warning" would understate it. Check existence first.
-    if [ ! -f "$REPO_ROOT/$_s5d_k" ]; then
-        _s5d_dead+=("$_s5d_k")
-        continue
-    fi
-    case "$_s5d_live_set" in
-        *"|$_s5d_k|"*) ;;
-        *) _s5d_stale+=("$_s5d_k") ;;
-    esac
-done
-
 for _s5d_k in ${_s5d_stale[@]+"${_s5d_stale[@]}"}; do
     echo "  PRUNE: _KLOC_WARN_KNOWN row '$_s5d_k' emitted no WARN this run — it is"
     echo "  back under ${WARN_PCT}% of CAP_LINES=${CAP_LINES}. ADVISORY, not a failure:"
@@ -2095,6 +2360,16 @@ fi
 
 assert "5d: every _KLOC_WARN_KNOWN row names a file that still exists on disk (no dead allowlist rows)" \
     test "${#_s5d_dead[@]}" -eq 0
+
+# WIRING: the classifier's return code must agree with the gating classes it
+# just emitted. The rc RULE is pinned hermetically in Section 4c; this is the
+# live half — it catches a mis-wired `|| _s5d_class_rc=$?` capture silently
+# swallowing a red, which no assert above would notice because they all read the
+# printed classes rather than the status.
+_s5d_expect_rc=0
+{ [ "${#_s5d_unknown[@]}" -eq 0 ] && [ "${#_s5d_dead[@]}" -eq 0 ]; } || _s5d_expect_rc=1
+assert "5d: the live ratchet's return code agrees with the gating classes it emitted" \
+    test "$_s5d_class_rc" -eq "$_s5d_expect_rc"
 
 # ===========================================================================
 # Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root
