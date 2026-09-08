@@ -380,39 +380,51 @@ fn orientation_dof_is_classified_not_skipped() {
 /// mismatch is expected. Section (a)'s silence is thereby attributable to a
 /// COMPUTED verdict over the real bytes rather than to a skip.
 ///
-/// The pre-assert on the anchor is load-bearing, not defensive noise: the
-/// anchor spans the `joint spherical(…)` line precisely so it selects one of
-/// those two occurrences, and if joints.ri is ever reformatted a
-/// silently-zero-substitution mutation would compile the UNMODIFIED file and
-/// this test would go vacuous in exactly the way it exists to prevent.
+/// The mutation site is located STRUCTURALLY — the `joint spherical(`
+/// declaration, then that declaration's own window up to the next `joint` — so
+/// renaming the parameters, wrapping the signature or changing the indent does
+/// not break this test. What it still couples to is exactly the property under
+/// test: that `spherical`'s DOF record is spelled `with orientation:
+/// Orientation`. Both window asserts are load-bearing rather than defensive
+/// noise: a silently-zero-substitution mutation would compile the UNMODIFIED
+/// file and leave this test vacuous in precisely the way it exists to prevent.
 #[test]
 fn stdlib_spherical_over_declared_dof_is_diagnosed() {
-    // Split so the mutation is visibly a swap of the `with` line alone, with
-    // the preceding `joint` line serving only to disambiguate spherical from
-    // ball. Kept byte-exact against stdlib/joints.ri (4-space continuation
-    // indent included) — the anchor assert below is what enforces that.
-    const SPHERICAL_DECL: &str = "joint spherical(c: Point3<Length>, d: Point3<Length>)\n";
-    const DECLARED_DOF: &str = "    with orientation: Orientation";
-    const OVER_DECLARED_DOF: &str = "    with { orientation: Orientation, extra: Angle }";
+    const SPHERICAL_DECL: &str = "joint spherical(";
+    const DECLARED_DOF: &str = "with orientation: Orientation";
+    const OVER_DECLARED_DOF: &str = "with { orientation: Orientation, extra: Angle }";
 
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/joints.ri");
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("cannot read stdlib/joints.ri at `{path}`: {e}"));
 
-    let anchor = format!("{SPHERICAL_DECL}{DECLARED_DOF}");
+    let decl_start = source.find(SPHERICAL_DECL).unwrap_or_else(|| {
+        panic!("stdlib/joints.ri no longer declares `{SPHERICAL_DECL}…`; this test \
+                mutates that declaration and cannot proceed without it")
+    });
+    // The declaration's own window: everything up to the next joint declaration,
+    // so `ball`'s identical DOF record cannot be the one selected.
+    let window_end = source[decl_start + SPHERICAL_DECL.len()..]
+        .find("\njoint ")
+        .map_or(source.len(), |offset| {
+            decl_start + SPHERICAL_DECL.len() + offset
+        });
+    let window = &source[decl_start..window_end];
+
     assert_eq!(
-        source.matches(anchor.as_str()).count(),
+        window.matches(DECLARED_DOF).count(),
         1,
-        "the `spherical` DOF-record anchor must occur EXACTLY once in \
-         stdlib/joints.ri, or the mutation below is not the mutation this test \
-         claims to make. Zero occurrences means the file was reformatted and \
-         this test silently stopped mutating anything; more than one means the \
-         anchor no longer discriminates spherical from ball. Re-derive the \
-         anchor from the file rather than relaxing this assert.\nanchor:\n{anchor}"
+        "`{DECLARED_DOF}` must occur EXACTLY once inside the `spherical` \
+         declaration, or the mutation below is not the mutation this test claims \
+         to make. Zero occurrences means `spherical`'s DOF record is no longer \
+         spelled that way and this test silently stopped mutating anything.\n\
+         window:\n{window}"
     );
-    let mutated = source.replace(
-        anchor.as_str(),
-        &format!("{SPHERICAL_DECL}{OVER_DECLARED_DOF}"),
+    let dof_start = decl_start + window.find(DECLARED_DOF).expect("asserted above");
+    let mutated = format!(
+        "{}{OVER_DECLARED_DOF}{}",
+        &source[..dof_start],
+        &source[dof_start + DECLARED_DOF.len()..]
     );
 
     assert_single_dof_mismatch(
