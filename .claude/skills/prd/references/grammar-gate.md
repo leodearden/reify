@@ -36,11 +36,12 @@ Then, from `tree-sitter-reify/`, mint one session-scoped cache dir and parse the
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/tree-sitter-reify"
-TS_CACHE="${TS_CACHE:-$(mktemp -d /tmp/prd-gate-ts-cache-XXXXXX)}"
+TS_CACHE="/tmp/prd-gate-ts-cache-$(git rev-parse --show-toplevel | sha256sum | cut -c1-16)"
+mkdir -p "$TS_CACHE" && chmod 700 "$TS_CACHE"
 XDG_CACHE_HOME="$TS_CACHE" tree-sitter parse --quiet /tmp/prd-gate-fixtures/<slug>-<n>.ri
 ```
 
-Reuse the same `$TS_CACHE` for every fixture in the session: the first parse pays a one-off grammar compile, and the rest are free (see **Performance note**).
+`$TS_CACHE` is **derived, not random**, and that is the whole point. If you are running these commands as an agent, every tool call gets a **fresh shell** — a `TS_CACHE` you set in one call is gone by the next — so a `mktemp -d` idiom would silently mint a new dir per fixture, pay the full cold compile every single time, and leave a 776 KB `reify.so` behind in `/tmp` for each one: the exact opposite of what the **Performance note** below promises. Deriving the name from the repo root instead gives you the *same* dir on every call, in every shell, for the whole session, so only the first parse pays the compile. It stays keyed to this worktree, which is the isolation precondition 3 is about. `chmod 700` because `/tmp` is world-writable and `tree-sitter` *executes* the `reify.so` it caches there.
 
 - **Exit 0** → fixture parses. Gate passes for that fragment.
 - **Exit 1** → fixture fails. Gate fails for that fragment — but only once both preconditions above hold (correct CWD, generated grammar present).
@@ -122,8 +123,8 @@ For PRDs that **introduce no novel syntax** (e.g. pure-infrastructure PRDs: a ne
 
 Against a **warm** `$TS_CACHE`, `tree-sitter parse` is sub-millisecond per fixture: even a PRD with 20 fixtures parses in well under a second.
 
-The **first** parse against a fresh `$TS_CACHE` is different — it compiles the grammar to `reify.so` before it can parse anything. Measured on this host: **~2s cold, ~0.01s warm** (task #5925). That one-off is why the setup block reuses a single `$TS_CACHE` for the whole session rather than minting one per fixture. Expect it, and don't read a slow first parse as a hang.
+The **first** parse against a fresh `$TS_CACHE` is different — it compiles the grammar to `reify.so` before it can parse anything, and that cost is **load-dependent**. Measured on this host (task #5925): **~0.01s warm**; cold, **~1.9s idle but 3.2–4.7s at a load average of ~110**, which is where this host habitually sits. Quote the range, not a single number, and don't read a first parse of several seconds as a hang. That one-off — plus the 776 KB each cache dir holds — is why the setup block derives one stable `$TS_CACHE` for the whole session rather than minting one per fixture. Dirs left in `/tmp` are age-cleaned by systemd (`D /tmp 1777 root root 30d`), not by anything in this repo.
 
-The PRD gate itself needs no manual step: `scripts/prd-capability-check.py` isolates its grammar probes automatically — a per-repo-root, grammar-fingerprinted dir under `$TMPDIR` — and `REIFY_TS_CACHE_HOME` pins that dir if you need to inspect or share it. The manual idiom above and the gate's automatic one are the same mechanism.
+The PRD gate itself needs no manual step: `scripts/prd-capability-check.py` isolates its grammar probes automatically — a per-repo-root, grammar-fingerprinted dir under `$TMPDIR`. That is the same *idea* as the manual idiom above but **not the same directory**: the gate's key also folds in a hash of the generated `src/grammar.json`, which the shell one-liner does not try to reproduce. To make them literally one directory — e.g. to inspect or share the compiled `reify.so`, or to spend the cold compile only once across both — export `REIFY_TS_CACHE_HOME="$TS_CACHE"`; the gate uses that value verbatim.
 
 If the dir you point `REIFY_TS_CACHE_HOME` at cannot be created, the gate falls back to that per-lane default rather than failing — you lose your pinned dir, not the run, and the probes stay isolated either way.

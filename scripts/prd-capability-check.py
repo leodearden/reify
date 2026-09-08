@@ -292,9 +292,10 @@ def _grammar_cache_home(repo_root: str) -> str:
         trustworthy in this pool; a content-derived key makes a changed grammar
         a NEW directory by construction rather than a stale hit.
 
-    Stable rather than per-process, so the cold reify.so compile (measured on
-    this host at 1.7-1.9 s, against ~0.01 s warm) is amortised across every probe
-    in a process and every process in a lane.
+    Stable rather than per-process, so the cold reify.so compile is amortised
+    across every probe in a process and every process in a lane.  That cost is
+    load-dependent and worth amortising: measured on this host at ~1.9 s idle but
+    3.2-4.7 s at a load average of ~110, against ~0.01 s warm.
 
     Under $TMPDIR, which reify's landlock grants wholesale.  GARBAGE COLLECTION
     is systemd's, not this repo's, and the rule was verified rather than assumed:
