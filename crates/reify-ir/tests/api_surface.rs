@@ -686,15 +686,21 @@ fn value_types_in_scope() {
 
     // Value::kind_name (task #6466): exhaustive discriminant-name method,
     // hoisted so reify-ir/ri_literal.rs and reify-constraints delegate to
-    // one table instead of each spelling out their own. Both spellings name
-    // the same inherent method since ValueMod is Value re-exported.
+    // one table instead of each spelling out their own.
+    //
+    // Reachability + signature only. The fn-pointer coercion pins the exact
+    // shape (`&Value -> &'static str`), so a return-type change to `String`
+    // reds here. Asserting the same call through `ValueMod` would be
+    // tautological — `ValueMod` is proven identical to `Value` by the
+    // type-identity assertions above — and the name TABLE is pinned
+    // variant-by-variant by `kind_name_is_pinned_for_every_variant` in
+    // reify-ir/src/value.rs, not here.
+    let _: fn(&Value) -> &'static str = Value::kind_name;
     let bb: Value = Value::BoundingBox {
         min: Box::new(Value::Undef),
         max: Box::new(Value::Undef),
     };
     assert_eq!(bb.kind_name(), "BoundingBox");
-    let bb_mod: ValueMod = bb;
-    assert_eq!(bb_mod.kind_name(), "BoundingBox");
 }
 
 #[test]
