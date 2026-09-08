@@ -1503,6 +1503,264 @@ mod tests {
         );
     }
 
+
+    // ── world-parented closing edge is rejected (task 7186 review fix 1) ──
+
+    /// Build the three-call shape whose closing edge is parented to
+    /// `world()`:
+    ///
+    /// ```text
+    /// body(m0, solidA, j1, world)   → joint_parents: j1 → world
+    /// body(m1, solidB, j2, j1)      → joint_parents: j2 → j1
+    /// body(m2, solidC, j2, world)   → parent conflict: j2 already → j1
+    /// ```
+    ///
+    /// The third call takes `append_body`'s parent-conflict branch with
+    /// `parent == world`, which is the rejected shape. `pose` selects the
+    /// 4-arg (`None` → identity) or 5-arg (`Some(p)`) closing form.
+    fn world_parented_closure_fixture(pose: Option<Value>) -> Value {
+        let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j2 = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j2.clone(), j1],
+        );
+        let mut args = vec![m2, Value::String("solidC".to_string()), j2, world];
+        if let Some(p) = pose {
+            args.push(p);
+        }
+        eval_builtin("body", &args)
+    }
+
+    /// Assert `m` is the mechanism error Map for a world-parented closing
+    /// edge — the same four-key decoration `make_duplicate_solid_error`
+    /// produces (`error`, `error_message`, empty-List `error_path1` /
+    /// `error_path2`), stamped with this error's own discriminator.
+    fn assert_world_parented_closure_error(m: &Value) {
+        let map = match m {
+            Value::Map(m) => m,
+            other => panic!("expected errored Mechanism Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("mechanism".to_string())),
+            "the error Map decorates the mechanism in place, keeping kind='mechanism'"
+        );
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("world_parented_closure".to_string())),
+            "error field should be 'world_parented_closure'"
+        );
+        match map.get(&Value::String("error_message".to_string())) {
+            Some(Value::String(s)) => {
+                assert!(!s.is_empty(), "error_message should be non-empty");
+                assert!(
+                    s.contains("world()"),
+                    "error_message must name the world-parented closing edge, got {:?}",
+                    s
+                );
+                assert!(
+                    s.contains("free variable"),
+                    "error_message must say the loop-closure solver has no free variable \
+                     on the closing side, got {:?}",
+                    s
+                );
+            }
+            other => panic!("expected error_message String, got {:?}", other),
+        }
+        assert_eq!(
+            map.get(&Value::String("error_path1".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path1 is an empty List (v0.1 error-Map shape uniformity)"
+        );
+        assert_eq!(
+            map.get(&Value::String("error_path2".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path2 is an empty List (v0.1 error-Map shape uniformity)"
+        );
+    }
+
+    /// **Task 7186 review fix 1 (a).** A closing edge parented to `world()`
+    /// must be rejected at BUILD time with a loud, actionable error Map.
+    ///
+    /// Why this is this task's to close: `path_b` is
+    /// `[world] ++ walk_to_world(joint_parents, parent)`, and `walk_to_world`
+    /// returns an EMPTY vec iff `is_world(parent)` (it breaks before pushing
+    /// only for the world sentinel; a non-world parent with no recorded
+    /// ancestor still yields `[parent]`). So `path_b == [world]` (len 1) iff
+    /// the closing edge's `parent` is the world sentinel. Both
+    /// `strip_world_sentinel` impls reject `len < 2`, so
+    /// `extract_loop_closure_chains` returns None and snapshot.rs maps that
+    /// to `Value::Undef` for the WHOLE mechanism, with no diagnostic. Before
+    /// step-2 dropped the closing joint from `path_b` this was unreachable
+    /// (`path_b` always ended with `at`), so it is a failure mode this task
+    /// introduced.
+    ///
+    /// Measured on this exact fixture before the fix: `path_a.len() == 3`,
+    /// `path_b.len() == 1` (`[world]` only), `snapshot(...) == Undef`.
+    ///
+    /// Why rejection and not repair: with `parent == world`, chain_b holds
+    /// NO joints, so `free_b == []` for any bindings — see
+    /// `world_parented_closing_edge_with_pose_is_rejected` for the measured
+    /// silent-wrong-answer that softer remedies produce.
+    #[test]
+    fn world_parented_closing_edge_is_rejected() {
+        let errored = world_parented_closure_fixture(None);
+        assert_world_parented_closure_error(&errored);
+
+        // Propagation: the error must not be swallowed downstream. `body()`
+        // returns an errored Mechanism Map verbatim (its generic `error`-key
+        // short-circuit), and `snapshot()` on an errored mechanism is Undef
+        // rather than a partial Snapshot of the pre-error bodies.
+        let j3 = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let propagated = eval_builtin(
+            "body",
+            &[
+                errored.clone(),
+                Value::String("solidD".to_string()),
+                j3,
+                eval_builtin("world", &[]),
+            ],
+        );
+        assert_eq!(
+            propagated, errored,
+            "a subsequent body() call on the errored mechanism returns it verbatim"
+        );
+        assert!(
+            eval_builtin("snapshot", &[errored.clone(), Value::List(vec![])]).is_undef(),
+            "snapshot() of the errored mechanism must be Undef, not a normal Snapshot Map"
+        );
+        assert!(
+            eval_builtin(
+                "body_id_of",
+                &[errored, Value::String("solidA".to_string())],
+            )
+            .is_undef(),
+            "body_id_of() on the errored mechanism must be Undef"
+        );
+    }
+
+    /// **Task 7186 review fix 1 (b).** The 5-arg closing form of the same
+    /// shape must be rejected identically. This is the case that is strictly
+    /// WORSE than the 4-arg `Undef`: a non-identity `pose` appends a
+    /// synthetic 0-DOF rigid link, so `path_b == [world, fixed]` (len 2)
+    /// clears `strip_world_sentinel` and the mechanism reports a normal,
+    /// plausible-looking Snapshot carrying an unsatisfied closure.
+    ///
+    /// Measured on this exact fixture (`pose = translate(0.2m, 0, 0)`,
+    /// `j1` bound to 0.5 m) before the fix: `path_b.len() == 2`, snapshot
+    /// NOT Undef, `free_values == [[]]`, bodies at 0.5 / 1.5 / 1.7 m, and a
+    /// direct residual probe gives `T_a = (1.5, 0, 0)`, `T_b = (0.2, 0, 0)`,
+    /// residual twist `[0, 0, 0, -1.3, 0, 0]` — a 1.3 m unsatisfied closure
+    /// returned as a normal Snapshot Map with no diagnostic. That is the
+    /// silent-wrong-answer this rejection closes.
+    #[test]
+    fn world_parented_closing_edge_with_pose_is_rejected() {
+        let pose = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.2),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        let errored = world_parented_closure_fixture(Some(pose));
+        assert_world_parented_closure_error(&errored);
+        assert!(
+            eval_builtin("snapshot", &[errored, Value::List(vec![])]).is_undef(),
+            "snapshot() of the errored mechanism must be Undef — not the 0.5/1.5/1.7 m \
+             bodies carrying a 1.3 m unsatisfied closure"
+        );
+    }
+
+    /// **Task 7186 review fix 1 (c).** The negative control that pins the
+    /// rejection's exact boundary: a closing edge whose `parent` is a REAL
+    /// joint with no recorded ancestor still records a loop closure and is
+    /// NOT rejected. `walk_to_world` pushes such a parent (it stops only at
+    /// the world sentinel), so `path_b == [world, parent]` — len 2, which
+    /// clears `strip_world_sentinel`, and chain_b carries one real joint so
+    /// `free_b` is non-empty and the closure is solvable.
+    ///
+    /// This must PASS both before and after the step-10 guard: it is the
+    /// assertion that stops `is_world(parent)` from being widened into
+    /// "parent has no recorded ancestor", which would over-reject.
+    #[test]
+    fn non_world_parented_closing_edge_still_records() {
+        let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j2 = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        // j3 is never used as an `at`, so joint_parents records no ancestor
+        // for it — the boundary case one step away from the world sentinel.
+        let j3 = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j2.clone(),
+                j1.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j2.clone(),
+                j3.clone(),
+            ],
+        );
+
+        let map = match &m3 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        assert!(
+            !map.contains_key(&Value::String("error".to_string())),
+            "a closing edge parented to a real joint must NOT be rejected, got {:?}",
+            map.get(&Value::String("error".to_string()))
+        );
+        let (path_a, path_b) = only_closure_paths(&m3);
+        assert_eq!(
+            path_a,
+            Value::List(vec![world.clone(), j1, j2]),
+            "path_a is the spanning-tree walk down to the closing joint"
+        );
+        assert_eq!(
+            path_b,
+            Value::List(vec![world, j3]),
+            "path_b is [world, parent] — len 2, so strip_world_sentinel accepts it"
+        );
+    }
+
     // ── closed-chain detection: joint-graph cycle ────────────────────────
 
     /// v0.2: `body()` calls whose recorded `(at → parent)` edges introduce a
