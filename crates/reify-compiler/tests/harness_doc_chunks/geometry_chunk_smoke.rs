@@ -1364,6 +1364,89 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
     }
 }
 
+/// Every arity the MEASUREMENT section documents for a whole-handle query must
+/// be exercised by a fence that compiles.
+///
+/// Twin of [`documented_oracle_arities_are_exercised_by_a_compiling_fence`], and
+/// deliberately the same shape rather than a generalisation of it: the two scope
+/// different sections and different name sets, and folding them into one
+/// parameterised helper would put the section marker, the name set and the
+/// panic's subject all behind arguments, which is how a failure ends up naming
+/// the wrong section.
+///
+/// SCOPED TO `WHOLE_HANDLE_GEOMETRY_QUERY_NAMES` — four names, not the fifteen
+/// `measurement_query_family_documented_in_geometry_chunk` covers. That is a
+/// deliberate stop, not an oversight. The property needs a fence that actually
+/// CALLS the name, and the whole-handle four share one realized-handle dispatch
+/// path, so a single `structure def` over one let-bound solid exercises all four.
+/// The other eleven do not fit that fence: `curvature`/`normal` need a hydrated
+/// face or edge sub-handle, `geo_equiv` needs a dimensioned Length tolerance at
+/// arity 3, and `max_deviation` needs two let-bound geometries on a separate
+/// dispatch path. Covering them would need several fences of setup and would
+/// couple this doc gate to argument-DIMENSION semantics, which the oracle guard
+/// explicitly leaves unchecked. Name coverage for all fifteen is already total;
+/// this adds arity precision where it is cheap and unambiguous.
+///
+/// The registry const is reached through the crate root
+/// (`reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES`, re-exported at
+/// `lib.rs`), never `reify_compiler::units::…` — `mod units` is private, so the
+/// latter does not compile from an integration test.
+#[test]
+fn documented_measurement_arities_are_exercised_by_a_compiling_fence() {
+    let markdown = read_chunk();
+    let section = section_body(
+        &markdown,
+        MEASUREMENT_SECTION_MARKER,
+        CHUNK_PATH,
+        MEASUREMENT_SECTION_TITLE,
+    );
+    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
+
+    for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
+        let documented = documented_signature_arities(&section, name);
+        // Anti-vacuity, per name. Without it, a name that lost its `-> <Type>`
+        // annotation — or was dropped from the signature list entirely — would
+        // silently contribute zero assertions instead of failing.
+        assert!(
+            !documented.is_empty(),
+            "{CHUNK_PATH}'s `{MEASUREMENT_SECTION_TITLE}` section documents no `{name}(…) -> \
+             <Type>` signature form, so nothing pins that name's arity and this check would pass \
+             vacuously for it. Restore the `-> <Type>` return annotation on the call form. (The \
+             `->` is what separates a SIGNATURE from a prose mention; see the module doc's \"The \
+             one doc-FORMAT pin this file does impose\".)"
+        );
+
+        // Comment-free fence bodies: a call form appearing only in a `//`
+        // annotation is not an exercised form. That matters here specifically —
+        // the measurement fence's own annotation writes
+        // `volume(box(60mm, 40mm, 8mm))` to illustrate the inline-arg hoist, at
+        // the same arity 1 as the real call, so without stripping it the fence
+        // could lose `let v = volume(plate)` and stay green.
+        let in_fences: Vec<usize> = fences
+            .iter()
+            .map(|fence| strip_reify_comments(fence))
+            .flat_map(|fence| {
+                call_sites(&fence, name)
+                    .into_iter()
+                    .map(|(arity, _)| arity)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for arity in &documented {
+            assert!(
+                in_fences.contains(arity),
+                "{CHUNK_PATH} documents `{name}` at {arity} argument(s) in its \
+                 `{MEASUREMENT_SECTION_TITLE}` section, but no ```reify fence calls it at that \
+                 arity (fence call arities for `{name}`: {in_fences:?}). Either the documented \
+                 signature is a phantom the compiler was never shown, or the worked fence \
+                 drifted off the form it demonstrates. The fences are what actually compile, so \
+                 fix whichever of the two is wrong — a designer copies whichever they read first."
+            );
+        }
+    }
+}
+
 /// Minimum CATALOGUE ROWS the LENGTH-ARGUMENTS table must carry.
 ///
 /// The EXACT live count (`translate`, `rotate_around`, `revolve`,
