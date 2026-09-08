@@ -507,13 +507,16 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
 /// that reverts the normaliser lands here.
 ///
 /// TOLERANCES ARE MEASURED, not guessed (λ = 7, this fixture): node residual 1.1e-16 m,
-/// member-force relative residual 4.0e-16, σ-echo relative residual exactly 0. The
-/// agreement is at f64 round-off because −1/1/2 ×7 and 0.5 ×7 are all exactly
-/// representable, so `D_λ = λ·D` holds here to the last bit — but the tolerances below
-/// are deliberately NOT sized on that. They are sized on the larger hazard: if a future
-/// change makes `D_λ = λ·D` only approximate, the two runs can stop one iterate apart,
-/// and the stop residual (`SURFACE_EQUILIBRIUM_REL_TOL = 1e-11` × a measured
-/// `d_scale ≈ 9`) bounds that displacement at ~1e-11 m — so 1e-9 keeps ~2 orders over
+/// member-force relative residual 4.0e-16, σ-echo relative residual exactly 0. Note those
+/// residuals are NOT zero: exact INPUTS do not give an exact assembled matrix, because a
+/// membrane entry is `σ·w` for a geometry-derived cotangent weight `w` and `fl(7σ·w) ≠
+/// 7·fl(σ·w)` in general at a non-power-of-two λ (contrast the kernel fixtures, which pick
+/// λ = 2^±20 precisely so they CAN assert bit-exactness). `D_λ = λ·D` therefore holds here
+/// only to f64 rounding — and the tolerances below are deliberately NOT sized on it, so do
+/// not invoke exactness to tighten them. They are sized on the larger hazard: that same
+/// rounding can in principle push the two runs one iterate apart, and the stop residual
+/// (`SURFACE_EQUILIBRIUM_REL_TOL = 1e-11` × a measured `d_scale ≈ 9`) bounds that
+/// displacement at ~1e-11 m — so 1e-9 keeps ~2 orders over
 /// the hazard and ~7 over the measurement. Do not slacken either without re-measuring:
 /// the defect this locks moves the converged shape by far more than 1e-9, or fails
 /// `converged` outright in `solve_with`.
