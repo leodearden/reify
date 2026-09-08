@@ -1036,6 +1036,33 @@ structure def KlipperDialect : GcodeDialect { }
 // (its F1800 fixture is chosen to discriminate the mm/min -> m/s divisor from a
 // multiply-by-reciprocal, which differ by one ULP — see that test's comment).
 //
+// NOTE — the returned value is NOT evaluable by the `Profile` functions, in
+// spite of the `-> List<Profile>` return type above. The `Value::Map` carrier
+// documented in the UNITS paragraph is the reason: `evaluate_profile` (:398),
+// `evaluate_profile_dot` (:402), `evaluate_profile_ddot` (:407) and
+// `profile_duration` (:412) all route through
+// `trajectory/trampoline.rs::value_to_multijoint_spline`, whose first act is to
+// destructure a `Value::StructureInstance` and return `None` for anything else
+// — so a bare Map never reaches the spline evaluator at all. Measured, on an
+// imported profile `g0 = gcode_import("G1 X10 Y10 F1800", MarlinDialect())[0]`:
+//
+//     profile_duration(g0)        =>  undef   (OpContractViolation)
+//     evaluate_profile(g0, 0.0s)  =>  undef   (OpContractViolation)
+//
+// The supported use today is to read the list itself and its `.count` — which
+// is exactly what both shipped consumers do (`examples/trajectory/`
+// `gcode_import_smoke.ri`:40 and `printer_print_envelope.ri`:241). An author
+// who needs an *evaluable* profile should build a `PiecewisePolynomialProfile`
+// (:288) by hand out of `Waypoint` (:202) values instead; that path is a real
+// `StructureInstance` and does evaluate — measured, a two-waypoint
+// natural-cubic profile over [0s, 1s] gives `profile_duration` => `1 s` and
+// `evaluate_profile(p, 0.5s)` => `[0.5]`. Closing this gap for `gcode_import`
+// would mean giving the payload a concrete `Profile` variant AND a time
+// parameterisation the g-code waypoints do not carry — there is no `t` in the
+// payload, only positions and an optional feed — so it is a design change well
+// beyond the marshalling boundary the units conversion above touches, not an
+// oversight in it.
+//
 // The body delegates to the `gcode_import_lower` intrinsic rather than
 // returning a stub `[]`. Because this fn has a `.ri` declaration the compiler's
 // `resolve_function_overload` returns `Resolved` → `UserFunctionCall`, causing
