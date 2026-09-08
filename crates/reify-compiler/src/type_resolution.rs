@@ -5702,12 +5702,9 @@ mod tests {
             );
         }
 
-        // NON-VACUITY control. A zero-errors oracle only proves something if an
-        // UNRESOLVABLE name in the same position is loud. It is here — the
-        // `param` arm emits `unresolved type: …` — unlike the joint `with` DOF
-        // path (THE DEFECT CHAIN in the header above), which is why the
-        // integration companions in `standard_joint_library_tests.rs` cannot
-        // use this oracle and use a positive/mutation one instead.
+        // NON-VACUITY control: a zero-errors oracle proves something only where
+        // an UNRESOLVABLE name in the same position is loud. It is, in `param`
+        // position — but not in the joint `with` DOF position (fact 1 above).
         let control = compile_orientation_probe(
             "structure S {\n    param o : Blorp = orient_identity()\n}",
         );
