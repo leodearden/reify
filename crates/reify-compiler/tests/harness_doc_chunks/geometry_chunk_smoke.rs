@@ -415,6 +415,25 @@ const MEASUREMENT_SECTION_MARKER: &str = "<!-- MEASUREMENT-SECTION -->";
 /// only; nothing matches on it.
 const MEASUREMENT_SECTION_TITLE: &str = "## Measurement & Mass-Property Queries";
 
+/// Marker that OPENS the `undef`-TRAP region inside the measurement section —
+/// the two traps that explain why a query silently yields `Value::Undef`. Matched
+/// BYTE-EXACTLY on the trimmed line, exactly as every other marker here is, and
+/// for the identical reason: the anchor must be inert so the heading's wording
+/// stays free.
+///
+/// This is the one marker scoping a region for a FORBIDDEN direction rather than
+/// a required one, and the scoping is what makes that safe. The chunk writes
+/// `volume(...)` legitimately all over the measurement section — the signature
+/// list, the worked fence, the fence's own hoist annotation — so a chunk-wide
+/// "no hoisted call form" scan would be RED against entirely correct prose. Only
+/// this region claims that an inline geometry argument yields `undef`, so only
+/// this region is scanned.
+const NOT_HOISTED_TRAP_MARKER: &str = "<!-- NOT-HOISTED-TRAP -->";
+
+/// Human-readable name of [`NOT_HOISTED_TRAP_MARKER`]'s region. Panic text only;
+/// nothing matches on it.
+const NOT_HOISTED_TRAP_TITLE: &str = "### Eval status, and when a query yields `undef`";
+
 /// Marker that OPENS the TOPOLOGY-SELECTOR catalogue section — the one that
 /// documents [`reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES`] as a table.
 /// Matched BYTE-EXACTLY on the trimmed line, as every other marker here is.
@@ -736,6 +755,86 @@ fn measurement_query_family_documented_in_geometry_chunk() {
              and is the sole source of this list."
         );
     }
+}
+
+/// The `undef` traps must illustrate themselves with a query the compile-time
+/// inline-arg hoist does NOT cover.
+///
+/// A registry-driven CONSISTENCY guard, not a prose pin: nothing here asserts on
+/// wording. The only claim is that whatever call the trap region exhibits is
+/// drawn from OUTSIDE `reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES`, which
+/// is iterated directly (no local mirror) so a name entering or leaving the
+/// hoisted set moves this check with it.
+///
+/// THE DEFECT THIS CLOSES was live in this chunk. The arg-shape trap illustrated
+/// "an inline geometry argument yields `undef`" with
+/// `volume(box(10mm, 10mm, 10mm))` — but `volume` is one of the four names the
+/// very next sentence exempts, and the worked fence twenty lines above says that
+/// same inline form WORKS. So the section contradicted itself twice over, and the
+/// chunk is served VERBATIM to the in-GUI assistant: a trap in this shape does not
+/// merely confuse, it asserts a behaviour the compiler does not have, and the
+/// assistant then rewrites working code to dodge an imaginary hazard.
+///
+/// THE CALL FORM is the needle, deliberately. The carve-out sentence names all
+/// four as bare backticked identifiers (`` `volume` ``, `` `area` ``, …) and must
+/// stay exactly as it is — naming them is the carve-out's whole job. Only a call
+/// form `name(` makes the false claim, so only a call form is forbidden.
+///
+/// ANTI-VACUITY IS EXPLICIT here rather than inherited. [`section_body`]'s
+/// panic-on-absent-marker covers a DELETED marker, but a forbidden-direction
+/// assertion is trivially satisfied by an EMPTY region, so gutting the
+/// illustrative call would otherwise go green. The floor therefore requires at
+/// least one surviving call form drawn from `GEOMETRY_QUERY_NAMES` MINUS the
+/// whole-handle four — computed from the two registries rather than hardcoded, so
+/// swapping `perimeter` for `max_deviation` in the prose keeps this correct.
+#[test]
+fn the_undef_trap_example_is_a_query_the_hoist_does_not_cover() {
+    let markdown = read_chunk();
+    let region = section_body(
+        &markdown,
+        NOT_HOISTED_TRAP_MARKER,
+        CHUNK_PATH,
+        NOT_HOISTED_TRAP_TITLE,
+    );
+
+    for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
+        let call_form = format!("{name}(");
+        assert!(
+            !region.contains(&call_form),
+            "{CHUNK_PATH}'s `{NOT_HOISTED_TRAP_TITLE}` region exhibits `{call_form}…` as its \
+             example of a call that yields `undef`, but `{name}` is one of \
+             reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES: the task-5345 inline-arg hoist \
+             (crates/reify-compiler/src/units.rs:937, pinned by \
+             geometry_query_inline_arg_tests.rs::compile_inline_volume_torus_hoists_into_realization) \
+             desugars an inline geometry argument to `{name}` into a synthetic let, so that call \
+             resolves. The example therefore contradicts the very carve-out the next sentence \
+             grants — and this chunk is served verbatim to the in-GUI assistant, which would read \
+             it as a behaviour the compiler does not have and steer designers away from a form \
+             that works. Illustrate the trap with a query the hoist does not cover (any member of \
+             GEOMETRY_QUERY_NAMES outside that four — `perimeter`, `curvature`, `normal`, \
+             `length`, `feature`, or any of the multi-arg queries). Naming `{name}` as a bare \
+             backticked identifier in the carve-out sentence is fine and untouched by this check; \
+             only the call form is forbidden."
+        );
+    }
+
+    let not_hoisted: Vec<&str> = reify_compiler::GEOMETRY_QUERY_NAMES
+        .iter()
+        .copied()
+        .filter(|name| !reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES.contains(name))
+        .collect();
+    assert!(
+        not_hoisted
+            .iter()
+            .any(|name| region.contains(&format!("{name}("))),
+        "{CHUNK_PATH}'s `{NOT_HOISTED_TRAP_TITLE}` region no longer exhibits ANY query call form \
+         at all, so the forbidden-direction check above passes vacuously — an empty region \
+         satisfies it exactly as well as a correct one does. The region's job is to SHOW a call \
+         that silently yields `undef`; a trap that names no call teaches nothing. Restore an \
+         illustrative call drawn from one of {not_hoisted:?} (GEOMETRY_QUERY_NAMES minus the \
+         hoisted whole-handle four, computed here from both registries so this list follows the \
+         compiler)."
+    );
 }
 
 /// Minimum CATALOGUE ROWS the TOPOLOGY-SELECTOR table must carry.
