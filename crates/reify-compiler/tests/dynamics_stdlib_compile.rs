@@ -825,6 +825,7 @@ structure def Probe {
 #[test]
 fn inverse_dynamics_signature_uses_mechanism_and_motion_trajectory() {
     let inverse_dynamics = find_function("inverse_dynamics");
+    assert!(inverse_dynamics.is_pub, "inverse_dynamics should be pub");
     assert_eq!(
         inverse_dynamics.params,
         vec![
@@ -862,6 +863,10 @@ fn inverse_dynamics_at_snapshot_signature_uses_mechanism_and_snapshot() {
     // regressed — update the q_dot/q_ddot expected type below to match rather than
     // loosening the Mechanism/Snapshot checks this test exists to guard.
     let inverse_dynamics_at_snapshot = find_function("inverse_dynamics_at_snapshot");
+    assert!(
+        inverse_dynamics_at_snapshot.is_pub,
+        "inverse_dynamics_at_snapshot should be pub"
+    );
     assert_eq!(
         inverse_dynamics_at_snapshot.params,
         vec![
