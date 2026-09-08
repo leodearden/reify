@@ -133,16 +133,30 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// - `crate::ignore_hygiene::extract_ignore_reason` — read by
 ///   `reify_audit::ptodo`'s scan for the §8.3 γ reason policy, and the
 ///   original reason `reify-audit` carries this crate as a normal dependency
-///   rather than a dev-dependency. It stays below the edge for the same
-///   reason the pair above does: it is pinned to agree with its siblings
-///   `ignore_attr`/`check_ignore_reasons` on which ignore-attribute forms
-///   carry a reason, and those have below-edge callers (`reify-expr`'s
-///   `field_calculus_tests`, this crate's `tests/ignore_reason_hygiene`)
-///   that could not reach a definition above it.
+///   rather than a dev-dependency. It stays below the edge because it is
+///   reached from both sides: reify-audit's production scan reads it from
+///   above, and it is the extraction half of `crate::ignore_hygiene`'s
+///   format-vs-liveness split with PTODO, whose other public entry point
+///   `check_ignore_reasons` is called from a crate that does not depend on
+///   `reify-audit` at all — so a definition above the edge could not serve
+///   that module. Its form-agreement pin points UP, not sideways: the
+///   sibling it mirrors on which ignore-attribute forms carry a reason is
+///   `reify_audit::ptodo`'s private `ignore_attr`, which lives ABOVE the
+///   edge (`eir_non_canonical_no_spaces_returns_reason` here,
+///   `scan_file_ignore_non_canonical_form_blocker_prose` there). Do not
+///   infer any agreement with `check_ignore_reasons`: that scanner never
+///   calls the extractor and deliberately recognises only the canonical
+///   spaced form (pinned by
+///   `check_ignore_reasons_non_canonical_form_is_silently_ignored`, against
+///   which the extractor's own pin above deliberately disagrees). The two
+///   below-edge scanners are locked together on doc-comment skipping alone
+///   (`lock_step_doc_comment_skipping_in_both_scanners`).
 ///
 /// Items, not a census of their call sites: a census rots on the next rename
 /// while still reading as authoritative — see `reify_audit::git_env`'s module
-/// doc, which tells a reader to re-run the sweep instead.
+/// doc, which tells a reader to re-run the sweep instead. The test names cited
+/// above are the one deliberate exception, and are not that census: they are
+/// pins, not call sites — the things to re-run to check the claims made here.
 ///
 /// Single-sourced here: other sites that mention this arrangement state only
 /// the fact and point back, keeping no copy. Keep it that way — adding or
