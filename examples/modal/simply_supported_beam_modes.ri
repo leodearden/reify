@@ -79,17 +79,15 @@ structure SimplySupportedBeamModes {
     // = vec3(0,0,1) is the dimensionless unit excitation direction (the slender
     // bending direction).
     //
-    // Ctor args bind BY NAME (task 4522): each `name:` label is matched
-    // against ModalOptions' param list by name, and any unlabelled args fill
-    // the remaining slots in declaration order — declaration order no longer
-    // determines binding for labelled args. The real trap is a MISSPELLED
-    // label: an unknown name emits `E_CTOR_UNKNOWN_FIELD` — a Warning today,
-    // an Error at δ — and is STILL appended leniently as `__arg{i}`, so the
-    // intended param falls back to its default WITHOUT failing the build,
-    // which for `element_order` means a silent return to the `ElementOrder.P1`
-    // bending lock this fixture exists to avoid. sigma / tol / max_iters are
-    // therefore spelled out at their ModalOptions defaults (0.0 / 1e-9 / 200)
-    // for review visibility, not because it is required for correctness.
+    // Ctor args bind BY NAME (task 4522), so these labels are load-bearing and
+    // position-independent. Every param is still spelled out — sigma / tol /
+    // max_iters at their ModalOptions defaults (0.0 / 1e-9 / 200) — because a
+    // MISSPELLED label is diagnosed (`E_CTOR_UNKNOWN_FIELD`) yet STILL bound
+    // leniently, leaving `element_order` at its `ElementOrder.P1` default and
+    // quietly reinstating the bending lock this fixture exists to avoid. The
+    // binder rule, the lenient fallback and the CURRENT severity are stated
+    // once, in `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`
+    // (crates/reify-compiler/tests/modal_options_validation_tests.rs).
     // n_modes = 8 (not 3): this beam is wide (b=10mm) and thin (h=2mm), so the
     // lateral Y-bending family is ≈ (b/h) = 5× stiffer in frequency than the
     // vertical Z-bending family. The first lateral mode (≈ 5·f₁,z ≈ 579 Hz) lands

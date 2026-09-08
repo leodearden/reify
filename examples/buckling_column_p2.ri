@@ -25,18 +25,17 @@
 //     LoadCase fields + solve_buckling params both tightened by ζ/4444 — distinct
 //     from task 4093, which tightened solve_elastic_static in the FEA examples)
 //
-// Ctor args bind BY NAME (task 4522): each `name:` label is matched against
-// BucklingOptions' param list by name, and any unlabelled args fill the
-// remaining slots in declaration order — declaration order no longer
-// determines binding for labelled args. The real trap is a MISSPELLED label:
-// an unknown name emits `E_CTOR_UNKNOWN_FIELD` — a Warning today, an Error
-// at δ — and is STILL appended leniently as `__arg{i}`, so the intended param
-// falls back to its default WITHOUT failing the build, which for
-// `element_order` means a silent return to the `ElementOrder.P1` bending lock
-// this fixture exists to avoid. The 6 preceding params are therefore spelled
-// out at their BucklingOptions defaults for review visibility, not because
-// it is required for correctness. Mirrors the cantilever_beam_modes.ri
-// pattern (examples/modal/cantilever_beam_modes.ri:80-90).
+// Ctor args bind BY NAME (task 4522), so these labels are load-bearing and
+// position-independent. The 6 preceding params are still spelled out at their
+// BucklingOptions defaults because a MISSPELLED label is diagnosed
+// (`E_CTOR_UNKNOWN_FIELD`) yet STILL bound leniently, leaving `element_order`
+// at its `ElementOrder.P1` default and quietly reinstating the bending lock
+// this fixture exists to avoid. The binder rule, the lenient fallback and the
+// CURRENT severity are stated once, in
+// `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`
+// (crates/reify-compiler/tests/modal_options_validation_tests.rs). Mirrors the
+// `let opts = ModalOptions(...)` pattern in
+// examples/modal/cantilever_beam_modes.ri.
 
 structure BucklingColumnP2 {
     // Geometry: 800 mm tall column, 20×20 mm cross-section.

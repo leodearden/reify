@@ -325,16 +325,16 @@ structure def PointLoad : Load {
     // PointLoad() contributes [0, 0, -force], byte-identical to the pre-4245
     // hardcoded -Z path.
     //
-    // `direction` is declared LAST. Ctor args bind BY NAME (task 4522), so
-    // existing labelled call sites like `PointLoad(point: ..., force: ...)`
-    // are unaffected by where `direction` sits in the declaration — reordering
-    // params does not mis-bind a labelled caller. Declaring it last still
-    // matters for callers that pass values positionally without `name:`
-    // labels (unlabelled args fill the remaining slots in declaration order),
-    // so directional callers can append
-    // `PointLoad(point: ..., force: ..., direction: vec3(...))`
-    // (task 3015's non-colinear superposition) without disturbing earlier
-    // positional args.
+    // `direction` is declared LAST. Ctor args bind BY NAME (task 4522), and
+    // every call site in the corpus today is either zero-arg `PointLoad()` or
+    // fully labelled (`PointLoad(point: ..., force: ...)`), so none of them
+    // depends on where `direction` sits in the declaration — a directional
+    // caller just appends `direction: vec3(...)` (task 3015's non-colinear
+    // superposition) wherever it likes. Declaration order governs only
+    // UNLABELLED args, which fill the remaining slots in order: promoting
+    // `direction` ahead of `point`/`force` would silently rebind an
+    // all-positional `PointLoad(p, f)` so that `p` lands in `direction`.
+    // Declaring it last keeps both spellings meaning what they read as.
     //
     // `direction` is `Vector3<Dimensionless>`. Which Q a stdlib 3-vector field
     // takes is decided by what the field DENOTES (the RULING at trajectory.ri's
