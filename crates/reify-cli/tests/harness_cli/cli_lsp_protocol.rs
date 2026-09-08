@@ -761,10 +761,11 @@ fn huge_unknown_uri_did_change(version: i64) -> (String, serde_json::Value) {
 /// which makes `did_change`'s unknown-URI `eprintln!`
 /// (crates/reify-lsp/src/server.rs) fire. Since task #6162 landed, that
 /// line is bounded by `truncate_for_log` before it is written — the
-/// captured stderr is small (well under 16 KiB), not the URI echoed
-/// verbatim — and the bounded-length assertions at the end of this function
-/// are this test's end-to-end regression guard for that fix, through the
-/// real binary.
+/// captured stderr is small (a low-single-digit-KiB bound derived from
+/// reify-lsp's own published `LOG_STR_MAX_BYTES`, not a number transcribed
+/// here — see the assertions below), not the URI echoed verbatim — and the
+/// bounded-length assertions at the end of this function are this test's
+/// end-to-end regression guard for that fix, through the real binary.
 ///
 /// Historical/pre-fix measured A/B on this binary (target/debug/reify),
 /// kept here because it is what motivates `spawn_pipe_reader` being spawned
@@ -1014,18 +1015,25 @@ fn lsp_full_interactive_loop_through_binary() {
     );
 
     // Task #6162 regression guard: a 160 KiB client-supplied URI must not
-    // become 160 KiB of stderr. Derived basis: the truncated log line is at
-    // most 39 bytes of prefix + 1024 bytes of (256-char) URI + ~35 bytes of
-    // marker, i.e. < 1.15 KiB — 16 KiB leaves >14x headroom over that bound
-    // while sitting far below the measured pre-fix value of 163_895 bytes.
-    // A failure here means the truncation regressed (or never happened),
-    // NOT that the drain broke.
+    // become 160 KiB of stderr. Derived, not hand-transcribed, so a future
+    // bump of reify-lsp's LOG_STR_MAX_CHARS mechanically raises this bound
+    // instead of silently under-covering the real worst case (task #6162
+    // amendment review): `reify_lsp::server::LOG_STR_MAX_BYTES` is
+    // truncate_for_log's own published worst-case output length, plus this
+    // file's headroom for the `eprintln!` prefix ("[reify-lsp] didChange \
+    // for unknown URI: ", 39 bytes) and trailing newline — comfortably
+    // below the measured pre-fix value of 163_895 bytes either way. A
+    // failure here means the truncation regressed (or never happened), NOT
+    // that the drain broke.
+    let max_expected_stderr_bytes = reify_lsp::server::LOG_STR_MAX_BYTES + 128;
     assert!(
-        stderr.len() < 16 * 1024,
-        "expected <16KiB of captured stderr from phase 4b's huge-URI didChange (derived \
-         worst case < 1.15KiB; measured 163_895 bytes pre-fix), got {} bytes. This means the \
-         did_change unknown-URI log line is not being truncated — NOT that the stderr drain \
-         is broken. Captured stderr: {stderr_summary}",
+        stderr.len() < max_expected_stderr_bytes,
+        "expected <{max_expected_stderr_bytes} bytes of captured stderr from phase 4b's \
+         huge-URI didChange (reify_lsp::server::LOG_STR_MAX_BYTES = {}, +128 bytes headroom \
+         for the eprintln! prefix/newline; measured 163_895 bytes pre-fix), got {} bytes. This \
+         means the did_change unknown-URI log line is not being truncated — NOT that the \
+         stderr drain is broken. Captured stderr: {stderr_summary}",
+        reify_lsp::server::LOG_STR_MAX_BYTES,
         stderr.len()
     );
     // Proves the bounded-length assertion above isn't vacuously satisfied by
@@ -1077,6 +1085,17 @@ fn lsp_full_interactive_loop_through_binary() {
 /// `pipe_write` call and never reaches `publish_diagnostics`, so that call
 /// panics on its own 30s timeout. Expect this test to cost ~30s while RED —
 /// that is the notification timeout firing as designed, not a hang.
+///
+/// Stderr byte budget (task #6162 amendment review): the one log line this
+/// test's trigger produces measures ~1.1 KiB (a 39-byte `eprintln!` prefix +
+/// at most 1024 bytes of truncated URI + a ~35-byte marker), well inside the
+/// ~4 KiB worst-case pipe capacity documented on `spawn_pipe_reader` (a
+/// kernel-shrunk pipe bottoms out at a single page). That headroom is a
+/// SHARED, bounded budget, not free space: a future per-eval stderr line
+/// added to reify-lsp (`diagnostics.rs` already has conditional `eprintln!`
+/// sites), or a second `didChange` added to this test, spends directly
+/// against it and can turn this test's pass/fail signal misleading rather
+/// than absent. The post-exit assertion below polices this directly.
 ///
 /// Deliberately does NOT assert the child's exit CODE and does NOT wait for
 /// the `shutdown` response: tower-lsp dispatches requests/notifications
@@ -1190,6 +1209,20 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
         "expected the child's stderr, drained only after it exited, to contain did_change's \
          unknown-URI log line, proving the eprintln! this test is about actually fired under \
          undrained-pipe backpressure. Captured stderr: {stderr_summary}"
+    );
+    // Task #6162 amendment review: fails loudly and specifically if this
+    // test's stderr budget (see doc comment above: ~1.1 KiB measured) ever
+    // grows to spend the ~4 KiB worst-case single-page pipe capacity this
+    // test's whole premise depends on staying under — as opposed to the
+    // test wedging at the 30s barrier above with a message that would read
+    // as "the #6162 fix regressed" for what is actually a budget overrun.
+    assert!(
+        stderr_after_exit.len() < 4096,
+        "expected this test's total stderr to stay comfortably under a kernel-shrunk \
+         single-page pipe (4096 bytes) — see the stderr byte budget paragraph in this test's \
+         doc comment. A future stderr addition (here or in reify-lsp) has spent that shared \
+         headroom; got {} bytes. Captured stderr: {stderr_summary}",
+        stderr_after_exit.len()
     );
 }
 
