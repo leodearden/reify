@@ -23,6 +23,7 @@
 
 use std::collections::HashSet;
 
+use reify_compiler::ValueCellKind;
 use reify_core::{ContentHash, Type, ValueCellId};
 use reify_ir::ValueMap;
 
@@ -270,14 +271,14 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
         return ParameterClass::Structural;
     }
 
-    // Rule 4: type-based dispatch (shared with `classify_cell_with_count_cache`).
+    // Rule 4: type-based dispatch (shared with `stage_a_cell_vetoes`).
     classify_by_type(&node.cell_type)
 }
 
 /// Rule 4 in isolation: the type-only half of the classification, with no
 /// graph context.
 ///
-/// Extracted so [`classify_cell`] and [`classify_cell_with_count_cache`] cannot
+/// Extracted so [`classify_cell`] and [`stage_a_cell_vetoes`] cannot
 /// drift — the two classifiers differ only in how they evaluate Rules 1/2/3/3b
 /// (linear scan vs. pre-computed count-cell set), never in the type whitelist.
 /// Widening the whitelist is therefore a one-site edit.
@@ -299,36 +300,81 @@ fn classify_by_type(cell_type: &Type) -> ParameterClass {
     }
 }
 
-/// Private classifier that accepts a pre-computed set of count-cell IDs.
+/// Does this differing cell VETO Stage-A eligibility?
 ///
-/// Called by [`stage_a_eligible`], which builds `count_cells` once before the
-/// per-cell loop to avoid O(N·C) cost (N differing cells × C collection subs).
-/// The public [`classify_cell`] applies the same rules via a linear scan — the
-/// per-call HashSet construction is negligible when classifying a single cell,
-/// but adds up inside the union-walk loop.
-fn classify_cell_with_count_cache(
+/// The classifier [`stage_a_eligible`]'s value-diff walk actually calls. It
+/// accepts a pre-computed set of count-cell IDs (built once before the per-cell
+/// loop) so the walk runs in O(N) rather than O(N·C) — N differing cells × C
+/// collection/keyed subs.
+///
+/// It differs from the public [`classify_cell`] in TWO ways, and only one of
+/// them is a performance detail:
+///
+/// * Rules 3/3b are an O(1) set lookup instead of a linear scan (performance).
+/// * Rule 4 is **LEAF-SCOPED** (task 6643, semantics). See below.
+///
+/// # Rules 1/2/3/3b are kind-agnostic BY CONSTRUCTION
+///
+/// They are evaluated BEFORE the `node.kind` match, so a derived
+/// (`ValueCellKind::Let`) cell that is a guard, a collection count or a keyed
+/// count still vetoes. That ordering is the safety property, not a convention:
+/// the compiler's block/where `__guard_N` feature-suppression cells are
+/// constructed as `kind: Let` + `cell_type: Type::Bool`
+/// (`crates/reify-eval/src/graph.rs:599-605`, allocated in
+/// `reify-compiler/src/guards.rs:297,667,700`), so a naive "skip all `Let`
+/// cells" would make every guarded design's suppression toggles invisible to
+/// Stage A. Rule 2 firing first is what prevents that.
+///
+/// # Rule 4 is consulted only for LEAF cells
+///
+/// PRD `docs/prds/v0_3/mesh-morphing.md` line 33 scopes Stage A to **leaf**
+/// parameters ("classify each leaf parameter … the only differing leaves are
+/// dimensional"). A derived cell's value is a pure function of its upstream
+/// leaves, so it necessarily changes on every dimensional tick — running the
+/// conservative type whitelist over it vetoed 100% of ticks for any design
+/// containing one non-whitelisted derived cell. Task 6635 closed that for bare
+/// `Type::Geometry` by widening the whitelist; task 6643 closes the whole class
+/// (`StructureRef`, `List<Geometry>`, `Bool`, `String`, `Enum`, …) by scoping
+/// Rule 4 to leaves instead.
+///
+/// `ValueCellKind::Auto { .. }` counts as a LEAF: an `auto` param is a
+/// *declared* leaf whose value the constraint solver supplies, not a derived
+/// expression, so the whitelist still applies to it in full.
+///
+/// The `match` on `node.kind` is deliberately EXHAUSTIVE — no `_` arm — so a
+/// future `ValueCellKind` variant forces an explicit leaf/derived ruling here
+/// rather than silently defaulting.
+///
+/// Reading `node.kind` from `new_graph` introduces no assumption beyond the
+/// pre-existing one for `node.cell_type`: the walk runs only after the shape
+/// gate has established the two graphs are structurally identical.
+fn stage_a_cell_vetoes(
     graph: &EvaluationGraph,
     cell_id: &ValueCellId,
     count_cells: &HashSet<&ValueCellId>,
-) -> ParameterClass {
-    // Rule 1: missing cell → Structural (conservative).
+) -> bool {
+    // Rule 1: missing cell → veto (conservative). With no ValueCellNode there
+    // is no `kind`, so leaf scoping cannot apply.
     let Some(node) = graph.value_cells.get(cell_id) else {
-        return ParameterClass::Structural;
+        return true;
     };
 
-    // Rule 2: structure-controlling override.
-    if graph.structure_controlling.contains(cell_id) {
-        return ParameterClass::Structural;
+    // Rules 2 / 3 / 3b: structure-controlling and count-cell overrides.
+    // KIND-AGNOSTIC BY CONSTRUCTION — evaluated before the kind match below.
+    // `count_cells` unions the collection-sub and keyed-sub count cells.
+    if graph.structure_controlling.contains(cell_id) || count_cells.contains(cell_id) {
+        return true;
     }
 
-    // Rule 3: collection-count override (O(1) lookup into pre-computed set).
-    if count_cells.contains(cell_id) {
-        return ParameterClass::Structural;
+    // Rule 4: type-based dispatch, LEAF-SCOPED. Uses the SAME
+    // [`classify_by_type`] the public `classify_cell` calls, so the whitelist
+    // cannot drift between the two.
+    match node.kind {
+        ValueCellKind::Param | ValueCellKind::Auto { .. } => {
+            classify_by_type(&node.cell_type) == ParameterClass::Structural
+        }
+        ValueCellKind::Let => false,
     }
-
-    // Rule 4: type-based dispatch — the SAME [`classify_by_type`] the public
-    // `classify_cell` calls, so the whitelist cannot drift between the two.
-    classify_by_type(&node.cell_type)
 }
 
 /// Stage A top-level eligibility predicate.
@@ -401,9 +447,8 @@ pub fn stage_a_eligible(
         // Values differ (including Some vs None for non-Undef values).
         // Use new_graph for classification — structurally identical to
         // old_graph after the shape gate.
-        match classify_cell_with_count_cache(new_graph, id, &count_cells) {
-            ParameterClass::Dimensional => continue,
-            ParameterClass::Structural => return false,
+        if stage_a_cell_vetoes(new_graph, id, &count_cells) {
+            return false;
         }
     }
 
@@ -413,7 +458,6 @@ pub fn stage_a_eligible(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_compiler::ValueCellKind;
     use reify_core::{ContentHash, Type, ValueCellId};
 
     use reify_ir::MemberKey;
@@ -1310,10 +1354,10 @@ mod tests {
         use reify_core::RealizationNodeId;
         use reify_ir::{GeometryHandleId, Value, ValueMap};
 
-        // Covers `classify_cell_with_count_cache`, the private twin
+        // Covers `stage_a_cell_vetoes`, the private predicate
         // `stage_a_eligible` actually calls. Without this, a future edit that
-        // relaxes ONLY the twin would pass the two `classify_cell` guards above
-        // and still be broken.
+        // relaxes ONLY that predicate would pass the two `classify_cell`
+        // guards above and still be broken.
         let id = ValueCellId::new("Part", "gated_body");
         let mut g1 = graph_with_cell(&id, Type::Geometry);
         g1.structure_controlling.insert(id.clone());
@@ -1342,7 +1386,7 @@ mod tests {
             !stage_a_eligible(&g1, &g2, &v1, &v2),
             "task 6635: a structure-controlling Type::Geometry cell must still \
              veto the tick end-to-end through stage_a_eligible — the Rule 2 \
-             override must hold in classify_cell_with_count_cache too"
+             override must hold in stage_a_cell_vetoes too"
         );
     }
 
