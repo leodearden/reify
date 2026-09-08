@@ -44,16 +44,23 @@
 //! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
 //! 5. journal — mechanism differs per arm:
 //!    - [`Engine::eval`] per-template arm — hand-rolled `Started`/`Completed`
-//!      pairs around the solver write-back. Exception: the
+//!      pairs around the solver write-back. Two exceptions: the
 //!      pinned-connector-auto write-back
-//!      (`write_solved_pinned_connector_autos`, task #4710) fires first
-//!      and is un-journaled by design — its own doc says "Does NOT touch
-//!      the journal".
+//!      (`write_solved_pinned_connector_autos`, task #4710), which fires
+//!      first and is un-journaled by design — its own doc says "Does NOT
+//!      touch the journal" — and, separately, a later post-solve phase,
+//!      `materialize_dependent_cells`, which writes `values` and marks the
+//!      snapshot `Determined` for cross-scope Let-coupled cells with no
+//!      cache entry and no journal call. Its sibling post-solve phase,
+//!      `evaluate_let_bindings`, DOES journal via `commit_cell_result`, so
+//!      it needs no exception entry.
 //!    - [`Engine::eval`]'s merged-cluster branch
 //!      (`dispatch_merged_cluster_solve`) — hand-rolled `Started`/
 //!      `Completed` pairs, same shape as the per-template arm. No
 //!      pinned-connector write-back here (the merged builder already
-//!      excludes strict connector-instance autos), so no exception.
+//!      excludes strict connector-instance autos), so no pinned-connector
+//!      exception — but it shares the per-template arm's
+//!      `materialize_dependent_cells` exception above.
 //!    - [`Engine::eval_cached`] per-template arm — TWO un-journaled
 //!      write-backs: the pinned-connector-auto write-back (same
 //!      exception as the `eval` per-template arm) and, separately, its
