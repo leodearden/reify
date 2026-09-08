@@ -1077,9 +1077,10 @@ const BUILD_SURFACE_OPTIMIZED_EXAMPLES: &[BuildSurfaceCase] = &[
 ///
 /// `worst_buckling_case` consumes the result, so a degraded dispatch still
 /// surfaces as a stale-Undef violation here exactly as it would on the real
-/// example. Argument binding is POSITIONAL (`name:` labels are cosmetic), so
-/// `BucklingOptions(n_modes: 1)` binds the FIRST declared param and leaves the
-/// rest at their defaults — see examples/buckling_column_p2.ri's header.
+/// example. Ctor args bind BY NAME (task 4522), so
+/// `BucklingOptions(n_modes: 1)` binds the `n_modes` param specifically (it
+/// happens to also be the first declared param) and leaves the rest at their
+/// defaults — see examples/buckling_column_p2.ri's header.
 const BUCKLING_MULTI_CASE_PROBE_SRC: &str = r#"structure BucklingMultiCaseProbe {
     param length : Length = 200mm
     param width  : Length = 20mm

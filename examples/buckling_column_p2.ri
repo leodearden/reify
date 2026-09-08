@@ -25,17 +25,16 @@
 //     LoadCase fields + solve_buckling params both tightened by ζ/4444 — distinct
 //     from task 4093, which tightened solve_elastic_static in the FEA examples)
 //
-// IMPORTANT — argument binding is POSITIONAL (the `name:` labels are
-// cosmetic; the parser strips them and binds each value to the param in
-// BucklingOptions' DECLARATION order — see ts_parser.rs lower_call_argument).
-// `element_order` is the LAST declared param (7th), so every preceding param
-// must be supplied here in order to reach it: a partial keyword-style call
-// would silently bind `element_order`'s value to an earlier param and leave
-// the real `element_order` at its `ElementOrder.P1` default (the P1
-// bending-lock floor would never lift). The 6 preceding params are therefore
-// spelled out at their BucklingOptions defaults so the trailing `element_order`
-// lands in the right slot. Mirrors the cantilever_beam_modes.ri pattern
-// (examples/modal/cantilever_beam_modes.ri:80-99).
+// Ctor args bind BY NAME (task 4522): each `name:` label is matched against
+// BucklingOptions' param list by name, and any unlabelled args fill the
+// remaining slots in declaration order — declaration order no longer
+// determines binding for labelled args. The real trap is a MISSPELLED label:
+// an unknown name is appended leniently as `__arg{i}` with NO diagnostic
+// (only a DUPLICATE label is diagnosed), so the intended param silently
+// falls back to its default. The 6 preceding params are therefore spelled
+// out at their BucklingOptions defaults for review visibility, not because
+// it is required for correctness. Mirrors the cantilever_beam_modes.ri
+// pattern (examples/modal/cantilever_beam_modes.ri:80-89).
 
 structure BucklingColumnP2 {
     // Geometry: 800 mm tall column, 20×20 mm cross-section.
@@ -63,9 +62,10 @@ structure BucklingColumnP2 {
     let mi = FEAMaterialInput(material: material)
 
     // Buckling solve: @optimized dispatcher routes to solver::buckling trampoline.
-    // All 6 preceding BucklingOptions params are spelled out positionally at
-    // their defaults so that `element_order: ElementOrder.P2` (the 7th param)
-    // binds to the correct slot (positional binding — see header comment).
+    // The 6 preceding BucklingOptions params are spelled out at their defaults
+    // for review visibility (binding is by name — see header comment), so
+    // `element_order: ElementOrder.P2` is unambiguous even though it is the
+    // 7th param.
     let result = solve_buckling(
         mi.material, length, width, height, lc.loads, lc.supports,
         BucklingOptions(

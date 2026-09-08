@@ -77,16 +77,15 @@ structure CantileverBeamModes {
     // = vec3(0,0,1) is the dimensionless unit excitation direction along which
     // participation mass is projected (the slender bending direction).
     //
-    // IMPORTANT — argument binding is POSITIONAL (the `name:` labels are
-    // cosmetic; the parser strips them and binds each value to the param in
-    // ModalOptions' DECLARATION order — see ts_parser.rs lower_call_argument).
-    // `element_order` is the LAST declared param, so every preceding param must
-    // be supplied here in order to reach it: a partial keyword-style call would
-    // silently bind `element_order`'s value to an earlier param and leave the
-    // real `element_order` at its `ElementOrder.P1` default (the P1 bending lock
-    // would never lift). sigma / tol / max_iters are therefore spelled out at
-    // their ModalOptions defaults (0.0 / 1e-9 / 200) so the trailing
-    // reference_direction and element_order land in the right slots.
+    // Ctor args bind BY NAME (task 4522): each `name:` label is matched
+    // against ModalOptions' param list by name, and any unlabelled args fill
+    // the remaining slots in declaration order — declaration order no longer
+    // determines binding for labelled args. The real trap is a MISSPELLED
+    // label: an unknown name is appended leniently as `__arg{i}` with NO
+    // diagnostic (only a DUPLICATE label is diagnosed), so the intended param
+    // silently falls back to its default. sigma / tol / max_iters are
+    // therefore spelled out at their ModalOptions defaults (0.0 / 1e-9 / 200)
+    // for review visibility, not because it is required for correctness.
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [root],
