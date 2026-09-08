@@ -301,22 +301,6 @@ fn is_identity_pose(pose: &Value) -> bool {
     pose == &identity_transform()
 }
 
-/// The `pose` of the FIRST body record whose `at` field equals `at`.
-///
-/// Mirrors the "first-recorded wins" policy `joint_parents` already applies
-/// to the spanning-tree edge: `path_a` descends the spanning tree, so the
-/// body it terminates at is the one that recorded that edge.
-fn first_body_pose<'a>(bodies: &'a [Value], at: &Value) -> Option<&'a Value> {
-    for body in bodies {
-        if let Value::Map(b) = body
-            && b.get(&Value::String("at".to_string())) == Some(at)
-        {
-            return b.get(&Value::String("pose".to_string()));
-        }
-    }
-    None
-}
-
 /// Build a body record `Value::Map` with the standard five-key layout:
 /// `at`, `id`, `parent`, `pose`, `solid` (alphabetical, matching `BTreeMap`
 /// iteration). Parallel to `make_joint`/`make_coupling` in `joints.rs`.
@@ -485,12 +469,15 @@ fn make_world_parented_closure_error(mech_map: &BTreeMap<Value, Value>, message:
 ///   `mechanism_loop_closure_chains` reads to emit `LoopClosureChain::Cycle`,
 ///   and those chains are not solver-feedable in the first place.
 ///
-/// On the parent-conflict branch each path may additionally carry ONE
-/// trailing synthetic 0-DOF rigid link `{ kind: "fixed", origin: <pose> }`
-/// encoding that side's terminal body pose (task 7186 defect B) — the
-/// first-recorded body at `at` for `path_a`, the closing call's own `pose`
-/// for `path_b`. An identity pose contributes no link, so the 3-/4-arg
-/// `body()` forms leave both paths joint-only.
+/// On the parent-conflict branch `path_b` — and ONLY `path_b` — may
+/// additionally carry ONE trailing synthetic 0-DOF rigid link
+/// `{ kind: "fixed", origin: <pose> }` (task 7186 defect B, as amended by
+/// review fix 2). It encodes the single meaning of `pose` on a closing
+/// call: the closing edge is a rigid 0-DOF TIE from `parent` to `at`, so
+/// the residual is `T_tree(at) == T(parent) ∘ pose` and the offset belongs
+/// to the closing side alone. `path_a` is always joint-only. An identity
+/// pose contributes no link, so the 3-/4-arg `body()` forms leave both
+/// paths joint-only.
 ///
 /// The closing joint is always available from the record's explicit
 /// `closing_joint` field, on every branch.
@@ -659,24 +646,21 @@ fn append_body(
         let mut path_a = vec![world.clone()];
         path_a.extend(walk_to_world(&joint_parents, existing_parent));
         path_a.push(at.clone());
-        // Task 7186 defect B: admit the terminal body's pose into the
-        // residual as a synthetic 0-DOF rigid link. `bodies` here still
-        // holds only the PRE-EXISTING records (the new body is pushed
-        // below), so this is exactly the first-recorded lookup wanted.
+        // Task 7186 review fix 2: `path_a` carries NO pose link — it is
+        // joint-only, terminating at the closing joint's OUTPUT frame.
         //
-        // Poses land at path TERMINALS only — they are deliberately NOT
-        // interleaved after each joint in the walk — because that is what
-        // `walk_fk` does: `joint_world_transform` (snapshot.rs) composes
-        // joint transforms alone when descending, and a body's pose
-        // decorates only that body's own `world_transform`. A per-joint
-        // pose in the residual would make the solved configuration
-        // inconsistent with the FK re-walk snapshot.rs performs
-        // immediately after the solve.
-        if let Some(p) = first_body_pose(&bodies, &at)
-            && !is_identity_pose(p)
-        {
-            path_a.push(pose_link(p));
-        }
+        // Step-6 pushed `first_body_pose(&bodies, &at)` here. That was
+        // wrong twice over. The residual constrains JOINT frames, and
+        // `first_body_pose` returns the pose of the FIRST-RECORDED body at
+        // `at` — in general a DIFFERENT body from the closing one (in the
+        // `p4_platform` fixture, "post2" rather than "closing"). That pose
+        // places THAT body's own solid; where a third body's solid sits has
+        // no bearing on where the two joint frames must coincide. Composing
+        // it made chain_a's terminal a body-solid frame while chain_b's is a
+        // joint frame plus an edge offset — two different things equated. It
+        // was inert in-tree only because every fixture's first-recorded body
+        // carries the default identity pose. Pinned by
+        // `first_recorded_body_pose_stays_out_of_path_a`.
         let mut path_b = vec![world];
         path_b.extend(walk_to_world(&joint_parents, &parent));
         // Task 7186 defect A: `at` is deliberately NOT appended here.
@@ -700,9 +684,23 @@ fn append_body(
         // reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs (B4) and
         // reify-eval/tests/relate_mounted_joint_sweep_e2e.rs (B7).
         //
-        // Task 7186 defect B: the CLOSING call's own `pose` is this side's
-        // terminal body pose — the rigid-link offset between the loop's two
-        // attachment frames. Same terminal-only placement rule as path_a.
+        // Task 7186 defect B, as amended by review fix 2. THE SINGLE MEANING
+        // of `pose` on a closing call: the closing edge is a rigid 0-DOF TIE
+        // from `parent` to `at` whose transform is `pose`. So the residual is
+        //
+        //     T_tree(at)  ==  T(parent) ∘ pose
+        //
+        // — chain_a walks the spanning tree to `at`, chain_b walks to
+        // `parent` and then applies the tie. `pose` therefore appears exactly
+        // ONCE, at chain_b's tail, and never decorates a joint mid-walk.
+        //
+        // (Step-6 justified the terminal placement with "that is what
+        // `walk_fk` does". That was measurably wrong for this side: `walk_fk`
+        // read `pose` as an offset from the body's own `at` frame, so the
+        // closing body got its pose applied a SECOND time and landed 206.2 mm
+        // off the frame the solve had just enforced. `walk_fk` now composes a
+        // parent-conflict closing body from `body.parent` to match the rule
+        // above — see its comment in snapshot.rs.)
         if !is_identity_pose(&pose) {
             path_b.push(pose_link(&pose));
         }
@@ -1427,15 +1425,15 @@ mod tests {
     /// residual. A rigid platform carried by several joints at different
     /// pivots is therefore inexpressible.
     ///
-    /// The fix encodes a terminal body's pose as a synthetic 0-DOF rigid
-    /// link appended to that side's path. `path_a` takes the pose of the
-    /// FIRST-recorded body at `at` (mirroring the "first-recorded wins"
-    /// spanning-tree policy); `path_b` takes the CLOSING call's own pose.
+    /// The fix encodes the CLOSING call's own pose as a synthetic 0-DOF
+    /// rigid link at `path_b`'s tail — the transform of the rigid tie
+    /// `parent --pose--> at`, giving the residual
+    /// `T_tree(at) == T(parent) ∘ pose`. `path_a` stays joint-only
+    /// (review fix 2; see `first_recorded_body_pose_stays_out_of_path_a`).
     ///
-    /// Poses land at path TERMINALS only, never interleaved after each
-    /// joint, because that is what `walk_fk` does: `joint_world_transform`
-    /// composes joint transforms alone when descending, and a body's pose
-    /// decorates only that body's own `world_transform`.
+    /// The pose lands at the path TERMINAL, never interleaved after each
+    /// joint: it is the transform of ONE edge — the closing one — not a
+    /// decoration of every joint along the walk.
     #[test]
     fn closing_body_pose_enters_path_b() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1539,59 +1537,6 @@ mod tests {
             assert_eq!(path_a, expect_a, "{label}: path_a must be unchanged");
             assert_eq!(path_b, expect_b, "{label}: path_b must be unchanged");
         }
-    }
-
-    /// The FIRST-recorded body at `at` carries a non-identity pose: `path_a`
-    /// gains the corresponding rigid link at its tail, AFTER the closing
-    /// joint. "First-recorded wins" mirrors the policy `joint_parents`
-    /// already applies to the spanning-tree edge.
-    #[test]
-    fn first_recorded_body_pose_enters_path_a() {
-        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
-        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
-        let world = eval_builtin("world", &[]);
-        let pose = pose_translate_1mm_x();
-
-        let m0 = eval_builtin("mechanism", &[]);
-        // First-recorded body at j_x carries the pose.
-        let m1 = eval_builtin(
-            "body",
-            &[
-                m0,
-                Value::String("solidA".to_string()),
-                j_x.clone(),
-                j_a.clone(),
-                pose.clone(),
-            ],
-        );
-        // Closing edge with the default identity pose.
-        let m2 = eval_builtin(
-            "body",
-            &[
-                m1,
-                Value::String("solidD".to_string()),
-                j_x.clone(),
-                j_b.clone(),
-            ],
-        );
-
-        let (path_a, path_b) = only_closure_paths(&m2);
-        assert_eq!(
-            path_a,
-            Value::List(vec![
-                world.clone(),
-                j_a.clone(),
-                j_x.clone(),
-                expected_pose_link(&pose)
-            ]),
-            "path_a must carry the first-recorded body's pose AFTER the closing joint"
-        );
-        assert_eq!(
-            path_b,
-            Value::List(vec![world.clone(), j_b.clone()]),
-            "path_b is unchanged — the closing call's pose is identity"
-        );
     }
 
     /// **Task 7186 review fix 2.** The FIRST-recorded body's pose must stay

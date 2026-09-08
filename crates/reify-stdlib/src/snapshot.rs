@@ -784,12 +784,68 @@ fn walk_fk(
         let at = body_map.get(&Value::String("at".to_string()))?.clone();
         let pose = body_map.get(&Value::String("pose".to_string()))?.clone();
 
-        // Walk the parent chain ancestor-ward to compute the body's
-        // `at`-joint frame in world coordinates.
-        let t_at_world = joint_world_transform(&at, joint_parents, bindings, &mut cache)?;
+        // Task 7186 review fix 2 — which frame this body's pose offsets FROM.
+        //
+        // A body is a PARENT-CONFLICT CLOSING body iff `joint_parents` records
+        // a spanning-tree parent for its `at` that DISAGREES with the body's
+        // own `parent` field. That disagreement is exactly the one
+        // `make_body_record`'s doc note (mechanism.rs) describes: on a closing
+        // edge the body record keeps the user-supplied `parent` (user intent)
+        // while the spanning tree keeps the first-recorded edge. Keep the two
+        // comments cross-referencing.
+        //
+        // For those bodies the base frame is `T(body.parent)`, not `T(at)`,
+        // because `append_body` records the closing edge as a rigid 0-DOF TIE
+        // `parent --pose--> at`: the residual it emits is
+        // `T_tree(at) == T(parent) ∘ pose`. Composing `T(parent) ∘ pose` here
+        // makes FK and the residual THE SAME composition — the closing body is
+        // placed on chain_b's terminal frame, which equals chain_a's terminal
+        // `T_tree(at)` precisely when the closure is satisfied. So the body
+        // always rides on a frame the solve actually enforced, and when the
+        // solve does NOT converge it lands on the closure side rather than
+        // somewhere neither chain describes.
+        //
+        // Reading `pose` off `T(at)` instead applied it a SECOND time (it is
+        // already inside the residual that placed `at`): measured on the
+        // rigid-platform fixture, the closing body sat 206.2 mm from the pivot
+        // the solve had just enforced.
+        //
+        // EVERY other body keeps the previous composition byte for byte:
+        // open-chain bodies agree with `joint_parents`, and cycle / self-loop
+        // closing bodies have NO `joint_parents` entry for their `at` (the
+        // cycle branch never inserts one), so the condition is false for them.
+        let closing_parent = match joint_parents.get(&at) {
+            Some(tree_parent) => {
+                let own_parent = body_map.get(&Value::String("parent".to_string()));
+                match own_parent {
+                    Some(p) if p != tree_parent => Some(p.clone()),
+                    _ => None,
+                }
+            }
+            None => None,
+        };
 
-        // body's world_transform = T_at_world ∘ pose.
-        let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
+        // Walk the parent chain ancestor-ward to compute the frame this
+        // body's `pose` offsets from — `T(body.parent)` for a parent-conflict
+        // closing body, `T(at)` for every other body.
+        let base_world = match &closing_parent {
+            // Defence-in-depth: `joint_world_transform` starts with
+            // `joint_parents.get(joint)?`, so passing the world sentinel as
+            // the JOINT would return None. Since task 7186 step-10 the builder
+            // rejects a world-parented closing edge outright
+            // (`error = "world_parented_closure"`), so this arm is unreachable
+            // from `body()`; it survives for hand-built mechanism Maps.
+            Some(p) if is_world(p) => eval_builtin("transform3_identity", &[]),
+            // `body.parent` is a real joint with its own spanning-tree entry,
+            // so this is a normal cached walk — no new recursion hazard, and
+            // the shared `cache` stays valid because it is keyed on joints,
+            // not bodies.
+            Some(p) => joint_world_transform(p, joint_parents, bindings, &mut cache)?,
+            None => joint_world_transform(&at, joint_parents, bindings, &mut cache)?,
+        };
+
+        // body's world_transform = T_base_world ∘ pose.
+        let world_transform = eval_builtin("transform_compose", &[base_world, pose.clone()]);
         if world_transform.is_undef() {
             return None;
         }
