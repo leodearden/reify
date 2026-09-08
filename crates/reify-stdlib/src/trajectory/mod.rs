@@ -49,14 +49,15 @@ pub(crate) mod trampoline;
 /// pattern: the stdlib `.ri` `input_shape` declaration delegates to the undeclared
 /// `input_shape_apply` name, so both route here to
 /// [`input_shape::eval_input_shape`]. The dispatcher first checks for a
-/// TOTS-family shaper (λ arm) — `TOTSShaper` (prismatic/linear) and
-/// `RevoluteTOTSShaper` (revolute), one per joint kind, with membership decided
-/// by [`tots::is_tots_shaper_type_name`], the single source of truth — and runs
-/// the real SQP loop (`input_shape::run_tots` → [`tots::solve_tots`]); only
-/// then falls through to the impulse-train arms (ZV/ZVD/EI/Cascaded, ζ). Returns
-/// the shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad
-/// args / infeasible TOTS / unrecognised shaper). See
-/// [`input_shape::eval_input_shape`] for the full argument contract.
+/// TOTS-family shaper (λ arm) — membership decided by
+/// [`tots::is_tots_shaper_type_name`], the single source of truth, one entry
+/// per joint kind — and runs the real SQP loop (`input_shape::run_tots` →
+/// [`tots::solve_tots`]) over a θ-deferred canonical stand-in model, echoing
+/// the input profile's data on success (see `input_shape::eval_input_shape`
+/// for the deferral); only then falls through to the impulse-train arms
+/// (ZV/ZVD/EI/Cascaded, ζ). Returns `Value::Undef` on bad args / infeasible
+/// TOTS / unrecognised shaper. See [`input_shape::eval_input_shape`] for the
+/// full argument contract.
 ///
 /// `evaluate_profile` / `evaluate_profile_dot` / `evaluate_profile_ddot` /
 /// `profile_duration` (task 4539, β residue) are fully wired to the spline
