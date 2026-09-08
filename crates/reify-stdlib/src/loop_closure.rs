@@ -573,8 +573,15 @@ pub fn extract_loop_closure_chains(
     // which of its entries the solver may iterate.  A 0-DOF link in EITHER
     // path contributes its transform (`origin ∘ identity`) to the residual
     // without contributing a free variable, which is what lets
-    // `mechanism::append_body` carry a closing body's `pose` into the
+    // `mechanism::append_body` carry a closing call's `pose` into the
     // closure as a synthetic `{ kind: "fixed", origin: <pose> }` rigid link.
+    //
+    // That link occurs on chain_b ONLY.  `pose` on a closing call is the
+    // transform of the rigid 0-DOF TIE `parent --pose--> at`, so the residual
+    // is `T_tree(at) == T(parent) ∘ pose` — one pose, on the closing side.
+    // `path_a` is joint-only (task 7186 review fix 2).  The `EITHER` above is
+    // a property of this resolver, not a shape `append_body` produces: it
+    // means a hand-built chain_a carrying such a link would still resolve.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {

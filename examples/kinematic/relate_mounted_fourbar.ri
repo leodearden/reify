@@ -149,6 +149,16 @@ structure RelateMountedFourbar {
     // (task #7186).  Appending the closing joint to both sides would conjugate
     // the residual and relocate the closure from pivot C to pivot B, which is
     // what used to make this Grashof loop infeasible by 1.045 mm.
+    //
+    // A closing edge is a rigid 0-DOF TIE from `parent` to `at` whose transform
+    // is the closing call's `pose`, so the closure reads
+    // `T_tree(at) == T(parent) . pose`.  The 4-arg closing call below leaves
+    // `pose` at the identity, so here the tie is simply
+    // `T(j_coupler_tip via chain_a) == T(j_rocker_tip)` — pivot C reached both
+    // ways.  The "closing" body itself therefore rides on chain_b's terminal
+    // frame, which equals chain_a's exactly when the loop closes.  (A rigid
+    // platform spanning two pivots would give the tie a non-identity `pose`;
+    // this loop needs none.)
     let m0 = mechanism()
     let m1 = body(m0, "crank",       j_crank)
     let m2 = body(m1, "coupler",     j_coupler,     j_crank)

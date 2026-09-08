@@ -2141,6 +2141,140 @@ mod tests {
         );
     }
 
+    /// **Task 7186 step-13 — regression PIN, not a bug fix.** An ERRORED
+    /// mechanism must not produce dynamics results on the CLOSED-CHAIN
+    /// routing arm either.
+    ///
+    /// Why this needed checking. `snapshot_inverse_dynamics` (the open-chain
+    /// arm) carries an explicit `map_get(mech, "error").is_some() → None`
+    /// guard; `closed_chain_inverse_dynamics` carries none. And an errored
+    /// mechanism CAN reach that arm, because it can carry a NON-EMPTY
+    /// `loop_closures` list: `append_body` records a valid loop closure
+    /// first, a LATER `body()` call errors, and both
+    /// `make_duplicate_solid_error` and `make_world_parented_closure_error`
+    /// preserve the mechanism's fields verbatim. `inverse_dynamics_sample`
+    /// then reads `loop_closures` non-empty, sets `is_closed`, and routes
+    /// there.
+    ///
+    /// MEASURED RESULT: it is already rejected, and no new guard was added.
+    /// The rejection happens EARLIER, at the shared `snapshot_for_sample`
+    /// seam that both arms pass through: it calls `eval_builtin("snapshot",
+    /// …)`, whose errored-mechanism guard is generic over the `error` key
+    /// (not specific to `duplicate_solid`), so the snapshot is `Undef` and
+    /// `snapshot_for_sample` returns None before the `is_closed` dispatch is
+    /// reached. That single seam is what makes the missing guard on the
+    /// closed-chain arm harmless — which is precisely why it is worth
+    /// pinning: if `snapshot_for_sample` ever grows tolerance for errored
+    /// mechanisms, the closed-chain arm has nothing else standing between it
+    /// and a plausible-looking torque vector computed from a mechanism the
+    /// builder rejected.
+    ///
+    /// The fixture builds the reaching shape: a parent-conflict loop closure
+    /// on `j_b`, then a world-parented closing edge on `j_c` that errors
+    /// (`error = "world_parented_closure"`, task 7186 step-10) while keeping
+    /// the recorded closure. Measured on that mechanism:
+    /// `loop_closures.len() == 1`, `bodies.len() == 4`, `error` present —
+    /// all three asserted below so the pin cannot go vacuous by the fixture
+    /// silently ceasing to be errored or closed-chain-shaped.
+    #[test]
+    fn closed_chain_inverse_dynamics_rejects_errored_mechanism() {
+        let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_z = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let range_0_1m = || Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(1.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let mp = |m: f64| {
+            eval_dynamics("point_mass", &[Value::Real(m)]).expect("point_mass is recognised")
+        };
+
+        let j_a = crate::eval_builtin("prismatic", &[axis_x, range_0_1m()]);
+        let j_b = crate::eval_builtin("prismatic", &[axis_y, range_0_1m()]);
+        let j_c = crate::eval_builtin("prismatic", &[axis_z, range_0_1m()]);
+        let world = crate::eval_builtin("world", &[]);
+
+        let m0 = crate::eval_builtin("mechanism", &[]);
+        let m1 = crate::eval_builtin("body", &[m0, mp(1.0), j_a.clone(), world.clone()]);
+        let m2 = crate::eval_builtin("body", &[m1, mp(2.0), j_b.clone(), world.clone()]);
+        // Parent conflict on j_b (already → world) ⇒ one recorded loop closure.
+        let m3 = crate::eval_builtin("body", &[m2, mp(3.0), j_b, j_a.clone()]);
+        // Open edge registering j_c → j_a, so the next call is a real closing edge.
+        let m4 = crate::eval_builtin("body", &[m3, mp(4.0), j_c.clone(), j_a]);
+        // World-parented CLOSING edge ⇒ error Map that still carries the
+        // loop_closures list recorded above.
+        let errored = crate::eval_builtin("body", &[m4, mp(5.0), j_c, world]);
+
+        // Preconditions: the fixture really is errored AND closed-chain-shaped.
+        let em = match &errored {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {other:?}"),
+        };
+        assert_eq!(
+            em.get(&Value::String("error".to_string())),
+            Some(&Value::String("world_parented_closure".to_string())),
+            "fixture precondition: the mechanism must be errored"
+        );
+        match em.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(lc)) => assert_eq!(
+                lc.len(),
+                1,
+                "fixture precondition: the errored mechanism must still carry the \
+                 previously-recorded loop closure (that is what routes it to the \
+                 closed-chain path)"
+            ),
+            other => panic!("expected loop_closures List, got {other:?}"),
+        }
+        let n_bodies = match em.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b.len(),
+            other => panic!("expected bodies List, got {other:?}"),
+        };
+        assert_eq!(n_bodies, 4, "fixture precondition: 4 recorded bodies");
+
+        // One `values` entry per body; vels/accels one entry per DOF.
+        let sample = mint_instance(
+            "TrajectorySample",
+            vec![
+                (
+                    "t".to_string(),
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
+                (
+                    "values".to_string(),
+                    Value::List(vec![
+                        Value::length(0.1),
+                        Value::length(0.2),
+                        Value::length(0.2),
+                        Value::length(0.3),
+                    ]),
+                ),
+                (
+                    "vels".to_string(),
+                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+                ),
+                (
+                    "accels".to_string(),
+                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+                ),
+            ],
+        );
+
+        assert!(
+            inverse_dynamics_sample(&errored, &sample).is_none(),
+            "inverse_dynamics_sample must return None for an ERRORED mechanism, even when its \
+             loop_closures list is non-empty — a plausible-looking torque vector computed from a \
+             mechanism the builder rejected is the silent-wrong-answer class this pin guards. \
+             Today the rejection comes from the shared snapshot_for_sample seam; if that seam \
+             stops rejecting errored mechanisms, closed_chain_inverse_dynamics needs the same \
+             explicit error guard snapshot_inverse_dynamics already has"
+        );
+    }
+
     // ── Suggestion 3: ramp_profile edge branches ──────────────────────────────
 
     /// Zero-displacement move (`from == to`) must emit exactly one rest sample

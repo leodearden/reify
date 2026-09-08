@@ -849,6 +849,17 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 ///   (its last element only). Produced by the parent-conflict branch of
 ///   `append_body`. Valid linear kinematic chain, solver-feedable via
 ///   `chain_transform` / `solve_loop_closure` without further filtering.
+///   A builder-produced `WellFormed` `chain_b` may END in a synthetic 0-DOF
+///   `{ kind: "fixed", origin: <pose> }` rigid link — the transform of the
+///   closing edge's rigid TIE `parent --pose--> at` (task 7186). It
+///   contributes its transform to the residual but NO free variable
+///   (`is_zero_dof_joint` keeps it out of `free_b`), so callers must not
+///   assume `chain_b.len()` equals the free-variable count. `chain_a` never
+///   carries such a link.
+///   `chain_b` is also guaranteed NON-EMPTY for a builder-produced record:
+///   the only shape that would empty it is a closing edge parented to the
+///   world sentinel, and `append_body` rejects that at build time with
+///   `error = "world_parented_closure"` (task 7186 step-10).
 /// - `Cycle` — the closing joint appears more than once in `chain_b`
 ///   (both at the end and at least once mid-walk). Produced by the
 ///   cycle/self-loop branch of `append_body`. **Not** a valid linear

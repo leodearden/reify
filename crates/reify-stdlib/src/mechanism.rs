@@ -1479,8 +1479,8 @@ mod tests {
         assert_eq!(
             path_a,
             Value::List(vec![world.clone(), j_a.clone(), j_x.clone()]),
-            "path_a is unchanged — the first-recorded body at j_x has the default \
-             identity pose, which is omitted"
+            "path_a is joint-only — it never carries a pose link, whatever the \
+             recorded bodies' poses are (task 7186 review fix 2)"
         );
     }
 
