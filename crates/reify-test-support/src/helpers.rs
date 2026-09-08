@@ -740,45 +740,52 @@ pub fn run_modify_pipeline(
 /// lowest-level helper in the family: [`get_let_expr_in`] resolves a named template from a
 /// module and then delegates to this function.
 ///
-/// **Ambiguity hazard:** matches on `id.member` alone; `id.entity` is not
-/// considered. A template holding two value cells with the same member name
-/// under different entities (e.g. two composed sub-entities that both
-/// declare a `width`) resolves to whichever one appears first in
-/// `value_cells` — *silently*, with no panic or other signal that the match
-/// was ambiguous. A caller querying such a template by member name alone can
-/// assert against the wrong cell and never know it. This is deliberate
-/// first-match-wins behavior, pinned by
-/// `test_get_let_expr_in_template_matches_member_ignoring_entity`; if a
-/// specific entity's cell matters, disambiguate before calling, e.g. by
-/// searching `template.value_cells` directly for the desired `id.entity`.
-///
-/// This is not new behavior introduced by this function: it is the exact
-/// walk `get_let_expr_in` performed inline before delegating here (task
-/// #5831), so the ~150 pre-existing `get_let_expr`/`get_let_expr_in` call
-/// sites across reify-compiler and reify-expr (none in this task's
-/// file-lock scope) already depend on first-match-wins today, whether or
-/// not any of them currently hits an ambiguous template. A fail-fast
-/// panic-on-ambiguity variant was raised in review and deliberately
-/// deferred rather than applied here: flipping it would change long-lived
-/// shared test-infrastructure behavior across that whole call-site surface,
-/// which needs its own verification pass, not a same-task amendment — see
-/// the follow-up ticket filed from task #5831.
+/// **Ambiguity:** matches on `id.member` alone; `id.entity` is not
+/// considered. A template holding two value cells that share a member name
+/// under different entities cannot be resolved this way, and this function
+/// panics, naming the colliding entities (see # Panics). The realistic
+/// producer is a scoped sub/connect `Auto` cell (`id.entity =
+/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
+/// same-named cell — real `.ri` source produces this with zero diagnostics,
+/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
+/// If a specific entity's cell matters, disambiguate before calling, e.g.
+/// by searching `template.value_cells` directly for the desired
+/// `id.entity`.
 ///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value cell shares that member name (see Ambiguity above).
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in_template<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    let cell = template
+    let mut matching = template
         .value_cells
         .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{}'", template.name)
-        });
+        .filter(|vc| vc.id.member == cell_name);
+    let cell = matching.next().unwrap_or_else(|| {
+        panic!(
+            "no value cell named '{cell_name}' in template '{}'",
+            template.name
+        )
+    });
+    if matching.next().is_some() {
+        let entities: Vec<&str> = template
+            .value_cells
+            .iter()
+            .filter(|vc| vc.id.member == cell_name)
+            .map(|vc| vc.id.entity.as_str())
+            .collect();
+        panic!(
+            "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
+             member, under entities {entities:?}; get_let_expr* resolves on id.member alone, \
+             so disambiguate by searching `template.value_cells` for the desired id.entity",
+            template.name,
+            entities.len()
+        );
+    }
     cell.default_expr.as_ref().unwrap_or_else(|| {
         panic!("value cell '{cell_name}' in '{}' has no default expr", template.name)
     })
@@ -794,7 +801,7 @@ pub fn get_let_expr_in_template<'a>(
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - Panics from [`get_let_expr_in_template`] if the cell or its default expr is absent.
+/// - Panics from [`get_let_expr_in_template`] if the cell is absent, ambiguous, or its default expr is absent.
 #[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -819,7 +826,7 @@ pub fn get_let_expr_in<'a>(
 ///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
-/// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+/// - Panics from [`get_let_expr_in`] if the cell is absent, ambiguous, or its default expr is absent.
 #[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
