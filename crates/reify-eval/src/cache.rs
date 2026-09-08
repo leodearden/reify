@@ -160,54 +160,36 @@ impl CachedResult {
     /// No separate `CachedResult` arm for geometry handles is required — the
     /// `Value` layer already carries the correct key fragment.
     ///
-    /// # Why there is no separate per-handle significance comparison
+    /// # Handle freshness is not carried by this entry
     ///
-    /// A standalone GH significance helper once lived in
-    /// `crate::significance_filter`. It was implemented, never wired to any
-    /// production caller, and deleted by task #6372 as subsumed by the
-    /// composition described above. It is deliberately NOT reintroduced:
+    /// The early-cutoff branch of
+    /// [`CacheStore::record_evaluation_with_freshness`] (its
+    /// `existing.result_hash == new_hash` guard) reassigns `basis_version`,
+    /// `dependency_trace`, `freshness`, `warm_state` and `cost_per_byte`, but
+    /// never reassigns `existing.result`. An equal-hash re-record therefore
+    /// leaves the stored `Value::GeometryHandle` verbatim — including its
+    /// older, or still-`None`, `kernel_handle` — because `kernel_handle` is
+    /// excluded from the key above, so a re-realization to a fresh handle
+    /// hashes equal and takes that branch.
     ///
-    /// - It was extensionally identical to machinery already on the live path.
-    ///   `Value::PartialEq`'s GH arm and `Value::content_hash`'s tag-28 arm
-    ///   both key on `realization_ref` + `upstream_values_hash` and both
-    ///   exclude `kernel_handle` — the very predicate the helper computed.
-    /// - [`CacheStore::record_evaluation_with_freshness`] early-cutoffs on
-    ///   `result_hash`, so a re-realization to a fresh handle already yields
-    ///   [`EvalOutcome::Unchanged`] and dirties no dependents — for every
-    ///   target, with no opt-in allowlist gate in the way.
+    /// **Any consumer that needs a live handle for kernel dispatch must read
+    /// the `values` `ValueMap` / `realization_handles`, never the eval-cache
+    /// entry's `kernel_handle`.** Those are written by
+    /// `Engine::post_process_geometry_handle_cells` in `engine_build.rs` — the
+    /// GHR-δ §5 read-time revalidation oracle. Cached results are handed back
+    /// as live values on the production path (the
+    /// `CachedResult::Value(v, _) => v.clone()` arm in `engine_admin.rs`), so
+    /// a handle read from here can be arbitrarily stale while looking fresh.
     ///
-    /// # What the early cutoff does *not* refresh
+    /// Pinned by `tests::geometry_handle_cache_key`, which drives the real
+    /// `record_evaluation_with_freshness` API and asserts both the
+    /// [`EvalOutcome`] and the retained stale handle.
     ///
-    /// One mechanical consequence is worth recording, because it runs opposite
-    /// to the obvious reading. On hash equality the result write **is**
-    /// suppressed: the early-cutoff branch of
-    /// [`CacheStore::record_evaluation_with_freshness`] (cache.rs:824-836)
-    /// reassigns `basis_version`, `dependency_trace`, `freshness`,
-    /// `warm_state` and `cost_per_byte`, but never reassigns
-    /// `existing.result`. The entry therefore keeps the previously stored
-    /// `CachedResult::Value(Value::GeometryHandle { .. })` verbatim —
-    /// including its older, or still-`None`, `kernel_handle`.
-    /// `tests::geometry_handle_cache_key::geometry_handle_symbolic_to_realized_early_cutoffs`
-    /// pins exactly that: the `None` → `Some(7)` realization transition returns
-    /// [`EvalOutcome::Unchanged`], so the cache still holds `None`.
-    ///
-    /// Handle freshness is consequently **not** carried by the eval-cache
-    /// entry. It is supplied by `Engine::post_process_geometry_handle_cells`
-    /// in `engine_build.rs`, which on the build success path writes
-    /// `kernel_handle: Some(kernel_handle)` into the `values` `ValueMap` and
-    /// records `realization_handles.insert(realization.id.clone(),
-    /// kernel_handle)` — the GHR-δ §5 read-time revalidation oracle.
-    ///
-    /// **Warning for GHR-ζ (#3608), and for any consumer that needs a live
-    /// handle for kernel dispatch: read `values` / `realization_handles`,
-    /// never the eval-cache entry's `kernel_handle`.** Cached results are
-    /// handed back as live values on the production path (e.g. the
-    /// `CachedResult::Value(v, _) => v.clone()` arm in `engine_admin.rs`), so a
-    /// handle read from here can be arbitrarily stale while looking fresh.
-    ///
-    /// Pinned by `tests::geometry_handle_cache_key`, whose early-cutoff tests
-    /// assert this contract through the real `record_evaluation_with_freshness`
-    /// API.
+    /// A standalone per-handle significance helper in
+    /// `crate::significance_filter` was deleted by #6372 as subsumed by the
+    /// composition above, and is deliberately not reintroduced; the rationale
+    /// and history live in `docs/prds/v0_3/geometry-handle-runtime.md` §5
+    /// ("Amended by #6372").
     pub fn content_hash(&self) -> ContentHash {
         match self {
             CachedResult::Value(val, det) => {
@@ -5824,13 +5806,8 @@ mod tests {
         //
         // They are also the gate that licensed #6372's deletion of the
         // never-wired standalone GH significance helper in
-        // `crate::significance_filter` (see the `CachedResult::content_hash`
-        // doc for the full rationale): they demonstrate, through the real
-        // production API, that the `Value` layer already delivers that
-        // helper's contract for every target and with no opt-in allowlist, so
-        // deleting it lost no behaviour.  They remain as the permanent
-        // regression pin that would fire if a future change re-admitted
-        // `kernel_handle` into the key.
+        // `crate::significance_filter` — see the `CachedResult::content_hash`
+        // doc, which points on to the rationale.
 
         /// (3) Re-realization to a FRESH kernel handle, with `realization_ref`
         /// and `upstream_values_hash` unchanged, must early-cutoff.
@@ -5933,6 +5910,22 @@ mod tests {
                 EvalOutcome::Unchanged,
                 "the symbolic None → realized Some(id) transition preserves \
                  realization_ref + upstream_values_hash and must early-cutoff",
+            );
+
+            // The other half of that contract, and the one the
+            // `CachedResult::content_hash` doc warns about: early cutoff is
+            // the SUPPRESS-the-write path, so the entry still holds the
+            // symbolic handle it was first recorded with.
+            let CachedResult::Value(Value::GeometryHandle { kernel_handle, .. }, _) =
+                &store.get(&node).expect("cache entry must be present").result
+            else {
+                panic!("expected the cached entry to still hold a GeometryHandle")
+            };
+            assert_eq!(
+                *kernel_handle, None,
+                "early cutoff must NOT reassign existing.result, so the entry \
+                 keeps the stale symbolic kernel_handle — a consumer needing a \
+                 live handle must read values / realization_handles instead",
             );
         }
     }
