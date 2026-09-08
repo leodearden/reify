@@ -28,6 +28,7 @@
 #include <BRepAlgoAPI_Common.hxx>
 
 // OCCT fillet / chamfer
+#include <BRepTools_History.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
@@ -712,7 +713,14 @@ TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
 // (`face_map`, `edge_map`, `edge_face_map`) are populated once and never
 // invalidated — there is no version counter, no guard and no assert, so
 // assigning `shape` after a map has been built silently stales it.
-TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
+// History-returning overload. `out_unify_history` receives the
+// `BRepTools_History` describing what the unification pass did to the
+// unwrapped shape's sub-shapes, so a caller tracking per-sub-shape provenance
+// (`extract_boolean_history`) can CHAIN boolean-child -> unified-survivor.
+// Left as a NULL handle when no unification pass ran, which callers must treat
+// as "every child survived unchanged".
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
+                                      Handle(BRepTools_History)& out_unify_history) {
     TopoDS_Shape unwrapped = unwrap_boolean_compound(raw);
 
     // Merge same-domain faces and edges. A boolean leaves the seam where its
@@ -739,9 +747,23 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
         /*UnifyFaces=*/Standard_True,
         /*ConcatBSplines=*/Standard_False);
     unifier.Build();
+    // ShapeUpgrade_UnifySameDomain provides a history place holder and collects
+    // into it BY DEFAULT (documented at ShapeUpgrade_UnifySameDomain.hxx), so
+    // this is non-null after Build().
+    out_unify_history = unifier.History();
 
     // Unification can re-wrap its output in a compound, so tighten once more.
+    // Unwrapping never changes any sub-shape's identity — it only re-wraps the
+    // solids — so indices taken from the unify history stay valid against the
+    // returned shape's face/edge maps.
     return unwrap_boolean_compound(unifier.Shape());
+}
+
+// Convenience overload for the callers that do not track provenance
+// (`boolean_fuse` / `boolean_cut` / `boolean_common` / `fuse_shape_list`).
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
+    Handle(BRepTools_History) unused;
+    return normalize_boolean_result(raw, unused);
 }
 
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
@@ -875,6 +897,90 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
 
 namespace {
 
+/// Chain a boolean child through the unification history to the sub-shape(s)
+/// that actually survived into the NORMALIZED result (task 7054).
+///
+/// `ShapeUpgrade_UnifySameDomain` does not merely renumber — it RE-IDENTIFIES:
+/// when it merges two coplanar faces the survivor is a new TShape that
+/// `BRepAlgoAPI::Modified()` never reported. Looking the boolean's own children
+/// up in the normalized result's map directly would therefore miss on every
+/// merged face and blow `silent_drop_count`, which
+/// `boolean_op_history_integration.rs` and `topology_diagnostic_denoise_e2e.rs`
+/// both require to stay 0.
+///
+/// Cases, in the order they are tested:
+///   - NULL history (no unification pass ran) → the child itself.
+///   - `IsRemoved(child)` → absorbed by the merge. Reported via `out_removed`
+///     so the caller SKIPS it WITHOUT counting a silent drop: an absorbed child
+///     is an expected outcome, not a correspondence loss.
+///   - `Modified(child)` empty → survived unchanged → the child itself.
+///   - `Modified(child)` non-empty → one entry per survivor. Many-to-one merges
+///     are legitimate and must not be collapsed: both parents of a merged pair
+///     have to keep pointing at the shared survivor.
+void resolve_through_unify_history(
+    const Handle(BRepTools_History)& unify_history,
+    const TopoDS_Shape& child,
+    TopTools_ListOfShape& out_survivors,
+    bool& out_removed) {
+    out_survivors.Clear();
+    out_removed = false;
+    if (unify_history.IsNull()) {
+        out_survivors.Append(child);
+        return;
+    }
+    if (unify_history->IsRemoved(child)) {
+        out_removed = true;
+        return;
+    }
+    const TopTools_ListOfShape& modified = unify_history->Modified(child);
+    if (modified.IsEmpty()) {
+        out_survivors.Append(child);
+        return;
+    }
+    for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
+        out_survivors.Append(it.Value());
+    }
+}
+
+/// Emit one record per DISTINCT surviving result sub-shape for a single parent
+/// sub-shape, chaining through the unification history first. Returns without
+/// emitting (and without touching `out_drop_count`) for children the merge
+/// absorbed; increments `out_drop_count` only for a survivor the result map
+/// genuinely cannot resolve — preserving `silent_drop_count`'s existing
+/// meaning.
+void emit_records_for_child(
+    const Handle(BRepTools_History)& unify_history,
+    const TopoDS_Shape& child,
+    const TopTools_IndexedMapOfShape& result_map,
+    uint32_t parent_index,
+    uint32_t parent_idx_0,
+    std::set<uint32_t>& seen_for_this_parent_sub,
+    std::vector<uint32_t>& out_records,
+    uint32_t& out_drop_count) {
+    TopTools_ListOfShape survivors;
+    bool removed = false;
+    resolve_through_unify_history(unify_history, child, survivors, removed);
+    if (removed) {
+        return;
+    }
+    for (TopTools_ListIteratorOfListOfShape it(survivors); it.More(); it.Next()) {
+        Standard_Integer one_based = result_map.FindIndex(it.Value());
+        if (one_based < 1) {
+            ++out_drop_count;
+            continue;
+        }
+        const uint32_t result_idx_0 = static_cast<uint32_t>(one_based - 1);
+        // Two boolean children of the SAME parent sub-shape can merge into one
+        // survivor; emit that pairing once rather than duplicating it.
+        if (!seen_for_this_parent_sub.insert(result_idx_0).second) {
+            continue;
+        }
+        out_records.push_back(parent_index);
+        out_records.push_back(parent_idx_0);
+        out_records.push_back(result_idx_0);
+    }
+}
+
 /// Walk `parent_map` (canonical TopExp 1-based order), querying
 /// `op.Modified()/Generated()/IsDeleted()` for each parent sub-shape.
 /// For each child reported by Modified or Generated, look up its
@@ -897,6 +1003,7 @@ void emit_history_for_parent(
     BRepAlgoAPI_BooleanOperation& op,
     const TopTools_IndexedMapOfShape& parent_map,
     const TopTools_IndexedMapOfShape& result_map,
+    const Handle(BRepTools_History)& unify_history,
     uint32_t parent_index,
     std::vector<uint32_t>& out_modified,
     std::vector<uint32_t>& out_generated,
@@ -908,33 +1015,25 @@ void emit_history_for_parent(
         const uint32_t parent_idx_0 = static_cast<uint32_t>(i - 1);
 
         // Modified: parent sub-shape replaced by N result sub-shapes
-        // (split, merged, or otherwise transformed).
+        // (split, merged, or otherwise transformed). Each child is chained
+        // through the unification history before the result-map lookup — see
+        // `resolve_through_unify_history`.
+        std::set<uint32_t> seen_modified;
         const TopTools_ListOfShape& modified = op.Modified(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
-            const TopoDS_Shape& child = it.Value();
-            Standard_Integer one_based = result_map.FindIndex(child);
-            if (one_based < 1) {
-                ++out_drop_count;
-                continue;
-            }
-            out_modified.push_back(parent_index);
-            out_modified.push_back(parent_idx_0);
-            out_modified.push_back(static_cast<uint32_t>(one_based - 1));
+            emit_records_for_child(
+                unify_history, it.Value(), result_map, parent_index, parent_idx_0,
+                seen_modified, out_modified, out_drop_count);
         }
 
         // Generated: parent sub-shape gives rise to NEW sub-shapes
         // (e.g. fuse-section walls created from intersecting faces).
+        std::set<uint32_t> seen_generated;
         const TopTools_ListOfShape& generated = op.Generated(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(generated); it.More(); it.Next()) {
-            const TopoDS_Shape& child = it.Value();
-            Standard_Integer one_based = result_map.FindIndex(child);
-            if (one_based < 1) {
-                ++out_drop_count;
-                continue;
-            }
-            out_generated.push_back(parent_index);
-            out_generated.push_back(parent_idx_0);
-            out_generated.push_back(static_cast<uint32_t>(one_based - 1));
+            emit_records_for_child(
+                unify_history, it.Value(), result_map, parent_index, parent_idx_0,
+                seen_generated, out_generated, out_drop_count);
         }
 
         // Deleted: parent sub-shape has no result analogue. Emit only
@@ -969,7 +1068,15 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
     const OcctShape& right) {
     auto history = std::make_unique<BooleanOpHistory>();
     history->result = std::make_unique<OcctShape>();
-    history->result->shape = op.Shape();
+
+    // ORDER IS LOAD-BEARING (task 7054): normalize and assign `shape` BEFORE
+    // touching `face_map()` / `edge_map()` below. occt_wrapper.h documents the
+    // three lazy topology-map caches as populate-once with NO invalidation, no
+    // version counter and no assert, so assigning `shape` after a map has been
+    // built would silently stale it — the maps would index the raw COMPOUND
+    // while the stored shape is the unified SOLID.
+    Handle(BRepTools_History) unify_history;
+    history->result->shape = normalize_boolean_result(op.Shape(), unify_history);
 
     // Build the result face/edge maps once via the cached lazy
     // accessors so subsequent FindIndex calls are O(1).
@@ -978,21 +1085,21 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
 
     // Faces: emit per-parent records.
     emit_history_for_parent(
-        op, left.face_map(), result_face_map, /*parent_index=*/0,
+        op, left.face_map(), result_face_map, unify_history, /*parent_index=*/0,
         history->face_modified, history->face_generated, history->face_deleted,
         history->silent_drop_count);
     emit_history_for_parent(
-        op, right.face_map(), result_face_map, /*parent_index=*/1,
+        op, right.face_map(), result_face_map, unify_history, /*parent_index=*/1,
         history->face_modified, history->face_generated, history->face_deleted,
         history->silent_drop_count);
 
     // Edges: emit per-parent records.
     emit_history_for_parent(
-        op, left.edge_map(), result_edge_map, /*parent_index=*/0,
+        op, left.edge_map(), result_edge_map, unify_history, /*parent_index=*/0,
         history->edge_modified, history->edge_generated, history->edge_deleted,
         history->silent_drop_count);
     emit_history_for_parent(
-        op, right.edge_map(), result_edge_map, /*parent_index=*/1,
+        op, right.edge_map(), result_edge_map, unify_history, /*parent_index=*/1,
         history->edge_modified, history->edge_generated, history->edge_deleted,
         history->silent_drop_count);
 

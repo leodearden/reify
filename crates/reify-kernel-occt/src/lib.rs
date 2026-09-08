@@ -1699,9 +1699,11 @@ impl OcctKernel {
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).
     ///
-    /// The result handle is registered with `BRepKind::Solid` (matching
-    /// the existing `boolean_fuse` arm of `execute(GeometryOp::Union)`).
-    /// The history records describe the parent ↔ result correspondence
+    /// The result is NORMALIZED (unwrapped to the tightest topology-preserving
+    /// type, then same-domain-unified) exactly like the plain `boolean_fuse`
+    /// arm, and the handle's `BRepKind` is classified from that real shape —
+    /// so a disjoint fuse registers as the multi-body `BRepKind::Compound`,
+    /// not `Solid`. The history records describe the parent ↔ result correspondence
     /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
     /// `.IsDeleted()` for each parent's faces and edges; consumers (the
     /// v0.2 propagation helper in `reify-eval`) use them to copy parent
@@ -1727,7 +1729,13 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Stamp the repr from the ACTUAL result shape, matching the plain
+        // boolean arms: `extract_boolean_history` normalizes its result too
+        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
+        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
+        // consumer that trusts it to tell one solid from a multi-body result.
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
@@ -1752,7 +1760,13 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Stamp the repr from the ACTUAL result shape, matching the plain
+        // boolean arms: `extract_boolean_history` normalizes its result too
+        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
+        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
+        // consumer that trusts it to tell one solid from a multi-body result.
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
@@ -1777,7 +1791,13 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Stamp the repr from the ACTUAL result shape, matching the plain
+        // boolean arms: `extract_boolean_history` normalizes its result too
+        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
+        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
+        // consumer that trusts it to tell one solid from a multi-body result.
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
