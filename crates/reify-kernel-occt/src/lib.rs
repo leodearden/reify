@@ -12147,6 +12147,70 @@ mod tests {
         );
     }
 
+    /// Provenance query: shapes whose OCCT volume integral works report EXACT.
+    ///
+    /// `BRepGProp::VolumeProperties` returns non-zero mass for every real solid
+    /// measured on OCCT 7.8.1 (box 1000, cylinder r10 h20 6283.185307, sphere,
+    /// torus, revolves and pipes), so `exact` must be true and the reported
+    /// volume must be the exact integrator's, not a tessellation.
+    ///
+    /// The `src.volume == query(Volume)` assertion is EXACT f64 equality on
+    /// purpose: both route through the same C++ arm-selection helper, and
+    /// OCCT's integration is deterministic (three repeat probe runs produced
+    /// bit-identical output).
+    #[test]
+    fn mass_properties_source_reports_exact_for_solids() {
+        let mut kernel = OcctKernel::new();
+
+        // Canonical 20×10×5 box — exact volume measured at 1000.0.
+        let box_id = make_box_20_10_5(&mut kernel);
+        // Cylinder r=10, h=20 — exact volume measured at π·100·20 = 6283.185307179586.
+        let cyl_id = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(10.0),
+                height: Value::Real(20.0),
+            })
+            .expect("Cylinder creation must succeed")
+            .id;
+
+        // 1e-9 relative: a unit box measured 0.99999999999999978 (2.2e-16
+        // relative), so this bound carries ~1e7 margin over observed FP noise.
+        for (label, id, expected) in [
+            ("box 20×10×5", box_id, 1000.0f64),
+            ("cylinder r10 h20", cyl_id, 6283.185307179586f64),
+        ] {
+            let src = kernel
+                .mass_properties_source(id)
+                .unwrap_or_else(|e| panic!("{label}: mass_properties_source must succeed: {e:?}"));
+
+            assert!(
+                src.exact,
+                "{label}: OCCT's exact volume integral returns non-zero mass, \
+                 so exact must be true (got {src:?})"
+            );
+            let rel_err = (src.volume - expected).abs() / expected;
+            assert!(
+                rel_err < 1e-9,
+                "{label}: volume expected ≈{expected}, got {} (relative error {rel_err:.3e})",
+                src.volume
+            );
+
+            // The provenance query and the ordinary Volume query must agree
+            // bit-for-bit — they share one arm-selection helper.
+            let via_query = kernel
+                .query(&GeometryQuery::Volume(id))
+                .expect("Volume query must succeed")
+                .as_f64()
+                .expect("Volume must be numeric");
+            assert_eq!(
+                src.volume, via_query,
+                "{label}: mass_properties_source().volume must equal \
+                 GeometryQuery::Volume exactly (same helper, deterministic integration)"
+            );
+        }
+    }
+
+
     /// T8 strengthens this test with an analytical diagonal assertion.
     ///
     /// For a 1000×1000×1000 cube with density 1 the moment of inertia about each
