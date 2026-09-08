@@ -1074,11 +1074,21 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // NOT INDEPENDENT SIGNAL, and deliberately so: this is (i) restated at
     // the Money layer. `line_cost` == `unit_cost * quantity_produced` with
     // `unit_cost` a literal that is identical in both halves, so (i)'s
-    // `merged_q < frozen_q` MECHANICALLY entails the inequality asserted
-    // here — (ii) cannot fail while (i) passes. It stays because the
-    // user-observable joint-drive claim is about MONEY and should be
-    // asserted in Money terms rather than left for a reader to re-derive,
-    // but it must not be mistaken for additional coverage. (Contrast
+    // `merged_q < frozen_q` entails the inequality asserted here — (ii)
+    // cannot fail while (i) passes.
+    //
+    // That entailment is CONDITIONAL, not free: it needs each half's
+    // `line_cost` to be freshly refolded against THAT half's own solved
+    // auto. A stale/unfolded FROZEN `line_cost` would RED here while (i)
+    // stayed green. (iii) below therefore pins the closed-form refold in
+    // BOTH halves, which is what discharges the premise and makes "cannot
+    // fail while (i) passes" true rather than assumed — weaken (iii)'s
+    // frozen arm and (ii) silently reacquires that signal.
+    //
+    // (ii) stays because the user-observable joint-drive claim is about
+    // MONEY and should be asserted in Money terms rather than left for a
+    // reader to re-derive, but it must not be mistaken for additional
+    // coverage on top of (i) + (iii). (Contrast
     // `mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline`,
     // whose SUM spans two children and is genuinely not implied by any
     // single-child claim.) The instance-path alias — the read that WOULD be
@@ -1111,6 +1121,14 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // source, and that both agree with `unit_cost * quantity_produced` read from
     // the same eval — the `Costed` closed form. A stale (unfolded) cell fails
     // this even when (i) and (ii) would pass.
+    //
+    // The ALIAS half is merged-only by construction: `build_dependent_cells`
+    // emits that entry for the cluster the inlined `minimize` forms, and the
+    // frozen-cascade half has no cluster and hence no instance-path spelling
+    // to check. The CLOSED-FORM half below is looped over BOTH halves — it is
+    // the premise (ii)'s entailment from (i) rests on (see (ii)'s note), and
+    // the frozen half is precisely where nothing else would catch a stale
+    // `line_cost`.
     let aliased_cost = scalar_si(
         merged,
         &ValueCellId::new("RivetedPanel.rivets", "line_cost"),
@@ -1124,14 +1142,21 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
          source — that alias entry is what makes the objective non-`Undef` \
          inside the merged solve",
     );
-    let merged_unit_cost = scalar_si(merged, &ValueCellId::new("Rivet", "unit_cost"), "merged");
-    assert_eq!(
-        merged_line_cost,
-        merged_unit_cost * merged_q,
-        "BT-5(iii): the derived `Costed.line_cost` must be REFOLDED against the \
-         solved auto (`unit_cost * quantity_produced` = {merged_unit_cost} * \
-         {merged_q}), not left at whatever it held before the solve",
-    );
+    for (what, result, solved_q) in [
+        ("merged", merged, merged_q),
+        ("frozen-cascade", frozen, frozen_q),
+    ] {
+        let half_line_cost = scalar_si(result, &line_cost, what);
+        let half_unit_cost = scalar_si(result, &ValueCellId::new("Rivet", "unit_cost"), what);
+        assert_eq!(
+            half_line_cost,
+            half_unit_cost * solved_q,
+            "BT-5(iii): the derived `Costed.line_cost` must be REFOLDED against \
+             the {what} half's OWN solved auto (`unit_cost * quantity_produced` \
+             = {half_unit_cost} * {solved_q}), not left at whatever it held \
+             before that half's solve",
+        );
+    }
 }
 
 /// KNOWN-LIMITATION PIN — the parent's `let total_cost : Money =
@@ -1166,17 +1191,29 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
     // below loops over its cases the same way.
     for (what, result) in [("merged", merged), ("frozen-cascade", frozen)] {
         // PRESENCE — the anti-vacuity guard. Subsumed by the `Some(..)` in
-        // the UNRESOLVED check below; it stays for its distinct message, so
-        // a misspelled `ValueCellId` or an edit that deletes `let total_cost`
-        // from the shipped example reads as a fixture defect rather than as a
-        // regressed engine limitation.
+        // the UNRESOLVED check below; it stays for its distinct message, so a
+        // MISSING entry never reads as the KNOWN-LIMITATION-REGRESSED case the
+        // UNRESOLVED message describes (`total_cost` now holding a usable
+        // number), which is the one diagnosis that would send an operator to
+        // re-open #5835.
+        //
+        // Its message names TWO causes, not one: `EvalResult::values` is a
+        // documented PARTIAL map, so an absent entry is not necessarily
+        // fixture drift — omitting an unresolved cell outright is a plausible
+        // engine RE-SPELLING of the very unresolved state this pin tracks.
+        // Either way this REDs (no false green), but a message that named
+        // only fixture drift would point the operator at the wrong subsystem.
         let cell = result.values.get(&total_cost);
         assert!(
             cell.is_some(),
-            "fixture integrity: `RivetedPanel.total_cost` must be PRESENT in \
-             the {what} eval's value map (the shipped example's `let \
-             total_cost` binding, or this cell's id spelling, has changed) \
-             — got no entry",
+            "`RivetedPanel.total_cost` must be PRESENT in the {what} eval's \
+             value map — got no entry. EITHER the shipped example's `let \
+             total_cost` binding, or this cell's id spelling, has changed \
+             (fixture drift); OR the engine now OMITS unresolved cells from \
+             the partial `values` map (see the PARTIAL-MAP INVARIANT on \
+             `EvalResult::values`), which is a re-spelling of the #5835 \
+             limitation and NOT a fixture defect. Inspect the shipped example \
+             before re-baselining.",
         );
         // UNRESOLVED — the actual claim. Exact shape, NOT a deny-list of the
         // numeric variants a `Money` cell could resolve to: a deny-list can
