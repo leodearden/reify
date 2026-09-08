@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -136,6 +137,19 @@ impl ReifyLanguageServer {
 /// bytes-per-char worst case rather than assume this figure carries over.
 const LOG_STR_MAX_CHARS: usize = 256;
 
+/// Worst-case byte length of [`truncate_for_log`]'s return value when the
+/// input needs truncating: [`LOG_STR_MAX_CHARS`] UTF-8 characters at up to
+/// 4 bytes each, plus the `"...[truncated, N bytes total]"` marker suffix
+/// (bounded at 48 bytes, generously covering every decimal digit of a
+/// 64-bit `usize`). Marked `pub` — unlike `LOG_STR_MAX_CHARS` — specifically
+/// so an out-of-crate regression guard (`cli_lsp_protocol.rs`'s
+/// bounded-stderr e2e assertions) can derive its bound from this crate's
+/// actual truncation budget instead of hand-transcribing a copy: a future
+/// bump of `LOG_STR_MAX_CHARS` then mechanically raises that bound too,
+/// instead of silently leaving a stale hand-derived number under-covering
+/// the real worst case (task #6162 amendment review).
+pub const LOG_STR_MAX_BYTES: usize = LOG_STR_MAX_CHARS * 4 + 48;
+
 /// Truncate a client-controlled string to at most [`LOG_STR_MAX_CHARS`]
 /// characters before it is echoed into a log line.
 ///
@@ -152,10 +166,22 @@ const LOG_STR_MAX_CHARS: usize = 256;
 /// byte offset of the `(N+1)`-th character, which is a char boundary by
 /// construction, so the resulting slice can never panic on a multi-byte
 /// codepoint straddling the cut point.
-fn truncate_for_log(s: &str) -> String {
+///
+/// Returns `Cow<'_, str>` rather than `String` so the common (non-truncating)
+/// path — the overwhelming majority of calls, since most URIs are far
+/// shorter than [`LOG_STR_MAX_CHARS`] — borrows the input instead of paying
+/// for a heap copy it immediately discards into a `format!`. Both the
+/// production call site (formatted directly into an `eprintln!`) and the
+/// unit test's `assert_eq!`s against `&str`/`String` work unchanged, since
+/// `Cow<str>` implements `Display` and `PartialEq` against both.
+fn truncate_for_log(s: &str) -> Cow<'_, str> {
     match s.char_indices().nth(LOG_STR_MAX_CHARS) {
-        None => s.to_string(),
-        Some((cut, _)) => format!("{}...[truncated, {} bytes total]", &s[..cut], s.len()),
+        None => Cow::Borrowed(s),
+        Some((cut, _)) => Cow::Owned(format!(
+            "{}...[truncated, {} bytes total]",
+            &s[..cut],
+            s.len()
+        )),
     }
 }
 
