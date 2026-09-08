@@ -1023,10 +1023,25 @@ structure def KlipperDialect : GcodeDialect { }
 // (`reify-stdlib/src/trajectory/gcode_import.rs`), which is the unit-regime
 // BOUNDARY: the parser-side `Waypoint` struct and the whole pure lowering layer
 // below it stay in native g-code millimetres / mm-per-minute for lossless parse
-// fidelity, and only this DSL-visible projection is SI. That is the same
-// two-regime split `reify_fdm::Toolpath` uses. G-code text is still authored in
-// millimetres — `examples/trajectory/gcode_import_smoke.ri`'s `"G1 X10 Y10"` is
-// a move to (10 mm, 10 mm), and it surfaces here as (0.01 m, 0.01 m).
+// fidelity, and only this DSL-visible projection is SI. G-code text is still
+// authored in millimetres — `examples/trajectory/gcode_import_smoke.ri`'s
+// `"G1 X10 Y10"` is a move to (10 mm, 10 mm), and it surfaces here as
+// (0.01 m, 0.01 m).
+//
+// That regime is NOT what the FDM slice surface does, and the difference is
+// worth knowing before authoring against both. `fdm_slice.ri` keeps its
+// `Toolpath` NATIVE all the way through the DSL: `Bead.width`, `.height`,
+// `.layer_z`, `.speed` and the centerline are declared as undimensioned `Real`
+// / `Point3<Real>` in raw millimetres and mm·min⁻¹ (see the field-type ↔
+// marshalling contract at the top of that file), with mm→SI deferred to the
+// downstream θ `FDMPrint` mapping inside Rust. So the two g-code-derived
+// payloads sit in OPPOSITE unit regimes today — this one is not following an
+// existing precedent, it is establishing the other pole of the split.
+//
+// A NEW DSL-visible payload should follow the regime here: converting at the
+// projection is what lets a design author's dimensional arithmetic see the
+// units at all, and it puts the whole conversion at one nameable boundary
+// instead of leaving every consumer to remember which axis is in what.
 //
 // Two tests keep this paragraph honest: `gcode_import_smoke_waypoints_are_si_lengths`
 // in `crates/reify-eval/tests/gcode_import_eval_e2e.rs` pins the positions
@@ -1038,9 +1053,9 @@ structure def KlipperDialect : GcodeDialect { }
 //
 // NOTE — the returned value is NOT evaluable by the `Profile` functions, in
 // spite of the `-> List<Profile>` return type above. The `Value::Map` carrier
-// documented in the UNITS paragraph is the reason: `evaluate_profile` (:398),
-// `evaluate_profile_dot` (:402), `evaluate_profile_ddot` (:407) and
-// `profile_duration` (:412) all route through
+// documented in the UNITS paragraph is the reason: `evaluate_profile`,
+// `evaluate_profile_dot`, `evaluate_profile_ddot` and `profile_duration` (all
+// declared above in this file) route through
 // `trajectory/trampoline.rs::value_to_multijoint_spline`, whose first act is to
 // destructure a `Value::StructureInstance` and return `None` for anything else
 // — so a bare Map never reaches the spline evaluator at all. Measured, on an
@@ -1051,17 +1066,17 @@ structure def KlipperDialect : GcodeDialect { }
 //
 // The supported use today is to read the list itself and its `.count` — which
 // is exactly what both shipped consumers do (`examples/trajectory/`
-// `gcode_import_smoke.ri`:40 and `printer_print_envelope.ri`:241). An author
-// who needs an *evaluable* profile should build a `PiecewisePolynomialProfile`
-// (:288) by hand out of `Waypoint` (:202) values instead; that path is a real
-// `StructureInstance` and does evaluate — measured, a two-waypoint
-// natural-cubic profile over [0s, 1s] gives `profile_duration` => `1 s` and
-// `evaluate_profile(p, 0.5s)` => `[0.5]`. Closing this gap for `gcode_import`
-// would mean giving the payload a concrete `Profile` variant AND a time
-// parameterisation the g-code waypoints do not carry — there is no `t` in the
-// payload, only positions and an optional feed — so it is a design change well
-// beyond the marshalling boundary the units conversion above touches, not an
-// oversight in it.
+// `gcode_import_smoke.ri` and `printer_print_envelope.ri`). An author who
+// needs an *evaluable* profile should build a `PiecewisePolynomialProfile` by
+// hand out of `Waypoint` values instead (both declared above in this file);
+// that path is a real `StructureInstance` and does evaluate — measured, a
+// two-waypoint natural-cubic profile over [0s, 1s] gives `profile_duration`
+// => `1 s` and `evaluate_profile(p, 0.5s)` => `[0.5]`. Closing this gap for
+// `gcode_import` would mean giving the payload a concrete `Profile` variant
+// AND a time parameterisation the g-code waypoints do not carry — there is no
+// `t` in the payload, only positions and an optional feed — so it is a design
+// change well beyond the marshalling boundary the units conversion above
+// touches, not an oversight in it.
 //
 // The body delegates to the `gcode_import_lower` intrinsic rather than
 // returning a stub `[]`. Because this fn has a `.ri` declaration the compiler's
