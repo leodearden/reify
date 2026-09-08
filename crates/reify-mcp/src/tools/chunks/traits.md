@@ -45,9 +45,20 @@ trait StandardThread {
 trait Cylindrical {
     param diameter : Length
     param length : Length
+    // Illustrative PARAMETER arithmetic for a `let` default — not a measurement.
+    // `length` here is this trait's own `param length`; inside this scope it
+    // SHADOWS the `length(curve)` geometry query.
     let volume = pi * (diameter/2)^2 * length
 }
 ```
+
+> **The `volume` above is arithmetic, not a measurement**, and the shadowing is worth pausing on.
+> `pi * (diameter/2)^2 * length` derives a number from the trait's own parameters; it never sees a
+> realized solid, so it stops describing the part as soon as a feature changes it. The `length` in
+> that expression is `param length`, not the `length(curve)` geometry query — same word, and the
+> parameter wins inside the trait body. To measure realized geometry, call `volume(solid)`,
+> `centroid(solid)` or `center_of_mass(solid, density)`; the `geometry` chunk's "Measurement &
+> Mass-Property Queries" section documents the family and its arg-shape rule.
 
 ## Associated Functions
 

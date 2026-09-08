@@ -565,8 +565,9 @@ these constructors evaluate to a symbolic `Selector` value — a *query* over a 
 the resolved sub-handles. The compiler bridges `Selector` to `List<Geometry>` by inserting a
 `ResolveSelector` coercion, and it does so at exactly **three** consumption sites: binding the
 selector to a function/feature **parameter**, passing it to `single()` or another list helper, and
-**indexing** it (`sel[0]`). Anywhere else — a bare `let all_faces = faces(b)`, a `len()` you expected
-to work — the value is still a `Selector` and you get a silent wrong answer rather than an error.
+**indexing** it (`sel[0]`). Anywhere else — a bare `let all_faces = faces(b)`, or the value handed to
+something that expects a list without being one of those three sites — it is still a `Selector`, and
+you get a silent wrong answer rather than an error.
 Note this differs from `docs/reify-stdlib-reference.md` §3.9, which documents the *post-coercion*
 surface type (`fn faces(solid: Solid) -> List<Surface>`); §3.9 describes what a consumption site
 sees, this table describes what the value IS.
