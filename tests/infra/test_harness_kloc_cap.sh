@@ -353,10 +353,19 @@ WARN_PCT=90
 # "surface the squeeze before it breaks" signal task #6121 added the WARN tier
 # for. harness_syntax.rs measured 18957/20000 = 94.8% as of task #6121; it is
 # listed here because it is outside that task's scope, NOT because it is
-# acceptable — the remedy is still rule (a)'s split. Deliberately no "tracked
-# elsewhere" claim and no #NNNN cite: none existed when this was written, and
-# the PTODO gate is right to red an unbacked one (it caught exactly that in an
-# earlier draft of the WARN_PCT comment above).
+# acceptable — the remedy is still rule (a)'s split, and that split is #7040.
+#
+# THE CITE IS LOAD-BEARING, not decoration. Departure from the warn set is free
+# (a) and the stale-row PRUNE note is advisory (c), so nothing in this guard
+# will ever nag about a listed row again: absent a live pointer to the work it
+# defers, harness_syntax would sit just under the line until it broke the cap —
+# precisely the innocent-author ambush the WARN tier exists to prevent. So when
+# #7040 reaches a terminal state, this row must be re-justified or dropped, not
+# silently re-inherited. A bare `#NNNN` in prose is the repo's citation form and
+# does not itself create a PTODO marker; what the ratchet reds is an UNBACKED
+# tracked-elsewhere CLAIM, which is why an earlier draft of the WARN_PCT comment
+# above was rejected — a cite that resolves to a live task is the fix for that,
+# not an omission.
 #
 # Kept in-script rather than in a new manifest file because this guard already
 # carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
