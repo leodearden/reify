@@ -78,8 +78,11 @@
 //! asserting it agrees with the bare template the rest of this module reads (see
 //! [`sub_entity`]); the second pins that `CapstanDrive` states that relation in
 //! the DSL itself — matched by the datums the compiled constraint actually reads
-//! (see [`sub_cell_reads`]), not merely by *a* constraint being present — so a
-//! plain `reify check` catches a divergence too. Neither reads geometry, so both go
+//! (see [`sub_cell_reads`]), not merely by *a* constraint being present, and
+//! partitioned so that EACH half of the window (`≥ band`, `< band + lead`) is
+//! observed separately, since both halves read the same two datums and either
+//! alone would otherwise satisfy the gate — so a plain `reify check` catches a
+//! divergence too. Neither reads geometry, so both go
 //! through [`dev_capstan_checked`] (no kernel) rather than the OCCT fixture —
 //! a gate whose whole point is "this must bite outside a full OCCT run" must
 //! not itself be skipped when OCCT is absent.
@@ -178,6 +181,10 @@ fn sub_entity(sub: &str) -> String {
 /// relation's SHAPE rather than merely its presence — without it, swapping the
 /// coverage constraint for any other `CapstanDrive`-scoped one leaves that gate
 /// green while its message goes on describing `shuttle.stroke >= capstan.band`.
+/// Necessary but NOT sufficient on its own, though: the two halves of that
+/// window read overlapping datums, so recovering the cells is what lets the gate
+/// PARTITION them (on `capstan.lead`) and observe each half separately — see
+/// claim (1) there for the measurement.
 ///
 /// Built on the canonical [`CompiledExpr::walk`] traversal rather than a local
 /// match, so a future expression variant cannot quietly hide a read from it.
@@ -1329,18 +1336,33 @@ fn capstan_surfaces_only_the_finished_drum() {
 /// in the DSL.
 ///
 /// Three claims:
-///   1. `CapstanDrive` declares a constraint that reads `shuttle.stroke`
-///      against `capstan.band` — the relation's SHAPE, over the compiled
-///      template, not merely "some constraint exists". Presence alone would be
-///      satisfied by any `CapstanDrive`-scoped constraint (a pose or clearance
-///      check, say), leaving this gate green while its failure message went on
-///      naming a coverage relation the file no longer carries. The relation is
-///      cross-structure — a cell of `capstan` against a cell of `shuttle` — so
-///      the assembly that owns both `sub`s is the only scope it CAN be stated
-///      in. Deriving `Fairlead.stroke` from the capstan instead would need a
-///      parameter override through `sub shuttle = Fairlead(…)`, which does not
-///      come through (see [`sub_entity`]). So the stroke stays a hand-set param
-///      and the assembly asserts it stays honest;
+///   1. `CapstanDrive` declares BOTH halves of the coverage window, told apart
+///      by the datums each compiled constraint reads — the relation's SHAPE,
+///      over the compiled template, not merely "some constraint exists".
+///      Matching datums at all is what lifts the gate above presence: presence
+///      alone is satisfied by any `CapstanDrive`-scoped constraint (a pose or
+///      clearance check, say). But datum-matching alone is necessary and NOT
+///      sufficient, because the file spells the window as a PAIR whose halves
+///      read overlapping datums — `shuttle.stroke < capstan.band +
+///      capstan.lead` reads `shuttle.stroke` and `capstan.band` exactly as the
+///      lower bound does, so "some constraint reads both" is satisfied by
+///      either half alone. Measured in this worktree against that weaker form:
+///      deleting `constraint shuttle.stroke >= capstan.band` left the module
+///      green (6 passed), and so did deleting `constraint shuttle.stroke <
+///      capstan.band + capstan.lead` — the blind spot was SYMMETRIC, and in
+///      both directions `reify check` had quietly stopped enforcing that side.
+///      So the constraints reading both datums are PARTITIONED on whether they
+///      ALSO read `capstan.lead`, and each half is asserted non-empty:
+///      `band_only` is the lower bound ("the stroke covers the band"),
+///      `with_lead` the upper ("…with less than one whole turn of margin").
+///      The halves are disjoint by construction, so this also entails that the
+///      two are distinct constraints, and it reds on either deletion. The
+///      relation is cross-structure — a cell of `capstan` against a cell of
+///      `shuttle` — so the assembly that owns both `sub`s is the only scope it
+///      CAN be stated in. Deriving `Fairlead.stroke` from the capstan instead
+///      would need a parameter override through `sub shuttle = Fairlead(…)`,
+///      which does not come through (see [`sub_entity`]). So the stroke stays a
+///      hand-set param and the assembly asserts it stays honest;
 ///   2. the checker actually EVALUATED what the template declares — every
 ///      declared constraint's `ConstraintNodeId` appears among the reported
 ///      results. A declared-but-unevaluated relation would leave (3) quantifying
@@ -1351,11 +1373,36 @@ fn capstan_surfaces_only_the_finished_drum() {
 ///      rather than a failure;
 ///   3. every one of those results is `Satisfied`.
 ///
-/// The direction of the comparison is deliberately NOT pinned: `capstan.band <=
-/// shuttle.stroke` is the same relation spelled the other way round, and a gate
-/// that rejected it would be pinning source phrasing rather than design intent.
-/// What (1) pins is that both datums are still the ones the coverage claim is
-/// about.
+/// (1)'s partition is a COVERAGE-HOLE closure, not one half of a RED/GREEN pair
+/// — both constraints it separates already exist in the design file, and the
+/// weaker form of this gate was green while they did. What was absent was this
+/// test's ability to notice either one LEAVING, so the strengthening was
+/// verified by deleting each half in turn and watching this test red (and the
+/// pre-strengthening baseline recorded under (1) by watching it stay green),
+/// rather than by a failing-then-passing test of new design behaviour.
+///
+/// STILL deliberately NOT pinned, after (1)'s partition: the direction of each
+/// comparison (`capstan.band <= shuttle.stroke` is the same relation spelled the
+/// other way round), the source phrasing, and the arrangement of the operands —
+/// `shuttle.stroke - capstan.band < capstan.lead` reads all three datums and
+/// lands in `with_lead` unchanged. A gate that rejected any of those would be
+/// pinning source phrasing rather than design intent. What (1) pins is that both
+/// halves of the window are still stated and still about the same datums.
+///
+/// Nor is the partition pinned as a COUNT ("exactly one half reads `lead`"),
+/// only as "at least one in each half" — the same reasoning (2) gives for
+/// preferring containment to a count. A future THIRD lead-reading bound
+/// tightening the margin is a legitimate edit that a count would red on while
+/// claiming the exact INVERSE of what happened, sending the reader after a
+/// dropped constraint that is still there. It costs nothing: replacing the lower
+/// bound with a second lead-reading constraint empties `band_only` and reds
+/// anyway.
+///
+/// ACCEPTED LIMITATION, named in the failure message rather than worked around:
+/// re-spelling the pair as ONE conjunction constraint reds this gate. That is
+/// intended, not collateral — one entry reports one `Satisfaction`, so the check
+/// surface could no longer say WHICH half broke and (3)'s per-half diagnosis
+/// would be lost.
 ///
 /// (3) is asserted positively rather than as "nothing is `Violated`" — the same
 /// reason `capstan_surfaces_only_the_finished_drum` gives for `Capstan`, and it
@@ -1403,30 +1450,76 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
 
     let stroke_read = (sub_entity(SHUTTLE_SUB), "stroke".to_string());
     let band_read = (sub_entity(CAPSTAN_SUB), "band".to_string());
-    let states_coverage = drive_template.constraints.iter().any(|c| {
-        let reads = sub_cell_reads(&c.expr);
-        reads.contains(&stroke_read) && reads.contains(&band_read)
-    });
+    // `lead` is a `capstan`-sub read of the same `IndexAccess` shape
+    // [`sub_cell_reads`] already recovers, so it needs no helper change — it is
+    // simply the datum that tells the window's two halves apart.
+    let lead_read = (sub_entity(CAPSTAN_SUB), "lead".to_string());
+
+    // Every `CapstanDrive` constraint with its datums, kept for the failure
+    // messages: this dump is what makes a shape regression diagnosable at all,
+    // rather than reporting only that *something* is missing.
+    let declared: Vec<(&ConstraintNodeId, Vec<(String, String)>)> = drive_template
+        .constraints
+        .iter()
+        .map(|c| (&c.id, sub_cell_reads(&c.expr)))
+        .collect();
+
+    // Both halves of the window read `stroke` and `band`; only the upper one
+    // also reads `lead`. Partitioning on that datum is what makes each half
+    // INDIVIDUALLY observable — see claim (1) for the measurement showing that
+    // "some constraint reads both" is green with either half deleted. The two
+    // sets are disjoint by construction, so asserting both non-empty also
+    // entails that the pair is two distinct constraints.
+    let (with_lead, band_only): (Vec<_>, Vec<_>) = declared
+        .iter()
+        .filter(|(_, reads)| reads.contains(&stroke_read) && reads.contains(&band_read))
+        .partition(|(_, reads)| reads.contains(&lead_read));
+
     assert!(
-        states_coverage,
-        "`{CAPSTAN_DRIVE_ENTITY}` must carry the shuttle-covers-the-band constraint \
-         — one relating `{}.{}` to `{}.{}` (the file spells the window as a pair, \
-         `shuttle.stroke >= capstan.band` and `shuttle.stroke < capstan.band + \
-         capstan.lead`; either order is fine, both datums are not). No declared \
-         constraint reads both. That relation reads a `{CAPSTAN_ENTITY}` cell against \
-         a `{FAIRLEAD_ENTITY}` cell, so the assembly owning both `sub`s is the ONLY \
-         scope it can live in (why: this test's doc comment). If it was deliberately \
-         re-expressed, this gate and its message have to move with it. Datums each \
-         `{CAPSTAN_DRIVE_ENTITY}` constraint reads: {:?}",
+        !band_only.is_empty(),
+        "`{CAPSTAN_DRIVE_ENTITY}` must carry the LOWER half of the coverage window \
+         — a constraint relating `{}.{}` to `{}.{}` and NOT reading `{}.{}`, i.e. \
+         `shuttle.stroke >= capstan.band` (either order is fine; the datums are \
+         not). Without it the fairlead runs out of travel before the wrap band \
+         does: the rope departs outside the shuttle's reach, the fleet angle opens \
+         and the fairlead side-loads the rope instead of guiding it. Note this is \
+         NOT satisfied by the upper half — `shuttle.stroke < capstan.band + \
+         capstan.lead` reads `stroke` and `band` too, which is why the halves are \
+         told apart by `{}.{}`. ACCEPTED LIMITATION: re-spelling the pair as ONE \
+         conjunction constraint reds this gate deliberately — a single entry \
+         reports a single `Satisfaction`, so the check surface could no longer say \
+         WHICH half broke and claim (3)'s per-half diagnosis would be lost. If that \
+         was the deliberate edit, this gate and its message have to move with it. \
+         Datums each `{CAPSTAN_DRIVE_ENTITY}` constraint reads: {declared:?}",
         stroke_read.0,
         stroke_read.1,
         band_read.0,
         band_read.1,
-        drive_template
-            .constraints
-            .iter()
-            .map(|c| (&c.id, sub_cell_reads(&c.expr)))
-            .collect::<Vec<_>>()
+        lead_read.0,
+        lead_read.1,
+        lead_read.0,
+        lead_read.1,
+    );
+    assert!(
+        !with_lead.is_empty(),
+        "`{CAPSTAN_DRIVE_ENTITY}` must carry the UPPER half of the coverage window \
+         — a constraint reading `{}.{}`, `{}.{}` AND `{}.{}`, i.e. \
+         `shuttle.stroke < capstan.band + capstan.lead`. Without it the stroke is \
+         unbounded above: ANY stroke exceeding the band passes, and the design \
+         intent that `Fairlead.stroke` is the band rounded up to a whole turn \
+         (`ceil(active_turns) * lead`) stops being asserted anywhere in the DSL — \
+         a shuttle sized for twice the travel it needs would `reify check` clean. \
+         The lower half alone does not cover this: it reads `stroke` and `band` \
+         but not `{}.{}`. Datums each `{CAPSTAN_DRIVE_ENTITY}` constraint reads: \
+         {declared:?}",
+        stroke_read.0,
+        stroke_read.1,
+        band_read.0,
+        band_read.1,
+        lead_read.0,
+        lead_read.1,
+        lead_read.0,
+        lead_read.1,
     );
 
     // ---- (3) …and it holds at the file's defaults ----
