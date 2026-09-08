@@ -7107,16 +7107,25 @@ mod tests {
         }
     }
 
-    /// Task #6373: pins that `edit_source`'s `SolveResult::Solved` resolution
-    /// back-prop arm (the per-cell write-back inside the per-entity-group
-    /// solver loop) is wired through the `commit_cell_result` primitive
-    /// (`cell_commit.rs`) rather than the hand-rolled
+    /// Task #6373 (resolution back-prop arm) and task #6423 (its SECOND
+    /// PROPAGATION WAVE dependent-re-eval sibling, gated on
+    /// `if !all_resolved_ids.is_empty()`): pins that BOTH of `edit_source`'s
+    /// per-edit write-back sites are wired through the `commit_cell_result`
+    /// primitive (`cell_commit.rs`) rather than the hand-rolled
     /// values-insert/snapshot-insert/record_evaluation copy that writes no
     /// journal leg at all. This is the `edit_source` half of the
-    /// edit_param/edit_source resolution-arm sync pair (INV-EVAL-1): its
-    /// mirror is `edit_param_dependent_reeval_routes_through_commit_primitive`
-    /// above, and the edit_param side of this exact migration has its own
-    /// suite at `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    /// edit_param/edit_source resolution-arm AND wave2 sync pairs
+    /// (INV-EVAL-1): the mirrors are
+    /// `edit_param_dependent_reeval_routes_through_commit_primitive` and
+    /// `edit_param_recorded_sites_route_through_commit_primitive` above, and
+    /// the edit_param side of the resolution-arm migration has its own suite
+    /// at `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    /// The single `edit_source` call below drives BOTH sites in one flow —
+    /// `x` is resolved by the per-entity-group solver loop (resolution arm)
+    /// and `y` is re-evaluated by the wave2 loop that follows it — so one
+    /// fixture covers both without needing two separate models, mirroring
+    /// `edit_param_recorded_sites_route_through_commit_primitive`'s T4/T5
+    /// precedent.
     ///
     /// FIXTURE: two `.ri` sources differing only in the constraint's target —
     /// SRC_A seeds the solver at x = 20mm via cold `eval()`, SRC_B retargets
@@ -7125,8 +7134,9 @@ mod tests {
     /// above already pins as reaching `SolveResult::Solved` post-#4700 —
     /// forcing a real Nelder-Mead search, not the initially-feasible
     /// early-exit — so `MOVED_AUTO_TOL = 1e-6` is used for every value
-    /// assertion here, exactly as that test uses it (see its doc comment for
-    /// why `1e-9` would be wrong for a search-path fixture).
+    /// assertion here, INCLUDING `y`'s (which carries x's full solver error,
+    /// since `y = x + 5mm`) — see that test's doc comment for why `1e-9`
+    /// would be wrong for a search-path fixture.
     ///
     /// RED on base: `x` is declared `auto`, so its `value_cells` node carries
     /// no `default_expr`; both edit_source's main eval walk and its wave2
@@ -7134,7 +7144,16 @@ mod tests {
     /// neither touches `x` — the Solved arm's hand-rolled write-back is the
     /// only site that resolves `x`, and it calls no `self.journal.record(..)`
     /// today. Assertion (1) below (the `resolved_params` guard) already
-    /// passes on base; assertion (2) (the journal pair) is the RED signal.
+    /// passes on base; assertion (2) (the journal pair for `x`) is the RED
+    /// signal for the resolution arm. For the wave2 site: `y` moves from
+    /// 0.025 to 0.015 (observed error 1.77e-15 against the expected value,
+    /// i.e. far inside `MOVED_AUTO_TOL`) but on base appends zero journal
+    /// events for `y` — assertion (4)'s journal-delta check is the RED
+    /// signal for wave2, and its trailing `dependency_trace` check pins that
+    /// the wave2 commit records the expr-derived trace
+    /// (`extract_dependency_trace(expr)`) rather than the resolution arm's
+    /// `DependencyTrace::default()` (structurally empty there, since a
+    /// solver-resolved auto has no static expr to trace).
     #[test]
     fn edit_source_resolution_back_prop_routes_through_commit_primitive() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
@@ -7168,6 +7187,10 @@ mod tests {
         let x_id = ValueCellId::new("WarmAutoSrcCommit", "x");
         let x_node = NodeId::Value(x_id.clone());
         let events_before = engine.journal().events_for_node(&x_node).len();
+
+        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        let y_node = NodeId::Value(y_id.clone());
+        let y_events_before = engine.journal().events_for_node(&y_node).len();
 
         let compiled_b = compile_source(SRC_B);
         let result = engine
@@ -7276,8 +7299,11 @@ mod tests {
             other => panic!("expected CachedResult::Value, got {other:?}"),
         }
 
-        // (4) Downstream reseed unaffected: y = x + 5mm = 15mm.
-        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        // (4) Downstream reseed: y = x + 5mm = 15mm — positive control that
+        // the wave2 loop actually ran (`x` is `auto` and carries no
+        // `default_expr`, so the wave2 loop, guarded on
+        // `node.default_expr.is_some()`, structurally cannot touch `x`;
+        // only `y` can exercise it).
         let y_val = result
             .values
             .get(&y_id)
@@ -7288,126 +7314,38 @@ mod tests {
             MOVED_AUTO_TOL,
             "edit_source reseed: y must be 0.015 m (15mm = x + 5mm)",
         );
-    }
 
-    /// Task #6423: pins that `edit_source`'s SECOND PROPAGATION WAVE
-    /// (dependent re-eval of downstream `let` bindings after a resolved
-    /// auto, gated by `if !all_resolved_ids.is_empty()`) is wired through
-    /// the `commit_cell_result` primitive rather than the hand-rolled
-    /// values-insert/snapshot-insert/record_evaluation copy that writes no
-    /// journal leg at all (INV-EVAL-1). This is the wave2 sibling of
-    /// `edit_source_resolution_back_prop_routes_through_commit_primitive`
-    /// above (task #6373, which pins the `SolveResult::Solved` resolution
-    /// write-back, not the wave2 loop); its edit_param mirror is
-    /// `edit_param_dependent_reeval_routes_through_commit_primitive` above
-    /// (task δ #5056).
-    ///
-    /// FIXTURE: the same seed-20mm → retarget-10mm two-source `edit_source`
-    /// shape as the #6373 test above — a real Nelder-Mead search, not the
-    /// initially-feasible early-exit — because the wave2 block only runs
-    /// `if !all_resolved_ids.is_empty()`: it needs the solver to have
-    /// actually resolved autos in THIS edit. `x` is declared `auto` and so
-    /// carries no `default_expr`; the wave2 loop is guarded on
-    /// `node.default_expr.is_some()`, so it structurally cannot touch `x` —
-    /// only the downstream `let y = x + 5mm` bind can exercise it, which is
-    /// why `y` (not `x`) is the cell under test here.
-    ///
-    /// RED on base, measured on this exact fixture: cold `eval()` gives `y`
-    /// 4 journal events; after `edit_source` retargets `x` from 20mm to
-    /// 10mm, `y` still has exactly 4 — the wave2 write-back moves y's value
-    /// (0.025 → 0.015, observed error 1.77e-15 against the expected 0.015,
-    /// i.e. 5.6e5× inside the `1e-9` tolerance
-    /// `assert_recorded_via_commit_primitive` hard-codes) but appends zero
-    /// journal events. (`x`, whose resolution arm #6373 already migrated,
-    /// gains a `Started(Custom("edit-reeval"))`/`Completed` pair on this
-    /// same edit — the fixture's positive control that the shared assertion
-    /// shape works against this engine configuration.) Assertions (1)/(2)
-    /// below are fixture guards that already pass on base; assertions
-    /// (3)/(4) are the RED signals.
-    #[test]
-    fn edit_source_wave2_dependent_reeval_routes_through_commit_primitive() {
-        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
-        use reify_core::ValueCellId;
-        use reify_test_support::compile_source;
-
-        use crate::cache::NodeId;
-
-        const MOVED_AUTO_TOL: f64 = 1e-6;
-
-        const SRC_A: &str = r#"structure WarmWave2SrcCommit {
-    param x : Length = auto
-    constraint x == 20mm
-    let y = x + 5mm
-}"#;
-        const SRC_B: &str = r#"structure WarmWave2SrcCommit {
-    param x : Length = auto
-    constraint x == 10mm
-    let y = x + 5mm
-}"#;
-
-        let compiled_a = compile_source(SRC_A);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
-            .with_solver(Box::new(DimensionalSolver));
-        // Cold eval — populates eval_state; solver resolves x = 20mm, y = 25mm.
-        engine.eval(&compiled_a);
-
-        let x_id = ValueCellId::new("WarmWave2SrcCommit", "x");
-        let y_id = ValueCellId::new("WarmWave2SrcCommit", "y");
-        let y_node = NodeId::Value(y_id.clone());
-        let events_before = engine.journal().events_for_node(&y_node).len();
-
-        let compiled_b = compile_source(SRC_B);
-        let result = engine
-            .edit_source(&compiled_b)
-            .expect("edit_source must succeed");
-
-        // (1) GUARD: the Solved arm actually fired and resolved x to 10mm —
-        // a failure here means the fixture never reached the Solved arm,
-        // not that the production code under test is wrong.
-        let x_resolved = result.resolved_params.get(&x_id).expect(
-            "x must be in resolved_params after SolveResult::Solved back-prop; \
-             if absent, the fixture never reached the Solved arm",
-        );
-        assert_scalar_si_approx_eq(
-            x_resolved,
-            0.01,
-            MOVED_AUTO_TOL,
-            "edit_source wave2 fixture: x must be resolved to 0.01 m (10mm)",
-        );
-
-        // (2) GUARD: y was actually re-evaluated by the wave2 loop under
-        // test — the positive control that the site under test executed.
-        let y_val = result
-            .values
-            .get(&y_id)
-            .expect("y must be in result.values after edit_source wave2 reseed");
-        assert_scalar_si_approx_eq(
-            y_val,
-            0.015,
-            1e-9,
-            "edit_source wave2 fixture: y must be 0.015 m (15mm = x + 5mm)",
-        );
-
-        // (3) RED SIGNAL A — event-count delta: on base this is 4 before,
-        // 4 after (zero new events); after the migration it is >= 4 + 2.
-        let events_after = engine.journal().events_for_node(&y_node);
+        // RED SIGNAL (task #6423, wave2): on base this appends zero journal
+        // events for `y` despite its value moving from 0.025 to 0.015.
+        let y_events_after = engine.journal().events_for_node(&y_node);
         assert!(
-            events_after.len() >= events_before + 2,
+            y_events_after.len() >= y_events_before + 2,
             "edit_source wave2 must append at least a Started+Completed pair for y, \
-             had {events_before} events before, {} after",
-            events_after.len()
+             had {y_events_before} events before, {} after",
+            y_events_after.len()
         );
-
-        // (4) RED SIGNAL B — provenance + three-leg agreement (journal
-        // Started/Completed pair with the edit-reeval slug, plus snapshot
-        // and cache both at (0.015, Determined)). On base y's trailing pair
-        // is the COLD pair whose Started.payload is None, so the helper's
-        // `other => panic!` arm fires here.
-        assert_recorded_via_commit_primitive(
+        assert_recorded_via_commit_primitive_with_tol(
             &engine,
             &y_id,
             0.015,
+            MOVED_AUTO_TOL,
             "edit_source wave2 dependent re-eval (y)",
+        );
+
+        // Pin that the wave2 commit records the expr-derived dependency
+        // trace (`extract_dependency_trace(expr)`) rather than the
+        // resolution arm's `DependencyTrace::default()` — a copy-paste that
+        // swapped one for the other would silently drop y's
+        // reverse-dependency edge on x (breaking downstream invalidation on
+        // a later edit) while every assertion above still passes.
+        let y_cache_entry = engine
+            .cache_store()
+            .get(&y_node)
+            .expect("y must have a cache entry after edit_source wave2 reseed");
+        assert!(
+            y_cache_entry.dependency_trace.reads.contains(&x_id),
+            "y's cache entry dependency_trace.reads must contain x after the wave2 commit, got {:?}",
+            y_cache_entry.dependency_trace.reads
         );
     }
 
@@ -7415,13 +7353,33 @@ mod tests {
     /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
     /// commit: a `Started`/`Completed` journal pair with the edit-reeval
     /// provenance slug, and `(expected_si, DeterminacyState::Determined)` in
-    /// both the snapshot and the cache. Shared by the recorded-site fixtures
-    /// below (task δ #5056 step-3) so each site's test is a thin setup +
-    /// one-line assertion, mirroring `assert_scalar_si_approx_eq` above.
+    /// both the snapshot and the cache, within the default `1e-9` tolerance.
+    /// Shared by the recorded-site fixtures below (task δ #5056 step-3) so
+    /// each site's test is a thin setup + one-line assertion, mirroring
+    /// `assert_scalar_si_approx_eq` above. Early-exit fixtures (the solver
+    /// lands exactly on the target with no search) satisfy `1e-9`; a
+    /// search-path fixture (a real Nelder-Mead solve, whose error is bounded
+    /// by the solver's own convergence tolerance rather than by floating
+    /// point) needs `assert_recorded_via_commit_primitive_with_tol` instead
+    /// — see `edit_param_back_props_moved_auto`'s doc comment for why.
     fn assert_recorded_via_commit_primitive(
         engine: &crate::Engine,
         id: &reify_core::ValueCellId,
         expected_si: f64,
+        label: &str,
+    ) {
+        assert_recorded_via_commit_primitive_with_tol(engine, id, expected_si, 1e-9, label);
+    }
+
+    /// Same as `assert_recorded_via_commit_primitive`, but with an explicit
+    /// tolerance for the snapshot/cache value comparisons (the journal shape
+    /// and determinacy checks are always exact) — for search-path fixtures
+    /// where `1e-9` is the wrong bound; see that function's doc comment.
+    fn assert_recorded_via_commit_primitive_with_tol(
+        engine: &crate::Engine,
+        id: &reify_core::ValueCellId,
+        expected_si: f64,
+        tol: f64,
         label: &str,
     ) {
         use crate::cache::{CachedResult, NodeId};
@@ -7471,7 +7429,7 @@ mod tests {
             DeterminacyState::Determined,
             "{label}: snapshot determinacy"
         );
-        assert_scalar_si_approx_eq(snap_v, expected_si, 1e-9, &format!("{label}: snapshot value"));
+        assert_scalar_si_approx_eq(snap_v, expected_si, tol, &format!("{label}: snapshot value"));
 
         let cache_entry = engine
             .cache_store()
@@ -7484,7 +7442,7 @@ mod tests {
                     DeterminacyState::Determined,
                     "{label}: cache determinacy"
                 );
-                assert_scalar_si_approx_eq(v, expected_si, 1e-9, &format!("{label}: cache value"));
+                assert_scalar_si_approx_eq(v, expected_si, tol, &format!("{label}: cache value"));
             }
             other => panic!("{label}: expected CachedResult::Value, got {other:?}"),
         }
