@@ -72,16 +72,18 @@
 //!      for both the main write-back and its wave-2. No pinned-connector
 //!      write-back (same exclusion as `eval`'s merged-cluster branch).
 //!    - [`Engine::edit_param`] — `commit_cell_result` for the main
-//!      write-back and its wave-2 downstream reseed (both
-//!      `CacheLeg::Record`). A third phase, the post-wave2
-//!      driver-ordered guard-member reseed, follows: its active-member
-//!      leg also routes through `commit_cell_result`, but with
-//!      `CacheLeg::Skip("post-wave2 guard-member reseed")` — journals,
-//!      does not cache. No un-journaled *resolution* write-back — the
-//!      same reseed's inactive-guarded-member leg instead calls
-//!      [`deactivate_if_not_auto`], which writes `values`/snapshot only
-//!      (no cache, no journal), by design; see the canonical Auto-cell
-//!      lifecycle rule above.
+//!      write-back and the wave-2 downstream reseed's active-member leg
+//!      (both `CacheLeg::Record`); that same wave-2 reseed's
+//!      inactive-guarded-member leg instead calls
+//!      [`deactivate_if_not_auto`] (no cache, no journal). A third phase,
+//!      the post-wave2 driver-ordered guard-member reseed, follows: its
+//!      active-member leg also routes through `commit_cell_result`, but
+//!      with `CacheLeg::Skip("post-wave2 guard-member reseed")` —
+//!      journals, does not cache. No un-journaled *resolution*
+//!      write-back — its inactive-guarded-member leg, like the wave-2
+//!      reseed's, also calls [`deactivate_if_not_auto`], writing
+//!      `values`/snapshot only (no cache, no journal), by design; see
+//!      the canonical Auto-cell lifecycle rule above.
 //!    - [`Engine::edit_source`] — main write-back journals via
 //!      `commit_cell_result`; its wave-2 ("Second propagation wave")
 //!      does NOT — a bare `values`/snapshot insert plus
@@ -95,7 +97,8 @@
 //! 8. `resolved_ids` / `all_resolved_ids` — uniform: every arm populates
 //!    a local resolved-ids set seeded from the solver's resolved
 //!    values. In [`Engine::eval`]'s and [`Engine::eval_cached`]'s
-//!    per-template arms it is a strict superset of that:
+//!    per-template arms it is a superset of that — strict when
+//!    `pinned_connector_autos` is non-empty, equal otherwise:
 //!    `write_solved_pinned_connector_autos` (in `engine_eval.rs`) also
 //!    inserts each pinned connector-instance auto (their merged-cluster
 //!    branches take no pinned-connector write-back, per leg 5 above, so
@@ -114,10 +117,11 @@
 //! still emits no `resolved_params` and no `objective_provenance` —
 //! consult that doc's `resolved_params`/`objective_provenance` clause
 //! for the rationale before "fixing" `eval_cached` to write them. That
-//! doc's separate "migrated per-template sibling" remark is about a
-//! different topic (task #5118's `commit_cell_result` migration, not
-//! legs 6-7) and is not authoritative for leg 5 above — treat leg 5 as
-//! this file's canonical account of journal behavior per arm.
+//! same clause's "migrated per-template sibling" remark — it sits in the
+//! same sentence, joined by "but" — is about a different topic (task
+//! #5118's `commit_cell_result` migration, not legs 6-7) and is not
+//! authoritative for leg 5 above — treat leg 5 as this file's canonical
+//! account of journal behavior per arm.
 //!
 //! Check all eight legs when modifying warm Resolution back-prop.
 //!
