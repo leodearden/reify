@@ -121,14 +121,29 @@ assert "wrapper exit code is 42 (got $_EC)" \
 # -- verify.sh plan integration tests ------------------------------------------
 # These formerly grepped dark-factory-orchestrator.yaml's test_command. Since task 3766 the
 # orchestrator calls scripts/verify.sh, so the canonical command list is taken
-# from verify.sh --print-plan (--scope all → full plan, index-independent; env
-# lines stripped via `grep -v '^#'`). The gated passes are plain `cargo test`
-# under the flock wrapper regardless of the nextest/cargo-test choice for the
-# ungated tail, so the gated assertions below stay exact-match.
-TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
-export TEST_PLAN_SEGS
+# from verify.sh --print-plan (--scope all → full plan, index-independent). The
+# gated passes are plain `cargo test` under the flock wrapper regardless of the
+# nextest/cargo-test choice for the ungated tail, so the gated assertions below
+# stay exact-match.
+#
+# CAPTURE SHAPE (task 6247), used identically at every --print-plan site below:
+# capture into a _RAW variable via capture_print_plan (which retries until the
+# dump is complete), assert plan_capture_complete on that RAW dump, and only
+# THEN reduce it to command lines with plan_strip_comments. The order is forced:
+# the completeness markers verify.sh emits are themselves comment lines, so the
+# former single-shot `... --print-plan | grep -v '^#'` destroyed the evidence of
+# truncation and a short capture read as "pattern absent" — a misleading
+# contract failure instead of a retry.
+TEST_PLAN_SEGS_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan TEST_PLAN_SEGS_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan || true
 assert "TEST_PLAN_SEGS: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$TEST_PLAN_SEGS"
+    plan_capture_complete "$TEST_PLAN_SEGS_RAW"
+TEST_PLAN_SEGS="$(plan_strip_comments "$TEST_PLAN_SEGS_RAW")"
+export TEST_PLAN_SEGS
 
 echo ""
 echo "--- Test 10: plan has NO cargo-test-occt-gated.sh invocation (task 4451: OCCT folded into nextest pool) ---"
@@ -360,12 +375,18 @@ echo "--- Tests T1–T7 (task 4621): host-relative compile timeout knobs ---"
 #     distinguishable. RED against current code: the release pass currently follows the unified
 #     base knob → would render 95m.
 _T1_ERR="$(mktemp)"
-_T1_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T1_ERR" | grep -v '^#')"
-export _T1_PLAN
+_T1_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T1_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T1_ERR" || true
 assert "T1: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T1_PLAN"
+    plan_capture_complete "$_T1_RAW"
+_T1_PLAN="$(plan_strip_comments "$_T1_RAW")"
+export _T1_PLAN
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: debug nextest pass uses 95m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 95m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: release nextest pass keeps its OWN default 90m (decoupled, task 5382)" \
@@ -382,11 +403,17 @@ assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses its own d
 
 # T3: Malformed REIFY_VERIFY_TEST_TIMEOUT=banana → falls back to 60m (validation guard).
 _T3_ERR="$(mktemp)"
-_T3_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T3_ERR" | grep -v '^#')"
-export _T3_PLAN
+_T3_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T3_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T3_ERR" || true
 assert "T3: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T3_PLAN"
+    plan_capture_complete "$_T3_RAW"
+_T3_PLAN="$(plan_strip_comments "$_T3_RAW")"
+export _T3_PLAN
 assert "T3: REIFY_VERIFY_TEST_TIMEOUT=banana (malformed): falls back to 60m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T3_PLAN" "$_T3_ERR"
 rm -f "$_T3_ERR"
@@ -395,11 +422,17 @@ rm -f "$_T3_ERR"
 #     both render `timeout --kill-after=60 70m` in verify.sh lint --print-plan.
 #     RED: current code always emits 45m.
 _T4_ERR="$(mktemp)"
-_T4_PLAN="$(REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>"$_T4_ERR" | grep -v '^#')"
-export _T4_PLAN
+_T4_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T4_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
+        --print-plan 2>"$_T4_ERR" || true
 assert "T4: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T4_PLAN"
+    plan_capture_complete "$_T4_RAW"
+_T4_PLAN="$(plan_strip_comments "$_T4_RAW")"
+export _T4_PLAN
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: clippy pass uses 70m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo clippy' "$_T4_PLAN" "$_T4_ERR"
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: gui-feature cargo check uses 70m outer timeout" \
@@ -408,11 +441,17 @@ rm -f "$_T4_ERR"
 
 # T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset → clippy uses 45m (workstation default preserved).
 _T5_ERR="$(mktemp)"
-_T5_PLAN="$(env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>"$_T5_ERR" | grep -v '^#')"
-export _T5_PLAN
+_T5_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T5_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
+        --print-plan 2>"$_T5_ERR" || true
 assert "T5: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T5_PLAN"
+    plan_capture_complete "$_T5_RAW"
+_T5_PLAN="$(plan_strip_comments "$_T5_RAW")"
+export _T5_PLAN
 assert "T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset: clippy pass uses default 45m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo clippy' "$_T5_PLAN" "$_T5_ERR"
 rm -f "$_T5_ERR"
@@ -421,22 +460,34 @@ rm -f "$_T5_ERR"
 #     `timeout --kill-after=60 50m` in verify.sh typecheck --print-plan.
 #     RED: current code always emits 30m.
 _T6_ERR="$(mktemp)"
-_T6_PLAN="$(REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>"$_T6_ERR" | grep -v '^#')"
-export _T6_PLAN
+_T6_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T6_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+        --print-plan 2>"$_T6_ERR" || true
 assert "T6: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T6_PLAN"
+    plan_capture_complete "$_T6_RAW"
+_T6_PLAN="$(plan_strip_comments "$_T6_RAW")"
+export _T6_PLAN
 assert "T6: REIFY_VERIFY_CHECK_TIMEOUT=50m: cargo check --workspace --tests uses 50m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 50m .*cargo check --workspace' "$_T6_PLAN" "$_T6_ERR"
 rm -f "$_T6_ERR"
 
 # T7: REIFY_VERIFY_CHECK_TIMEOUT unset → check uses 30m (workstation default preserved).
 _T7_ERR="$(mktemp)"
-_T7_PLAN="$(env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>"$_T7_ERR" | grep -v '^#')"
-export _T7_PLAN
+_T7_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T7_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+        --print-plan 2>"$_T7_ERR" || true
 assert "T7: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T7_PLAN"
+    plan_capture_complete "$_T7_RAW"
+_T7_PLAN="$(plan_strip_comments "$_T7_RAW")"
+export _T7_PLAN
 assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 30m .*cargo check --workspace' "$_T7_PLAN" "$_T7_ERR"
 rm -f "$_T7_ERR"
@@ -456,12 +507,18 @@ echo "--- Tests T8–T10 (task 5382): release-pass cold-aware inner timeout knob
 #     default 60m (REIFY_VERIFY_TEST_TIMEOUT explicitly unset). Proves the release knob is
 #     release-only. RED against current code: no release knob exists, so release renders 60m.
 _T8_ERR="$(mktemp)"
-_T8_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T8_ERR" | grep -v '^#')"
-export _T8_PLAN
+_T8_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T8_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T8_ERR" || true
 assert "T8: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T8_PLAN"
+    plan_capture_complete "$_T8_RAW"
+_T8_PLAN="$(plan_strip_comments "$_T8_RAW")"
+export _T8_PLAN
 assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: release nextest pass uses 100m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T8_PLAN" "$_T8_ERR"
 assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: debug nextest pass stays default 60m (release knob is release-only)" \
@@ -472,12 +529,18 @@ rm -f "$_T8_ERR"
 #     90m default (mirrors T3's malformed-fallback guard through the shared
 #     _resolve_timeout_knob validator). RED against current code: release renders 60m.
 _T9_ERR="$(mktemp)"
-_T9_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T9_ERR" | grep -v '^#')"
-export _T9_PLAN
+_T9_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T9_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T9_ERR" || true
 assert "T9: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T9_PLAN"
+    plan_capture_complete "$_T9_RAW"
+_T9_PLAN="$(plan_strip_comments "$_T9_RAW")"
+export _T9_PLAN
 assert "T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana (malformed): release pass falls back to 90m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T9_PLAN" "$_T9_ERR"
 rm -f "$_T9_ERR"
@@ -558,13 +621,19 @@ echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware t
 
 # T11: default → both release pre-builds render the 45m pre-build budget (was a fixed 10m).
 _T11_ERR="$(mktemp)"
-_T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
-    DF_VERIFY_ROLE=merge \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T11_ERR" | grep -v '^#')"
-export _T11_PLAN
+_T11_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T11_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
+        DF_VERIFY_ROLE=merge \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T11_ERR" || true
 assert "T11: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T11_PLAN"
+    plan_capture_complete "$_T11_RAW"
+_T11_PLAN="$(plan_strip_comments "$_T11_RAW")"
+export _T11_PLAN
 assert "T11: default: reify-cli release pre-build uses the 45m pre-build budget (not the former fixed 10m)" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
 assert "T11: default: reify-audit release pre-build uses the same 45m pre-build budget" \
@@ -574,14 +643,20 @@ rm -f "$_T11_ERR"
 # T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m drives the pre-builds ONLY — the two nextest passes
 #      keep their own 60m/90m defaults. Proves the pre-build knob is pre-build-scoped.
 _T12_ERR="$(mktemp)"
-_T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
-    -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
-    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T12_ERR" | grep -v '^#')"
-export _T12_PLAN
+_T12_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T12_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+        -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T12_ERR" || true
 assert "T12: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T12_PLAN"
+    plan_capture_complete "$_T12_RAW"
+_T12_PLAN="$(plan_strip_comments "$_T12_RAW")"
+export _T12_PLAN
 assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: reify-cli pre-build uses 40m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 40m .*cargo build --release -p reify-cli' "$_T12_PLAN" "$_T12_ERR"
 assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: debug nextest pass stays default 60m (pre-build knob is pre-build-only)" \
@@ -593,13 +668,19 @@ rm -f "$_T12_ERR"
 # T13: malformed REIFY_VERIFY_PREBUILD_TIMEOUT=banana → falls back to the 45m default via the
 #      shared _resolve_timeout_knob validator (mirrors T3/T9's malformed-fallback guard).
 _T13_ERR="$(mktemp)"
-_T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
-    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T13_ERR" | grep -v '^#')"
-export _T13_PLAN
+_T13_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T13_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+        DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T13_ERR" || true
 assert "T13: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T13_PLAN"
+    plan_capture_complete "$_T13_RAW"
+_T13_PLAN="$(plan_strip_comments "$_T13_RAW")"
+export _T13_PLAN
 assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 45m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
 rm -f "$_T13_ERR"
