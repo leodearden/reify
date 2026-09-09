@@ -1063,8 +1063,10 @@ mod tests {
     // drift apart.
     use super::auto_type_param_fixtures::{
         AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, BT8_CONSTANT_CONSTRAINT_SRC,
-        NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC, UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
-        assert_auto_fail_fixture_is_newly_reachable, assert_bt8_fixture_still_diverges,
+        GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC, NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC,
+        UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
+        assert_auto_fail_fixture_is_newly_reachable,
+        assert_bt8_fixture_still_diverges, assert_guarded_group_fixture_is_newly_reachable,
     };
 
     // Additional imports for the eval-diagnostics regression-lock cluster.
@@ -1411,6 +1413,29 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
              overwrites it at the same ValueCellId when the graph is built. A \
              flat `compiled.templates` scan would fire here and suppress eval \
              on a healthy module"
+        );
+
+        // (5) POSITIVE — case (1)'s hazard with the `param seal : T` member
+        // inside a GUARDED group, which is where stage 1's absence proof was
+        // UNSOUND. A guarded member lives in `CompiledGuardedGroup::members`,
+        // a Vec that never appears in `TopologyTemplate::value_cells`, yet
+        // `from_templates` inserts it into `graph.value_cells` all the same.
+        // Measured before the fix: stage 1 found every scanned cell
+        // representable and short-circuited to `None`, while the graph carried
+        // `Bearing.seal : TypeParam("T")` and `compute_diagnostics` panicked at
+        // `crates/reify-eval/src/engine_eval.rs:210`. So this case is not a
+        // variant spelling of (1) — it is the arm (1) cannot reach, and an
+        // absence proof that scans a strict subset of what reaches the graph
+        // goes RED right here.
+        assert_guarded_group_fixture_is_newly_reachable();
+        assert!(
+            fires(GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC),
+            "a failed `auto:` resolution leaves an unrepresentable cell in the \
+             graph whether the `param seal : T` member is plain or GUARDED — \
+             the guard MUST fire on both, or the engine panics on the guarded \
+             one (task #6851). Stage 1 may only ever prove ABSENCE, so it has \
+             to scan every collection `EvaluationGraph::from_templates` draws \
+             cells from, not just `value_cells`"
         );
     }
 

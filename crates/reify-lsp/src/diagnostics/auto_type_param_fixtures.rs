@@ -126,6 +126,50 @@ structure def Bearing<T: Seal> {
 structure def Assembly { sub b = Bearing<auto: Seal>() }
 "#;
 
+/// Containment fixture for the same `auto:`-resolution-failure hazard as
+/// [`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`], with the `param seal : T` member
+/// moved inside a GUARDED group — the shape the containment predicate's
+/// stage-1 absence proof used to miss entirely.
+///
+/// Verbatim [`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`] except that `seal` now
+/// lives in a `where bore > 0.5 { ... }` block. That is ordinary `.ri`, not a
+/// contrivance: it is the same `where` form `examples/m5_guarded_enum.ri`
+/// uses. Every property point 2 of the sibling fixture's doc establishes
+/// carries over unchanged and was re-measured on this shape — stub: ZERO
+/// diagnostics and a SUCCEEDING resolution (its graph carries no
+/// unrepresentable cell at all); real `SimpleConstraintChecker`:
+/// `E_AUTO_TYPE_PARAM_NO_CANDIDATE`, "'GasketSeal' rejected by constraint
+/// Bearing#0". So this crash path, like its sibling's, is genuinely NEW to
+/// task #6798's checker swap rather than pre-existing.
+///
+/// **Why a second fixture rather than a parameter on the first.** A guarded
+/// member is not merely a different spelling: `crates/reify-compiler/src/`
+/// collects it into `CompiledGuardedGroup::members`, a Vec that never appears
+/// in `TopologyTemplate::value_cells`. `EvaluationGraph::from_templates`
+/// nevertheless inserts it into `graph.value_cells` (the
+/// `guarded_groups[*].members` / `[*].else_members` arms of
+/// `crates/reify-eval/src/graph.rs`), cloning its `cell_type` verbatim. A
+/// scan of `value_cells` alone therefore proves ABSENCE over a strict subset
+/// of what reaches the graph, and answers "safe" on a graph that is not —
+/// measured on this fixture: stage 1 all-representable → `None`, while the
+/// graph in fact carries `Bearing.seal : TypeParam("T")` and
+/// `compute_diagnostics` PANICS at `crates/reify-eval/src/engine_eval.rs:210`.
+///
+/// Keep both fixtures: the unguarded one pins the plain arm, this one pins the
+/// guarded arms, and only together do they span the collections stage 1 must
+/// scan.
+pub(crate) const GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    where bore > 0.5 {
+        param seal : T
+    }
+    constraint bore > 10.0
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#;
+
 /// Narrowness fixture: a FAILED `auto:` resolution that is provably SAFE to
 /// evaluate, sharing a document with independent eval-time diagnostics.
 ///
@@ -230,6 +274,51 @@ pub(crate) fn assert_auto_fail_fixture_is_newly_reachable() {
          does, this fixture has stopped demonstrating newly-reachable failure \
          and the containment tests below are vacuous. real-checker \
          diagnostics: {:#?}",
+        real.diagnostics
+    );
+}
+
+/// Anti-vacuity guard for [`GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC`], mirroring
+/// [`assert_auto_fail_fixture_is_newly_reachable`]'s clean-vs-NO_CANDIDATE
+/// claim on the guarded-member shape.
+///
+/// Not a call through to that function with a different const: the two pin the
+/// same claim over two different fixtures, and keeping them separate is what
+/// lets each name its own fixture in its failure message. Both are needed —
+/// if the guarded shape ever stopped diverging, the containment tests over it
+/// would pass vacuously while the plain shape's guard stayed green and hid it.
+pub(crate) fn assert_guarded_group_fixture_is_newly_reachable() {
+    let parsed = reify_compiler::parse_with_stdlib(
+        GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+        ModulePath::single("test"),
+    );
+    let stub = reify_compiler::compile_with_stdlib(&parsed);
+    let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    assert!(
+        !stub
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error),
+        "anti-vacuity guard: the compile-time stub must compile \
+         GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC with ZERO Error-severity \
+         diagnostics — that is what makes the panic hazard NEWLY reachable \
+         via task #6798's checker swap rather than pre-existing. If the stub \
+         now errors too, this fixture has stopped demonstrating \
+         newly-reachable failure and the containment tests over it are \
+         vacuous. stub diagnostics: {:#?}",
+        stub.diagnostics
+    );
+    assert!(
+        real.diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+        "anti-vacuity guard: the real SimpleConstraintChecker must fail \
+         `auto:` resolution on GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC with an \
+         Error-severity AutoTypeParamNoCandidate — that failed resolution is \
+         what leaves the unsubstituted TypeParam cell inside the guarded \
+         group, which is the cell the containment guard exists to keep away \
+         from the engine (task #6851). real-checker diagnostics: {:#?}",
         real.diagnostics
     );
 }
