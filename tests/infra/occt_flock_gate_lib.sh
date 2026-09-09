@@ -49,6 +49,36 @@ _reify_occt_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_reify_occt_lib_dir/slot_holder_handshake_lib.sh"
 unset _reify_occt_lib_dir
 
+# occt_wait_for_ready_count BARRIER_DIR N [BASE_ITERS=100]
+# Return 0 once BARRIER_DIR holds at least N `ready-*` files — the multi-payload
+# form of the ready-file handshake, used by Tests 20, 21A and 21B where several
+# wrapper invocations each announce that they now hold a slot.
+#
+# Waiting for a COUNT rather than a named marker is what lets a test with N
+# slots and more than N invocations synchronize at all: waiting for every
+# payload would deadlock, since the surplus invocations cannot enter their
+# critical section until an earlier one leaves.
+#
+# BASE_ITERS x 0.2s (load-scaled) is a BROKEN-INFRA BACKSTOP so a payload that
+# never arrives cannot hang the suite — it is NOT a timing assertion.  Callers
+# assert on the resulting event log, so an exhausted budget yields a clean RED
+# rather than a hang.
+occt_wait_for_ready_count() {
+    local _dir="$1" _want="$2"
+    local _budget
+    _budget="$(load_tolerant_attempts "${3:-100}")"
+    local _i=0
+    while [ "$_i" -lt "$_budget" ]; do
+        if [ "$(find "$_dir" -maxdepth 1 -name 'ready-*' | wc -l)" -ge "$_want" ]; then
+            return 0
+        fi
+        sleep 0.2
+        _i=$(( _i + 1 ))
+    done
+    return 1
+}
+export -f occt_wait_for_ready_count
+
 # occt_serial3_n2_serialized EVENT_LOG
 # Returns 0 iff the log shows a maximum of EXACTLY 2 slots held at once — the
 # causal signature of three invocations correctly serialized behind a 2-slot

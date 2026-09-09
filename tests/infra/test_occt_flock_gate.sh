@@ -185,11 +185,17 @@ echo "--- Test 14: REIFY_OCCT_LOCK_WAIT=1 fires within budget, exits non-zero wi
 _LOCK14="$(mktemp)"
 _ERR14="$(mktemp)"
 
-# Spawn a background holder that acquires slot-1 and holds it for 10s.
-# The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
-# target the slot file to actually block the wrapper.
-( flock -x 9; sleep 10 ) 9>>"${_LOCK14}.slot-1" &
-_HOLDER14=$!
+# Spawn a background holder that acquires slot-1 and holds it until THIS TEST
+# releases it (task 6247).  The wrapper uses ${LOCK}.slot-1 (not $LOCK
+# directly), so the holder must target the slot file to actually block it.
+#
+# The hold used to be a fixed `sleep 10`, which is a race in the OVERRUN
+# direction: on a saturated host the wrapper's preamble plus retry cycle can
+# outlast the hold, so the wrapper acquires the slot it was supposed to be
+# blocked on and the test's premise silently disappears.  A test-released hold
+# strictly CONTAINS the wrapper invocation however long it takes.
+_HOLD14="$(mktemp -d)"
+_HOLDER14="$(holder_spawn_gated "${_LOCK14}.slot-1" "$_HOLD14/ready" "$_HOLD14/release")"
 # Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
 # the holder actually holds slot-1, instead of a fixed `sleep 0.2` grace that a
 # saturated host can outrun (holder unscheduled ⇒ wrapper finds slot FREE ⇒
@@ -211,8 +217,8 @@ REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=1 timeo
 _END14="$(date +%s)"
 _ELAPSED14=$(( _END14 - _START14 ))
 
-kill "$_HOLDER14" 2>/dev/null || true
-wait "$_HOLDER14" 2>/dev/null || true
+holder_release "$_HOLD14/release" "$_HOLDER14" || true
+rm -rf "$_HOLD14"
 
 # Discriminators: exit==75 (EX_TEMPFAIL) and stderr pattern are the NON-VACUOUS
 # proof that the deadline logic fired correctly.  The elapsed guard is a generous
@@ -243,6 +249,13 @@ _LOCK15="$(mktemp)"
 # + 1s command).  Hold bumped 4s→6s for margin: with a bounded confirm latency
 # (≤~2s under load) remaining_hold is ≥4s ⇒ elapsed ≥5s ⇒ truncates to ≥4 with
 # ≥1s margin; 6s < LOCK_WAIT(10s) leaves headroom so no spurious exit-75.
+# NOT migrated to holder_spawn_gated (task 6247), unlike the Test 14 and Test 22
+# holders: those must OUTLIVE the wrapper, whereas here the wrapper must outlive
+# the HOLDER.  This test proves the internal timer starts after the lock is
+# acquired, so the holder has to release itself mid-wait while the wrapper is
+# still blocked.  The 6s is a test INPUT, not a synchronization grace, and a
+# test-released hold cannot express it: the wrapper would block until LOCK_WAIT
+# expired and exit 75 instead of 124.
 ( flock -x 9; sleep 6 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
 # Causal flock-probe barrier (task 5258): block until the holder holds slot-1.
@@ -791,49 +804,69 @@ assert "Test 19: ≥2 slots held simultaneously with N=2 (causal R-proof; max_co
 
 # -- Test 20: N=2, three concurrent invocations serializes the third ----------
 # With only 2 slots, a third concurrent wrapper invocation must wait until one
-# slot is released. Measured elapsed must be >= 700ms (two parallel rounds of
-# ~400ms — proves serialization) and <= 2000ms (load-tolerant sanity ceiling,
-# raised 1200->2000 per esc-3939-94: verify-pipeline load inflated the
-# serialized 3rd invocation to 1473ms in one run with no logic defect).
-# At 2000ms the upper bound no longer discriminates N=2 (~800ms) from fully-serial
-# N=1 (~1200ms); the >=700ms lower bound guards against under-serialization only.
-# COVERAGE GAP (accepted tradeoff per esc-3939-94): a fully-serial regression
-# (N->1) produces ~1200ms for three invocations — inside [700,2000], undetected.
-# Test 19 does NOT guard this: two fully-serial invocations complete in ~800ms,
-# below Test 19's <900ms threshold (both pass under a fully-serial regression).
-# This validates that the acquire-loop bounds N strictly (not ">=N" slots).
+# slot is released.  This validates that the acquire-loop bounds N strictly
+# (not ">=N" slots).
+#
+# HOW IT IS PROVED (task 6247, PRD infra-test-wallclock-deflake.md D1): by
+# reading the slot event log, not the clock.  The retired form asserted total
+# wall-clock inside [700,5000]ms, a ceiling ratcheted 1200->2000->5000 and still
+# observed at 5791ms, which also could not see the very regression it was aimed
+# at — three FULLY SERIAL invocations land ~1200ms, inside the band.
+#
+# BARRIER SHAPE — deliberately TWO ready files, not three.  Each payload touches
+# ready-$$ once it holds a slot, then waits for `go`.  With 2 slots the third
+# invocation cannot enter its critical section until one of the first two exits,
+# so waiting for all three would deadlock.  Waiting for exactly two, then
+# touching `go`, MAKES the two-way contention happen rather than hoping for it:
+# the first two are pinned holding until the test says otherwise, the third then
+# acquires, finds `go` already present and exits.  Max concurrency is therefore
+# exactly 2, with 3 ACQUIRE and 3 RELEASE events.
+#
+# Under an N->1 regression only one ready file ever appears; the bounded wait
+# elapses, `go` is touched, all three run serially, max concurrency is 1 and the
+# assertion goes cleanly RED — a clean RED, never a hang.
 echo ""
 echo "--- Test 20: REIFY_OCCT_CONCURRENCY=2 serializes the 3rd invocation when both slots are busy ---"
 
 _LOCK20="$(mktemp)"
 _LOG20="$(mktemp)"
-_START20_NS="$(date +%s%N)"
+_BARRIER20="$(mktemp -d)"
 
-# Spawn three concurrent invocations each sleeping 0.4s with N=2 slots.
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+# Three concurrent invocations, each pinned holding its slot until `go` appears.
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER20"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER20"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID20A=$!
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER20"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER20"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID20B=$!
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER20"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER20"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID20C=$!
+
+occt_wait_for_ready_count "$_BARRIER20" 2 || true
+touch "$_BARRIER20/go"
 wait "$_PID20A" "$_PID20B" "$_PID20C"
 
-_END20_NS="$(date +%s%N)"
-_ELAPSED20_MS=$(( (_END20_NS - _START20_NS) / 1000000 ))
-
+rm -rf "$_BARRIER20"
 rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
-
-# Two slots: two run in parallel (~400ms), third waits and runs (~800ms total).
-# Lower bound >= 700ms proves the third was serialized (all-parallel ~400ms).
-# Upper bound <= 2000ms is a load-tolerant sanity ceiling (esc-3939-94).
-assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
-    occt_serial3_n2_within_bounds "$_ELAPSED20_MS"
 
 # CAUSAL serialization proof (task 6247, PRD infra-test-wallclock-deflake.md
 # D1/T3), read off the slot event log instead of the clock: exactly 2 of the
 # three invocations may hold a slot at any instant. An N->1 over-serialization
-# regression gives 1 and a lost cap gives 3, both of which the millisecond band
-# above accepts — which is why it is retired in favour of this.
+# regression gives 1 and a lost cap gives 3, both of which the retired
+# millisecond band accepted.
 _ACQ20="$(grep -c ' ACQUIRE ' "$_LOG20" 2>/dev/null || true)"
 _REL20="$(grep -c ' RELEASE' "$_LOG20" 2>/dev/null || true)"
 assert "Test 20: exactly 2 slots held at once across the three N=2 invocations (causal proof)" \
@@ -850,9 +883,9 @@ rm -f "$_LOG20"
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
 # Sub-test A: two concurrent wrappers → R-proof ≥2 slots simultaneously held
 #   (causal event-log, same technique as Test 19; replaces vacuous <2000ms ceiling).
-# Sub-test B: three concurrent wrappers → third serialized ([700,5000]ms,
-#   load-tolerant ceiling per esc-3939-94; raised 2000→5000 after 3317ms observed
-#   under task/3443 load; shared with Test 20 via occt_flock_gate_lib.sh).
+# Sub-test B: three concurrent wrappers → third serialized (causal event-log
+#   proof, max concurrency exactly 2; shared with Test 20 via
+#   occt_flock_gate_lib.sh, task 6247).
 #
 # Historical note: a prior implementation auto-detected N as
 # clamp(nproc - load_1m_int, 1, MAX_CAP) and was retired (esc-4000-39, 2026-05-28)
@@ -887,40 +920,53 @@ REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
             sleep 0.2; _w=$(( _w + 1 )); done
     ' &
 _PID21A2=$!
-_w21a=0
-while [ "$(ls "$_BARRIER21A"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w21a" -lt 100 ]; do
-    sleep 0.2; _w21a=$(( _w21a + 1 ))
-done
+occt_wait_for_ready_count "$_BARRIER21A" 2 || true
 touch "$_BARRIER21A/go"
 wait "$_PID21A1" "$_PID21A2"
 _MAX21A="$(occt_max_concurrent_holders "$_LOG21A")"
 rm -rf "$_BARRIER21A"
 rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2" "$_LOG21A"
 
-# Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → third must wait.
-_START21B_NS="$(date +%s%N)"
+# Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → the third must wait.
+# Same causal proof and same two-ready-file barrier as Test 20 (see the note
+# there for why exactly two, and why the millisecond band was retired).
+_BARRIER21B="$(mktemp -d)"
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER21B"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER21B"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID21B1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER21B"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER21B"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID21B2=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER21B"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER21B"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID21B3=$!
+
+occt_wait_for_ready_count "$_BARRIER21B" 2 || true
+touch "$_BARRIER21B/go"
 wait "$_PID21B1" "$_PID21B2" "$_PID21B3"
-_END21B_NS="$(date +%s%N)"
-_ELAPSED21B_MS=$(( (_END21B_NS - _START21B_NS) / 1000000 ))
+rm -rf "$_BARRIER21B"
 rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
 
 assert "Test 21A: ≥2 slots held simultaneously with MAX_CONCURRENCY=2 (causal R-proof; max_concurrent=${_MAX21A})" \
     test "$_MAX21A" -ge 2
 
-assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms, got ${_ELAPSED21B_MS}ms)" \
-    occt_serial3_n2_within_bounds "$_ELAPSED21B_MS"
-
 # CAUSAL serialization proof — the exact twin of Test 20's, on the
-# MAX_CONCURRENCY path. See the note there for why the band above is retired.
+# MAX_CONCURRENCY path.
 _ACQ21B="$(grep -c ' ACQUIRE ' "$_LOG21B" 2>/dev/null || true)"
 _REL21B="$(grep -c ' RELEASE' "$_LOG21B" 2>/dev/null || true)"
 assert "Test 21B: exactly 2 slots held at once across the three MAX_CONCURRENCY=2 invocations (causal proof)" \
@@ -945,11 +991,12 @@ echo "--- Test 22: LOCK_WAIT fires within budget when ALL N=2 slots are external
 _LOCK22="$(mktemp)"
 _ERR22="$(mktemp)"
 
-# Spawn two background holders: one pins slot-1, one pins slot-2.
-( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-1" &
-_HOLDER22A=$!
-( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-2" &
-_HOLDER22B=$!
+# Spawn two background holders, one per slot, each holding until THIS TEST
+# releases it (task 6247 — see the Test 14 note for why a fixed hold is a race
+# the wrapper can win on a saturated host).
+_HOLD22="$(mktemp -d)"
+_HOLDER22A="$(holder_spawn_gated "${_LOCK22}.slot-1" "$_HOLD22/ready-a" "$_HOLD22/release")"
+_HOLDER22B="$(holder_spawn_gated "${_LOCK22}.slot-2" "$_HOLD22/ready-b" "$_HOLD22/release")"
 # Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
 # BOTH holders hold their slots, instead of a fixed `sleep 0.2` grace a saturated
 # host can outrun.  Two calls reuse the single-slot helper (one per slot); each
@@ -971,8 +1018,9 @@ REIFY_OCCT_LOCK="$_LOCK22" REIFY_OCCT_CONCURRENCY=2 REIFY_OCCT_LOCK_WAIT=1 \
 _END22="$(date +%s)"
 _ELAPSED22=$(( _END22 - _START22 ))
 
-kill "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
-wait "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
+holder_release "$_HOLD22/release" "$_HOLDER22A" || true
+holder_release "$_HOLD22/release" "$_HOLDER22B" || true
+rm -rf "$_HOLD22"
 
 assert "Test 22: wrapper exits 75 when all N=2 slots held and LOCK_WAIT=1 (got $_EXIT22)" \
     test "$_EXIT22" -eq 75
