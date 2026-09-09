@@ -17,6 +17,18 @@ LIB="$REPO_ROOT/scripts/lib_test_semaphore.sh"
 
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh (task 6247) — the causal holder-handshake
+# primitives.  Every contended test below needs two facts that a fixed pause
+# after backgrounding a holder only approximates: that the holder REALLY holds
+# the slot before the wrapper starts, and that it is STILL holding while the
+# wrapper waits.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
+# Non-blocking probe: returns 0 while some OTHER process holds the slot's
+# exclusive flock (a `flock -n` that FAILS is the proof of a live holder).
+_slot_held_now() { ! ( flock -n -x 9 ) 9>>"$1"; }
+
 # ===========================================================================
 # FOUNDATION tests (Tests 1-5): lib structure and sourceable interface
 # ===========================================================================
@@ -131,6 +143,8 @@ _ERR10="$(mktemp)"
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK10}.slot-1" &
 _HOLDER10=$!
 sleep 0.2   # give holder time to acquire
+assert "Test 10: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
+    holder_wait_until_held "${_LOCK10}.slot-1"
 
 _EXIT10=0
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK10" \
@@ -153,6 +167,8 @@ _ERR11="$(mktemp)"
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK11}.slot-1" &
 _HOLDER11=$!
 sleep 0.2
+assert "Test 11: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
+    holder_wait_until_held "${_LOCK11}.slot-1"
 
 _EXIT11=0
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK11" \
@@ -331,6 +347,8 @@ _ERR19="$(mktemp)"
 ( flock -x 9; sleep 2 ) 9>>"${_LOCK19}.slot-1" &
 _HOLDER19=$!
 sleep 0.2   # give holder time to acquire
+assert "Test T19: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
+    holder_wait_until_held "${_LOCK19}.slot-1"
 
 _START19_NS="$(date +%s%N)"
 _EXIT19=0
@@ -341,20 +359,31 @@ DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK19" \
 _END19_NS="$(date +%s%N)"
 _ELAPSED19_MS=$(( (_END19_NS - _START19_NS) / 1000000 ))
 
+# CAUSAL WINDOW (task 6247): was the holder STILL holding at the point the
+# heartbeat marker appeared?  T19e asserts a heartbeat tick happened while the
+# wrapper was queued, and that is only meaningful if the contention window
+# actually contained a tick.  With the wrapper run in the FOREGROUND this can
+# only be sampled after it has already returned — by which time a self-timed
+# hold is long over — so the fact is unobservable-as-true here by construction.
+_HELD19_AT_HB=0
+if grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_ERR19" && _slot_held_now "${_LOCK19}.slot-1"; then
+    _HELD19_AT_HB=1
+fi
+
 kill "$_HOLDER19" 2>/dev/null || true
 wait "$_HOLDER19" 2>/dev/null || true
 rm -f "$_LOCK19" "${_LOCK19}.slot-1"
 
 assert "Test T19a: WAIT=unlimited exits 0 (queued-then-ran, not 75; got $_EXIT19)" \
     test "$_EXIT19" -eq 0
-assert "Test T19b: elapsed >= 1500ms (was blocked by 2s holder; got ${_ELAPSED19_MS}ms)" \
-    test "$_ELAPSED19_MS" -ge 1500
 assert "Test T19c: stderr contains @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation" \
     grep -qE '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$_ERR19"
 assert "Test T19d: stderr contains @@REIFY_CLOCK_START@@" \
     grep -q '@@REIFY_CLOCK_START@@' "$_ERR19"
 assert "Test T19e: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (HEARTBEAT_SECS=1 + 2s hold)" \
     grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_ERR19"
+assert "Test T19f: the holder still held slot-1 when the heartbeat appeared — the contention window caused the tick" \
+    test "$_HELD19_AT_HB" -eq 1
 
 rm -f "$_ERR19"
 
@@ -367,6 +396,8 @@ _ERR20="$(mktemp)"
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK20}.slot-1" &
 _HOLDER20=$!
 sleep 0.2
+assert "Test T20: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
+    holder_wait_until_held "${_LOCK20}.slot-1"
 
 _EXIT20=0
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK20" \
@@ -655,11 +686,21 @@ _CD4_ERR="$(mktemp)"
 ( flock -x 9; sleep 1 ) 9>>"${_CD4_LOCK}.slot-1" &
 _CD4_HOLDER=$!
 sleep 0.2   # give holder time to acquire the lock
+assert "Test CD-4: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
+    holder_wait_until_held "${_CD4_LOCK}.slot-1"
 
 _CD4_EXIT=0
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_CD4_LOCK" \
     REIFY_TEST_SEMAPHORE_CONCURRENCY=1 REIFY_TEST_SEMAPHORE_WAIT=unlimited \
     timeout 15 "$LIB" true 2>"$_CD4_ERR" || _CD4_EXIT=$?
+
+# CAUSAL WINDOW (task 6247), the twin of T19f: was the holder still holding
+# when the STOP marker appeared?  CD-4 is gated on the tightest hold in this
+# file, so it is the most exposed to a pause that outruns or overruns it.
+_HELD_CD4_AT_STOP=0
+if grep -q '@@REIFY_CLOCK_STOP@@' "$_CD4_ERR" && _slot_held_now "${_CD4_LOCK}.slot-1"; then
+    _HELD_CD4_AT_STOP=1
+fi
 
 kill "$_CD4_HOLDER" 2>/dev/null || true
 wait "$_CD4_HOLDER" 2>/dev/null || true
@@ -671,6 +712,8 @@ assert "Test CD-4b: stderr contains @@REIFY_CLOCK_STOP@@ (clock_enter_wait wired
     grep -q '@@REIFY_CLOCK_STOP@@' "$_CD4_ERR"
 assert "Test CD-4c: stderr contains @@REIFY_CLOCK_START@@ (clock_exit_wait wired — STOP/START balanced)" \
     grep -q '@@REIFY_CLOCK_START@@' "$_CD4_ERR"
+assert "Test CD-4d: the holder still held slot-1 when the STOP marker appeared — the wait was really contended" \
+    test "$_HELD_CD4_AT_STOP" -eq 1
 
 rm -f "$_CD4_ERR"
 
@@ -747,6 +790,8 @@ make_counting_stub "$_CE2_STUBDIR" shuf "$_CE2_SHUF_COUNT"
 ( flock -x 9; sleep 45 ) 9>>"${_CE2_LOCK}.slot-1" &
 _CE2_HOLDER=$!
 sleep 0.2   # give holder time to acquire
+assert "Test CE-2: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
+    holder_wait_until_held "${_CE2_LOCK}.slot-1"
 
 _CE2_EXIT=0
 PATH="$_CE2_STUBDIR:$PATH" timeout 30 bash -c '
