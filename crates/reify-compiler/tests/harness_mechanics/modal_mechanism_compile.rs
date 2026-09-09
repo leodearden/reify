@@ -11,6 +11,9 @@
 //! inspected for their resolved `cell_type`.
 //!
 //! RED until step-2 adds `modal_mechanism_fns.ri` + stdlib_loader registration.
+//!
+//! Also hosts the sibling-subsystem `displacement_at` return-type pins over
+//! `std.modal.analysis.fns` (`mod modal_analysis_fns_stdlib_compile`, below).
 
 use reify_core::*;
 use reify_test_support::compile_source_with_stdlib;
@@ -70,25 +73,13 @@ structure def Probe {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Task #6094's `displacement_at` return-type pins live HERE, as a nested module
-// of this already-baseline-registered binary, rather than as a new top-level
-// `tests/modal_analysis_fns_stdlib_compile.rs`. That standalone form was flagged
-// `reason=unregistered-standalone` by scripts/check-harness-baseline-registration.sh.
-// Of the three sanctioned remedies (a baseline grandfather row is NOT one of them
-// — SUPERSEDED, Leo 2026-07-22 esc-5056-11: the manifest is a shrinking ratchet,
-// not an allow-list to grow), this is the one that adds ZERO new link units, which
-// is the actual goal of the C1/C2 contract (PRD docs/prds/merge-gate-compile-cost.md
-// §5); a fresh single-module `harness_<subsystem>.rs` root would satisfy the letter
-// while re-adding the very binary the contract removes. This file is the
-// semantically right host: it is the same CLASS of check (a compile-typing pin over
-// a `std.modal.*` stdlib fn, driven through `compile_source_with_stdlib`) on a
-// sibling module of the same subsystem — `std.modal.mechanism.fns` here,
-// `std.modal.analysis.fns` below.
-//
-// The nested `mod` keeps the absorbed file's stem, so its tests select as
-// `modal_analysis_fns_stdlib_compile::<test>`; no `#[test]` fn is added or removed
-// relative to the standalone form. Its imports stay inside the module rather than
-// joining this file's top-level `use reify_core::*;`.
+// Nested rather than a top-level `tests/modal_analysis_fns_stdlib_compile.rs`: a
+// new integration-test file is a new link unit, which the merge-gate compile-cost
+// contract exists to remove (docs/prds/merge-gate-compile-cost.md §5) and which
+// scripts/check-harness-baseline-registration.sh flags `unregistered-standalone`.
+// Absorbing it into an existing binary costs zero link units; the `mod` keeps the
+// would-be file's stem, so its tests select as
+// `modal_analysis_fns_stdlib_compile::<test>`.
 mod modal_analysis_fns_stdlib_compile {
     //! Compile-side type pins for `crates/reify-compiler/stdlib/modal_analysis_fns.ri`
     //! — the `std.modal.analysis.fns` module (split out from `std.modal.analysis`
