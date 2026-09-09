@@ -1801,8 +1801,13 @@ mod tests {
     /// `free_b` is non-empty and the closure is solvable.
     ///
     /// This must PASS both before and after the step-10 guard: it is the
-    /// assertion that stops `is_world(parent)` from being widened into
-    /// "parent has no recorded ancestor", which would over-reject.
+    /// assertion that stops the BUILDER's `is_world(parent)` rejection from
+    /// being widened into "parent has no recorded ancestor", which would
+    /// over-reject. Note snapshot.rs's FK base-frame arm *does* treat those
+    /// two shapes alike — but that is rooting, not rejecting: it decides
+    /// WHERE an admitted closing body rides, matching how `chain_transform`
+    /// roots chain_b, and it admits strictly more mechanisms rather than
+    /// fewer.
     #[test]
     fn non_world_parented_closing_edge_still_records() {
         let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1860,6 +1865,26 @@ mod tests {
             path_b,
             Value::List(vec![world, j3]),
             "path_b is [world, parent] — len 2, so strip_world_sentinel accepts it"
+        );
+
+        // Task 7186 review fix 3: the claim above is "NOT rejected AND
+        // solvable", so assert the second half too — a build that records the
+        // closure but whose `snapshot()` is `Undef` is the same silent
+        // whole-mechanism failure the step-10 guard exists to eliminate,
+        // just moved one step past the boundary it pins.
+        //
+        // This is what caught the regression: `walk_fk`'s closing-body arm
+        // routed `body.parent` through `joint_world_transform`, whose leading
+        // `joint_parents.get(joint)?` returns None for an UNREGISTERED parent
+        // such as `j3` — turning the whole snapshot Undef. The residual side
+        // roots the same unregistered parent at the identity (`walk_to_world`
+        // stops at it, `chain_transform` accumulates from identity), so FK now
+        // degrades identically. See the `!joint_parents.contains_key(p)` arm
+        // in snapshot.rs.
+        assert!(
+            !eval_builtin("snapshot", &[m3, Value::List(vec![])]).is_undef(),
+            "a recorded, non-rejected closure must still produce a snapshot — FK must root \
+             an unregistered closing parent at the identity, exactly as chain_transform does"
         );
     }
 

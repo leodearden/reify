@@ -829,13 +829,40 @@ fn walk_fk(
         // body's `pose` offsets from — `T(body.parent)` for a parent-conflict
         // closing body, `T(at)` for every other body.
         let base_world = match &closing_parent {
-            // Defence-in-depth: `joint_world_transform` starts with
-            // `joint_parents.get(joint)?`, so passing the world sentinel as
-            // the JOINT would return None. Since task 7186 step-10 the builder
-            // rejects a world-parented closing edge outright
-            // (`error = "world_parented_closure"`), so this arm is unreachable
-            // from `body()`; it survives for hand-built mechanism Maps.
-            Some(p) if is_world(p) => eval_builtin("transform3_identity", &[]),
+            // Root at the identity whenever `joint_parents` has no ancestor
+            // recorded for the parent — which covers TWO shapes:
+            //
+            //   1. the world sentinel, which is never a key in `joint_parents`
+            //      (since task 7186 step-10 the builder rejects a
+            //      world-parented closing edge outright with
+            //      `error = "world_parented_closure"`, so this shape is
+            //      unreachable from `body()` and survives only for hand-built
+            //      mechanism Maps); and
+            //   2. a REAL joint that was never registered as anyone's `at`.
+            //      `body()` validates only that `parent` IS a joint value
+            //      (mechanism.rs), not that it is registered, so
+            //      `body(m, "C", j2, j3)` with `j3` unused as an `at` builds
+            //      cleanly — see `non_world_parented_closing_edge_still_records`.
+            //
+            // Both must degrade the same way, because that is what the RESIDUAL
+            // side already does: `append_body` composes
+            // `path_b = [world] ++ walk_to_world(joint_parents, parent)`, and
+            // `walk_to_world` yields just `[parent]` for an unregistered
+            // parent, so `chain_transform` (loop_closure.rs) accumulates
+            // chain_b from the identity — i.e. it roots an unregistered parent
+            // at world. Calling `joint_world_transform` here instead would hit
+            // its leading `joint_parents.get(joint)?`, return None, and turn
+            // the WHOLE mechanism's snapshot into `Value::Undef` — the same
+            // silent whole-mechanism failure class the step-10
+            // `world_parented_closure` guard exists to eliminate, and a
+            // regression against pre-7186 behaviour, where the walk always
+            // started at `at` (always registered). Measured before this arm
+            // was widened: the shape above produced `snapshot(m, []) ==
+            // Undef`, while registering `j3` as an `at` first made the same
+            // snapshot non-Undef.
+            Some(p) if is_world(p) || !joint_parents.contains_key(p) => {
+                eval_builtin("transform3_identity", &[])
+            }
             // `body.parent` is a real joint with its own spanning-tree entry,
             // so this is a normal cached walk — no new recursion hazard, and
             // the shared `cache` stays valid because it is keyed on joints,
