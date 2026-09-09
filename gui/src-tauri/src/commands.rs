@@ -470,9 +470,14 @@ pub fn reload_for_watch_impl(
 /// hand-copied `match`es have nothing structural stopping one from gaining a
 /// format the other lacks.
 ///
-/// NOTE: `mcp_context.rs`'s `TauriToolContext::export` carries a THIRD copy.
-/// It is deliberately left alone — that is the orphaned reify-mcp surface
-/// whose re-homing is η's Phase 3, not δ's.
+/// `mcp_context.rs`'s `TauriToolContext::export` calls this too, so all three
+/// export surfaces read ONE map. Re-homing that context is η's Phase 3, but
+/// the format map is not waiting on it: leaving a third hand-copied `match`
+/// there is exactly the drift this extraction exists to prevent.
+///
+/// The `Err` text is the message every caller surfaces verbatim —
+/// `TauriToolContext::export` wraps it in `ToolError::InvalidParams`
+/// unchanged.
 pub fn parse_export_format(format: &str) -> Result<reify_ir::ExportFormat, String> {
     match format {
         "step" | "stp" => Ok(reify_ir::ExportFormat::Step),

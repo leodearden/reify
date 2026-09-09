@@ -318,7 +318,7 @@ A new frontend-mediated tool requires three coordinated changes:
 
 4. **Engine-side WRITE tools take a different, wider path** (task 5097).
    A tool that MUTATES engine or document state has no `buildHandlers()`
-   entry at all — it resolves in Rust — but it must touch four surfaces,
+   entry at all — it resolves in Rust — but it must touch five surfaces,
    all in the same commit or the tree is red:
    - the `ToolDef` in `tool_defs()` (literal `ToolDef { name: "..." }` form
      is mandatory: `gui/src/__tests__/toolDefNames.ts` parses the source

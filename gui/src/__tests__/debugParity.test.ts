@@ -112,12 +112,14 @@ const PURE_ENGINE_SIDE = [
   // which went stale when the apply_gui_state push landed.)
   'set_fea_case',
   // Task 5097 δ: the five reify-mcp AI write tools.  Same asymmetry as
-  // set_fea_case — each has a named Rust dispatch_tool arm, and the frontend
-  // pushes the mutating ones make use the DIFFERENT command names
-  // 'apply_gui_state' (reify_set_parameter, reify_update_source) and
-  // 'open_file' (reify_open_file, which shares the open_file funnel outright);
-  // reify_save_file and reify_export are pure I/O and push nothing at all.  So
-  // no handler keyed by any of these five names exists or should.
+  // set_fea_case — each has a named Rust dispatch_tool arm, and every one of
+  // them pushes under a DIFFERENT command name than its own: 'open_file' for
+  // reify_open_file (which shares the open_file funnel outright), and
+  // 'apply_gui_state' for the other four.  That includes reify_save_file and
+  // reify_export: they commit no new engine state, but they still push their
+  // rebuilt GuiState, because the seam's build_gui_state() rebuild is what
+  // refreshed the baseline and must therefore reach the frontend too.  So no
+  // handler keyed by any of these five names exists or should.
   'reify_set_parameter',
   'reify_update_source',
   'reify_open_file',
