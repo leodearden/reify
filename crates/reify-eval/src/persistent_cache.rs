@@ -746,20 +746,34 @@ impl PersistentlyCacheable for BucklingResultCache {
 /// `#[non_exhaustive]` and carries no serde impls, and this cache must own its
 /// wire format independently of that type's evolution.
 ///
-/// # Carried fields, and the two deliberate omissions
+/// # Carried fields — all of them
 ///
-/// `severity`, `message` and `code` are carried. `code` is the whole point —
-/// downstream consumers (LSP, `--json` output) and this cache's acceptance
-/// tests key off `DiagnosticCode`, not message substrings. This is precisely
-/// where the sibling mirror `DiagnosticOnDisk` in
-/// `crates/reify-shell-extract/src/result.rs:407` is insufficient: it
-/// deliberately drops `code`, so it cannot be reused as-is.
+/// All five of `Diagnostic`'s fields are carried: `severity`, `message`,
+/// `code`, `labels` and `candidates`. A warm serve replays exactly the
+/// diagnostic a cold serve emitted, never a degraded one.
 ///
-/// `labels` and `candidates` are NOT carried. Solver-trampoline diagnostics
-/// build with `Diagnostic::warning(..).with_code(..)` and no span, so both are
-/// always empty on the persisted path; carrying them would require serde on
-/// `DiagnosticLabel` / `SourceSpan`, which have none. The loss is pinned by
-/// `with_diagnostics_round_trip_drops_labels_and_candidates`.
+/// `code` is the field the sibling mirror `DiagnosticOnDisk` in
+/// `crates/reify-shell-extract/src/result.rs:407` deliberately drops, which is
+/// why that mirror cannot be reused as-is: downstream consumers (LSP, `--json`
+/// output) and this cache's acceptance tests key off `DiagnosticCode`, not
+/// message substrings.
+///
+/// `labels` and `candidates` are carried too. An earlier version of this mirror
+/// dropped them on the premise that solver-trampoline diagnostics build with
+/// `Diagnostic::warning(..).with_code(..)` and no span — which is false:
+/// `crates/reify-eval/src/compute_targets/elastic_static.rs:673-675` computes
+/// `first_instance_source_span(&value_inputs[5])` and pushes a span-carrying
+/// `FeaUnderConstrained` warning, which `fea_diagnostic_to_core`
+/// (`compute_targets/fea_diagnostics.rs:55-57`) decorates with a
+/// `DiagnosticLabel`. `candidates` has no producer on the persisted path today,
+/// and is carried anyway: leaving an audit-dependent premise in the wire format
+/// is the exact class of error that mistake was.
+///
+/// `Diagnostic` is `#[non_exhaustive]`, so "all of them" is a claim about
+/// today's five fields — a sixth added upstream would silently take its builder
+/// default here. This doc plus
+/// `with_diagnostics_round_trip_preserves_labels_and_candidates` are the
+/// tripwire.
 ///
 /// `severity` is an explicit `u8` discriminant (not `Severity`'s serde derive)
 /// so a corrupt byte is rejected loudly by [`severity_from_u8`] instead of
@@ -783,6 +797,17 @@ impl PersistentlyCacheable for BucklingResultCache {
 /// removal degrades to `None` rather than to a wrong variant. Pinned by
 /// `persisted_diagnostic_code_is_encoded_by_name_not_variant_index` and
 /// `unrecognised_code_name_decodes_to_none`.
+/// On-disk wire mirror of [`reify_core::DiagnosticLabel`].
+///
+/// Carries `SourceSpan` structurally (it is a plain `{ start: u32, end: u32 }`)
+/// so neither `DiagnosticLabel` nor `SourceSpan` needs a serde impl.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+struct PersistedLabel {
+    start: u32,
+    end: u32,
+    message: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct PersistedDiagnostic {
     /// 0 = `Severity::Info`, 1 = `Severity::Warning`, 2 = `Severity::Error`.
@@ -793,6 +818,8 @@ struct PersistedDiagnostic {
     /// index. `None` covers both "uncoded" and "a name this build no longer
     /// knows" — see the type docs.
     code: Option<String>,
+    labels: Vec<PersistedLabel>,
+    candidates: Vec<String>,
 }
 
 /// Encode a [`reify_core::Severity`] as its on-disk `u8` discriminant.
@@ -860,6 +887,16 @@ fn diagnostic_to_persisted(d: &reify_core::Diagnostic) -> PersistedDiagnostic {
         severity: severity_to_u8(d.severity),
         message: d.message.clone(),
         code: d.code.and_then(code_to_wire_name),
+        labels: d
+            .labels
+            .iter()
+            .map(|l| PersistedLabel {
+                start: l.span.start,
+                end: l.span.end,
+                message: l.message.clone(),
+            })
+            .collect(),
+        candidates: d.candidates.clone(),
     }
 }
 
@@ -876,6 +913,15 @@ fn diagnostic_from_persisted(p: &PersistedDiagnostic) -> io::Result<reify_core::
     };
     if let Some(code) = p.code.as_deref().and_then(code_from_wire_name) {
         out = out.with_code(code);
+    }
+    for l in &p.labels {
+        out = out.with_label(reify_core::DiagnosticLabel::new(
+            reify_core::SourceSpan::new(l.start, l.end),
+            l.message.clone(),
+        ));
+    }
+    if !p.candidates.is_empty() {
+        out = out.with_candidates(p.candidates.clone());
     }
     Ok(out)
 }
@@ -899,8 +945,8 @@ fn encode_diagnostics_block(diagnostics: &[reify_core::Diagnostic]) -> Vec<u8> {
     let mirror: Vec<PersistedDiagnostic> =
         diagnostics.iter().map(diagnostic_to_persisted).collect();
     bincode::serialize(&mirror).expect(
-        "PersistedDiagnostic is a plain owned record (u8 + String + Option<String>); \
-         bincode::serialize into a Vec cannot fail.",
+        "PersistedDiagnostic is a plain owned record (u8 + Strings + Vecs of \
+         owned records); bincode::serialize into a Vec cannot fail.",
     )
 }
 
@@ -944,7 +990,7 @@ fn encode_diagnostics_block(diagnostics: &[reify_core::Diagnostic]) -> Vec<u8> {
 #[derive(Debug, Clone)]
 pub struct WithDiagnostics<V> {
     /// Diagnostics emitted by the solve that produced `value`, replayed
-    /// verbatim on a warm serve. Lossy in exactly two documented ways — see
+    /// verbatim on a warm serve — every field of every diagnostic, see
     /// [`PersistedDiagnostic`].
     pub diagnostics: Vec<reify_core::Diagnostic>,
     /// The persisted result payload.
@@ -5486,6 +5532,8 @@ version = "9.9.9"
             severity: 7,
             message: "corrupt".to_string(),
             code: None,
+            labels: Vec::new(),
+            candidates: Vec::new(),
         };
         let err = diagnostic_from_persisted(&corrupt)
             .expect_err("an unknown severity discriminant must not decode");
@@ -5546,6 +5594,8 @@ version = "9.9.9"
             severity: 1,
             message: "written by a newer engine".to_string(),
             code: Some("NoSuchCodeFromTheFuture".to_string()),
+            labels: Vec::new(),
+            candidates: Vec::new(),
         };
         let restored = diagnostic_from_persisted(&from_the_future)
             .expect("an unknown code name must degrade, never fail the decode");
