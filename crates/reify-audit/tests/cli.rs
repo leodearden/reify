@@ -246,6 +246,62 @@ mod cli {
         }
     }
 
+    /// `--print-repo-id` must print exactly the same identity
+    /// `reify_audit::jcodemunch_index::resolve_repo_id` derives in-process —
+    /// this is the single derivation task #6459 collapses onto, replacing
+    /// `scripts/jcodemunch-index-reify.sh`'s independent bash re-derivation.
+    /// Exercised against a real tempdir (not a nonexistent path) so the CLI
+    /// path is proven end to end, including its own `Path::new` + stdout
+    /// round trip, not just the pure derivation function in isolation.
+    #[test]
+    fn print_repo_id_matches_resolve_repo_id_derivation() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let project_root = tmp.path();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(project_root)
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--print-repo-id must exit 0; got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let expected = reify_audit::jcodemunch_index::resolve_repo_id(project_root);
+        assert_eq!(
+            printed, expected,
+            "--print-repo-id must print exactly what resolve_repo_id derives"
+        );
+    }
+
+    /// `--jcodemunch-repo` overrides the derived identity for
+    /// `--print-repo-id` too — the same override precedence `main` applies
+    /// when constructing the real jcodemunch seam.
+    #[test]
+    fn print_repo_id_honours_jcodemunch_repo_override() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(tmp.path())
+            .args(["--jcodemunch-repo", "leodearden/reify"])
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(out.status.code(), Some(0));
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(printed, "leodearden/reify");
+    }
+
     /// `--task <id> --pre-done` on a done/merged task with an empty `events`
     /// table should produce a P5PhantomDone High finding and exit non-zero.
     #[test]

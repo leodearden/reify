@@ -92,6 +92,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: derived per-path, e.g. local/<basename>-<sha1[..8]>)");
     let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR, else $CODE_INDEX_PATH, else $HOME/.code-index)");
     let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
+    let _ = writeln!(out, "  --print-repo-id          Print the derived (or --jcodemunch-repo-overridden) jcodemunch");
+    let _ = writeln!(out, "                           repo id for --project-root, then exit (no task/git/runs-db work)");
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
@@ -265,6 +267,17 @@ struct Args {
     /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
     /// hermetic test behaviour and provides an offline escape hatch.
     no_jcodemunch: bool,
+    /// `--print-repo-id`: print the derived (or `--jcodemunch-repo`-overridden)
+    /// jcodemunch repo identity for `--project-root` to stdout and exit,
+    /// touching none of the task/runs-db/git machinery below.
+    ///
+    /// This is the ONE identity derivation task #6459 collapses onto:
+    /// `scripts/jcodemunch-index-reify.sh` shells out to this mode instead of
+    /// re-implementing §4.2's `~`-expand/absolutize/readlink-f/sha1 pipeline a
+    /// second time in bash, so the two languages cannot independently drift
+    /// the way they did before `resolve_repo_id` was made to reproduce the
+    /// script's exact normalization.
+    print_repo_id: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -312,6 +325,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
         });
     let mut no_jcodemunch = false;
+    let mut print_repo_id = false;
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
@@ -420,6 +434,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--no-jcodemunch" => {
                 no_jcodemunch = true;
             }
+            "--print-repo-id" => {
+                print_repo_id = true;
+            }
             other => {
                 return Err(format!("unknown flag '{}'", other));
             }
@@ -440,6 +457,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         jcodemunch_repo,
         jcodemunch_index_dir,
         no_jcodemunch,
+        print_repo_id,
     })
 }
 
@@ -643,6 +661,22 @@ fn main() -> ExitCode {
             return ExitCode::from(ERROR_EXIT);
         }
     };
+
+    // --print-repo-id: a standalone info mode, like --help/--version. It
+    // needs only --project-root (and an optional --jcodemunch-repo override),
+    // so it returns before any task loading, runs.db open, or git op — none
+    // of which this mode touches. This is the single derivation
+    // `scripts/jcodemunch-index-reify.sh` now shells out to instead of
+    // re-deriving jcodemunch's repo-identity formula a second time in bash
+    // (task #6459) — see `Args::print_repo_id`.
+    if args.print_repo_id {
+        let repo_id = args
+            .jcodemunch_repo
+            .clone()
+            .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)));
+        println!("{repo_id}");
+        return ExitCode::SUCCESS;
+    }
 
     // --pre-done requires --task.
     if args.pre_done && args.task_id.is_none() {
@@ -1084,6 +1118,7 @@ mod tests {
             jcodemunch_repo: None,
             jcodemunch_index_dir: String::new(),
             no_jcodemunch: false,
+            print_repo_id: false,
         }
     }
 
@@ -1790,6 +1825,36 @@ mod tests {
             !jcodemunch_only_run_set(&make_args(false, Some("PDCHECK"))),
             "a PDCHECK-only run must not reach jcodemunch_only_run_set's \
              stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // --print-repo-id (task #6459)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_print_repo_id() {
+        let args = parse_args(&["--print-repo-id".to_string()])
+            .unwrap_or_else(|e| panic!("--print-repo-id must parse successfully; got: {e}"));
+        assert!(args.print_repo_id);
+    }
+
+    #[test]
+    fn parse_args_empty_defaults_print_repo_id_false() {
+        let args = parse_args(&[]).unwrap_or_else(|e| panic!("empty argv must parse: {e}"));
+        assert!(!args.print_repo_id, "--print-repo-id must default to off");
+    }
+
+    /// An accepted-but-undiscoverable flag is a usability bug — same
+    /// discoverability guard as `usage_text_lists_jcodemunch_index_dir`.
+    #[test]
+    fn usage_text_lists_print_repo_id() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("--print-repo-id"),
+            "--help must list --print-repo-id; got:\n{usage}"
         );
     }
 }

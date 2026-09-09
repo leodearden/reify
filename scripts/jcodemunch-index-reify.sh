@@ -127,6 +127,20 @@ die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }
 # the path string, and keeping it so is what lets the whole contract be tested
 # against throwaway paths. Existence is checked later, only where it matters —
 # immediately before the indexer actually runs.
+#
+# ONE DERIVATION, NOT TWO (task #6459). This formula used to be reimplemented
+# a second time in Rust (`crates/reify-audit/src/jcodemunch_index.rs::
+# resolve_repo_id`), which GATES on the index this script WRITES — a
+# divergence between the two would make the gate probe an identity the
+# indexer never wrote, refusing E_JC_INDEX_EMPTY against a phantom. Below,
+# `resolve_repo_id` shells out to `reify-audit --print-repo-id` (the single
+# Rust implementation) whenever that binary is built, and only falls back to
+# the inline bash pipeline in this function when it is not — this script must
+# stay usable on a cold checkout, before anything has ever been built. The
+# fallback is kept honest by `resolve_repo_id_agrees_with_the_indexer_scripts_
+# readlink_f_semantics` in jcodemunch_index.rs's own test suite, which
+# recomputes this exact bash pipeline (`~`-expand then `readlink -f`) via the
+# real coreutils and asserts the Rust derivation matches it.
 sha1_hex() {
     if command -v sha1sum >/dev/null 2>&1; then
         printf '%s' "$1" | sha1sum | cut -d' ' -f1
@@ -147,8 +161,38 @@ esac
 PROJECT_ROOT="$(readlink -f -- "$PROJECT_ROOT")" \
     || die "could not resolve --project-root to an absolute path"
 
-REPO_NAME="$(basename -- "$PROJECT_ROOT")-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
-REPO_ID="local/$REPO_NAME"
+# Locate a built reify-audit binary relative to the checkout THIS SCRIPT lives
+# in (not $PROJECT_ROOT — the two can differ entirely, e.g. an operator
+# pointing --project-root at some other tree). REIFY_AUDIT_BIN is a test-only
+# override seam, matching the REIFY_JC_INDEXER_CMD convention above.
+REIFY_AUDIT_BIN="${REIFY_AUDIT_BIN:-}"
+if [ -z "$REIFY_AUDIT_BIN" ]; then
+    _jc_own_repo_root="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$_jc_own_repo_root" ]; then
+        if [ -x "$_jc_own_repo_root/target/release/reify-audit" ]; then
+            REIFY_AUDIT_BIN="$_jc_own_repo_root/target/release/reify-audit"
+        elif [ -x "$_jc_own_repo_root/target/debug/reify-audit" ]; then
+            REIFY_AUDIT_BIN="$_jc_own_repo_root/target/debug/reify-audit"
+        fi
+    fi
+fi
+
+REPO_ID=""
+if [ -n "$REIFY_AUDIT_BIN" ]; then
+    REPO_ID="$("$REIFY_AUDIT_BIN" --print-repo-id --project-root "$PROJECT_ROOT" 2>/dev/null)" || REPO_ID=""
+fi
+if [ -z "$REPO_ID" ]; then
+    # Cold checkout (or a REIFY_AUDIT_BIN that failed to run): the one
+    # remaining bash copy of the derivation, held honest by the readlink-f
+    # agreement test named above.
+    REPO_ID="local/$(basename -- "$PROJECT_ROOT")-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
+fi
+case "$REPO_ID" in
+    local/?*) ;;
+    *) die "resolved a malformed jcodemunch repo id '$REPO_ID' (expected local/<name>) from ${REIFY_AUDIT_BIN:-the bash fallback}" ;;
+esac
+
+REPO_NAME="${REPO_ID#local/}"
 CODE_INDEX_DIR="${CODE_INDEX_PATH:-$HOME/.code-index}"
 DB_PATH="$CODE_INDEX_DIR/local-$REPO_NAME.db"
 
