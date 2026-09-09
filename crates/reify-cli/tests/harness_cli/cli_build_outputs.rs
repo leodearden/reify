@@ -16,11 +16,6 @@
 //!   against the `.ri` file's directory, NOT the process cwd.
 //! - **B10** — back-compat: `-o` present keeps the imperative single-output
 //!   path byte-for-byte (the declarative driver does NOT fire).
-//!
-//! RED until step-16 wires the no-`-o` declarative mode into `cmd_build`: today
-//! `reify build f.ri` without `-o` exits non-zero with a usage error, so
-//! B5/B6/B7 fail. B10 (the `-o` imperative path) is a pure regression guard and
-//! is green before and after.
 
 use crate::common;
 
@@ -157,8 +152,7 @@ fn build_no_output_flag_emits_all_occurrences() {
 /// B10 (back-compat regression guard): `-o` present keeps the imperative
 /// single-output path. `reify build <temp>/foo.ri -o <temp>/x.stl` writes the
 /// `-o` target and does NOT run the declarative driver — so the occurrence's own
-/// path ("o.stl") is never emitted. This test is green both before and after
-/// step-16.
+/// path ("o.stl") is never emitted.
 #[test]
 fn build_with_output_flag_keeps_imperative_path() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
