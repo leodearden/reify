@@ -543,7 +543,7 @@ _bash_snap_root() {
     sed -n 's/^OCCT_SNAP_ROOT="${OCCT_SNAP_ROOT:-\(.*\)}"$/\1/p' "$GUARD" | head -1
 }
 
-# _bash_snap_map — `<sentinel> <subdir>` pairs from occt_find_dir's
+# _bash_snap_map — `<sentinel> <subdir>` pairs from dep_find_dir's
 # `case "$sentinel"`, one per line, in arm order.
 _bash_snap_map() {
     awk '
@@ -1033,7 +1033,7 @@ assert "bash parse of OCCT_SNAP_ROOT's default is non-empty (defaulted assignmen
     test -n "$_BASH_SNAP_ROOT"
 assert "Rust parse of the snap sentinel -> subdir map is non-empty" \
     test -n "$_RUST_SNAP_MAP"
-assert "bash parse of the snap sentinel -> subdir case is non-empty (occt_find_dir's case found)" \
+assert "bash parse of the snap sentinel -> subdir case is non-empty (dep_find_dir's case found)" \
     test -n "$_BASH_SNAP_MAP"
 
 assert "OCCT_SNAP_ROOT's default ('$_BASH_SNAP_ROOT') equals find_dir_with_override's read_dir literal ('$_RUST_SNAP_ROOT')" \
@@ -1077,8 +1077,17 @@ assert "guard exits 0 for an accepted SONAME ('$_ACCEPTED_FIRST', Debian two-hop
 # guard's [ok] line (or regressing it to name the wrong dir) leaves the whole
 # suite passing. That is the same "a passing suite and a deleted suite are
 # indistinguishable from outside" failure this task exists to close.
+#
+# The needle carries the trailing " at " so this arm's FIRST-LEVEL-only rule is
+# pinned HERE and not merely transitively. The fixture is a Debian two-hop
+# chain whose leaf is `libTKernel.so.<accepted>.1`, so a `readlink -f`
+# regression in dep_soname_ver would record "OCCT <accepted>.1 at " — and
+# "OCCT <accepted>" alone is a PREFIX of that and would pass either way.
+# Section 11's OpenVDB needle carries the separator for the identical reason;
+# without it here, that one assert would be the only thing covering the shared
+# helper's rule, which evaporates the moment anyone re-splits it per dep.
 assert "guard RECORDS the resolved OCCT version and both resolved dirs on the green path" \
-    _guard_output_names "$_SON_OK" "$_SON_INC" "OCCT $_ACCEPTED_FIRST" "$_SON_OK" "$_SON_INC"
+    _guard_output_names "$_SON_OK" "$_SON_INC" "OCCT $_ACCEPTED_FIRST at " "$_SON_OK" "$_SON_INC"
 
 # 8 — patch-shaped: the dev symlink points one hop further on a functionally
 # identical OCCT. Exact-matching the verbatim segment would make this a red

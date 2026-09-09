@@ -188,7 +188,7 @@ fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBu
 /// the same environment, fell through to the candidate list and went green
 /// describing a resolution this function would not perform. Both halves of
 /// that mirror now agree; the bash half is the `[ -n "$override" ]` test in
-/// that script's `occt_find_dir`.
+/// that script's `dep_find_dir`.
 fn find_dir_with_override(
     override_dir: Option<&str>,
     candidates: &[&str],
@@ -426,7 +426,7 @@ mod tests {
 
     /// An exported-but-EMPTY override counts as unset here, matching the
     /// `[ -n "$override" ]` half of the mirror in
-    /// `scripts/check-manifold-deps.sh`'s `occt_find_dir`. Without the filter
+    /// `scripts/check-manifold-deps.sh`'s `dep_find_dir`. Without the filter
     /// this resolved to the empty path and set `has_occt` while the preflight,
     /// reading the same environment, went green — exactly the guard/build
     /// disagreement that arm exists to prevent.

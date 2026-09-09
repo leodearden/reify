@@ -55,10 +55,11 @@ set -euo pipefail
 
 err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
-# stdout, not stderr: this is the RECORDING half of the OCCT arm — it puts the
-# resolved version in the verify log so a reviewer reading a green
-# reify-kernel-occt result can see WHICH OCCT produced it. add_tool() only
-# executes plan entries, so nothing parses this script's stdout.
+# stdout, not stderr: this is the RECORDING half of EVERY presence arm (OCCT,
+# Gmsh, OpenVDB) — it puts the resolved version and dirs in the verify log so a
+# reviewer reading a green reify-kernel-<dep> result can see WHICH install
+# produced it. add_tool() only executes plan entries, so nothing parses this
+# script's stdout.
 ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
