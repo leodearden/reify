@@ -91,10 +91,9 @@ fn eval_and_extract_cache_keys(source: &str) -> (ContentHash, ContentHash) {
 /// edit — `height` occupies BOTH the `width` and the `height` slot of
 /// `solve_elastic_static`, i.e. a square cross-section written the way an
 /// author naturally writes one. It is the reduced form of the dogfood repro in
-/// `prj/printer_v01/printer.ri:1962`
-/// (`solve_elastic_static(material_static, half_span, h_eq, h_eq2, ...)`),
-/// which had to introduce a `let h_eq2 = h_eq * 1.0` alias solely to dodge the
-/// duplicate-`ValueCellId` abort this file now pins against.
+/// `prj/printer_v01/printer.ri`'s `GantryFea`, which had to introduce a
+/// `let h_eq2 = h_eq * 1.0` alias solely to dodge the duplicate-`ValueCellId`
+/// abort this file now pins against.
 const DUP_CELL_SRC: &str = r#"
 structure FeaDupCellSmoke {
     // 1 m long beam with a 100 mm SQUARE cross-section — one `height` cell
@@ -249,12 +248,10 @@ fn cache_key_changes_when_load_changes() {
 
 // ── Assertion 5: the lowering emits a duplicate-free dependency SET ───────────
 
-/// Task #6661. Passing ONE value cell to TWO parameters of a single `@optimized`
-/// call is a legal authoring shape (square cross-section, symmetric span). The
-/// `@optimized` lowering must therefore emit `value_inputs` as a genuine
-/// dependency SET, mirroring what its sibling
-/// `Engine::build_compute_realization_inputs` has always done for
-/// `realization_inputs`.
+/// Task #6661, end to end: the `@optimized` lowering must emit `value_inputs`
+/// as a genuine dependency SET even when one value cell reaches two parameters
+/// of one call. Rationale: `compute_cache_key`'s §"Missing-input and
+/// duplicate-input policy".
 ///
 /// Two independent guarantees are asserted here:
 ///
@@ -292,14 +289,11 @@ fn duplicate_value_cell_arg_lowers_to_a_duplicate_free_value_inputs_set() {
 /// duplicates in the value bucket must not cost the stored key its ability to
 /// tell `f(.., width, height, ..)` from `f(.., height, width, ..)`.
 ///
-/// The signal deliberately does NOT come from the value bucket, which
-/// `compute_cache_key_is_invariant_under_value_input_reordering` pins as
-/// order-blind BY DESIGN (both variants below yield the identical
-/// `{length, width, height}` set). It comes from `Engine::persistent_cache_key`,
-/// which folds `combine_all` over the ORDERED evaluated `arg_values`; because
-/// `ContentHash::combine` is order-dependent, swapping two differently-valued
-/// args changes the stored key. A future refactor that drops that fold — or that
-/// "restores" multiplicity to the value bucket to recover position — fails here.
+/// The signal deliberately does NOT come from the value bucket (both variants
+/// below yield the identical `{length, width, height}` set); it comes from
+/// `Engine::persistent_cache_key`'s fold over the ORDERED evaluated
+/// `arg_values`. A future refactor that drops that fold — or that "restores"
+/// multiplicity to the value bucket to recover position — fails here.
 #[test]
 fn stored_cache_key_still_distinguishes_argument_position() {
     // Make width and height DIFFER, so swapping them is observable at all.

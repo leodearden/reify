@@ -91,25 +91,25 @@ use reify_core::ContentHash;
 ///
 /// Collapsing is sound because `value_inputs` is semantically a dependency
 /// **set**: every one of its consumers is set-like — this function's
-/// order-invariant sort, `deps.rs:234`'s `HashSet`-backed reverse-edge index,
-/// and `demand.rs:173`'s `contains`-gated BFS.  It also makes the key
-/// idempotent under a producer-side dedupe, so the value is identical whether
-/// or not a given lowering site deduped first (`build_compute_value_inputs`
-/// in engine_eval.rs does).
+/// order-invariant sort, `DepIndex::add`'s `HashSet`-backed reverse-edge index
+/// (`deps.rs`), and `DemandSet::rebuild_cone`'s `contains`-gated BFS
+/// (`demand.rs`).  It also makes the key idempotent under a producer-side
+/// dedupe, so the value is identical whether or not a given lowering site
+/// deduped first (`build_compute_value_inputs` in `engine_eval.rs` does).
 ///
 /// No arity/position signal is lost, and a future reader must not "restore"
 /// multiplicity here to recover it: this bucket has been position-blind since
 /// 3503 (see `compute_cache_key_is_invariant_under_value_input_reordering`),
 /// and the ordered signal lives in `Engine::persistent_cache_key`
-/// (engine_eval.rs:9575-9583), which folds `combine_all` over the ORDERED
-/// full `arg_values` list and is what both production `@optimized` dispatch
-/// sites actually store in `node.cache_key`.  `ContentHash::combine` is
+/// (`engine_eval.rs`), which folds `combine_all` over the ORDERED full
+/// `arg_values` list and is what both production `@optimized` dispatch sites
+/// actually store in `node.cache_key`.  `ContentHash::combine` is
 /// order-dependent, so `f(a, b)`, `f(b, a)`, `f(a, a)` and `f(a)` all keep
 /// distinct at-rest keys.
 ///
 /// **`realization_inputs` duplicates remain a producer bug** and keep their
 /// `debug_assert!`.  Their sole producer, `Engine::build_compute_realization_inputs`
-/// (engine_compute.rs:793-823), already dedupes with a first-occurrence
+/// (`engine_compute.rs`), already dedupes with a first-occurrence
 /// `seen: HashSet` guard, so a duplicate there really would signal a broken
 /// producer rather than a legal authoring shape.  That asymmetry is the
 /// diagnosis of #6661: the value side never got the guard the realization
@@ -129,10 +129,8 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
     let value_bucket_hash: ContentHash = {
         let mut sorted_refs: Vec<&reify_core::ValueCellId> = node.value_inputs.iter().collect();
         sorted_refs.sort(); // ValueCellId derives Ord via (entity, member)
-        // Canonically collapse duplicates: `Vec::dedup` drops CONSECUTIVE
-        // repeats, which after the sort means all of them.  A duplicate here is
-        // a legal authoring shape (one cell passed to two params of one
-        // @optimized call), not a producer bug — see the docstring's
+        // `Vec::dedup` drops only CONSECUTIVE repeats, so the sort above is
+        // what makes this total.  Why value_inputs is a SET: see the docstring's
         // §"Missing-input and duplicate-input policy" (task #6661).
         sorted_refs.dedup();
         let hashes: Vec<ContentHash> = sorted_refs
@@ -198,7 +196,7 @@ mod tests {
 
     use reify_compiler::ValueCellKind;
     use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type, ValueCellId};
-    use reify_ir::ReprKind;
+    use reify_ir::{CompiledExpr, ReprKind};
 
     use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
 
@@ -374,49 +372,15 @@ mod tests {
         );
     }
 
-    /// Passing ONE value cell to TWO parameters of a single `@optimized` call is
-    /// a legal authoring shape, not a producer bug: a square cross-section
-    /// (`solve_elastic_static(material, span, h, h, ...)`), a symmetric span, or
-    /// any two dimensions the author deliberately ties together all lower to a
-    /// `value_inputs` vec carrying the same `ValueCellId` twice.  Task #6661: the
-    /// `debug_assert!` this pins against aborted the whole `reify eval` process
-    /// on exactly that shape, and forced the `prj/printer_v01/printer.ri`
-    /// dogfood design to carry a `let h_eq2 = h_eq * 1.0` workaround.
+    /// Task #6661: reaching the assertion at all proves `compute_cache_key` is
+    /// TOTAL on a duplicated `value_input` — the `debug_assert!` this replaces
+    /// aborted the whole `reify eval` process on it, forcing a
+    /// `let h_eq2 = h_eq * 1.0` workaround into `prj/printer_v01/printer.ri`.
+    /// And duplicates canonically COLLAPSE: `[a, a]` and `[a]` yield one key.
     ///
-    /// `compute_cache_key` must therefore be TOTAL on duplicates: no panic, and
-    /// deterministic across repeated calls on the same node.
-    #[test]
-    fn compute_cache_key_tolerates_duplicate_value_inputs() {
-        let a = ValueCellId::new("Bracket", "h");
-
-        let mut graph = EvaluationGraph::default();
-        insert_value_cell(&mut graph, a.clone(), ContentHash::of_str("hash_h"));
-
-        let mut node = make_empty_node();
-        node.value_inputs = vec![a.clone(), a.clone()];
-
-        let key1 = compute_cache_key(&node, &graph);
-        let key2 = compute_cache_key(&node, &graph);
-        assert_eq!(
-            key1, key2,
-            "compute_cache_key must be deterministic on a duplicated value_input — \
-             one cell passed to two params of one @optimized call is a legal shape (#6661)"
-        );
-    }
-
-    /// Duplicates are canonically COLLAPSED: `[a, a]` and `[a]` produce the same
-    /// key, because `ComputeNodeData::value_inputs` is semantically a dependency
-    /// SET — every one of its consumers is set-like (this function's
-    /// order-invariant sort, `deps.rs`'s `HashSet`-backed reverse index, and
-    /// `demand.rs`'s `contains`-gated BFS).
-    ///
-    /// The arity/position signal is NOT lost, and a future reader must not
-    /// "restore" multiplicity here to recover it: `Engine::persistent_cache_key`
-    /// (engine_eval.rs:9575-9583) folds `combine_all` over the ORDERED full
-    /// `arg_values` list, and THAT — not the bare `compute_cache_key` — is what
-    /// both production `@optimized` dispatch sites store in `node.cache_key`.
-    /// `ContentHash::combine` is order-dependent, so `f(a, a)` and `f(a)` still
-    /// receive distinct at-rest keys.
+    /// Why that is sound, and where the arity/position signal actually lives
+    /// (so a future reader does not "restore" multiplicity here to recover it):
+    /// `compute_cache_key`'s §"Missing-input and duplicate-input policy".
     #[test]
     fn compute_cache_key_collapses_duplicate_value_inputs() {
         let a = ValueCellId::new("Bracket", "h");
@@ -438,10 +402,8 @@ mod tests {
     }
 
     /// Extends `compute_cache_key_is_invariant_under_value_input_reordering` to
-    /// the duplicated case: with a duplicate present, the key must still be
-    /// invariant under WHERE in the vec the duplicate lands.  Sort-then-dedup
-    /// gives this for free; a positional or multiplicity-preserving scheme would
-    /// not.
+    /// the duplicated case: the key must be invariant under WHERE in the vec the
+    /// duplicate lands.  Sort-then-dedup gives this for free.
     #[test]
     fn compute_cache_key_is_invariant_under_reordering_with_duplicates() {
         let a = ValueCellId::new("Bracket", "a");
@@ -690,6 +652,41 @@ mod tests {
             key_filtered, key_double_counted,
             "retaining the geometry ref in value_inputs (double-counting it alongside \
              realization_inputs) must produce a different cache key"
+        );
+    }
+
+    /// Task #6661, producer half: the wrapper around the classifier tested
+    /// above must emit a duplicate-free dependency SET while leaving that
+    /// exclusion contract intact — a `Type::Geometry` cell and a graph-absent
+    /// ref are DROPPED (never deduped into the list), and a non-`ValueRef` arg
+    /// is skipped without disturbing first-occurrence order.
+    #[test]
+    fn build_compute_value_inputs_emits_a_duplicate_free_excluded_set() {
+        let scale = ValueCellId::new("Bracket", "scale");
+        let body = ValueCellId::new("Bracket", "body");
+        let ghost = ValueCellId::new("Bracket", "ghost");
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, scale.clone(), ContentHash::of_str("scalar_h"));
+        insert_geometry_value_cell(&mut graph, body.clone(), ContentHash::of_str("geom_h"));
+
+        // The square-cross-section shape (one cell in two slots) crossed with
+        // every excluded class, each of them likewise appearing twice.
+        let scalar = Type::dimensionless_scalar();
+        let args = vec![
+            CompiledExpr::value_ref(scale.clone(), scalar.clone()),
+            CompiledExpr::value_ref(body.clone(), Type::Geometry),
+            CompiledExpr::literal(reify_ir::Value::Real(1.0), scalar.clone()),
+            CompiledExpr::value_ref(scale.clone(), scalar.clone()),
+            CompiledExpr::value_ref(body, Type::Geometry),
+            CompiledExpr::value_ref(ghost, scalar),
+        ];
+
+        assert_eq!(
+            crate::engine_eval::build_compute_value_inputs(&graph, &args),
+            vec![scale],
+            "value_inputs must be the duplicate-free set of graph-present, \
+             non-geometry ValueRef args, in first-occurrence order"
         );
     }
 }

@@ -284,28 +284,15 @@ pub(crate) fn compute_value_input_for_ref(
 /// classification is delegated verbatim so the type-based exclusion contract
 /// (graph-absent refs AND `Type::Geometry` cells) lives in exactly one place.
 ///
-/// # Why a set
+/// The `seen: HashSet` guard is the one the realization sibling
+/// [`Engine::build_compute_realization_inputs`](crate::Engine) has always had —
+/// which is exactly why the `realization_inputs` duplicate assert never fired
+/// while the value side, `filter_map`ing without a dedupe at both sites,
+/// aborted `reify eval` on a square cross-section
+/// (`solve_elastic_static(material, span, h, h, ...)`).
 ///
-/// One value cell legitimately reaching TWO parameters of a single call is a
-/// supported authoring shape, not a producer bug: a square cross-section
-/// (`solve_elastic_static(material, span, h, h, ...)`), a symmetric span, or any
-/// two dimensions the author deliberately ties together. Before this helper,
-/// both sites `filter_map`ed without a dedupe, so such a call emitted `h` twice
-/// and `compute_cache_key`'s uniqueness `debug_assert!` aborted the whole
-/// `reify eval` process — which is why the `prj/printer_v01/printer.ri` dogfood
-/// design had to carry a `let h_eq2 = h_eq * 1.0` alias.
-///
-/// `value_inputs` is semantically a dependency set: every consumer is set-like
-/// (`compute_cache_key`'s order-invariant sort, `deps.rs`'s `HashSet`-backed
-/// reverse-edge index, `demand.rs`'s `contains`-gated BFS). This restores the
-/// symmetry with the realization sibling
-/// [`Engine::build_compute_realization_inputs`](crate::Engine), whose identical
-/// first-occurrence `seen: HashSet` guard is exactly why the `realization_inputs`
-/// duplicate assert has never fired.
-///
-/// The multiplicity/position signal is unaffected: it is carried by
-/// `Engine::persistent_cache_key`'s fold over the ORDERED full `arg_values`
-/// list, which is what both sites actually store in `node.cache_key`.
+/// Why `value_inputs` is a SET, and where the multiplicity/position signal IS
+/// carried: `compute_cache_key`'s §"Missing-input and duplicate-input policy".
 pub(crate) fn build_compute_value_inputs(
     graph: &crate::graph::EvaluationGraph,
     args: &[reify_ir::CompiledExpr],
