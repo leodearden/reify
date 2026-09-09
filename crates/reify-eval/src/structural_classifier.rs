@@ -1540,9 +1540,9 @@ mod tests {
 
         assert!(
             stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643: a dimensional-only tick must stay Stage-A eligible even \\
-             though a DERIVED StructureRef(\"ElasticResult\") cell was recomputed \\
-             — PRD line 33 scopes Stage A to LEAF parameters, and a solver-output \\
+            "task 6643: a dimensional-only tick must stay Stage-A eligible even \
+             though a DERIVED StructureRef(\"ElasticResult\") cell was recomputed \
+             — PRD line 33 scopes Stage A to LEAF parameters, and a solver-output \
              cell is derived, not a leaf"
         );
     }
@@ -1567,8 +1567,8 @@ mod tests {
 
         assert!(
             stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643: a derived Bool `let` that is NOT structure_controlling \\
-             must not veto a dimensional tick — it carries no structural signal \\
+            "task 6643: a derived Bool `let` that is NOT structure_controlling \
+             must not veto a dimensional tick — it carries no structural signal \
              of its own, only its upstream leaves' signal"
         );
     }
@@ -1615,8 +1615,8 @@ mod tests {
 
         assert!(
             stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643: a derived Enum `let` must not veto a dimensional tick — \\
-             an authored enum LEAF still does (Rule 4 is unchanged for leaves), \\
+            "task 6643: a derived Enum `let` must not veto a dimensional tick — \
+             an authored enum LEAF still does (Rule 4 is unchanged for leaves), \
              and a topology-driving one is also in structure_controlling"
         );
     }
@@ -1657,8 +1657,8 @@ mod tests {
 
         assert!(
             stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643: a derived List<Geometry> `let` (resolved selector / \\
-             adjacent_faces) must not veto a dimensional tick; the Param-kind \\
+            "task 6643: a derived List<Geometry> `let` (resolved selector / \
+             adjacent_faces) must not veto a dimensional tick; the Param-kind \
              half of that shape and the list-LENGTH question remain #7016's"
         );
     }
@@ -1688,9 +1688,9 @@ mod tests {
 
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643 CRITICAL CONSTRAINT: a structure_controlling cell must \\
-             veto REGARDLESS of kind — a compiler `__guard_N` feature-suppression \\
-             toggle is `Let` + `Bool`, so leaf scoping must evaluate Rule 2 \\
+            "task 6643 CRITICAL CONSTRAINT: a structure_controlling cell must \
+             veto REGARDLESS of kind — a compiler `__guard_N` feature-suppression \
+             toggle is `Let` + `Bool`, so leaf scoping must evaluate Rule 2 \
              BEFORE the kind match, never skip Let cells wholesale"
         );
     }
@@ -1715,8 +1715,8 @@ mod tests {
 
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643 CRITICAL CONSTRAINT: a collection count_cell must veto \\
-             REGARDLESS of kind — `let n = base + extra` is a Let-kind cell that \\
+            "task 6643 CRITICAL CONSTRAINT: a collection count_cell must veto \
+             REGARDLESS of kind — `let n = base + extra` is a Let-kind cell that \
              drives collection elaboration"
         );
     }
@@ -1741,7 +1741,7 @@ mod tests {
 
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643 CRITICAL CONSTRAINT: a keyed-sub count_cell (Rule 3b) must \\
+            "task 6643 CRITICAL CONSTRAINT: a keyed-sub count_cell (Rule 3b) must \
              veto REGARDLESS of kind"
         );
     }
@@ -1762,8 +1762,8 @@ mod tests {
 
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643 CRITICAL CONSTRAINT: an unknown cell (Rule 1) must still \\
-             veto — with no ValueCellNode there is no `kind`, so it cannot be \\
+            "task 6643 CRITICAL CONSTRAINT: an unknown cell (Rule 1) must still \
+             veto — with no ValueCellNode there is no `kind`, so it cannot be \
              shown to be derived"
         );
     }
@@ -1782,7 +1782,7 @@ mod tests {
 
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643: leaf scoping must not widen the LEAF whitelist — an \\
+            "task 6643: leaf scoping must not widen the LEAF whitelist — an \
              authored `param mirrored: Bool` is a leaf, so Rule 4 still applies"
         );
     }
@@ -1810,8 +1810,35 @@ mod tests {
 
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
-            "task 6643: `auto` is a declared LEAF (the solver supplies its value, \\
+            "task 6643: `auto` is a declared LEAF (the solver supplies its value, \
              it is not a derived expression), so Rule 4 must still apply to it"
+        );
+    }
+
+    /// GREEN-LOCK: `classify_cell` is deliberately NOT leaf-scoped. It answers
+    /// "what class is THIS cell, in isolation", so a derived non-whitelisted
+    /// cell still classifies `Structural` here even though the same cell no
+    /// longer vetoes a tick.
+    ///
+    /// Pairs with
+    /// [`stage_a_eligible_dimensional_tick_with_derived_bool_diff_returns_true`],
+    /// which drives the SAME cell shape through the walk and gets `true`. The
+    /// divergence is the contract; without this test, "fixing" `classify_cell`
+    /// to match `stage_a_cell_vetoes` would leave the suite fully green (every
+    /// other `classify_cell` test builds its graph with `graph_with_cell`,
+    /// which hardcodes `ValueCellKind::Param`).
+    #[test]
+    fn classify_cell_derived_let_non_whitelisted_type_stays_structural() {
+        let id = ValueCellId::new("MorphDerivedLet", "is_wide");
+        let graph = graph_with_cell_kind(&id, Type::Bool, ValueCellKind::Let);
+
+        assert_eq!(
+            classify_cell(&graph, &id),
+            ParameterClass::Structural,
+            "task 6643: leaf scoping lives in `stage_a_cell_vetoes`, not here — \
+             `classify_cell` must keep reporting a derived non-whitelisted cell as \
+             Structural so \"is this type Dimensional?\" stays a separable question \
+             from \"does this cell veto a tick?\""
         );
     }
 }
