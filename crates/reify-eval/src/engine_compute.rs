@@ -431,7 +431,7 @@ impl crate::Engine {
             && crate::compute_persist::is_persistable_target(target)
         {
             match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
-                Some(result) => {
+                Some((result, _replayed)) => {
                     // Fold hook — mirrors the Completed arm.
                     if target == "shell-extract::extract" {
                         crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
@@ -453,6 +453,10 @@ impl crate::Engine {
                         0.0,  // cost_per_byte unknown for a cache hit
                     );
                     self.persistent_hit_count += 1;
+                    // DEFECT, fixed in the next step of task 7245: `_replayed`
+                    // carries the diagnostics the original solve emitted, and
+                    // discarding them here is what makes every `W_*` warning
+                    // first-run-only once a persistent cache dir is configured.
                     return Ok((result, vec![], vec![]));
                 }
                 None => {
@@ -684,11 +688,16 @@ impl crate::Engine {
                 if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
                     && crate::compute_persist::is_persistable_target(target)
                 {
+                    // Task 7245: the trampoline's diagnostics are stored
+                    // alongside the value so a later warm serve can replay
+                    // them. Borrowed here, before the `Ok((..))` below moves
+                    // `diagnostics` out.
                     crate::compute_persist::persistent_write(
                         cache_dir,
                         target,
                         cache_key,
                         &effective_value,
+                        &diagnostics,
                     );
                 }
                 // θ / task 3427 step-4: return effective_value (prior on

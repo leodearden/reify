@@ -37,12 +37,19 @@ pub(crate) fn is_persistable_target(target: &str) -> bool {
     )
 }
 
-/// Look up a prior result from the on-disk cache and reconstruct the result
-/// [`reify_ir::Value`] without re-running the trampoline.
+/// Look up a prior result from the on-disk cache and reconstruct both the
+/// result [`reify_ir::Value`] and the diagnostics its original solve emitted,
+/// without re-running the trampoline.
 ///
-/// Returns `Some(value)` on a hit (the caller should complete the dispatch and
-/// return immediately, skipping `invoke_compute_trampoline`) or `None` on a
-/// miss or any read error (caller falls through to the normal invoke path).
+/// Returns `Some((value, diagnostics))` on a hit (the caller should complete
+/// the dispatch and return immediately, skipping `invoke_compute_trampoline`)
+/// or `None` on a miss or any read error (caller falls through to the normal
+/// invoke path).
+///
+/// The diagnostics come back through the same channel the trampoline's fresh
+/// diagnostics use, so a warm serve is indistinguishable from a cold one to
+/// every downstream consumer. `diagnostics` is empty for a solve that emitted
+/// none — an empty list is a hit, not a miss.
 ///
 /// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
 /// `"shell-extract::extract"` (task #4071).
@@ -63,7 +70,7 @@ pub(crate) fn persistent_lookup(
     cache_dir: &std::path::Path,
     target: &str,
     cache_key: reify_core::ContentHash,
-) -> Option<reify_ir::Value> {
+) -> Option<(reify_ir::Value, Vec<reify_core::Diagnostic>)> {
     debug_assert!(
         is_persistable_target(target),
         "persistent_lookup called for non-persistable target {:?}",
@@ -73,15 +80,18 @@ pub(crate) fn persistent_lookup(
     match target {
         "solver::elastic_static" => {
             match crate::persistent_cache::read_entry::<
-                crate::persistent_cache::ElasticResult,
+                crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(er)) => Some(
-                    crate::compute_targets::elastic_static::value_from_elastic_result(&er),
-                ),
+                Ok(Some(entry)) => Some((
+                    crate::compute_targets::elastic_static::value_from_elastic_result(
+                        &entry.value,
+                    ),
+                    entry.diagnostics,
+                )),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -97,15 +107,18 @@ pub(crate) fn persistent_lookup(
         }
         "solver::buckling" => {
             match crate::persistent_cache::read_entry::<
-                crate::persistent_cache::BucklingResultCache,
+                crate::persistent_cache::WithDiagnostics<
+                    crate::persistent_cache::BucklingResultCache,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(brc)) => Some(
-                    crate::compute_targets::buckling::value_from_buckling_result(&brc),
-                ),
+                Ok(Some(entry)) => Some((
+                    crate::compute_targets::buckling::value_from_buckling_result(&entry.value),
+                    entry.diagnostics,
+                )),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -122,15 +135,18 @@ pub(crate) fn persistent_lookup(
         }
         "shell-extract::extract" => {
             match crate::persistent_cache::read_entry::<
-                reify_shell_extract::ShellExtractionResult,
+                crate::persistent_cache::WithDiagnostics<
+                    reify_shell_extract::ShellExtractionResult,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(ser)) => Some(
-                    crate::shell_extract_compute::shell_extraction_result_to_value(&ser),
-                ),
+                Ok(Some(entry)) => Some((
+                    crate::shell_extract_compute::shell_extraction_result_to_value(&entry.value),
+                    entry.diagnostics,
+                )),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -154,8 +170,13 @@ pub(crate) fn persistent_lookup(
 /// # Behaviour
 ///
 /// Extracts a typed cache container from `result` via the target-specific
-/// bridge function, then calls [`crate::persistent_cache::write_entry`]
-/// (atomic temp+rename).
+/// bridge function, wraps it together with `diagnostics` in a
+/// [`crate::persistent_cache::WithDiagnostics`] envelope, then calls
+/// [`crate::persistent_cache::write_entry`] (atomic temp+rename).
+///
+/// `diagnostics` are the ones this dispatch's trampoline emitted. They are
+/// stored so a later warm serve can replay them; without them the on-disk
+/// cache would make every `W_*` warning first-run-only.
 ///
 /// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
 /// `"shell-extract::extract"` (task #4071).
@@ -177,6 +198,7 @@ pub(crate) fn persistent_write(
     target: &str,
     cache_key: reify_core::ContentHash,
     result: &reify_ir::Value,
+    diagnostics: &[reify_core::Diagnostic],
 ) {
     debug_assert!(
         is_persistable_target(target),
@@ -198,12 +220,15 @@ pub(crate) fn persistent_write(
                 return;
             };
             if let Err(e) = crate::persistent_cache::write_entry::<
-                crate::persistent_cache::ElasticResult,
+                crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &er,
+                &crate::persistent_cache::WithDiagnostics {
+                    diagnostics: diagnostics.to_vec(),
+                    value: er,
+                },
             ) {
                 tracing::warn!(
                     %e,
@@ -226,12 +251,17 @@ pub(crate) fn persistent_write(
                 return;
             };
             if let Err(e) = crate::persistent_cache::write_entry::<
-                crate::persistent_cache::BucklingResultCache,
+                crate::persistent_cache::WithDiagnostics<
+                    crate::persistent_cache::BucklingResultCache,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &brc,
+                &crate::persistent_cache::WithDiagnostics {
+                    diagnostics: diagnostics.to_vec(),
+                    value: brc,
+                },
             ) {
                 tracing::warn!(
                     %e,
@@ -255,12 +285,17 @@ pub(crate) fn persistent_write(
                 return;
             };
             if let Err(e) = crate::persistent_cache::write_entry::<
-                reify_shell_extract::ShellExtractionResult,
+                crate::persistent_cache::WithDiagnostics<
+                    reify_shell_extract::ShellExtractionResult,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &ser,
+                &crate::persistent_cache::WithDiagnostics {
+                    diagnostics: diagnostics.to_vec(),
+                    value: ser,
+                },
             ) {
                 tracing::warn!(
                     %e,
@@ -291,7 +326,9 @@ mod tests {
     use crate::deps::DependencyTrace;
     use crate::engine_compute::{ComputeOutcome, RealizationReadHandle};
     use crate::graph::CancellationHandle;
-    use crate::persistent_cache::{ENGINE_VERSION_HASH, ElasticResult, entry_bin_path, read_entry};
+    use crate::persistent_cache::{
+        ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, entry_bin_path, read_entry,
+    };
 
     // ── FEA input helpers (cantilever-style, tet path) ────────────────────────
 
@@ -593,9 +630,11 @@ mod tests {
         );
 
         // Assert read_entry round-trips with max_von_mises matching the dispatch result.
-        let entry = read_entry::<ElasticResult>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
-            .expect("read_entry must not return Err")
-            .expect("read_entry must return Some after a successful write");
+        let entry =
+            read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
+                .expect("read_entry must not return Err")
+                .expect("read_entry must return Some after a successful write")
+                .value;
         let relative_err =
             (entry.max_von_mises - max_vm).abs() / max_vm.abs().max(f64::EPSILON);
         assert!(
@@ -744,11 +783,14 @@ mod tests {
         // Seed the on-disk cache entry for a known cache_key.
         let cache_key = ContentHash(0xf00d_beef_cafe_babe_f00d_beef_cafe_babe_u128);
         let input_hash = format!("{cache_key}");
-        write_entry::<crate::persistent_cache::ElasticResult>(
+        write_entry::<WithDiagnostics<ElasticResult>>(
             tmp.path(),
             crate::persistent_cache::ENGINE_VERSION_HASH,
             &input_hash,
-            &er,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: er,
+            },
         )
         .expect("test seed write_entry must succeed");
 
@@ -864,11 +906,14 @@ mod tests {
         // Seed a cache entry under KEY_A.
         let key_a = ContentHash(0x1111_2222_3333_4444_1111_2222_3333_4444_u128);
         let input_hash_a = format!("{key_a}");
-        write_entry::<crate::persistent_cache::ElasticResult>(
+        write_entry::<WithDiagnostics<ElasticResult>>(
             tmp.path(),
             crate::persistent_cache::ENGINE_VERSION_HASH,
             &input_hash_a,
-            &er,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: er,
+            },
         )
         .expect("test seed write_entry must succeed");
 
@@ -1050,11 +1095,14 @@ mod tests {
         // Seed the on-disk cache entry for a known cache_key.
         let cache_key = ContentHash(0xb0c5_1234_b0c5_5678_b0c5_1234_b0c5_5678_u128);
         let input_hash = format!("{cache_key}");
-        write_entry::<BucklingResultCache>(
+        write_entry::<WithDiagnostics<BucklingResultCache>>(
             tmp.path(),
             ENGINE_VERSION_HASH,
             &input_hash,
-            &brc,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: brc,
+            },
         )
         .expect("test seed write_entry must succeed");
 
@@ -1173,11 +1221,14 @@ mod tests {
         // Seed under KEY_A.
         let key_a = ContentHash(0xaaaa_bcde_1234_5678_aaaa_bcde_1234_5678_u128);
         let input_hash_a = format!("{key_a}");
-        write_entry::<BucklingResultCache>(
+        write_entry::<WithDiagnostics<BucklingResultCache>>(
             tmp.path(),
             ENGINE_VERSION_HASH,
             &input_hash_a,
-            &brc,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: brc,
+            },
         )
         .expect("test seed write_entry must succeed");
 
