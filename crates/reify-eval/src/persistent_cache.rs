@@ -724,6 +724,97 @@ impl PersistentlyCacheable for BucklingResultCache {
     }
 }
 
+// ── Diagnostics envelope (task 7245) ─────────────────────────────────────────
+
+/// On-disk wire mirror of [`reify_core::Diagnostic`].
+///
+/// A mirror rather than a serde derive on `Diagnostic` itself: `Diagnostic` is
+/// `#[non_exhaustive]` and carries no serde impls, and this cache must own its
+/// wire format independently of that type's evolution.
+///
+/// # Carried fields, and the two deliberate omissions
+///
+/// `severity`, `message` and `code` are carried. `code` is the whole point —
+/// downstream consumers (LSP, `--json` output) and this cache's acceptance
+/// tests key off `DiagnosticCode`, not message substrings. This is precisely
+/// where the sibling mirror `DiagnosticOnDisk` in
+/// `crates/reify-shell-extract/src/result.rs:407` is insufficient: it
+/// deliberately drops `code`, so it cannot be reused as-is.
+///
+/// `labels` and `candidates` are NOT carried. Solver-trampoline diagnostics
+/// build with `Diagnostic::warning(..).with_code(..)` and no span, so both are
+/// always empty on the persisted path; carrying them would require serde on
+/// `DiagnosticLabel` / `SourceSpan`, which have none. The loss is pinned by
+/// `with_diagnostics_round_trip_drops_labels_and_candidates`.
+///
+/// `severity` is an explicit `u8` discriminant (not `Severity`'s serde derive)
+/// so a corrupt byte is rejected loudly by [`severity_from_u8`] instead of
+/// deserialising into some default. `code` does use `DiagnosticCode`'s
+/// feature-gated derive, whose PascalCase wire format is already test-pinned in
+/// reify-core — the enum has no mnemonic/`FromStr` round-trip, and a hand-rolled
+/// variant↔integer table over a `#[non_exhaustive]` enum would rot silently.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+struct PersistedDiagnostic {
+    /// 0 = `Severity::Info`, 1 = `Severity::Warning`, 2 = `Severity::Error`.
+    /// Unknown discriminants on read are rejected with `InvalidData`.
+    severity: u8,
+    message: String,
+    code: Option<reify_core::DiagnosticCode>,
+}
+
+/// Encode a [`reify_core::Severity`] as its on-disk `u8` discriminant.
+fn severity_to_u8(s: reify_core::Severity) -> u8 {
+    match s {
+        reify_core::Severity::Info => 0,
+        reify_core::Severity::Warning => 1,
+        reify_core::Severity::Error => 2,
+    }
+}
+
+/// Decode an on-disk severity discriminant, rejecting unknown values with
+/// `InvalidData` so a corrupt or tampered entry surfaces as a cache miss
+/// rather than as a silently-wrong severity.
+fn severity_from_u8(b: u8) -> io::Result<reify_core::Severity> {
+    match b {
+        0 => Ok(reify_core::Severity::Info),
+        1 => Ok(reify_core::Severity::Warning),
+        2 => Ok(reify_core::Severity::Error),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "PersistedDiagnostic unknown Severity discriminant {other} \
+                 (corrupted or tampered cache entry?)"
+            ),
+        )),
+    }
+}
+
+/// Project a live [`reify_core::Diagnostic`] onto its wire mirror.
+fn diagnostic_to_persisted(d: &reify_core::Diagnostic) -> PersistedDiagnostic {
+    PersistedDiagnostic {
+        severity: severity_to_u8(d.severity),
+        message: d.message.clone(),
+        code: d.code,
+    }
+}
+
+/// Rehydrate a wire mirror into a live [`reify_core::Diagnostic`].
+///
+/// Built through the public builders rather than a struct literal —
+/// `Diagnostic` is `#[non_exhaustive]`, so a literal would not compile from
+/// outside reify-core and would silently need updating on every new field.
+fn diagnostic_from_persisted(p: &PersistedDiagnostic) -> io::Result<reify_core::Diagnostic> {
+    let mut out = match severity_from_u8(p.severity)? {
+        reify_core::Severity::Info => reify_core::Diagnostic::info(p.message.clone()),
+        reify_core::Severity::Warning => reify_core::Diagnostic::warning(p.message.clone()),
+        reify_core::Severity::Error => reify_core::Diagnostic::error(p.message.clone()),
+    };
+    if let Some(code) = p.code {
+        out = out.with_code(code);
+    }
+    Ok(out)
+}
+
 /// Convert a 32-character ASCII `&str` cache key component into a fixed
 /// `[u8; 32]` byte array for storage in [`CacheEntryHeader`] echo fields.
 ///
