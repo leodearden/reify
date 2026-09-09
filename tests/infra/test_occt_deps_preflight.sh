@@ -29,8 +29,8 @@
 #
 # Sections:
 #   0. SELF-CHECK, the harness itself. The needle-containment primitive
-#      `_out_contains` must report a PRESENT needle deterministically (bounded
-#      statistical loop, N=5000) and must contain no `| grep` pipeline
+#      `_out_contains` must report a PRESENT needle as a match and a genuinely
+#      absent one as a miss, and must contain no `|` pipeline at all
 #      (deterministic structural pin on the hazard CLASS). A
 #      `printf | grep -q` under this file's `set -o pipefail` reports a MATCH
 #      as a MISS ~0.14% of the time — grep short-circuits, the builtin writer
@@ -424,7 +424,7 @@ _guard_exits_nonzero() {
 # The `case` form has no pipeline, so no pipefail exposure at all, and no fork.
 # The needle is QUOTED inside the pattern, which is what keeps matching LITERAL
 # (grep -F semantics) rather than glob. Section 0's
-# `_containment_has_no_grep_pipeline` pins this deterministically — do not
+# `_containment_has_no_pipeline` pins this deterministically — do not
 # "simplify" it back into a pipeline.
 _out_contains() {
     case "$1" in
@@ -723,17 +723,16 @@ _ALL_DEPS_OK=("${_OCCT_OK[@]}" "${_DOWNSTREAM_OK[@]}")
 # (writer killed, grep succeeded) every time — 0.14% per call, ~2.8% per run
 # across this file's ~20 output asserts.
 #
-# WHY THE LOOP IS STATISTICAL AND NOT A SINGLE DETERMINISTIC CASE: an
-# oversized (>64KiB) payload with the needle at byte 0 was MEASURED not to
-# reproduce it (0 misses / 50 at 200011 bytes), so no deterministic behavioural
-# reproduction exists. At the measured 0.0014/call rate, N=5000 gives
-# P(false pass | defect present) = (1-0.0014)^5000 ~= 9e-4. The loop breaks on
-# the FIRST miss, so RED is cheap; the fixed form is fork-free, so GREEN pays
-# ~0.7s for the full 5000.
-#
-# The paired STRUCTURAL assert makes regression detection deterministic even on
-# a statistically lucky run: the primitive's body must contain no `| grep`
-# pipeline at all, which is the hazard CLASS rather than one instance of it.
+# THE REGRESSION PIN IS STRUCTURAL, NOT STATISTICAL.
+# `_containment_has_no_pipeline` reads the LIVE function body and refuses any
+# `|` at all: the hazard CLASS — every pipeline, not just the one `grep`
+# instance that happened to be measured — caught deterministically and
+# instantly. An earlier draft also ran a 5000-call stress loop against a
+# payload/needle pair proven to match; it was strictly weaker on every axis
+# (documented ~9e-4 false-pass probability, ~1s on every RUN_RUST=1 verify, and
+# blind to a non-grep pipeline) and is gone. What remains is deterministic: the
+# needle IS present (pipefail-free oracle), the primitive says so, a genuinely
+# absent needle still MISSES, and the body carries no pipeline.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- 0: self-check — the needle-containment primitive is not itself flaky ---"
@@ -744,44 +743,25 @@ _SELF_LIB_OK="$(_mk_lib_fixture selfcheck-lib "$_ACCEPTED_FIRST")"
 _SELF_INC_MISSING="$(_mk_empty_fixture selfcheck-include)"
 _SELF_PAYLOAD="$(OCCT_LIB_DIR="$_SELF_LIB_OK" OCCT_INCLUDE_DIR="$_SELF_INC_MISSING" bash "$GUARD" 2>&1 || true)"
 _SELF_NEEDLE="Standard_Failure.hxx"
-_SELF_STRESS_N=5000
 
 assert "self-check captured a non-empty real guard payload to match against" \
     test -n "$_SELF_PAYLOAD"
 
-# Reference oracle, asserted BEFORE the stress loop so that loop can only ever
-# fail for the SIGPIPE reason and never because the needle is genuinely absent.
-# Run under `bash -c` (default shell options — no pipefail) using bash's own
-# fork-free `==` pattern match, which has no pipeline and cannot take SIGPIPE.
+# Reference oracle, asserted BEFORE the primitive is exercised so the assert
+# below can only fail because the primitive is broken, never because the needle
+# is genuinely absent. Run under `bash -c` (default shell options — no
+# pipefail) using bash's own fork-free `==` pattern match, which has no pipeline
+# and cannot take SIGPIPE.
 assert "self-check needle '$_SELF_NEEDLE' is genuinely PRESENT in that payload (bash [[ == * ]] oracle)" \
     bash -c '[[ "$1" == *"$2"* ]]' _ "$_SELF_PAYLOAD" "$_SELF_NEEDLE"
 
-# _containment_is_deterministic — $_SELF_STRESS_N calls of the primitive on a
-# payload/needle pair already proven to match. Breaks on the FIRST miss and
-# reports the iteration index; the echoes land in assert's per-assert tmpfile,
-# so a failure carries its own evidence in the archived verify log.
-_containment_is_deterministic() {
-    local i
-    for ((i = 1; i <= _SELF_STRESS_N; i++)); do
-        if ! _out_contains "$_SELF_PAYLOAD" "$_SELF_NEEDLE"; then
-            echo "_out_contains reported a MISS at iteration $i of $_SELF_STRESS_N"
-            echo "needle: $_SELF_NEEDLE"
-            echo "payload bytes: ${#_SELF_PAYLOAD}"
-            echo "the needle IS present (asserted above), so this is the"
-            echo "pipefail + SIGPIPE defect, not a real miss."
-            return 1
-        fi
-    done
-    return 0
-}
-
-assert "_out_contains reports a PRESENT needle deterministically over $_SELF_STRESS_N calls" \
-    _containment_is_deterministic
+assert "_out_contains reports that genuinely PRESENT needle as a match" \
+    _out_contains "$_SELF_PAYLOAD" "$_SELF_NEEDLE"
 
 # Negative control, run in THIS shell (the primitive is a shell function, not
 # an exported command, so it is not reachable from a `bash -c` child): the
 # primitive must still MISS a needle that is genuinely absent. Without this, a
-# bare `return 0` would satisfy the stress assert above.
+# bare `return 0` would satisfy the positive assert above.
 _containment_negative_control() {
     ! _out_contains "$_SELF_PAYLOAD" "__no_such_needle_6493__"
 }
@@ -789,18 +769,23 @@ _containment_negative_control() {
 assert "_out_contains still reports a genuinely ABSENT needle as a miss (negative control)" \
     _containment_negative_control
 
-# _containment_has_no_grep_pipeline — DETERMINISTIC structural pin on the
-# hazard class. `declare -f` re-renders the live function body, so this reads
-# the primitive actually in force rather than a grep of the file. It is the
-# half that still reds on a statistically lucky run of the loop above, and it
-# is what stops the fork-free form being "simplified" back into a pipeline.
-_containment_has_no_grep_pipeline() {
+# _containment_has_no_pipeline — DETERMINISTIC structural pin on the hazard
+# CLASS. `declare -f` re-renders the live function body, so this reads the
+# primitive actually in force rather than a grep of the file, and it refuses
+# ANY `|` — not merely the measured `| grep` — because every pipeline under
+# this file's `set -o pipefail` carries the identical SIGPIPE exposure. This is
+# what stops the fork-free form being "simplified" back into a pipeline.
+#
+# A `case` ALTERNATION pattern (`*a* | *b*)`) would trip it too. That is an
+# accepted and LOUD false positive: the assert dumps the body it rejected, and
+# a literal-containment primitive has no need of alternation.
+_containment_has_no_pipeline() {
     local body
     body="$(declare -f _out_contains)" || return 1
     [ -n "$body" ] || return 1
     case "$body" in
-        *'| grep'* | *'|grep'*)
-            echo "_out_contains' body still contains a grep pipeline:"
+        *'|'*)
+            echo "_out_contains' body contains a pipeline ('|'):"
             printf '%s\n' "$body"
             return 1
             ;;
@@ -808,8 +793,8 @@ _containment_has_no_grep_pipeline() {
     return 0
 }
 
-assert "_out_contains' body contains no '| grep' pipeline (no pipefail/SIGPIPE exposure)" \
-    _containment_has_no_grep_pipeline
+assert "_out_contains' body contains no '|' pipeline at all (no pipefail/SIGPIPE exposure)" \
+    _containment_has_no_pipeline
 
 # --- A MISS must be DIAGNOSABLE, not silent.
 #
