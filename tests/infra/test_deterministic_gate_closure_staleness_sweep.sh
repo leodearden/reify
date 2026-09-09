@@ -412,12 +412,12 @@ EMPTY_REPO="$REPO_DIR"
 
 # The canonical all-zero summary, asserted as one exact string so a counter
 # rename or reordering is caught rather than silently tolerated.
-ZERO_SWEEP="SWEEP: candidates=0 gate_closure=0 merge_verify_red=0 unmet_dependency=0 corrupt_hold=0 live_skipped=0 no_class=0 unknown=0"
+ZERO_SWEEP="SWEEP: candidates=0 merge_verify_red=0 unmet_dependency=0 corrupt_hold=0 live_skipped=0 no_class=0 unknown=0"
 
 # Every value-taking flag, in one place: the A1 usage-completeness check and
 # the A3 missing-value sweep both iterate this list, so a future flag cannot
 # be added to the parser without both checks noticing.
-VALUE_FLAGS=(--db --tag --escalations --repo --main-ref --format --class --stale-heartbeat-min --emit-requests)
+VALUE_FLAGS=(--db --tag --repo --main-ref --format --class --stale-heartbeat-min --emit-requests)
 
 # _usage_names_all_flags — every VALUE_FLAGS entry appears in the usage text.
 # One assert over the whole set (rather than one per flag) keeps the fork
@@ -487,7 +487,7 @@ assert "A5b: a 0-byte DB stub warns on stderr" _err_has '\[warn\]'
 # --- A6: empty fixture, table format ----------------------------------------
 run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format table
 assert "A6: empty fixture exits 0" _rc_is 0
-assert "A6: trailing SWEEP: line carries all eight counters at zero" _sweep_line_is "$ZERO_SWEEP"
+assert "A6: trailing SWEEP: line carries all seven counters at zero" _sweep_line_is "$ZERO_SWEEP"
 
 # --- A7: empty fixture, json format -----------------------------------------
 run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format json
@@ -495,7 +495,7 @@ assert "A7: --format json exits 0" _rc_is 0
 assert "A7: stdout is a single valid JSON object" _out_json_check 'isinstance(d, dict)'
 assert "A7: candidates == []" _out_json_check 'd["candidates"] == []'
 assert "A7: summary keys exactly match the A6 counter set" _out_json_check \
-    'sorted(d["summary"]) == ["candidates","corrupt_hold","gate_closure","live_skipped","merge_verify_red","no_class","unknown","unmet_dependency"]'
+    'sorted(d["summary"]) == ["candidates","corrupt_hold","live_skipped","merge_verify_red","no_class","unknown","unmet_dependency"]'
 assert "A7: every summary counter is 0" _out_json_check 'all(v == 0 for v in d["summary"].values())'
 
 # --- A8: flag <-> env parity for the task-DB knob ---------------------------
@@ -680,202 +680,80 @@ assert "B7: an unparseable heartbeat warns on stderr" \
     _err_has '\[warn\].*9106'
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block C — trigger class A: gate_closure
+# Block C — the RETIRED gate_closure class (task 7349)
 #
-# This task's original scope: a deterministic always-escalates gate task left
-# `blocked` after its gating escalation was resolved or dismissed elsewhere.
-# The staleness signal is the ABSENCE of a live `status=pending`
-# esc-<id>-*.json — validated against the live store on 2026-07-26, where
-# 5537/5549/5559 were blocked with always_escalates=true and zero live
-# escalation files (theirs archived `dismissed`), while every other blocked
-# gate task still had a live pending file.
+# `gate_closure` was the sweep's class A: a `blocked` task carrying
+# task_kind=deterministic and always_escalates, with no live pending
+# escalation, reported STALE with action=close — which the dark-factory
+# consumer turned into set_task_status('cancelled'). All nine firings in the
+# retained journal were collateral, so the class is retired at the SOURCE
+# rather than defused downstream in the consumer.
 #
-# The emitted action is `close`, not `redispatch`: per #5316 §5 the correct
-# closure for a satisfied deterministic gate is a transition to `cancelled`,
-# not a re-run.
+# What this block pins is the absence, in BOTH directions: the canonical
+# class-A shape is now adjudicated NO-CLASS whether or not a live escalation
+# exists. Class A owned the sweep's only read of the escalation store, so its
+# retirement also removes `--escalations` outright — C4 pins that, and the
+# fixture below writes its escalation into the DEFAULT path the sweep used to
+# resolve ($REPO/data/escalations), so a surviving residual read would still
+# find it and C2 would still catch it.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block C: trigger class A (gate_closure) ---"
+echo "--- Block C: the retired gate_closure class ---"
 
 _mk_tasks_db
 C_DB="$DB"
-_mk_esc_dir
-C_ESC="$ESC_DIR"
 _mk_repo
 C_REPO="$REPO_DIR"
 
-# The class-A metadata predicate, as recorded on the live blocked gate tasks.
+# The class-A metadata predicate as recorded on the live blocked gate tasks —
+# the exact shape that produced all nine collateral firings.
 C_GATE_META='{"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"}'
-# The 5372 shape: deterministic, but with no always_escalates key at all.
-C_NO_ALWAYS_META='{"task_kind":"deterministic","gate_escalated_at":"2026-07-26T08:00:00Z"}'
 
-_add_task 9201 blocked "$C_GATE_META"                         # no esc files    => STALE
-_add_task 9202 blocked "$C_GATE_META"                         # pending         => GATED
-_add_task 9203 blocked "$C_GATE_META"                         # dismissed       => STALE
-_add_task 9204 blocked "$C_GATE_META"                         # resolved        => STALE
-_add_task 9205 blocked "$C_GATE_META"                         # dismissed+pending => GATED
-_add_task 9206 blocked "$C_NO_ALWAYS_META"                    # not class A
-_add_task 9207 in-progress "$C_GATE_META" "$(_now_iso -10800)" ""   # blocked-only => not class A
-_add_task 9208 blocked "$C_GATE_META"                         # malformed esc   => unknown
-_add_task 9209 blocked "$C_GATE_META"                         # unrecognized st => unknown
-_add_task 9210 blocked "$C_GATE_META"                         # null status     => unknown
-_add_task 9211 blocked "$C_GATE_META"                         # absent status   => unknown
+_add_task 9201 blocked "$C_GATE_META"   # no escalation file at all
+_add_task 9202 blocked "$C_GATE_META"   # a LIVE status=pending escalation
 
+# The escalation goes where the sweep's OWN default used to point, not into a
+# temp dir it can no longer be aimed at — so this is a real negative and not
+# an artefact of the store being out of reach.
+mkdir -p "$C_REPO/data/escalations"
+ESC_DIR="$C_REPO/data/escalations"
 _add_esc 9202 1 pending
-_add_esc 9203 1 dismissed
-_add_esc 9204 1 resolved
-_add_esc 9205 1 dismissed
-_add_esc 9205 2 pending
-printf 'this is not json\n' > "$C_ESC/esc-9208-1.json"
-# A well-formed record carrying a status OUTSIDE the store's `pending /
-# resolved / dismissed` vocabulary (models.py:100). A schema addition on the
-# escalation side produces exactly this shape.
-printf '{"id":"esc-9209-1","task_id":"9209","status":"in_triage"}\n' > "$C_ESC/esc-9209-1.json"
-# A well-formed record whose status is JSON null — the live store holds one
-# such file today (data/escalations/b3-state.json), which escapes the sweep's
-# glob only by name, not by shape.
-printf '{"id":"esc-9210-1","task_id":"9210","status":null}\n' > "$C_ESC/esc-9210-1.json"
-# A well-formed record with NO `status` key AT ALL — the mid-write shape, and
-# the one case whose ROUTE through _esc_state changes when the parse sentinel
-# stops being a NUL. `.get("status","")` yields the empty string, which today
-# collides with the NUL sentinel (bash strips the NUL from BOTH the capture and
-# the `case` pattern, so the arm degenerates to ""-matches-"") and so lands on
-# the parse-error arm; once the sentinel is a literal token it will land on the
-# `*)` unrecognized-status arm instead. The VERDICT is `unknown` either way —
-# that equivalence is what C10g/C10h pin, so the sentinel change is provably
-# behaviour-preserving rather than merely asserted to be.
-printf '{"id":"esc-9211-1","task_id":"9211"}\n' > "$C_ESC/esc-9211-1.json"
-# A .json.lock sidecar (the live store holds these next to the real files):
-# the glob must match *.json only, never *.json.lock, or 9201 would read as
-# gated by a lock file.
-printf 'lock\n' > "$C_ESC/esc-9201-1.json.lock"
 
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" --format json
-assert "C0: the class-A fixture sweep exits 0" _rc_is 0
-
-# --- C1: zero live escalation files => STALE + close -------------------------
-assert "C1: a blocked always-escalates gate task with no live escalation is a class-A hit" \
-    _json_is 't[9201]["class"] == "gate_closure" and t[9201]["verdict"] == "STALE"'
-assert "C1: the emitted action is close (not redispatch) per #5316 §5" \
-    _json_is 't[9201]["action"] == "close"'
-assert "C1: evidence names the absence of a live pending escalation" \
-    _json_is '"no live pending escalation" in t[9201]["evidence"]'
-assert "C1: a *.json.lock sidecar does not read as a gating escalation" \
-    _json_is 't[9201]["verdict"] == "STALE"'
-
-# --- C2/C3/C4: the escalation-state oracle ----------------------------------
-assert "C2: a live status=pending escalation still gates the task" \
-    _json_is 't[9202]["verdict"] == "GATED"'
-assert "C3a: a dismissed escalation is stale (the live 5537/5549/5559 shape)" \
-    _json_is 't[9203]["verdict"] == "STALE"'
-assert "C3b: a resolved escalation is stale" \
-    _json_is 't[9204]["verdict"] == "STALE"'
-assert "C4: any single pending escalation gates, even alongside a dismissed one" \
-    _json_is 't[9205]["verdict"] == "GATED"'
-assert "C2/C4: a GATED row is not counted as a hit" \
-    _json_is 's["gate_closure"] == 3'
-
-# --- C5/C6: the class-A predicate is narrow ---------------------------------
-assert "C5: no always_escalates key (the 5372 shape) is not class A" \
-    _json_is 't[9206]["class"] != "gate_closure"'
-assert "C6: an in-progress row matching A's metadata is not class A (blocked-only)" \
-    _json_is 't[9207]["class"] != "gate_closure"'
-
-# --- C7/C8: a failed oracle degrades to unknown, never to STALE -------------
 C_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq-XXXXXX")"
 _TMPDIRS+=("$C_REQ")
-run_sweep --db "$C_DB" --escalations "$C_REPO/no-such-escalations-dir" --repo "$C_REPO" \
-    --emit-requests "$C_REQ" --format json
-assert "C7: a nonexistent --escalations dir still exits 0" _rc_is 0
-assert "C7: a missing oracle degrades every class-A candidate to unknown, never STALE" \
-    _json_is 't[9201]["verdict"] == "unknown" and s["gate_closure"] == 0'
-assert "C7: a missing oracle is counted in unknown" _json_is 's["unknown"] >= 1'
-assert "C7: a missing oracle warns on stderr" _err_has '\[warn\]'
-assert "C7: a missing oracle emits no re-dispatch request" _no_request_for "$C_REQ" 9201
 
-C_REQ2="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq2-XXXXXX")"
-_TMPDIRS+=("$C_REQ2")
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-    --emit-requests "$C_REQ2" --format json
-assert "C8: a malformed escalation file degrades to unknown, not STALE" \
-    _json_is 't[9208]["verdict"] == "unknown"'
-assert "C8: a malformed escalation file warns on stderr" _err_has '\[warn\].*9208'
-# Deliberately adjacent to the assert above so it reads the SAME run's ERR_OUT.
-# The parse sentinel must survive command substitution: bash strips a NUL from
-# `$(...)` and warns while doing it, and that warning lands on the SUT's OWN
-# stderr — the very channel `warn()` writes to and every `_err_has` assert here
-# reads. Diagnostics a consumer cannot distinguish from the tool's own output
-# are a defect in the tool, not noise.
-assert "C8: the parse sentinel leaks no bash NUL warning onto the SUT's own stderr" \
-    _not _err_has 'ignored null byte'
+run_sweep --db "$C_DB" --repo "$C_REPO" --emit-requests "$C_REQ" --format json
+assert "C0: the retired-class fixture sweep exits 0" _rc_is 0
 
-# --- C10: the status predicate is a TERMINAL allowlist, not a pending one ----
-# `pending` gates and `resolved`/`dismissed` clear; EVERY other value —
-# unrecognized, null, empty — is a failed oracle read and must degrade to
-# `unknown`. A pending-allowlist would sink all of these into `clear`, which
-# yields STALE / close / an emitted request telling the consumer to CANCEL the
-# task — failing open toward the sweep's single most destructive action, and
-# inverting invariant L2 ("a failed oracle lookup must never manufacture an
-# actionable verdict"). Both shapes below are realistic: a schema addition on
-# the escalation side, and a mid-write/partially-populated record.
-assert "C10a: an unrecognized escalation status degrades to unknown, not STALE" \
-    _json_is 't[9209]["verdict"] == "unknown"'
-assert "C10b: an unrecognized status warns, naming the task and the status" \
-    _err_has '\[warn\].*9209.*in_triage'
-assert "C10c: an unrecognized status emits no re-dispatch request" \
-    _no_request_for "$C_REQ2" 9209
-assert "C10d: a null escalation status degrades to unknown, not STALE" \
-    _json_is 't[9210]["verdict"] == "unknown"'
-assert "C10e: a null status emits no re-dispatch request" \
-    _no_request_for "$C_REQ2" 9210
-assert "C10g: an ABSENT status key degrades to unknown, not STALE" \
-    _json_is 't[9211]["verdict"] == "unknown"'
-assert "C10h: an absent status key emits no re-dispatch request" \
-    _no_request_for "$C_REQ2" 9211
-assert "C10f: none of these shapes is counted as a class-A hit" \
-    _json_is 's["gate_closure"] == 3'
+# --- C1: the canonical shape is adjudicated, and matches nothing -------------
+# NO-CLASS, not `unknown`: nothing failed to be read here. The row is fully
+# adjudicated and the answer is negative.
+assert "C1: the canonical gate-closure shape is no longer a trigger class" \
+    _json_is 't[9201]["class"] == "-" and t[9201]["verdict"] == "NO-CLASS" and t[9201]["action"] == "none"'
+assert "C1: ... it is counted in no_class, and no gate_closure counter is rendered at all" \
+    _json_is 's["no_class"] == 2 and "gate_closure" not in s'
+assert "C1: ... and emits no re-dispatch request" _no_request_for "$C_REQ" 9201
 
-# --- C11: an UNREADABLE escalations dir degrades exactly like a missing one --
-# C7 covers a NONEXISTENT dir. The dir that exists but cannot be enumerated
-# (mode 000, root-owned dir swept by another uid, a stale mount) is the more
-# dangerous shape, because it defeats the terminal allowlist WITHOUT ever
-# entering the loop: `[ -d ]` succeeds (stat needs +x on the PARENT, not on the
-# dir), the glob fails to expand for want of +r, `[ -e "$f" ] || continue`
-# swallows the unexpanded pattern, and found=0/pending=0 falls straight into
-# the `clear` branch. Task 9202 carries a live status=pending escalation, so
-# reporting it STALE / close is a fail-open on a task whose gate IS still live
-# — inverting L2 at the one point the allowlist cannot defend.
-if [ "$(id -u)" != 0 ]; then
-    C_REQ3="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq3-XXXXXX")"
-    _TMPDIRS+=("$C_REQ3")
-    chmod 000 "$C_ESC"
-    run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-        --emit-requests "$C_REQ3" --format json
-    chmod 700 "$C_ESC"
-    assert "C11: an unreadable --escalations dir still exits 0" _rc_is 0
-    assert "C11: a task with a LIVE pending escalation degrades to unknown, never STALE" \
-        _json_is 't[9202]["verdict"] == "unknown"'
-    assert "C11: an unreadable oracle yields no class-A hit at all" \
-        _json_is 's["gate_closure"] == 0'
-    assert "C11: an unreadable oracle is counted in unknown" _json_is 's["unknown"] >= 1'
-    assert "C11: an unreadable oracle warns on stderr" _err_has '\[warn\].*9202'
-    assert "C11: an unreadable oracle emits no re-dispatch request" \
-        _no_request_for "$C_REQ3" 9202
-    assert "C11: ... and none for the genuinely-stale row either" \
-        _no_request_for "$C_REQ3" 9201
-else
-    echo "  SKIP: C11 unreadable-dir asserts (running as uid 0; mode bits do not apply)"
-fi
+# --- C2: the other direction — a LIVE escalation changes nothing -------------
+assert "C2: a task with a live pending escalation adjudicates identically" \
+    _json_is 't[9202]["class"] == "-" and t[9202]["verdict"] == "NO-CLASS" and t[9202]["action"] == "none"'
+assert "C2: ... and emits no re-dispatch request either" _no_request_for "$C_REQ" 9202
+# The strongest form: not merely "both are NO-CLASS", but that the escalation
+# is invisible in every field the report carries.
+assert "C2: the two rows are indistinguishable in every reported field" \
+    _json_is 'all(t[9201][k] == t[9202][k] for k in ("class", "verdict", "action", "evidence", "flags"))'
 
-# --- C9: --class filtering ---------------------------------------------------
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-    --class gate_closure --format json
-assert "C9a: --class gate_closure emits only class-A rows" \
-    _json_is 'all(c["class"] == "gate_closure" for c in d["candidates"]) and len(d["candidates"]) > 0'
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-    --class merge_verify_red --format json
-assert "C9b: --class merge_verify_red suppresses the class-A hit" \
-    _json_is '9201 not in t and s["gate_closure"] == 0'
+# --- C3: the retired name leaves the --class vocabulary ----------------------
+# Same shape as A4b's `--class bogus`: a name the sweep cannot act on is a
+# usage error, not a silently-empty sweep that reads as "nothing to do".
+run_sweep --db "$C_DB" --repo "$C_REPO" --class gate_closure
+assert "C3: --class gate_closure is now a usage error (exit 2)" _rc_is 2
+assert "C3: ... and the error names the surviving vocabulary" _err_has 'merge_verify_red'
+
+# --- C4: the escalation store is not an input any more -----------------------
+run_sweep --db "$C_DB" --repo "$C_REPO" --escalations "$C_REPO/data/escalations"
+assert "C4: --escalations is no longer a recognised flag (exit 2)" _rc_is 2
+assert "C4: ... and the error names it" _err_has '\[error\].*--escalations'
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — trigger class B: merge_verify_red
