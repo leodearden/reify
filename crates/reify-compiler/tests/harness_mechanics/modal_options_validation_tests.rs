@@ -752,7 +752,7 @@ structure CtorMisspelledLabelProbe {
 #[test]
 fn corpus_rayleigh_ctor_args_lower_to_dimensioned_literals() {
     let module = compile_source_with_stdlib(include_str!(
-        "../../../examples/modal/transient_step_response.ri"
+        "../../../../examples/modal/transient_step_response.ri"
     ));
     let errors = errors_only(&module);
     assert!(
@@ -1568,7 +1568,7 @@ fn modal_options_constrains_positivity_invariants() {
 /// receivers so a deeply-nested chain like `sources.count > 0` surfaces
 /// `("count", "sources")`.
 ///
-/// Ported verbatim from `crates/reify-compiler/tests/trajectory_stdlib_compile.rs:125-144`
+/// Ported verbatim from `crates/reify-compiler/tests/harness_mechanics/trajectory_stdlib_compile.rs:125-144`
 /// (same helper used by `piecewise_polynomial_profile_constrains_waypoints_nonempty`
 /// for the `waypoints.count > 0` assertion shape needed here).
 fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
