@@ -122,7 +122,10 @@ pub structure IdlerPulley {
 /// It is the ROPE's centreline, not the arc centre, that stays on `pitch_r`: under
 /// tension the rope bottoms out in its seat, so its centre sits `groove_r -
 /// rope_dia/2` inboard of the arc centre, and the arc centre is put that far
-/// OUTBOARD to compensate. So the D/d story below is untouched by the oversize arc.
+/// OUTBOARD to compensate. So the Sizing paragraph below is untouched by the
+/// oversize arc, and so is every axial figure in it: `active_turns`, `band`,
+/// `groove_len` and `Fairlead.stroke` are all bit-identical across the change,
+/// which is why `CapstanDrive`'s stroke-coverage constraints keep holding.
 /// The wrap stays positive and zero-slip because both rope ends are ANCHORED to
 /// the drum, not because the channel traps them.
 ///

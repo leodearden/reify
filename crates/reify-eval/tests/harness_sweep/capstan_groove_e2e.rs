@@ -1944,9 +1944,19 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
 ///     fail on a legitimate edit rather than on a regression.
 ///   * SCOPED to `Capstan` it is the strict anything-but-`Satisfied` claim,
 ///     because every `Capstan` constraint reads scalar cells only (`land_r`,
-///     `pitch_r`, `groove_r`, `bore_r`, `lead`, `flange_r`, `d_ratio`) and none
-///     of them touches a `volume()` cell — so `Indeterminate` there is always a
-///     regression, never a missing kernel. That claim was previously made for
+///     `seat_c`, `groove_r`, `rope_dia`, `bore_r`, `lead`, `flange_r`,
+///     `d_ratio`) and none of them touches a `volume()` cell — so
+///     `Indeterminate` there is always a regression, never a missing kernel.
+///     #5683's oversize seat arc reshuffled that list rather than only adding
+///     to it: `rope_dia` and `seat_c` joined (the new `groove_r > rope_dia/2`
+///     bound, and the `land_r` band and groove-bottom-to-bore wall restated
+///     against the arc centre), and `pitch_r` LEFT it — no `Capstan` constraint
+///     names `pitch_r` any more, it reaches them only through `seat_c` and
+///     `flange_r`. All of them are ordinary `param`/`let` scalars, so the
+///     strict claim stays exactly as decidable as it was. Re-measured on this
+///     tree rather than carried over: 7 of 7 `Capstan` results `Satisfied`,
+///     0 `Indeterminate`, out of 18 file-wide over `Capstan`, `CapstanDrive`,
+///     `Fairlead`, `IdlerPulley` and `ShuttlePlate`. That claim was previously made for
 ///     `Capstan` ONLY inside the OCCT-gated
 ///     `capstan_surfaces_only_the_finished_drum`, which returns early with no
 ///     kernel; since `Indeterminate` reaches the diagnostics only as a warning
@@ -1977,9 +1987,9 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
     // ---- …and `Capstan` strictly, on this surface too ----
     // The file-wide claim above is deliberately weak, but `Capstan` is one of the
     // entities whose constraint inputs are ALL defined kernel-free — every one of
-    // them reads scalar cells only (`land_r`, `pitch_r`, `groove_r`, `bore_r`,
-    // `lead`, `flange_r`, `d_ratio`), none reaches a `volume()` cell — so the
-    // strict claim is decidable here and safe to make.
+    // them reads scalar cells only (`land_r`, `seat_c`, `groove_r`, `rope_dia`,
+    // `bore_r`, `lead`, `flange_r`, `d_ratio`), none reaches a `volume()` cell
+    // — so the strict claim is decidable here and safe to make.
     //
     // Without it, `Indeterminate` on a `Capstan` constraint reads green on every
     // kernel-free machine — the blind spot [`Strictness`] documents. Neither of

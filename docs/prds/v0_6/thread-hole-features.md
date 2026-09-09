@@ -293,9 +293,11 @@ once. #5683 moved it to DIN 15061 rope-drum practice, `groove_r = 0.53·rope_dia
 moved the land from `pitch_r` to the seat's arc centre `seat_c = pitch_r + groove_r −
 rope_dia/2`. What stays on the D/d circle is the **rope's** centreline, not the arc
 centre: under tension the rope bottoms out in its seat, so pinning the rope to `pitch_r`
-and pushing the arc centre outboard leaves `drum_d`, the pitch circumference,
-`active_turns`, `groove_len` and the 63 mm shuttle stroke bit-identical — the D/d story
-is untouched. That was the objection #5580 recorded for deferring this work, and
+and pushing the arc centre outboard leaves `drum_d`, the pitch circumference and
+`active_turns` bit-identical — and with them all three of the design's distinct axial
+figures, `Capstan.band` (≈ 60.3 mm), `groove_len` (≈ 88.3 mm) and `Fairlead.stroke`
+(63 mm). The D/d story is untouched, and so are the two `CapstanDrive`
+stroke-coverage constraints, which read only those cells. That was the objection #5580 recorded for deferring this work, and
 anchoring the rope rather than the arc dissolves it. What the oversize arc buys is a
 mouth of `2·groove_r = 1.06·rope_dia` — a strict 6% clearance where #5580 had an exact
 equality — and 0.175 mm of per-side clearance at the rope's widest section, so a
