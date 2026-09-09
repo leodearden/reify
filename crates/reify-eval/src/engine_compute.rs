@@ -431,7 +431,7 @@ impl crate::Engine {
             && crate::compute_persist::is_persistable_target(target)
         {
             match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
-                Some((result, _replayed)) => {
+                Some((result, replayed)) => {
                     // Fold hook — mirrors the Completed arm.
                     if target == "shell-extract::extract" {
                         crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
@@ -453,11 +453,24 @@ impl crate::Engine {
                         0.0,  // cost_per_byte unknown for a cache hit
                     );
                     self.persistent_hit_count += 1;
-                    // DEFECT, fixed in the next step of task 7245: `_replayed`
-                    // carries the diagnostics the original solve emitted, and
-                    // discarding them here is what makes every `W_*` warning
-                    // first-run-only once a persistent cache dir is configured.
-                    return Ok((result, vec![], vec![]));
+                    // Task 7245: replay the diagnostics the original solve
+                    // emitted, through the SAME tuple slot the fresh
+                    // (trampoline) path uses. Every consumer already does
+                    // `diagnostics.extend(diags)` on it, so a warm serve needs
+                    // no consumer change to say what the cold serve said.
+                    //
+                    // #5062 / INV-EVAL-3 (each diagnostic has exactly one owner
+                    // per serve — replayed XOR freshly-pushed, never both)
+                    // holds STRUCTURALLY here, with no flag and no dedup pass:
+                    // this arm `return`s on a HIT and falls through to
+                    // `invoke_compute_trampoline` only on a MISS, so a single
+                    // dispatch can never do both.
+                    //
+                    // The 3rd element stays `vec![]`: `structured_detail`
+                    // replay is the same defect class but a different codec,
+                    // deliberately out of this task's scope and filed as its
+                    // own follow-up.
+                    return Ok((result, replayed, vec![]));
                 }
                 None => {
                     self.persistent_miss_count += 1;
