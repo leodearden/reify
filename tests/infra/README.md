@@ -165,6 +165,22 @@ sleep 0.3  # holder-sleep:allow — one-sided: the check below can only
 The reason should say why the fixed interval cannot produce a false PASS, so
 the exemption is auditable.
 
+**Current blessed survivors** (as of task #6247):
+- `test_jobserver_balancer.sh` Block 19b: a kernel-reap grace after `kill -9`,
+  not a holder handshake at all — nothing holds a lock across it.  It matches
+  clause 1 on the lone word *grace*, which is exactly the lexeme over-reach the
+  escape exists for.
+- `test_seed_warm_lane.sh` H5d and H9: the settle before each "not done yet"
+  check.  Those checks are one-sided — the holder genuinely holds the lane lock
+  until the test kills it, so an outrun settle can only false-FAIL, never
+  false-pass.  Converting them to a real `holder_wait_until_held` barrier is the
+  better fix, but it is a behavioural change rather than an annotation and is
+  filed as a follow-up.
+
+**Nothing enforces this list**, for the same reason as `wallclock:allow` above:
+`grep -rn 'holder-sleep:allow' tests/infra/*.sh` is the authority, and this
+list is refreshed BY HAND whenever an escape is added or removed.
+
 ## Opt-in soak: seed lane-lock release (`REIFY_RUN_SEED_LANE_LOCK_SOAK`)
 
 `test_seed_lane_lock_release_soak.sh` is the repeat-N characterization
