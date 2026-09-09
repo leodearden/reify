@@ -94,8 +94,26 @@ verify_env_exports() {
 echo ""
 echo "--- Extractor correctness (a): synthetic fixture ---"
 
+# ONE EXIT trap for the WHOLE file. bash keeps a single EXIT handler per shell,
+# so a second `trap ... EXIT` anywhere below would SILENTLY replace this one and
+# leak whatever the replaced handler was responsible for -- which is exactly what
+# happened when the fixture-suite cleanup was added later in the file. Everything
+# that needs removing registers itself here instead; _amb_self_trap_count below
+# pins the "exactly one" property so the mistake cannot recur unnoticed.
+_AMB_CLEANUP_PATHS=()
+_amb_cleanup() {
+    [ "${#_AMB_CLEANUP_PATHS[@]}" -gt 0 ] && rm -rf "${_AMB_CLEANUP_PATHS[@]}"
+    return 0
+}
+trap _amb_cleanup EXIT
+
+# Self-guard for the invariant above, asserted against this file's own source.
+_amb_self_trap_count() { grep -c '^trap ' "${BASH_SOURCE[0]}"; }
+assert "this file installs EXACTLY ONE EXIT trap (a second would silently replace it and leak)" \
+    test "$(_amb_self_trap_count)" -eq 1
+
 _FIXTURE="$(mktemp)"
-trap 'rm -f "$_FIXTURE"' EXIT
+_AMB_CLEANUP_PATHS+=("$_FIXTURE")
 
 cat > "$_FIXTURE" <<'FIXTURE_EOF'
 pre_block_key: pre_block_value
@@ -171,9 +189,20 @@ assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty a
 # this host) while still firing well inside the 30m outer envelope, which is the
 # only way the attribution survives.
 # ---------------------------------------------------------------------------
-# _amb_run_under_ambient YAML BUDGET_SECS CMD...
+# _amb_run_under_ambient YAML BUDGET_SECS KILL_GRACE_SECS CMD...
 # Run CMD under the production verify_env ambient extracted from YAML, bounded
-# by BUDGET_SECS. Echoes whatever CMD writes to stdout.
+# by BUDGET_SECS with a KILL_GRACE_SECS SIGKILL escalation. Echoes whatever CMD
+# writes to stdout.
+#
+# WHY THE ESCALATION, AND WHY NOT --foreground. A bare `timeout N` sends only
+# SIGTERM: a child that blocks or ignores it leaves the BACKSTOP ITSELF hanging,
+# which defeats the one job it has. `--kill-after` is the house convention
+# (verify.sh, test_occt_flock_gate.sh) for exactly that reason. The default
+# (non---foreground) mode is also load-bearing here: timeout puts the child in
+# its OWN process group and signals the GROUP, so the nested suite's backgrounded
+# descendants -- gated flock holders, wrapper invocations, each with its own
+# generous budget -- are reaped WITH it instead of being orphaned into the
+# reaper's lap. Passing --foreground would switch that off.
 #
 # How CMD's STDERR is captured is the CALLER's decision, made with a `2>&1` at
 # the call site. Merging it in here would be wrong twice: it would decide for
@@ -182,10 +211,14 @@ assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty a
 # deadline-capable site to check its stderr never reaches the inherited fd 2 --
 # a redirect it cannot see is one it must report as a leak.
 #
-# Returns CMD's OWN exit code, or one of two codes of its own:
+# Returns CMD's OWN exit code, or one of three codes of its own:
 #   99   the ambient was not applied, so the run proves nothing (the
 #        non-vacuity preflight -- see the section comment above);
-#   124  the backstop fired, i.e. CMD WEDGED.
+#   124  the backstop fired and SIGTERM ended CMD, i.e. CMD WEDGED;
+#   137  the backstop fired and CMD had to be SIGKILLed, i.e. CMD WEDGED AND
+#        did not answer SIGTERM. Both wedge codes are infrastructure hangs and
+#        neither is a failed assertion; _amb_nested_verdict keeps them apart
+#        from a completed run's own non-zero exit.
 #
 # CMD is a COMMAND, not a suite path, and that is load-bearing in two ways. It
 # keeps `bash <the suite>` written out at the call site, where a reader -- and
@@ -201,14 +234,14 @@ assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty a
 # or at any call site compares a measured magnitude. Its only job is to end a
 # hang early enough that the outcome is still attributable to THIS suite.
 _amb_run_under_ambient() {
-    local _yaml="$1" _budget="$2"
-    shift 2
+    local _yaml="$1" _budget="$2" _grace="$3"
+    shift 3
     (
         while IFS= read -r _kv; do
             export "$_kv"
         done < <(verify_env_exports "$_yaml")
         [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ] || { echo "AMBIENT-NOT-APPLIED"; exit 99; }
-        timeout "$_budget" "$@"
+        timeout --kill-after="$_grace" "$_budget" "$@"
     )
 }
 
@@ -226,7 +259,9 @@ _amb_nested_verdict() {
         0)
             echo "nested=$_suite outcome=passed rc=0" ;;
         124)
-            echo "nested=$_suite outcome=wedged rc=124 -- it never finished and the anti-hang backstop ended it. That is a HANG in $_suite, not a failed assertion inside it: look for a barrier that never released, not for a regression." ;;
+            echo "nested=$_suite outcome=wedged rc=124 -- it never finished and the anti-hang backstop ended it with SIGTERM. That is a HANG in $_suite, not a failed assertion inside it: look for a barrier that never released, not for a regression." ;;
+        137)
+            echo "nested=$_suite outcome=wedged rc=137 -- it never finished AND did not answer SIGTERM, so the backstop escalated to SIGKILL. Still a HANG in $_suite, not a failed assertion: look for a child that blocks or ignores SIGTERM. (An external SIGKILL, e.g. the OOM killer, lands here too -- also infrastructure, never a regression.)" ;;
         99)
             echo "nested=$_suite outcome=ambient-not-applied rc=99 -- the hostile verify_env ambient was not in effect, so this run proves nothing either way." ;;
         *)
@@ -246,39 +281,50 @@ _AMB_SUITE_NAME="test_occt_flock_gate.sh"
 # that envelope for the outcome to be attributed to this suite rather than
 # surfacing as "run_all was interrupted".
 _AMB_NESTED_BACKSTOP_SECS=900
-
-_AMB_TMPDIRS=()
-trap '[ "${#_AMB_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_AMB_TMPDIRS[@]}"' EXIT
+# SIGTERM-to-SIGKILL grace for the same backstop, matching the house convention
+# (`timeout --kill-after=60` in verify.sh and test_occt_flock_gate.sh). Also a
+# BROKEN-INFRA BACKSTOP, not a timing assertion: it is only ever reached by a
+# child that already failed to answer SIGTERM.
+_AMB_NESTED_KILL_GRACE_SECS=60
 
 # _amb_fixture_suite LINE... -- a throwaway stand-in for the nested suite.
+# Registers its workdir with the file's single cleanup registry (see the ONE
+# EXIT trap note above); it must NOT install a trap of its own.
 _amb_fixture_suite() {
-    local _d; _d="$(mktemp -d)"; _AMB_TMPDIRS+=("$_d")
+    local _d; _d="$(mktemp -d)"; _AMB_CLEANUP_PATHS+=("$_d")
     local _l
     printf '#!/usr/bin/env bash\n' > "$_d/suite.sh"
     for _l in "$@"; do printf '%s\n' "$_l" >> "$_d/suite.sh"; done
     echo "$_d/suite.sh"
 }
 
-# _amb_nested_rc BUDGET SUITE -- echo _amb_run_under_ambient's exit code.
+# _amb_nested_rc BUDGET GRACE SUITE -- echo _amb_run_under_ambient's exit code.
 _amb_nested_rc() {
     local _rc=0
-    _amb_run_under_ambient "$_AMB_YAML" "$1" bash "$2" >/dev/null 2>&1 || _rc=$?
+    _amb_run_under_ambient "$_AMB_YAML" "$1" "$2" bash "$3" >/dev/null 2>&1 || _rc=$?
     echo "$_rc"
 }
 
 _amb_wedge_suite="$(_amb_fixture_suite 'sleep 600')"
 assert "a WEDGED nested suite surfaces as the backstop's own exit code 124, instead of hanging this file until the outer envelope kills run_all" \
-    test "$(_amb_nested_rc 2 "$_amb_wedge_suite")" -eq 124
+    test "$(_amb_nested_rc 2 2 "$_amb_wedge_suite")" -eq 124
+
+# The half a bare `timeout` cannot do: a child that IGNORES SIGTERM would leave
+# the backstop itself hanging forever. The escalation must end it, and the
+# outcome must still be reported as a wedge rather than as a suite that ran.
+_amb_deaf_suite="$(_amb_fixture_suite "trap '' TERM" 'sleep 600')"
+assert "a nested suite that IGNORES SIGTERM is still ended, by the backstop's SIGKILL escalation (137)" \
+    test "$(_amb_nested_rc 2 2 "$_amb_deaf_suite")" -eq 137
 
 # The discriminator. Without it the backstop could "pass" by mapping every
 # non-zero outcome onto 124, which would erase the distinction it exists to make.
 _amb_fail_suite="$(_amb_fixture_suite 'exit 3')"
 assert "a nested suite that RAN and failed passes its own exit code through unchanged (3, not the backstop's 124)" \
-    test "$(_amb_nested_rc 60 "$_amb_fail_suite")" -eq 3
+    test "$(_amb_nested_rc 60 60 "$_amb_fail_suite")" -eq 3
 
 _amb_pass_suite="$(_amb_fixture_suite 'echo "Results: 1 passed, 0 failed"')"
 assert "a nested suite that passed reports 0 through the backstop" \
-    test "$(_amb_nested_rc 60 "$_amb_pass_suite")" -eq 0
+    test "$(_amb_nested_rc 60 60 "$_amb_pass_suite")" -eq 0
 
 # The existing exit-99 preflight, now proven through the extracted seam: the
 # hostile ambient must genuinely reach the nested child, or every verdict above
@@ -288,7 +334,7 @@ _amb_probe_suite="$(_amb_fixture_suite 'echo "HEAVY=${REIFY_GATE_EXCLUDE_HEAVY:-
 # and a fresh shell would report command-not-found -- which grep would then read
 # as a plain absence, making the case pass or fail for the wrong reason.
 _amb_ambient_reaches_child() {
-    _amb_run_under_ambient "$_AMB_YAML" 60 bash "$1" 2>&1 | grep -qxF "HEAVY=1"
+    _amb_run_under_ambient "$_AMB_YAML" 60 60 bash "$1" 2>&1 | grep -qxF "HEAVY=1"
 }
 assert "the production ambient genuinely reaches the nested child (REIFY_GATE_EXCLUDE_HEAVY=1 observed inside it)" \
     _amb_ambient_reaches_child "$_amb_probe_suite"
@@ -319,6 +365,8 @@ _amb_verdict_case() {
 
 assert "verdict(124): names the nested suite and calls it a WEDGE, and is not a pass" \
     _amb_verdict_case 124 no "$_AMB_SUITE_NAME" wedged
+assert "verdict(137): names the nested suite and calls it a WEDGE too, so a SIGTERM-deaf hang is never read as a regression" \
+    _amb_verdict_case 137 no "$_AMB_SUITE_NAME" wedged
 assert "verdict(3): names the nested suite and says it RAN and failed -- not a wedge" \
     _amb_verdict_case 3 no "$_AMB_SUITE_NAME" failed
 assert "verdict(99): names the ambient-not-applied preflight, so a proves-nothing run is never read as either of the other two" \
@@ -355,7 +403,7 @@ amb_rc=0
 # variables, or a redirect buried in a callee, is invisible to that derivation --
 # which is also to say invisible to a reader.
 amb_out="$(
-    _amb_run_under_ambient "$_AMB_YAML" "$_AMB_NESTED_BACKSTOP_SECS" \
+    _amb_run_under_ambient "$_AMB_YAML" "$_AMB_NESTED_BACKSTOP_SECS" "$_AMB_NESTED_KILL_GRACE_SECS" \
         bash "$SCRIPT_DIR/test_occt_flock_gate.sh" 2>&1
 )" || amb_rc=$?
 
