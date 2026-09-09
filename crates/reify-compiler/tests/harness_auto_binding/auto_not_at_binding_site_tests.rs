@@ -611,10 +611,9 @@ fn positional_auto_seed_label_points_at_the_auto_operand() {
 /// the first-offending-arg short-circuit rather than merely appearing to.
 #[test]
 fn positional_auto_seed_reports_only_the_first_offending_arg() {
-    let source = format!(
-        "fn span2(a: Length, b: Length) -> Length = a  \
-         structure S {{ let y = span2(auto(5mm), auto(7mm)) }}"
-    );
+    let source = "fn span2(a: Length, b: Length) -> Length = a  \
+         structure S { let y = span2(auto(5mm), auto(7mm)) }"
+        .to_string();
     let module = compile_source_with_stdlib(&source);
 
     let gate_errors: Vec<_> = errors_only(&module)
