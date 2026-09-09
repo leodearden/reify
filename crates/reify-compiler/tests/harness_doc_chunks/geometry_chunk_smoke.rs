@@ -416,19 +416,34 @@ const MEASUREMENT_SECTION_MARKER: &str = "<!-- MEASUREMENT-SECTION -->";
 const MEASUREMENT_SECTION_TITLE: &str = "## Measurement & Mass-Property Queries";
 
 /// Marker that OPENS the `undef`-TRAP region inside the measurement section —
-/// the two traps that explain why a query silently yields `Value::Undef`. Matched
-/// BYTE-EXACTLY on the trimmed line, exactly as every other marker here is, and
-/// for the identical reason: the anchor must be inert so the heading's wording
-/// stays free.
+/// the three traps (arg shape, binder scope, no OCCT) that explain why a query
+/// silently yields `Value::Undef`. Matched BYTE-EXACTLY on the trimmed line,
+/// exactly as every other marker here is, and for the identical reason: the
+/// anchor must be inert so the heading's wording stays free.
 ///
 /// This is the one marker scoping a region for a FORBIDDEN direction rather than
 /// a required one, and the scoping is what makes that safe. The chunk writes
 /// `volume(...)` legitimately all over the measurement section — the signature
 /// list, the worked fence, the fence's own hoist annotation — so a chunk-wide
 /// "no hoisted call form" scan would be RED against entirely correct prose. Only
-/// this region claims that an inline geometry argument yields `undef`, so only
-/// this region is scanned.
+/// these three traps claim that an inline geometry argument yields `undef`, so
+/// only they are scanned.
+///
+/// PAIRED WITH [`NOT_HOISTED_TRAP_END_MARKER`], and read through
+/// [`marker_closed_region`] rather than [`section_body`], because "to the next
+/// `##` heading" is NOT the extent this scan wants. `section_body` does not stop
+/// at a `### ` heading and has no end-marker notion, so the unclosed region ran
+/// past the traps and swallowed the section's closing **Worked reference**
+/// paragraph — text that is not about `undef` at all, where a perfectly correct
+/// future sentence ("it calls `volume(part)` on a filleted body") would have
+/// gone RED. The closing marker is what makes the docstring above a description
+/// of the real extent instead of an aspiration.
 const NOT_HOISTED_TRAP_MARKER: &str = "<!-- NOT-HOISTED-TRAP -->";
+
+/// Marker that CLOSES [`NOT_HOISTED_TRAP_MARKER`]'s region, immediately after the
+/// third trap. Matched byte-exactly on the trimmed line, and its ABSENCE panics
+/// — see [`marker_closed_region`].
+const NOT_HOISTED_TRAP_END_MARKER: &str = "<!-- /NOT-HOISTED-TRAP -->";
 
 /// Human-readable name of [`NOT_HOISTED_TRAP_MARKER`]'s region. Panic text only;
 /// nothing matches on it.
@@ -561,6 +576,43 @@ pub(crate) fn section_body(
          heading is free and needs no change here — only the marker is matched."
     );
     body.join("\n")
+}
+
+/// The part of a [`section_body`] that lies BEFORE `end_marker`.
+///
+/// A CLOSED region, for the one scan that needs one. [`section_body`] runs to
+/// the next `## ` heading, which is right for a coverage scan — more text can
+/// only help it — but wrong for a FORBIDDEN-direction scan, where every extra
+/// line is another place correct prose can trip the assertion. Delegating keeps
+/// the fence-awareness and the two panics in one implementation rather than
+/// growing the near-identical scraper this module's doc warns about.
+///
+/// PANICS when `end_marker` is absent, for the same reason `section_body` panics
+/// on an absent opening marker: silently falling back to "the rest of the
+/// section" would quietly widen a forbidden-direction scan back to the extent it
+/// was narrowed away from, and the widening would first be noticed as a RED
+/// against prose that is perfectly correct.
+pub(crate) fn marker_closed_region(
+    markdown: &str,
+    marker: &str,
+    end_marker: &str,
+    chunk_path: &str,
+    section_title: &str,
+) -> String {
+    let body = section_body(markdown, marker, chunk_path, section_title);
+    let end = body
+        .lines()
+        .position(|line| line.trim() == end_marker)
+        .unwrap_or_else(|| {
+            panic!(
+                "{chunk_path} opens the `{section_title}` region with `{marker}` but never closes \
+                 it: no line is exactly `{end_marker}`. The closing marker is what bounds this \
+                 region — without it the scan would run on to the next `##` heading and start \
+                 judging text that was never in scope. Restore the closing marker on its own \
+                 line where the region ends."
+            )
+        });
+    body.lines().take(end).collect::<Vec<_>>().join("\n")
 }
 
 /// FORM A oracle names — dispatched through the kinematic-query post-process
@@ -780,19 +832,26 @@ fn measurement_query_family_documented_in_geometry_chunk() {
 /// stay exactly as it is — naming them is the carve-out's whole job. Only a call
 /// form `name(` makes the false claim, so only a call form is forbidden.
 ///
-/// ANTI-VACUITY IS EXPLICIT here rather than inherited. [`section_body`]'s
-/// panic-on-absent-marker covers a DELETED marker, but a forbidden-direction
-/// assertion is trivially satisfied by an EMPTY region, so gutting the
-/// illustrative call would otherwise go green. The floor therefore requires at
-/// least one surviving call form drawn from `GEOMETRY_QUERY_NAMES` MINUS the
-/// whole-handle four — computed from the two registries rather than hardcoded, so
-/// swapping `perimeter` for `max_deviation` in the prose keeps this correct.
+/// SCOPED TO THE THREE TRAPS, and closed at both ends by
+/// [`marker_closed_region`]. The region is exactly what claims that an inline
+/// geometry argument yields `undef`; the section's closing **Worked reference**
+/// paragraph sits outside it deliberately, because a correct sentence there
+/// naming `volume(part)` is not this test's business.
+///
+/// ANTI-VACUITY IS EXPLICIT here rather than inherited. The two markers'
+/// panic-on-absent covers a DELETED region, but a forbidden-direction assertion
+/// is trivially satisfied by an EMPTY one, so gutting the illustrative call
+/// would otherwise go green. The floor therefore requires at least one surviving
+/// call form drawn from `GEOMETRY_QUERY_NAMES` MINUS the whole-handle four —
+/// computed from the two registries rather than hardcoded, so swapping
+/// `perimeter` for `max_deviation` in the prose keeps this correct.
 #[test]
 fn the_undef_trap_example_is_a_query_the_hoist_does_not_cover() {
     let markdown = read_chunk();
-    let region = section_body(
+    let region = marker_closed_region(
         &markdown,
         NOT_HOISTED_TRAP_MARKER,
+        NOT_HOISTED_TRAP_END_MARKER,
         CHUNK_PATH,
         NOT_HOISTED_TRAP_TITLE,
     );
@@ -903,17 +962,7 @@ fn topology_selector_family_documented_in_geometry_chunk() {
         rows.len()
     );
 
-    let table_names: Vec<String> = {
-        let mut out: Vec<String> = Vec::new();
-        for row in &rows {
-            for name in row {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-            }
-        }
-        out
-    };
+    let table_names = catalogue_table_names(&rows);
 
     // (a) COVERAGE — registry → table.
     for name in reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES {
@@ -1611,6 +1660,30 @@ pub(crate) fn catalogue_table_rows(section: &str) -> Vec<Vec<String>> {
     rows
 }
 
+/// The DISTINCT names carried by `rows`, in document order.
+///
+/// A SIBLING of [`catalogue_table_rows`] rather than a replacement for it,
+/// because the two catalogue scans each ask a table two different questions: how
+/// many ROWS it still has (the anti-vacuity floor) and which NAMES it claims
+/// (the registry assertions in both directions). Both call sites want both
+/// answers, so the rows are parsed once and flattened here.
+///
+/// It exists because the flatten was an eleven-line verbatim copy in each of
+/// those two callers — the same kind of near-duplicate
+/// [`assert_cited_paths_resolve`] was extracted to stop growing
+/// (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924). A dedup rule that lives in
+/// one place is also the only way the two scans can be said to compare against
+/// the same set.
+pub(crate) fn catalogue_table_names(rows: &[Vec<String>]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in rows.iter().flatten() {
+        if !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
 /// Every geometry constructor the LENGTH-ARGUMENTS section names as taking a
 /// dimensioned argument must be a REAL registry entry.
 ///
@@ -1668,17 +1741,7 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
     );
 
     let table_rows = catalogue_table_rows(&section);
-    let table_names: Vec<String> = {
-        let mut out: Vec<String> = Vec::new();
-        for row in &table_rows {
-            for name in row {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-            }
-        }
-        out
-    };
+    let table_names = catalogue_table_names(&table_rows);
     let called = called_names(&strip_reify_comments(&section));
 
     // Anti-vacuity, one floor per set. The ROW floor catches a deleted or
@@ -2070,12 +2133,19 @@ pub(crate) fn assert_cited_paths_resolve(
 
 /// Cite floors for [`cited_test_paths_in_the_chunk_resolve`].
 ///
-/// The EXACT live counts, not round numbers under them: 22 `<path>::<fn>` cites,
-/// resolving to 11 distinct `.rs` files and 6 distinct `.ri` files. Task 5581's
-/// two new sections raised all three (from 13/6/4) by citing their own chunk
-/// guards, the eval tests that pin the measurement family's runtime behaviour,
-/// and the two worked `.ri` walks a reader is sent to next. Re-measure rather
-/// than trusting this sentence — the protocol is below.
+/// The EXACT live counts, not round numbers under them. The three constants
+/// below ARE the measurement — `<path>::<fn>` cites, then distinct `.rs` files,
+/// then distinct `.ri` files — and this prose deliberately does not restate
+/// them. A restated count is a second number that has to agree with the
+/// constant, and the first draft of this docstring already did not: it read 22
+/// against a floor of 24, both written in the same commit. That is the exact
+/// mechanism the paragraph below warns about — a later editor re-derives from
+/// the sentence and lands a floor under live. The panic text prints the whole
+/// live cite list, so the failure itself is the re-measurement surface.
+///
+/// Task 5581's two new sections raised all three (from 13/6/4) by citing their
+/// own chunk guards, the eval tests that pin the measurement family's runtime
+/// behaviour, and the two worked `.ri` walks a reader is sent to next.
 ///
 /// WHY EXACT — a measured incident, not a principle. With the cite floor one
 /// below live, dropping trap 5's `single_body_self_pair_excluded` row left
@@ -2104,7 +2174,7 @@ pub(crate) fn assert_cited_paths_resolve(
 /// That masking is not hypothetical: it is why a first pass over these ten
 /// floors found two of the four that had gone stale, and a one-at-a-time sweep
 /// found all four.
-const MINIMUM_FN_CITES: usize = 24;
+const MINIMUM_FN_CITES: usize = 25;
 const MINIMUM_RS_FILES: usize = 11;
 const MINIMUM_RI_FILES: usize = 6;
 
@@ -2508,5 +2578,32 @@ prose, not a table row at all
     assert_eq!(
         catalogue_table_rows(table),
         vec![vec!["interp".to_string(), "bezier".to_string()]]
+    );
+}
+
+/// The flatten keeps DOCUMENT ORDER and drops a repeat, across rows as well as
+/// within one.
+///
+/// Both directions of the catalogue assertions read this list — coverage reports
+/// it back in its panic text, and registry-truth iterates it — so an order that
+/// wandered or a duplicate that survived would show up as a confusing panic
+/// rather than a wrong verdict. Pinned here because the two callers no longer
+/// carry a copy of the rule to read.
+#[test]
+fn catalogue_table_names_flattens_in_document_order_without_repeats() {
+    let rows = vec![
+        vec!["interp".to_string(), "bezier".to_string()],
+        vec!["helix".to_string()],
+        vec!["bezier".to_string()],
+    ];
+    assert_eq!(
+        catalogue_table_names(&rows),
+        vec![
+            "interp".to_string(),
+            "bezier".to_string(),
+            "helix".to_string()
+        ],
+        "the second `bezier` is the same claim as the first, and the surviving order is the \
+         order a reader scans the table in"
     );
 }

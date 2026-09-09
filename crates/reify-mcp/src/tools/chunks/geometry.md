@@ -430,7 +430,9 @@ gate.
        geometry_chunk_smoke.rs::documented_measurement_arities_are_exercised_by_a_compiling_fence
        geometry_chunk_smoke.rs::the_undef_trap_example_is_a_query_the_hoist_does_not_cover
 
-     That last guard scopes the `<!-- NOT-HOISTED-TRAP -->` region below and pins exactly ONE
+     That last guard scopes the region BETWEEN `<!-- NOT-HOISTED-TRAP -->` and
+     `<!-- /NOT-HOISTED-TRAP -->` below — both markers matched byte-exactly, and a missing
+     closing one is RED rather than a silent widening — and pins exactly ONE
      claim: the call form the arg-shape trap exhibits is drawn from OUTSIDE
      reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, so the trap cannot illustrate "an inline
      argument yields undef" with one of the four names the next sentence exempts. It reads the
@@ -440,6 +442,8 @@ gate.
      crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs::assert_hoist_scope
      whose three binder cases each assert exactly zero hoists. Naming a whole-handle query as a
      bare backticked identifier in the carve-out sentence is fine — only the CALL FORM is refused.
+     The closing marker sits directly after the third trap, so the **Worked reference** paragraph
+     that ends this section is OUTSIDE the guarded region and may name any call form it likes.
 
      RUNTIME claims below (which names resolve to real numbers, and when they do not) are pinned
      separately, on the eval side:
@@ -518,11 +522,11 @@ structure def MeasuredBracket {
 ### Eval status, and when a query yields `undef`
 
 Every one of these fifteen names has live eval dispatch. There is **no** "compile-time typed but
-never evaluated" subset in this family, whatever older comments in `units.rs` still say. What there
-is, is a resolution *stage*: these are kernel-bearing consumers, resolved during `reify build`
-against a realized handle. Under kernel-less `reify eval` / `reify check` they stay `Value::Undef`,
-and a constraint over one reads `INDETERMINATE` while the process still exits 0 (`--strict` flips
-that). This is the same stage split the interference/clearance section documents at length.
+never evaluated" subset in this family. What there is, is a resolution *stage*: these are
+kernel-bearing consumers, resolved during `reify build` against a realized handle. Under
+kernel-less `reify eval` / `reify check` they stay `Value::Undef`, and a constraint over one reads
+`INDETERMINATE` while the process still exits 0 (`--strict` flips that). This is the same stage
+split the interference/clearance section documents at length.
 
 Three things make a query silently `undef` even under `reify build`, and all three are worth knowing
 before you debug the number:
@@ -547,6 +551,7 @@ before you debug the number:
 3. **No OCCT.** The kernel gate is all-or-nothing, not per-query: with OCCT unavailable the whole
    geometry pipeline is skipped, every query cell stays `undef`, and the exit code is still 0. There
    is no per-query fallback to a cheaper representation, so do not write code that expects one.
+<!-- /NOT-HOISTED-TRAP -->
 
 **Worked reference:** `examples/kernel_queries/all_queries_walk.ri` calls the family end-to-end over
 a multi-feature part. Read it as a runnable example, not as normative prose — its own header is
@@ -572,6 +577,16 @@ from the compiler registry in `crates/reify-compiler/src/units.rs`.
      THE TABLE SHAPE IS LOAD-BEARING for that guard: a catalogue row is a `|`-leading line whose
      FIRST cell backticks the selector it is about. Rewriting this into bullets is RED. The other
      columns are free-form — nothing matches on them.
+
+     THE CALL FORM COLUMN is therefore UNPINNED, and it is the column whose errors are silent.
+     A wrong arity is not a compile error: the compiler types a topology-selector call from its
+     NAME alone, and eval's arity gate — crates/reify-eval/src/geometry_ops.rs::expected_arity —
+     simply declines to dispatch, so the cell stays `Value::Undef` with no diagnostic. That is
+     exactly the shape of the 2026-07-24 finding (`rotate(geo, axis, angle)` documented at a
+     signature the compiler had never been shown, tasks #5347 / #5364). Check an argument list
+     against that arity table, or against docs/reify-stdlib-reference.md §3.9, before trusting it;
+     making this column registry-checkable the way the first column is needs that arity table
+     exposed outside reify-eval.
 
      The Result and Eval columns are transcribed from
      crates/reify-compiler/src/units.rs::topology_selector_result_type and from the eval dispatch
