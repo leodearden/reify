@@ -1005,16 +1005,31 @@ fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
 ///
 /// # What this test does NOT claim — the eval-layer convergence boundary
 ///
-/// It does NOT assert the merged auto lands ON the cost argmin. A LINEAR Money
-/// objective's argmin sits exactly on a constraint boundary, where the penalty
-/// method's stationary point is offset INSIDE the penalty by
-/// `objective_gradient / (2 * PENALTY_WEIGHT)` ≈ 2.5e-7 — vastly larger than
-/// `FEASIBILITY_THRESHOLD` (1e-12) — so the converged point reads as infeasible
-/// and `solve_core` returns its `initially_feasible` fallback: the seed
-/// `extract_initial_point` supplies. That is the SAME documented eval-layer
-/// behaviour `examples/continuous_cost_min.ri`'s header records ("returns the
-/// initially-feasible SEED ... rather than a unique convergent point", PRD §9 Q2
-/// "no fix required"), and it is exactly why the house norm puts precise-argmin
+/// It does NOT assert the merged auto lands ON the cost argmin. With a Money
+/// objective and a live inequality, the solver synthesises a robustness-floor
+/// margin before it ever solves (`synthesise_floor_constraints` /
+/// `robustness_margin_for`, solver.rs), so the argmin this half actually
+/// reaches sits exactly on that FLOORED boundary, not the raw `>= 0.0`
+/// bracket. The penalty method's stationary point is offset INSIDE that
+/// floor by `objective_gradient / (2 * PENALTY_WEIGHT)` ≈ 2.5e-7 — vastly
+/// larger than `FEASIBILITY_THRESHOLD` (1e-12) — so the converged point reads
+/// as infeasible; the `effective_constraints` clamp (`derive_param_intervals`
+/// / `resolve_bounds` with `include_strict = false`, solver.rs) is what snaps
+/// it back onto the floored bound. That clamp — not a seed fallback — is what
+/// produces the published figure: `solve_core` is NOT returning its
+/// `initially_feasible` seed here (that early-return is gated on
+/// `initially_feasible && effective_objective.is_none()`, which cannot fire
+/// once a user `minimize` is present, and today's seed for this model is the
+/// constraint-derived midpoint `50.0`, task #5618's arm — nowhere near the
+/// observed `1e-9`).
+///
+/// A genuine seed-return convergence gap IS documented elsewhere:
+/// `examples/continuous_cost_min.ri`'s header records `solve_core` actually
+/// returning its initially-feasible SEED rather than a unique convergent
+/// point (PRD §9 Q2, "no fix required") — but that account does not support
+/// a seed return HERE; this model's clamp is the robustness floor instead.
+/// BT-5b, below in this file, is the test that pins this model's floored
+/// value executably, and it is exactly why the house norm puts precise-argmin
 /// assertions at the `reify-constraints` layer with explicitly bounded autos and
 /// keeps `.ri`-layer tests on ordering / off-boundary claims.
 ///
