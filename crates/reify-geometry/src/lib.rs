@@ -603,12 +603,17 @@ mod tests {
         resolutions: Arc<Mutex<Vec<VoxelResolution>>>,
     }
 
+    /// A fresh `RecordingKernel` together with shared handles to the two logs
+    /// it writes: the method-name call log and the `VoxelResolution` request
+    /// log.
+    type RecordingKernelWithLogs = (
+        RecordingKernel,
+        Arc<Mutex<Vec<&'static str>>>,
+        Arc<Mutex<Vec<VoxelResolution>>>,
+    );
+
     impl RecordingKernel {
-        fn new() -> (
-            Self,
-            Arc<Mutex<Vec<&'static str>>>,
-            Arc<Mutex<Vec<VoxelResolution>>>,
-        ) {
+        fn new() -> RecordingKernelWithLogs {
             let log = Arc::new(Mutex::new(Vec::new()));
             let resolutions = Arc::new(Mutex::new(Vec::new()));
             (
