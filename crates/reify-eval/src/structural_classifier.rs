@@ -316,26 +316,21 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
 /// Rule 4 in isolation: the type-only half of the classification, with no
 /// graph context.
 ///
-/// Extracted so [`classify_cell`] and [`stage_a_cell_vetoes`] cannot
-/// drift — the two classifiers differ only in how they evaluate Rules 1/2/3/3b
-/// (linear scan vs. pre-computed count-cell set), never in the type whitelist.
-/// Widening the whitelist is therefore a one-site edit.
+/// Extracted so the whitelist itself cannot drift between its two callers.
+/// They consult it at different SCOPES — [`classify_cell`] for a cell of any
+/// [`reify_compiler::ValueCellKind`], [`stage_a_cell_vetoes`] only for LEAF
+/// cells (`Param` / `Auto`) — but whichever one asks gets the same answer, so
+/// widening the whitelist stays a one-site edit. That difference in scope is
+/// also why "is this type on the whitelist?", which is all this function
+/// answers, is not the same question as "does a differing cell of this type
+/// veto a tick?" — see [`stage_a_eligible`]'s "# The value-diff walk is
+/// LEAF-SCOPED".
 ///
 /// `Type::Geometry` is on the whitelist as of task 6635; the `_ => Structural`
 /// conservative default is unchanged — note in particular that
 /// `Type::List(Type::Geometry)` is still caught by it, which is a KNOWN,
 /// partially-open dormancy gap. Rationale, measured evidence and that gap: the
 /// `## Type::Geometry and Rule 4` note on [`classify_cell`].
-///
-/// # The two callers apply it at different SCOPES
-///
-/// [`classify_cell`] applies it to a cell of any
-/// [`reify_compiler::ValueCellKind`]; [`stage_a_cell_vetoes`] only to LEAF
-/// cells (`Param` / `Auto`). This function answers "is this type on the
-/// whitelist?", which is not the same question as "does a differing cell of
-/// this type veto a tick?" — see [`stage_a_eligible`]'s "# The value-diff walk
-/// is LEAF-SCOPED". They share the whitelist itself, which is why it stays
-/// extracted: widening it is a one-site edit that cannot drift between them.
 ///
 /// This is deliberately NOT a public entry point: callers must go through
 /// [`classify_cell`], which applies the `structure_controlling` /
