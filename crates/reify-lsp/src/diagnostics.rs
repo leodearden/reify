@@ -1579,87 +1579,113 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// completion" IS the no-panic assertion. Wrapping either call in
     /// `#[should_panic]` or `catch_unwind` would invert the contract this test
     /// exists to state — do not.
+    ///
+    /// **Two fixtures, one body.** The `param seal : T` member is exercised
+    /// both plain and inside a GUARDED group, because the containment
+    /// predicate reaches them through different collections: a guarded member
+    /// lives in `CompiledGuardedGroup::members`, never in
+    /// `TopologyTemplate::value_cells`, and was measured to slip past the
+    /// predicate's stage-1 absence proof and panic here at
+    /// `crates/reify-eval/src/engine_eval.rs:210` —
+    /// "unrepresentable cell_type: value cell `Bearing.seal` has cell_type
+    /// TypeParam(\"T\")". Parameterised over a table rather than copied, so the
+    /// two shapes' contracts cannot drift apart; every assertion below is
+    /// load-bearing for both.
     #[test]
     fn auto_resolution_failure_does_not_panic_diagnostics_entry_points() {
-        // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
-        assert_auto_fail_fixture_is_newly_reachable();
+        // Each fixture carries its OWN anti-vacuity guard: both claim "stub
+        // clean, real checker fails resolution", but each names its own
+        // fixture when that stops being true.
+        let fixtures: [(&str, &str, fn()); 2] = [
+            (
+                "plain member",
+                AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+                assert_auto_fail_fixture_is_newly_reachable,
+            ),
+            (
+                "guarded-group member",
+                GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                assert_guarded_group_fixture_is_newly_reachable,
+            ),
+        ];
 
-        let no_candidate_code = Some(lsp_types::NumberOrString::String(
-            "AutoTypeParamNoCandidate".to_string(),
-        ));
+        for (shape, src, assert_fixture_is_newly_reachable) in fixtures {
+            // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
+            assert_fixture_is_newly_reachable();
 
-        // --- Stateless surface: compute_diagnostics ---
-        // Panics at engine_eval.rs without the containment guard (measured).
-        let diags = compute_diagnostics(AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, &test_uri());
-        assert!(
-            diags.iter().any(|d| d.code == no_candidate_code),
-            "containment (compute_diagnostics): a failed `auto:` resolution \
-             must still surface the compile-stage AutoTypeParamNoCandidate \
-             error — reaching this assertion at all means the eval pass was \
-             correctly skipped rather than panicking on the unsubstituted \
-             TypeParam cell (task #6851). A panic here means the containment \
-             guard has regressed; an empty/miscoded result means the guard \
-             fires too early and swallows the compile diagnostics. got: {:#?}",
-            diags
-        );
+            let no_candidate_code = Some(lsp_types::NumberOrString::String(
+                "AutoTypeParamNoCandidate".to_string(),
+            ));
 
-        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
-        //
-        // Snapshot `EvalState` first: the guard's placement BEFORE the state
-        // mutations is load-bearing, and nothing else pins it. If a refactor
-        // moved `state.version_counter += 1` or the `last_content_hash`
-        // assignment above the guard, this test would still be green on
-        // `result.diagnostics` alone while the SECOND request on the same
-        // unchanged document took the `content_unchanged` branch into
-        // `eval_cached` — which returns empty diagnostics by construction —
-        // and silently reported no eval diagnostics for a module that was
-        // never evaluated at all.
-        let mut state = EvalState::new();
-        let hash_before = state.last_content_hash;
-        let version_before = state.version_counter;
-        let initialized_before = state.is_engine_initialized();
+            // --- Stateless surface: compute_diagnostics ---
+            // Panics at engine_eval.rs without the containment guard (measured).
+            let diags = compute_diagnostics(src, &test_uri());
+            assert!(
+                diags.iter().any(|d| d.code == no_candidate_code),
+                "containment (compute_diagnostics, {shape}): a failed `auto:` resolution \
+                 must still surface the compile-stage AutoTypeParamNoCandidate \
+                 error — reaching this assertion at all means the eval pass was \
+                 correctly skipped rather than panicking on the unsubstituted \
+                 TypeParam cell (task #6851). A panic here means the containment \
+                 guard has regressed; an empty/miscoded result means the guard \
+                 fires too early and swallows the compile diagnostics. got: {:#?}",
+                diags
+            );
 
-        let result = compute_diagnostics_with_state(
-            &mut state,
-            AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
-            &test_uri(),
-        );
+            // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+            //
+            // Snapshot `EvalState` first: the guard's placement BEFORE the state
+            // mutations is load-bearing, and nothing else pins it. If a refactor
+            // moved `state.version_counter += 1` or the `last_content_hash`
+            // assignment above the guard, this test would still be green on
+            // `result.diagnostics` alone while the SECOND request on the same
+            // unchanged document took the `content_unchanged` branch into
+            // `eval_cached` — which returns empty diagnostics by construction —
+            // and silently reported no eval diagnostics for a module that was
+            // never evaluated at all.
+            let mut state = EvalState::new();
+            let hash_before = state.last_content_hash;
+            let version_before = state.version_counter;
+            let initialized_before = state.is_engine_initialized();
 
-        assert_eq!(
-            state.last_content_hash, hash_before,
-            "containment: a guard-suppressed request must leave \
-             `last_content_hash` UNADVANCED, so the next request on the same \
-             document takes the cold-start branch rather than `eval_cached` \
-             (which returns empty diagnostics by construction). Advancing it \
-             here is the stale-cache bug the guard's placement prevents."
-        );
-        assert_eq!(
-            state.version_counter, version_before,
-            "containment: a guard-suppressed request evaluated nothing, so it \
-             must not burn a version. A bumped counter means the guard drifted \
-             BELOW `state.version_counter += 1`."
-        );
-        assert_eq!(
-            state.is_engine_initialized(),
-            initialized_before,
-            "containment: a guard-suppressed request must leave the engine \
-             UNINITIALIZED — it never fed it a snapshot. An initialized engine \
-             here means the guard drifted below the eval call it exists to \
-             skip, i.e. the panic it contains is reachable again."
-        );
+            let result = compute_diagnostics_with_state(&mut state, src, &test_uri());
 
-        assert!(
-            result
-                .diagnostics
-                .iter()
-                .any(|d| d.code == no_candidate_code),
-            "containment (compute_diagnostics_with_state): the live server's \
-             keystroke path must still surface the compile-stage \
-             AutoTypeParamNoCandidate error without feeding the unsubstituted \
-             TypeParam graph to the engine (task #6851). A panic here means \
-             the containment guard has regressed. got: {:#?}",
-            result.diagnostics
-        );
+            assert_eq!(
+                state.last_content_hash, hash_before,
+                "containment ({shape}): a guard-suppressed request must leave \
+                 `last_content_hash` UNADVANCED, so the next request on the same \
+                 document takes the cold-start branch rather than `eval_cached` \
+                 (which returns empty diagnostics by construction). Advancing it \
+                 here is the stale-cache bug the guard's placement prevents."
+            );
+            assert_eq!(
+                state.version_counter, version_before,
+                "containment ({shape}): a guard-suppressed request evaluated nothing, so \
+                 it must not burn a version. A bumped counter means the guard drifted \
+                 BELOW `state.version_counter += 1`."
+            );
+            assert_eq!(
+                state.is_engine_initialized(),
+                initialized_before,
+                "containment ({shape}): a guard-suppressed request must leave the engine \
+                 UNINITIALIZED — it never fed it a snapshot. An initialized engine \
+                 here means the guard drifted below the eval call it exists to \
+                 skip, i.e. the panic it contains is reachable again."
+            );
+
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == no_candidate_code),
+                "containment (compute_diagnostics_with_state, {shape}): the live \
+                 server's keystroke path must still surface the compile-stage \
+                 AutoTypeParamNoCandidate error without feeding the unsubstituted \
+                 TypeParam graph to the engine (task #6851). A panic here means \
+                 the containment guard has regressed. got: {:#?}",
+                result.diagnostics
+            );
+        }
     }
 
     /// Regression guard for task 2525: `compute_diagnostics` must accept sources

@@ -1018,55 +1018,83 @@ mod tests {
     /// guard the constructor panics before it can return, so "the test ran to
     /// completion" IS the no-panic assertion. Do not add `#[should_panic]` or
     /// a `catch_unwind` wrapper; that would invert the contract.
+    ///
+    /// **Two fixtures, one body.** The `param seal : T` member is exercised
+    /// both plain and inside a GUARDED group, mirroring
+    /// `diagnostics::tests::auto_resolution_failure_does_not_panic_diagnostics_entry_points`
+    /// — this entry point is affected identically, because all three share the
+    /// one containment predicate. A guarded member lives in
+    /// `CompiledGuardedGroup::members`, never in
+    /// `TopologyTemplate::value_cells`, and was measured to slip past that
+    /// predicate's stage-1 absence proof and panic. Parameterised over a table
+    /// rather than copied, so the two shapes' contracts cannot drift apart;
+    /// every assertion below is load-bearing for both.
     #[test]
     fn auto_resolution_failure_does_not_panic_analysis_context() {
-        // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
-        crate::diagnostics::auto_type_param_fixtures::assert_auto_fail_fixture_is_newly_reachable();
+        use crate::diagnostics::auto_type_param_fixtures as fixtures;
 
-        // --- AnalysisContext (the site under test) ---
-        let ctx = AnalysisContext::new(
-            crate::diagnostics::auto_type_param_fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
-            &test_uri(),
-        );
-        let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
-            .compiled
-            .diagnostics
-            .iter()
-            .map(|d| (d.severity, d.code, d.message.as_str()))
-            .collect();
-        assert!(
-            ctx.compiled
+        // Each fixture carries its OWN anti-vacuity guard: both claim "stub
+        // clean, real checker fails resolution", but each names its own
+        // fixture when that stops being true.
+        let cases: [(&str, &str, fn()); 2] = [
+            (
+                "plain member",
+                fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+                fixtures::assert_auto_fail_fixture_is_newly_reachable,
+            ),
+            (
+                "guarded-group member",
+                fixtures::GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                fixtures::assert_guarded_group_fixture_is_newly_reachable,
+            ),
+        ];
+
+        for (shape, src, assert_fixture_is_newly_reachable) in cases {
+            // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
+            assert_fixture_is_newly_reachable();
+
+            // --- AnalysisContext (the site under test) ---
+            let ctx = AnalysisContext::new(src, &test_uri());
+            let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
+                .compiled
                 .diagnostics
                 .iter()
-                .any(|d| d.severity == Severity::Error
-                    && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
-            "containment (AnalysisContext::from_parsed): a failed `auto:` \
-             resolution must still surface the compile-stage \
-             AutoTypeParamNoCandidate error, so hover/completion/goto-def \
-             report the real problem. Reaching this assertion at all means \
-             the eval/check pass was correctly skipped rather than panicking \
-             on the unsubstituted TypeParam cell (task #6851). Observed \
-             (severity, code, message) triples: {:#?}",
-            observed
-        );
+                .map(|d| (d.severity, d.code, d.message.as_str()))
+                .collect();
+            assert!(
+                ctx.compiled
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error
+                        && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+                "containment (AnalysisContext::from_parsed, {shape}): a failed \
+                 `auto:` resolution must still surface the compile-stage \
+                 AutoTypeParamNoCandidate error, so hover/completion/goto-def \
+                 report the real problem. Reaching this assertion at all means \
+                 the eval/check pass was correctly skipped rather than panicking \
+                 on the unsubstituted TypeParam cell (task #6851). Observed \
+                 (severity, code, message) triples: {:#?}",
+                observed
+            );
 
-        // Pin that the eval/check pass was SKIPPED, not run-and-recovered.
-        // Without this, a future change that "fixes" the panic by making eval
-        // tolerant of unrepresentable cells would silently satisfy the
-        // assertion above while re-introducing exactly the cell #6851 is about
-        // into the engine. This assertion is what keeps the test about
-        // CONTAINMENT rather than about absence-of-crash.
-        assert!(
-            ctx.check_result.constraint_results.is_empty()
-                && ctx.check_result.diagnostics.is_empty(),
-            "containment (AnalysisContext::from_parsed): the eval/check pass \
-             must be SKIPPED on a failed `auto:` resolution, leaving an empty \
-             CheckResult — a populated one means the unsubstituted TypeParam \
-             graph reached the engine after all (task #6851). Got \
-             constraint_results: {:#?}, diagnostics: {:#?}",
-            ctx.check_result.constraint_results,
-            ctx.check_result.diagnostics
-        );
+            // Pin that the eval/check pass was SKIPPED, not run-and-recovered.
+            // Without this, a future change that "fixes" the panic by making eval
+            // tolerant of unrepresentable cells would silently satisfy the
+            // assertion above while re-introducing exactly the cell #6851 is about
+            // into the engine. This assertion is what keeps the test about
+            // CONTAINMENT rather than about absence-of-crash.
+            assert!(
+                ctx.check_result.constraint_results.is_empty()
+                    && ctx.check_result.diagnostics.is_empty(),
+                "containment (AnalysisContext::from_parsed, {shape}): the \
+                 eval/check pass must be SKIPPED on a failed `auto:` resolution, \
+                 leaving an empty CheckResult — a populated one means the \
+                 unsubstituted TypeParam graph reached the engine after all (task \
+                 #6851). Got constraint_results: {:#?}, diagnostics: {:#?}",
+                ctx.check_result.constraint_results,
+                ctx.check_result.diagnostics
+            );
+        }
     }
 
     /// The containment guard's NARROWNESS at the THIRD production entry
