@@ -171,11 +171,68 @@ assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty a
 # this host) while still firing well inside the 30m outer envelope, which is the
 # only way the attribution survives.
 # ---------------------------------------------------------------------------
+# _amb_run_under_ambient YAML SUITE BUDGET_SECS
+# Run SUITE under the production verify_env ambient extracted from YAML, bounded
+# by BUDGET_SECS, with the child's stderr merged into stdout. Echoes that
+# combined output.
+#
+# Returns the suite's OWN exit code, or one of two codes of its own:
+#   99   the ambient was not applied, so the run proves nothing (the
+#        non-vacuity preflight -- see the section comment above);
+#   124  the backstop fired, i.e. the suite WEDGED.
+#
+# The export loop and the preflight run inside this function's own subshell, so
+# no ambient export leaks back to the caller. verify_env_exports is a shell
+# function and is inherited by that subshell like any other.
+#
+# BUDGET_SECS is a BROKEN-INFRA BACKSTOP, not a timing assertion: nothing here
+# or at any call site compares a measured magnitude. Its only job is to end a
+# hang early enough that the outcome is still attributable to THIS suite.
+_amb_run_under_ambient() {
+    local _yaml="$1" _suite="$2" _budget="$3"
+    (
+        while IFS= read -r _kv; do
+            export "$_kv"
+        done < <(verify_env_exports "$_yaml")
+        [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ] || { echo "AMBIENT-NOT-APPLIED"; exit 99; }
+        timeout "$_budget" bash "$_suite" 2>&1
+    )
+}
+
+# _amb_nested_verdict RC SUITE
+# Echo one line saying what RC means for SUITE; return 0 only for a clean run.
+#
+# The three non-zero outcomes are three DIFFERENT diagnoses and must never be
+# read as one another: a wedge is an infrastructure hang, a completed failure is
+# a regression, and a missing ambient means the run settled nothing. Reported as
+# a structured `outcome=` token rather than prose, so a reader (or a later
+# classifier) reaches the diagnosis without parsing a sentence.
+_amb_nested_verdict() {
+    local _rc="$1" _suite="$2"
+    case "$_rc" in
+        0)
+            echo "nested=$_suite outcome=passed rc=0" ;;
+        124)
+            echo "nested=$_suite outcome=wedged rc=124 -- it never finished and the anti-hang backstop ended it. That is a HANG in $_suite, not a failed assertion inside it: look for a barrier that never released, not for a regression." ;;
+        99)
+            echo "nested=$_suite outcome=ambient-not-applied rc=99 -- the hostile verify_env ambient was not in effect, so this run proves nothing either way." ;;
+        *)
+            echo "nested=$_suite outcome=failed rc=$_rc -- it ran to completion and reported failures. That is a REGRESSION in $_suite, not a hang." ;;
+    esac
+    [ "$_rc" -eq 0 ]
+}
+
 echo ""
 echo "--- Nested-run backstop: bounded, and wedge distinguishable from failure ---"
 
 _AMB_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 _AMB_SUITE_NAME="test_occt_flock_gate.sh"
+# Generous by design: the nested suite has measured 16-246s on this host, and
+# the whole of run_all.sh runs under a 30m outer envelope. 900s never
+# discriminates against a slow-but-alive run, yet still fires far enough inside
+# that envelope for the outcome to be attributed to this suite rather than
+# surfacing as "run_all was interrupted".
+_AMB_NESTED_BACKSTOP_SECS=900
 
 _AMB_TMPDIRS=()
 trap '[ "${#_AMB_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_AMB_TMPDIRS[@]}"' EXIT
@@ -261,10 +318,9 @@ assert "verdict(0): a clean nested run is a pass" \
 #
 # Mirrors test_run_all_ambient_isolation.sh (task 4961)'s run-the-real-
 # suite-once idiom, generalized from one hardcoded knob to the FULL
-# verify_env export set. The export loop and probe run inside the
-# `$( ... )` command-substitution subshell only, so none of the ambient
-# exports leak back out to this script; `verify_env_exports` is a shell
-# function and is inherited by the subshell like any other.
+# verify_env export set. The ambient export loop, the preflight and the
+# anti-hang backstop all live in _amb_run_under_ambient above, which the
+# section before this one exercises against fixture suites.
 #
 # Non-vacuity: post-4965, test_occt_flock_gate.sh exits 0 under BOTH the
 # default env and this ambient, so its exit code alone can't prove the
@@ -277,13 +333,11 @@ echo ""
 echo "--- End-to-end: test_occt_flock_gate.sh under the real verify_env ambient ---"
 
 amb_rc=0
-amb_out="$(
-    while IFS= read -r _kv; do
-        export "$_kv"
-    done < <(verify_env_exports "$REPO_ROOT/dark-factory-orchestrator.yaml")
-    [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ] || { echo "AMBIENT-NOT-APPLIED"; exit 99; }
-    bash "$SCRIPT_DIR/test_occt_flock_gate.sh" 2>&1
-)" || amb_rc=$?
+amb_out="$(_amb_run_under_ambient "$_AMB_YAML" "$SCRIPT_DIR/$_AMB_SUITE_NAME" "$_AMB_NESTED_BACKSTOP_SECS")" || amb_rc=$?
+
+# Emitted BEFORE the assert, so a wedge is attributed even to a reader who sees
+# nothing but this file's own output.
+_amb_nested_verdict "$amb_rc" "$_AMB_SUITE_NAME" || true
 
 assert "test_occt_flock_gate.sh exits 0 under the real verify_env ambient (got rc=$amb_rc)" \
     test "$amb_rc" -eq 0
