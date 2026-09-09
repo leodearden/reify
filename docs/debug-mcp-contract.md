@@ -114,8 +114,12 @@ resolves `Ok(Value)` for any well-formed JSON reply — including the in-band
 handler that threw (§2a) — so a REFUSED push is indistinguishable from a landed
 one at the transport. All five tools therefore route their reply through
 `frontend_ok`, which converts that envelope into
-`Err("<command> push refused by the frontend: …")`. The consequence is specific
-to this cluster: the seam has already refreshed `last_state` to S1 by the time
+`Err("<command> push refused by the frontend: …")`. That routing is
+STRUCTURAL, not a per-handler discipline: the four `apply_gui_state` tools
+reach it through the shared `push_gui_state` helper (payload + push + reply
+check as one step), and `reify_open_file` through the shared `open_file`
+funnel — so there are two call sites to keep correct, not five. The
+consequence is specific to this cluster: the seam has already refreshed `last_state` to S1 by the time
 the push goes out, so a refused push read as success leaves the baseline ahead
 of the frontend — bug #7 again — while the AI client is told the write landed.
 The two DEBUG-NATIVE funnels are deliberately exempt: `open_file` and
