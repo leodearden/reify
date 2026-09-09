@@ -5277,4 +5277,237 @@ version = "9.9.9"
         assert_eq!(a, b, "re-encoding the same mirror must be byte-identical");
         assert!(!a.is_empty(), "a non-empty mirror must produce bytes");
     }
+
+    // ── WithDiagnostics<V> envelope tests (task 7245) ─────────────────────────
+    //
+    // The envelope is what makes diagnostics replayable for EVERY persistable
+    // target rather than per-record. It is generic over `V: PersistentlyCacheable`
+    // and drops straight into the existing `write_entry` / `read_entry`
+    // machinery with only a turbofish change at the compute_persist call sites.
+
+    /// `make_sample_result` with the task-#4942 aposteriori tail PRESENT, so the
+    /// round-trip covers a body whose full tail chain is written.
+    fn sample_result_with_aposteriori() -> ElasticResult {
+        let mut er = make_sample_result();
+        er.aposteriori = Some(AposterioriEstimate {
+            convergence_status: reify_solver_elastic::ConvergenceStatus::Converged {
+                final_indicator: 1.5e-3,
+            },
+            error_indicator: Some(vec![0.1, 0.2, 0.3]),
+            global_relative_energy_error: Some(1.5e-3),
+        });
+        er
+    }
+
+    #[test]
+    fn with_diagnostics_round_trips_value_and_diagnostics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667f";
+
+        let original = WithDiagnostics {
+            diagnostics: vec![shell_too_thick_warning()],
+            value: sample_result_with_aposteriori(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        assert_eq!(
+            read_back.value.max_von_mises, original.value.max_von_mises,
+            "max_von_mises must round-trip"
+        );
+        assert_eq!(
+            read_back.value, original.value,
+            "the whole ElasticResult record must round-trip unchanged — the \
+             diagnostics prefix must not perturb the body encoding"
+        );
+        assert_eq!(read_back.diagnostics.len(), 1, "one diagnostic was written");
+        assert_eq!(read_back.diagnostics[0].severity, reify_core::Severity::Warning);
+        assert_eq!(
+            read_back.diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick),
+            "the replayed diagnostic must keep its code"
+        );
+        assert_eq!(
+            read_back.diagnostics[0].message, original.diagnostics[0].message,
+            "the replayed diagnostic must keep its message verbatim"
+        );
+    }
+
+    #[test]
+    fn with_diagnostics_round_trips_empty_diagnostics_as_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667e";
+
+        let original = WithDiagnostics {
+            diagnostics: Vec::new(),
+            value: make_sample_result(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        assert!(
+            read_back.diagnostics.is_empty(),
+            "an empty diagnostics list must round-trip empty, got {:?}",
+            read_back.diagnostics
+        );
+        assert_eq!(read_back.value, original.value);
+    }
+
+    #[test]
+    fn with_diagnostics_prefix_survives_absent_aposteriori_tail() {
+        // THE prefix-ordering regression. `ElasticResult`'s body ends with a
+        // CONDITIONAL probe-byte tail: `read_aposteriori_tail`
+        // (reify-compute-contract/src/elastic_result.rs:408) greedily `read`s
+        // one byte and treats `probe_n == 0` as "no tail". If the diagnostics
+        // block were appended as a SUFFIX, an entry with `aposteriori: None`
+        // plus a non-empty diagnostics list would have that greedy read swallow
+        // the block's first byte and decode it as an aposteriori discriminant —
+        // a silent wrong-data path. Writing the block as a PREFIX makes it
+        // fully self-delimiting and unable to interact with any `V`'s internal
+        // greedy tails.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667d";
+
+        let value = make_sample_result();
+        assert!(
+            value.aposteriori.is_none(),
+            "this test is only meaningful when the conditional tail is ABSENT"
+        );
+        let original = WithDiagnostics {
+            diagnostics: vec![
+                shell_too_thick_warning(),
+                reify_core::Diagnostic::info("adaptive refinement converged"),
+            ],
+            value,
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit, not a decode failure");
+
+        assert!(
+            read_back.value.aposteriori.is_none(),
+            "a suffix layout would have decoded the diagnostics block's first \
+             byte as an aposteriori discriminant; got {:?}",
+            read_back.value.aposteriori
+        );
+        assert_eq!(read_back.value, original.value);
+        assert_eq!(read_back.diagnostics.len(), 2);
+        assert_eq!(
+            read_back.diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick)
+        );
+        assert_eq!(read_back.diagnostics[1].severity, reify_core::Severity::Info);
+    }
+
+    #[test]
+    fn with_diagnostics_header_byte_size_matches_uncompressed_body() {
+        // Forwarding pin for (d): `solve_time_ms` passes through to `V`, and
+        // `uncompressed_byte_size` accounts for the diagnostics prefix so
+        // `CacheEntryHeader.byte_size` stays the true uncompressed body length —
+        // the invariant held by
+        // `write_entry_populates_byte_size_field_with_actually_uncompressed_body_byte_count`
+        // for the bare-`V` case.
+        use std::fs::File;
+        use std::io::Read as _;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "deadbeef00112233deadbeef00112233";
+        let inp = "cafebabe44556677cafebabe4455667c";
+
+        let original = WithDiagnostics {
+            diagnostics: vec![shell_too_thick_warning()],
+            value: make_sample_result(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+
+        let mut f = File::open(entry_bin_path(root, eng, inp)).unwrap();
+        let header = CacheEntryHeader::read_from(&mut f).unwrap();
+
+        assert_eq!(
+            header.solve_time_ms,
+            original.value.solve_time_ms,
+            "solve_time_ms must be forwarded to V — it is the cost term in \
+             cost-weighted LRU eviction"
+        );
+
+        // Body layout: [u64 LE block length][diagnostics block][zstd frame of V].
+        let mut body: Vec<u8> = Vec::new();
+        f.read_to_end(&mut body).unwrap();
+        let block_len =
+            u64::from_le_bytes(body[..8].try_into().expect("8-byte length frame")) as usize;
+        let mut decompressed: Vec<u8> = Vec::new();
+        zstd::Decoder::new(&body[8 + block_len..])
+            .unwrap()
+            .read_to_end(&mut decompressed)
+            .unwrap();
+
+        assert_eq!(
+            header.byte_size,
+            (8 + block_len + decompressed.len()) as u64,
+            "byte_size must be the uncompressed body byte count: the 8-byte \
+             length frame plus the diagnostics block plus the decompressed V body"
+        );
+    }
+
+    #[test]
+    fn with_diagnostics_round_trip_drops_labels_and_candidates() {
+        // The documented lossiness of `PersistedDiagnostic`. Solver-trampoline
+        // diagnostics carry neither labels nor candidates, so this loss is
+        // unobservable on the persisted path — but it must be a deliberate,
+        // pinned decision rather than an accident, because carrying them would
+        // require serde on `DiagnosticLabel`/`SourceSpan`, which have none.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667c";
+
+        let rich = reify_core::Diagnostic::warning("decorated")
+            .with_code(reify_core::DiagnosticCode::ShellTooThick)
+            .with_label(reify_core::DiagnosticLabel::new(
+                reify_core::SourceSpan::new(3, 9),
+                "here",
+            ))
+            .with_candidates(vec!["foo::Bar".to_string()]);
+        assert!(!rich.labels.is_empty() && !rich.candidates.is_empty());
+
+        write_entry(
+            root,
+            eng,
+            inp,
+            &WithDiagnostics {
+                diagnostics: vec![rich],
+                value: make_sample_result(),
+            },
+        )
+        .unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        assert_eq!(read_back.diagnostics[0].message, "decorated");
+        assert_eq!(
+            read_back.diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick)
+        );
+        assert!(
+            read_back.diagnostics[0].labels.is_empty(),
+            "labels are deliberately not carried"
+        );
+        assert!(
+            read_back.diagnostics[0].candidates.is_empty(),
+            "candidates are deliberately not carried"
+        );
+    }
 }
