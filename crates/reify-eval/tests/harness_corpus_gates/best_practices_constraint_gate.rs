@@ -609,9 +609,11 @@ fn run_corpus_gate() -> Vec<GateFailure> {
 /// `audit_file` against `EXPECTED_INDETERMINATE`. Asserts ZERO
 /// `GateFailure`s on the live corpus.
 ///
-/// This is expected GREEN on the measured baseline (7 files, 31 constraints:
-/// 28 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
-/// listed in `EXPECTED_INDETERMINATE` above).
+/// This is expected GREEN on the measured baseline (8 files, 39 constraints:
+/// 36 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
+/// listed in `EXPECTED_INDETERMINATE` above). Re-measured 2026-09-07 when
+/// `dimensioned_arguments.ri` (+8 constraints, all Satisfied) joined the
+/// corpus for task 5760.
 #[test]
 fn best_practices_corpus_satisfies_every_constraint() {
     let failures = run_corpus_gate();
