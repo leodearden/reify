@@ -147,7 +147,21 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///
 /// Starting at 1 follows the Reify convention that 0 means "uninitialised /
 /// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
-pub const ENTRY_FORMAT_VERSION: u32 = 1;
+///
+/// # Version history
+///
+/// - **1** — header followed directly by the [`PersistentlyCacheable`] body.
+/// - **2** (task 7245) — the body is preceded by a length-framed diagnostics
+///   block, so a warm serve can replay the diagnostics the cold solve emitted
+///   (see [`WithDiagnostics`]). The block is a prefix rather than a tail, which
+///   makes v1 entries unreadable by construction. That is handled, not worked
+///   around: [`write_entry`] stamps this const into every header and
+///   [`read_entry`] calls [`CacheEntryHeader::verify_format_version`] BEFORE
+///   decoding the body, so every v1 entry reads as a clean miss and is
+///   cold-recomputed once. Note that [`ENGINE_VERSION_HASH`] would NOT have
+///   invalidated these entries on its own — its contributor set covers the
+///   solver sources, not this module.
+pub const ENTRY_FORMAT_VERSION: u32 = 2;
 
 /// Fixed byte length of a bincode-1.3 fixint-LE encoded [`CacheEntryHeader`].
 ///
