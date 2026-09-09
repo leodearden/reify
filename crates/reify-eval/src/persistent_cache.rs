@@ -763,17 +763,36 @@ impl PersistentlyCacheable for BucklingResultCache {
 ///
 /// `severity` is an explicit `u8` discriminant (not `Severity`'s serde derive)
 /// so a corrupt byte is rejected loudly by [`severity_from_u8`] instead of
-/// deserialising into some default. `code` does use `DiagnosticCode`'s
-/// feature-gated derive, whose PascalCase wire format is already test-pinned in
-/// reify-core — the enum has no mnemonic/`FromStr` round-trip, and a hand-rolled
-/// variant↔integer table over a `#[non_exhaustive]` enum would rot silently.
+/// deserialising into some default.
+///
+/// # Why `code` is persisted as a NAME
+///
+/// bincode encodes a derived enum POSITIONALLY, as a u32 variant index; it
+/// never consults `rename_all`, so riding `DiagnosticCode`'s PascalCase serde
+/// derive directly would put a bare index on the wire. `DiagnosticCode` is
+/// grouped by category, so a new code is realistically INSERTED mid-enum — and
+/// nothing invalidates existing entries when that happens:
+/// [`ENTRY_FORMAT_VERSION`] does not move on an enum edit, and
+/// `crates/reify-core/src/diagnostics.rs` is deliberately NOT in
+/// `CONTRIBUTORS_RELATIVE` (engine_hash_algo.rs:101, as this module already
+/// notes above). Every cached entry would then silently re-read as its
+/// NEIGHBOURING code.
+///
+/// Persisting the stable serde name (via [`code_to_wire_name`] /
+/// [`code_from_wire_name`]) makes an insertion a non-event. A rename or a
+/// removal degrades to `None` rather than to a wrong variant. Pinned by
+/// `persisted_diagnostic_code_is_encoded_by_name_not_variant_index` and
+/// `unrecognised_code_name_decodes_to_none`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct PersistedDiagnostic {
     /// 0 = `Severity::Info`, 1 = `Severity::Warning`, 2 = `Severity::Error`.
     /// Unknown discriminants on read are rejected with `InvalidData`.
     severity: u8,
     message: String,
-    code: Option<reify_core::DiagnosticCode>,
+    /// The code's stable serde variant name (PascalCase), never its positional
+    /// index. `None` covers both "uncoded" and "a name this build no longer
+    /// knows" — see the type docs.
+    code: Option<String>,
 }
 
 /// Encode a [`reify_core::Severity`] as its on-disk `u8` discriminant.
@@ -803,12 +822,44 @@ fn severity_from_u8(b: u8) -> io::Result<reify_core::Severity> {
     }
 }
 
+/// Encode a [`reify_core::DiagnosticCode`] as its stable on-disk name.
+///
+/// The name is `DiagnosticCode`'s own serde identifier, so it stays in
+/// lock-step with the PascalCase wire format reify-core already test-pins for
+/// LSP and `--json` consumers, with no second table to rot.
+fn code_to_wire_name(c: reify_core::DiagnosticCode) -> Option<String> {
+    serde_json::to_value(c)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+}
+
+/// Decode an on-disk code name, degrading to `None` when this build does not
+/// know it.
+///
+/// Unlike [`severity_from_u8`], an unrecognised name is NOT `InvalidData`:
+/// dropping one code is a bounded, safe degradation, whereas rejecting the
+/// entry would throw away a still-valid cached solve. The `tracing::warn!`
+/// keeps that degradation observable.
+fn code_from_wire_name(name: &str) -> Option<reify_core::DiagnosticCode> {
+    match serde_json::from_value(serde_json::Value::String(name.to_owned())) {
+        Ok(code) => Some(code),
+        Err(_) => {
+            tracing::warn!(
+                code_name = name,
+                "persistent cache entry carries an unrecognised DiagnosticCode name; \
+                 replaying the diagnostic without a code"
+            );
+            None
+        }
+    }
+}
+
 /// Project a live [`reify_core::Diagnostic`] onto its wire mirror.
 fn diagnostic_to_persisted(d: &reify_core::Diagnostic) -> PersistedDiagnostic {
     PersistedDiagnostic {
         severity: severity_to_u8(d.severity),
         message: d.message.clone(),
-        code: d.code,
+        code: d.code.and_then(code_to_wire_name),
     }
 }
 
@@ -823,7 +874,7 @@ fn diagnostic_from_persisted(p: &PersistedDiagnostic) -> io::Result<reify_core::
         reify_core::Severity::Warning => reify_core::Diagnostic::warning(p.message.clone()),
         reify_core::Severity::Error => reify_core::Diagnostic::error(p.message.clone()),
     };
-    if let Some(code) = p.code {
+    if let Some(code) = p.code.as_deref().and_then(code_from_wire_name) {
         out = out.with_code(code);
     }
     Ok(out)
@@ -848,7 +899,7 @@ fn encode_diagnostics_block(diagnostics: &[reify_core::Diagnostic]) -> Vec<u8> {
     let mirror: Vec<PersistedDiagnostic> =
         diagnostics.iter().map(diagnostic_to_persisted).collect();
     bincode::serialize(&mirror).expect(
-        "PersistedDiagnostic is a plain owned record (u8 + String + Option<enum>); \
+        "PersistedDiagnostic is a plain owned record (u8 + String + Option<String>); \
          bincode::serialize into a Vec cannot fail.",
     )
 }

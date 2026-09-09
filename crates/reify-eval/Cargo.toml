@@ -59,6 +59,12 @@ bincode.workspace = true
 bytemuck.workspace = true
 inventory.workspace = true
 serde = { workspace = true, features = ["derive"] }
+# Task 7245: `PersistedDiagnostic` persists `DiagnosticCode` as its stable serde
+# NAME rather than bincode's positional variant index (see
+# src/persistent_cache.rs). serde_json is the codec that reaches that name —
+# `DiagnosticCode` has no mnemonic/`FromStr` round-trip. Production code, so a
+# normal dep.
+serde_json.workspace = true
 tracing.workspace = true
 xxhash-rust = { workspace = true }
 rustc-hash = "2"
