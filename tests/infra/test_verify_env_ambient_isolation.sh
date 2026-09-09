@@ -149,6 +149,114 @@ assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty a
     bash -c '[ -n "$1" ] && ! printf "%s\n" "$1" | grep -vE "^[A-Za-z_][A-Za-z0-9_]*="' _ "$_REAL_ACTUAL"
 
 # ---------------------------------------------------------------------------
+# The nested run is BOUNDED and its outcomes are DISTINGUISHABLE (task 6247)
+#
+# This file drives BOTH of its end-to-end assertions from ONE invocation of a
+# real suite. Unbounded, that has two costs. A wedge inside the nested suite
+# wedges THIS file too, until the outer `timeout --kill-after=60 30m` envelope
+# kills the whole of run_all.sh -- at which point the attribution is gone and
+# the failure reads as "run_all was interrupted", not "the nested suite hung".
+# And a wedge is reported through the same `$amb_rc -ne 0` channel as a suite
+# that ran to completion and failed an assertion, which are opposite diagnoses:
+# one is an infrastructure hang, the other a real regression.
+#
+# _amb_run_under_ambient is the whole nested run behind one interface -- extract
+# the ambient, prove it applied, bound the child -- so the wedge path can be
+# exercised here against the REAL code path with a tiny fixture suite, rather
+# than being asserted about a stub or left untested until it happens for real.
+#
+# The budget is a BROKEN-INFRA BACKSTOP, not a timing assertion: every case
+# below asserts an exit CODE, never a measured magnitude. The live budget is
+# generous enough never to discriminate (the nested suite measured 38-246s on
+# this host) while still firing well inside the 30m outer envelope, which is the
+# only way the attribution survives.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Nested-run backstop: bounded, and wedge distinguishable from failure ---"
+
+_AMB_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+_AMB_SUITE_NAME="test_occt_flock_gate.sh"
+
+_AMB_TMPDIRS=()
+trap '[ "${#_AMB_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_AMB_TMPDIRS[@]}"' EXIT
+
+# _amb_fixture_suite LINE... -- a throwaway stand-in for the nested suite.
+_amb_fixture_suite() {
+    local _d; _d="$(mktemp -d)"; _AMB_TMPDIRS+=("$_d")
+    local _l
+    printf '#!/usr/bin/env bash\n' > "$_d/suite.sh"
+    for _l in "$@"; do printf '%s\n' "$_l" >> "$_d/suite.sh"; done
+    echo "$_d/suite.sh"
+}
+
+# _amb_nested_rc BUDGET SUITE -- echo _amb_run_under_ambient's exit code.
+_amb_nested_rc() {
+    local _rc=0
+    _amb_run_under_ambient "$_AMB_YAML" "$2" "$1" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+_amb_wedge_suite="$(_amb_fixture_suite 'sleep 600')"
+assert "a WEDGED nested suite surfaces as the backstop's own exit code 124, instead of hanging this file until the outer envelope kills run_all" \
+    test "$(_amb_nested_rc 2 "$_amb_wedge_suite")" -eq 124
+
+# The discriminator. Without it the backstop could "pass" by mapping every
+# non-zero outcome onto 124, which would erase the distinction it exists to make.
+_amb_fail_suite="$(_amb_fixture_suite 'exit 3')"
+assert "a nested suite that RAN and failed passes its own exit code through unchanged (3, not the backstop's 124)" \
+    test "$(_amb_nested_rc 60 "$_amb_fail_suite")" -eq 3
+
+_amb_pass_suite="$(_amb_fixture_suite 'echo "Results: 1 passed, 0 failed"')"
+assert "a nested suite that passed reports 0 through the backstop" \
+    test "$(_amb_nested_rc 60 "$_amb_pass_suite")" -eq 0
+
+# The existing exit-99 preflight, now proven through the extracted seam: the
+# hostile ambient must genuinely reach the nested child, or every verdict above
+# is about a run that proves nothing.
+_amb_probe_suite="$(_amb_fixture_suite 'echo "HEAVY=${REIFY_GATE_EXCLUDE_HEAVY:-unset}"')"
+# Run in THIS shell, not via `bash -c`: _amb_run_under_ambient is not exported,
+# and a fresh shell would report command-not-found -- which grep would then read
+# as a plain absence, making the case pass or fail for the wrong reason.
+_amb_ambient_reaches_child() {
+    _amb_run_under_ambient "$_AMB_YAML" "$1" 60 2>&1 | grep -qxF "HEAVY=1"
+}
+assert "the production ambient genuinely reaches the nested child (REIFY_GATE_EXCLUDE_HEAVY=1 observed inside it)" \
+    _amb_ambient_reaches_child "$_amb_probe_suite"
+
+# _amb_verdict_case RC WANT_ZERO PATTERN... -- the verdict for RC must carry the
+# right success/failure sense and name every PATTERN.
+_amb_verdict_case() {
+    local _rc="$1" _want_zero="$2"; shift 2
+    local _out _vrc=0 _pat _bad=0
+    _out="$(_amb_nested_verdict "$_rc" "$_AMB_SUITE_NAME" 2>&1)" || _vrc=$?
+    echo "rc=$_rc -> vrc=$_vrc verdict: $_out"
+    if [ "$_want_zero" = "yes" ] && [ "$_vrc" -ne 0 ]; then
+        echo "the verdict for rc=$_rc reported failure; a clean nested run must not."
+        _bad=1
+    fi
+    if [ "$_want_zero" = "no" ] && [ "$_vrc" -eq 0 ]; then
+        echo "the verdict for rc=$_rc reported success; that outcome is not a pass."
+        _bad=1
+    fi
+    for _pat in "$@"; do
+        case "$_out" in
+            *"$_pat"*) ;;
+            *) echo "the verdict for rc=$_rc never mentions '$_pat'."; _bad=1 ;;
+        esac
+    done
+    return "$_bad"
+}
+
+assert "verdict(124): names the nested suite and calls it a WEDGE, and is not a pass" \
+    _amb_verdict_case 124 no "$_AMB_SUITE_NAME" wedged
+assert "verdict(3): names the nested suite and says it RAN and failed -- not a wedge" \
+    _amb_verdict_case 3 no "$_AMB_SUITE_NAME" failed
+assert "verdict(99): names the ambient-not-applied preflight, so a proves-nothing run is never read as either of the other two" \
+    _amb_verdict_case 99 no "$_AMB_SUITE_NAME" ambient-not-applied
+assert "verdict(0): a clean nested run is a pass" \
+    _amb_verdict_case 0 yes "$_AMB_SUITE_NAME" passed
+
+# ---------------------------------------------------------------------------
 # End-to-end: test_occt_flock_gate.sh under the REAL production ambient.
 #
 # Mirrors test_run_all_ambient_isolation.sh (task 4961)'s run-the-real-
