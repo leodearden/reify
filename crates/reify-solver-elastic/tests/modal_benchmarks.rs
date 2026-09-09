@@ -269,11 +269,156 @@ fn free_dof_map(n_dofs: usize, bcs: &[DirichletBc]) -> (Vec<usize>, usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Cantilever P2 modal measurement (shared by the benchmark + the tuning sweep)
+// Shared P2 beam modal core (task 6663 amendment — review suggestion 4)
 // ---------------------------------------------------------------------------
+//
+// All three benchmarks in this file (cantilever, simply-supported,
+// clamped-clamped) run the SAME pipeline — build_node_xyz → build_tet_mesh →
+// promote_tets_to_p2 → assemble_p2_k_and_m → Σ M sanity → free_dof_map →
+// project_free → solve_eigen_dense → λ-to-Hz — and differ ONLY in the Dirichlet
+// set, the requested mode count and the analytic βL. That pipeline lived in
+// three verbatim copies, so a fix to the assembly or the mass-sanity logic had
+// to be applied three times. It is written once below and parameterized by the
+// three things that actually vary.
 
-/// Outcome of one cantilever P2 modal solve on a given mesh.
-struct CantileverMeasurement {
+/// One assembled-and-solved P2 beam modal problem: everything the three
+/// benchmarks share, with only the Dirichlet set and the mode count varying.
+struct BeamModalSolve {
+    /// Mode frequencies (Hz), ascending — one per returned eigenpair.
+    freqs: Vec<f64>,
+    /// Per-mode `(x, y, z)` eigenvector energy fractions, index-aligned with
+    /// `freqs`. Used by the benchmarks that must pick a mode FAMILY out of an
+    /// interleaved spectrum; ignored by the ones whose fundamental is unambiguous.
+    fracs: Vec<[f64; 3]>,
+    /// Smallest eigenvalue λ (rad²/s²), or NaN when no eigenpair came back.
+    lambda_min: f64,
+    n_free: usize,
+    n_nodes_p2: usize,
+    /// Relative deviation of `Σ_ij M[i,j]` from the exact `3·ρ·V_total` — a
+    /// BC-independent total-mass sanity check every benchmark asserts on.
+    mass_rel: f64,
+    converged: bool,
+}
+
+/// Build the beam at `grid`, promote to P2, assemble `(K, M)`, apply the
+/// Dirichlet set `bcs_of` returns for the promoted node set, project to the free
+/// DOFs and dense-eigensolve.
+///
+/// `bcs_of` receives the PROMOTED (P2) node coordinates, so a coordinate
+/// selection catches the edge-midpoint nodes on a face as well as the corners —
+/// the selection pattern every benchmark here relies on.
+fn solve_beam_modes(
+    grid: &BeamFixture,
+    bcs_of: impl Fn(&[[f64; 3]]) -> Vec<DirichletBc>,
+    opts: EigenSolverOptions,
+) -> BeamModalSolve {
+    let nodes_p1 = build_node_xyz(grid);
+    let tets_p1 = build_tet_mesh(grid);
+    let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
+    let n_nodes_p2 = nodes_p2.len();
+    let n_dofs = 3 * n_nodes_p2;
+
+    let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
+
+    let bcs = bcs_of(&nodes_p2);
+    assert!(!bcs.is_empty(), "a beam modal benchmark must constrain at least one DOF");
+
+    // Assemble (K, M) at P2.
+    let (k_full, m_full) = assemble_p2_k_and_m(&nodes_p2, &tets_p2, &material, STEEL_DENSITY);
+
+    // Total-mass sanity: Σ M = 3·ρ·V_total (V_total = L·b·h, exact box fill).
+    let v_total = grid.lx * grid.ly * grid.lz;
+    let total_mass_sum = sum_all_entries(&m_full);
+    let expected_mass_sum = 3.0 * STEEL_DENSITY * v_total;
+    let mass_rel = (total_mass_sum - expected_mass_sum).abs() / expected_mass_sum;
+
+    // Project to the free-DOF subspace (and build the inverse free→full map the
+    // per-axis eigenvector classification needs).
+    let (free_of_full, n_free) = free_dof_map(n_dofs, &bcs);
+    let mut full_of_free = vec![0_usize; n_free];
+    for (g, &f) in free_of_full.iter().enumerate() {
+        if f != usize::MAX {
+            full_of_free[f] = g;
+        }
+    }
+    let k_free = project_free(&k_full, &free_of_full, n_free);
+    let m_free = project_free(&m_full, &free_of_full, n_free);
+    let eig = solve_eigen_dense(&k_free, &m_free, opts);
+
+    let to_hz = |l: f64| l.sqrt() / (2.0 * PI);
+    let lambda_min = eig.eigenvalues.first().copied().unwrap_or(f64::NAN);
+    let freqs: Vec<f64> = eig.eigenvalues.iter().map(|&l| to_hz(l)).collect();
+    // `eigenvectors` is a faer `Mat<f64>` (column j = mode j, row = free DOF);
+    // `col_as_slice(j)` views column j as a contiguous `&[f64]` over the free
+    // DOFs (the `modal_ops` idiom). `j < eigenvalues.len() == ncols`, so the
+    // column index is always in range.
+    let fracs: Vec<[f64; 3]> = (0..eig.eigenvalues.len())
+        .map(|j| axis_energy_fractions(eig.eigenvectors.col_as_slice(j), &full_of_free))
+        .collect();
+
+    BeamModalSolve {
+        freqs,
+        fracs,
+        lambda_min,
+        n_free,
+        n_nodes_p2,
+        mass_rel,
+        converged: eig.converged,
+    }
+}
+
+/// Per-axis energy fractions `(x, y, z)` of an eigenvector over the free DOFs:
+/// `e[α] = Σ_i φ_i² · [axis(i) == α]`, normalized to sum 1. The vertical
+/// (Z-dominant) bending modes have `z ≈ 1`; lateral (Y) and axial (X) modes have
+/// their energy on the other axes. This is the mode-identification lever the SS
+/// benchmark needs because — unlike the locked P1 `ny=1` mesh — the P2 mesh
+/// resolves the lateral Y-bending mode (`≈ 5× f₁,z ≈ 579 Hz`) *within* the first
+/// few eigenvalues, so it intrudes between the 2nd and 3rd vertical modes.
+fn axis_energy_fractions(eigvec: &[f64], full_of_free: &[usize]) -> [f64; 3] {
+    let mut e = [0.0_f64; 3];
+    for (free_idx, &comp) in eigvec.iter().enumerate() {
+        e[full_of_free[free_idx] % 3] += comp * comp;
+    }
+    let total = e[0] + e[1] + e[2];
+    if total > 0.0 { [e[0] / total, e[1] / total, e[2] / total] } else { [0.0; 3] }
+}
+
+/// Analytic Euler-Bernoulli natural frequency of this file's beam fixture for a
+/// given dimensionless eigen-coefficient `βL`:
+/// `f = (βL)²/(2π) · √(EI / (ρ A L⁴))`, `I = b·h³/12`, `A = b·h`.
+///
+/// The BC family lives ENTIRELY in `βL` — 1.875104 (clamped-free), `nπ`
+/// (pinned-pinned), 4.730041 (clamped-clamped) — which is why one function
+/// serves all three benchmarks; it used to be written out three times.
+fn analytic_beam_frequency(grid: &BeamFixture, beta_l: f64) -> f64 {
+    beta_l.powi(2) / (2.0 * PI)
+        * (STEEL_E_PA * grid.i_bending_z() / (STEEL_DENSITY * grid.area() * grid.lx.powi(4))).sqrt()
+}
+
+/// Clamp all three translational DOFs at every promoted-P2 node satisfying
+/// `on_face`. The clamp-family BC builder: the cantilever passes the `x ≈ 0`
+/// root face, the clamped-clamped benchmark passes `x ≈ 0` OR `x ≈ L`.
+fn clamped_face_bcs(
+    nodes_p2: &[[f64; 3]],
+    on_face: impl Fn(&[f64; 3]) -> bool,
+) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (n, xyz) in nodes_p2.iter().enumerate() {
+        if on_face(xyz) {
+            for axis in 0..3_usize {
+                bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+            }
+        }
+    }
+    bcs
+}
+
+/// Outcome of one clamp-family (cantilever / clamped-clamped) P2 modal solve.
+///
+/// One struct for both: the two benchmarks assert on exactly the same fields, so
+/// the former `CantileverMeasurement` / `ClampedClampedMeasurement` pair was a
+/// field-for-field duplicate.
+struct BeamModalMeasurement {
     f1: f64,
     f1_analytic: f64,
     f2: f64,
@@ -286,71 +431,55 @@ struct CantileverMeasurement {
     lambda_min: f64,
 }
 
-/// Build the cantilever beam at the given mesh, assemble (K, M) at P2, clamp the
-/// `x ≈ 0` root face, project to free DOFs, dense-eigensolve, and return the
-/// measured fundamental frequency vs the Euler-Bernoulli reference.
-fn measure_cantilever(grid: &BeamFixture) -> CantileverMeasurement {
-    let nodes_p1 = build_node_xyz(grid);
-    let tets_p1 = build_tet_mesh(grid);
-    let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
-    let n_nodes_p2 = nodes_p2.len();
-    let n_dofs = 3 * n_nodes_p2;
-
-    let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
-
-    // BCs: clamp the x ≈ 0 root face (all 3 DOFs, catches P2 edge-midpoints).
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-    for (n, xyz) in nodes_p2.iter().enumerate() {
-        if (xyz[0] - 0.0).abs() < 1e-10 {
-            for axis in 0..3_usize {
-                bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
-            }
-        }
-    }
-    assert!(!bcs.is_empty(), "cantilever must clamp at least one root-face DOF");
-
-    // Assemble (K, M) at P2.
-    let (k_full, m_full) = assemble_p2_k_and_m(&nodes_p2, &tets_p2, &material, STEEL_DENSITY);
-
-    // Total-mass sanity: Σ M = 3·ρ·V_total (V_total = L·b·h, exact box fill).
-    let v_total = grid.lx * grid.ly * grid.lz;
-    let total_mass_sum = sum_all_entries(&m_full);
-    let expected_mass_sum = 3.0 * STEEL_DENSITY * v_total;
-    let mass_rel = (total_mass_sum - expected_mass_sum).abs() / expected_mass_sum;
-
-    // Project to the free-DOF subspace and solve K_free φ = λ M_free φ.
-    let (free_of_full, n_free) = free_dof_map(n_dofs, &bcs);
-    let k_free = project_free(&k_full, &free_of_full, n_free);
-    let m_free = project_free(&m_full, &free_of_full, n_free);
+/// Measure a clamp-family beam's fundamental against its Euler-Bernoulli
+/// reference: clamp every P2 node satisfying `on_clamped_face`, solve the three
+/// lowest modes, and compare `f₁` to `analytic_beam_frequency(grid, beta1_l)`.
+///
+/// The BC predicate and `βL` are the ONLY things that separate the cantilever
+/// benchmark from the clamped-clamped one.
+fn measure_beam_modes(
+    grid: &BeamFixture,
+    on_clamped_face: impl Fn(&[f64; 3]) -> bool,
+    beta1_l: f64,
+) -> BeamModalMeasurement {
     let opts = EigenSolverOptions { n_modes: 3, tol: 1e-9, max_iters: 200, sigma: 0.0 };
-    let eig = solve_eigen_dense(&k_free, &m_free, opts);
+    let solve = solve_beam_modes(grid, |nodes_p2| clamped_face_bcs(nodes_p2, &on_clamped_face), opts);
 
-    let lambda_min = eig.eigenvalues.first().copied().unwrap_or(f64::NAN);
-    let to_hz = |l: f64| l.sqrt() / (2.0 * PI);
-    let f1 = to_hz(lambda_min);
-    let f2 = eig.eigenvalues.get(1).map(|&l| to_hz(l)).unwrap_or(f64::NAN);
-    let f3 = eig.eigenvalues.get(2).map(|&l| to_hz(l)).unwrap_or(f64::NAN);
-
-    // Analytic Euler-Bernoulli cantilever first frequency:
-    // f₁ = (β₁L)²/(2π) · √(EI / (ρ A L⁴)), β₁L = 1.875104, I = b·h³/12, A = b·h.
-    const BETA1_L: f64 = 1.875104;
-    let f1_analytic = BETA1_L.powi(2) / (2.0 * PI)
-        * (STEEL_E_PA * grid.i_bending_z() / (STEEL_DENSITY * grid.area() * grid.lx.powi(4)))
-            .sqrt();
+    let f1 = solve.freqs.first().copied().unwrap_or(f64::NAN);
+    let f2 = solve.freqs.get(1).copied().unwrap_or(f64::NAN);
+    let f3 = solve.freqs.get(2).copied().unwrap_or(f64::NAN);
+    let f1_analytic = analytic_beam_frequency(grid, beta1_l);
     let rel_err = (f1 - f1_analytic).abs() / f1_analytic;
 
-    CantileverMeasurement {
+    BeamModalMeasurement {
         f1,
         f1_analytic,
         f2,
         f3,
         rel_err,
-        n_free,
-        n_nodes_p2,
-        mass_rel,
-        converged: eig.converged,
-        lambda_min,
+        n_free: solve.n_free,
+        n_nodes_p2: solve.n_nodes_p2,
+        mass_rel: solve.mass_rel,
+        converged: solve.converged,
+        lambda_min: solve.lambda_min,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cantilever P2 modal measurement (shared by the benchmark + the tuning sweep)
+// ---------------------------------------------------------------------------
+
+/// Euler-Bernoulli clamped-free (cantilever) first-mode eigen-coefficient.
+const BETA1_L_CANTILEVER: f64 = 1.875104;
+
+/// Build the cantilever beam at the given mesh, clamp the `x ≈ 0` root face
+/// (all 3 DOFs, by coordinate so the P2 edge-midpoints on the face are caught
+/// too), and return the measured fundamental vs the Euler-Bernoulli reference.
+///
+/// One call site over [`measure_beam_modes`]; the root-face predicate and
+/// `βL = 1.875104` are the whole of what makes it "the cantilever".
+fn measure_cantilever(grid: &BeamFixture) -> BeamModalMeasurement {
+    measure_beam_modes(grid, |xyz| xyz[0].abs() < 1e-10, BETA1_L_CANTILEVER)
 }
 
 // ---------------------------------------------------------------------------
@@ -499,30 +628,6 @@ fn simply_supported_bcs(nodes_p2: &[[f64; 3]], length: f64, height: f64) -> Vec<
     bcs
 }
 
-/// Per-axis energy fractions `(x, y, z)` of an eigenvector over the free DOFs:
-/// `e[α] = Σ_i φ_i² · [axis(i) == α]`, normalized to sum 1. The vertical
-/// (Z-dominant) bending modes have `z ≈ 1`; lateral (Y) and axial (X) modes have
-/// their energy on the other axes. This is the mode-identification lever the SS
-/// benchmark needs because — unlike the locked P1 `ny=1` mesh — the P2 mesh
-/// resolves the lateral Y-bending mode (`≈ 5× f₁,z ≈ 579 Hz`) *within* the first
-/// few eigenvalues, so it intrudes between the 2nd and 3rd vertical modes.
-fn axis_energy_fractions(eigvec: &[f64], full_of_free: &[usize]) -> [f64; 3] {
-    let mut e = [0.0_f64; 3];
-    for (free_idx, &comp) in eigvec.iter().enumerate() {
-        e[full_of_free[free_idx] % 3] += comp * comp;
-    }
-    let total = e[0] + e[1] + e[2];
-    if total > 0.0 { [e[0] / total, e[1] / total, e[2] / total] } else { [0.0; 3] }
-}
-
-/// Analytic Euler-Bernoulli simply-supported natural frequency for the given
-/// dimensionless eigen-coefficient `βL = nπ`:
-/// `fₙ = (nπ)²/(2π) · √(EI / (ρ A L⁴))`, `I = b·h³/12`, `A = b·h`.
-fn analytic_ss_frequency(grid: &BeamFixture, beta_l: f64) -> f64 {
-    beta_l.powi(2) / (2.0 * PI)
-        * (STEEL_E_PA * grid.i_bending_z() / (STEEL_DENSITY * grid.area() * grid.lx.powi(4))).sqrt()
-}
-
 /// One measured spectrum entry: frequency plus the `(x, y, z)` energy fractions
 /// used to classify the mode family.
 struct ModeInfo {
@@ -548,63 +653,34 @@ struct SimplySupportedMeasurement {
     converged: bool,
 }
 
-/// Build the simply-supported beam at the given mesh, assemble (K, M) at P2, pin
-/// both end faces in Z + minimal neutral-axis anchors, project to free DOFs,
-/// dense-eigensolve a generous low spectrum, classify each mode by dominant
-/// axis, and return the first three vertical (Z-bending) frequencies vs the
-/// Euler-Bernoulli pin-pin references.
+/// Build the simply-supported beam at the given mesh, pin both end faces in Z +
+/// minimal neutral-axis anchors, dense-eigensolve a generous low spectrum,
+/// classify each mode by dominant axis, and return the first three vertical
+/// (Z-bending) frequencies vs the Euler-Bernoulli pin-pin references.
+///
+/// The third call site over [`solve_beam_modes`]. Unlike the two clamp-family
+/// benchmarks it cannot go through [`measure_beam_modes`]: its BC set is not a
+/// face clamp (Z-only pins plus three neutral-axis anchors), it asks for a
+/// generous 8-mode window rather than 3, and its signal is a mode FAMILY picked
+/// out of an interleaved spectrum rather than the raw fundamental. What it does
+/// share — assembly, mass sanity, free-DOF projection, the dense solve and the
+/// per-mode axis classification — is exactly what `solve_beam_modes` provides.
 fn measure_simply_supported(grid: &BeamFixture) -> SimplySupportedMeasurement {
-    let nodes_p1 = build_node_xyz(grid);
-    let tets_p1 = build_tet_mesh(grid);
-    let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
-    let n_nodes_p2 = nodes_p2.len();
-    let n_dofs = 3 * n_nodes_p2;
-
-    let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
-
-    // BCs over the promoted node set (coordinate selection catches P2 midpoints).
-    let bcs = simply_supported_bcs(&nodes_p2, grid.lx, grid.lz);
-    assert!(!bcs.is_empty(), "simply-supported must pin at least one end-face DOF");
-
-    let (k_full, m_full) = assemble_p2_k_and_m(&nodes_p2, &tets_p2, &material, STEEL_DENSITY);
-
-    // Total-mass sanity: Σ M = 3·ρ·V_total (exact box fill).
-    let v_total = grid.lx * grid.ly * grid.lz;
-    let total_mass_sum = sum_all_entries(&m_full);
-    let expected_mass_sum = 3.0 * STEEL_DENSITY * v_total;
-    let mass_rel = (total_mass_sum - expected_mass_sum).abs() / expected_mass_sum;
-
-    // Project to the free-DOF subspace (and build the inverse free→full map for
-    // the per-axis eigenvector classification).
-    let (free_of_full, n_free) = free_dof_map(n_dofs, &bcs);
-    let mut full_of_free = vec![0_usize; n_free];
-    for (g, &f) in free_of_full.iter().enumerate() {
-        if f != usize::MAX {
-            full_of_free[f] = g;
-        }
-    }
-    let k_free = project_free(&k_full, &free_of_full, n_free);
-    let m_free = project_free(&m_full, &free_of_full, n_free);
-
     // Solve a generous low spectrum: the lateral Y-bending mode (≈ 5× f₁,z)
     // sits between the 2nd and 3rd vertical modes under P2, so 8 eigenpairs
     // comfortably cover z1, z2, y1, z3.
     let opts = EigenSolverOptions { n_modes: 8, tol: 1e-9, max_iters: 300, sigma: 0.0 };
-    let eig = solve_eigen_dense(&k_free, &m_free, opts);
+    let solve = solve_beam_modes(
+        grid,
+        |nodes_p2| simply_supported_bcs(nodes_p2, grid.lx, grid.lz),
+        opts,
+    );
 
-    let to_hz = |l: f64| l.sqrt() / (2.0 * PI);
-    // `eigenvectors` is a faer `Mat<f64>` (column j = mode j, row = free DOF);
-    // `col_as_slice(j)` views column j as a contiguous `&[f64]` over the free
-    // DOFs (the `modal_ops` idiom). `j < eigenvalues.len() == ncols`, so the
-    // column index is always in range.
-    let spectrum: Vec<ModeInfo> = eig
-        .eigenvalues
+    let spectrum: Vec<ModeInfo> = solve
+        .freqs
         .iter()
-        .enumerate()
-        .map(|(j, &l)| ModeInfo {
-            freq: to_hz(l),
-            fracs: axis_energy_fractions(eig.eigenvectors.col_as_slice(j), &full_of_free),
-        })
+        .zip(solve.fracs.iter())
+        .map(|(&freq, &fracs)| ModeInfo { freq, fracs })
         .collect();
 
     // Vertical (Z-dominant) family, ascending by frequency.
@@ -623,9 +699,9 @@ fn measure_simply_supported(grid: &BeamFixture) -> SimplySupportedMeasurement {
     }
 
     let f_analytic = [
-        analytic_ss_frequency(grid, PI),
-        analytic_ss_frequency(grid, 2.0 * PI),
-        analytic_ss_frequency(grid, 3.0 * PI),
+        analytic_beam_frequency(grid, PI),
+        analytic_beam_frequency(grid, 2.0 * PI),
+        analytic_beam_frequency(grid, 3.0 * PI),
     ];
     let rel_err: [f64; 3] =
         std::array::from_fn(|i| (f_bending[i] - f_analytic[i]).abs() / f_analytic[i]);
@@ -636,10 +712,10 @@ fn measure_simply_supported(grid: &BeamFixture) -> SimplySupportedMeasurement {
         rel_err,
         spectrum,
         n_bending_found,
-        n_free,
-        n_nodes_p2,
-        mass_rel,
-        converged: eig.converged,
+        n_free: solve.n_free,
+        n_nodes_p2: solve.n_nodes_p2,
+        mass_rel: solve.mass_rel,
+        converged: solve.converged,
     }
 }
 
@@ -779,5 +855,171 @@ fn simply_supported_beam_p2_modal_within_two_percent() {
         m.rel_err[2] < SS_P2_HIGHER_MODE_TOL,
         "ss f3 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% > {:.2}%",
         m.f_bending[2], m.f_analytic[2], m.rel_err[2] * 100.0, SS_P2_HIGHER_MODE_TOL * 100.0,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Clamped-clamped P2 modal benchmark (task 6663)
+// ---------------------------------------------------------------------------
+
+/// Euler-Bernoulli clamped-clamped (fixed-fixed) first-mode eigen-coefficient.
+const BETA1_L_CLAMPED_CLAMPED: f64 = 4.730041;
+
+/// Build the clamped-clamped beam at the given mesh, clamp BOTH end faces (all
+/// 3 DOFs, by coordinate so the P2 edge-midpoints on each face are caught too),
+/// and return the measured fundamental vs the Euler-Bernoulli reference.
+///
+/// The second call site over [`measure_beam_modes`], differing from
+/// [`measure_cantilever`] in EXACTLY the two things that function is
+/// parameterized by: the BC predicate catches `x ≈ 0` OR `x ≈ L` instead of the
+/// root face alone, and `βL = 4.730041` instead of 1.875104. (Before task
+/// 6663's amendment the whole build-assemble-project-solve body was copied
+/// verbatim between the two.)
+fn measure_clamped_clamped(grid: &BeamFixture) -> BeamModalMeasurement {
+    let lx = grid.lx;
+    measure_beam_modes(
+        grid,
+        move |xyz| xyz[0].abs() < 1e-10 || (xyz[0] - lx).abs() < 1e-10,
+        BETA1_L_CLAMPED_CLAMPED,
+    )
+}
+
+/// Calibrated relative-error bound on the clamped-clamped fundamental frequency.
+///
+/// **This is an HONEST MEASURED FLOOR, not the 2% the cantilever/SS bounds hit** —
+/// the same class as this file's existing euler P2 5% and P1 9–11% bounds, which
+/// `CANTILEVER_P2_REL_TOL`'s doc comment names explicitly as the contrast case.
+///
+/// # Tuning history (release mode, analytic f₁ = 262.6464 Hz)
+///
+/// | nx×ny×nz | n_free | f₁ (Hz) | rel_err | note                              |
+/// |----------|--------|---------|---------|-----------------------------------|
+/// | 16×1×1   | 837    | 270.760 | +3.089% | fails a 2% bound                  |
+/// | **24×1×1** | **1269** | **268.179** | **+2.106%** | **chosen** — 1.89% margin under 4%, matches the SS benchmark's span mesh, **~39 s** |
+/// | 32×1×1   | 1701   | 267.096 | +1.694% | clears 2% by only 0.31%           |
+///
+/// # Gate cost
+///
+/// **MEASURED 38.8 s** at the chosen `nx=24` (`test result: ok … finished in
+/// 38.78s`, release, this test alone, sequential) — the same way
+/// [`CANTILEVER_P2_REL_TOL`] records `~25 s` for its own chosen mesh, and for
+/// the same reason: this test is release-only, so its cost lands entirely on the
+/// merge gate and must be visible to whoever next tunes the mesh rather than
+/// re-derived from the QZ's O(n³).
+///
+/// That is ≈ 1.6× the cantilever benchmark's ~25 s at `n_free = 864` — well
+/// under what the cubic alone predicts ((1269/864)³ ≈ 3.2×), because the dense
+/// QZ's constant factors and the assembly it shares do not scale cubically.
+/// Sizing the next step from this row rather than from the ratio matters: the
+/// `nz=2` cantilever row's ~115 s at `n_free = 1440` is the cautionary
+/// neighbour, and `nx=32` here (`n_free = 1701`) would buy 0.41% of accuracy for
+/// a materially larger share of the gate.
+///
+/// **Why 2% is not used here.** It FAILS at nx=16 and nx=24 and clears at nx=32
+/// by only 0.31%, so a 2% bound at any of this file's established meshes would be
+/// either unreachable or knife-edge fragile. 4% at nx=24 leaves a 1.89% margin —
+/// ahead of the 0.65% margin `CANTILEVER_P2_REL_TOL` was calibrated with.
+///
+/// **Why the residual is discretization, not a model gap.** The error falls
+/// monotonically under span refinement (3.089% → 2.106% → 1.694%) and `f₁ >
+/// analytic` at every mesh, which is the signature of a conforming P2 +
+/// consistent-mass Rayleigh quotient: it bounds the exact 3-D value from ABOVE
+/// and descends toward it. The clamped-clamped fundamental sits at βL = 4.730041,
+/// i.e. `(4.730041/π)² = 2.27×` the simply-supported fundamental's curvature
+/// demand, so the same mesh resolves it less well — hence a residual roughly 2×
+/// the SS benchmark's at the identical nx=24. The Timoshenko shear/rotary-inertia
+/// correction for this `L/r ≈ 346` beam is only about −0.12%, far too small to
+/// explain a +2.1% offset, so this is discretization stiffening and not the
+/// 3D-solid-vs-Euler-Bernoulli model gap.
+const CLAMPED_P2_REL_TOL: f64 = 0.04;
+
+/// Clamped-clamped (fixed-fixed) P2 modal-frequency accuracy benchmark — the
+/// third member of this file's cantilever / simply-supported family, on the SAME
+/// shared steel fixture.
+///
+/// Slender steel beam: `L = 200 mm` (X span) × `b = 10 mm` (Y width) ×
+/// `h = 2 mm` (Z height, the thin bending axis), `L/r ≈ 346`. AISI 1045
+/// (E = 205 GPa, ν = 0.29, ρ = 7850 kg/m³).
+///
+/// BCs: BOTH the `x ≈ 0` and `x ≈ L` end faces are fully clamped — all 3 DOFs at
+/// every P2 node on either face, selected by x-coordinate so the P2 edge-midpoint
+/// nodes on each face are caught too.
+///
+/// Reference (Euler-Bernoulli clamped-clamped first mode):
+/// `f₁ = (4.730041² / 2π) · √(EI / (ρ A L⁴)) ≈ 262.6 Hz`, with `I = b·h³/12`,
+/// `A = b·h`.
+///
+/// # Why this exists alongside the e2e's clause (d) (review suggestion 5)
+///
+/// The eval-surface acceptance e2e
+/// (`reify-eval-fea-tests/tests/modal_analysis_e2e.rs::
+/// e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported`) already
+/// checks a clamped-clamped fundamental against `βL = 4.730041`, at −1.46% on a
+/// 3% band, for 21.7 s covering THREE solves — so on wall clock per accuracy
+/// statement this benchmark is the expensive one, and the question of whether it
+/// earns its 38.8 s is fair. It does, on three axes that are independent by
+/// construction rather than by coincidence, and a shared failure would have to
+/// break all three at once to stay hidden:
+///
+///   1. **Solver path.** This test dense-eigensolves (`solve_eigen_dense`, a QZ
+///      over the full projected pair). The e2e goes through
+///      `solve_generalized_eigen`'s shift-invert route — sparse Cholesky of
+///      `K_free` plus Lanczos. They share no numerical kernel below the
+///      assembly, so an accuracy defect in either is invisible to the other.
+///   2. **Fixture regime.** `L/r ≈ 346` here (200 × 10 × 2 mm) versus the
+///      dogfood section's stubby `L/h ≈ 18`. Euler–Bernoulli is the right model
+///      for the first and a ~1.5%-shear-deficient model for the second, which is
+///      exactly why the e2e band has to be 3% while this one can be read as a
+///      convergence statement (3.089% → 2.106% → 1.694% under span refinement).
+///      A discretization regression that hid inside the e2e's shear-explained
+///      residual would move this monotone sequence.
+///   3. **Layer.** No parser, no eval graph, no `@optimized` dispatch and no BC
+///      REALIZATION: the Dirichlet set here is written directly by coordinate.
+///      That is what makes it an accuracy statement about the clamped-clamped
+///      SOLVE rather than about `build_dirichlet_bcs` — the e2e cannot separate
+///      the two, because realizing the BCs is the thing it is testing.
+///
+/// **Routing this through `solve_eigen_shift_invert` was considered and
+/// rejected.** It would recover most of the 38.8 s (n_free = 1269 is well into
+/// the sparse regime), but it buys that by deleting axis 1 — the independent
+/// dense-QZ cross-check that is half of why the test earns its place — and it
+/// would make this the only member of the file's three-benchmark family not
+/// sharing `solve_beam_modes`'s single path, re-opening the duplication that
+/// amendment removed. The cheaper lever, if the gate ever needs one, is the
+/// mesh: the tuning table above prices nx=16 at 3.089%, which a 4% bound still
+/// admits.
+///
+/// Passes when `|f₁ − f₁,analytic| / f₁,analytic < CLAMPED_P2_REL_TOL`.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "heavy (dense modal eigensolve): release-only at the merge gate; debug skips it for per-task speed — task 6663"
+)]
+#[test]
+fn clamped_clamped_beam_p2_modal_within_calibrated_band() {
+    // nx=24 matches the simply-supported benchmark's span mesh — see
+    // CLAMPED_P2_REL_TOL's tuning history for the measured nx sweep and for why
+    // 2% is not the bound here.
+    let grid = BeamFixture { nx: 24, ny: 1, nz: 1, lx: 0.2, ly: 0.01, lz: 0.002 };
+    let m = measure_clamped_clamped(&grid);
+
+    eprintln!(
+        "clamped-clamped P2 (nx={}, ny={}, nz={}, P2 nodes={}, n_free={}): \
+         f1 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% (f2 = {:.2} Hz, f3 = {:.2} Hz); \
+         Σ M rel = {:.2e}",
+        grid.nx, grid.ny, grid.nz, m.n_nodes_p2, m.n_free,
+        m.f1, m.f1_analytic, m.rel_err * 100.0, m.f2, m.f3, m.mass_rel,
+    );
+
+    assert!(m.converged, "dense modal eigensolve must converge for the clamped-clamped beam");
+    assert!(m.lambda_min > 0.0, "λ_min = {} must be positive (free vibration)", m.lambda_min);
+    assert!(
+        m.mass_rel < 1e-9,
+        "global consistent-mass total Σ M off by rel {:.2e} from 3ρV",
+        m.mass_rel,
+    );
+    assert!(
+        m.rel_err < CLAMPED_P2_REL_TOL,
+        "clamped-clamped P2: f1 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% > {:.2}%",
+        m.f1, m.f1_analytic, m.rel_err * 100.0, CLAMPED_P2_REL_TOL * 100.0,
     );
 }

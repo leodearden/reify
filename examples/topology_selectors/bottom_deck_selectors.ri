@@ -1,0 +1,71 @@
+module bottom_deck_selectors
+
+// Compact selector-driven design exercising curated 3-arg fillet through the
+// production .ri pipeline (task 5208). Trimmed from the repro
+// designs/litter_tray/bottom_deck_v2_selectors.ri to the three shapes that the
+// curated-fillet reachability fix must make buildable end-to-end:
+//
+//   (1) 3-arg fillet of a blank box `let`, selector = edges_parallel_to on that
+//       SAME let (the plan-view vertical corners) — outer / recess_cut / main_cut;
+//   (2) a curated fillet applied to a boolean-composed (difference) body —
+//       the horizontal rim loop of `hollowed`;
+//   (3) CHAINED curated fillets, each stage a named `let` referencing the prior
+//       via edges_at_height (rim -> ledge -> floor -> base loops).
+//
+// Seven curated fillets total (3 blank-box edges_parallel_to + 4 chained
+// edges_at_height). The structure conforms to `Physical`, so `reify eval`
+// surfaces `mass = volume(geometry) * material.density` over the final filleted
+// body — the observable designer signal this fixture drives.
+
+structure def BottomDeckSelectors : Physical {
+    // Overall envelope
+    param outer_length    : Length = 480mm
+    param outer_width     : Length = 260mm
+    param wall_height     : Length = 80mm
+    param corner_radius   : Length = 25mm
+
+    // Wall / ledge cross-section
+    param upper_wall      : Length = 2.4mm
+    param ledge_width     : Length = 5mm
+    param recess_depth    : Length = 15mm
+    param floor_thickness : Length = 4mm
+
+    // Edge-softening radii (selector-driven 3-arg fillets)
+    param rim_fillet   : Length = 1mm
+    param ledge_fillet : Length = 1mm
+    param floor_fillet : Length = 5mm
+    param base_fillet  : Length = 2mm
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // Derived section dims
+    let lower_wall    = upper_wall + ledge_width
+    let ledge_z       = wall_height - recess_depth
+    let inner_length  = outer_length - 2 * lower_wall
+    let inner_width   = outer_width  - 2 * lower_wall
+    let recess_length = outer_length - 2 * upper_wall
+    let recess_width  = outer_width  - 2 * upper_wall
+
+    let up       = vec3(0.0, 0.0, 1.0)
+    let recess_h = recess_depth + 20mm
+
+    // (1) blank-box lets, corners filleted via edges_parallel_to on the same let.
+    let outer_blank  = translate(box(outer_length, outer_width, wall_height), 0mm, 0mm, wall_height / 2)
+    let outer        = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_radius)
+
+    let recess_blank = translate(box(recess_length, recess_width, recess_h), 0mm, 0mm, ledge_z + recess_h / 2)
+    let recess_cut   = fillet(recess_blank, edges_parallel_to(recess_blank, up, 1deg), corner_radius - upper_wall)
+
+    let main_blank   = translate(box(inner_length, inner_width, wall_height), 0mm, 0mm, floor_thickness + wall_height / 2)
+    let main_cut     = fillet(main_blank, edges_parallel_to(main_blank, up, 1deg), corner_radius - lower_wall)
+
+    // (2) boolean-composed body — curated fillets below select loops on THIS.
+    let hollowed = difference(difference(outer, recess_cut), main_cut)
+
+    // (3) chained curated fillets, each stage a named let via edges_at_height.
+    let rim_soft   = fillet(hollowed,   edges_at_height(hollowed,   wall_height,     0.5mm), rim_fillet)
+    let ledge_soft = fillet(rim_soft,   edges_at_height(rim_soft,   ledge_z,         0.5mm), ledge_fillet)
+    let floor_soft = fillet(ledge_soft, edges_at_height(ledge_soft, floor_thickness, 0.5mm), floor_fillet)
+
+    param geometry : Solid = fillet(floor_soft, edges_at_height(floor_soft, 0mm, 0.5mm), base_fillet)
+}

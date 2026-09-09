@@ -251,9 +251,9 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: compile_linear_pattern_2d_wrong_arity_produces_diagnostic
+      pattern: PRD boundary row 9b — RESOLUTION RECORDED
       paths:
-      - crates/reify-compiler/tests/compile_api_tests.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs
       expect: present
 - label: θ
   task_id: 5751

@@ -1801,10 +1801,10 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
 
   const VOLUME_LADDER: UnitLadderMap = {
     Volume: [
-      { label: 'mm³', si_scale: 1e-9, is_default: true },
-      { label: 'cm³', si_scale: 1e-6, is_default: false },
+      { label: 'mm^3', si_scale: 1e-9, is_default: true },
+      { label: 'cm^3', si_scale: 1e-6, is_default: false },
       { label: 'L', si_scale: 1e-3, is_default: false },
-      { label: 'm³', si_scale: 1.0, is_default: false },
+      { label: 'm^3', si_scale: 1.0, is_default: false },
     ],
   };
 
@@ -1815,7 +1815,7 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
         name: 'capacity',
         entity_path: 'Tank.capacity',
         value: '7045002.24',
-        unit: 'mm³',
+        unit: 'mm^3',
         dimension: 'Volume',
         si_value: 0.00704500224,
         ...overrides,
@@ -1834,7 +1834,7 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     ));
     const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
     const labels = Array.from(select.options).map((o) => o.value);
-    expect(labels).toEqual(['mm³', 'cm³', 'L', 'm³']);
+    expect(labels).toEqual(['mm^3', 'cm^3', 'L', 'm^3']);
   });
 
   it('(b) selecting "L" shows the converted displayed value and label, with no duplicate canonical number', () => {
@@ -1904,7 +1904,7 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     ));
     const row = screen.getByTestId('prop-row-c1');
     const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
-    expect(select.value).toBe('mm³');
+    expect(select.value).toBe('mm^3');
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     expect(input.value).toBe('7045002.24');
   });
@@ -2054,7 +2054,7 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
 
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
-    expect(screen.getByTestId('unit-edit-hint-c1').textContent).toContain('mm³');
+    expect(screen.getByTestId('unit-edit-hint-c1').textContent).toContain('mm^3');
 
     // Committing ends the edit and the hint disappears again. The literal must
     // carry a unit: since task #5757 a bare magnitude is refused for a
@@ -2171,7 +2171,7 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     // (an <input>'s value is never part of its element's text content).
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     expect(input.value).toBe('42');
-    expect(row.textContent).toContain('mm³');
+    expect(row.textContent).toContain('mm^3');
   });
 
   it('(k) a cell removed from props.values (e.g. file reload) has its unit preference pruned, both persisted and in-memory', () => {
@@ -2205,7 +2205,7 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     // c1 reappears — it must NOT remember the pruned 'L' choice; it falls
     // back to the ladder default rather than resurrecting the stale pick.
     setValues(capacityValues());
-    expect((screen.getByTestId('unit-select-c1') as HTMLSelectElement).value).toBe('mm³');
+    expect((screen.getByTestId('unit-select-c1') as HTMLSelectElement).value).toBe('mm^3');
   });
 });
 

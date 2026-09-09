@@ -45,7 +45,7 @@ tasks:
       kind: grep
       pattern: fn no_example_emits_ctor_field_conformance_diagnostics
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
   - name: predicate-flip-is-one-arm
     binding: grep:crates/reify-compiler/src/conformance/mod.rs:1691-1697 — read verbatim
@@ -227,7 +227,7 @@ tasks:
       kind: grep
       pattern: a false positive from the conformance walker
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: absent
   - name: severity-safe-pre-delta-BY-MEASUREMENT-not-construction
     binding: 'PREMISE REPAIRED by the Adversary. grep:crates/reify-compiler/src/conformance/mod.rs:32
@@ -547,7 +547,7 @@ tasks:
       kind: grep
       pattern: fn best_practices_index_matches_corpus_directory
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
 - label: ζ₃
   task_id: 5769

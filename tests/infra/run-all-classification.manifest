@@ -92,6 +92,7 @@ test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_git_rerere_guard.sh pool
 test_govtest_slice_reaper.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
@@ -102,6 +103,7 @@ test_heavy_filter_atoms.sh pool
 test_hooks_call_verify.sh pool
 test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
+test_infra_git_env_isolation.sh intra-run-serial
 test_jcodemunch_index_reify.sh pool
 test_jobserver_acceptance.sh pool
 test_jobserver_balancer.sh pool
@@ -128,6 +130,7 @@ test_nextest_slow_priority.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
 test_no_new_wallclock_rust_deadlines.sh pool
 test_no_new_wallclock_upper_bounds.sh pool
+test_no_prebuilt_reify_bin_spawn.sh pool
 test_npm_ci_hardening.sh pool
 test_occt_deps_preflight.sh pool
 test_occt_flock_gate_bounds.sh pool
@@ -157,6 +160,7 @@ test_reify_audit_freshness.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
+test_reify_audit_ptodo_ratchet_superset.sh pool
 test_reify_audit_ptodo_ratchet_vacuity.sh pool
 test_reify_bin_freshness.sh pool
 test_reify_overlap_deploy_smoke.sh pool
@@ -183,6 +187,7 @@ test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
 test_slot_event_log.sh pool
 test_slot_timeout_marker.sh pool
+test_smoke_predone_hook.sh pool
 test_sn_gate.sh pool
 test_spec_anchor_lint.sh pool
 test_stash_guard.sh pool
@@ -193,6 +198,7 @@ test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool
 test_test_run_semaphore.sh pool
 test_thin_warm_lane.sh pool
+test_tree_sitter_parse_isolation.sh pool
 test_typecheck_compiles_tests.sh pool
 test_verify_admission_knob_parity.sh pool
 test_verify_compile_gate.sh pool

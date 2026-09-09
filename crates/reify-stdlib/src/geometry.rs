@@ -934,30 +934,75 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         "frame_at" => eval_frame_at(args),
 
         // --- BoundingBox constructors ---
+        //
+        // A BoundingBox is Length-valued BY CONSTRUCTION (task 6081, ruling
+        // from esc-5997-2): `bbox` admits only `Point3<Length>` corners, and
+        // both accessors emit `Length` components unconditionally — even for a
+        // hand-built or kernel-produced box whose stored corners say otherwise.
+        //
+        // The quantity polymorphism this replaced was NOT a designed
+        // capability: it was incidental generic component-dimension
+        // propagation. The old gate only checked that the two corners AGREED,
+        // and the accessors merely echoed whatever dimension they found. Do not
+        // re-derive it as intentional. The only real producer,
+        // `dispatch_bounding_box` (reify-eval/src/geometry_ops.rs), is
+        // unconditionally `Point3<Length>`, and the sole `.ri` consumer
+        // (examples/differential_field_ops.ri) is metre-valued.
+        //
+        // DELIBERATE REINTERPRETATION, and the one place where this ruling
+        // trades a check for a guarantee. The accessors do not merely decline to
+        // propagate a non-Length stored dimension — for a UNIFORMLY non-Length
+        // corner (an all-Angle box, say) they RELABEL those magnitudes as metres.
+        // A MIXED-dimension stored corner is still rejected outright, because the
+        // accessors read corners through `tensor_components_f64`. The relabelling
+        // is what makes reify-compiler's static rows `Vector3<Length>` /
+        // `Point3<Length>` sound rather than an over-claim: a row true only of
+        // constructor-produced boxes would be the very static/runtime
+        // disagreement this ruling removes, since `Value::BoundingBox` is also
+        // minted by `dispatch_bounding_box` and constructible directly in Rust.
+        // The narrowed constructor above is what makes the relabelled input
+        // impossible in the first place; a uniformly non-Length stored corner can
+        // now only be a PRODUCER bug, and if one ever appears the better answer
+        // is to reject it here (with a `diagnose` arm for `bbox_size` /
+        // `bbox_center`) rather than to coerce it. Not done today: there is no
+        // such producer, and the tests
+        // `bbox_size/bbox_center_emits_length_components_for_angle_bbox` pin the
+        // coercion as the current, deliberate behaviour.
+        //
+        // Going monomorphic is the SAFE direction: a later `BoundingBox<Q>`
+        // would be a WIDENING, which is the easy one. For scale, the static
+        // type is a bare unit variant referenced across six crates
+        // (reify-compiler, reify-core, reify-eval, reify-expr, reify-ir,
+        // reify-kernel-openvdb) — re-derive the current site list with
+        //   grep -rn --include=*.rs -E 'Type::BoundingBox|Type::bounding_box\(\)' crates gui
+        // rather than trusting a count quoted here (the house convention on
+        // rotting inventory numbers; see `NAMED_DIMENSIONS` in reify-core).
         "bbox" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
             let min = &args[0];
             let max = &args[1];
-            let min_comps = match min {
-                Value::Point(comps) if comps.len() == 3 => comps,
-                _ => return Some(Value::Undef),
-            };
-            let max_comps = match max {
-                Value::Point(comps) if comps.len() == 3 => comps,
-                _ => return Some(Value::Undef),
-            };
-            let min_dim = min_comps
-                .first()
-                .map(|v| v.dimension())
-                .unwrap_or(DimensionVector::DIMENSIONLESS);
-            let max_dim = max_comps
-                .first()
-                .map(|v| v.dimension())
-                .unwrap_or(DimensionVector::DIMENSIONLESS);
-            if min_dim != max_dim {
-                return Some(Value::Undef);
+            // A BoundingBox is Length-valued by construction (task 6081): both
+            // corners must be `Point3<Length>` — UNIFORMLY, in every component.
+            // The quantity is therefore read through [`classify_bbox_corner`] and
+            // NOT off component 0: a first-component reading admitted
+            // `bbox(point3(1m, 2deg, 3m), …)`, whose stored corner is not
+            // Length-valued at all, and merely displaced the failure one call
+            // downstream to `bbox_size`/`bbox_center` — where, the `bbox` call
+            // having SUCCEEDED, the post-Undef classifier never fires and the user
+            // gets exactly the silent Undef this ruling exists to remove.
+            //
+            // This subsumes the older `min_dim != max_dim` gate: any non-Length
+            // corner is rejected, so mismatched corners cannot both be Length
+            // either. The explanation is emitted by the post-Undef classifier
+            // `diagnose` below, not here — and it decodes the corners through the
+            // SAME helper, so the two cannot drift in the shape dimension any more
+            // than they can in the quantity one.
+            for corner in [min, max] {
+                if classify_bbox_corner(corner) != BboxCorner::Uniform(DimensionVector::LENGTH) {
+                    return Some(Value::Undef);
+                }
             }
             Value::BoundingBox {
                 min: Box::new(min.clone()),
@@ -972,7 +1017,15 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
             match &args[0] {
                 Value::BoundingBox { min, max } => {
-                    let (min_vals, dim) = match tensor_components_f64(min) {
+                    // A BoundingBox is Length-valued by construction (task 6081),
+                    // so the extent is Length regardless of what the stored
+                    // corners carry — the stored dimension is deliberately NOT
+                    // propagated. See the DELIBERATE REINTERPRETATION note on the
+                    // `bbox` constructor banner above: for a uniformly non-Length
+                    // stored corner this RELABELS the magnitudes as metres rather
+                    // than rejecting them, which is sound only because such a box
+                    // is impossible by construction.
+                    let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
@@ -983,20 +1036,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     if min_vals.len() != 3 || max_vals.len() != 3 {
                         return Some(Value::Undef);
                     }
-                    let make_component = |v: f64| -> Value {
-                        if dim.is_dimensionless() {
-                            Value::Real(v)
-                        } else {
-                            Value::Scalar {
-                                si_value: v,
-                                dimension: dim,
-                            }
-                        }
-                    };
                     Value::Vector(vec![
-                        make_component(max_vals[0] - min_vals[0]),
-                        make_component(max_vals[1] - min_vals[1]),
-                        make_component(max_vals[2] - min_vals[2]),
+                        Value::length(max_vals[0] - min_vals[0]),
+                        Value::length(max_vals[1] - min_vals[1]),
+                        Value::length(max_vals[2] - min_vals[2]),
                     ])
                 }
                 _ => Value::Undef,
@@ -1008,7 +1051,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
             match &args[0] {
                 Value::BoundingBox { min, max } => {
-                    let (min_vals, dim) = match tensor_components_f64(min) {
+                    // A BoundingBox is Length-valued by construction (task 6081),
+                    // so the centre is Length regardless of what the stored
+                    // corners carry — the stored dimension is deliberately NOT
+                    // propagated. Same DELIBERATE REINTERPRETATION note as
+                    // `bbox_size` above; see the constructor banner.
+                    let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
@@ -1019,20 +1067,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     if min_vals.len() != 3 || max_vals.len() != 3 {
                         return Some(Value::Undef);
                     }
-                    let make_component = |v: f64| -> Value {
-                        if dim.is_dimensionless() {
-                            Value::Real(v)
-                        } else {
-                            Value::Scalar {
-                                si_value: v,
-                                dimension: dim,
-                            }
-                        }
-                    };
                     Value::Point(vec![
-                        make_component((min_vals[0] + max_vals[0]) / 2.0),
-                        make_component((min_vals[1] + max_vals[1]) / 2.0),
-                        make_component((min_vals[2] + max_vals[2]) / 2.0),
+                        Value::length((min_vals[0] + max_vals[0]) / 2.0),
+                        Value::length((min_vals[1] + max_vals[1]) / 2.0),
+                        Value::length((min_vals[2] + max_vals[2]) / 2.0),
                     ])
                 }
                 _ => Value::Undef,
@@ -1589,12 +1627,22 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   gate. A twist wrong in both halves is rejected by eval's angular gate before the
 ///   linear one is reached, so this arm stays silent there and leaves the explaining
 ///   to #6080, which owns that gate.
+/// - **`bbox`** (exactly 2 args) — a corner that is not `Point3<Length>`
+///   (task 6081: a BoundingBox is spatial by construction), including one whose
+///   components carry MIXED dimensions. Every SHAPE failure stays silent — a
+///   non-`Point` argument, a component count other than 3, a non-numeric
+///   component — like the arity convention above: a type failure is not a
+///   dimension failure.
 ///
-/// Invariant: the dimension arms consult [`TWIST_LINEAR_DIM`] — the SAME const the
-/// eval gates use — and read the twist shape through
+/// Invariant: the two RULING #6126 dimension arms consult [`TWIST_LINEAR_DIM`] —
+/// the SAME const the eval gates use — and read the twist shape through
 /// [`decompose_twist_component`] — the SAME helper the eval arm uses — so the
 /// classifier cannot drift away from what eval actually rejects, in either the
-/// dimension or the shape dimension of that drift.
+/// dimension or the shape dimension of that drift. The `bbox` arm holds the same
+/// property the same way: it decodes both corners through
+/// [`classify_bbox_corner`] — the SAME helper its own eval gate reads, which is
+/// where `DimensionVector::LENGTH` is compared — so the shape half is pinned
+/// alongside the quantity half rather than re-derived here.
 ///
 /// Invariant: this hook fires on EVERY `Value::Undef` from these builtins, not just
 /// dimension rejections, so each arm stays SILENT (`None`) on every non-dimension
@@ -1614,12 +1662,23 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
 ///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
 ///   half, so one fault class does not report two ways across one builtin family.
+/// - The `bbox` arm is `Severity::Error` for the same reason (task 6081): a
+///   non-Length corner is an outright CONSTRUCTION failure — no BoundingBox is
+///   produced at all — rather than a drop-and-continue like `affine_scale`,
+///   where the offending factor is discarded and evaluation proceeds.
 ///
-/// Every arm stays code-less (no `DiagnosticCode`): minting
+/// `DiagnosticCode` is deliberately NOT uniform across the arms. The two RULING
+/// #6126 arms stay code-less because MINTING
 /// `DiagnosticCode::ArgDimensionMismatch` is owned by
 /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
 /// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
-/// this same hook is the standing in-crate precedent.
+/// this same hook is the standing in-crate precedent. The `bbox` arm mints nothing
+/// either — it carries the PRE-EXISTING
+/// [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
+/// `reify_eval::geometry_ops` already attaches to exactly this fault class (an
+/// `Severity::Error` runtime dimension rejection of a positional argument).
+/// Converging the two — once the PRD's code exists — is worth doing and is
+/// deliberately NOT done here.
 /// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
@@ -1705,8 +1764,116 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
                 dimension_label(lin_dim)
             )))
         }
+        "bbox" => {
+            if args.len() != 2 {
+                return None;
+            }
+            diagnose_bbox_corners(&args[0], &args[1])
+        }
         _ => None,
     }
+}
+
+/// How a `bbox` corner argument decodes.
+///
+/// The SINGLE decoder shared by the `bbox` eval gate and
+/// [`diagnose_bbox_corners`], so the classifier cannot drift from what eval
+/// actually rejects — in the SHAPE dimension of that drift as well as the
+/// quantity one. The RULING #6126 arms get that property by sharing
+/// [`decompose_twist_component`] with their eval gate; before this the `bbox`
+/// pair shared only the `DimensionVector::LENGTH` constant, and the shape halves
+/// had duly diverged (the classifier reported a `Point3<…>` for a `Point2`
+/// argument, naming a Point3 that did not exist).
+///
+/// The three cases fall on two sides of [`diagnose`]'s no-mis-attribution
+/// invariant: a QUANTITY failure is the classifier's to explain, a SHAPE failure
+/// is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BboxCorner {
+    /// A `Point` of exactly 3 numeric components that all carry this dimension.
+    /// The only shape eval admits — and then only at `LENGTH`.
+    Uniform(DimensionVector),
+    /// A `Point` of exactly 3 numeric components whose dimensions DISAGREE
+    /// (`point3(1m, 2deg, 3m)`). A quantity failure: the classifier speaks.
+    Mixed,
+    /// Not a corner at all — a non-`Point`, a component count other than 3, or a
+    /// non-numeric component. A shape failure: the classifier stays silent.
+    NotACorner,
+}
+
+/// Decode one `bbox` corner argument. See [`BboxCorner`] for why the three cases
+/// are distinguished rather than folded together.
+fn classify_bbox_corner(v: &Value) -> BboxCorner {
+    let comps = match v {
+        Value::Point(comps) if comps.len() == 3 => comps,
+        _ => return BboxCorner::NotACorner,
+    };
+    // Read the quantity through the same uniformity-checking extractor the two
+    // accessors read a stored corner through, so the gate cannot admit a corner
+    // `bbox_size`/`bbox_center` would go on to reject.
+    if let Some((_, dim)) = tensor_components_f64(v) {
+        return BboxCorner::Uniform(dim);
+    }
+    // `tensor_components_f64` folds MIXED component dimensions and NON-NUMERIC
+    // components into one `None`; split them apart again, because they land on
+    // opposite sides of the no-mis-attribution invariant. Non-numeric wins the
+    // tie: it is the shape failure, and a shape failure is never blamed on a
+    // dimension.
+    if comps.iter().any(|c| c.as_f64().is_none()) {
+        BboxCorner::NotACorner
+    } else {
+        BboxCorner::Mixed
+    }
+}
+
+/// The `bbox` arm of [`diagnose`]: report the first corner that is not
+/// `Point3<Length>`.
+///
+/// `min` is reported before `max` so a both-wrong call names `min`
+/// deterministically. Every SHAPE failure returns `None` — a non-`Point`
+/// argument, a component count other than 3, a non-numeric component — because a
+/// type failure is not a dimension failure, and staying silent matches the
+/// `affine_scale` convention of explaining only the user-correctable dimension
+/// cause. That shape half is decided by [`classify_bbox_corner`], the SAME
+/// decoder the eval gate reads, so this arm cannot speak for a corner eval
+/// accepted nor stay quiet on one eval rejected on dimension grounds.
+///
+/// The dimension half of the message goes through [`dimension_label`] (added by
+/// RULING #6126) rather than re-rolling a fourth rendering of the same thing, so an
+/// unnamed dimension prints its actual exponents instead of the uninformative word
+/// "dimensioned". DIMENSIONLESS is the one divergence and it is deliberate: the label
+/// lands in a TYPE-ARGUMENT slot (`Point3<…>`), where the spelling is `Real`, not
+/// `dimension_label`'s prose "dimensionless".
+///
+/// The message mirrors `ArgRejection::message`'s
+/// `"{builtin}: {arg_name} argument expects {expected}, got {got}"` shape
+/// (`crates/reify-eval/src/arg_acceptance.rs`). It is hand-mirrored rather than
+/// shared: reify-stdlib cannot depend on reify-eval (reify-eval → reify-expr →
+/// reify-stdlib would be a cycle), and copying the wording across that boundary
+/// is established practice (see `reify-compiler/src/conformance/mod.rs`,
+/// annotated "COPIED from ArgRejection::message").
+fn diagnose_bbox_corners(min: &Value, max: &Value) -> Option<reify_core::Diagnostic> {
+    for (arg_name, corner) in [("min", min), ("max", max)] {
+        let got = match classify_bbox_corner(corner) {
+            // Shape failure — silent, per the invariant above.
+            BboxCorner::NotACorner => continue,
+            // The one accepted corner: nothing to explain.
+            BboxCorner::Uniform(dim) if dim == DimensionVector::LENGTH => continue,
+            BboxCorner::Uniform(dim) if dim.is_dimensionless() => "Point3<Real>".to_string(),
+            BboxCorner::Uniform(dim) => format!("Point3<{}>", dimension_label(dim)),
+            // No single quantity to name, so the slot describes the fault instead
+            // of pretending to a `Point3<…>` spelling the argument does not have.
+            BboxCorner::Mixed => "a Point3 with mixed component dimensions".to_string(),
+        };
+        return Some(
+            reify_core::Diagnostic::error(format!(
+                "bbox: {arg_name} argument expects Point3<Length>, got {got} \
+                 (a bounding box is spatial by construction)"
+            ))
+            .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+        );
+    }
+    None
 }
 
 #[cfg(test)]
@@ -2885,6 +3052,107 @@ mod tests {
         assert!(eval_builtin("bbox", &[pt3, vec3]).is_undef());
     }
 
+    // ── bbox is Length-valued by construction (task 6081) ────────────────────
+    // A bounding box is spatial: both corners must be `Point3<Length>`. Agreeing
+    // non-Length corners (two Angle points, two dimensionless points) used to
+    // slip through the old `min_dim != max_dim` gate and construct a
+    // quantity-polymorphic BoundingBox; they are now rejected outright.
+
+    /// Build a `Point3<Angle>` — the polymorphism escape hatch the old gate
+    /// admitted, since `point3` is dimension-polymorphic at eval.
+    fn make_point3_angle(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(
+            [x, y, z]
+                .into_iter()
+                .map(|si_value| Value::Scalar {
+                    si_value,
+                    dimension: DimensionVector::ANGLE,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn bbox_angle_corners_returns_undef() {
+        let min = make_point3_angle(0.0, 0.0, 0.0);
+        let max = make_point3_angle(1.0, 2.0, 3.0);
+        assert!(
+            eval_builtin("bbox", &[min, max]).is_undef(),
+            "two agreeing Angle corners must be rejected: a BoundingBox is Length-valued"
+        );
+    }
+
+    #[test]
+    fn bbox_dimensionless_corners_returns_undef() {
+        let min = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let max = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert!(
+            eval_builtin("bbox", &[min, max]).is_undef(),
+            "two agreeing dimensionless corners must be rejected: a BoundingBox is Length-valued"
+        );
+    }
+
+    #[test]
+    fn bbox_length_corners_still_constructs() {
+        // Positive guard: the narrowing must not over-reject the valid case.
+        let result = eval_builtin("bbox", &[make_point3_min(), make_point3_max()]);
+        assert!(
+            matches!(result, Value::BoundingBox { .. }),
+            "metre-valued corners must still construct a BoundingBox, got {:?}",
+            result
+        );
+    }
+
+    /// A corner whose components DISAGREE is not `Point3<Length>` either, and
+    /// must be rejected AT CONSTRUCTION.
+    ///
+    /// This is the case a first-component reading of the quantity let through.
+    /// Letting it construct did not make it work: `bbox_size`/`bbox_center` read
+    /// the stored corner through `tensor_components_f64`, which rejects mixed
+    /// component dimensions, so the user got an Undef one call downstream — and,
+    /// the `bbox` call itself having SUCCEEDED, with no diagnostic at all.
+    #[test]
+    fn bbox_mixed_dimension_corner_returns_undef() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::ANGLE,
+            },
+            Value::length(3.0),
+        ]);
+        assert!(
+            eval_builtin("bbox", &[min, make_point3_max()]).is_undef(),
+            "a corner mixing Length and Angle components is not Point3<Length>"
+        );
+    }
+
+    /// The mixed-component rejection is per-corner, not min-only.
+    #[test]
+    fn bbox_mixed_dimension_max_corner_returns_undef() {
+        let max = Value::Point(vec![
+            Value::length(4.0),
+            Value::length(5.0),
+            Value::Scalar {
+                si_value: 6.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert!(eval_builtin("bbox", &[make_point3_min(), max]).is_undef());
+    }
+
+    /// A non-numeric component is a SHAPE failure, and eval rejects it too — the
+    /// gate admits only three numeric, uniformly-Length components.
+    #[test]
+    fn bbox_non_numeric_corner_component_returns_undef() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Bool(true),
+            Value::length(3.0),
+        ]);
+        assert!(eval_builtin("bbox", &[min, make_point3_max()]).is_undef());
+    }
+
     // ── bbox_size / bbox_center tests (step-11) ──────────────────────────────
 
     fn make_bbox() -> Value {
@@ -2956,9 +3224,18 @@ mod tests {
         assert!(eval_builtin("bbox_center", &[make_bbox(), make_bbox()]).is_undef());
     }
 
-    #[test]
-    fn bbox_size_dimensionless_bbox() {
-        let bbox = Value::BoundingBox {
+    // ── accessors are Length-valued in their own right (task 6081) ───────────
+    // These hand-built BoundingBox values deliberately BYPASS the `bbox`
+    // constructor gate, which now admits only Length corners. They pin that
+    // `bbox_size`/`bbox_center` emit Length components for EVERY
+    // `Value::BoundingBox` — including one produced by the kernel
+    // (`dispatch_bounding_box`, itself unconditionally Length) or hand-built —
+    // which is what makes the static rows `Vector3<Length>` / `Point3<Length>`
+    // sound. The old behaviour propagated the stored corner dimension; that
+    // was incidental generic propagation, not a designed capability.
+
+    fn make_dimensionless_bbox() -> Value {
+        Value::BoundingBox {
             min: Box::new(Value::Point(vec![
                 Value::Real(0.0),
                 Value::Real(0.0),
@@ -2969,15 +3246,69 @@ mod tests {
                 Value::Real(4.0),
                 Value::Real(6.0),
             ])),
-        };
-        let result = eval_builtin("bbox_size", &[bbox]);
+        }
+    }
+
+    fn make_angle_bbox() -> Value {
+        Value::BoundingBox {
+            min: Box::new(make_point3_angle(0.0, 0.0, 0.0)),
+            max: Box::new(make_point3_angle(2.0, 4.0, 6.0)),
+        }
+    }
+
+    #[test]
+    fn bbox_size_emits_length_components_for_dimensionless_bbox() {
+        let result = eval_builtin("bbox_size", &[make_dimensionless_bbox()]);
         match result {
             Value::Vector(ref comps) => {
-                assert_eq!(comps[0], Value::Real(2.0));
-                assert_eq!(comps[1], Value::Real(4.0));
-                assert_eq!(comps[2], Value::Real(6.0));
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(2.0));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
             }
-            other => panic!("expected Vector of Reals, got {:?}", other),
+            other => panic!("expected Vector of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_center_emits_length_components_for_dimensionless_bbox() {
+        let result = eval_builtin("bbox_center", &[make_dimensionless_bbox()]);
+        match result {
+            Value::Point(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(1.0));
+                assert_eq!(comps[1], Value::length(2.0));
+                assert_eq!(comps[2], Value::length(3.0));
+            }
+            other => panic!("expected Point of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_size_emits_length_components_for_angle_bbox() {
+        let result = eval_builtin("bbox_size", &[make_angle_bbox()]);
+        match result {
+            Value::Vector(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(2.0));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
+            }
+            other => panic!("expected Vector of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_center_emits_length_components_for_angle_bbox() {
+        let result = eval_builtin("bbox_center", &[make_angle_bbox()]);
+        match result {
+            Value::Point(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(1.0));
+                assert_eq!(comps[1], Value::length(2.0));
+                assert_eq!(comps[2], Value::length(3.0));
+            }
+            other => panic!("expected Point of Lengths, got {:?}", other),
         }
     }
 
@@ -5951,6 +6282,214 @@ mod tests {
             super::diagnose("transform_log", &[]).is_none(),
             "zero args stays silent"
         );
+    }
+
+    // ── bbox dimension-rejection diagnostics (task 6081) ──────────────────────
+    // `bbox` with a non-Length corner returns a bare Value::Undef; this
+    // classifier is what turns that silence into a Severity::Error naming the
+    // builtin, the offending corner and the offending dimension.
+
+    fn make_point3_dim(dimension: DimensionVector) -> Value {
+        Value::Point(
+            [0.0, 1.0, 2.0]
+                .into_iter()
+                .map(|si_value| Value::Scalar {
+                    si_value,
+                    dimension,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn diagnose_bbox_angle_corners_errors_naming_angle() {
+        let min = make_point3_angle(0.0, 0.0, 0.0);
+        let max = make_point3_angle(1.0, 2.0, 3.0);
+        let diag = super::diagnose("bbox", &[min, max])
+            .expect("Angle-cornered bbox must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Error,
+            "a bbox dimension rejection is a construction failure, not a drop-and-continue"
+        );
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "must carry the canonical runtime dimension-rejection code"
+        );
+        assert!(
+            diag.message.contains("bbox"),
+            "message must name the builtin, got: {}",
+            diag.message
+        );
+        let angle_name = DimensionVector::ANGLE
+            .canonical_name()
+            .expect("ANGLE is a named dimension");
+        assert!(
+            diag.message.contains(angle_name),
+            "message must name the offending dimension {angle_name:?}, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("Length"),
+            "message must name the expected Length quantity, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_mass_corner_errors_naming_mass() {
+        // Length min + Mass max: the max corner is the offender.
+        let min = make_point3_min();
+        let max = make_point3_dim(DimensionVector::MASS);
+        let diag = super::diagnose("bbox", &[min, max])
+            .expect("Mass-cornered bbox must produce a diagnostic");
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        );
+        let mass_name = DimensionVector::MASS
+            .canonical_name()
+            .expect("MASS is a named dimension");
+        assert!(
+            diag.message.contains(mass_name),
+            "message must name the offending dimension {mass_name:?}, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_length_corners_returns_none() {
+        assert!(
+            super::diagnose("bbox", &[make_point3_min(), make_point3_max()]).is_none(),
+            "a valid metre-valued bbox must not produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_wrong_arity_returns_none() {
+        // Arity failures stay silent, matching the affine_scale/transform3
+        // convention: only the user-correctable dimension cause is explained.
+        assert!(super::diagnose("bbox", &[]).is_none());
+        assert!(super::diagnose("bbox", &[make_point3_angle(0.0, 0.0, 0.0)]).is_none());
+        assert!(
+            super::diagnose(
+                "bbox",
+                &[
+                    make_point3_angle(0.0, 0.0, 0.0),
+                    make_point3_angle(1.0, 2.0, 3.0),
+                    make_point3_angle(4.0, 5.0, 6.0),
+                ]
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_non_point_args_return_none() {
+        // Type failures stay silent too — only the dimension cause is explained.
+        assert!(super::diagnose("bbox", &[Value::Real(1.0), Value::Real(2.0)]).is_none());
+    }
+
+    /// A mixed-component corner is a QUANTITY failure, so it is explained rather
+    /// than left as a silent Undef — the same fault class as a uniformly-Angle
+    /// corner, just without one dimension to name.
+    #[test]
+    fn diagnose_bbox_mixed_dimension_corner_errors_naming_the_corner() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::ANGLE,
+            },
+            Value::length(3.0),
+        ]);
+        let diag = super::diagnose("bbox", &[min, make_point3_max()])
+            .expect("a mixed-dimension corner must produce a diagnostic, not a silent Undef");
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        );
+        assert!(
+            diag.message.contains("min argument expects Point3<Length>"),
+            "message must name the offending corner and the expected quantity, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("mixed component dimensions"),
+            "message must say WHY, without inventing a single quantity to blame, got: {}",
+            diag.message
+        );
+    }
+
+    /// A wrong-SHAPE corner must stay silent rather than be mislabelled as a
+    /// dimension failure.
+    ///
+    /// Before the shared decoder this reported `bbox: min argument expects
+    /// Point3<Length>, got Point3<Angle>` for a `Point2` argument — naming a
+    /// Point3 that does not exist, and blaming the dimension for what is really
+    /// an arity-of-components fault.
+    #[test]
+    fn diagnose_bbox_point2_corner_returns_none() {
+        let min = Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::ANGLE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::ANGLE,
+            },
+        ]);
+        assert!(
+            super::diagnose("bbox", &[min, make_point3_min()]).is_none(),
+            "a 2-component corner is a shape failure; a shape failure is not a dimension failure"
+        );
+    }
+
+    /// A non-numeric component is a shape failure too, and stays silent — it wins
+    /// the tie against the mixed-dimension reading it would otherwise produce.
+    #[test]
+    fn diagnose_bbox_non_numeric_corner_component_returns_none() {
+        let min = Value::Point(vec![
+            Value::length(1.0),
+            Value::Bool(true),
+            Value::length(3.0),
+        ]);
+        assert!(super::diagnose("bbox", &[min, make_point3_max()]).is_none());
+    }
+
+    #[test]
+    fn diagnose_affine_scale_behaviour_survives_the_bbox_arm() {
+        // Guards the restructure of `diagnose`'s early-return guard into a
+        // `match name`: the affine_scale arm must be preserved verbatim.
+        let dimensioned = super::diagnose(
+            "affine_scale",
+            &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("dimensioned scale factor must still produce a diagnostic");
+        assert_eq!(dimensioned.severity, reify_core::Severity::Warning);
+        assert!(dimensioned.message.contains("dimensionless"));
+
+        let zero = super::diagnose(
+            "affine_scale",
+            &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("zero scale factor must still produce a diagnostic");
+        assert_eq!(zero.severity, reify_core::Severity::Warning);
+        assert!(zero.message.contains("degenerate"));
+
+        assert!(
+            super::diagnose(
+                "affine_scale",
+                &[Value::Real(2.0), Value::Real(1.0), Value::Real(0.5)],
+            )
+            .is_none()
+        );
+        // Wrong arity for affine_scale still stays silent.
+        assert!(super::diagnose("affine_scale", &[Value::Real(2.0)]).is_none());
     }
 
     // ── affine_compose tests (step-3 RED / step-4 GREEN) ──────────────────────

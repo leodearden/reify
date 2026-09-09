@@ -318,6 +318,62 @@ fn wait_for_watch_registration_via_removal(
     wait_for_watch_registration_inner(dir, probe_seen, true, Duration::from_secs(10))
 }
 
+/// A positive-progress barrier (added by #6462): waits for TWO deliveries
+/// of a control path -- one whose callback the filter under test is
+/// expected to PASS -- in `sink`, calling `write_control` before each wait.
+/// Delivery of a control event is positive evidence that an EARLIER write
+/// the filter is expected to DROP has already been through the notify
+/// closure, replacing a fixed sleep, which only ever proved that time
+/// passed.
+///
+/// WHY TWO deliveries and not one: the debouncer is keyed by path, so one
+/// batch holds at most one entry per path -- two deliveries of the same
+/// control path are therefore necessarily two DISTINCT batches.
+/// `drain_ready` (watcher.rs:98-124) is a `HashMap::retain`, so intra-batch
+/// order is unspecified, and a one-delivery barrier could snapshot between
+/// a same-batch straggler and the control (see
+/// `wait_for_control_drain_does_not_return_until_a_same_batch_straggler_has_landed`
+/// above for the discriminating case). The single worker thread runs a
+/// batch to completion before draining the next (watcher.rs:307-332), so
+/// observing the second delivery proves every callback of the first
+/// delivery's batch has already returned. A filtered write issued BEFORE
+/// the first control write can never land in a later batch than it
+/// (recorded earlier => earlier debounce deadline), so it is visible by
+/// then either way.
+///
+/// WHY this is not subject to the retry-cadence constraint documented on
+/// `wait_until_with_retry` (:110-119): the second write is gated on the
+/// FIRST DELIVERY, which can only have happened after that entry was
+/// drained out of `pending`, so `Debouncer::record`'s insert-or-update can
+/// never perpetually reset a pending entry here. There is no cadence to
+/// tune -- which is why this is built on `wait_for` rather than on
+/// `wait_until_with_retry`.
+///
+/// PRECONDITION: the caller must already have confirmed the watch is live
+/// (`wait_for_watch_registration` / `wait_for_watch_registration_via_removal`);
+/// this helper assumes a write produces an event and cannot recover a
+/// write issued before registration.
+///
+/// `timeout` bounds EACH of the two waits, not the pair. `write_control`
+/// should vary the bytes it writes across calls (mirroring
+/// `wait_for_watch_registration_inner`'s `probe_attempt` counter, above),
+/// so successive control writes differ on disk instead of relying on a
+/// write of byte-identical content emitting its own Modify.
+fn wait_for_control_drain(
+    sink: &Arc<Mutex<Vec<PathBuf>>>,
+    control_name: &str,
+    mut write_control: impl FnMut(),
+    timeout: Duration,
+) -> bool {
+    let count = |paths: &[PathBuf]| paths.iter().filter(|p| p.ends_with(control_name)).count();
+    write_control();
+    if !wait_for(sink, timeout, |paths| count(paths) >= 1) {
+        return false;
+    }
+    write_control();
+    wait_for(sink, timeout, |paths| count(paths) >= 2)
+}
+
 /// Discriminating test for the constraint that motivates
 /// `wait_for_watch_registration_via_removal` (defined above its
 /// Changed-probe sibling): a watcher constructed with `Some(target_file)`
@@ -664,14 +720,24 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     resolves to a live symbol) -- an upper bound on `start.elapsed()`;
 //     see the tombstone just below.
 //
+// FIXED BY #6462 (both deleted; replaced by a two-delivery
+// `wait_for_control_drain` barrier, not widened):
+//   * watcher_ignores_non_ri_file_changes -- a fixed 500ms sleep gating the
+//     `paths.is_empty()` NEGATIVE assertion on wall-clock separation alone.
+//     Now: two deliveries of a dedicated control.ri write. Two deliveries
+//     of the SAME path are necessarily two distinct debouncer batches (the
+//     debouncer is keyed by path), and the single worker thread completes
+//     batch N's callbacks before draining batch N+1, so observing the
+//     second delivery proves every callback of the first batch -- including
+//     any filtered write issued before it, whose earlier record implies an
+//     earlier debounce deadline -- has already run. Race-free by
+//     construction, not by timeout.
+//   * watcher_with_target_file_only_fires_for_that_file -- the same fixed
+//     500ms sleep and the same fix, using the test's own project.ri write
+//     as the control: it's the only path the target_file filter ever
+//     passes for a Changed event, so it doubles as its own barrier.
+//
 // JUDGED SAFE, and why:
-//   * Fixed sleeps gating NEGATIVE assertions, in
-//     watcher_ignores_non_ri_file_changes and
-//     watcher_with_target_file_only_fires_for_that_file.
-//     Descheduling makes a negative assertion MORE likely to hold, never
-//     less, so these cannot invert. They carry a VACUITY risk instead --
-//     a different class, out of scope here; both are already barriered by
-//     a positive registration confirmation, which is what stops it.
 //   * The sub-debounce-window sleep in
 //     watcher_rereads_final_content_after_nonatomic_truncate_then_append.
 //     If load stretches it past DEBOUNCE_DURATION the two writes merely
@@ -724,6 +790,12 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     `wait_for_watch_registration_inner`'s retry cadence and budget.
 //     Both are driven through the `WaitClock` seam, and the cadence
 //     exceeding DEBOUNCE_DURATION is deliberate -- see that helper's doc.
+//   * `wait_for_control_drain`'s two `wait_for` budgets (added by #6462,
+//     used at both converted sites above). Each is a generous `wait_for`
+//     budget over a hard POSITIVE claim -- that a control delivery
+//     arrived -- the same shape the registration-barriered condition-polls
+//     row above already blesses: slack, not a claim, and monotone under
+//     descheduling.
 //   * The debouncer_* / VirtualClock tests. `Instant::now()` there is
 //     only a seed for synthetic arithmetic; no real time is consumed and
 //     none is asserted on.
@@ -813,6 +885,107 @@ fn wait_for_returns_false_after_timeout_when_never_satisfied() {
         start.elapsed() >= Duration::from_millis(150),
         "should wait out the full timeout, took {:?}",
         start.elapsed()
+    );
+}
+
+// Synthetic-sink, inotify-free meta-tests pinning the contract of
+// `wait_for_control_drain` (added by #6462; the helper itself is defined
+// beside the other `wait_*` helpers above). No FileWatcher, no tempdir, no
+// inotify -- these keep passing even on hosts where every watcher test in
+// this file skips. `write_control` here plays the role the debouncer's
+// worker thread plays in production: each of these tests drives it
+// directly rather than through a real watch, so the barrier's two-delivery
+// contract is pinned deterministically.
+
+#[test]
+fn wait_for_control_drain_does_not_return_until_a_same_batch_straggler_has_landed() {
+    // THE DISCRIMINATING TEST. write_control simulates a worker draining
+    // two debouncer batches: call 1 pushes ONLY control.ri (a batch whose
+    // control was pushed first and whose straggler has not been pushed yet
+    // -- exactly the window a one-delivery barrier would snapshot in);
+    // call 2 pushes straggler.ri THEN control.ri (batch 1's callbacks all
+    // returned before batch 2's push, because one worker thread runs a
+    // batch to completion before draining the next). A barrier that
+    // returns as soon as it observes the FIRST control delivery would
+    // return before straggler.ri ever lands, leaving a negative assertion
+    // gated on it vacuous -- a one-delivery implementation fails this test.
+    let sink: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let write_sink = sink.clone();
+    let call = Rc::new(Cell::new(0u32));
+    let call_counter = call.clone();
+
+    let drained = wait_for_control_drain(
+        &sink,
+        "control.ri",
+        move || {
+            let n = call_counter.get() + 1;
+            call_counter.set(n);
+            let mut guard = write_sink.lock().unwrap();
+            if n == 1 {
+                guard.push(PathBuf::from("control.ri"));
+            } else {
+                guard.push(PathBuf::from("straggler.ri"));
+                guard.push(PathBuf::from("control.ri"));
+            }
+        },
+        Duration::from_secs(10),
+    );
+
+    assert!(drained, "two control deliveries should satisfy the barrier");
+    let paths = sink.lock().unwrap();
+    assert!(
+        paths.iter().any(|p| p.ends_with("straggler.ri")),
+        "the barrier returned before the same-batch straggler landed -- a \
+         negative assertion gated on this barrier would be vacuous, got: {:?}",
+        *paths
+    );
+}
+
+#[test]
+fn wait_for_control_drain_returns_false_when_the_control_is_never_delivered() {
+    // write_control is a no-op: the FIRST wait (count >= 1) never
+    // succeeds, so the barrier must time out and return false after that
+    // one wait -- it must not block on a second window once the first has
+    // already failed.
+    let sink: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+
+    let drained = wait_for_control_drain(&sink, "control.ri", || {}, Duration::from_millis(150));
+
+    assert!(
+        !drained,
+        "control is never delivered, barrier should time out"
+    );
+}
+
+#[test]
+fn wait_for_control_drain_returns_false_when_only_the_first_delivery_ever_lands() {
+    // write_control pushes control.ri on the FIRST call only; a second
+    // call (if the implementation makes one) is a no-op. Pins that the
+    // SECOND wait is load-bearing: a one-delivery implementation that
+    // returns as soon as the first wait succeeds would return true here --
+    // exactly the vacuity risk this helper exists to close.
+    let sink: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let write_sink = sink.clone();
+    let call = Rc::new(Cell::new(0u32));
+    let call_counter = call.clone();
+
+    let drained = wait_for_control_drain(
+        &sink,
+        "control.ri",
+        move || {
+            let n = call_counter.get() + 1;
+            call_counter.set(n);
+            if n == 1 {
+                write_sink.lock().unwrap().push(PathBuf::from("control.ri"));
+            }
+        },
+        Duration::from_millis(150),
+    );
+
+    assert!(
+        !drained,
+        "only one control delivery ever lands, barrier should time out \
+         waiting for the second"
     );
 }
 
@@ -1139,9 +1312,16 @@ fn watcher_ignores_non_ri_file_changes() {
     let dir = tempfile::tempdir().unwrap();
     let txt_file = dir.path().join("notes.txt");
     std::fs::write(&txt_file, "initial content").unwrap();
+    // Created lazily by the first control write below, same as probe.ri --
+    // the notify wiring collapses an initial Create and a later Modify to
+    // the same `FileEvent::Changed`, so there is nothing to gain from
+    // pre-creating it.
+    let control_file = dir.path().join("control.ri");
 
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
+    let control_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let control_clone = control_paths.clone();
     let probe_seen = Arc::new(AtomicBool::new(false));
     let probe_seen_clone = probe_seen.clone();
 
@@ -1153,6 +1333,18 @@ fn watcher_ignores_non_ri_file_changes() {
             // `changed_paths` and fail the test outright.
             if path.ends_with("probe.ri") {
                 probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
+            }
+            // MANDATORY for the same reason as the probe.ri arm above:
+            // control.ri IS a .ri file, and this test asserts
+            // `paths.is_empty()` below. Routing it into its own sink
+            // (rather than `changed_paths`) is what lets control.ri serve
+            // as a positive-progress barrier (#6462) while keeping that
+            // assertion meaning "no event of any kind reached the
+            // callback for a filtered file" instead of weakening it to a
+            // `.txt`-specific check.
+            if path.ends_with("control.ri") {
+                control_clone.lock().unwrap().push(path);
                 return;
             }
             changed_clone.lock().unwrap().push(path);
@@ -1173,8 +1365,32 @@ fn watcher_ignores_non_ri_file_changes() {
     // Modify a .txt file (should be ignored)
     std::fs::write(&txt_file, "updated content").unwrap();
 
-    // Wait long enough that we'd see the event if it weren't filtered
-    std::thread::sleep(Duration::from_millis(500));
+    // #6462: a fixed 500ms sleep stood here, gating the absence assertion
+    // below on wall-clock separation alone. Replaced with a
+    // positive-progress barrier: two deliveries of control.ri (which the
+    // extension filter passes) prove, by construction rather than by
+    // timeout, that the .txt write above has already been through the
+    // notify closure and dropped -- see `wait_for_control_drain`'s doc
+    // comment for why two deliveries, not one, are required.
+    let mut control_attempt = 0u32;
+    let drained = wait_for_control_drain(
+        &control_paths,
+        "control.ri",
+        || {
+            control_attempt += 1;
+            std::fs::write(
+                &control_file,
+                format!("structure Control {{ param n = {control_attempt} }}"),
+            )
+            .unwrap();
+        },
+        Duration::from_secs(10),
+    );
+    assert!(
+        drained,
+        "control.ri should have been delivered twice -- without that, the \
+         absence assertion below proves nothing about the extension filter"
+    );
 
     let paths = changed_paths.lock().unwrap();
     assert!(
@@ -1230,33 +1446,52 @@ fn watcher_with_target_file_only_fires_for_that_file() {
          outright and this run could not exercise the target_file filter"
     );
 
-    // Modify the other .ri file (should be ignored due to target_file filter)
+    // Modify the other .ri file (should be ignored due to target_file
+    // filter). This write must stay strictly BEFORE the project.ri control
+    // writes below: the batch argument in the comment further down depends
+    // on other.ri having been recorded first, so its debounce deadline is
+    // no later than the first control write's.
     std::fs::write(&other_file, "structure Other { param x = 10mm }").unwrap();
-    std::thread::sleep(Duration::from_millis(500));
 
-    // Modify the target file (should trigger)
-    std::fs::write(&project_file, "structure Project { param y = 20mm }").unwrap();
-    // Wait for the event to propagate (with debounce). Bind the result so a
+    // #6462: a fixed 500ms sleep stood here, separating the other.ri write
+    // above from the project.ri write below by 5x the debounce window.
+    // Replaced with a positive-progress barrier -- project.ri (the target
+    // file) doubles as its own control, since it's the only path the
+    // target_file filter passes for Changed events. Bind the result so a
     // genuine regression fails via the assert below with a clear message,
     // rather than the boolean being silently discarded.
-    let found = wait_for(&changed_paths, Duration::from_secs(10), |paths| {
-        paths.iter().any(|p| p.ends_with("project.ri"))
-    });
+    let mut project_attempt = 0u32;
+    let found = wait_for_control_drain(
+        &changed_paths,
+        "project.ri",
+        || {
+            project_attempt += 1;
+            std::fs::write(
+                &project_file,
+                format!("structure Project {{ param y = {project_attempt}mm }}"),
+            )
+            .unwrap();
+        },
+        Duration::from_secs(10),
+    );
 
     // The negative check below is an immediate snapshot, not a poll:
     // asserting an event's absence can only ever false-PASS under a
     // condition-poll (there's no positive condition to wait for), so
     // polling here would just add latency on every green run for no
-    // correctness benefit. It is race-free by construction, not by
-    // timeout: other.ri was modified 500ms before project.ri (above) — 5x
-    // the production debounce window (`DEBOUNCE_DURATION`, 100ms, in watcher.rs) — and the
-    // watcher's debounce only suppresses duplicate same-path events; it
-    // does not delay or reorder emission across distinct paths. So a
-    // broken target_file filter's other.ri push would already be sitting
-    // in `changed_paths` well before project.ri's push makes `found` true
-    // above. That's a wall-clock ordering argument sized to catch "the
-    // filter is simply broken" (what this test exists to catch), not a
-    // formal guarantee against an adversarially delayed event.
+    // correctness benefit. It is race-free by CONSTRUCTION now, not by
+    // wall-clock separation: the debouncer is keyed by path, so the two
+    // project.ri deliveries `found` waits for above are necessarily two
+    // distinct debouncer batches, and the single worker thread completes
+    // batch N's callbacks before draining batch N+1 (see
+    // `wait_for_control_drain`'s doc comment). other.ri was recorded
+    // before the FIRST project.ri write, so a broken target_file filter's
+    // other.ri entry has a debounce deadline no later than that first
+    // write's, and is therefore pushed in a batch no later than the first
+    // project.ri delivery's -- which has necessarily already run by the
+    // time the SECOND delivery (what `found` actually observes) lands. No
+    // wall-clock separation is assumed anywhere, which is why the 500ms
+    // sleep could go.
     let paths = changed_paths.lock().unwrap();
     assert!(
         found,

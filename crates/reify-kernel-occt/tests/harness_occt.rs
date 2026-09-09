@@ -98,6 +98,8 @@ mod max_deviation_query;
 mod mesh_deviation;
 #[path = "harness_occt/nurbs_surface_integration.rs"]
 mod nurbs_surface_integration;
+#[path = "harness_occt/offset_surface_integration.rs"]
+mod offset_surface_integration;
 #[path = "harness_occt/pattern_differential_integration.rs"]
 mod pattern_differential_integration;
 #[path = "harness_occt/pattern_single_pass_counter.rs"]

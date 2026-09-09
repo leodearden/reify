@@ -231,7 +231,7 @@ tasks:
       kind: grep
       pattern: fn discover
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
   - name: full-stack-upstream
     binding: G6 branch 3 — every capability the parity signal asserts is produced

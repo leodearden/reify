@@ -8,6 +8,9 @@
 //! Critically: NO ir-tier type references — `cargo build -p reify-ast` enforces this
 //! and the dag_invariant.rs test pins it at the Cargo.toml level.
 
+use std::convert::Infallible;
+use std::ops::ControlFlow;
+
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
 use crate::ast::{Expr, TypeExpr};
@@ -550,6 +553,41 @@ pub fn find_named_member_span<'a>(
 /// Refusing hands the caller (the `set_parameter` path) a clean rejection to
 /// surface as a structured error, which is what PRD §7 B7 requires.
 pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<SourceSpan> {
+    find_param_default_expr(members, name).map(|e| e.span)
+}
+
+/// Resolve a param's DEFAULT EXPRESSION within a member list — the
+/// `&Expr`-returning primitive [`find_param_default_span`] is a thin
+/// `.map(|e| e.span)` over.
+///
+/// Same contract, same refusal rules, ONE traversal: a caller that needs the
+/// span gets it from here, and a caller that needs to inspect the
+/// [`ExprKind`](crate::ast::ExprKind) before acting on the span gets that from
+/// here too. Both readings therefore agree by construction, which is the point
+/// — the asymmetry note on [`walk_specialization_scope_members`] records that
+/// this module's member walkers drift when the same question is answered by two
+/// hand-rolled recursion sets, and a second walk that recovered the expression
+/// would be exactly that drift.
+///
+/// The caller that motivated it is `EngineSession::apply_param_to_source`
+/// (INV-GUI-3 source write-back, task 5096 γ): it may splice over a
+/// `NumberLiteral`/`QuantityLiteral`/`StringLiteral`/`BoolLiteral` default but
+/// must REFUSE a `BinOp`, an `Auto`, a call or an identifier, because
+/// overwriting one of those destroys a user-authored parametric relationship or
+/// a solver-determined value. That literal-ness gate lives with the splice, in
+/// the GUI engine — this helper only hands over the expression it needs to make
+/// the decision, and deliberately does not narrow its own contract to literals:
+/// a walker that answered "where is the default, if it is one of four kinds"
+/// would be a different question, and the kinds it admits are the GUI's policy
+/// rather than the AST's.
+///
+/// [`find_param_default_span`] is a `.map(|e| e.span)` wrapper over this and,
+/// as of γ, has no in-tree caller beyond the tests and the reify-ast API-surface
+/// guard: `apply_param_to_source` needs the expression, so it calls this. The
+/// wrapper stays because it is α's published span API (task #5094) for the
+/// consumers still to come — δ's MCP tools and η's re-homed slider, which want
+/// a span without borrowing the AST — not because anything calls it today.
+pub fn find_param_default_expr<'a>(members: &'a [MemberDecl], name: &str) -> Option<&'a Expr> {
     let mut candidates = ParamDefaultCandidates::default();
     collect_param_default_candidates(members, name, 0, &mut candidates);
     if candidates.count == 1 {
@@ -566,7 +604,8 @@ pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<Sou
 /// `body` is `None` (bare instantiation or collection form), the walker is
 /// a no-op — those forms are not specialization scopes.
 ///
-/// In later steps the walker will recurse into:
+/// The traversal itself is `walk_members` driven by
+/// `MemberRecursionSet::SPECIALIZATION_SCOPE`, so this walker recurses into:
 ///   * `MemberDecl::Sub(s)` whose `s.body.is_some()` — nested specialization
 ///     scopes (spec §8.7 nested-sub criterion).
 ///   * `MemberDecl::GuardedGroup(g)` — both `g.members` (the `where { … }`
@@ -584,71 +623,181 @@ pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<Sou
 /// **Asymmetry note:** [`find_named_member_span`] DOES recurse into
 /// `PortDecl.members` but does NOT recurse into `SubDecl.body`. These two
 /// helpers have divergent contracts that are individually correct but can
-/// surprise callers who infer one from the other. A future consolidation
-/// (shared `walk_members` helper parameterized by `visit_port_body /
-/// visit_sub_body` flags) would unify them; deferred to task η or later.
+/// surprise callers who infer one from the other. The shared-helper
+/// consolidation that would unify them is now DONE: both are `walk_members`
+/// calls that differ only in the `MemberRecursionSet` they pass. The divergent
+/// contracts stay divergent on purpose — they are declared side by side as
+/// data instead of hand-rolled apart.
 ///
-/// This module now hand-rolls the member-recursion set in THREE places, so a
-/// newly added [`MemberDecl`] variant must be taught to all three:
-///
-/// | walker | `SubDecl.body` | `PortDecl.members` | early exit |
-/// |---|---|---|---|
-/// | `walk_members_depth` (this one) | yes | no | no — visits everything |
-/// | `find_named_member_span_depth` | no | yes | yes — first match wins |
-/// | `collect_param_default_candidates` | no | no | yes — once ambiguous |
-///
-/// The three differ in BOTH the recursion set and the exit rule, which is why
-/// the consolidation above is still deferred rather than done inline: unifying
-/// only the two that share an exit rule would relocate the drift hazard rather
-/// than remove it. The table is here so the next variant addition starts from a
-/// complete list instead of rediscovering it.
+/// **Anti-drift.** The canonical list of every member-recursion set in this
+/// module, and of each caller's exit rule, is the table on
+/// `MemberRecursionSet` — this doc deliberately does not restate it, because a
+/// second copy is exactly the drift surface the consolidation removed. A newly
+/// added [`MemberDecl`] variant is now classified in ONE place,
+/// `walk_members`'s wildcard-free match, which fails to compile until that
+/// classification is made rather than silently defaulting to "never descended
+/// into".
 pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
 where
     F: FnMut(&'a MemberDecl),
 {
     if let Some(body) = sub.body.as_ref() {
-        walk_members_depth(body, visitor, 0);
+        // `Infallible` as the break type statically pins "this wrapper visits
+        // everything and never exits early" — the closure always returns
+        // `Continue`, so `walk_members` can never actually produce a `Break`.
+        let _: ControlFlow<Infallible> = walk_members(
+            body,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                visitor(m);
+                ControlFlow::Continue(())
+            },
+        );
     }
 }
 
-fn walk_members_depth<'a, F>(members: &'a [MemberDecl], visitor: &mut F, depth: usize)
+/// Which optional bodies a member-recursion walk descends into.
+///
+/// The single place the member-recursion set is declared as data, replacing
+/// the three independent hand-rolled recursion sets this module used to
+/// carry (one per walker). `GuardedGroupDecl.{members,else_members}` and
+/// `MatchArmDeclArmDecl.member` are recursed UNCONDITIONALLY by every caller
+/// today, so only the two cells that actually differ — `SubDecl.body` and
+/// `PortDecl.members` — are modeled as flags.
+///
+/// This table is the module's canonical anti-drift artifact: every
+/// member-recursion set in this module is one of the consts below, and
+/// [`walk_members`] is the single traversal all three callers share. The exit
+/// rule is NOT a property of the set — it is the `ControlFlow` break type the
+/// caller's visitor chooses — but it is listed here so one table carries the
+/// whole picture.
+///
+/// | const | used by | `SubDecl.body` | `PortDecl.members` | early exit |
+/// |---|---|---|---|---|
+/// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no | no — `B = Infallible` pins it |
+/// | `NAMED_MEMBER_LOOKUP` | [`find_named_member_span_depth`] | no | yes | yes — first match wins |
+/// | `PARAM_DEFAULT_LOOKUP` | [`collect_param_default_candidates`] | no | no | yes — once ambiguous |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MemberRecursionSet {
+    sub_body: bool,
+    port_body: bool,
+}
+
+impl MemberRecursionSet {
+    /// Used by [`walk_specialization_scope_members`] (spec §8.7): a nested
+    /// specialization scope is a child of its enclosing one, but a port body
+    /// is forbidden inside a specialization scope (task 2369) and so is
+    /// never descended into here.
+    const SPECIALIZATION_SCOPE: Self = Self {
+        sub_body: true,
+        port_body: false,
+    };
+    /// Used by `find_named_member_span_depth` (hover/goto-definition): a
+    /// port-body param/let IS addressable by its bare name for these
+    /// purposes, but a `sub`'s body holds specialization overrides of a
+    /// child instance, not the child's own declarations.
+    const NAMED_MEMBER_LOOKUP: Self = Self {
+        sub_body: false,
+        port_body: true,
+    };
+    /// Used by `collect_param_default_candidates` (cell-id resolution):
+    /// neither a port-body param (addressed only by the composite
+    /// `<port>.<param>` name) nor a `sub`'s specialization-override body is
+    /// an editable top-level cell, so neither is descended into.
+    const PARAM_DEFAULT_LOOKUP: Self = Self {
+        sub_body: false,
+        port_body: false,
+    };
+}
+
+/// The single member-recursion walker behind
+/// [`walk_specialization_scope_members`], `find_named_member_span_depth`, and
+/// `collect_param_default_candidates`.
+///
+/// Visits every member of `members`, invoking `visitor` on each one
+/// (parent-before-children), and recurses according to `set` — see
+/// [`MemberRecursionSet`] for which optional bodies are conditional and which
+/// are unconditional. `visitor` returns [`ControlFlow`] so one walker can
+/// serve both a visit-everything caller (`Continue(())` always, using an
+/// uninhabited `Infallible` break type to make "never exits early" a
+/// static property) and an early-exit caller (`Break` on a match); a `Break`
+/// unwinds out of every nesting level via `?`, not just the innermost loop.
+/// Recursion is bounded by [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack
+/// overflow on pathological input.
+fn walk_members<'a, B, F>(
+    members: &'a [MemberDecl],
+    set: MemberRecursionSet,
+    depth: usize,
+    visitor: &mut F,
+) -> ControlFlow<B>
 where
-    F: FnMut(&'a MemberDecl),
+    F: FnMut(&'a MemberDecl) -> ControlFlow<B>,
 {
     if depth > MAX_MEMBER_NESTING_DEPTH {
-        return;
+        return ControlFlow::Continue(());
     }
     for member in members {
-        visitor(member);
+        visitor(member)?;
         match member {
-            // Spec §8.7 nested-sub criterion: a nested SubDecl whose own
-            // body is `Some(_)` opens its own specialization scope. Visit
-            // the outer Sub first (parent-before-children), then descend.
+            // Spec §8.7 nested-sub criterion: a nested SubDecl whose own body
+            // is `Some(_)` opens its own specialization scope — descended
+            // into only when `set.sub_body`. Deliberately does NOT descend
+            // into `s.keyed_members[].overrides` (a `Vec<MemberDecl>`): no
+            // walker ever has, so a specialization scope nested inside a
+            // keyed entry's overrides is unreached by all three callers
+            // today. Preserved as-is — see the task's follow-up note.
             MemberDecl::Sub(s) => {
-                if let Some(nested) = s.body.as_ref() {
-                    walk_members_depth(nested, visitor, depth + 1);
+                if set.sub_body
+                    && let Some(nested) = s.body.as_ref()
+                {
+                    walk_members(nested, set, depth + 1, visitor)?;
+                }
+            }
+            // Port bodies — descended into only when `set.port_body`.
+            MemberDecl::Port(p) => {
+                if set.port_body {
+                    walk_members(&p.members, set, depth + 1, visitor)?;
                 }
             }
             // Spec §8.7 + shadow_lint.rs:39-43: `where { … } else { … }`
-            // members are siblings inside the enclosing specialization
-            // scope. Recurse into both branches so the visitor sees their
-            // members at the same logical level as the parent's other
-            // direct children.
+            // members are siblings inside the enclosing scope, recursed into
+            // UNCONDITIONALLY — every caller today agrees on this cell.
             MemberDecl::GuardedGroup(g) => {
-                walk_members_depth(&g.members, visitor, depth + 1);
-                walk_members_depth(&g.else_members, visitor, depth + 1);
+                walk_members(&g.members, set, depth + 1, visitor)?;
+                walk_members(&g.else_members, set, depth + 1, visitor)?;
             }
             // Spec §6.4 (task 2372): match-arm decl clusters desugar each arm
-            // to a same-name guarded decl. Recurse into each arm's member so
-            // the visitor sees per-arm declarations as children of the group.
+            // to a same-name guarded decl, recursed into UNCONDITIONALLY —
+            // every caller today agrees on this cell too.
             MemberDecl::MatchArmDeclGroup(g) => {
                 for arm in &g.arms {
-                    walk_members_depth(std::slice::from_ref(&*arm.member), visitor, depth + 1);
+                    walk_members(std::slice::from_ref(&*arm.member), set, depth + 1, visitor)?;
                 }
             }
-            _ => {}
+            // LOAD-BEARING: no `_` wildcard here. `MemberDecl` is not
+            // `#[non_exhaustive]`, so listing every remaining variant
+            // explicitly means a newly added variant fails THIS match at
+            // compile time rather than silently defaulting to "never
+            // descended into" — the exact silent-omission failure mode this
+            // consolidation exists to prevent.
+            MemberDecl::Param(_)
+            | MemberDecl::Let(_)
+            | MemberDecl::Constraint(_)
+            | MemberDecl::ConstraintInst(_)
+            | MemberDecl::Minimize(_)
+            | MemberDecl::Maximize(_)
+            | MemberDecl::AssociatedType(_)
+            | MemberDecl::Fn(_)
+            | MemberDecl::Connect(_)
+            | MemberDecl::Chain(_)
+            | MemberDecl::MetaBlock(_)
+            | MemberDecl::ForallConnect(_)
+            | MemberDecl::ForallConstraint(_)
+            | MemberDecl::Relate(_) => {}
         }
     }
+    ControlFlow::Continue(())
 }
 
 fn find_named_member_span_depth<'a>(
@@ -656,79 +805,66 @@ fn find_named_member_span_depth<'a>(
     name: &str,
     depth: usize,
 ) -> Option<MemberSpanInfo<'a>> {
-    if depth > MAX_MEMBER_NESTING_DEPTH {
-        return None;
+    // The `_ => ControlFlow::Continue(())` wildcard below is a name-matching
+    // predicate over Param/Let, not a recursion-set decision — only
+    // `walk_members`'s own match is exhaustiveness-load-bearing. Hoisting the
+    // Param/Let name test ahead of the recursion arms cannot reorder
+    // anything, because Param/Let have no recursion arm; first-match-wins is
+    // `Break` propagating out through `walk_members`'s `?`.
+    match walk_members(
+        members,
+        MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+        depth,
+        &mut |member| match member {
+            MemberDecl::Param(p) if p.name == name => ControlFlow::Break(MemberSpanInfo {
+                span: p.span,
+                doc: p.doc.as_deref(),
+            }),
+            MemberDecl::Let(l) if l.name == name => ControlFlow::Break(MemberSpanInfo {
+                span: l.span,
+                doc: l.doc.as_deref(),
+            }),
+            _ => ControlFlow::Continue(()),
+        },
+    ) {
+        ControlFlow::Break(info) => Some(info),
+        ControlFlow::Continue(()) => None,
     }
-    for member in members {
-        match member {
-            MemberDecl::Param(p) if p.name == name => {
-                return Some(MemberSpanInfo {
-                    span: p.span,
-                    doc: p.doc.as_deref(),
-                });
-            }
-            MemberDecl::Let(l) if l.name == name => {
-                return Some(MemberSpanInfo {
-                    span: l.span,
-                    doc: l.doc.as_deref(),
-                });
-            }
-            MemberDecl::GuardedGroup(g) => {
-                if let Some(result) = find_named_member_span_depth(&g.members, name, depth + 1) {
-                    return Some(result);
-                }
-                if let Some(result) = find_named_member_span_depth(&g.else_members, name, depth + 1)
-                {
-                    return Some(result);
-                }
-            }
-            MemberDecl::Port(port) => {
-                if let Some(result) = find_named_member_span_depth(&port.members, name, depth + 1) {
-                    return Some(result);
-                }
-            }
-            // Spec §6.4 (task 2372): recurse into each arm's member to find
-            // named declarations inside match-arm clusters.
-            MemberDecl::MatchArmDeclGroup(g) => {
-                for arm in &g.arms {
-                    if let Some(result) = find_named_member_span_depth(
-                        std::slice::from_ref(&*arm.member),
-                        name,
-                        depth + 1,
-                    ) {
-                        return Some(result);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Accumulator for [`collect_param_default_candidates`].
 ///
 /// `count` is how many matching `Param` members the traversal reached;
-/// `first_default` is the default span of the FIRST one (already `None` when
-/// that param has no default). [`find_param_default_span`] yields
+/// `first_default` is the default EXPRESSION of the FIRST one (already `None`
+/// when that param has no default). [`find_param_default_expr`] yields
 /// `first_default` only when `count == 1`, so a multiply-declared name is
 /// refused rather than resolved to whichever branch happened to come first.
+///
+/// Borrows the `&Expr` out of the walked member list rather than copying its
+/// `SourceSpan`, so the one traversal serves both the span-only caller
+/// ([`find_param_default_span`]) and the caller that must inspect the
+/// expression kind before splicing over the span.
 #[derive(Default)]
-struct ParamDefaultCandidates {
+struct ParamDefaultCandidates<'a> {
     count: usize,
-    first_default: Option<SourceSpan>,
+    first_default: Option<&'a Expr>,
 }
 
-/// Depth-bounded worker for [`find_param_default_span`].
+/// Depth-bounded worker for [`find_param_default_expr`] (and therefore, via its
+/// `.map(|e| e.span)` delegation, for [`find_param_default_span`]).
 ///
-/// Visits EVERY matching `Param` reachable within [`MAX_MEMBER_NESTING_DEPTH`]
-/// and accumulates into `out` — it deliberately does NOT return on first match,
-/// because the public contract needs the candidate COUNT to decide between
-/// resolving and refusing.
-///
-/// The recursion set is `GuardedGroup` (BOTH `members` and `else_members`) and
-/// each `MatchArmDeclGroup` arm's `member`. Everything else is skipped — in
+/// A thin visitor over [`walk_members`] carrying
+/// [`MemberRecursionSet::PARAM_DEFAULT_LOOKUP`], so the recursion set is
+/// `GuardedGroup` (BOTH `members` and `else_members`) and each
+/// `MatchArmDeclGroup` arm's `member`. Everything else is skipped — in
 /// particular the two bodies below, each for its own reason.
+///
+/// Deliberately does NOT stop on the FIRST match, because the public contract
+/// needs the candidate COUNT to decide between resolving and refusing. It DOES
+/// stop on the second, and that costs nothing observable: `first_default` is
+/// written only at `count == 1`, so it is frozen from the first hit onward, and
+/// [`find_param_default_span`] reads only `count == 1` vs not — it never
+/// distinguishes 2 from 7. `count` therefore saturates at 2.
 ///
 /// **`PortDecl.members` is deliberately NOT traversed**, and here this helper
 /// diverges from [`find_named_member_span`] ON PURPOSE. Parity with that
@@ -763,51 +899,44 @@ struct ParamDefaultCandidates {
 /// overrides of a child instance, not the child's own param declarations, so a
 /// default span found there would belong to a different entity than the caller's
 /// cell_id names — splicing into it would rewrite the wrong declaration.
-fn collect_param_default_candidates(
-    members: &[MemberDecl],
+fn collect_param_default_candidates<'a>(
+    members: &'a [MemberDecl],
     name: &str,
     depth: usize,
-    out: &mut ParamDefaultCandidates,
+    out: &mut ParamDefaultCandidates<'a>,
 ) {
-    // A subtree cut off by the depth bound contributes ZERO candidates, so a
-    // param that is only reachable past the bound leaves `count == 0` and the
-    // caller returns `None` — same observable outcome as the pre-step-6
-    // early `return None`.
-    if depth > MAX_MEMBER_NESTING_DEPTH {
-        return;
-    }
-    for member in members {
-        // Ambiguity is established at 2 and the public contract never
-        // distinguishes 2 from 7, so stop walking. Checked at the top of every
-        // iteration, which also short-circuits each recursive entry on its
-        // first pass — no per-recursion-site guard needed.
-        if out.count > 1 {
-            return;
-        }
-        match member {
-            MemberDecl::Param(p) if p.name == name => {
+    // The depth bound lives in `walk_members`, which returns `Continue` at the
+    // bound: a subtree cut off there contributes ZERO candidates, so a param
+    // that is only reachable past the bound leaves `count == 0` and the caller
+    // returns `None` — same observable outcome as the pre-consolidation early
+    // `return`.
+    //
+    // The `if let` below is a name-matching predicate over `Param`, not a
+    // recursion-set decision; only `walk_members`'s own match is
+    // exhaustiveness-load-bearing. `Break` on the second hit unwinds out of
+    // every nesting level via `?` — where the hand-rolled loop instead re-tested
+    // `out.count > 1` at the top of every frame's every iteration. Both stop
+    // mutating `out` the instant `count` reaches 2, so they agree on the only
+    // two cells anyone reads.
+    let _: ControlFlow<()> = walk_members(
+        members,
+        MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+        depth,
+        &mut |member| {
+            if let MemberDecl::Param(p) = member
+                && p.name == name
+            {
                 out.count += 1;
                 if out.count == 1 {
-                    out.first_default = p.default.as_ref().map(|e| e.span);
+                    out.first_default = p.default.as_ref();
+                }
+                if out.count > 1 {
+                    return ControlFlow::Break(());
                 }
             }
-            MemberDecl::GuardedGroup(g) => {
-                collect_param_default_candidates(&g.members, name, depth + 1, out);
-                collect_param_default_candidates(&g.else_members, name, depth + 1, out);
-            }
-            MemberDecl::MatchArmDeclGroup(g) => {
-                for arm in &g.arms {
-                    collect_param_default_candidates(
-                        std::slice::from_ref(&*arm.member),
-                        name,
-                        depth + 1,
-                        out,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
+            ControlFlow::Continue(())
+        },
+    );
 }
 
 /// `connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore }`
@@ -1514,11 +1643,17 @@ mod has_test_annotation_tests {
     }
 }
 
+/// Shared hand-built `MemberDecl`/`SubDecl` fixture constructors — no parser.
+///
+/// Hoisted out of `find_param_default_span_tests` (pre-1) so more than one
+/// `#[cfg(test)]` module in this file can build the same nested-member shapes
+/// without duplicating any `ParamDecl`/`LetDecl`/`GuardedGroupDecl`/`PortDecl`/
+/// `MatchArmDeclGroupDecl`/`SubDecl` literal.
 #[cfg(test)]
-mod find_param_default_span_tests {
+mod member_test_fixtures {
     use super::{
         Expr, GuardedGroupDecl, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
-        ParamDecl, PortDecl, find_param_default_span,
+        ParamDecl, PortDecl, SubDecl,
     };
     use crate::ast::ExprKind;
     use reify_core::{ContentHash, PortDirection, SourceSpan};
@@ -1528,7 +1663,11 @@ mod find_param_default_span_tests {
     /// `decl_span` is the whole `param … = …` declaration's span; `default_span`,
     /// when `Some`, is the span of the default EXPRESSION alone. Keeping the two
     /// distinct is what makes the §6.1 invariant assertable.
-    fn param(name: &str, decl_span: (u32, u32), default_span: Option<(u32, u32)>) -> MemberDecl {
+    pub(super) fn param(
+        name: &str,
+        decl_span: (u32, u32),
+        default_span: Option<(u32, u32)>,
+    ) -> MemberDecl {
         MemberDecl::Param(ParamDecl {
             name: name.to_string(),
             doc: None,
@@ -1550,7 +1689,11 @@ mod find_param_default_span_tests {
 
     /// Build a `MemberDecl::Let` by hand — the sibling variant that
     /// [`super::find_named_member_span`] matches but this helper deliberately does not.
-    fn let_member(name: &str, decl_span: (u32, u32), value_span: (u32, u32)) -> MemberDecl {
+    pub(super) fn let_member(
+        name: &str,
+        decl_span: (u32, u32),
+        value_span: (u32, u32),
+    ) -> MemberDecl {
         MemberDecl::Let(LetDecl {
             name: name.to_string(),
             doc: None,
@@ -1573,7 +1716,7 @@ mod find_param_default_span_tests {
     }
 
     /// A `BoolLiteral(true)` stand-in for a guard condition / match discriminant.
-    fn dummy_expr() -> Expr {
+    pub(super) fn dummy_expr() -> Expr {
         Expr {
             kind: ExprKind::BoolLiteral(true),
             span: SourceSpan::new(0, 1),
@@ -1581,7 +1724,7 @@ mod find_param_default_span_tests {
     }
 
     /// `where <cond> { members } else { else_members }`.
-    fn guarded(members: Vec<MemberDecl>, else_members: Vec<MemberDecl>) -> MemberDecl {
+    pub(super) fn guarded(members: Vec<MemberDecl>, else_members: Vec<MemberDecl>) -> MemberDecl {
         MemberDecl::GuardedGroup(GuardedGroupDecl {
             condition: dummy_expr(),
             members,
@@ -1592,7 +1735,7 @@ mod find_param_default_span_tests {
     }
 
     /// `port <name> : in <T> { members }`.
-    fn port(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
+    pub(super) fn port(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
         MemberDecl::Port(PortDecl {
             name: name.to_string(),
             direction: Some(PortDirection::In),
@@ -1606,7 +1749,7 @@ mod find_param_default_span_tests {
     }
 
     /// `match <disc> { P => <member> … }` at decl level.
-    fn match_arm_group(arms: Vec<(&str, MemberDecl)>) -> MemberDecl {
+    pub(super) fn match_arm_group(arms: Vec<(&str, MemberDecl)>) -> MemberDecl {
         MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
             discriminant: dummy_expr(),
             arms: arms
@@ -1627,7 +1770,7 @@ mod find_param_default_span_tests {
     /// Same shape as `build_nested_guarded_members` in
     /// crates/reify-lsp/src/analysis.rs, but with a default attached so the
     /// depth assertions can name the exact span rather than settling for `is_some`.
-    fn build_nested_guarded_members(
+    pub(super) fn build_nested_guarded_members(
         depth: usize,
         target: &str,
         default_span: (u32, u32),
@@ -1638,6 +1781,45 @@ mod find_param_default_span_tests {
         }
         current
     }
+
+    /// Build a `SubDecl` by hand — no parser. Mirrors the field-literal shape
+    /// established by `make_sub_with_body` in
+    /// `crates/reify-syntax/tests/harness_syntax/sub_decl_specialization_tests.rs`
+    /// (`match_decl_block_tests.rs` builds the same shape from inline `SubDecl`
+    /// literals rather than a named helper). reify-ast had no `SubDecl` test
+    /// builder of its own before this.
+    ///
+    /// `body: None` yields a bare-instantiation/collection-shaped `SubDecl`
+    /// (no specialization scope); `body: Some(members)` opens one.
+    pub(super) fn sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
+        SubDecl {
+            name: name.to_string(),
+            structure_name: "Foo".to_string(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            is_collection: false,
+            where_clause: None,
+            body,
+            spec_param_overrides: Vec::new(),
+            keyed_members: Vec::new(),
+            is_aux: false,
+            is_priv: false,
+            pose_expr: None,
+            index_binder: None,
+            index_domain: None,
+            relate_relations: Vec::new(),
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        }
+    }
+}
+
+#[cfg(test)]
+mod find_param_default_span_tests {
+    use super::member_test_fixtures::*;
+    use super::{find_param_default_expr, find_param_default_span};
+    use crate::ast::ExprKind;
+    use reify_core::SourceSpan;
 
     #[test]
     fn param_with_default_returns_the_default_expression_span() {
@@ -1659,6 +1841,31 @@ mod find_param_default_span_tests {
             found,
             SourceSpan::new(0, 30),
             "must return the default EXPRESSION range, never the whole param decl"
+        );
+    }
+
+    #[test]
+    fn param_with_default_returns_the_default_expression_itself() {
+        // The `&Expr`-returning primitive `find_param_default_span` delegates to
+        // (task 5096 γ, INV-GUI-3 write-back): `apply_param_to_source` must read
+        // the default's `ExprKind` — to refuse splicing over a `BinOp` or an
+        // `Auto` — from the SAME traversal that produced the span it would
+        // splice into, or the two readings could disagree about which
+        // declaration they describe.
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        let expr = find_param_default_expr(&members, "width").expect("param has a default");
+        assert_eq!(
+            expr.kind,
+            ExprKind::NumberLiteral {
+                value: 80.0,
+                is_real: false,
+            },
+            "must hand back the default EXPRESSION, not merely locate its range"
+        );
+        assert_eq!(
+            expr.span,
+            SourceSpan::new(22, 27),
+            "the borrowed expression's own span is the default range"
         );
     }
 
@@ -1862,6 +2069,603 @@ mod find_param_default_span_tests {
         assert_eq!(
             find_param_default_span(&members, "diameter"),
             Some(SourceSpan::new(10, 14))
+        );
+    }
+}
+
+/// GOLDEN-MASTER (characterization) tests for the three member-recursion
+/// walkers, pinned against the CURRENT (pre-consolidation) hand-rolled
+/// implementations. This module must be green BEFORE `walk_members`/
+/// `MemberRecursionSet` exist — it is the safety net the consolidation is
+/// checked against, not a test of the new code.
+#[cfg(test)]
+mod member_recursion_set_tests {
+    use super::member_test_fixtures::*;
+    use super::{
+        MAX_MEMBER_NESTING_DEPTH, MemberDecl, find_named_member_span, find_param_default_span,
+        walk_specialization_scope_members,
+    };
+    use reify_core::SourceSpan;
+
+    /// One uniquely-named `param` (each carrying a default span, so
+    /// `find_param_default_span` is assertable too) planted in each of the
+    /// five nested member bodies the three walkers disagree on, plus one
+    /// top-level marker. Shared across all three entry points so a single
+    /// fixture pins the full 3-entry-point × 6-marker reachability table.
+    fn build_reachability_fixture() -> Vec<MemberDecl> {
+        vec![
+            param("marker_top", (0, 40), Some((10, 14))),
+            MemberDecl::Sub(sub_with_body(
+                "nested_sub",
+                Some(vec![param("marker_sub", (100, 140), Some((110, 114)))]),
+            )),
+            port(
+                "nested_port",
+                vec![param("marker_port", (200, 240), Some((210, 214)))],
+            ),
+            guarded(
+                vec![param("marker_then", (300, 340), Some((310, 314)))],
+                vec![],
+            ),
+            guarded(
+                vec![],
+                vec![param("marker_else", (400, 440), Some((410, 414)))],
+            ),
+            match_arm_group(vec![(
+                "A",
+                param("marker_arm", (500, 540), Some((510, 514))),
+            )]),
+        ]
+    }
+
+    /// Debug tag for a visited member: names the marker param, or names the
+    /// container (distinguishing the two `GuardedGroup`s by which branch is
+    /// non-empty, since neither carries its own name).
+    fn tag(member: &MemberDecl) -> String {
+        match member {
+            MemberDecl::Param(p) => format!("param:{}", p.name),
+            MemberDecl::Sub(s) => format!("sub:{}", s.name),
+            MemberDecl::Port(p) => format!("port:{}", p.name),
+            MemberDecl::GuardedGroup(g) => {
+                format!("guarded(then={},else={})", g.members.len(), g.else_members.len())
+            }
+            MemberDecl::MatchArmDeclGroup(_) => "match_arm_group".to_string(),
+            other => panic!("reachability fixture should not contain {other:?}"),
+        }
+    }
+
+    #[test]
+    fn walk_specialization_scope_members_reachability_table() {
+        let fixture = build_reachability_fixture();
+        let sub = sub_with_body("scope", Some(fixture));
+        let mut tags = Vec::new();
+        walk_specialization_scope_members(&sub, &mut |m| tags.push(tag(m)));
+
+        assert!(
+            tags.contains(&"param:marker_top".to_string()),
+            "top-level marker must be reached; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_sub".to_string()),
+            "SubDecl.body IS recursed into by walk_specialization_scope_members; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_then".to_string()),
+            "GuardedGroup.members is always recursed; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_else".to_string()),
+            "GuardedGroup.else_members is always recursed; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_arm".to_string()),
+            "MatchArmDeclGroup arms are always recursed; tags={tags:?}"
+        );
+        assert!(
+            !tags.contains(&"param:marker_port".to_string()),
+            "PortDecl.members must NOT be recursed by walk_specialization_scope_members; tags={tags:?}"
+        );
+
+        // Container nodes are visited themselves (not just skipped-through),
+        // and parent-before-children ordering holds for every container that
+        // does recurse.
+        let sub_idx = tags
+            .iter()
+            .position(|t| t == "sub:nested_sub")
+            .expect("Sub container itself must be visited");
+        assert!(
+            tags.iter().any(|t| t == "port:nested_port"),
+            "Port container itself must be visited, even though its body is not descended; tags={tags:?}"
+        );
+        let then_guard_idx = tags
+            .iter()
+            .position(|t| t == "guarded(then=1,else=0)")
+            .expect("then-branch GuardedGroup container must be visited");
+        let else_guard_idx = tags
+            .iter()
+            .position(|t| t == "guarded(then=0,else=1)")
+            .expect("else-branch GuardedGroup container must be visited");
+        let arm_group_idx = tags
+            .iter()
+            .position(|t| t == "match_arm_group")
+            .expect("MatchArmDeclGroup container itself must be visited");
+
+        let marker_sub_idx = tags.iter().position(|t| t == "param:marker_sub").unwrap();
+        let marker_then_idx = tags.iter().position(|t| t == "param:marker_then").unwrap();
+        let marker_else_idx = tags.iter().position(|t| t == "param:marker_else").unwrap();
+        let marker_arm_idx = tags.iter().position(|t| t == "param:marker_arm").unwrap();
+
+        assert!(
+            sub_idx < marker_sub_idx,
+            "parent-before-children: Sub container must precede its nested param"
+        );
+        assert!(
+            then_guard_idx < marker_then_idx,
+            "parent-before-children: then-branch GuardedGroup must precede its member"
+        );
+        assert!(
+            else_guard_idx < marker_else_idx,
+            "parent-before-children: else-branch GuardedGroup must precede its member"
+        );
+        assert!(
+            arm_group_idx < marker_arm_idx,
+            "parent-before-children: MatchArmDeclGroup must precede its arm's member"
+        );
+    }
+
+    #[test]
+    fn find_named_member_span_reachability_table() {
+        let fixture = build_reachability_fixture();
+        for name in [
+            "marker_top",
+            "marker_port",
+            "marker_then",
+            "marker_else",
+            "marker_arm",
+        ] {
+            assert!(
+                find_named_member_span(&fixture, name).is_some(),
+                "find_named_member_span must reach {name}"
+            );
+        }
+        assert!(
+            find_named_member_span(&fixture, "marker_sub").is_none(),
+            "find_named_member_span must NOT reach into SubDecl.body"
+        );
+    }
+
+    #[test]
+    fn find_param_default_span_reachability_table() {
+        let fixture = build_reachability_fixture();
+        for (name, expected_span) in [
+            ("marker_top", (10, 14)),
+            ("marker_then", (310, 314)),
+            ("marker_else", (410, 414)),
+            ("marker_arm", (510, 514)),
+        ] {
+            assert_eq!(
+                find_param_default_span(&fixture, name),
+                Some(SourceSpan::new(expected_span.0, expected_span.1)),
+                "find_param_default_span must reach {name}"
+            );
+        }
+        assert_eq!(
+            find_param_default_span(&fixture, "marker_sub"),
+            None,
+            "find_param_default_span must NOT reach into SubDecl.body"
+        );
+        assert_eq!(
+            find_param_default_span(&fixture, "marker_port"),
+            None,
+            "find_param_default_span must NOT reach into PortDecl.members"
+        );
+    }
+
+    // ── shared cross-cutting contract: depth bound ────────────────────────
+
+    #[test]
+    fn depth_bound_applies_identically_to_all_three_entry_points() {
+        let at_limit =
+            build_nested_guarded_members(MAX_MEMBER_NESTING_DEPTH, "deep_param", (10, 14));
+        let beyond_limit =
+            build_nested_guarded_members(MAX_MEMBER_NESTING_DEPTH + 1, "deep_param", (10, 14));
+
+        let mut names_at_limit = Vec::new();
+        walk_specialization_scope_members(
+            &sub_with_body("s", Some(at_limit.clone())),
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    names_at_limit.push(p.name.clone());
+                }
+            },
+        );
+        assert!(
+            names_at_limit.contains(&"deep_param".to_string()),
+            "walk_specialization_scope_members: a param at exactly MAX_MEMBER_NESTING_DEPTH must be reached"
+        );
+
+        let mut names_beyond_limit = Vec::new();
+        walk_specialization_scope_members(
+            &sub_with_body("s", Some(beyond_limit.clone())),
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    names_beyond_limit.push(p.name.clone());
+                }
+            },
+        );
+        assert!(
+            !names_beyond_limit.contains(&"deep_param".to_string()),
+            "walk_specialization_scope_members: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+
+        assert!(
+            find_named_member_span(&at_limit, "deep_param").is_some(),
+            "find_named_member_span: a param at exactly MAX_MEMBER_NESTING_DEPTH must be reached"
+        );
+        assert!(
+            find_named_member_span(&beyond_limit, "deep_param").is_none(),
+            "find_named_member_span: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+
+        assert_eq!(
+            find_param_default_span(&at_limit, "deep_param"),
+            Some(SourceSpan::new(10, 14)),
+            "find_param_default_span: a param at exactly MAX_MEMBER_NESTING_DEPTH must be reached"
+        );
+        assert_eq!(
+            find_param_default_span(&beyond_limit, "deep_param"),
+            None,
+            "find_param_default_span: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+    }
+
+    // ── shared cross-cutting contract: exit rules ─────────────────────────
+
+    #[test]
+    fn find_named_member_span_first_match_wins_over_ambiguous_guarded_branches() {
+        let members = vec![guarded(
+            vec![param("dup", (0, 40), Some((10, 14)))],
+            vec![param("dup", (50, 90), Some((60, 64)))],
+        )];
+        let found =
+            find_named_member_span(&members, "dup").expect("dup is declared in the then-branch");
+        assert_eq!(
+            found.span,
+            SourceSpan::new(0, 40),
+            "the then-branch declaration must win (first-match-wins)"
+        );
+        assert_eq!(
+            find_param_default_span(&members, "dup"),
+            None,
+            "find_param_default_span must refuse a doubly-declared name rather than resolve it"
+        );
+    }
+
+    #[test]
+    fn find_named_member_span_first_match_wins_over_ambiguous_match_arms() {
+        let members = vec![match_arm_group(vec![
+            ("A", param("dup", (0, 40), Some((10, 14)))),
+            ("B", param("dup", (50, 90), Some((60, 64)))),
+        ])];
+        let found = find_named_member_span(&members, "dup").expect("dup is declared in arm 0");
+        assert_eq!(
+            found.span,
+            SourceSpan::new(0, 40),
+            "arm 0's declaration must win (first-match-wins)"
+        );
+        assert_eq!(
+            find_param_default_span(&members, "dup"),
+            None,
+            "find_param_default_span must refuse a doubly-declared name rather than resolve it"
+        );
+    }
+}
+
+/// RED until step-3 lands `MemberRecursionSet`/`walk_members` — this module
+/// must fail to COMPILE (`cannot find type`/`cannot find function`), not fail
+/// an assertion, until then.
+#[cfg(test)]
+mod member_walker_contract_tests {
+    use super::member_test_fixtures::*;
+    use super::{MemberDecl, MemberRecursionSet, walk_members};
+    use std::ops::ControlFlow;
+
+    // ── (a) declarative recursion-set pin ─────────────────────────────────
+
+    #[test]
+    fn recursion_set_consts_match_the_drift_table() {
+        assert_eq!(
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            MemberRecursionSet {
+                sub_body: true,
+                port_body: false
+            },
+            "walk_specialization_scope_members recurses SubDecl.body, not PortDecl.members"
+        );
+        assert_eq!(
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            MemberRecursionSet {
+                sub_body: false,
+                port_body: true
+            },
+            "find_named_member_span recurses PortDecl.members, not SubDecl.body"
+        );
+        assert_eq!(
+            MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+            MemberRecursionSet {
+                sub_body: false,
+                port_body: false
+            },
+            "find_param_default_span recurses neither SubDecl.body nor PortDecl.members"
+        );
+        assert_ne!(
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP
+        );
+        assert_ne!(
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            MemberRecursionSet::PARAM_DEFAULT_LOOKUP
+        );
+        assert_ne!(
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            MemberRecursionSet::PARAM_DEFAULT_LOOKUP
+        );
+    }
+
+    // ── (b) variant-coverage pin ───────────────────────────────────────────
+
+    /// Mirrors what `walk_members`'s match arms decide for each `MemberDecl`
+    /// variant. EXHAUSTIVE with NO `_` arm: adding a new `MemberDecl` variant
+    /// must break this test's compile, forcing a deliberate classification
+    /// decision here (and, separately, in `walk_members`'s own match).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum DescendKind {
+        Always,
+        IfSubBody,
+        IfPortBody,
+        Never,
+    }
+
+    fn descends_into(member: &MemberDecl) -> DescendKind {
+        match member {
+            MemberDecl::Param(_) => DescendKind::Never,
+            MemberDecl::Let(_) => DescendKind::Never,
+            MemberDecl::Constraint(_) => DescendKind::Never,
+            MemberDecl::ConstraintInst(_) => DescendKind::Never,
+            MemberDecl::Sub(_) => DescendKind::IfSubBody,
+            MemberDecl::Minimize(_) => DescendKind::Never,
+            MemberDecl::Maximize(_) => DescendKind::Never,
+            MemberDecl::GuardedGroup(_) => DescendKind::Always,
+            MemberDecl::AssociatedType(_) => DescendKind::Never,
+            MemberDecl::Fn(_) => DescendKind::Never,
+            MemberDecl::Port(_) => DescendKind::IfPortBody,
+            MemberDecl::Connect(_) => DescendKind::Never,
+            MemberDecl::Chain(_) => DescendKind::Never,
+            MemberDecl::MetaBlock(_) => DescendKind::Never,
+            MemberDecl::ForallConnect(_) => DescendKind::Never,
+            MemberDecl::ForallConstraint(_) => DescendKind::Never,
+            MemberDecl::MatchArmDeclGroup(_) => DescendKind::Always,
+            MemberDecl::Relate(_) => DescendKind::Never,
+        }
+    }
+
+    /// Drives `walk_members` to completion (never breaks) and reports whether
+    /// a `Param` named `"marker"` was reached anywhere in the tree.
+    fn reaches_marker(member: MemberDecl, set: MemberRecursionSet) -> bool {
+        let members = vec![member];
+        let mut reached = false;
+        let _: ControlFlow<()> = walk_members(&members, set, 0, &mut |m| {
+            if let MemberDecl::Param(p) = m
+                && p.name == "marker"
+            {
+                reached = true;
+            }
+            ControlFlow::Continue(())
+        });
+        reached
+    }
+
+    /// One row of the nesting-variant table below: the variant's display name,
+    /// a builder for a `MemberDecl` of that variant whose optional body holds a
+    /// `param "marker"`, and the classification `descends_into` must report.
+    /// Named so the tuple stays under `clippy::type_complexity`.
+    type NestingVariant = (&'static str, fn() -> MemberDecl, DescendKind);
+
+    #[test]
+    fn walk_members_recursion_matches_declared_classification() {
+        let nesting_variants: [NestingVariant; 4] = [
+            (
+                "Sub",
+                || MemberDecl::Sub(sub_with_body("s", Some(vec![param("marker", (0, 40), None)]))),
+                DescendKind::IfSubBody,
+            ),
+            (
+                "Port",
+                || port("p", vec![param("marker", (0, 40), None)]),
+                DescendKind::IfPortBody,
+            ),
+            (
+                "GuardedGroup",
+                || guarded(vec![param("marker", (0, 40), None)], vec![]),
+                DescendKind::Always,
+            ),
+            (
+                "MatchArmDeclGroup",
+                || match_arm_group(vec![("A", param("marker", (0, 40), None))]),
+                DescendKind::Always,
+            ),
+        ];
+        let recursion_sets: [(&str, MemberRecursionSet); 3] = [
+            (
+                "SPECIALIZATION_SCOPE",
+                MemberRecursionSet::SPECIALIZATION_SCOPE,
+            ),
+            (
+                "NAMED_MEMBER_LOOKUP",
+                MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            ),
+            (
+                "PARAM_DEFAULT_LOOKUP",
+                MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+            ),
+        ];
+
+        for (variant_name, build, expected_kind) in nesting_variants {
+            let actual_kind = descends_into(&build());
+            assert_eq!(
+                actual_kind, expected_kind,
+                "{variant_name}'s declared classification is wrong"
+            );
+
+            for (set_name, set) in recursion_sets {
+                let expected_reach = match expected_kind {
+                    DescendKind::Always => true,
+                    DescendKind::IfSubBody => set.sub_body,
+                    DescendKind::IfPortBody => set.port_body,
+                    DescendKind::Never => false,
+                };
+                let actual_reach = reaches_marker(build(), set);
+                assert_eq!(
+                    actual_reach, expected_reach,
+                    "{variant_name} under {set_name}: expected reach={expected_reach}, got {actual_reach}"
+                );
+            }
+        }
+    }
+
+    // ── (c) early-exit short-circuit ───────────────────────────────────────
+
+    #[test]
+    fn walk_members_break_stops_before_else_branch() {
+        let members = vec![guarded(
+            vec![param("then_marker", (0, 40), None)],
+            vec![param("else_marker", (50, 90), None)],
+        )];
+        let mut visited = Vec::new();
+        let result = walk_members(
+            &members,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    visited.push(p.name.clone());
+                    if p.name == "then_marker" {
+                        return ControlFlow::Break("stopped");
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Break("stopped"));
+        assert_eq!(
+            visited,
+            vec!["then_marker".to_string()],
+            "must stop before the else-branch member is visited"
+        );
+    }
+
+    #[test]
+    fn walk_members_break_stops_before_second_match_arm() {
+        let members = vec![match_arm_group(vec![
+            ("A", param("arm0_marker", (0, 40), None)),
+            ("B", param("arm1_marker", (50, 90), None)),
+        ])];
+        let mut visited = Vec::new();
+        let result = walk_members(
+            &members,
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            0,
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    visited.push(p.name.clone());
+                    if p.name == "arm0_marker" {
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        assert_eq!(
+            visited,
+            vec!["arm0_marker".to_string()],
+            "must stop before arm 1's member is visited"
+        );
+    }
+
+    #[test]
+    fn walk_members_break_inside_nested_sub_body_stops_before_next_sibling() {
+        let members = vec![
+            MemberDecl::Sub(sub_with_body(
+                "s",
+                Some(vec![param("nested_marker", (0, 40), None)]),
+            )),
+            param("sibling_marker", (100, 140), None),
+        ];
+        let mut visited = Vec::new();
+        let result = walk_members(
+            &members,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                match m {
+                    MemberDecl::Sub(s) => visited.push(format!("sub:{}", s.name)),
+                    MemberDecl::Param(p) => {
+                        visited.push(format!("param:{}", p.name));
+                        if p.name == "nested_marker" {
+                            return ControlFlow::Break(());
+                        }
+                    }
+                    _ => {}
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        assert_eq!(
+            visited,
+            vec!["sub:s".to_string(), "param:nested_marker".to_string()],
+            "must unwind out of the nested Sub body without visiting the next top-level sibling"
+        );
+    }
+
+    #[test]
+    fn walk_members_continue_visits_every_member_exactly_once() {
+        let members = vec![
+            param("a", (0, 40), None),
+            guarded(
+                vec![param("b", (0, 40), None)],
+                vec![param("c", (0, 40), None)],
+            ),
+            match_arm_group(vec![("A", param("d", (0, 40), None))]),
+        ];
+        let mut visit_count = 0usize;
+        let mut param_order = Vec::new();
+        let result: ControlFlow<()> = walk_members(
+            &members,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                visit_count += 1;
+                if let MemberDecl::Param(p) = m {
+                    param_order.push(p.name.clone());
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Continue(()));
+        // 6 distinct nodes: a, guarded(container), b, c, match_arm_group(container), d.
+        assert_eq!(
+            visit_count, 6,
+            "every member node, including containers, must be visited exactly once"
+        );
+        assert_eq!(
+            param_order,
+            vec!["a", "b", "c", "d"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>(),
+            "left-to-right, parent-before-children order"
         );
     }
 }

@@ -24,6 +24,12 @@ mod as_printed_material_e2e;
 mod as_printed_r0_trampoline;
 #[path = "harness_fea_solver_e2e/as_printed_trampoline.rs"]
 mod as_printed_trampoline;
+// Task #5025's edit-path dispatch guards. A DELIBERATELY separate stem from
+// `fea_in_the_loop_producer`, whose test-scoped heavy atom would otherwise sweep
+// these two cheap guards off the task/merge gate along with the ~490s producer
+// (task #6630; pinned by tests/infra/test_heavy_filter_atoms.sh Assertion G).
+#[path = "harness_fea_solver_e2e/edit_path_optimized_dispatch.rs"]
+mod edit_path_optimized_dispatch;
 #[path = "harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs"]
 mod fea_bracket_minimize_mass_e2e;
 #[path = "harness_fea_solver_e2e/fea_cold_start_heuristic_e2e.rs"]
@@ -43,6 +49,8 @@ mod fea_loads_stdlib_smoke;
 mod fea_stress_reductions_smoke;
 #[path = "harness_fea_solver_e2e/fea_structured_detail_e2e.rs"]
 mod fea_structured_detail_e2e;
+#[path = "harness_fea_solver_e2e/jacobian_column_member_access.rs"]
+mod jacobian_column_member_access;
 #[path = "harness_fea_solver_e2e/kinematic_diagnostics_e2e.rs"]
 mod kinematic_diagnostics_e2e;
 #[path = "harness_fea_solver_e2e/kinematic_examples_e2e.rs"]
@@ -71,8 +79,6 @@ mod multi_load_case_typed_envelope;
 mod objective_inherit_ambiguous;
 #[path = "harness_fea_solver_e2e/objective_inheritance.rs"]
 mod objective_inheritance;
-#[path = "harness_fea_solver_e2e/objective_inheritance_e2e.rs"]
-mod objective_inheritance_e2e;
 #[path = "harness_fea_solver_e2e/objective_provenance.rs"]
 mod objective_provenance;
 #[path = "harness_fea_solver_e2e/objective_set_signal.rs"]
@@ -93,6 +99,8 @@ mod stress_sweep_degenerate;
 mod stress_trait_hierarchy;
 #[path = "harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs"]
 mod tensegrity_delta_combined_form_find_e2e;
+#[path = "harness_fea_solver_e2e/tensegrity_force_density_gauge.rs"]
+mod tensegrity_force_density_gauge;
 #[path = "harness_fea_solver_e2e/tensegrity_membrane_load.rs"]
 mod tensegrity_membrane_load;
 #[path = "harness_fea_solver_e2e/tensegrity_pavilion_e2e.rs"]

@@ -10,7 +10,7 @@
 
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::{BinOp, CompiledExprKind, Value};
+use reify_ir::{BinOp, CompiledExprKind, CompiledFunction, Value};
 use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -45,6 +45,27 @@ fn find_structure(name: &str) -> &'static TopologyTemplate {
                     .iter()
                     .map(|t| (&t.name, &t.entity_kind))
                     .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Look up a compiled function by name within the `std/dynamics` module.
+///
+/// This mirrors `trajectory_stdlib_compile.rs`'s `find_function` (itself
+/// layered on that file's generic `find_named`) rather than sharing it:
+/// integration-test binaries each compile as a separate crate, so a private
+/// helper in one `tests/*.rs` file cannot be called from another.
+fn find_function(name: &str) -> &'static CompiledFunction {
+    let module = load_stdlib_module();
+    module
+        .functions
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `{}` in std/dynamics; found functions: {:?}",
+                name,
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
             )
         })
 }
@@ -775,4 +796,106 @@ structure def Probe {
             errors
         );
     }
+}
+
+// ─── task 6041: std.kinematic type guard (inverse_dynamics) ───────────────
+//
+// `inverse_dynamics` and `inverse_dynamics_at_snapshot` take the real
+// `Mechanism`/`Snapshot` structure types from `std.kinematic` (task 4311),
+// not the pre-task-4311 `Real` placeholders — mirrors what
+// `mass_properties_has_four_params_with_correct_types` guards for the
+// `Frame3`/`std.ports` half (task 4547). Not a load-order position check:
+// a reversed `std.kinematic`/`std.dynamics` order panics the stdlib loader
+// for every test in this binary before a position assertion could run, so
+// only a silent type regression (order correct, types wrong) is worth
+// guarding here.
+//
+// One test per function, each pinning params then return_type, rather than
+// one test covering both: `assert_eq!` aborts its test fn on the first
+// failing arm, so a single combined test that regressed both functions
+// would have reported only the first.
+//
+// NOTE: neither test below exercises `MotionTrajectory.mechanism` itself,
+// which remains a `Real` placeholder (dynamics.ri's mechanism-type
+// placeholder note) guarded separately by
+// `motion_trajectory_has_mechanism_and_samples_params` above — this pair is
+// signature coverage for the two fns, not full `Mechanism`-type coverage of
+// std.dynamics.
+
+#[test]
+fn inverse_dynamics_signature_uses_mechanism_and_motion_trajectory() {
+    let inverse_dynamics = find_function("inverse_dynamics");
+    assert!(inverse_dynamics.is_pub, "inverse_dynamics should be pub");
+    assert_eq!(
+        inverse_dynamics.params,
+        vec![
+            (
+                "mechanism".to_string(),
+                Type::StructureRef("Mechanism".to_string())
+            ),
+            (
+                "trajectory".to_string(),
+                Type::StructureRef("MotionTrajectory".to_string())
+            ),
+        ],
+        "inverse_dynamics params should be exactly (mechanism: Mechanism, \
+         trajectory: MotionTrajectory); got: {:?}",
+        inverse_dynamics.params
+    );
+    assert_eq!(
+        inverse_dynamics.return_type,
+        Type::List(Box::new(Type::List(Box::new(Type::StructureRef(
+            "JointForce".to_string()
+        ))))),
+        "inverse_dynamics return type should be List<List<JointForce>> (PRD §5.2); got: {:?}",
+        inverse_dynamics.return_type
+    );
+}
+
+#[test]
+fn inverse_dynamics_at_snapshot_signature_uses_mechanism_and_snapshot() {
+    // NOTE: the q_dot/q_ddot arm just below intentionally pins `List<dimensionless
+    // scalar>`, not a `JointValue`-named type — `JointValue` is `pub type JointValue
+    // = Real` (trajectory.ri, "no live owner" TODO), a placeholder the kinematic-
+    // completion PRD is expected to retarget (see the `joint-value-type` notes
+    // above `TrajectorySample` in dynamics.ri). If that retarget lands, this exact-
+    // equality arm fails for that unrelated reason, not because Mechanism/Snapshot
+    // regressed — update the q_dot/q_ddot expected type below to match rather than
+    // loosening the Mechanism/Snapshot checks this test exists to guard.
+    let inverse_dynamics_at_snapshot = find_function("inverse_dynamics_at_snapshot");
+    assert!(
+        inverse_dynamics_at_snapshot.is_pub,
+        "inverse_dynamics_at_snapshot should be pub"
+    );
+    assert_eq!(
+        inverse_dynamics_at_snapshot.params,
+        vec![
+            (
+                "mechanism".to_string(),
+                Type::StructureRef("Mechanism".to_string())
+            ),
+            (
+                "snapshot".to_string(),
+                Type::StructureRef("Snapshot".to_string())
+            ),
+            (
+                "q_dot".to_string(),
+                Type::List(Box::new(Type::dimensionless_scalar()))
+            ),
+            (
+                "q_ddot".to_string(),
+                Type::List(Box::new(Type::dimensionless_scalar()))
+            ),
+        ],
+        "inverse_dynamics_at_snapshot params should be exactly (mechanism: Mechanism, \
+         snapshot: Snapshot, q_dot: List<JointValue>, q_ddot: List<JointValue>); got: {:?}",
+        inverse_dynamics_at_snapshot.params
+    );
+    assert_eq!(
+        inverse_dynamics_at_snapshot.return_type,
+        Type::List(Box::new(Type::StructureRef("JointForce".to_string()))),
+        "inverse_dynamics_at_snapshot return type should be List<JointForce> (PRD §5.2); \
+         got: {:?}",
+        inverse_dynamics_at_snapshot.return_type
+    );
 }

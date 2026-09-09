@@ -433,7 +433,7 @@ describe('App unit ladders (task #5199)', () => {
           cell_id: 'Tank.capacity',
           name: 'capacity',
           value: '7045002.24',
-          unit: 'mm³',
+          unit: 'mm^3',
           determinacy: 'determined',
           entity_path: 'Tank.capacity',
           kind: 'let',
@@ -457,7 +457,7 @@ describe('App unit ladders (task #5199)', () => {
       {
         dimension: 'Volume',
         units: [
-          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'mm^3', si_scale: 1e-9, is_default: true },
           { label: 'L', si_scale: 1e-3, is_default: false },
         ],
       },
@@ -485,7 +485,7 @@ describe('App unit ladders (task #5199)', () => {
           cell_id: 'Tank.capacity',
           name: 'capacity',
           value: '7045002.24',
-          unit: 'mm³',
+          unit: 'mm^3',
           determinacy: 'determined',
           entity_path: 'Tank.capacity',
           kind: 'let',

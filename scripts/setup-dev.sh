@@ -341,6 +341,37 @@ info "Seeding per-worktree core.hooksPath via extensions.worktreeConfig..."
 "$(dirname "${BASH_SOURCE[0]}")/setup-main-gate-worktree-config.sh"
 ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 
+# ---------- git rerere disarm ----------
+#
+# Every warm lane shares ONE unlocked rr-cache, so a resolution recorded by one
+# task can be auto-staged into an unrelated task's merge.  Re-run every setup:
+# git's rerere.enabled default is -1 ("enabled iff rr-cache/ exists"), so LOSING
+# the explicit false silently re-arms the fleet.  Idempotent; never prunes
+# rr-cache.  Mechanism and recovery:
+# docs/notes/git-rerere-shared-worktree-hazard.md.
+#
+# EXIT-CODE CONTRACT — normative in the header of scripts/git-rerere-guard.sh;
+# read it there before touching the branch below.  In short: the shared-config
+# write is the success criterion here, not a globally clean verdict, so 2 is
+# advisory (something out of `arm`'s --local reach) and must not abort the rest
+# of setup — and the branch is `0 | 2 | *`, never a closed set {0,1,2}.
+
+info "Disabling git rerere repo-wide (shared rr-cache hazard)..."
+_rerere_arm_rc=0
+"$(dirname "${BASH_SOURCE[0]}")/git-rerere-guard.sh" arm || _rerere_arm_rc=$?
+if [ "$_rerere_arm_rc" -eq 0 ]; then
+    ok "git rerere disarmed (rerere.enabled=false, rerere.autoupdate=false)"
+elif [ "$_rerere_arm_rc" -eq 2 ]; then
+    warn "shared config pinned, but rerere is still armed — or unverifiable — in a scope"
+    warn "  'arm' cannot reach (another lane's config.worktree, or one it cannot read)"
+    warn "  run 'scripts/git-rerere-guard.sh check' — it names the worktree either way"
+    warn "  see docs/notes/git-rerere-shared-worktree-hazard.md"
+else
+    err "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc)"
+    exit 1
+fi
+unset _rerere_arm_rc
+
 # ---------- build-accelerator systemd --user services ----------
 #
 # Build infra installed as systemd --user units so it survives reboots and

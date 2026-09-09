@@ -2815,7 +2815,7 @@ structure Assembly {
     /// #4636 amendment — reviewer_comprehensive test-duplication finding):
     /// factors out exactly the pieces that
     /// `execute_realization_ops_cache_hit_reforwards_solid_attribute_to_reused_manifold_handle`
-    /// and `execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent`
+    /// and `execute_realization_ops_convert_loop_skips_forward_for_parent_whose_seed_failed`
     /// build IDENTICALLY, verbatim — three zero-initialized call counters
     /// (tessellate/ingest/union) plus a `"manifold"` kernel entry wired to
     /// `next_ingest_id: 1000` and its `BooleanUnion @ Mesh`-only
@@ -4745,17 +4745,36 @@ structure Assembly {
     /// insert unconditionally, or that recorded a bogus entry on a source
     /// miss, would not be caught by an engine-level test without this.
     ///
-    /// Uses [`reify_ir::GeometryOp::Tube`] as the non-seeded parent:
-    /// `is_seedable_primitive` (primitive_attribute_seed.rs) recognises only
-    /// Box/Cylinder/Sphere/Cone/Wedge/Torus/HalfSpace — `Tube` is a
-    /// `PrimitiveKind` at the compiler level (composed at the kernel layer as
-    /// `boolean_cut` of two cylinders) but is deliberately excluded from that
-    /// match, so `record_solid_attribute` is never called for its result
-    /// handle. This is a real, already-shipped "non-seeded parent", not a
-    /// synthetic op, and it needs zero extra mock staging:
-    /// `seed_primitive_attributes_for_handle` short-circuits to `Ok(())` for
-    /// a non-seedable op before touching the kernel at all
-    /// (primitive_attribute_seed.rs:144-151).
+    /// Uses [`reify_ir::GeometryOp::Tube`] as the parent that ends up
+    /// unseeded, and reaches that state through the seed-ERROR branch — NOT
+    /// the non-seedable no-op branch, which is what the name said before task
+    /// #6550 made `Tube` a seedable primitive.
+    ///
+    /// The mechanism today: the seeder DOES call
+    /// `extract_faces(GeometryHandleId(1))` for the Tube. The mock below
+    /// deliberately stages extraction fixtures only for the BOX's handle
+    /// (id 2), so the Tube's call returns `Err`, the engine pushes a WARNING
+    /// (not an Error) diagnostic, and `record_solid_attribute` is skipped
+    /// because it is gated on `seed_result.is_ok()`. The Tube therefore still
+    /// reaches the `'convert:` loop with no solid-level entry to forward,
+    /// which is the state every assertion below is about.
+    ///
+    /// The UNSTAGED fixture for handle 1 is LOAD-BEARING, so the premise is
+    /// asserted EXECUTABLY rather than merely documented: the first assertion
+    /// below requires the seeding-failure warning to be present. A future
+    /// author who "helpfully" stages `with_extracted_*` for
+    /// `GeometryHandleId(1)` would make the Tube seed successfully — and that
+    /// assertion turns the test RED instead of letting the rest of it pass
+    /// vacuously.
+    ///
+    /// Not retargeted onto a still-non-seedable op, deliberately. Candidates
+    /// do exist — `GeometryOp::Pipe` carries `parent_role: ParentRole::None`
+    /// (reify-ir/src/geometry.rs) and is still a seeder no-op, as do the curve
+    /// constructors — but a Pipe needs a path wire and its own capability
+    /// entry, which would replace this fixture wholesale for no gain: the
+    /// contract under test is what the `'convert:` loop does with a parent
+    /// carrying no solid attribute, and HOW the parent came to lack one is
+    /// immaterial to it.
     ///
     /// Unions the unseeded Tube (step0/left) with a normally-seeded Box
     /// (step1/right) so both the negative and positive forwarding outcomes
@@ -4766,7 +4785,7 @@ structure Assembly {
     /// mirroring the sibling cross-kernel conversion tests' `next_ingest_id:
     /// 1000` convention.
     #[test]
-    fn execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent() {
+    fn execute_realization_ops_convert_loop_skips_forward_for_parent_whose_seed_failed() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_core::Type;
         use reify_ir::{
@@ -4870,8 +4889,23 @@ structure Assembly {
             None,
         );
 
+        // ── PREMISE (executable, not documented): the Tube's seed must have
+        //    FAILED. This is what keeps the unstaged `GeometryHandleId(1)`
+        //    fixture honest — stage it and this assertion reds, instead of the
+        //    rest of the test silently passing on a parent that IS seeded. ──
+        assert!(
+            state.diagnostics.iter().any(|d| {
+                d.message
+                    .contains("topology-attribute seeding failed for NonSeededParent")
+                    && d.message.contains("op 0")
+            }),
+            "the Tube at op 0 must fail to seed (its extraction fixture is deliberately \
+             unstaged), leaving it with no solid-level attribute to forward: {:?}",
+            state.diagnostics
+        );
+
         // Sanity: the build itself must succeed (no error diagnostics, no
-        // kernel_error_out) — a non-seeded parent degrades gracefully rather
+        // kernel_error_out) — a failed seed degrades gracefully rather
         // than failing the realization.
         let errors: Vec<_> = state
             .diagnostics
@@ -4880,12 +4914,12 @@ structure Assembly {
             .collect();
         assert!(
             errors.is_empty(),
-            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            "a failed seed must degrade gracefully, not error: {:?}",
             errors
         );
         assert!(
             state.kernel_error_out.is_none(),
-            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            "a failed seed must degrade gracefully, not error: {:?}",
             state.kernel_error_out
         );
         assert_eq!(
@@ -6355,6 +6389,14 @@ structure Assembly {
                 label: "OffsetSolid → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSurface {
+                    target: GeometryHandleId(105),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(105)],
+                label: "OffsetSurface → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -6475,7 +6517,7 @@ structure Assembly {
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
             },
-            // ── Remaining primitives (task 4671 step-3: full 47-variant coverage) ─
+            // ── Remaining primitives (task 4671 step-3: full 48-variant coverage) ─
             Case {
                 op: GeometryOp::Sphere { radius: Value::Real(0.005) },
                 expected: vec![],
@@ -6776,7 +6818,7 @@ structure Assembly {
     // ── substitute_op_parents unit tests ─────────────────────────────────────
 
     /// Characterizes the per-variant-family parent-handle substitution semantics
-    /// of `substitute_op_parents`. For every non-Split variant (47 total):
+    /// of `substitute_op_parents`. For every non-Split variant (48 total):
     /// builds an op with known handle ids, applies `substitute_op_parents` with
     /// a mapping that remaps those ids, and asserts that only the PARENT fields
     /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
@@ -6785,7 +6827,7 @@ structure Assembly {
     ///   from the map are left as-is (tested via Union left absent from map).
     ///
     /// All expected values are hardcoded independently of the L1 table, so
-    /// full 47-variant coverage gives full validation of the table's
+    /// full 48-variant coverage gives full validation of the table's
     /// `parent_role` column for this function.
     ///
     /// Stays GREEN against the current per-variant fn; the coverage-completeness
@@ -7047,6 +7089,10 @@ structure Assembly {
         check_single_target!(
             GeometryOp::OffsetSolid { target: h(10), distance: Value::Real(0.002) },
             10, 110, "OffsetSolid"
+        );
+        check_single_target!(
+            GeometryOp::OffsetSurface { target: h(10), distance: Value::Real(0.002) },
+            10, 110, "OffsetSurface"
         );
         check_single_target!(
             GeometryOp::Shell { target: h(10), thickness: Value::Real(0.002), faces_to_remove: vec![0], open_face_handles: vec![] },
@@ -7508,6 +7554,14 @@ structure Assembly {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetSurface {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSurface,
+                label: "OffsetSurface → ModifyOffsetSurface",
             },
             Case {
                 op: GeometryOp::OffsetCurve {

@@ -1,21 +1,8 @@
 //! Tests for meta block compilation — `meta { key = "value" }` and `meta.key` access.
 
-use reify_compiler::TopologyTemplate;
 use reify_core::Severity;
 use reify_ir::{CompiledExpr, CompiledExprKind};
-use reify_test_support::compile_first_template;
-
-/// Helper: get the default_expr for a value cell by member name.
-fn get_cell_expr<'a>(template: &'a TopologyTemplate, member: &str) -> &'a reify_ir::CompiledExpr {
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("should have '{}' value cell", member));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{}' should have a default expr", member))
-}
+use reify_test_support::{compile_first_template, get_let_expr_in_template};
 
 // ---------------------------------------------------------------------------
 // step-1: meta block entries stored in template.meta
@@ -67,7 +54,7 @@ fn meta_access_compiles_to_string() {
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    let expr = get_cell_expr(&template, "desc");
+    let expr = get_let_expr_in_template(&template, "desc");
     match &expr.kind {
         CompiledExprKind::MetaAccess { entity, key } => {
             assert_eq!(entity, "Bracket");

@@ -2920,6 +2920,43 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 δ).
     RelateExpectsRelation,
+    /// Origin: `crates/reify-compiler/src/relation_signatures.rs` (the `tangent`
+    /// arm of `check_relation_arg_types`, geometric-relations tangent).
+    ///
+    /// Canonical message form:
+    /// ``"tangent: no tangency between `Direction` and `Direction`; supported: \
+    /// cylinder/cylinder tangent(Axis, Axis, r1, r2), …"``
+    ///
+    /// Emitted as `Severity::Error` when a `tangent` call's first two operand
+    /// types do not classify into one of the four curated tangency combos
+    /// (cylinder/cylinder `(Axis, Axis)`, cylinder/plane `(Axis, Plane)`,
+    /// sphere/plane `(Point, Plane)`, sphere/sphere `(Point, Point)` — the plane
+    /// combos in either operand order), or when the call's arity does not match
+    /// the radius count that combo requires (one radius per CURVED surface: 3
+    /// args for the plane combos, 4 for the curved/curved ones).
+    ///
+    /// Unlike the rest of the relation family, tangent's legality is a property
+    /// of the operand PAIR rather than of either slot alone — `(Axis, Plane)` is
+    /// a cylinder resting on a plane while `(Plane, Plane)` is two planes that
+    /// never touch — so it cannot be policed through `relation_operand_datum`'s
+    /// single-`ExpectedDatum`-across-both-slots table and gets its own arm.
+    ///
+    /// This must be a COMPILE-time rejection because the residual layer cannot
+    /// fail loudly: an unhandled operand shape there contributes zero Jacobian
+    /// rows, which the rank partition files as *redundant* with a 0 rank
+    /// contribution and post-solve verification reads as residual `0.0` — a
+    /// tangency request wholly ignored and reported as satisfied (the
+    /// silent-failure class `docs/legibility/design-invariants.md` forbids).
+    /// With this gate the residual layer's unsupported arm is unreachable from
+    /// `.ri`.
+    ///
+    /// A radius slot carrying the wrong physical dimension is NOT this code — it
+    /// draws the UNIT layer's `ArgTypeMismatch`, so a unit error and an
+    /// unsupported geometry pairing stay distinguishable.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TANGENT_OPERANDS_UNSUPPORTED`
+    /// (severity convention: `E_*` → Error).
+    TangentOperandsUnsupported,
     /// Origin: `crates/reify-eval/src/relate_solve.rs` (the pre-solve
     /// trace-to-ground connectivity check in `solve_relate_scope`,
     /// geometric-relations η).
@@ -4089,6 +4126,69 @@ pub enum DiagnosticCode {
     /// non-breaking and round-trips through the feature-gated serde derives
     /// automatically.
     EvalCachedGuardedGroupsFallback,
+    /// Origin: all FOUR `@optimized`-target-not-registered emission sites, and
+    /// only those:
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_params_and_lets_unified` (SOFT)
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_let_bindings` (SOFT)
+    ///   - `crates/reify-eval/src/engine_admin.rs::dispatch_compute_node` (HARD)
+    ///   - `crates/reify-eval/src/engine_compute.rs::run_compute_dispatch` (HARD)
+    ///
+    /// Two canonical message forms, both single-sourced from
+    /// `engine_compute.rs`'s `NO_TRAMPOLINE_STEM` and built by the constructor
+    /// pair beside it (`Engine::soft_no_trampoline_diagnostic`, a method so the
+    /// empty-registry predicate below is spelled exactly once /
+    /// `hard_no_trampoline_diagnostic`):
+    /// - SOFT: `"@optimized target \"<t>\": no registered compute trampoline (falling back to body-inlining)"`
+    /// - HARD: `"@optimized target \"<t>\": no registered compute trampoline"`
+    ///
+    /// The clause is present only at the SOFT sites because body-inlining is
+    /// what those two call sites actually go on to do; the HARD sites return
+    /// `Err` and never inline, so claiming a fallback there would be false.
+    ///
+    /// SEVERITY POLICY (task 5311; RULING in
+    /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4). At the two SOFT
+    /// sites the severity is conditioned on the engine's compute registry:
+    /// `Severity::Warning` iff the registry is entirely EMPTY, `Severity::Error`
+    /// otherwise. An empty registry means the *driver* declared a
+    /// trampoline-free posture — `reify check` and `reify-lsp` both construct
+    /// their engine without calling `register_compute_trampolines` — so the
+    /// missing trampoline is expected, not a defect, and reporting it as an
+    /// error while exiting 0 is a loud/silent mismatch. A driver that
+    /// registered SOME trampolines (`reify eval`, `reify build`: 19 production
+    /// targets) and is still missing THIS one is a genuine defect, so the
+    /// severity stays `Severity::Error` there and keeps gating those exit codes.
+    /// At the two HARD sites the severity is UNCONDITIONALLY `Severity::Error`
+    /// — see `hard_no_trampoline_diagnostic`'s rustdoc for why the predicate is
+    /// inapplicable there on the merits.
+    ///
+    /// The CODE is PRESERVED across that severity flip, deliberately: it names
+    /// the CAUSE, while the severity reports how much the caller's posture
+    /// makes that cause matter. Downstream tooling and tests should therefore
+    /// match on this code rather than on the severity or on message substrings
+    /// (the `hex_wedge_mesh_diagnostic` precedent below does the same).
+    ///
+    /// SIDE EFFECT OF CARRYING A CODE AT ALL — worth knowing before editing
+    /// either constructor. `reify-cli`'s `dedup_diagnostics` short-circuits on
+    /// `code.is_some()`, and its `merge_build_diagnostics` keys on the code, so
+    /// a CODED entry is exempt from within-list collapsing while an UNCODED one
+    /// is not. Before this variant existed the diagnostic was uncoded, so two
+    /// byte-identical copies from two `@optimized` call sites collapsed into
+    /// ONE printed line on `cmd_check`'s realization sub-path; they now both
+    /// survive, so the line count under `check` is per CALL SITE rather than
+    /// per distinct message. Measured on `examples/anisotropic_bar.ri`: two
+    /// `solver::elastic_static` lines; on `examples/fdm_bracket.ri`: three
+    /// lines over two distinct targets. That is the behaviour
+    /// `dedup_diagnostics`' own rationale asks for — a coded entry's
+    /// multiplicity is a per-callout fact, not re-run noise — and the
+    /// coded-vs-uncoded split is pinned by `dedup_collapses_only_uncoded_entries`
+    /// and `dedup_exempts_the_coded_missing_trampoline_pair` in
+    /// `crates/reify-cli/src/main.rs`.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, carries no
+    /// `VARIANT_COUNT` backstop, and is never matched exhaustively anywhere in
+    /// the workspace, so adding one variant is purely additive and round-trips
+    /// through the feature-gated serde derives automatically.
+    NoRegisteredComputeTrampoline,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5004,6 +5104,36 @@ mod tests {
     fn diagnostic_code_relate_expects_relation_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::RelateExpectsRelation).unwrap();
         assert_eq!(s, "\"RelateExpectsRelation\"");
+    }
+
+    // --- TangentOperandsUnsupported tests (task 5540 — E_TANGENT_OPERANDS_UNSUPPORTED) ---
+    // Pairs with the `tangent` arm of `check_relation_arg_types` in
+    // `crates/reify-compiler/src/relation_signatures.rs`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // severity tests are added here.
+
+    /// `DiagnosticCode::TangentOperandsUnsupported` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::TangentOperandsUnsupported)`.
+    /// Pins the error-severity contract for E_TANGENT_OPERANDS_UNSUPPORTED.
+    #[test]
+    fn tangent_operands_unsupported_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("tangent: no tangency between `Plane` and `Plane`")
+            .with_code(DiagnosticCode::TangentOperandsUnsupported);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::TangentOperandsUnsupported));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TangentOperandsUnsupported`
+    /// serializes as `"TangentOperandsUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_tangent_operands_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TangentOperandsUnsupported).unwrap();
+        assert_eq!(s, "\"TangentOperandsUnsupported\"");
     }
 
     // --- AssemblyGlobalFloat tests (task 4387 η — E_ASSEMBLY_GLOBAL_FLOAT) ---

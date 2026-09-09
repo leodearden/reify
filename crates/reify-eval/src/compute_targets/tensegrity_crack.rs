@@ -14,16 +14,36 @@
 //! crackers in here alongside them: [`crack_dimensioned_scalar`] was a verbatim
 //! pair across `tensegrity_load.rs` and `membrane_load.rs`.
 //!
+//! # The four scalar/list crackers
+//!
+//! Two PAIRS, one per acceptance set, each a scalar cracker plus its list
+//! lifting:
+//!
+//! - [`crack_dimensioned_scalar`] / [`crack_scalar_list`] — the position wants
+//!   one PARTICULAR unit (a Force, a Pressure); a `Scalar` in any other is
+//!   rejected.
+//! - [`crack_dimensionless_scalar`] / [`crack_dimensionless_list`] — the
+//!   position is a bare RATIO; a `Scalar` in *any* unit is rejected.
+//!
+//! They stay four functions rather than one parameterised over an
+//! `Option<DimensionVector>` because "no dimension at all" is not one more
+//! choice on the same axis: it changes which `Value` variants read (`Int` is a
+//! ratio spelling but not a Force spelling) and which advice the diagnostic
+//! carries. What they DO share is one diagnostic vocabulary — the same "has the
+//! wrong unit" phrasing and the same located `"{what}[{i}]"` entry naming — so
+//! the tensegrity trampolines speak with one voice.
+//!
 //! Every fallible helper takes a `code: &str` diagnostic mnemonic (e.g.
 //! `"E_FormFindInfeasible"` or `"E_TensegrityLoadInfeasible"`) which is prefixed
 //! onto each message as `"{code}: …"`, so the located wording stays caller-owned.
-//! [`crack_dimensioned_scalar`] extends that convention with a second
-//! caller-owned string, `hint: &str` — the parenthetical argument-order advice.
-//! It is threaded in rather than inferred here because each trampoline's hint
-//! names that trampoline's OWN arguments (`membrane_load` has a
-//! `membrane_thickness`; `tensegrity_load` does not), so choosing it inside this
-//! module would mean enumerating its callers — exactly the coupling this file
-//! exists to remove.
+//! All four scalar/list crackers extend that convention with a second
+//! caller-owned string, `hint: &str` — the trailing clause saying what the caller
+//! wanted instead ([`crack_dimensioned_scalar`]'s is argument-order advice;
+//! [`crack_dimensionless_scalar`]'s explains why the position is bare). It is
+//! threaded in rather than inferred here because each trampoline's hint names
+//! that trampoline's OWN arguments (`membrane_load` has a `membrane_thickness`;
+//! `tensegrity_load` does not), so choosing it inside this module would mean
+//! enumerating its callers — exactly the coupling this file exists to remove.
 
 use reify_core::DimensionVector;
 use reify_ir::Value;
@@ -75,6 +95,119 @@ pub(crate) fn crack_dimensioned_scalar(
         )),
         other => Err(format!("{code}: {what} must be a scalar, got {other:?}")),
     }
+}
+
+/// Crack a value at a DIMENSIONLESS position, rejecting a dimensioned `Scalar`
+/// instead of silently stripping its unit.
+///
+/// # Why these positions are bare
+///
+/// Some trampoline inputs are genuinely RATIOS rather than physical quantities.
+/// `form_find`'s force densities, seed ratios and surface stresses are
+/// nullity-invariant — as the `form_find_free` stdlib doc puts it, "overall
+/// scaling of q is nullity-invariant, so only relative ratios matter" — so their
+/// absolute magnitude carries no information and there is no unit that would
+/// make them more precise.
+///
+/// # The two-sided contract
+///
+/// The dimension-checked-readers PRD
+/// (`docs/prds/v0_6/dimension-checked-readers.md`) puts exactly these positions
+/// in its Leg B "Deliberately bare" bucket, whose contract has TWO sides:
+///
+/// 1. Stay ACCEPTING — every numeric ratio spelling reads (see below), so the
+///    bare `[1.0, -1.0, …]` literals the whole tensegrity corpus passes keep
+///    working, and a future over-tightening to "bare `Real` only" is a
+///    regression, not a hardening.
+/// 2. Still REJECT a dimensioned `Scalar` — "silence about a position is not
+///    permission". Reading `1 N/m` as the ratio `1.0` silently reinterprets what
+///    the author wrote: they asked for a physical force density and got their
+///    SI magnitude repurposed as a dimensionless number, with no diagnostic and
+///    a plausible-looking solve at the end of it. That is a located error here
+///    instead.
+///
+/// # Accepted spellings
+///
+/// Accepts all THREE numeric spellings of a bare ratio — `Real`, `Int`, and a
+/// `Scalar` carrying `DIMENSIONLESS` — and nothing else. `Int` is not redundant
+/// with `Real`: `Int → Real` widening in this codebase is a TYPE-level rule only
+/// (`type_compat.rs` defines it for `type_compatible`; `coerce.rs` states that
+/// overload selection "does NOT apply Int→Real (or any other) widening"), so
+/// there is no value-level coercion and an integer ratio literal such as
+/// `form_find(net, [1, 1, 1, 1], anchors)` arrives here as `Value::Int`
+/// verbatim. `elastic_static.rs::dimensionless_component` records the same
+/// reasoning for the `MaterialFrame` dimensionless axis.
+///
+/// The dimensionless counterpart of [`crack_dimensioned_scalar`]: that one wants
+/// one PARTICULAR unit, this one wants no unit at all, so the acceptance sets
+/// differ and they stay distinct functions — but they deliberately share the
+/// "has the wrong unit" wording, and the same caller-owned `code` / `hint`
+/// convention (see the module doc), so the tensegrity trampolines present one
+/// diagnostic vocabulary. There is no `expected: DimensionVector` parameter
+/// because "no dimension at all" is not a choice the caller gets to make.
+///
+/// Forward pointer: task alpha (#5791) relocates `arg_acceptance` into
+/// `reify-ir` and adds a `dimensionless_spec()` whose acceptance set is exactly
+/// the `Real | Int | Scalar{DIMENSIONLESS}` above. Today's `accept_arg` rejects
+/// a bare `Value::Real` outright, so it cannot yet express side 1 of the
+/// contract; once alpha lands that additive redesign, this helper and
+/// [`crack_dimensionless_list`] should become thin adapters over it rather than
+/// a second definition site.
+pub(crate) fn crack_dimensionless_scalar(
+    v: &Value,
+    what: &str,
+    code: &str,
+    hint: &str,
+) -> Result<f64, String> {
+    match v {
+        Value::Real(r) => Ok(*r),
+        Value::Int(n) => Ok(*n as f64),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if dimension.is_dimensionless() => Ok(*si_value),
+        Value::Scalar { dimension, .. } => Err(format!(
+            "{code}: {what} has the wrong unit — expected a dimensionless ratio \
+             (a bare Real or a dimensionless Scalar), got a Scalar in {dimension}; {hint}"
+        )),
+        other => Err(format!("{code}: {what} must be a real, got {other:?}")),
+    }
+}
+
+/// Crack a `List<Real>` at a DIMENSIONLESS position, requiring every entry to be
+/// a bare ratio — the list lifting of [`crack_dimensionless_scalar`], whose
+/// `code` / `hint` it threads through unchanged.
+///
+/// Each entry's located name is `"{what}[{i}]"`, so a wrong-unit diagnostic tells
+/// the author WHICH entry carries a unit rather than merely naming the list —
+/// the same located-naming contract [`crack_scalar_list`] gives the dimensioned
+/// positions. Shared by all four of `form_find.rs`'s bare positions (anchored
+/// `force_densities` / `surface_stresses`, free `seed_ratios` /
+/// `surface_stresses`) through its `crack_reals` wrapper.
+pub(crate) fn crack_dimensionless_list(
+    v: &Value,
+    what: &str,
+    code: &str,
+    hint: &str,
+) -> Result<Vec<f64>, String> {
+    let list = match v {
+        Value::List(items) => items,
+        other => {
+            return Err(format!(
+                "{code}: {what} must be a list of dimensionless ratios, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        out.push(crack_dimensionless_scalar(
+            item,
+            &format!("{what}[{i}]"),
+            code,
+            hint,
+        )?);
+    }
+    Ok(out)
 }
 
 /// Crack a `List<Scalar>` requiring each entry to carry `expected` units (a bare
@@ -513,6 +646,184 @@ mod tests {
         assert!(
             err.contains("prestress[1]"),
             "must carry a located index: {err}"
+        );
+    }
+
+    // ---- crack_dimensionless_scalar (task #6120) ----------------------------
+    //
+    // The DIMENSIONLESS half of the pair: `form_find.rs`'s `force_densities`,
+    // `seed_ratios` and `surface_stresses` are Leg B "Deliberately bare"
+    // positions (`docs/prds/v0_6/dimension-checked-readers.md`), so the contract
+    // is two-sided — stay accepting of every bare numeric spelling, but reject a
+    // *dimensioned* Scalar rather than stripping its unit.
+
+    // The real caller (code, hint) pair, transcribed verbatim from the
+    // trampoline that owns them — `form_find.rs`'s `CODE` and
+    // `DIMENSIONLESS_HINT`. Same rationale as `TL_*` / `ML_*` above: pinning the
+    // production wording is what makes the full-string assertions evidence.
+    const FF_CODE: &str = "E_FormFindInfeasible";
+    const FF_HINT: &str = "force densities, seed ratios and surface stresses are \
+         nullity-invariant RELATIVE ratios, not physical quantities — only their relative \
+         magnitudes and signs matter, so drop the unit (write `1.0`, not `1N/1m`)";
+
+    /// A bare `Real` is the canonical spelling of a ratio — `[1.0, -1.0, …]`
+    /// literals are what every tensegrity example in the corpus passes.
+    #[test]
+    fn crack_dimensionless_scalar_accepts_bare_real() {
+        assert_eq!(
+            crack_dimensionless_scalar(&Value::Real(2.5), "force_densities[0]", FF_CODE, FF_HINT),
+            Ok(2.5)
+        );
+    }
+
+    /// A `Scalar` that carries an explicitly DIMENSIONLESS unit is still a valid
+    /// ratio spelling and must read. This is the gate's upper bound: over-
+    /// tightening it to "bare Real only" would reject a legitimate input.
+    #[test]
+    fn crack_dimensionless_scalar_accepts_dimensionless_scalar() {
+        assert_eq!(
+            crack_dimensionless_scalar(
+                &Value::Scalar {
+                    si_value: 2.5,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                "force_densities[0]",
+                FF_CODE,
+                FF_HINT,
+            ),
+            Ok(2.5)
+        );
+    }
+
+    /// The load-bearing assertion: a *dimensioned* `Scalar` is rejected rather
+    /// than silently stripped to its SI magnitude and reinterpreted as the bare
+    /// ratio. Asserted by full string equality so all three caller-visible parts
+    /// are pinned at the single definition site — the caller-owned `{code}`
+    /// prefix, the caller-owned trailing `{hint}`, and the `DimensionVector`
+    /// `Display` rendering of the offending unit, which is what tells the author
+    /// WHICH unit they attached.
+    #[test]
+    fn crack_dimensionless_scalar_rejects_dimensioned_scalar_with_caller_owned_code_and_hint() {
+        let got = crack_dimensionless_scalar(
+            &Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE_DENSITY,
+            },
+            "force_densities[3]",
+            FF_CODE,
+            FF_HINT,
+        );
+        assert_eq!(
+            got,
+            Err(
+                "E_FormFindInfeasible: force_densities[3] has the wrong unit — expected a \
+                 dimensionless ratio (a bare Real or a dimensionless Scalar), got a Scalar in \
+                 kg·m^-2·s^-2; force densities, seed ratios and surface stresses are \
+                 nullity-invariant RELATIVE ratios, not physical quantities — only their \
+                 relative magnitudes and signs matter, so drop the unit (write `1.0`, not \
+                 `1N/1m`)"
+                    .to_string()
+            )
+        );
+    }
+
+    /// An INTEGER ratio literal must read too. `Int → Real` widening in this
+    /// codebase is a TYPE-level rule only (`type_compat.rs`; `coerce.rs` states
+    /// overload selection "does NOT apply Int→Real … widening"), so there is no
+    /// value-level coercion and `form_find(net, [1, 1, 1, 1], anchors)` reaches
+    /// this reader as `Value::Int` verbatim. Same reasoning
+    /// `elastic_static.rs::dimensionless_component` records for the
+    /// `MaterialFrame` dimensionless axis, and the same acceptance set the PRD
+    /// states for `dimensionless_spec`: `Real | Int | Scalar{DIMENSIONLESS}`.
+    #[test]
+    fn crack_dimensionless_scalar_accepts_int() {
+        assert_eq!(
+            crack_dimensionless_scalar(&Value::Int(3), "force_densities[0]", FF_CODE, FF_HINT),
+            Ok(3.0)
+        );
+    }
+
+    // ---- crack_dimensionless_list (task #6120) ------------------------------
+    //
+    // The dimensionless twin of `crack_scalar_list`, and due for the same
+    // reason: once #6412 centralised the per-entry `"{what}[{i}]"` loop in this
+    // module, `form_find.rs::crack_reals` was left hand-rolling a second copy of
+    // it — a >=2-duplicate hit against the single-definition-site discipline
+    // that hoist just landed here.
+
+    /// Every entry is cracked in order, and the per-entry acceptance set
+    /// survives the lift: one list may legitimately mix all three numeric ratio
+    /// spellings, because `[1, 1.0, …]`-style literals lower to `Value::Int` and
+    /// `Value::Real` element-wise with no value-level widening between them.
+    #[test]
+    fn crack_dimensionless_list_accepts_mixed_numeric_entries() {
+        let mixed = Value::List(vec![
+            Value::Real(1.0),
+            Value::Int(2),
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        ]);
+        assert_eq!(
+            crack_dimensionless_list(&mixed, "force_densities", FF_CODE, FF_HINT),
+            Ok(vec![1.0, 2.0, 3.0]),
+        );
+    }
+
+    /// The list-SHAPE arm, which carries the mnemonic but NOT the ratio hint
+    /// (the unit is not the problem — the value is not a list at all). This is
+    /// the one message the lifting deliberately changes: `form_find.rs` used to
+    /// hardcode "must be a list of reals", and now reports the parameterized
+    /// "must be a list of dimensionless ratios" at the single definition site —
+    /// the same consolidation #6412 made when `tensegrity_load`'s "must be a
+    /// list of forces" became "must be a list of Force scalars".
+    #[test]
+    fn crack_dimensionless_list_rejects_non_list() {
+        assert_eq!(
+            crack_dimensionless_list(&Value::Real(1.0), "force_densities", FF_CODE, FF_HINT),
+            Err(
+                "E_FormFindInfeasible: force_densities must be a list of dimensionless ratios, \
+                 got Real(1.0)"
+                    .to_string()
+            )
+        );
+    }
+
+    /// The located `{what}[{i}]` entry index: an author whose THIRD seed ratio
+    /// carries a unit must be told WHICH entry is wrong, not merely that
+    /// "seed_ratios" is wrong — the property the t1a / t1b e2e tests pin
+    /// end-to-end, caught here at the unit level first.
+    #[test]
+    fn crack_dimensionless_list_labels_the_offending_entry_index() {
+        let third_entry_dimensioned = Value::List(vec![
+            Value::Real(-1.0),
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE_DENSITY,
+            },
+        ]);
+        let err =
+            crack_dimensionless_list(&third_entry_dimensioned, "seed_ratios", FF_CODE, FF_HINT)
+                .unwrap_err();
+        assert_eq!(
+            err,
+            "E_FormFindInfeasible: seed_ratios[2] has the wrong unit — expected a dimensionless \
+             ratio (a bare Real or a dimensionless Scalar), got a Scalar in kg·m^-2·s^-2; force \
+             densities, seed ratios and surface stresses are nullity-invariant RELATIVE ratios, \
+             not physical quantities — only their relative magnitudes and signs matter, so drop \
+             the unit (write `1.0`, not `1N/1m`)"
+        );
+        // Guards both degenerate labellings: a constant index, and a bare
+        // `what` naming only the list.
+        assert!(
+            !err.contains("seed_ratios[0]"),
+            "must name entry 2, got: {err}"
+        );
+        assert!(
+            !err.contains("seed_ratios has the wrong unit"),
+            "must locate the entry, not merely the list: {err}"
         );
     }
 }

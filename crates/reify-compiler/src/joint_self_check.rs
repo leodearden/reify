@@ -71,7 +71,8 @@ const NOMINAL_TRANS: u32 = 3;
 ///
 /// This is a per-member skip, NOT a whole-check guarantee. A member with a
 /// curated DOF COUNT but no kind split — `tangent`, where [`relation_delta_dof`]
-/// is `Some(2)` yet [`relation_delta_dof_kinds`] is `None` — removes DOF the
+/// is `Some(1)` or `Some(2)` depending on the operand combo (task 5540) yet
+/// [`relation_delta_dof_kinds`] is `None` — removes DOF the
 /// kind table cannot attribute, so omitting it here INFLATES the residual above
 /// the true geometry. Suppressing the resulting spurious mismatch is the
 /// caller's responsibility: it gates the verdict off via
@@ -97,7 +98,8 @@ pub(crate) fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
 /// ([`relation_delta_dof`] is `Some`) but whose rotational/translational KIND
 /// split is NOT ([`relation_delta_dof_kinds`] is `None`)?
 ///
-/// `tangent` is the motivating case: its codimension is a known `2`, but its
+/// `tangent` is the motivating case: its codimension is known once the operand
+/// pair is known (1 or 2 — task 5540 made the count operand-conditional), but its
 /// split is surface-conditional and nominally undecidable. [`residual_kinds`]
 /// omits such a member (it has no kind to attribute), which INFLATES the residual
 /// above the true geometry — so a declaration written to match the *true*
@@ -380,8 +382,10 @@ mod tests {
         assert!(!body_has_undecidable_kind_split(&body));
     }
 
-    /// `tangent` has a curated COUNT (`relation_delta_dof` = `Some(2)`) but no
-    /// kind split (`relation_delta_dof_kinds` = `None`) — the motivating
+    /// `tangent` has a curated COUNT (`relation_delta_dof` = `Some(1)` for this
+    /// `(Axis, Axis)` cylinder/cylinder combo since task 5540 made the count
+    /// operand-conditional) but no kind split
+    /// (`relation_delta_dof_kinds` = `None`) — the motivating
     /// count-known/kind-unknown member. Its presence trips the gate so the caller
     /// suppresses the verdict (`residual_kinds` would otherwise inflate the
     /// residual and draw a spurious mismatch).

@@ -17,6 +17,7 @@ Test classes are added incrementally per TDD step:
   TestBoundaryE2e           — step-11 RED / step-12 GREEN
 """
 
+import functools
 import importlib.util
 import io
 import json
@@ -55,6 +56,34 @@ else:
 # ---------------------------------------------------------------------------
 # Repo-root helpers for skip-guards
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Cached `node --input-type=module` runner
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _run_node_module(source: str):
+    """Run a Node ESM harness and return (returncode, stdout, stderr).
+
+    Cached on the source text.  Every .mjs test drives node through a harness
+    string that is a pure function of class constants, so the same few sources
+    were being re-executed once per assertion: the schema extraction (a pair of
+    static object literals) span node ~10 times, and TestMjsBatchDisposition
+    re-ran its identical scenario A four times.  Node start-up dominates this
+    suite's wall clock; the cache removes the duplication without changing what
+    any test asserts.
+
+    Only the RAW output is cached — callers still `json.loads` per call, so no
+    test can mutate a structure another test will read.  Safe because the .mjs
+    under test cannot change mid-run.
+    """
+    proc = subprocess.run(
+        ["node", "--input-type=module"],
+        input=source, capture_output=True, text=True, timeout=60,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
 
 _REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 _REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
@@ -819,6 +848,113 @@ class TestMainCLI(unittest.TestCase):
         obj = json.loads(out)
         self.assertTrue(obj["blocks"])
 
+    # ── task #7257 step-07 (RED): the evidence gate on the CLI surface ───────
+
+    def _evidence_free_record(self, capability: str, verdict: str = "FAIL") -> dict:
+        """A blocking verdict carrying no executed-probe evidence."""
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": [],
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+        }
+
+    def _fixture_absent_record(self, capability: str) -> dict:
+        """An executed FAIL whose probe could not find its target file."""
+        return self._result_record(
+            capability, "FAIL", exit_code=1,
+            stderr="Error: No such file or directory (os error 2)",
+        )
+
+    def test_synthesize_only_evidence_free_fails_exits_0(self):
+        """A file of nothing but unexecuted promises does not block the batch."""
+        tmp = self._make_results_file(
+            prover=[self._evidence_free_record("vacuous-1"),
+                    self._evidence_free_record("vacuous-2", "UNPROVABLE")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0, f"evidence-free records must not block; stdout={out!r}")
+        obj = json.loads(out)
+        self.assertFalse(obj["blocks"])
+        self.assertEqual(sorted(obj["malformed"]), ["vacuous-1", "vacuous-2"])
+
+    def test_synthesize_one_executed_fail_among_vacuous_exits_1_with_one_blocker(self):
+        """The real finding still blocks, and it is the ONLY thing listed."""
+        tmp = self._make_results_file(
+            prover=[self._evidence_free_record("vacuous-1"),
+                    self._result_record("REAL fail", "FAIL", exit_code=1,
+                                        stderr="type mismatch: expected axis"),
+                    self._evidence_free_record("vacuous-2")],
+            adversary=[self._evidence_free_record("vacuous-3")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 1)
+        obj = json.loads(out)
+        self.assertEqual(obj["blocking"], ["REAL fail"])
+        self.assertEqual(len(obj["blocking"]), 1)
+
+    def test_synthesize_json_carries_all_seven_keys_with_right_types(self):
+        """The emitted JSON is the full BatchVerdict, not just the old three keys."""
+        tmp = self._make_results_file(
+            prover=[self._result_record("cap", "PASS")],
+        )
+        try:
+            _, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        obj = json.loads(out)
+        for key in ("blocks", "blocking", "report", "malformed",
+                    "fixture_absent", "executed", "total"):
+            self.assertIn(key, obj, f"synthesize JSON is missing {key!r}")
+        self.assertIsInstance(obj["blocks"], bool)
+        self.assertIsInstance(obj["blocking"], list)
+        self.assertIsInstance(obj["report"], str)
+        self.assertIsInstance(obj["malformed"], list)
+        self.assertIsInstance(obj["fixture_absent"], list)
+        self.assertIsInstance(obj["executed"], int)
+        self.assertIsInstance(obj["total"], int)
+
+    def test_synthesize_only_fixture_absent_exits_0_and_names_it(self):
+        """A missing fixture is a deliverable signal, not a batch-blocking failure."""
+        tmp = self._make_results_file(
+            prover=[self._fixture_absent_record("fixture-absent cap")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0, f"fixture-absent must not block; stdout={out!r}")
+        obj = json.loads(out)
+        self.assertFalse(obj["blocks"])
+        self.assertEqual(obj["fixture_absent"], ["fixture-absent cap"])
+
+    def test_synthesize_all_pass_reports_a_clean_basis(self):
+        """Happy-path regression guard: executed == total, nothing set aside."""
+        tmp = self._make_results_file(
+            prover=[self._result_record("cap-A", "PASS"),
+                    self._result_record("cap-B", "PASS")],
+            adversary=[self._result_record("cap-C", "PASS")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0)
+        obj = json.loads(out)
+        self.assertEqual(obj["total"], 3)
+        self.assertEqual(obj["executed"], 3)
+        self.assertEqual(obj["malformed"], [])
+        self.assertEqual(obj["fixture_absent"], [])
+
 
 # ---------------------------------------------------------------------------
 # step-09 (RED): Workflow .mjs syntax-validity contract
@@ -1026,7 +1162,11 @@ globalThis.agent = async (prompt, opts = {{}}) => {{
         return {{ prover: [], adversary: [] }};
     }}
     if (phase === "synthesize") {{
-        return {{ blocks: false, blocking: [], report: "" }};
+        // Full BatchVerdict shape (task #7257): an evidence-free {{blocks:false}}
+        // would now be dispositioned NOT_VERIFIED, so the mock must report a
+        // real executed probe for these contract tests to drive a VERIFIED leaf.
+        return {{ blocks: false, blocking: [], report: "",
+                 malformed: [], fixture_absent: [], executed: 1, total: 1 }};
     }}
     // fallback
     return {{}};
@@ -1534,6 +1674,1566 @@ console.log(MARK + JSON.stringify(cases));
         # edge: single object leaf (non-string, non-array) -> one leaf, unchanged.
         self.assertEqual(cases["single_object_leaf"]["length"], 1)
         self.assertEqual(cases["single_object_leaf"]["warnCalls"], [])
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-01 (RED): command normalization (ARM 1, item 3)
+# ---------------------------------------------------------------------------
+
+class TestCommandNormalization(unittest.TestCase):
+    """`command` may arrive as a string; rendering it must not explode it.
+
+    Observed on this branch before the fix: a record carrying
+    `"command": "target/release/reify eval f.ri"` (a STRING, not a list) was
+    rendered by synthesize_batch's `" ".join(rec.get("command", []))` as
+    `t a r g e t / r e l e a s e / r e i f y   e v a l   f . r i` — Python
+    joins a string character-by-character.  The captured evidence a human is
+    meant to re-run became unreadable.
+
+    GREEN in task #7257 step-02 (pdv.normalize_command).
+    """
+
+    _STRING_CMD = "target/release/reify eval f.ri"
+    _EXPLODED = "t a r g e t"
+
+    # ── (a) unit tests for normalize_command ─────────────────────────────────
+
+    def test_list_round_trips_as_list_of_str(self):
+        """A list of strings round-trips unchanged."""
+        self.assertEqual(
+            pdv.normalize_command(["reify", "check", "/fixture.ri"]),
+            ["reify", "check", "/fixture.ri"],
+        )
+
+    def test_list_items_are_stringified(self):
+        """Non-str items in a list are coerced to str (evidence stays renderable)."""
+        self.assertEqual(pdv.normalize_command(["reify", 7, None]), ["reify", "7", "None"])
+
+    def test_tuple_becomes_list(self):
+        """A tuple normalizes to a list (JSON round-trips give lists, tests give tuples)."""
+        out = pdv.normalize_command(("reify", "check"))
+        self.assertIsInstance(out, list)
+        self.assertEqual(out, ["reify", "check"])
+
+    def test_string_becomes_single_element_list(self):
+        """A STRING command becomes ONE token, so `" ".join` renders it verbatim."""
+        self.assertEqual(pdv.normalize_command(self._STRING_CMD), [self._STRING_CMD])
+
+    def test_none_becomes_empty_list(self):
+        """None (absent command) normalizes to []."""
+        self.assertEqual(pdv.normalize_command(None), [])
+
+    def test_int_becomes_empty_list(self):
+        """A non-str, non-sequence value carries no command evidence → []."""
+        self.assertEqual(pdv.normalize_command(7), [])
+
+    def test_empty_list_stays_empty(self):
+        """An explicit empty list stays empty (no evidence)."""
+        self.assertEqual(pdv.normalize_command([]), [])
+
+    # ── (b) end-to-end through synthesize_batch ──────────────────────────────
+
+    def _string_command_record(self) -> dict:
+        """A blocking record whose `command` is a STRING rather than a list."""
+        return {
+            "capability": "string-command capability",
+            "probe_kind": "ir",
+            "verdict": "FAIL",
+            "command": self._STRING_CMD,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "assertion did not hold",
+        }
+
+    def test_string_command_renders_verbatim_in_report(self):
+        """The report shows the command exactly as captured."""
+        bv = pdv.synthesize_batch({"prover": [self._string_command_record()], "adversary": []})
+        self.assertIn(
+            self._STRING_CMD, bv.report,
+            f"string command must render verbatim; report was:\n{bv.report}",
+        )
+
+    def test_string_command_is_not_character_exploded(self):
+        """The report must NOT contain the character-spaced explosion."""
+        bv = pdv.synthesize_batch({"prover": [self._string_command_record()], "adversary": []})
+        self.assertNotIn(
+            self._EXPLODED, bv.report,
+            f"string command was exploded character-by-character; report was:\n{bv.report}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-03 (RED): evidence gate for blocking records (ARM 1, item 1)
+# ---------------------------------------------------------------------------
+
+class TestEvidenceGate(unittest.TestCase):
+    """A blocking verdict with no executed-probe evidence is a harness defect.
+
+    PRD §6 decision 4: "Captured output is mandatory on every verdict. […]
+    Every D1 result carries the exact command + stdout/stderr + exit code, so a
+    human (or D4) can re-derive the verdict without re-running."  An
+    evidence-free record is therefore not a valid falsification at all — it is
+    an unexecuted promise, and tabulating it as `blocking` buries the ONE real
+    finding among N vacuous ones (the observed pi-report failure).
+
+    GREEN in task #7257 step-04 (has_probe_evidence / classify_record).
+    """
+
+    def _result(self, capability: str, verdict: str, *,
+                command: Any = ("reify", "check", "/fixture.ri"),
+                exit_code: Any = 1,
+                stdout: str = "", stderr: str = "",
+                omit_command: bool = False,
+                omit_exit_code: bool = False) -> dict:
+        """Build a synthetic α --json result record, with omissions on request."""
+        rec: dict = {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": list(command) if isinstance(command, tuple) else command,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+        if omit_command:
+            del rec["command"]
+        if omit_exit_code:
+            del rec["exit_code"]
+        return rec
+
+    # ── (1)(2) evidence-free FAIL: not blocking, but named as malformed ──────
+
+    def test_evidence_free_fail_does_not_block(self):
+        """A FAIL with command [] and exit_code None must not appear in blocking."""
+        rec = self._result("evidence-free cap", "FAIL", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertNotIn("evidence-free cap", bv.blocking)
+        self.assertFalse(bv.blocks, "an unexecuted promise must not block the batch")
+
+    def test_evidence_free_fail_is_reported_as_malformed(self):
+        """The same record's capability IS surfaced — as malformed, not blocking."""
+        rec = self._result("evidence-free cap", "FAIL", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("evidence-free cap", bv.malformed)
+
+    # ── (3)(4) partial evidence is still no evidence ─────────────────────────
+
+    def test_missing_command_key_is_malformed(self):
+        """A record with no `command` key at all → malformed, not blocking."""
+        rec = self._result("no-command cap", "FAIL", omit_command=True)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("no-command cap", bv.malformed)
+        self.assertNotIn("no-command cap", bv.blocking)
+
+    def test_missing_exit_code_key_is_malformed(self):
+        """A non-empty command but no `exit_code` key → no process outcome → malformed."""
+        rec = self._result("no-exit-code cap", "UNPROVABLE", omit_exit_code=True)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("no-exit-code cap", bv.malformed)
+        self.assertNotIn("no-exit-code cap", bv.blocking)
+
+    def test_exit_code_zero_is_valid_evidence(self):
+        """exit_code 0 is a real outcome — `is not None`, not truthiness."""
+        rec = self._result("exit-zero cap", "FAIL", exit_code=0)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("exit-zero cap", bv.blocking)
+        self.assertEqual(bv.malformed, [])
+
+    # ── (5) the headline signal: one real finding is no longer buried ────────
+
+    def test_one_executed_fail_among_evidence_free_fails_is_the_only_blocker(self):
+        """The real finding stands alone; the three vacuous ones do not dilute it."""
+        role_results = {
+            "prover": [
+                self._result("vacuous-1", "FAIL", command=[], exit_code=None),
+                self._result("REAL executed fail", "FAIL", exit_code=1,
+                             stderr="type mismatch: expected axis"),
+                self._result("vacuous-2", "FAIL", omit_command=True),
+            ],
+            "adversary": [
+                self._result("vacuous-3", "UNPROVABLE", command=[], omit_exit_code=True),
+            ],
+        }
+        bv = pdv.synthesize_batch(role_results)
+        self.assertTrue(bv.blocks)
+        self.assertEqual(bv.blocking, ["REAL executed fail"])
+        self.assertEqual(sorted(bv.malformed), ["vacuous-1", "vacuous-2", "vacuous-3"])
+
+    # ── (6) existing blocking semantics preserved for executed probes ────────
+
+    def test_executed_unprovable_still_blocks(self):
+        """An executed UNPROVABLE keeps blocking (unchanged semantics)."""
+        rec = self._result("unprovable cap", "UNPROVABLE", exit_code=2)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("unprovable cap", bv.blocking)
+
+    def test_executed_harness_error_still_blocks(self):
+        """An executed HARNESS_ERROR keeps blocking (unchanged semantics)."""
+        rec = self._result("harness-error cap", "HARNESS_ERROR", exit_code=-1,
+                           stderr="probe runner crashed")
+        bv = pdv.synthesize_batch({"prover": [], "adversary": [rec]})
+        self.assertTrue(bv.blocks)
+        self.assertIn("harness-error cap", bv.blocking)
+
+    # ── (7) a PREMISE-shaped record is neither blocking nor malformed ────────
+
+    def test_premise_shaped_record_is_neither_blocking_nor_malformed(self):
+        """RESULTS_SCHEMA is loose enough today that a premise validates as a result.
+
+        Such a record has no `verdict` key at all.  It is not a falsification
+        and it is not an evidence-free BLOCKING verdict either — the evidence
+        gate must not manufacture a malformed entry out of it.
+        """
+        premise_shaped = {
+            "capability": "a revolute joint rejects a non-axis argument",
+            "assertion_kind": "rejection",
+            "fixture": "tests/prd-gate/fixtures/revolute-non-axis.ri",
+        }
+        bv = pdv.synthesize_batch({"prover": [premise_shaped], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.blocking, [])
+        self.assertEqual(bv.malformed, [])
+
+    def test_pass_record_is_not_malformed_even_without_evidence(self):
+        """The gate applies to BLOCKING verdicts only; a PASS is not re-litigated."""
+        rec = self._result("passing cap", "PASS", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.malformed, [])
+        self.assertEqual(bv.blocking, [])
+
+    # ── (8) executed / total counters ────────────────────────────────────────
+
+    def test_executed_and_total_counters_on_a_mixed_set(self):
+        """`executed` counts records with probe evidence; `total` counts all records."""
+        role_results = {
+            "prover": [
+                self._result("p-pass", "PASS", exit_code=0),
+                self._result("p-fail", "FAIL", exit_code=1),
+                self._result("p-vacuous", "FAIL", command=[], exit_code=None),
+            ],
+            "adversary": [
+                self._result("a-pass", "PASS", exit_code=0),
+                self._result("a-vacuous", "UNPROVABLE", omit_command=True),
+            ],
+        }
+        bv = pdv.synthesize_batch(role_results)
+        self.assertEqual(bv.total, 5)
+        self.assertEqual(bv.executed, 3)
+
+    def test_counters_are_zero_on_an_empty_batch(self):
+        """An empty batch reports 0 executed of 0 total (not a silent pass basis)."""
+        bv = pdv.synthesize_batch({"prover": [], "adversary": []})
+        self.assertEqual(bv.total, 0)
+        self.assertEqual(bv.executed, 0)
+
+    def test_malformed_report_section_names_the_capability(self):
+        """A malformed record is visible in the report, labelled as a harness defect."""
+        rec = self._result("evidence-free cap", "FAIL", command=[], exit_code=None)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("evidence-free cap", bv.report)
+        self.assertIn("MALFORMED", bv.report)
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-05 (RED): fixture-absent ≠ falsification (ARM 1, item 4)
+# ---------------------------------------------------------------------------
+
+class TestFixtureAbsent(unittest.TestCase):
+    """A probe that could not find its fixture has falsified nothing.
+
+    During decompose, the .ri fixture a premise probes is very often the leaf's
+    own deliverable — it does not exist yet, by construction.  Scoring the
+    resulting ENOENT as a premise falsification reports a design defect where
+    there is only a missing file, which is what the observed pi report did.
+
+    GREEN in task #7257 step-06 (fixture_absent_evidence).
+    """
+
+    def _result(self, capability: str, verdict: str = "FAIL",
+                stderr: str = "", exit_code: int = 1) -> dict:
+        """An EXECUTED α result record (real command, real exit code)."""
+        return {
+            "capability": capability,
+            "probe_kind": "ir",
+            "verdict": verdict,
+            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "exit_code": exit_code,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    # ── (1) the verbatim stderr from the observed run ────────────────────────
+
+    def test_observed_enoent_stderr_is_not_a_falsification(self):
+        """'Error: No such file or directory (os error 2)' → fixture-absent."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertNotIn("fixture-absent cap", bv.blocking)
+        self.assertFalse(bv.blocks)
+        self.assertIn("fixture-absent cap", bv.fixture_absent)
+
+    # ── (2) both signature forms, case-insensitively ─────────────────────────
+
+    def test_bare_no_such_file_signature(self):
+        """A bare 'No such file or directory' is enough."""
+        rec = self._result("bare-enoent cap", stderr="No such file or directory")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("bare-enoent cap", bv.fixture_absent)
+        self.assertFalse(bv.blocks)
+
+    def test_signature_match_is_case_insensitive(self):
+        """Lower-cased diagnostics match too — the signature is normalized."""
+        rec = self._result("lowercase-enoent cap", stderr="no such file or directory")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("lowercase-enoent cap", bv.fixture_absent)
+        self.assertFalse(bv.blocks)
+
+    # ── (3) the Rust io::Error rendering on its own ──────────────────────────
+
+    def test_bare_os_error_2_signature(self):
+        """Rust renders ENOENT as 'os error 2'; that alone classifies fixture-absent."""
+        rec = self._result("os-error-2 cap", stderr="failed to open input: os error 2")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("os-error-2 cap", bv.fixture_absent)
+        self.assertFalse(bv.blocks)
+
+    # ── (4)(5) the over-reach guards ─────────────────────────────────────────
+
+    def test_unrelated_diagnostic_still_blocks(self):
+        """A genuine falsification with an unrelated stderr is untouched."""
+        rec = self._result("real fail cap", stderr="type mismatch: expected axis")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("real fail cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_empty_stderr_still_blocks(self):
+        """An executed FAIL with no stderr at all is still a falsification."""
+        rec = self._result("silent fail cap", stderr="")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("silent fail cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+    # ── (6) missing BINARY is not a missing fixture ──────────────────────────
+
+    def test_binary_not_found_sentinel_still_blocks(self):
+        """α's binary-not-found sentinel emits the SAME ENOENT text but must block.
+
+        A missing `reify` binary is a real harness failure: nothing was probed
+        and the batch cannot be trusted.  The fixture-absent carve-out must not
+        swallow it just because the OS worded both errors the same way.
+        """
+        stderr = (f"{pcc._BINARY_NOT_FOUND_SENTINEL}: [Errno 2] "
+                  "No such file or directory: 'target/release/reify'")
+        rec = self._result("missing binary cap", verdict="HARNESS_ERROR",
+                           stderr=stderr, exit_code=127)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks, "a missing binary must still block")
+        self.assertIn("missing binary cap", bv.blocking)
+        self.assertNotIn("missing binary cap", bv.fixture_absent)
+
+    # ── (7) counters and report placement ────────────────────────────────────
+
+    def test_fixture_absent_record_counts_as_executed(self):
+        """The probe DID run — it just could not find its fixture."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.executed, 1)
+        self.assertEqual(bv.total, 1)
+
+    def test_fixture_absent_is_named_in_its_own_report_section(self):
+        """The capability stays visible, under a fixture-absent label."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertIn("fixture-absent cap", bv.report)
+        self.assertIn("FIXTURE ABSENT", bv.report)
+
+    def test_fixture_absent_is_not_counted_as_malformed(self):
+        """The two categories are distinct: one ran without a target, one never ran."""
+        rec = self._result("fixture-absent cap",
+                           stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.malformed, [])
+
+    def test_passing_record_with_enoent_stderr_is_untouched(self):
+        """The carve-out applies to blocking verdicts only."""
+        rec = self._result("passing cap", verdict="PASS",
+                           stderr="No such file or directory", exit_code=0)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.fixture_absent, [])
+        self.assertEqual(bv.blocking, [])
+        self.assertFalse(bv.blocks)
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-17 (RED): the errno signature must be anchored, not a prefix
+# ---------------------------------------------------------------------------
+
+class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
+    """`os error 2` as a bare substring swallows every errno that STARTS with 2.
+
+    `_FIXTURE_ABSENT_SIGNATURES` matches with `any(sig in lowered ...)`, so the
+    literal `"os error 2"` is a PREFIX test, not an errno test: it fires on
+    ENOTDIR(20), EISDIR(21), EINVAL(22), EMFILE(24), ENOSPC(28) and every
+    3-digit 2XX errno.  Each of those is a genuine, executed falsification that
+    silently stops blocking — the fixture-absent carve-out (which exists so a
+    not-yet-written deliverable is not scored as a design defect) becomes a
+    hole that swallows real findings.  This is the exact failure mode the
+    carve-out was added to avoid, inverted.
+
+    GREEN in task #7257 step-18 (anchored `os error 2(?![0-9])`).
+
+    The class carries BOTH halves deliberately: the hostile errnos that must
+    start blocking again, AND the three genuine ENOENT spellings the suite
+    already depends on, so the fix's blast radius is pinned from both sides.
+    """
+
+    #: (label, stderr) for errnos whose decimal rendering begins with "2" but
+    #: which are NOT ENOENT.  Every one is a real failure that must block.
+    HOSTILE_ERRNOS = (
+        ("ENOTDIR", "Not a directory (os error 20)"),
+        ("EISDIR", "Is a directory (os error 21)"),
+        ("EINVAL", "Invalid argument (os error 22)"),
+        ("EMFILE", "Too many open files (os error 24)"),
+        ("ENOSPC", "No space left on device (os error 28)"),
+    )
+
+    def _result(self, capability: str, verdict: str = "FAIL",
+                stderr: str = "", exit_code: int = 1) -> dict:
+        """An EXECUTED α result record (real command, real exit code).
+
+        Same shape as TestFixtureAbsent._result — the evidence gate must be
+        satisfied so classification reaches the fixture-absent branch at all.
+        """
+        return {
+            "capability": capability,
+            "probe_kind": "ir",
+            "verdict": verdict,
+            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "exit_code": exit_code,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    # ── (1) every 2X errno is a real falsification and must block ────────────
+
+    def test_two_x_errnos_still_block(self):
+        """ENOTDIR/EISDIR/EINVAL/EMFILE/ENOSPC are falsifications, not absences."""
+        for label, stderr in self.HOSTILE_ERRNOS:
+            with self.subTest(errno=label):
+                cap = f"{label} cap"
+                rec = self._result(cap, stderr=stderr)
+                bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+                self.assertTrue(
+                    bv.blocks,
+                    f"{label} ({stderr!r}) is a real failure and must block")
+                self.assertIn(cap, bv.blocking)
+                self.assertNotIn(cap, bv.fixture_absent)
+
+    # ── (2) the 2XX range too ────────────────────────────────────────────────
+
+    def test_three_digit_two_hundred_errno_still_blocks(self):
+        """A 3-digit errno beginning with 2 must not be read as ENOENT either."""
+        rec = self._result("errno-212 cap", stderr="probe aborted (os error 212)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("errno-212 cap", bv.blocking)
+        self.assertNotIn("errno-212 cap", bv.fixture_absent)
+
+    # ── (3) unit-level sweep, so a regression localises to the matcher ───────
+
+    def test_matcher_rejects_non_enoent_errnos_directly(self):
+        """`fixture_absent_evidence` itself is False for every hostile errno.
+
+        Asserted against the predicate rather than through `synthesize_batch`
+        so a future regression points at the signature table, not at the
+        classification pipeline downstream of it.
+        """
+        table = self.HOSTILE_ERRNOS + (("errno-212", "probe aborted (os error 212)"),)
+        for label, stderr in table:
+            with self.subTest(errno=label):
+                rec = self._result(f"{label} cap", stderr=stderr)
+                self.assertFalse(
+                    pdv.fixture_absent_evidence(rec),
+                    f"{stderr!r} is not a fixture-absent signature")
+
+    # ── (4) REGRESSION PRESERVATION: genuine ENOENT still classifies ─────────
+
+    def test_genuine_enoent_spellings_still_classify_fixture_absent(self):
+        """The three spellings the suite already relies on must keep working.
+
+        The anchor must permit a bare trailing `os error 2` at end-of-string
+        (no closing paren) — requiring `)` would break the spelling asserted by
+        TestFixtureAbsent.test_bare_os_error_2_signature.
+        """
+        spellings = (
+            ("paren", "Error: No such file or directory (os error 2)"),
+            ("bare-errno-eos", "failed to open input: os error 2"),
+            ("phrase-only", "No such file or directory"),
+        )
+        for label, stderr in spellings:
+            with self.subTest(spelling=label):
+                cap = f"enoent-{label} cap"
+                rec = self._result(cap, stderr=stderr)
+                self.assertTrue(
+                    pdv.fixture_absent_evidence(rec),
+                    f"{stderr!r} is a genuine ENOENT spelling")
+                bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+                self.assertIn(cap, bv.fixture_absent)
+                self.assertFalse(bv.blocks)
+
+    # ── (5) near-miss guard ──────────────────────────────────────────────────
+
+    def test_no_such_device_blocks(self):
+        """'No such device (os error 19)' matches NEITHER signature.
+
+        Textually adjacent to ENOENT's phrase ("No such ...") and numerically
+        adjacent to the 2X block, so it pins both edges at once.
+        """
+        rec = self._result("enodev cap", stderr="No such device (os error 19)")
+        self.assertFalse(pdv.fixture_absent_evidence(rec))
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn("enodev cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-09 (RED): RESULTS_SCHEMA must constrain the record shape
+# ---------------------------------------------------------------------------
+
+class TestMjsResultsSchema(unittest.TestCase):
+    """The agent-output schema is the FIRST line of defence for ARM 1.
+
+    RESULTS_SCHEMA today declares `prover`/`adversary` as
+    `{type:"array", items:{type:"object"}}` — no required keys, no verdict
+    enum, no type on `command`.  Consequences measured on this branch:
+
+      - a PREMISE record validates as a RESULT record;
+      - a record with no `command`/`exit_code` at all validates, which is
+        exactly the unexecuted promise the Python evidence gate now catches;
+      - `"command": "target/release/reify eval f.ri"` (a STRING) validates,
+        which is the character-explosion source.
+
+    The Python gate is the second line of defence and stays.  This schema kills
+    the malformed shapes at source so an agent cannot emit them at all.
+
+    Source-sliced out of the .mjs the same way TestMjsNormalizeLeaves does:
+    everything BEFORE the `const _wfResult = await` IIFE anchor, evaluated via
+    `new Function` — no injected-globals mock, no IIFE execution.
+
+    GREEN in task #7257 step-10.
+    """
+
+    _MARK = "SCHEMAS_RESULT:"
+    _REQUIRED_KEYS = {"capability", "verdict", "command", "exit_code"}
+    _VERDICT_ENUM = ["PASS", "FAIL", "UNPROVABLE", "HARNESS_ERROR"]
+
+    def _harness_source(self) -> str:
+        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        return f"""\
+import {{ readFileSync }} from "node:fs";
+
+const MARK = "{self._MARK}";
+const MJS_PATH = "{mjs_abs}";
+
+let src = readFileSync(MJS_PATH, "utf8");
+const ANCHOR = "const _wfResult = await";
+const anchorIdx = src.indexOf(ANCHOR);
+if (anchorIdx === -1) {{
+    console.error("ANCHOR_NOT_FOUND: " + ANCHOR);
+    process.exit(1);
+}}
+let head = src.slice(0, anchorIdx);
+head = head.replace("export const meta", "const meta");
+
+let schemas;
+try {{
+    schemas = new Function(head + "\\nreturn {{ RESULTS_SCHEMA, VERDICT_SCHEMA }};")();
+}} catch (e) {{
+    console.error("SCHEMA_EXTRACT_FAILED: " + e.message);
+    process.exit(1);
+}}
+console.log(MARK + JSON.stringify(schemas));
+"""
+
+    def _schemas(self) -> dict:
+        """Run the extraction harness and return {RESULTS_SCHEMA, VERDICT_SCHEMA}.
+
+        The node run is cached (see _run_node_module) — the schemas are static
+        literals, so re-spawning node per assertion bought nothing.
+        """
+        rc, out, err = _run_node_module(self._harness_source())
+        self.assertEqual(rc, 0, f"node exited {rc}; stderr: {err!r}")
+        lines = [ln for ln in out.splitlines() if ln.startswith(self._MARK)]
+        self.assertTrue(lines, f"no schema marker in stdout; stdout: {out!r}")
+        return json.loads(lines[-1][len(self._MARK):])
+
+    def _record_items(self, role: str) -> dict:
+        """The `items` sub-schema constraining one α result record for `role`."""
+        results = self._schemas()["RESULTS_SCHEMA"]
+        self.assertIn(role, results["properties"],
+                      f"RESULTS_SCHEMA has no {role!r} property")
+        prop = results["properties"][role]
+        self.assertIn("items", prop, f"{role} declares no `items` record constraint")
+        return prop["items"]
+
+    # ── (1)(2) both roles constrain the record's required keys ───────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_prover_items_require_the_evidence_keys(self):
+        """A prover record must declare capability, verdict, command AND exit_code."""
+        items = self._record_items("prover")
+        required = set(items.get("required", []))
+        self.assertTrue(
+            self._REQUIRED_KEYS.issubset(required),
+            f"prover items.required is missing {self._REQUIRED_KEYS - required}; "
+            f"got {sorted(required)}",
+        )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_adversary_items_require_the_evidence_keys(self):
+        """The Adversary is constrained too — not just the Prover.
+
+        The Adversary is the role that can only ADD blocking signals, so an
+        unconstrained adversary record is the cheapest route to a vacuous block.
+        """
+        items = self._record_items("adversary")
+        required = set(items.get("required", []))
+        self.assertTrue(
+            self._REQUIRED_KEYS.issubset(required),
+            f"adversary items.required is missing {self._REQUIRED_KEYS - required}; "
+            f"got {sorted(required)}",
+        )
+
+    # ── (3) the verdict vocabulary is closed ─────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_verdict_is_a_closed_enum(self):
+        """PRD §6 decision 3 fixes the verdict vocabulary; the schema pins it."""
+        for role in ("prover", "adversary"):
+            with self.subTest(role=role):
+                props = self._record_items(role).get("properties", {})
+                self.assertIn("verdict", props, f"{role} items declares no verdict")
+                self.assertEqual(props["verdict"].get("enum"), self._VERDICT_ENUM)
+
+    # ── (4) the constraint that kills the string-command shape at source ─────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_command_is_an_array_of_strings(self):
+        """`command` must be argv tokens, never a ready-to-paste shell string."""
+        for role in ("prover", "adversary"):
+            with self.subTest(role=role):
+                props = self._record_items(role).get("properties", {})
+                self.assertIn("command", props, f"{role} items declares no command")
+                self.assertEqual(
+                    props["command"],
+                    {"type": "array", "items": {"type": "string"}},
+                    f"{role} command must be an array of strings; got {props['command']!r}",
+                )
+
+    # ── (5) exit_code is an integer, and null is not an accepted type ────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_exit_code_is_an_integer_and_not_nullable(self):
+        """A null exit_code is the unexecuted-promise shape; the schema rejects it."""
+        for role in ("prover", "adversary"):
+            with self.subTest(role=role):
+                props = self._record_items(role).get("properties", {})
+                self.assertIn("exit_code", props, f"{role} items declares no exit_code")
+                declared = props["exit_code"].get("type")
+                self.assertEqual(declared, "integer",
+                                 f"{role} exit_code.type must be 'integer'; got {declared!r}")
+                self.assertNotIn(
+                    "null", declared if isinstance(declared, list) else [declared],
+                    f"{role} exit_code must not accept null",
+                )
+
+    # ── (6) VERDICT_SCHEMA declares, but does not require, the new fields ────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_verdict_schema_declares_the_new_batchverdict_fields(self):
+        """The harness now emits malformed/fixture_absent/executed/total."""
+        props = self._schemas()["VERDICT_SCHEMA"].get("properties", {})
+        for key in ("malformed", "fixture_absent", "executed", "total"):
+            self.assertIn(key, props,
+                          f"VERDICT_SCHEMA declares no {key!r}; got {sorted(props)}")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs schema test")
+    def test_verdict_schema_requires_the_executed_counters(self):
+        """`executed`/`total` are REQUIRED; `malformed`/`fixture_absent` are not.
+
+        These were left optional on the reasoning that requiring them would
+        hard-fail against an older harness build — a skew that cannot occur, as
+        the Synthesize agent shells the harness out of the SAME checkout as the
+        .mjs.  What a loose schema DID admit is a Synthesize agent that drops
+        the counters despite the prompt: `executed ?? 0` then dispositions every
+        leaf NOT_VERIFIED and the batch INCOMPLETE, indistinguishable from
+        genuine incompleteness.  The schema is the enforcement point that makes
+        the agent retry instead of laundering a relay bug into a verdict.
+
+        `malformed`/`fixture_absent` stay optional — absent and empty mean the
+        same thing for a list, and neither carries disposition weight of its own.
+        """
+        schema = self._schemas()["VERDICT_SCHEMA"]
+        required = schema.get("required", [])
+        self.assertEqual(required,
+                         ["blocks", "blocking", "report", "executed", "total"])
+        self.assertNotIn("malformed", required)
+        self.assertNotIn("fixture_absent", required)
+        self.assertEqual(schema["properties"]["executed"].get("type"), "integer")
+        self.assertEqual(schema["properties"]["total"].get("type"), "integer")
+
+
+# ---------------------------------------------------------------------------
+# task #7257 steps 11/13: parameterized .mjs scenario harness
+# ---------------------------------------------------------------------------
+
+_MJS_RESULT_MARK = "SCENARIO_RESULT:"
+_MJS_PHASES_MARK = "SCENARIO_PHASES:"
+
+
+def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
+    """Build a Node ESM harness that runs the FULL .mjs body under a mock of
+    Workflow's injected globals and ONLY those, with a PARAMETERIZED agent.
+
+    Args:
+        leaves_js:    a JS expression for globalThis.args (the leaf array).
+        responses_js: a JS expression evaluating to an object mapping a
+                      lower-cased phase name to either a value or a
+                      (prompt, opts) => value function.
+
+    The harness records every phase the .mjs actually invokes, so a test can
+    assert on stages that were SKIPPED as well as on the returned verdict.
+    """
+    mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+    return f"""\
+import {{ readFileSync }} from "node:fs";
+
+const MJS_PATH = "{mjs_abs}";
+const RESULT_MARK = "{_MJS_RESULT_MARK}";
+const PHASES_MARK = "{_MJS_PHASES_MARK}";
+
+// ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
+globalThis.__PHASES = [];
+const RESPONSES = {responses_js};
+globalThis.agent = async (prompt, opts = {{}}) => {{
+    const phase = (opts.phase || "").toLowerCase();
+    globalThis.__PHASES.push(phase);
+    const r = RESPONSES[phase];
+    if (typeof r === "function") return r(prompt, opts);
+    if (r !== undefined) return r;
+    return {{}};
+}};
+
+// ── mock: pipeline(items, ...stages) — threads each item through in order ────
+globalThis.pipeline = async (items, ...stages) => {{
+    const results = [];
+    for (const item of items) {{
+        let val = item;
+        for (const stage of stages) {{
+            val = await stage(val, item, results.length);
+        }}
+        results.push(val);
+    }}
+    return results;
+}};
+
+globalThis.parallel = async (thunks) => Promise.all(thunks.map(t => t()));
+globalThis.__LOG_LINES = [];
+globalThis.log = (..._a) => {{ globalThis.__LOG_LINES.push(_a.map(String).join(" ")); }};
+globalThis.phase = (..._a) => {{}};
+globalThis.args = {leaves_js};
+globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }};
+globalThis.workflow = async () => {{}};
+
+// ── execute the .mjs body and capture its top-level return ──────────────────
+let src = readFileSync(MJS_PATH, "utf8");
+src = src.replace("export const meta", "const meta");
+const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
+const result = await new AsyncFunction(src)();
+console.log(RESULT_MARK + JSON.stringify(result));
+console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
+"""
+
+
+class _MjsScenarioMixin:
+    """Shared runner for the parameterized .mjs scenario harness."""
+
+    # A leaf that enumerates one premise, probes it, and synthesizes a clean,
+    # EVIDENCE-BACKED verified verdict — the "normal path" control.
+    VERIFIED_RESPONSES = """{
+    enumerate: { premises: [{
+        text: "revolute rejects non-axis arg",
+        assertion_kind: "rejection",
+        fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+        match: { exit_code: 1 },
+        capability: "arg-vs-param rejection (mock)",
+    }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check",
+        verdict: "PASS",
+        command: ["reify", "check", "f.ri"],
+        exit_code: 1,
+        stdout: "",
+        stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 1, total: 1 },
+}"""
+
+    # A leaf whose Enumerator returns nothing at all.
+    UNENUMERATED_RESPONSES = """{
+    enumerate: { premises: [] },
+    prove: { prover: [], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 0, total: 0 },
+}"""
+
+    def _run_scenario(self, leaves_js: str, responses_js: str):
+        """Run the .mjs under the scenario harness; return (verdict, phases).
+
+        Cached per (leaves_js, responses_js) via _run_node_module: a scenario is
+        deterministic, so a class asserting five things about one scenario runs
+        it once, not five times.
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 0, f"node exited {rc}; stderr: {err!r}; stdout: {out!r}")
+        res_lines = [ln for ln in out.splitlines()
+                     if ln.startswith(_MJS_RESULT_MARK)]
+        ph_lines = [ln for ln in out.splitlines()
+                    if ln.startswith(_MJS_PHASES_MARK)]
+        self.assertTrue(res_lines, f"no result marker; stdout: {out!r}")
+        self.assertTrue(ph_lines, f"no phases marker; stdout: {out!r}")
+        verdict = json.loads(res_lines[-1][len(_MJS_RESULT_MARK):])
+        phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
+        return verdict, phases
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-11 (RED): a zero-premise leaf is not a verified leaf (ARM 2)
+# ---------------------------------------------------------------------------
+
+class TestMjsUnenumeratedLeaf(unittest.TestCase, _MjsScenarioMixin):
+    """A leaf whose Enumerator returned zero premises was never probed.
+
+    Measured on this branch BEFORE the fix, driving one zero-premise leaf:
+        leaf_verdicts[0] == {leafLabel, blocks: false, blocking: [], report: ""}
+        summary          == "γ PASS — all 1 leaf(ves) verified"
+        phases           == ["enumerate", "synthesize"]
+
+    That is byte-identical in shape to a genuinely verified leaf, so the ONE
+    signal that matters — "nothing was checked here" — is unrecoverable from
+    the return value.  It also still burned a Synthesize agent call to
+    synthesize an empty record set (α over {} is vacuously non-blocking).
+
+    GREEN in task #7257 step-12.
+    """
+
+    _LABEL = "zero-premise leaf (delta)"
+    _LEAF_JS = '[{ signal: "zero-premise leaf (delta)" }]'
+
+    def _unenumerated(self):
+        return self._run_scenario(self._LEAF_JS, self.UNENUMERATED_RESPONSES)
+
+    # ── (1)(2) the per-leaf disposition ──────────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_leaf_verdict_carries_unenumerated_disposition(self):
+        """The leaf verdict says, in one field, that nothing was enumerated."""
+        verdict, _ = self._unenumerated()
+        self.assertEqual(len(verdict["leaf_verdicts"]), 1)
+        leaf = verdict["leaf_verdicts"][0]
+        self.assertEqual(
+            leaf.get("disposition"), "UNENUMERATED",
+            f"zero-premise leaf must be dispositioned UNENUMERATED; got {leaf!r}",
+        )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_unenumerated_differs_from_a_verified_leaf(self):
+        """The whole point: the two outcomes must be distinguishable."""
+        unenum, _ = self._unenumerated()
+        verified, _ = self._run_scenario(
+            '[{ signal: "normally verified leaf" }]', self.VERIFIED_RESPONSES)
+
+        unenum_leaf = unenum["leaf_verdicts"][0]
+        verified_leaf = verified["leaf_verdicts"][0]
+
+        self.assertEqual(verified_leaf.get("disposition"), "VERIFIED",
+                         f"control leaf must be VERIFIED; got {verified_leaf!r}")
+        self.assertNotEqual(
+            unenum_leaf.get("disposition"), verified_leaf.get("disposition"),
+            "a never-probed leaf must not share a disposition with a verified one",
+        )
+        # Both are non-blocking — which is exactly why `blocks` alone is not enough.
+        self.assertFalse(unenum_leaf["blocks"])
+        self.assertFalse(verified_leaf["blocks"])
+
+    # ── (3)(4)(5) the batch-level signal ─────────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_batch_disposition_is_not_pass(self):
+        """A batch that probed nothing did not pass."""
+        verdict, _ = self._unenumerated()
+        self.assertIn("disposition", verdict,
+                      f"batch verdict has no disposition; keys {sorted(verdict)}")
+        self.assertNotEqual(verdict["disposition"], "PASS")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_unenumerated_leaf_label_is_listed_at_top_level(self):
+        """The caller can name the never-probed leaf without opening journal.jsonl."""
+        verdict, _ = self._unenumerated()
+        self.assertIn("unenumerated_leaves", verdict,
+                      f"batch verdict has no unenumerated_leaves; keys {sorted(verdict)}")
+        self.assertEqual(verdict["unenumerated_leaves"], [self._LABEL])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_summary_names_the_leaf_and_the_probed_count(self):
+        """The one-line summary must not read as a pass."""
+        verdict, _ = self._unenumerated()
+        summary = verdict["summary"]
+        self.assertIn(self._LABEL, summary,
+                      f"summary must name the never-probed leaf; got {summary!r}")
+        self.assertIn("0 of 1", summary,
+                      f"summary must state the probed count; got {summary!r}")
+        self.assertNotIn("PASS", summary,
+                         f"a never-probed batch must not summarize as PASS; got {summary!r}")
+
+    # ── (6) the stage-3 short-circuit ────────────────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_synthesize_agent_is_not_called_for_a_zero_premise_leaf(self):
+        """There is nothing to synthesize — do not pay an agent to say so.
+
+        α over an empty record set is vacuously non-blocking, so the call could
+        only ever return a clean verdict.  Skipping it is both cheaper and one
+        less way to launder 'nothing ran' into 'nothing failed'.
+        """
+        _, phases = self._unenumerated()
+        self.assertNotIn(
+            "synthesize", phases,
+            f"stage 3 must short-circuit on an unenumerated leaf; phases {phases!r}",
+        )
+        self.assertIn("enumerate", phases,
+                      f"the Enumerator must still run; phases {phases!r}")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_verified_control_leaf_still_calls_synthesize(self):
+        """The short-circuit is scoped to the empty case — regression guard."""
+        _, phases = self._run_scenario(
+            '[{ signal: "normally verified leaf" }]', self.VERIFIED_RESPONSES)
+        self.assertIn("synthesize", phases,
+                      f"the normal path must still synthesize; phases {phases!r}")
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-13 (RED): the batch return must surface the probed count
+# ---------------------------------------------------------------------------
+
+class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
+    """A session must be able to answer "how many leaves were actually probed?"
+    from the workflow's return value, without opening journal.jsonl.
+
+    Today the aggregate carries only blocks / leaf_verdicts / summary, so a
+    batch in which NO leaf was ever probed is reported as
+    "γ PASS — all N leaf(ves) verified" — the ARM 2 failure.  A third
+    disposition is needed between BLOCKS and PASS: INCOMPLETE, meaning nothing
+    was falsified but nothing was verified either.
+
+    GREEN in task #7257 step-14.
+    """
+
+    # ── scenario A: one verified leaf + one zero-premise leaf ────────────────
+
+    _A_LEAVES = '[{ signal: "verified leaf (alpha)" }, { signal: "zero-premise leaf (beta)" }]'
+    _A_RESPONSES = """{
+    enumerate: (prompt) => prompt.includes("zero-premise")
+        ? { premises: [] }
+        : { premises: [{
+              text: "revolute rejects non-axis arg",
+              assertion_kind: "rejection",
+              fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+              match: { exit_code: 1 },
+              capability: "arg-vs-param rejection (mock)",
+          }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "PASS",
+        command: ["reify", "check", "f.ri"], exit_code: 1,
+        stdout: "", stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 1, total: 1 },
+}"""
+
+    # ── scenario B: two normally verified leaves ─────────────────────────────
+
+    _B_LEAVES = '[{ signal: "verified leaf (alpha)" }, { signal: "verified leaf (gamma)" }]'
+
+    # ── scenario C: a leaf that probed nothing because every record was malformed ─
+
+    _C_LEAVES = '[{ signal: "malformed-records leaf (epsilon)" }]'
+    _C_RESPONSES = """{
+    enumerate: { premises: [{
+        text: "revolute rejects non-axis arg",
+        assertion_kind: "rejection",
+        fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+        match: { exit_code: 1 },
+        capability: "arg-vs-param rejection (mock)",
+    }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "FAIL",
+        command: [], exit_code: -1, stdout: "", stderr: "",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [],
+                  report: "MALFORMED (no executed-probe evidence ...)",
+                  malformed: ["arg-vs-param rejection (mock)"],
+                  fixture_absent: [], executed: 0, total: 1 },
+}"""
+
+    # ── scenario D: the Synthesize agent returns null (agent death) ─────────
+    #
+    # The fail-closed fallback fires: the leaf BLOCKS with no harness output at
+    # all.  Nothing was probed, so `leaves_probed` must stay 0 — deriving it
+    # from the disposition counted this leaf as probed, overstating coverage on
+    # exactly the failure path a reader consults the counter to check.
+
+    _D_LEAVES = '[{ signal: "null-synthesize leaf (zeta)" }]'
+    _D_RESPONSES = """{
+    enumerate: { premises: [{
+        text: "revolute rejects non-axis arg",
+        assertion_kind: "rejection",
+        fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+        match: { exit_code: 1 },
+        capability: "arg-vs-param rejection (mock)",
+    }] },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "PASS",
+        command: ["reify", "check", "f.ri"], exit_code: 1,
+        stdout: "", stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: null,
+}"""
+
+    def _assert_consumer_contract(self, verdict):
+        """The pre-existing keys β/D4 consume must survive every change."""
+        for key in ("blocks", "leaf_verdicts", "summary"):
+            self.assertIn(key, verdict,
+                          f"consumer-contract key {key!r} missing; got {sorted(verdict)}")
+        self.assertIsInstance(verdict["blocks"], bool)
+        self.assertIsInstance(verdict["leaf_verdicts"], list)
+        self.assertIsInstance(verdict["summary"], str)
+
+    # ── (A) a mixed batch is INCOMPLETE, not PASS ────────────────────────────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_reports_probed_counts(self):
+        """One of two leaves was probed — the return must say exactly that."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertEqual(verdict.get("leaves_total"), 2)
+        self.assertEqual(verdict.get("leaves_probed"), 1)
+        self.assertEqual(verdict.get("leaves_unenumerated"), 1)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_names_the_unprobed_leaf(self):
+        """The never-probed leaf is nameable straight off the return value."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        self.assertEqual(verdict.get("unenumerated_leaves"),
+                         ["zero-premise leaf (beta)"])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_disposition_is_incomplete_and_does_not_block(self):
+        """INCOMPLETE is the third outcome: nothing falsified, nothing verified."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        self.assertEqual(verdict.get("disposition"), "INCOMPLETE")
+        self.assertFalse(verdict["blocks"],
+                         "an incomplete batch has falsified nothing — it must not block")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_mixed_batch_summary_states_the_probed_count(self):
+        """The one-line summary carries the count a reader actually needs."""
+        verdict, _ = self._run_scenario(self._A_LEAVES, self._A_RESPONSES)
+        summary = verdict["summary"]
+        self.assertIn("1 of 2", summary, f"summary must state 1 of 2; got {summary!r}")
+        self.assertIn("zero-premise leaf (beta)", summary,
+                      f"summary must name the never-probed leaf; got {summary!r}")
+        self.assertNotIn("PASS", summary, f"INCOMPLETE must not read PASS; got {summary!r}")
+
+    # ── (B) an all-verified batch still passes, and says on what basis ───────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_all_verified_batch_disposition_is_pass(self):
+        """The happy path is unchanged in outcome — regression guard."""
+        verdict, _ = self._run_scenario(self._B_LEAVES, self.VERIFIED_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertEqual(verdict.get("disposition"), "PASS")
+        self.assertFalse(verdict["blocks"])
+        self.assertEqual(verdict.get("leaves_probed"), verdict.get("leaves_total"))
+        self.assertEqual(verdict.get("leaves_total"), 2)
+        self.assertEqual(verdict.get("leaves_unenumerated"), 0)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_all_verified_summary_reports_the_probed_count(self):
+        """Even a pass states its basis, so 'verified' is never taken on trust."""
+        verdict, _ = self._run_scenario(self._B_LEAVES, self.VERIFIED_RESPONSES)
+        summary = verdict["summary"]
+        self.assertIn("PASS", summary, f"an all-verified batch passes; got {summary!r}")
+        self.assertIn("2 probed", summary,
+                      f"summary must state the probed count; got {summary!r}")
+
+    # ── (C) a leaf that executed nothing is NOT_VERIFIED, batch INCOMPLETE ───
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_leaf_with_no_executed_records_is_not_verified(self):
+        """executed === 0 with malformed records ⇒ that leaf verified nothing."""
+        verdict, _ = self._run_scenario(self._C_LEAVES, self._C_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        leaf = verdict["leaf_verdicts"][0]
+        self.assertEqual(leaf.get("disposition"), "NOT_VERIFIED",
+                         f"leaf that executed no probe must be NOT_VERIFIED; got {leaf!r}")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_malformed_records_are_counted_at_batch_level(self):
+        """The harness-defect count is visible without walking leaf_verdicts."""
+        verdict, _ = self._run_scenario(self._C_LEAVES, self._C_RESPONSES)
+        self.assertEqual(verdict.get("malformed_records"), 1)
+        self.assertEqual(verdict.get("fixture_absent_records"), 0)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_not_verified_leaf_makes_the_batch_incomplete_without_blocking(self):
+        """A harness defect is neither a pass nor a falsification."""
+        verdict, _ = self._run_scenario(self._C_LEAVES, self._C_RESPONSES)
+        self.assertEqual(verdict.get("disposition"), "INCOMPLETE")
+        self.assertFalse(verdict["blocks"],
+                         "a malformed record is a harness defect, not a falsification")
+        self.assertEqual(verdict.get("leaves_not_verified"), 1)
+        self.assertEqual(verdict.get("not_verified_leaves"),
+                         ["malformed-records leaf (epsilon)"])
+
+    # ── (D) a blocking leaf that executed nothing is not a probed leaf ───────
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_null_synthesize_leaf_blocks_but_is_not_counted_as_probed(self):
+        """BLOCKS does not imply evidence — leaves_probed reads the counter.
+
+        The null-synthesize fallback blocks the leaf without any harness output,
+        so `executed` is 0 by construction.  Counting it as probed inflated the
+        coverage number precisely when the pipeline was broken.
+        """
+        verdict, _ = self._run_scenario(self._D_LEAVES, self._D_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertTrue(verdict["blocks"], "a dropped synthesize must fail closed")
+        self.assertEqual(verdict.get("disposition"), "BLOCKS")
+        self.assertEqual(verdict.get("leaves_total"), 1)
+        self.assertEqual(verdict.get("leaves_probed"), 0,
+                         "nothing executed for this leaf; it must not count as probed")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_null_synthesize_leaf_reports_zero_executed(self):
+        """The fallback verdict states its own (empty) basis."""
+        verdict, _ = self._run_scenario(self._D_LEAVES, self._D_RESPONSES)
+        leaf = verdict["leaf_verdicts"][0]
+        self.assertEqual(leaf.get("executed"), 0)
+        self.assertEqual(leaf.get("total"), 0)
+        self.assertEqual(leaf.get("blocking"), ["null-synthesize leaf (zeta)"])
+
+
+# ---------------------------------------------------------------------------
+# task #7257 step-15 (RED): the user-observable signal, end to end
+# ---------------------------------------------------------------------------
+
+class TestUserObservableSignal(unittest.TestCase):
+    """One synthesize call must make all four ARM 1 sub-signals legible at once.
+
+    This is the report a human actually reads.  The observed pi report scored
+    five capabilities as blocking when exactly one had been probed, rendered a
+    string command character-by-character, and stated nowhere how many of its
+    records carried evidence.  A reader could not tell a falsification from an
+    unexecuted promise, and had no count to check the verdict against.
+
+    GREEN in task #7257 step-16 (the counts header).
+    """
+
+    _STRING_CMD = "target/release/reify eval f.ri"
+    _EXPLODED = "t a r g e t"
+
+    def _mixed_batch(self):
+        """One executed FAIL + three evidence-free + one fixture-absent + one string-command."""
+        return {
+            "prover": [
+                # (1) the ONE genuine, evidence-backed falsification
+                {"capability": "REAL executed fail", "probe_kind": "check",
+                 "verdict": "FAIL",
+                 "command": ["reify", "check", "tests/prd-gate/fixtures/x.ri"],
+                 "exit_code": 0, "stdout": "All constraints satisfied.", "stderr": ""},
+                # (2) three unexecuted promises
+                {"capability": "vacuous-1", "probe_kind": "check", "verdict": "FAIL",
+                 "command": [], "exit_code": None, "stdout": "", "stderr": ""},
+                {"capability": "vacuous-2", "probe_kind": "ir", "verdict": "UNPROVABLE",
+                 "command": [], "stdout": "", "stderr": ""},
+                {"capability": "vacuous-3", "probe_kind": "check", "verdict": "FAIL",
+                 "exit_code": None, "stdout": "", "stderr": ""},
+                # (3) a probe that ran but could not find its fixture
+                {"capability": "fixture-absent cap", "probe_kind": "ir", "verdict": "FAIL",
+                 "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
+                 "exit_code": 1, "stdout": "",
+                 "stderr": "Error: No such file or directory (os error 2)"},
+            ],
+            "adversary": [
+                # (4) an evidence-backed falsification whose command is a STRING
+                {"capability": "string-command cap", "probe_kind": "ir", "verdict": "FAIL",
+                 "command": self._STRING_CMD, "exit_code": 1, "stdout": "",
+                 "stderr": "assertion did not hold"},
+            ],
+        }
+
+    def test_only_evidence_backed_records_block(self):
+        """blocks is true, and `blocking` is EXACTLY the evidence-backed set.
+
+        The string-command record blocks too, and correctly so — a string
+        command normalizes to one token, so the record does carry executed-probe
+        evidence.  What it must NOT do is render exploded (asserted below).
+        The three vacuous records and the fixture-absent one are what disappear
+        from `blocking`, which is the signal: 6 records in, 2 real findings out,
+        not 6 undifferentiated blockers.
+        """
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertTrue(bv.blocks)
+        self.assertEqual(sorted(bv.blocking), ["REAL executed fail", "string-command cap"])
+
+    def test_the_three_unexecuted_promises_are_listed_as_malformed(self):
+        """Each vacuous record is still named — just under the right heading."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertEqual(sorted(bv.malformed), ["vacuous-1", "vacuous-2", "vacuous-3"])
+
+    def test_the_fixture_absent_record_is_listed_separately(self):
+        """A missing deliverable is its own category, not a falsification."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
+
+    def test_the_string_command_renders_verbatim(self):
+        """Captured evidence stays re-runnable."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertIn(self._STRING_CMD, bv.report)
+        self.assertNotIn(self._EXPLODED, bv.report)
+
+    def test_report_opens_with_a_machine_readable_counts_header(self):
+        """The report states its own basis on line 1, before any evidence block.
+
+        Without this a reader has to count report sections by hand to learn how
+        much of the batch was actually probed — which is exactly the arithmetic
+        nobody did on the pi report.
+        """
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        header = bv.report.splitlines()[0]
+        self.assertIn("records:", header, f"report header missing; got {header!r}")
+        for token in ("6 total", "3 with executed-probe evidence", "2 blocking",
+                      "3 malformed", "1 fixture-absent"):
+            self.assertIn(token, header,
+                          f"counts header must state {token!r}; got {header!r}")
+
+    def test_counts_header_is_emitted_even_when_nothing_blocks(self):
+        """An all-clear report still states the basis of its all-clear."""
+        bv = pdv.synthesize_batch({
+            "prover": [{"capability": "cap", "probe_kind": "check", "verdict": "PASS",
+                        "command": ["reify", "check", "f.ri"], "exit_code": 0,
+                        "stdout": "", "stderr": ""}],
+            "adversary": [],
+        })
+        header = bv.report.splitlines()[0]
+        self.assertIn("records:", header, f"report header missing; got {header!r}")
+        self.assertIn("1 total", header)
+        self.assertIn("0 blocking", header)
+
+    def test_counts_header_agrees_with_the_structured_fields(self):
+        """The header is derived from the same counters, never hand-maintained."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        header = bv.report.splitlines()[0]
+        self.assertIn(f"{bv.total} total", header)
+        self.assertIn(f"{bv.executed} with executed-probe evidence", header)
+        self.assertIn(f"{len(bv.blocking)} blocking", header)
+        self.assertIn(f"{len(bv.malformed)} malformed", header)
+        self.assertIn(f"{len(bv.fixture_absent)} fixture-absent", header)
+
+
+# ---------------------------------------------------------------------------
+# task #7257 amendment: HARNESS_ERROR is exempt from BOTH evidence downgrades
+# ---------------------------------------------------------------------------
+
+class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
+    """A HARNESS_ERROR blocks regardless of evidence, and is never fixture-absent.
+
+    Two review findings, one root cause.  The evidence gate and the
+    fixture-absent carve-out both exist to stop a PREMISE FALSIFICATION being
+    claimed on no evidence.  HARNESS_ERROR makes no such claim — it reports
+    that the probe machinery could not run — so routing it through either
+    downgrade inverts its meaning and stops it blocking:
+
+      - MALFORMED: the Prover prompt's own documented fallback for "I could not
+        run anything at all" is `{verdict: "HARNESS_ERROR", command: [],
+        exit_code: -1}`, which carries no evidence BY CONSTRUCTION.  Under a
+        blanket gate, python3 missing / a wrong α path / a dead shell step
+        silently became INCOMPLETE instead of BLOCKS.
+      - FIXTURE_ABSENT: a harness-level ENOENT (`python3: can't open file ...
+        [Errno 2] No such file or directory`) matched the ENOENT phrase and was
+        reported as "the fixture is the leaf's own deliverable" — the opposite
+        diagnosis.
+
+    The blast radius is pinned in both directions: an evidence-free FAIL is
+    still MALFORMED, and a FAIL carrying the same ENOENT stderr is still
+    FIXTURE_ABSENT.
+    """
+
+    # The exact fallback record the Prover prompt tells the agent to emit.
+    # _assert_the_mjs_prompt_still_emits_this_shape keeps it honest.
+    def _prompt_fallback_record(self, capability: str = "leaf label (delta)") -> dict:
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": "HARNESS_ERROR",
+            "command": [],
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "bind step exited 2: no such option --json",
+        }
+
+    def _executed(self, capability: str, verdict: str, stderr: str,
+                  exit_code: int = 2) -> dict:
+        """An EXECUTED record (real command, real exit code) with a chosen stderr."""
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": ["python3", "scripts/prd-capability-check.py",
+                        "--json", "/tmp/ps.json"],
+            "exit_code": exit_code,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    # ── (1) the prompt's own fallback record produces the intended disposition ─
+
+    def test_prompt_fallback_record_blocks(self):
+        """The documented "nothing ran" record must still stop the batch."""
+        rec = self._prompt_fallback_record()
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks,
+                        "an evidence-free HARNESS_ERROR is the ONE path that means "
+                        "'the harness itself died' — it must block")
+        self.assertEqual(bv.blocking, ["leaf label (delta)"])
+
+    def test_prompt_fallback_record_is_not_malformed(self):
+        """It is not an unexecuted promise — nothing was promised."""
+        rec = self._prompt_fallback_record()
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertEqual(bv.malformed, [])
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_prompt_fallback_record_is_classified_blocking(self):
+        """Unit-level, so a regression localises to classify_record."""
+        self.assertEqual(pdv.classify_record(self._prompt_fallback_record()),
+                         pdv.CAT_BLOCKING)
+
+    def test_the_mjs_prompt_still_emits_this_shape(self):
+        """Drift guard: the record above is a COPY of the .mjs prompt template.
+
+        If the prompt's fallback stops saying `command: [], exit_code: -1`, the
+        tests above stop testing the shape that actually reaches the harness.
+        """
+        with open(_PDV_MJS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('verdict: "HARNESS_ERROR"', src,
+                      "the Prover prompt no longer documents a HARNESS_ERROR fallback")
+        self.assertIn("command: [], exit_code: -1", src,
+                      "the fallback template no longer emits the evidence-free shape "
+                      "these tests pin; re-sync _prompt_fallback_record")
+
+    def test_evidence_free_harness_error_still_counts_zero_executed(self):
+        """The exemption is about BLOCKING, not about faking evidence.
+
+        `executed` must stay honest: nothing ran, so the counts header still
+        reports 0 with executed-probe evidence even though the batch blocks.
+        """
+        bv = pdv.synthesize_batch({"prover": [self._prompt_fallback_record()],
+                                   "adversary": []})
+        self.assertEqual(bv.executed, 0)
+        self.assertEqual(bv.total, 1)
+        header = bv.report.splitlines()[0]
+        self.assertIn("1 total", header)
+        self.assertIn("0 with executed-probe evidence", header)
+        self.assertIn("1 blocking", header)
+        self.assertIn("0 malformed", header)
+
+    # ── (2) a harness-level ENOENT is not a missing deliverable ──────────────
+
+    def test_harness_error_with_enoent_stderr_still_blocks(self):
+        """`python3: can't open file ...` is a broken harness, not an unwritten .ri."""
+        rec = self._executed(
+            "alpha script path cap", "HARNESS_ERROR",
+            stderr="python3: can't open file 'scripts/prd-capability-check.py': "
+                   "[Errno 2] No such file or directory")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertEqual(bv.blocking, ["alpha script path cap"])
+        self.assertEqual(bv.fixture_absent, [],
+                         "a harness-level ENOENT must not be reported as a missing "
+                         "leaf deliverable")
+
+    def test_harness_error_with_bare_errno_stderr_still_blocks(self):
+        """The Rust-style spelling of the same failure is treated identically."""
+        rec = self._executed("cwd cap", "HARNESS_ERROR",
+                             stderr="failed to spawn probe: os error 2")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_harness_error_enoent_is_classified_blocking(self):
+        """Unit-level pin on the classify_record precedence order."""
+        rec = self._executed("harness enoent cap", "HARNESS_ERROR",
+                             stderr="No such file or directory")
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
+
+    # ── (3) blast radius: neither downgrade is disabled for probe verdicts ───
+
+    def test_fail_with_the_same_enoent_stderr_is_still_fixture_absent(self):
+        """The carve-out still applies where its rationale applies — to a probe."""
+        rec = self._executed("missing deliverable cap", "FAIL",
+                             stderr="Error: No such file or directory (os error 2)")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.fixture_absent, ["missing deliverable cap"])
+
+    def test_evidence_free_fail_is_still_malformed(self):
+        """The evidence gate is intact for the verdicts it was written for."""
+        rec = dict(self._prompt_fallback_record("vacuous cap"), verdict="FAIL")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.malformed, ["vacuous cap"])
+
+    def test_evidence_free_unprovable_is_still_malformed(self):
+        """Same for UNPROVABLE — only HARNESS_ERROR is exempt."""
+        rec = dict(self._prompt_fallback_record("vacuous cap"), verdict="UNPROVABLE")
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertFalse(bv.blocks)
+        self.assertEqual(bv.malformed, ["vacuous cap"])
+
+    # ── (4) end to end through the CLI ───────────────────────────────────────
+
+    def test_cli_exits_1_on_the_prompt_fallback_record_alone(self):
+        """The exit code — what the Synthesize agent actually relays — is 1."""
+        data = {"prover": [self._prompt_fallback_record()], "adversary": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            tmp = f.name
+        buf_out, buf_err = io.StringIO(), io.StringIO()
+        try:
+            with unittest.mock.patch("sys.stdout", buf_out), \
+                 unittest.mock.patch("sys.stderr", buf_err):
+                rc = pdv.main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 1, "a dead harness must not exit 0")
+        payload = json.loads(buf_out.getvalue())
+        self.assertTrue(payload["blocks"])
+        self.assertEqual(payload["blocking"], ["leaf label (delta)"])
+        self.assertEqual(payload["malformed"], [])
+        self.assertEqual(payload["executed"], 0)
+
+
+# ---------------------------------------------------------------------------
+# task #7257 amendment: the report format cannot drift between sections
+# ---------------------------------------------------------------------------
+
+class TestEvidenceBlockIsShared(unittest.TestCase):
+    """All three report sections render evidence through ONE builder.
+
+    They drifted within one task: the fixture-absent branch silently omitted
+    `stdout`, so a probe that wrote to stdout before failing to find its fixture
+    lost that evidence — contrary to PRD §6 decision 4's "exact command +
+    stdout/stderr + exit code".  A reader comparing sections must be comparing
+    like with like.
+    """
+
+    _STDOUT = "partial output before the open failed"
+
+    def _rec(self, capability: str, verdict: str, stderr: str,
+             command=None, exit_code=1) -> dict:
+        return {
+            "capability": capability,
+            "probe_kind": "ir",
+            "verdict": verdict,
+            "command": ["reify", "eval", "f.ri"] if command is None else command,
+            "exit_code": exit_code,
+            "stdout": self._STDOUT,
+            "stderr": stderr,
+        }
+
+    def test_fixture_absent_section_carries_stdout(self):
+        """The drift that motivated the extraction."""
+        bv = pdv.synthesize_batch({"prover": [self._rec(
+            "fixture-absent cap", "FAIL",
+            "Error: No such file or directory (os error 2)")], "adversary": []})
+        self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
+        self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
+
+    def test_malformed_section_carries_stdout(self):
+        bv = pdv.synthesize_batch({"prover": [self._rec(
+            "vacuous cap", "FAIL", "", command=[], exit_code=None)],
+            "adversary": []})
+        self.assertEqual(bv.malformed, ["vacuous cap"])
+        self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
+
+    def test_blocking_section_carries_stdout(self):
+        bv = pdv.synthesize_batch({"prover": [self._rec(
+            "real fail cap", "FAIL", "type mismatch")], "adversary": []})
+        self.assertEqual(bv.blocking, ["real fail cap"])
+        self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
+
+    def test_all_three_sections_share_one_line_format(self):
+        """Same record, three categories — the evidence lines must be identical."""
+        common = dict(command=["reify", "eval", "f.ri"], exit_code=1)
+        block = pdv._evidence_block("FAIL", "cap", "prover", "reify eval f.ri",
+                                    1, self._STDOUT, "stderr text")
+        for stderr, category in (
+            ("type mismatch: expected axis", "blocking"),
+            ("Error: No such file or directory (os error 2)", "fixture-absent"),
+        ):
+            with self.subTest(category=category):
+                bv = pdv.synthesize_batch({"prover": [
+                    self._rec("cap", "FAIL", stderr, **common)], "adversary": []})
+                rendered = "\n".join(
+                    ln for ln in bv.report.splitlines()
+                    if ln.startswith(("[FAIL]", "  command:", "  exit_code:",
+                                      "  stdout:", "  stderr:")))
+                self.assertEqual(
+                    rendered,
+                    block.replace("stderr text", stderr),
+                    f"the {category} section renders a different evidence block",
+                )
+
+    def test_empty_stdout_and_stderr_lines_are_omitted(self):
+        """An evidence block never pads the report with contentless lines."""
+        block = pdv._evidence_block("FAIL", "cap", "prover", "reify eval f.ri",
+                                    1, "", "")
+        self.assertNotIn("stdout:", block)
+        self.assertNotIn("stderr:", block)
+        self.assertEqual(block.splitlines()[0], "[FAIL] cap (role: prover)")
+
 
 
 if __name__ == "__main__":
