@@ -98,17 +98,72 @@ tells the guard to skip it.  The reason should cite WHY the wall-clock
 magnitude is load-safe (exit code, marker, etc.) so the exemption is
 auditable.
 
-**Current blessed survivors** (as of task #5257):
+**Current blessed survivors** (as of task #6247):
 - `test_occt_flock_gate.sh` Tests 14 & 22: exit-75 + stderr pattern (`_ELAPSED*` operand)
 - `test_find_uses_smoke_runner.sh` ARM A liveness guard: rc!=0 + the `E2E_SMOKE_LAUNCHER_DEATH phase=readiness` marker (`_t4_elapsed` operand). Since task #5596 this assert runs once per e2e smoke runner (six in total), all sharing that one operand name and annotation.
-- `test_lane_x_flock.sh` flock-timing guard (`_ELAPSED18_MS` operand)
+- `test_mesh_count_parity_smoke_runner.sh` liveness guard: rc!=0 + the launcher-death message (`_mcp_elapsed` operand)
 
-These four retain their `wallclock:allow` escapes: each carries a real
-`elapsed` / `ELAPSED` / `_MS` time-measurement signal and is still (correctly)
-flagged.  The six `nextest` / `occt` config-constant `-lt 3600` pass-level
-ceilings that task #5257 de-annotated are **not** survivors — after the
-condition-(3) tightening they carry no time-measurement signal and pass
-un-flagged without an escape.
+Each retains its `wallclock:allow` escape: each carries a real `elapsed` /
+`ELAPSED` time-measurement signal and is still (correctly) flagged.  The six
+`nextest` / `occt` config-constant `-lt 3600` pass-level ceilings that task
+#5257 de-annotated are **not** survivors — after the condition-(3) tightening
+they carry no time-measurement signal and pass un-flagged without an escape.
+
+Task #6247 removed `test_lane_x_flock.sh`'s `_ELAPSED18_MS` flock-timing
+ceiling, which used to be the fourth entry: Test 18 now reads concurrency off
+an interval log instead of off the clock, so it needs no escape.
+
+**Nothing enforces this list** — the guard reads only the inline tokens, so the
+list is refreshed BY HAND whenever an escape is added or removed.  `grep -rn
+'wallclock:allow' tests/infra/*.sh` is the authority; this list exists to record
+*why* each survivor is blessed, which the token alone cannot say.
+
+## Bare holder-grace sleep guard (`holder-sleep:allow`)
+
+`test_no_bare_holder_sleep_grace.sh` is the sibling static guard (task #6247,
+PRD `infra-test-wallclock-deflake.md` D4).  Where the wall-clock guard flags an
+*assertion* that reads the clock, this one flags a *fixed sleep standing in for
+a barrier* — the idiom `sleep 0.2  # give holder time to acquire`.
+
+That sleep guesses at a duration on both sides at once.  It can be **outrun**:
+the holder is not holding yet, the code under test takes the uncontended path,
+and the assertions about contention pass vacuously or fail for the wrong reason.
+Where the holder is itself self-timed it can also be **overrun**: the grace eats
+into the hold, so the contention window shrinks below what the assertions need.
+`slot_holder_handshake_lib.sh` closes the first side with a causal barrier
+(`holder_wait_until_held`, `holder_wait_for_marker`) and the second with a
+test-released holder (`holder_spawn_gated` / `holder_release`).
+
+A `sleep <number>` statement is flagged iff it carries no `holder-sleep:allow`
+token and either:
+
+1. **lexeme** — its own inline comment, or the comment line directly above it,
+   names what it is waiting for (`holder`, `grace`, `give ... time to`,
+   `let ... acquire`).  The comment is the admission: the author knew what the
+   causal event was and slept for a guessed interval instead of waiting for it.
+2. **structural** — it falls within three lines after a backgrounded `flock -x`
+   holder spawn with no loop keyword in between, which catches the same idiom
+   stripped of its comment.
+
+**A barrier's own poll loop is legal and is not flagged.**  A poll loop sleeps
+between probes by construction; clause 1 needs an admission in a comment and
+clause 2 exempts any window containing `while` / `until` / `done`, so every
+barrier implementation — including `slot_holder_handshake_lib.sh`'s own — passes
+un-flagged.  A self-timed holder body such as `( flock -x 9; sleep 45 )` is also
+never a candidate: there the sleep is the HOLD, not a grace.
+
+### Opting out: `holder-sleep:allow`
+
+Annotate a deliberate survivor on the sleep line, or on the comment directly
+above it:
+
+```bash
+sleep 0.3  # holder-sleep:allow — one-sided: the check below can only
+           # false-FAIL, never false-pass, since the holder holds until killed
+```
+
+The reason should say why the fixed interval cannot produce a false PASS, so
+the exemption is auditable.
 
 ## Opt-in soak: seed lane-lock release (`REIFY_RUN_SEED_LANE_LOCK_SOAK`)
 

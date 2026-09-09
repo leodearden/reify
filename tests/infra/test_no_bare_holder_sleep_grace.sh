@@ -81,10 +81,117 @@ _hs_fixture() {
     echo "$_d"
 }
 
+# ---------------------------------------------------------------------------
+# _detect_bare_holder_sleep_grace <dir> [exclude_basename]
+#
+# Scans "$dir"/*.sh non-recursively (minus <exclude_basename>) for a fixed sleep
+# standing in for a holder-acquisition barrier. A physical line is a candidate
+# only if it IS a sleep statement -- `^[[:space:]]*sleep[[:space:]]+[0-9]` --
+# which is what keeps a self-timed holder body such as `( flock -x 9; sleep 45 )`
+# out of the candidate set: there the sleep is the HOLD, not a grace, and clause
+# B needs that line intact as its anchor.
+#
+# A candidate is a violation iff, after the escape check:
+#   (A) a holder-grace lexeme appears in the candidate's own inline comment or
+#       in the comment line directly above it; OR
+#   (B) the candidate falls within three lines after a backgrounded `flock -x`
+#       holder spawn, with no loop keyword anywhere from the spawn to the
+#       candidate.
+#
+# The escape token is checked FIRST, and on the lookback line as well as the
+# candidate, so a survivor can be blessed from either half of the clause-A form.
+#
+# Per-physical-line `[[ =~ ]]`, not `echo | grep` per line: the live scan covers
+# ~190 files, and a per-line pipe is also the esc-4574-42 EINTR class. No
+# logical-line joiner is needed here (unlike the wall-clock guard, whose
+# construct spans continuations) -- this idiom is always ONE physical line, and
+# clause B's window is defined in PHYSICAL lines by construction.
+#
+# Prints each violation as "file:lineno: <content>" to stderr.
+# Returns 1 if any violations found, 0 if none.
+# ---------------------------------------------------------------------------
+_detect_bare_holder_sleep_grace() {
+    local dir="$1"
+    local exclude_base="${2:-}"
+
+    # Pattern fragments, '' -split so this source carries no literal instance of
+    # what it flags. Alternated upper/lower initials rather than a nocasematch
+    # shopt, which would leak into every other match in this file.
+    local _esc_re;   _esc_re='holder-sle''ep:allow'
+    local _sleep_re; _sleep_re='^[[:space:]]*sle''ep[[:space:]]+[0-9]'
+    local _lex_re;   _lex_re='[Gg]iv''e[[:space:]].*[[:space:]]tim''e[[:space:]]to|[Hh]old''er|[Gg]rac''e|[Ll]e''t[[:space:]].*[[:space:]]acquir''e'
+    local _spawn_re; _spawn_re='floc''k[[:space:]]+-x.*&[[:space:]]*$'
+    local _loop_re;  _loop_re='(^|[^[:alnum:]_])(whil''e|unti''l|don''e)([^[:alnum:]_]|$)'
+
+    local _viof; _viof="$(mktemp)"
+    local _detector_cleanup_done=0
+    _detector_cleanup() {
+        if [ "$_detector_cleanup_done" = "0" ]; then
+            rm -f "$_viof"
+            _detector_cleanup_done=1
+        fi
+    }
+    trap '_detector_cleanup' RETURN
+
+    local f
+    for f in "$dir"/*.sh; do
+        [ -f "$f" ] || continue
+        local base; base="$(basename "$f")"
+        if [ -n "$exclude_base" ] && [ "$base" = "$exclude_base" ]; then
+            continue
+        fi
+
+        # `since_spawn` counts physical lines since the last holder spawn, or -1
+        # when no spawn is in reach; `window_loop` records whether a loop keyword
+        # has appeared since that spawn, and is cleared by each new spawn.
+        local line prev="" lineno=0 since_spawn=-1 window_loop=0
+        local dist inline above
+        while IFS= read -r line || [ -n "$line" ]; do
+            lineno=$(( lineno + 1 ))
+            dist=-1
+            if [ "$since_spawn" -ge 0 ]; then dist=$(( since_spawn + 1 )); fi
+            # Evaluated before the clause-B test so a loop keyword on the
+            # candidate's own line exempts it too.
+            if [[ "$line" =~ $_loop_re ]]; then window_loop=1; fi
+
+            if [[ "$line" =~ $_sleep_re ]] \
+               && ! [[ "$line" =~ $_esc_re ]] \
+               && ! [[ "$prev" =~ $_esc_re ]]; then
+                inline=""
+                case "$line" in *'#'*) inline="${line#*#}" ;; esac
+                above=""
+                case "$prev" in [[:space:]]*'#'*|'#'*) above="$prev" ;; esac
+
+                if [[ "$inline" =~ $_lex_re ]] || [[ "$above" =~ $_lex_re ]]; then
+                    echo "${f}:${lineno}: ${line}" >> "$_viof"
+                elif [ "$dist" -ge 1 ] && [ "$dist" -le 3 ] && [ "$window_loop" -eq 0 ]; then
+                    echo "${f}:${lineno}: ${line}" >> "$_viof"
+                fi
+            fi
+
+            if [[ "$line" =~ $_spawn_re ]]; then
+                since_spawn=0
+                window_loop=0
+            elif [ "$since_spawn" -ge 0 ]; then
+                since_spawn="$dist"
+                if [ "$since_spawn" -gt 3 ]; then since_spawn=-1; fi
+            fi
+            prev="$line"
+        done < "$f"
+    done
+
+    if [ -s "$_viof" ]; then
+        cat "$_viof" >&2
+        _detector_cleanup
+        return 1
+    fi
+    _detector_cleanup
+    return 0
+}
+
 # _hs_scan_rc DIR -- echo the detector's exit code (0 clean, 1 violations).
-# RED until step-20 defines _detect_bare_holder_sleep_grace: the call then
-# reports 127 (command not found), which every case below distinguishes from
-# both real verdicts because each asserts an EXACT code.
+# Each case asserts an EXACT code, so a detector that failed to load would
+# report 127 and fail every case rather than accidentally satisfying one.
 _hs_scan_rc() {
     local _rc=0
     _detect_bare_holder_sleep_grace "$1" "${2:-}" 2>/dev/null || _rc=$?
