@@ -7,7 +7,13 @@ description = "Engine facade and evaluation loop for Reify"
 
 [dependencies]
 reify-ast.workspace = true
-reify-core.workspace = true
+# Task 7245: the persistent compute cache serialises a `PersistedDiagnostic`
+# wire mirror carrying `code: Option<DiagnosticCode>`, whose Serialize/Deserialize
+# derives are `#[cfg_attr(feature = "serde", ...)]`-gated in reify-core. Declared
+# here rather than relying on feature unification from reify-lsp/reify-mcp, which
+# would break under `cargo check -p reify-eval`. Same form as
+# crates/reify-lsp/Cargo.toml:10 and crates/reify-mcp/Cargo.toml:9.
+reify-core = { workspace = true, features = ["serde"] }
 reify-config.workspace = true
 reify-ir.workspace = true
 reify-expr.workspace = true
