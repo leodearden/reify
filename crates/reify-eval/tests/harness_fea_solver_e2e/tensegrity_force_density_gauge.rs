@@ -11,17 +11,17 @@
 //! required on `member_forces`, none tolerated on the qᵢ/σ echoes — across all
 //! three emission sites: anchored line-only, anchored surfaces, free-standing.
 //!
-//! SCOPE — gauge COVARIANCE is asserted at BOTH emitters (the last two tests: anchored
-//! via `solve_at`, free-standing via `solve_free_at`), because they reach the property by
-//! different mechanisms — algebraic homogeneity of `D_ff x_f = −D_fa x_a` anchored, versus
-//! homogeneity of the GroupRatios search that fixes the gauge from `reference_group` when
-//! free-standing. Both fixtures are LINE-ONLY; the SURFACES path is the one deliberately
-//! scoped out, for TWO reasons. (1) The gauge is the (q, σ) PAIR: `D = CᵀQC + Σ_T σ_T·L_T`
-//! is linear in the pair, not in q alone, so a surfaces covariance experiment must rescale
-//! every σ_T by λ too — scaling q alone shifts the q/σ balance and MOVES the free nodes,
-//! which is physics, not a defect. (2) Even rescaled as a pair, surfaces convergence is
-//! judged on an ABSOLUTE tolerance on a residual not normalised by |D| (itself linear in
-//! q) — solver-side, outside #6095's scope, filed as #6119 (dup #6124).
+//! SCOPE — gauge COVARIANCE is asserted at ALL THREE emitters (the last three tests),
+//! each of which reaches the property by a DIFFERENT mechanism, so none of the three
+//! subsumes another: algebraic homogeneity of `D_ff x_f = −D_fa x_a` (anchored line-only,
+//! via `solve_at`); homogeneity of the GroupRatios search that fixes the gauge from
+//! `reference_group` (free-standing, via `solve_free_at`); and the gauge-RELATIVE stop
+//! criterion of the cotangent fixed point (anchored surfaces, via `solve_combined`).
+//! The surfaces case rescales the (q, σ) PAIR, never q alone: `D = CᵀQC + Σ_T σ_T·L_T` is
+//! linear in the pair, so that fixture scales every σ_T by λ alongside every qᵢ and
+//! asserts the σ echoes scale by λ too. Rescaling q on its own would shift the q/σ
+//! balance and MOVE the free nodes — physics, not a covariance failure — and excluding
+//! that confound is exactly what the σ-echo assertion is there for.
 
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -341,7 +341,8 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
 /// and surfaces carrying a non-empty member set. The surfaces path needs its own
 /// fixture because `membrane_tensegrity` has zero struts and zero cables — there
 /// `member_forces` is empty, so `force_si` and the qᵢ·Lᵢ pairing never run on it. One
-/// solve each, no gauge rescale, so this stays clear of the #6119/#6124 scope-out.
+/// solve each, no gauge rescale; the surfaces gauge rescale lives in
+/// `rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_path`.
 #[test]
 fn member_force_is_q_times_solved_length_in_the_unit_gauge() {
     let line_only = solve_at(&BASE_Q);
@@ -482,6 +483,99 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
     // BETWEEN two solves each known good, not merely between two ratios.
     assert_bridge_holds(&scaled, "anchored line-only (scaled gauge)");
     assert_gauge_covariance(&base, &scaled, 1e-9, 1e-12, "anchored line-only");
+}
+
+/// ANCHORED-SURFACES GAUGE COVARIANCE — the THIRD emitter, and the case this module's
+/// SCOPE note used to exclude. The gauge here is genuinely the (q, σ) PAIR:
+/// `D = CᵀQC + Σ_T σ_T·L_T` is linear in the pair, not in q alone, so this fixture
+/// rescales every σ_T by λ alongside every qᵢ. Scaling q alone would shift the q/σ
+/// balance and MOVE the free nodes — that is physics, not a covariance failure, which is
+/// why the σ-echo assertion below is load-bearing rather than decorative.
+///
+/// MECHANISM — distinct from both other emitters, which is why it needs its own case.
+/// The anchored line-only path is an exact ALGEBRAIC identity (λ cancels in
+/// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on the homogeneity of
+/// the GroupRatios SEARCH. Here the geometry comes from a cotangent fixed point, so
+/// covariance is a property of its STOPPING RULE: `form_find.rs` judges
+/// `free_equilibrium_residual_relative` — `max|(D·x)_free|` divided by
+/// `d_scale = ‖D‖_∞` over the free rows — against `SURFACE_EQUILIBRIUM_REL_TOL`.
+/// Numerator and denominator each pick up exactly one factor of λ, so the ratio is
+/// gauge-free and both gauges stop at the same iterate. Until task **#6119** that stop
+/// test was an ABSOLUTE tolerance on a residual normalised by geometry scale only: a
+/// large λ inflated it (never converging) and a small λ shrank it below tolerance
+/// (stopping PREMATURELY on unconverged geometry, the silent direction). A regression
+/// that reverts the normaliser lands here.
+///
+/// TOLERANCES ARE MEASURED, not guessed (λ = 7, this fixture): node residual 1.1e-16 m,
+/// member-force relative residual 4.0e-16, σ-echo relative residual exactly 0. Note those
+/// residuals are NOT zero: exact INPUTS do not give an exact assembled matrix, because a
+/// membrane entry is `σ·w` for a geometry-derived cotangent weight `w` and `fl(7σ·w) ≠
+/// 7·fl(σ·w)` in general at a non-power-of-two λ (contrast the kernel fixtures, which pick
+/// λ = 2^±20 precisely so they CAN assert bit-exactness). `D_λ = λ·D` therefore holds here
+/// only to f64 rounding — and the tolerances below are deliberately NOT sized on it, so do
+/// not invoke exactness to tighten them. They are sized on the larger hazard: that same
+/// rounding can in principle push the two runs one iterate apart, and the stop residual
+/// (`SURFACE_EQUILIBRIUM_REL_TOL = 1e-11` × a measured `d_scale ≈ 9`) bounds that
+/// displacement at ~1e-11 m — so 1e-9 keeps ~2 orders over
+/// the hazard and ~7 over the measurement. Do not slacken either without re-measuring:
+/// the defect this locks moves the converged shape by far more than 1e-9, or fails
+/// `converged` outright in `solve_with`.
+#[test]
+fn rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_path() {
+    // The base membrane stress on both caps — the same value
+    // `member_force_is_q_times_solved_length_in_the_unit_gauge` solves at.
+    const SIGMA_BASE: f64 = 0.5;
+
+    let base = solve_combined(&BASE_Q, SIGMA_BASE);
+    // NON-VACUITY: prove this really is the SURFACES path and not a silent fall-through
+    // to the line-only solve, which would make the whole test a duplicate of the
+    // anchored line-only case above. One σ echo per cap.
+    assert_eq!(
+        list_field(&base, "surface_stresses").len(),
+        2,
+        "the combined fixture must reach the surfaces path (one σ echo per cap)"
+    );
+
+    let scaled_q: Vec<f64> = BASE_Q.iter().map(|&q| q * GAUGE_LAMBDA).collect();
+    let scaled = solve_combined(&scaled_q, SIGMA_BASE * GAUGE_LAMBDA);
+    // As at both other emitters: the rescaled solve must independently satisfy the
+    // bridge — strict FORCE / bare-Real tags, the Nᵢ = qᵢ·Lᵢ·q_ref identity, and the
+    // strut/cable sign contract — so covariance is asserted BETWEEN two known-good solves.
+    assert_bridge_holds(&scaled, "anchored surfaces (scaled gauge)");
+
+    // The σ echoes must scale by λ too. THIS is what makes the experiment a whole-gauge
+    // rescale rather than a q-only one; a q-only rescale is different physics and would
+    // legitimately move the free nodes, so without this the geometry half below could
+    // pass for the wrong reason.
+    let base_sigma = list_field(&base, "surface_stresses");
+    let scaled_sigma = list_field(&scaled, "surface_stresses");
+    assert_eq!(
+        base_sigma.len(),
+        scaled_sigma.len(),
+        "both gauges must reach the surfaces path with the same cap count"
+    );
+    for (t, (b, s)) in base_sigma.iter().zip(scaled_sigma.iter()).enumerate() {
+        let bs = dimensionless_echo("surface_stresses", b);
+        let ss = dimensionless_echo("surface_stresses", s);
+        let expected = bs * GAUGE_LAMBDA;
+        // The same non-vacuity floor `assert_gauge_covariance` applies to the forces: at
+        // bs = 0 the ×λ claim holds for any λ, and σ = 0 would also silently degrade the
+        // solve back to the line-only path the check above exists to exclude.
+        assert!(
+            bs.abs() > 1e-9,
+            "anchored surfaces: surface_stresses[{t}] = {bs} at the base gauge makes the \
+             ×{GAUGE_LAMBDA} scale check vacuous, and a zero σ degrades the solve to the \
+             line-only path (task #6119)"
+        );
+        assert!(
+            (ss - expected).abs() <= 1e-12 * expected.abs(),
+            "anchored surfaces: surface_stresses[{t}] must scale by {GAUGE_LAMBDA} under a \
+             whole-gauge rescale: {bs} · {GAUGE_LAMBDA} = {expected}, got {ss}. Rescaling q \
+             without σ is a different structure, not a gauge change (task #6119)"
+        );
+    }
+
+    assert_gauge_covariance(&base, &scaled, 1e-9, 1e-9, "anchored surfaces");
 }
 
 /// FREE-STANDING GAUGE COVARIANCE — the same claim at the OTHER emitter, where it holds
