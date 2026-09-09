@@ -77,9 +77,18 @@ echo "--- holder_wait_until_held: causal flock-probe barrier ---"
 # — the barrier IS the wait.  This is the property the retired fixed pause
 # cannot offer: under load the background subshell may not be scheduled inside
 # any fixed window, leaving the slot free when the contended operation runs.
+#
+# The owner is GATED, never self-timed.  A `( flock -x 9; sleep N )` owner here
+# would reintroduce the OVERRUN half of the very race this lib exists to close
+# (lib header, "TWO-SIDED race"): three assertions run inside the hold below,
+# one of which forks a fresh `bash`, and on a saturated host that chain can
+# outlast any fixed N — at which point the owner releases early and the barrier
+# goes RED with the mechanism perfectly healthy.  A test-released owner makes
+# the hold strictly CONTAIN the assertions however long they take.  The gated
+# owner is itself under test in section (c); using it here is not circular,
+# because holder_spawn_gated does not use holder_wait_until_held.
 _SLOT_A="$_TMPD/a.slot"
-( flock -x 9; sleep 5 ) 9>>"$_SLOT_A" &
-_PID_A=$!
+_PID_A="$(holder_spawn_gated "$_SLOT_A" "$_TMPD/a.ready" "$_TMPD/a.release")"
 _SPAWNED_PIDS+=("$_PID_A")
 
 assert "holder_wait_until_held: confirms a live owner with no grace pause (returns 0)" \
@@ -95,8 +104,7 @@ assert "holder_wait_until_held: the probe agrees the slot is really taken" \
 assert "holder_wait_until_held: the exported helper really runs in a child shell" \
     bash -c "holder_wait_until_held '$_SLOT_A'"
 
-kill "$_PID_A" 2>/dev/null || true
-wait "$_PID_A" 2>/dev/null || true
+holder_release "$_TMPD/a.release" "$_PID_A" || true
 
 # NEGATIVE CONTROL: a fresh FREE slot is never taken, so the barrier must
 # exhaust its (tiny) backstop budget and return non-zero.  Without this the

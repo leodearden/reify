@@ -541,37 +541,46 @@ assert "plan_strip_comments (e2): the real dump has command lines left after str
 assert "plan_strip_comments (e3): stripping the real dump removed something" \
     refute test "$_STRIP_FORKFREE" = "$_REAL_DUMP"
 
-# (f) STRUCTURAL fork-freedom. The lib's whole rationale is that a pipe forks a
-# subshell and a filter which, under concurrent load, can fail with EINTR even
-# when the content matches (esc-4574-42). Asserting that property structurally
-# keeps a future "simplification" back to `| grep` from silently reintroducing it.
+# (f) FORK-FREEDOM. The lib's whole rationale is that a pipe forks a subshell
+# and a filter which, under concurrent load, can fail with EINTR even when the
+# content matches (esc-4574-42). What LICENSES the migration is the behavioural
+# equivalence control (e) above; (f1) and (f2) keep a future "simplification"
+# back to `| grep` from silently reintroducing the fork that (e) alone would
+# still accept, since a forking implementation can be byte-identical in output.
 #
-# `declare -f` renders a `case` alternation ('#'* | '') on its own line ending
-# in ')', so those lines are excluded below: that '|' is pattern alternation,
-# not a pipe operator, and a guard that flagged the bare character would
-# false-RED the moment the body used a two-pattern arm.
-_body_has_pipe() {
-    local _line _trim
-    while IFS= read -r _line; do
-        _trim="${_line%"${_line##*[![:space:]]}"}"
-        case "$_trim" in
-            *')') continue ;;
-            *'|'*) return 0 ;;
-        esac
-    done < <(declare -f "$1")
-    return 1
-}
+# (f1) is BEHAVIOURAL, not a scan of the rendered source: each external filter
+# is shadowed by a marker-writing function, so a real call is recorded however
+# it is spelled, while a body that merely mentions `grep` in a local name or a
+# comment records nothing. A source-text scan gets both of those backwards.
+# The shadows live inside a subshell so they cannot leak into later cases --
+# `_body_has` below itself runs `grep`.
+_STRIP_FILTER_CALLS="$(mktemp)"
+(
+    grep() { printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
+    sed()  { printf 'sed\n'  >> "$_STRIP_FILTER_CALLS"; }
+    awk()  { printf 'awk\n'  >> "$_STRIP_FILTER_CALLS"; }
+    plan_strip_comments "$_STRIP_MIXED" >/dev/null
+)
+assert "plan_strip_comments (f1): invokes no external filter (grep/sed/awk shadowed and never called)" \
+    test ! -s "$_STRIP_FILTER_CALLS"
+
+# NON-VACUITY for (f1): the shadows really do fire when something calls them,
+# so the empty marker above is evidence of absence rather than of a probe that
+# never worked.
+(
+    grep() { printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
+    printf '%s\n' "$_STRIP_MIXED" | grep -v '^#' >/dev/null
+)
+assert "plan_strip_comments (f1n): the filter shadows DO record a real call (f1 is not vacuous)" \
+    test -s "$_STRIP_FILTER_CALLS"
+rm -f "$_STRIP_FILTER_CALLS"
+
+# (f2) The one STRUCTURAL check worth keeping: a command substitution is a
+# subshell by definition, so its absence is exactly the property (f1) cannot
+# observe (a `$( ... )` that forks but calls no external filter).
 _body_has() { declare -f "$1" | grep -qF -- "$2"; }
 
-assert "plan_strip_comments (f1): body contains no pipe operator" \
-    refute _body_has_pipe plan_strip_comments
 assert "plan_strip_comments (f2): body contains no command substitution" \
     refute _body_has plan_strip_comments '$('
-assert "plan_strip_comments (f3): body shells out to no external filter (grep)" \
-    refute _body_has plan_strip_comments 'grep'
-assert "plan_strip_comments (f4): body shells out to no external filter (sed)" \
-    refute _body_has plan_strip_comments 'sed'
-assert "plan_strip_comments (f5): body shells out to no external filter (awk)" \
-    refute _body_has plan_strip_comments 'awk'
 
 test_summary
