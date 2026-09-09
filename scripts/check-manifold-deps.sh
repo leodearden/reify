@@ -659,8 +659,8 @@ ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED
 #
 # Note this gates the VERIFY PIPELINE, not `cargo build` — gmsh-free stub
 # builds stay sanctioned, and crates/reify-kernel-gmsh carries real
-# `cfg(not(has_gmsh))` stub modules (src/kernel.rs, src/lib.rs,
-# src/mesh_profile_2d.rs) for them, exactly as reify-kernel-occt does.
+# `cfg(not(has_gmsh))` stub modules for them, exactly as reify-kernel-occt
+# does.
 
 # BEGIN gmsh-candidates — EXACT MIRROR of reify_build_utils::NativeDep::Gmsh
 # (crates/reify-build-utils/src/lib.rs). Order is load-bearing and is the
@@ -705,7 +705,7 @@ dep_presence_arm GMSH Gmsh gmsh_hint
 #
 # Note this gates the VERIFY PIPELINE, not `cargo build` — openvdb-free stub
 # builds stay sanctioned, and crates/reify-kernel-openvdb carries real
-# `cfg(not(has_openvdb))` stub modules (src/kernel.rs, src/ingest.rs) for them.
+# `cfg(not(has_openvdb))` stub modules for them.
 
 # BEGIN openvdb-candidates — EXACT MIRROR of
 # reify_build_utils::NativeDep::OpenVdb (crates/reify-build-utils/src/lib.rs).

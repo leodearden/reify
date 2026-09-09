@@ -20,11 +20,11 @@ fn main() {
     // crate still compiles — only the stub kernel is exposed.
     //
     // Deliberately fail-OPEN: gmsh-free stub builds are sanctioned and this
-    // crate carries real `cfg(not(has_gmsh))` stub modules (`src/kernel.rs`,
-    // `src/lib.rs`, `src/mesh_profile_2d.rs`) for them, so hard-failing here
-    // would break a supported configuration. The GATE lives outside the build,
-    // in the Gmsh arm of `scripts/check-manifold-deps.sh` (task 6493) — see the
-    // warning text below.
+    // crate carries real `cfg(not(has_gmsh))` stub modules for them
+    // (`grep -l 'not(has_gmsh)' src/*.rs`), so hard-failing here would break a
+    // supported configuration. The GATE lives outside the build, in the Gmsh
+    // arm of `scripts/check-manifold-deps.sh` (task 6493) — see the warning
+    // text below.
     let LibLoc { include_dir: _include_dir, lib_dir } =
         match reify_build_utils::find(NativeDep::Gmsh) {
             Some(loc) => loc,

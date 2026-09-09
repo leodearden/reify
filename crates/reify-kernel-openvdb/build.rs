@@ -22,9 +22,9 @@ fn main() {
             //
             // Deliberately fail-OPEN: openvdb-free stub builds are sanctioned
             // and this crate carries real `cfg(not(has_openvdb))` stub modules
-            // (`src/kernel.rs`, `src/ingest.rs`) for them, so hard-failing here
-            // would break a supported configuration. The GATE lives outside the
-            // build, in the OpenVDB arm of `scripts/check-manifold-deps.sh`
+            // for them (`grep -l 'not(has_openvdb)' src/*.rs`), so hard-failing
+            // here would break a supported configuration. The GATE lives outside
+            // the build, in the OpenVDB arm of `scripts/check-manifold-deps.sh`
             // (task 6493) — see the warning text below.
             println!(
                 "cargo:warning=OpenVDB libraries not found. \

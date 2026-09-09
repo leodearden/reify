@@ -1237,8 +1237,8 @@ assert "guard exits 0 when BOTH Gmsh override dirs carry their sentinels (positi
 # reports zero tests REPORTED rather than zero FAILED.
 #
 # build.rs stays deliberately fail-OPEN — reify-kernel-openvdb's
-# cfg(not(has_openvdb)) stub modules (src/kernel.rs, src/ingest.rs) are a
-# sanctioned, tested configuration. The GATE lives in check-manifold-deps.sh.
+# cfg(not(has_openvdb)) stub modules are a sanctioned, tested configuration.
+# The GATE lives in check-manifold-deps.sh.
 #
 # EVERY case supplies healthy OCCT *and* Gmsh overrides: both arms run AHEAD of
 # the OpenVDB arm in the same script, so without them a
