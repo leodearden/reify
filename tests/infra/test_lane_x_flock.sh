@@ -25,6 +25,11 @@ LIB="$REPO_ROOT/scripts/lib_lane_x_flock.sh"
 
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh (task 6247) — causal holder-handshake primitives
+# and the holder_max_concurrent event-log predicate.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
 # ===========================================================================
 # FOUNDATION tests (Tests 1-4): lib structure and sourceable interface
 # ===========================================================================
@@ -172,6 +177,8 @@ _OUT12F="$(mktemp)"
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK12}.slot-1" &
 _HOLDER12=$!
 sleep 0.2   # give holder time to acquire
+assert "Test 12: holder confirmed holding slot-1 before the invocation starts (causal barrier)" \
+    holder_wait_until_held "${_LOCK12}.slot-1"
 
 _EXIT12=0
 REIFY_LANE_X_FLOCK_LOCK="$_LOCK12" REIFY_LANE_X_FLOCK_WAIT=0 \
@@ -264,6 +271,8 @@ _LOCK15="$(mktemp)"
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
 sleep 0.2
+assert "Test 15: holder confirmed holding slot-1 before the invocation starts (causal barrier)" \
+    holder_wait_until_held "${_LOCK15}.slot-1"
 
 # Same deadline-sentinel capture as Test 13: an explicit finite WAIT=1 against
 # the 45s holder reaches slot_acquire's rc=75 emit site on every green run.
@@ -329,6 +338,7 @@ echo "--- Test 18: DISABLE=1 does not acquire a slot — two concurrent invocati
 # against an ~1000ms/~2000ms expected split keeps this a jitter-proof
 # concurrency proof rather than a coin flip against subshell startup overhead.
 _LOCK18="$(mktemp)"
+_LOG18="$(mktemp)"
 _START18_NS="$(date +%s%N)"
 
 REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK18" \
@@ -350,10 +360,33 @@ rm -f "$_LOCK18" "${_LOCK18}.slot-1"
 
 assert "Test 18a: two DISABLE=1 1.0s invocations run concurrently, not serially (elapsed < 1500ms, got ${_ELAPSED18_MS}ms)" \
     test "$_ELAPSED18_MS" -lt 1500  # wallclock:allow
+
+# CAUSAL overlap proof (task 6247), replacing the ceiling above. Each payload
+# records when it entered and left its own interval; two intervals that overlap
+# means the invocations really did run at the same time. Under a regression
+# where DISABLE=1 stops bypassing the lock, the second payload enters only after
+# the first exits, so max concurrency is 1 and this goes RED — which is exactly
+# what the ceiling was trying to express, without pricing two fork+source
+# chains in milliseconds.
+#
+# DISABLE=1 acquires no slot BY CONSTRUCTION, so REIFY_SLOT_EVENT_LOG is
+# structurally empty here and cannot be the oracle; the payloads emit their own
+# intervals in the format holder_max_concurrent already parses.
+_MAX18="$(holder_max_concurrent "$_LOG18")"
+_ACQ18="$(grep -c ' ACQUIRE ' "$_LOG18" 2>/dev/null || true)"
+_REL18="$(grep -c ' RELEASE' "$_LOG18" 2>/dev/null || true)"
+assert "Test 18a-causal: the two DISABLE=1 payload intervals overlap (max concurrent ${_MAX18}, want 2) — a serializing regression yields 1" \
+    test "$_MAX18" -eq 2
+assert "Test 18a-control: both payloads recorded an entry (${_ACQ18} of 2) — a run where neither executed cannot pass" \
+    test "$_ACQ18" -eq 2
+assert "Test 18a-control: both payloads recorded an exit (${_REL18} of 2)" \
+    test "$_REL18" -eq 2
 assert "Test 18b: first invocation exits 0 (got $_EXIT18A)" \
     test "$_EXIT18A" -eq 0
 assert "Test 18c: second invocation exits 0 (got $_EXIT18B)" \
     test "$_EXIT18B" -eq 0
+
+rm -f "$_LOG18"
 
 # ===========================================================================
 # LOCK-PARENT VALIDATION tests (Tests 19-20): the two lock-parent-directory
