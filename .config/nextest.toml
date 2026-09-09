@@ -46,7 +46,11 @@ occt = { max-threads = 24 }
 # The 5 known-slow "heavy" binaries below carry their own larger ceiling
 # inline on their existing [[profile.default.overrides]] blocks (task 5141) —
 # nextest resolves each override SETTING by first-match independently, so
-# they do not fall through to this default.
+# they do not fall through to this default. A 6th override at the end of
+# this file (task 7339, package(reify-eval) & binary
+# (solve_elastic_static_body_e2e)) carries the same 1800s ceiling for a
+# DISTINCT reason — contention headroom, not intrinsic slowness; see that
+# block's own comment.
 # DELIBERATE: no `retries` key here or anywhere in this file. A retry would
 # re-run and mask the very hangs/flakes this ceiling exists to attribute and
 # kill (task invariant — regression-guarded by test_occt_gated_scope.sh).
@@ -55,8 +59,9 @@ occt = { max-threads = 24 }
 # be given its own [[profile.default.overrides]] slow-timeout (mirroring the
 # 5 heavy-binary blocks below) — otherwise nextest will SIGTERM it at 1200s
 # indistinguishable in the log from a genuine hang. There is no automated
-# check that the heavy-binary list stays complete; this comment is that
-# guard until one exists.
+# check that the heavy-binary list (or the contention-headroom override
+# alongside it, task 7339) stays complete; this comment is that guard until
+# one exists.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
 
@@ -306,14 +311,32 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 # legitimately needs >20 minutes"). Do not read the mere presence of this
 # block as evidence the test is a genuine 20+-minute test; a future reader
 # retuning these ceilings should treat its basis as distinct from the 5
-# above. terminate-after = 15 (1800s) mirrors the sibling blocks' value,
-# giving ~3x headroom over the worst recorded runtime (615s) even under
-# contention, while intentionally NOT going higher: raising terminate-after
-# further would only widen the window before a genuine hang in this binary
-# is attributed and killed (the exact problem task 5141 introduced this
-# per-test ceiling to fix). That widening is accepted here as the cost of
-# absorbing contention; shrinking host oversubscription itself is a
-# scheduler/capacity lever (task 5185, cancelled) and is out of scope.
+# above. terminate-after = 15 (1800s) mirrors the sibling blocks' value.
+# State both bounds honestly, since they diverge: ~3x headroom over the
+# worst COMPLETED run (615s) even under contention, but only ~1.5x over the
+# LOWER BOUND of the one observed timeout — esc-5097-3 was SIGTERMed at the
+# prior 1200s ceiling, so its true demand under that contention is unknown
+# and strictly greater than 1200s, and against that observation (not the
+# completed-run figure) the new ceiling carries much thinner margin.
+# Intentionally NOT going higher than 1800s regardless: raising
+# terminate-after further would only widen the window before a genuine hang
+# in this binary is attributed and killed (the exact problem task 5141
+# introduced this per-test ceiling to fix). That widening is accepted here
+# as the cost of absorbing contention; shrinking host oversubscription
+# itself is a scheduler/capacity lever (task 5185, cancelled) and is out of
+# scope. FOLLOW-UP SIGNAL: a second timeout at 1800s under similar
+# contention means the contention lever, not this ceiling, is the
+# remaining fix — do not respond to a repeat by raising terminate-after
+# again.
+#
+# No `priority` key on this block, unlike the 5 LPT-tier siblings above:
+# deliberately left at nextest's default (0) to keep this change a pure
+# slow-timeout adjustment within task 7339's scope. This test's measured
+# runtimes (median 171.573s, max up to 615s) would plausibly qualify it for
+# the secondary LPT tier (priority = 50) as scheduling headroom against the
+# same makespan pressure this override absorbs — see the LPT scheduling
+# comment above — but that is a distinct lever, deliberately left for a
+# follow-up rather than folded into this task.
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(solve_elastic_static_body_e2e)'
 slow-timeout = { period = "120s", terminate-after = 15 }
