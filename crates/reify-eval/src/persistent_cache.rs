@@ -5463,6 +5463,79 @@ version = "9.9.9"
         assert!(!a.is_empty(), "a non-empty mirror must produce bytes");
     }
 
+    #[test]
+    fn persisted_diagnostic_code_is_encoded_by_name_not_variant_index() {
+        // `DiagnosticCode` is grouped by category, so a new code is realistically
+        // INSERTED mid-enum — and nothing invalidates existing entries when that
+        // happens (`ENTRY_FORMAT_VERSION` does not move on an enum edit, and
+        // crates/reify-core/src/diagnostics.rs is deliberately absent from
+        // `CONTRIBUTORS_RELATIVE`). A positional encoding would therefore have
+        // every already-cached entry silently re-read as its NEIGHBOURING code.
+        // Persisting the stable serde name is what makes an insertion a
+        // non-event; the name appearing verbatim in the bytes is the whole
+        // invariant.
+        let block = encode_diagnostics_block(&[reify_core::Diagnostic::warning("m")
+            .with_code(reify_core::DiagnosticCode::ShellTooThick)]);
+        assert!(
+            block.windows(13).any(|w| w == b"ShellTooThick"),
+            "the encoded block must carry the code's stable NAME, not a \
+             positional variant index; bytes: {block:?}"
+        );
+    }
+
+    #[test]
+    fn unrecognised_code_name_decodes_to_none() {
+        // The other half of a name-based wire format: a name this build does not
+        // know (a code renamed or removed upstream, or an entry written by a
+        // newer engine) must degrade to `None` with severity and message intact.
+        // Never an `Err` — rejecting the entry would throw away a still-valid
+        // cached solve — and never a neighbouring variant, which is exactly what
+        // a positional encoding would silently produce.
+        let from_the_future = PersistedDiagnostic {
+            severity: 1,
+            message: "written by a newer engine".to_string(),
+            code: Some("NoSuchCodeFromTheFuture".to_string()),
+        };
+        let restored = diagnostic_from_persisted(&from_the_future)
+            .expect("an unknown code name must degrade, never fail the decode");
+
+        assert_eq!(
+            restored.code, None,
+            "an unknown code name must decode to None, never to a neighbouring variant"
+        );
+        assert_eq!(
+            restored.severity,
+            reify_core::Severity::Warning,
+            "severity must survive the degradation"
+        );
+        assert_eq!(
+            restored.message, "written by a newer engine",
+            "message must survive the degradation"
+        );
+    }
+
+    #[test]
+    fn known_code_names_round_trip() {
+        // Both a shell-selection code and an FEA code, from opposite ends of the
+        // category-grouped enum, plus the absent case.
+        for expected in [
+            Some(reify_core::DiagnosticCode::ShellTooThick),
+            Some(reify_core::DiagnosticCode::FeaUnderConstrained),
+            None,
+        ] {
+            let mut d = reify_core::Diagnostic::warning("m");
+            if let Some(c) = expected {
+                d = d.with_code(c);
+            }
+            let restored = diagnostic_from_persisted(&diagnostic_to_persisted(&d))
+                .expect("a well-formed mirror must decode");
+            assert_eq!(
+                restored.code, expected,
+                "code must survive the name-based round trip"
+            );
+        }
+    }
+
     // ── WithDiagnostics<V> envelope tests (task 7245) ─────────────────────────
     //
     // The envelope is what makes diagnostics replayable for EVERY persistable
