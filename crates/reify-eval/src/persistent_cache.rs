@@ -143,7 +143,7 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 /// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
 /// this constant in the same commit. Pinned by
 /// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal` and
-/// `entry_format_version_const_is_two`.
+/// `entry_format_version_const_is_three`.
 ///
 /// Starting at 1 follows the Reify convention that 0 means "uninitialised /
 /// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
@@ -3220,7 +3220,7 @@ version = "9.9.9"
     }
 
     #[test]
-    fn entry_format_version_const_is_two() {
+    fn entry_format_version_const_is_three() {
         // An intentional on-disk-layout bump must touch this assertion — that
         // is the point: it forces a deliberate acknowledgement that cached bytes
         // from the previous version are now incompatible. Mirrors the
@@ -3231,7 +3231,13 @@ version = "9.9.9"
         // v1 → v2 (task 7245): the body gained a length-framed diagnostics
         // prefix ahead of the `PersistentlyCacheable` body, so v1 entries are
         // not readable and must be rejected before the body decode is attempted.
-        assert_eq!(ENTRY_FORMAT_VERSION, 2);
+        //
+        // v2 → v3 (task 7245 review fix): `PersistedDiagnostic` itself was
+        // reshaped — `code` became a stable serde variant NAME instead of
+        // bincode's positional variant index, and `labels` / `candidates` are
+        // now carried — so a v2-era entry in a developer or CI cache dir is no
+        // longer decodable under this reader.
+        assert_eq!(ENTRY_FORMAT_VERSION, 3);
     }
 
     #[test]
@@ -3278,6 +3284,91 @@ version = "9.9.9"
         assert!(
             got.is_none(),
             "a v1 entry must read as a clean miss so the caller cold-recomputes"
+        );
+    }
+
+    #[test]
+    fn v2_entry_reads_as_clean_miss() {
+        // The migration contract for the v2 → v3 bump. v2 entries genuinely
+        // exist in developer and CI cache dirs — this branch's own test runs
+        // wrote them before the review fix reshaped `PersistedDiagnostic`.
+        //
+        // The fixture's diagnostics block is EMPTY on purpose: that is both the
+        // common shape (most solves say nothing) and the only v2 shape that
+        // still decodes CLEANLY under the v3 reader, since an empty
+        // `Vec<PersistedDiagnostic>` is 8 zero bytes whatever the element shape
+        // is. A v2 block with an actual diagnostic runs out of bytes under the
+        // v3 element layout and is already rejected — but by accident, not by
+        // contract. So the empty block is exactly the entry that would be
+        // silently served under a reader whose element shape has changed, and
+        // `verify_format_version` is what must stop it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667d";
+
+        // Written as a literal 2 (never `ENTRY_FORMAT_VERSION`) so this test
+        // keeps its meaning across any future bump.
+        assert_ne!(
+            2, ENTRY_FORMAT_VERSION,
+            "this fixture only models a STALE entry while ENTRY_FORMAT_VERSION \
+             differs from 2; the PersistedDiagnostic reshape is what makes v2 \
+             entries stale"
+        );
+
+        // Hand-write the v2 layout: a v2 header, then the length-framed
+        // diagnostics prefix carrying an empty vec (bincode encodes that as a
+        // u64 length of 0), then the `ElasticResult` body.
+        std::fs::create_dir_all(shard_dir(root, eng, inp)).unwrap();
+        let legacy = make_sample_result();
+        let block = 0u64.to_le_bytes();
+        let header = CacheEntryHeader {
+            format_version: 2,
+            engine_version_hash: cache_key_to_ascii_32(eng).unwrap(),
+            input_hash: cache_key_to_ascii_32(inp).unwrap(),
+            solve_time_ms: legacy.solve_time_ms(),
+            byte_size: 8 + block.len() as u64 + legacy.uncompressed_byte_size(),
+            written_at: 0,
+        };
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        header.write_to(&mut f).unwrap();
+        f.write_all(&(block.len() as u64).to_le_bytes()).unwrap();
+        f.write_all(&block).unwrap();
+        legacy.serialize_to_writer(&mut f).unwrap();
+        drop(f);
+        write_sidecar(&entry_meta_path(root, eng, inp)).unwrap();
+
+        let got = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .expect("a stale entry must be a miss, never an Err");
+        assert!(
+            got.is_none(),
+            "a v2 entry must read as a clean miss so the caller cold-recomputes"
+        );
+
+        // Non-vacuity: the SAME body bytes under the CURRENT stamp must be a
+        // HIT. Without this, a malformed fixture would fail its body decode —
+        // which `read_entry` also turns into `Ok(None)` — and the assertion
+        // above would pass for entirely the wrong reason.
+        let fresh_inp = "0011223344556677001122334455667e";
+        let fresh_header = CacheEntryHeader {
+            format_version: ENTRY_FORMAT_VERSION,
+            input_hash: cache_key_to_ascii_32(fresh_inp).unwrap(),
+            ..header
+        };
+        std::fs::create_dir_all(shard_dir(root, eng, fresh_inp)).unwrap();
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, fresh_inp)).unwrap();
+        fresh_header.write_to(&mut f).unwrap();
+        f.write_all(&(block.len() as u64).to_le_bytes()).unwrap();
+        f.write_all(&block).unwrap();
+        legacy.serialize_to_writer(&mut f).unwrap();
+        drop(f);
+        write_sidecar(&entry_meta_path(root, eng, fresh_inp)).unwrap();
+
+        assert!(
+            read_entry::<WithDiagnostics<ElasticResult>>(root, eng, fresh_inp)
+                .expect("a current-format entry must not Err")
+                .is_some(),
+            "the fixture body must be decodable, or the miss above proves nothing"
         );
     }
 
