@@ -1923,34 +1923,24 @@ mod tests {
         );
     }
 
-    /// Pins the ambiguity hazard documented on `get_value_cell_in`: resolution
-    /// keys on `id.member` alone, so when two cells share a member name under
-    /// different `id.entity` values, the first declared silently wins. This is
-    /// supported behaviour by design (see the rustdoc on `get_value_cell_in`),
-    /// not a bug to close — the alternatives (an entity-aware lookup, or a
-    /// panic on ambiguity) were considered and declined because they would
-    /// not be drop-in for the call sites this helper targets.
+    /// Pins that `get_value_cell_in` shares #7295's ambiguity guard: two value
+    /// cells sharing member name "x" under different entities must panic
+    /// rather than silently resolve to the first declared. Reuses
+    /// `ambiguous_x_template()` (below), whose two colliding cells both carry
+    /// a default, so a resolution failure here can only be the collision,
+    /// never a missing default. Deliberately not mirrored: main's entity-
+    /// naming pin (`test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities`)
+    /// — once `get_value_cell_in` and `get_let_expr_in_template` share one
+    /// walk, that coverage applies to both entry points already.
     #[test]
-    fn test_get_value_cell_in_resolves_first_match_when_member_name_is_ambiguous() {
-        use reify_core::{ModulePath, Type};
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_value_cell_in_panics_on_ambiguous_member() {
+        use reify_core::ModulePath;
 
-        let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", Type::dimensionless_scalar())
-            .auto_param("Sub", "x", Type::dimensionless_scalar())
-            .build();
         let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
+            .template(ambiguous_x_template())
             .build();
-
-        let cell = super::get_value_cell_in(&module, "S", "x");
-        assert_eq!(
-            cell.id.entity, "S",
-            "get_value_cell_in resolves on id.member alone; with two cells sharing \
-             member 'x' under different id.entity, the FIRST declared (id.entity \
-             == \"S\") must win silently — got id.entity {:?}, so the documented \
-             first-match-wins resolution order has changed",
-            cell.id.entity
-        );
+        super::get_value_cell_in(&module, "Bracket", "x");
     }
 
     // ── get_let_expr_in_template ────────────────────────────────────────────
