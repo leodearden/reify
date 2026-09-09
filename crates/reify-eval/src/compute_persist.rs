@@ -1249,4 +1249,117 @@ mod tests {
              (task #4071 step-2 adds it to is_persistable_target)",
         );
     }
+
+    // ── Diagnostics carried across the persist bridge (task 7245) ─────────────
+    //
+    // The bridge is the round trip that decides whether a warm serve can replay
+    // what the cold solve said. These two tests pin it as TARGET-AGNOSTIC —
+    // the `WithDiagnostics` envelope is generic, so the elastic and buckling
+    // arms must behave identically rather than one being special-cased.
+
+    /// The canonical too-thick warning, shaped exactly as the elastic solver
+    /// emits it: `Diagnostic::warning(..).with_code(..)`, no labels, no
+    /// candidates.
+    fn shell_too_thick_warning() -> reify_core::Diagnostic {
+        reify_core::Diagnostic::warning(
+            "shell candidate too thick for shell elements; falling back to tet mesh",
+        )
+        .with_code(reify_core::DiagnosticCode::ShellTooThick)
+    }
+
+    /// Assert a single replayed diagnostic is the too-thick warning.
+    fn assert_is_shell_too_thick_warning(diags: &[reify_core::Diagnostic]) {
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly the one written diagnostic must be replayed, got {diags:?}"
+        );
+        assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+        assert_eq!(
+            diags[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick),
+            "the replayed diagnostic must keep its code — downstream consumers \
+             key off DiagnosticCode, not message substrings"
+        );
+        assert_eq!(diags[0].message, shell_too_thick_warning().message);
+    }
+
+    #[test]
+    fn persistent_write_then_lookup_replays_elastic_static_diagnostics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0001_7245_0001_7245_0001_7245_0001_u128);
+        let value = crate::compute_targets::elastic_static::value_from_elastic_result(
+            &minimal_elastic_result(42.0),
+        );
+
+        super::persistent_write(
+            tmp.path(),
+            "solver::elastic_static",
+            cache_key,
+            &value,
+            &[shell_too_thick_warning()],
+        );
+
+        let (got_value, got_diags) =
+            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
+                .expect("the entry just written must be a hit");
+
+        assert_eq!(
+            got_value.content_hash(),
+            value.content_hash(),
+            "carrying diagnostics must not perturb the reconstructed Value"
+        );
+        assert_is_shell_too_thick_warning(&got_diags);
+    }
+
+    #[test]
+    fn persistent_write_then_lookup_replays_buckling_diagnostics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0002_7245_0002_7245_0002_7245_0002_u128);
+        let value = crate::compute_targets::buckling::value_from_buckling_result(
+            &minimal_buckling_result_cache(),
+        );
+
+        super::persistent_write(
+            tmp.path(),
+            "solver::buckling",
+            cache_key,
+            &value,
+            &[shell_too_thick_warning()],
+        );
+
+        let (got_value, got_diags) =
+            super::persistent_lookup(tmp.path(), "solver::buckling", cache_key)
+                .expect("the entry just written must be a hit");
+
+        assert_eq!(
+            got_value.content_hash(),
+            value.content_hash(),
+            "carrying diagnostics must not perturb the reconstructed Value"
+        );
+        assert_is_shell_too_thick_warning(&got_diags);
+    }
+
+    #[test]
+    fn persistent_write_then_lookup_replays_an_empty_diagnostics_list() {
+        // The common case: a solve that said nothing must still be a HIT, with
+        // an empty list rather than a decode failure.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0003_7245_0003_7245_0003_7245_0003_u128);
+        let value = crate::compute_targets::elastic_static::value_from_elastic_result(
+            &minimal_elastic_result(7.0),
+        );
+
+        super::persistent_write(tmp.path(), "solver::elastic_static", cache_key, &value, &[]);
+
+        let (got_value, got_diags) =
+            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
+                .expect("the entry just written must be a hit");
+
+        assert_eq!(got_value.content_hash(), value.content_hash());
+        assert!(
+            got_diags.is_empty(),
+            "a silent solve must replay no diagnostics, got {got_diags:?}"
+        );
+    }
 }
