@@ -161,7 +161,16 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///   cold-recomputed once. Note that [`ENGINE_VERSION_HASH`] would NOT have
 ///   invalidated these entries on its own — its contributor set covers the
 ///   solver sources, not this module.
-pub const ENTRY_FORMAT_VERSION: u32 = 2;
+/// - **3** (task 7245 review fix) — [`PersistedDiagnostic`], the element type
+///   inside that block, is itself reshaped: `code` is now the stable serde
+///   variant NAME rather than bincode's positional variant index, and `labels`
+///   and `candidates` are carried. Same migration mechanism as v1 → v2, and it
+///   is what stops a v2-era entry in a developer or CI cache dir from being
+///   mis-decoded under the v3 reader — an empty v2 diagnostics block is
+///   byte-identical to an empty v3 one, so without the stamp those entries
+///   would be served by a reader whose element shape has changed. Pinned by
+///   `v2_entry_reads_as_clean_miss`.
+pub const ENTRY_FORMAT_VERSION: u32 = 3;
 
 /// Fixed byte length of a bincode-1.3 fixint-LE encoded [`CacheEntryHeader`].
 ///
