@@ -1,29 +1,17 @@
 // Test fixture for task 6643 (leaf-scope Stage A's value-diff walk to PRD line 33).
 //
-// DELIBERATELY GEOMETRY-FREE. Stage A (`reify_eval::stage_a_eligible`) is pure
+// DELIBERATELY GEOMETRY-FREE: Stage A (`reify_eval::stage_a_eligible`) is pure
 // Rust and calls no geometry kernel, so the guard that consumes this fixture
-// must run in EVERY build profile including a stub build with neither gmsh nor
-// OCCT. That is the task-6635 lesson: the Stage-A contract it established was
-// carried only by `#[cfg(has_gmsh)]` e2es, which is why 6635 also had to add an
-// in-crate `reify-mesh-morph` unit test. No `box(...)`, no realization, no
-// kernel — just a derived `let` over two Length params.
+// must run in EVERY build profile, including a stub build with neither gmsh nor
+// OCCT.
 //
 // `is_wide` is the SAME shape as a compiler-synthesized `__guard_N` block/where
-// guard cell (`ValueCellKind::Let` + `Type::Bool`; see
-// `crates/reify-eval/src/graph.rs:599-605` and `reify-compiler/src/guards.rs`)
-// but is NOT registered in `graph.structure_controlling`. That is exactly the
-// discriminator the leaf-scoping change turns on, and the pairing it forms with
-// the `stage_a_eligible_derived_let_guard_cell_diff_returns_false` unit test is
-// the whole safety argument:
-//
-//   * `is_wide` (derived, not structure-controlling) → must NOT veto a tick.
-//   * a `__guard_N` cell (derived, structure-controlling) → must STILL veto,
-//     because Rule 2 is evaluated before the kind match.
-//
-// Ticking `width` 10mm → 10.5mm against `depth` 10mm flips `is_wide` from false
-// to true, so the derived cell provably differs on a PURELY DIMENSIONAL edit —
-// which is the mechanism the whole task is about (a derived cell is a pure
-// function of its leaves, so it changes on every tick).
+// guard cell (`ValueCellKind::Let` + `Type::Bool`) but is NOT registered in
+// `graph.structure_controlling` — that set membership, not the cell's kind or
+// type, is the discriminator leaf scoping turns on. Ticking `width` 10mm ->
+// 10.5mm against `depth` 10mm flips `is_wide`, so the derived cell provably
+// differs on a purely dimensional edit. The structure-controlling half of the
+// pairing is `morph_derived_let_guarded.ri`.
 
 structure MorphDerivedLet {
     param width: Length = 10mm
