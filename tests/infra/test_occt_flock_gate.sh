@@ -15,6 +15,14 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/occt_flock_gate_lib.sh" ] || { echo "ERROR: occt_flock_gate_lib.sh not found at $SCRIPT_DIR/occt_flock_gate_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/occt_flock_gate_lib.sh"
 
+# plan_capture_lib.sh (task 6426) — `plan_capture_complete` certifies a
+# --print-plan capture is not truncated, and `capture_print_plan` retries until
+# it is.  Every plan-string assertion in this file depends on both: without the
+# completeness certification a capture truncated under load reads as "pattern
+# absent" and fires a misleading failure instead of a retry (task 6247).
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 WRAPPER="$REPO_ROOT/scripts/cargo-test-occt-gated.sh"
 
 echo "=== OCCT flock gate tests ==="
@@ -119,6 +127,8 @@ assert "wrapper exit code is 42 (got $_EC)" \
 # ungated tail, so the gated assertions below stay exact-match.
 TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
 export TEST_PLAN_SEGS
+assert "TEST_PLAN_SEGS: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$TEST_PLAN_SEGS"
 
 echo ""
 echo "--- Test 10: plan has NO cargo-test-occt-gated.sh invocation (task 4451: OCCT folded into nextest pool) ---"
@@ -354,6 +364,8 @@ _T1_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=9
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T1_ERR" | grep -v '^#')"
 export _T1_PLAN
+assert "T1: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T1_PLAN"
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: debug nextest pass uses 95m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 95m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: release nextest pass keeps its OWN default 90m (decoupled, task 5382)" \
@@ -373,6 +385,8 @@ _T3_ERR="$(mktemp)"
 _T3_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T3_ERR" | grep -v '^#')"
 export _T3_PLAN
+assert "T3: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T3_PLAN"
 assert "T3: REIFY_VERIFY_TEST_TIMEOUT=banana (malformed): falls back to 60m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T3_PLAN" "$_T3_ERR"
 rm -f "$_T3_ERR"
@@ -384,6 +398,8 @@ _T4_ERR="$(mktemp)"
 _T4_PLAN="$(REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
     --print-plan 2>"$_T4_ERR" | grep -v '^#')"
 export _T4_PLAN
+assert "T4: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T4_PLAN"
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: clippy pass uses 70m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo clippy' "$_T4_PLAN" "$_T4_ERR"
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: gui-feature cargo check uses 70m outer timeout" \
@@ -395,6 +411,8 @@ _T5_ERR="$(mktemp)"
 _T5_PLAN="$(env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
     --print-plan 2>"$_T5_ERR" | grep -v '^#')"
 export _T5_PLAN
+assert "T5: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T5_PLAN"
 assert "T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset: clippy pass uses default 45m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo clippy' "$_T5_PLAN" "$_T5_ERR"
 rm -f "$_T5_ERR"
@@ -406,6 +424,8 @@ _T6_ERR="$(mktemp)"
 _T6_PLAN="$(REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
     --print-plan 2>"$_T6_ERR" | grep -v '^#')"
 export _T6_PLAN
+assert "T6: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T6_PLAN"
 assert "T6: REIFY_VERIFY_CHECK_TIMEOUT=50m: cargo check --workspace --tests uses 50m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 50m .*cargo check --workspace' "$_T6_PLAN" "$_T6_ERR"
 rm -f "$_T6_ERR"
@@ -415,6 +435,8 @@ _T7_ERR="$(mktemp)"
 _T7_PLAN="$(env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
     --print-plan 2>"$_T7_ERR" | grep -v '^#')"
 export _T7_PLAN
+assert "T7: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T7_PLAN"
 assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 30m .*cargo check --workspace' "$_T7_PLAN" "$_T7_ERR"
 rm -f "$_T7_ERR"
@@ -438,6 +460,8 @@ _T8_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=1
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T8_ERR" | grep -v '^#')"
 export _T8_PLAN
+assert "T8: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T8_PLAN"
 assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: release nextest pass uses 100m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T8_PLAN" "$_T8_ERR"
 assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: debug nextest pass stays default 60m (release knob is release-only)" \
@@ -452,6 +476,8 @@ _T9_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=b
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T9_ERR" | grep -v '^#')"
 export _T9_PLAN
+assert "T9: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T9_PLAN"
 assert "T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana (malformed): release pass falls back to 90m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T9_PLAN" "$_T9_ERR"
 rm -f "$_T9_ERR"
@@ -537,6 +563,8 @@ _T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIF
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T11_ERR" | grep -v '^#')"
 export _T11_PLAN
+assert "T11: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T11_PLAN"
 assert "T11: default: reify-cli release pre-build uses the 45m pre-build budget (not the former fixed 10m)" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
 assert "T11: default: reify-audit release pre-build uses the same 45m pre-build budget" \
@@ -552,6 +580,8 @@ _T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T12_ERR" | grep -v '^#')"
 export _T12_PLAN
+assert "T12: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T12_PLAN"
 assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: reify-cli pre-build uses 40m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 40m .*cargo build --release -p reify-cli' "$_T12_PLAN" "$_T12_ERR"
 assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: debug nextest pass stays default 60m (pre-build knob is pre-build-only)" \
@@ -568,6 +598,8 @@ _T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T13_ERR" | grep -v '^#')"
 export _T13_PLAN
+assert "T13: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T13_PLAN"
 assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 45m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
 rm -f "$_T13_ERR"
