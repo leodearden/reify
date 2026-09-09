@@ -1746,6 +1746,73 @@ assert "R7: a redispatch-shaped file naming an unknown class survives" \
 assert "R7: and the live hit is still emitted alongside them" \
     test -f "$R_REQ/redispatch-9904-merge_verify_red.json"
 
+# --- R8: the retired-class DRAIN (task 7349) ---------------------------------
+# The retirement does not take effect at RUNTIME unless the leftovers are
+# removed. The consumer is request-driven, so a redispatch-<id>-gate_closure
+# .json left in the directory by a pre-retirement sweep keeps instructing it to
+# set_task_status('cancelled') forever — the cancel loop would outlive the fix.
+#
+# A retired class can never appear in _KEEP, because no row can be classified
+# into one, so on a --class all run it is ALWAYS retracted with no extra
+# condition. The two scoping rules that still bind are the --class restriction
+# (R8d) and the degraded-read guard (R8e) — the drain inherits both rather than
+# bypassing them.
+R8_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-r8req-XXXXXX")"
+_TMPDIRS+=("$R8_REQ")
+
+# _r8_seed <task_id> <class> <action> — a leftover request in the documented
+# consumer schema, byte-shaped as a pre-retirement sweep would have left it.
+_r8_seed() {
+    cat > "$R8_REQ/redispatch-$1-$2.json" <<JSON
+{
+  "schema_version": 1,
+  "task_id": $1,
+  "class": "$2",
+  "verdict": "STALE",
+  "action": "$3",
+  "evidence": "fixture leftover from a pre-retirement sweep",
+  "main_ref_sha": "$R_TIP",
+  "emitted_by": "scripts/deterministic-gate-closure-staleness-sweep.sh"
+}
+JSON
+}
+_r8_seed 9401 gate_closure close
+_r8_seed 9402 unmet_dependency redispatch
+
+# R8d — a --class-restricted run adjudicated ONE class, so it must not delete a
+# request it never looked at, retired or not.
+run_sweep --db "$R_DB" --repo "$R_REPO" \
+    --class merge_verify_red --emit-requests "$R8_REQ" --format json
+assert "R8d: a --class-restricted run leaves both retired-class requests alone" \
+    test -f "$R8_REQ/redispatch-9401-gate_closure.json" -a -f "$R8_REQ/redispatch-9402-unmet_dependency.json"
+
+# R8e — R5's rule extends to retired classes: absence of a hit is not evidence
+# when the query never ran.
+run_sweep --db "$R_REPO/definitely-not-here.db" --repo "$R_REPO" \
+    --emit-requests "$R8_REQ" --format json
+assert "R8e: a degraded DB read retracts neither retired-class request" \
+    test -f "$R8_REQ/redispatch-9401-gate_closure.json" -a -f "$R8_REQ/redispatch-9402-unmet_dependency.json"
+
+# R8a/R8b/R8c — the drain itself.
+run_sweep --db "$R_DB" --repo "$R_REPO" \
+    --emit-requests "$R8_REQ" --format json
+assert "R8a: a full sweep drains the retired gate_closure request" \
+    _not test -f "$R8_REQ/redispatch-9401-gate_closure.json"
+assert "R8a: ... and the retired unmet_dependency request" \
+    _not test -f "$R8_REQ/redispatch-9402-unmet_dependency.json"
+assert "R8b: the drain names gate_closure as RETIRED" _err_has 'retired.*gate_closure'
+assert "R8b: ... and unmet_dependency too" _err_has 'retired.*unmet_dependency'
+assert "R8b: ... and cites the task that retired them, so the journal is legible" \
+    _err_has '7349'
+# The wording must be DISTINGUISHABLE from an ordinary supersession: an
+# operator reading the nightly journal has to be able to tell a one-off drain
+# from a hit that stopped being confirmed.
+assert "R8b: the drain wording is distinct from the supersession wording" \
+    _not _err_has 'no longer a confirmed (gate_closure|unmet_dependency) hit'
+assert "R8c: the live merge_verify_red hit is emitted in the same run" \
+    test -f "$R8_REQ/redispatch-9904-merge_verify_red.json"
+assert "R8c: ... and is all that is left" _request_count_is "$R8_REQ" 1
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block T — tag scoping
 #
