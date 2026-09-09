@@ -198,13 +198,22 @@
 #   THE DIRECTORY IS A SNAPSHOT OF THE CURRENT HITS, not an append-only log.
 #   Before emitting, each run RETRACTS every redispatch-<digits>-<class>.json
 #   that is no longer a confirmed hit, so a remediated task stops advertising
-#   an actionable request and a row whose primary class changed can never
-#   leave two contradictory instructions behind. Retraction is deliberately
-#   narrow: it touches only files this sweep could itself have emitted (a
-#   consumer's own bookkeeping in the same directory is left alone), a
-#   --class-restricted run retracts only that class, and a run whose DB read
-#   FAILED retracts nothing at all — absence of a hit is evidence only when
-#   the query actually ran.
+#   an actionable request. Retraction is deliberately narrow: it touches only
+#   files this sweep could itself have emitted (a consumer's own bookkeeping
+#   in the same directory is left alone), a --class-restricted run retracts
+#   only that class, and a run whose DB read FAILED retracts nothing at all —
+#   absence of a hit is evidence only when the query actually ran.
+#
+#   RETIRED CLASSES A CONSUMER MAY STILL SEE, AND WILL NEVER SEE EMITTED
+#   AGAIN: `gate_closure` and `unmet_dependency`. Task 7349 retired both, and
+#   because this directory is a snapshot rather than a log, retiring a class
+#   in the classifier alone would leave its last files sitting here
+#   instructing the consumer forever — the consumer is request-driven, so a
+#   stale redispatch-<id>-gate_closure.json keeps producing
+#   set_task_status('cancelled') on every pass. Both names therefore stay
+#   RECOGNISED here purely so they can be DRAINED, and each drain is announced
+#   with its own [info] line naming task 7349, distinct from the ordinary
+#   supersession wording.
 
 set -euo pipefail
 
@@ -958,31 +967,48 @@ if [ -n "$REQUESTS_DIR" ]; then
     fi
     if [ "$_emit_ok" = 1 ]; then
         # ── retract superseded requests, so the dir is a SNAPSHOT ────────────
-        # Emission alone only ever ADDS. That leaves two defects a consumer
-        # polling the directory cannot untangle: a remediated hit's file
+        # Emission alone only ever ADDS, which leaves two defects a consumer
+        # polling the directory cannot untangle. A remediated hit's file
         # survives forever, so the directory keeps advertising an actionable
-        # request for an already-closed task; and if a row's PRIMARY class
-        # changes between runs (its gating escalation reappears, so
-        # gate_closure stops winning and unmet_dependency takes over) the
-        # directory ends up holding redispatch-<id>-gate_closure.json
-        # (action=close) AND redispatch-<id>-unmet_dependency.json
-        # (action=redispatch) at once — two contradictory instructions with no
-        # ordering hint, since the bodies deliberately carry no wall-clock
-        # field. Retracting first makes the directory the CURRENT hit set,
-        # which is what the documented "diff the directory" contract needs, and
-        # closes both defects with one mechanism.
+        # request for an already-closed task. And a class this sweep no longer
+        # emits — a RETIRED one — leaves its last files behind permanently;
+        # the consumer is request-DRIVEN, so a stale
+        # redispatch-<id>-gate_closure.json keeps yielding
+        # set_task_status('cancelled') on every pass, and retiring the class
+        # in the classifier alone would leave that loop running. Retracting
+        # first makes the directory the CURRENT hit set, which is what the
+        # documented "diff the directory" contract needs, and closes both
+        # defects with one mechanism.
         #
         # Three scoping rules keep the retraction conservative:
         #   * only files this sweep could itself have EMITTED are touched —
-        #     redispatch-<digits>-<known class>.json. A consumer's own
-        #     bookkeeping in the same directory is never removed.
+        #     redispatch-<digits>-<class this sweep emits, or once did>.json. A
+        #     consumer's own bookkeeping in the same directory is never
+        #     removed.
         #   * a --class-restricted run adjudicated ONE class, so it retracts
-        #     only that class. Otherwise `--class gate_closure` would silently
-        #     delete the merge_verify_red requests of the previous full sweep.
+        #     only that class. Otherwise a restricted run would silently delete
+        #     the requests of the previous full sweep.
         #   * a DEGRADED READ retracts nothing. Absence of a hit is evidence
         #     only when the query actually ran; an unreadable DB reports zero
         #     candidates too, and wiping the directory on that would be the
         #     sweep destroying its own output on a transient fault.
+        #
+        # A RETIRED class needs no fourth rule and no extra branch: no row can
+        # be classified into one, so its key can never enter _KEEP, so a
+        # --class all run always falls through to the rm below. It inherits the
+        # other three rules unchanged — which is exactly why the drain is
+        # expressed by WIDENING the recognised-name set rather than as a
+        # separate pass.
+        # The two name sets are kept SEPARATE and separately named on purpose.
+        # _LIVE_CLASSES is the vocabulary this sweep emits; _RETIRED_CLASSES
+        # exists SOLELY to drain files this sweep emitted before task 7349, and
+        # must never be reused to classify anything — nothing may be added to
+        # it except by retiring a class, and nothing may be read from it except
+        # here.
+        _LIVE_CLASSES="merge_verify_red"
+        _RETIRED_CLASSES="gate_closure unmet_dependency"
+        _is_in_set() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
+
         if [ "$_DB_READABLE" = 1 ]; then
             declare -A _KEEP=()
             while IFS="$_FS" read -r k_id k_status k_class k_verdict k_action k_evidence k_flags; do
@@ -997,19 +1023,25 @@ if [ -n "$REQUESTS_DIR" ]; then
                 _rq_id="${_rq_key%%-*}"
                 _rq_class="${_rq_key#*-}"
                 case "$_rq_id" in ''|*[!0-9]*) continue ;; esac
-                case "$_rq_class" in
-                    gate_closure|merge_verify_red|unmet_dependency) ;;
-                    *) continue ;;
-                esac
+                _rq_retired=0
+                if _is_in_set "$_rq_class" "$_RETIRED_CLASSES"; then
+                    _rq_retired=1
+                elif ! _is_in_set "$_rq_class" "$_LIVE_CLASSES"; then
+                    continue
+                fi
                 [ "$CLASS" = "all" ] || [ "$_rq_class" = "$CLASS" ] || continue
                 [ -z "${_KEEP[$_rq_key]+set}" ] || continue
                 if rm -f "$_rq" 2>/dev/null; then
-                    info "Retracted superseded request redispatch-${_rq_key}.json — task $_rq_id is no longer a confirmed $_rq_class hit."
+                    if [ "$_rq_retired" = 1 ]; then
+                        info "Drained retired-class request redispatch-${_rq_key}.json — the $_rq_class trigger class was retired by task 7349 and is never emitted again."
+                    else
+                        info "Retracted superseded request redispatch-${_rq_key}.json — task $_rq_id is no longer a confirmed $_rq_class hit."
+                    fi
                 else
-                    warn "Could not retract superseded request redispatch-${_rq_key}.json in $REQUESTS_DIR."
+                    warn "Could not remove request redispatch-${_rq_key}.json in $REQUESTS_DIR."
                 fi
             done
-            unset _KEEP _rq _rq_key _rq_id _rq_class
+            unset _KEEP _rq _rq_key _rq_id _rq_class _rq_retired
         else
             warn "The task DB could not be read, so no superseded request was retracted from $REQUESTS_DIR — absence of a hit is not evidence when the query never ran."
         fi
