@@ -7,5 +7,4 @@ crates/reify-eval/src/engine_build.rs :: malformed-cite :: #[allow(dead_code)] /
 crates/reify-eval/src/engine_build.rs :: orphaned :: #3437 status=done: /// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel
 crates/reify-eval/src/engine_build.rs :: orphaned :: #4744 status=done: #[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β)
 crates/reify-eval/src/engine_build.rs :: untracked :: #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
-crates/reify-eval/src/significance_filter.rs :: untracked :: #[allow(dead_code)] // wiring deferred to GHR-ζ; used in tests only for now
 crates/reify-stdlib/src/joints.rs :: untracked :: #[allow(dead_code)] // consumed by RBD-ε RNEA (not yet landed)
