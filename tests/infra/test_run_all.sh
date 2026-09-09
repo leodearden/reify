@@ -2278,17 +2278,12 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     # `flock -x` might not land within a fixed 0.2s window, letting the pool
     # worker acquire the uncontended slot with no wait and emit no marker --
     # a false T24a (the same class of race Test 25's state poll avoids).
-    # A non-blocking acquire attempt on the same slot file (mirrors
-    # lib_slot_acquire.sh's own `flock -xn 9`) that FAILS is proof the holder
-    # holds it; cap at 5s as a deadlock backstop.
-    t24_i=0
-    while [ "$t24_i" -lt 50 ]; do
-        if ! ( flock -xn 9 ) 9>>"${LOCK_T24}.slot-1" 2>/dev/null; then
-            break
-        fi
-        sleep 0.1
-        t24_i=$((t24_i + 1))
-    done
+    # A non-blocking acquire attempt on the same slot file that FAILS is proof
+    # the holder holds it. That barrier is now stated once, in
+    # tests/infra/slot_holder_handshake_lib.sh, together with its self-healing
+    # `9>>` open and the BROKEN-INFRA BACKSTOP rationale for the poll budget;
+    # this was the third divergent copy of it (task 6247).
+    holder_wait_until_held "${LOCK_T24}.slot-1" || true
 
     # Separate stdout/stderr capture files (T22 pattern) -- the assertions
     # below need to distinguish which stream the marker lands on.

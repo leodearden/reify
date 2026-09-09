@@ -784,7 +784,7 @@ mkdir -p "$G_WORKTREES/_lane-locked/target"
 touch "$G_WORKTREES/_lane-locked/target/DIVERGENT_MARKER"
 touch "$G_WORKTREES/_lane-locked.lock"
 G_LOCK_READY="$G_WORKTREES/_lane-locked.lock.ready-marker"
-( flock -x 9 && sleep 300 ) 9>"$G_WORKTREES/_lane-locked.lock" &
+( flock -x 9 && touch "$G_LOCK_READY" && sleep 300 ) 9>"$G_WORKTREES/_lane-locked.lock" &
 G_LOCK_PID=$!
 _BGPIDS+=("$G_LOCK_PID")
 # Causal handshake (task 6247), the straight port of Block F's F4_READY/F5_READY
