@@ -1825,6 +1825,30 @@ pub(crate) fn frontend_ok(reply: Value, command: &str) -> Result<Value, String> 
     }
 }
 
+/// Push a rebuilt `GuiState` — and, optionally, the editor buffer to reconcile
+/// with it — to the frontend, and REFUSE a reply the frontend rejected.
+///
+/// THE push step of every `reify_*` AI write tool, composing the three
+/// statements each of them used to spell out: [`write_tool_frontend_payload`],
+/// `query_frontend("apply_gui_state", …)`, [`frontend_ok`]. Extracted so
+/// "every write tool inspects its push reply" is structurally true rather than
+/// a four-way discipline: the handlers need a `DebugServerState`/`AppHandle`
+/// and cannot be driven headlessly, so a dropped `frontend_ok` in one of four
+/// copies would have left the whole suite green (task #5097 δ).
+///
+/// The `GuiState` is discarded on success — callers already hold it, and the
+/// frontend's echo carries nothing they need.
+async fn push_gui_state(
+    bridge: &DebugBridge,
+    gui_state: &crate::types::GuiState,
+    file: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let payload = write_tool_frontend_payload(gui_state, file)?;
+    let reply = bridge.query_frontend("apply_gui_state", payload).await?;
+    frontend_ok(reply, "apply_gui_state")?;
+    Ok(())
+}
+
 /// Pure serializer: packs a `GuiState` and a case name into the JSON object
 /// sent to `query_frontend("apply_gui_state", ...)`.
 ///
@@ -2276,14 +2300,7 @@ async fn handle_reify_set_parameter(
 
     let diagnostics = run_on_engine(&state.engine, |s| Ok(s.get_diagnostics())).await?;
 
-    let payload = write_tool_frontend_payload(&gs, None)?;
-    let reply = state
-        .debug_bridge
-        .query_frontend("apply_gui_state", payload)
-        .await?;
-    // A refused push must not be reported as a landed write — the baseline is
-    // already at S1 (see [`frontend_ok`]).
-    frontend_ok(reply, "apply_gui_state")?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
 
     Ok(reify_set_parameter_envelope(new_value, unit, diagnostics))
 }
@@ -2468,16 +2485,32 @@ pub(crate) fn update_source_target_matches_active(
 /// the tab under.
 ///
 /// With `None` — the `load_from_source` flow, where there is no session path
-/// to fall back on and the guard accepts anything — it canonicalizes the
-/// caller's spelling itself via [`crate::path_key::canonicalize_debug_open_path`],
-/// so even that arm cannot emit a relative, tab-forking key.
+/// to fall back on and the guard accepts anything — it absolutises the
+/// caller's spelling itself, so that arm cannot emit a relative, tab-forking
+/// key either. Two steps, because the first alone is not enough:
+/// [`crate::path_key::canonicalize_debug_open_path`] falls back to the input
+/// UNCHANGED when `std::fs::canonicalize` fails, and in a `load_from_source`
+/// session the named file very often does not exist on disk — that is what
+/// distinguishes the flow. `std::path::absolute` then joins the survivors onto
+/// the process CWD without touching the filesystem. What it does NOT do is
+/// resolve `..` or symlinks; those reach the frontend as-is, where
+/// `canonicalizeKey`'s `.`/`..` folding is the defence-in-depth that covers
+/// them.
 pub(crate) fn resolve_update_source_push_path(
     active: Option<&std::path::Path>,
     requested: &str,
 ) -> String {
     match active {
         Some(active) => active.to_string_lossy().into_owned(),
-        None => crate::path_key::canonicalize_debug_open_path(requested),
+        None => {
+            let canonical = crate::path_key::canonicalize_debug_open_path(requested);
+            if std::path::Path::new(&canonical).is_absolute() {
+                return canonical;
+            }
+            std::path::absolute(&canonical)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(canonical)
+        }
     }
 }
 
@@ -2576,14 +2609,7 @@ async fn handle_reify_update_source(
     let filtered = filter_diagnostics_for_file(diagnostics, &file_path);
 
     let push_path = resolve_update_source_push_path(active.as_deref(), &file_path);
-    let payload = write_tool_frontend_payload(&gs, Some((&push_path, &content)))?;
-    let reply = state
-        .debug_bridge
-        .query_frontend("apply_gui_state", payload)
-        .await?;
-    // A refused push must not be reported as a landed write — the baseline is
-    // already at S1 (see [`frontend_ok`]).
-    frontend_ok(reply, "apply_gui_state")?;
+    push_gui_state(&state.debug_bridge, &gs, Some((&push_path, &content))).await?;
 
     Ok(reify_update_source_envelope(filtered))
 }
@@ -2726,14 +2752,7 @@ async fn handle_reify_save_file(
     let gs =
         reify_save_file_on_engine_and_refresh_baseline(&state.engine, &state.last_state, file_path)
             .await?;
-    let payload = write_tool_frontend_payload(&gs, None)?;
-    let reply = state
-        .debug_bridge
-        .query_frontend("apply_gui_state", payload)
-        .await?;
-    // A refused push must not be reported as a landed write — the baseline is
-    // already at S1 (see [`frontend_ok`]).
-    frontend_ok(reply, "apply_gui_state")?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
     Ok(reify_save_file_envelope())
 }
 
@@ -2781,14 +2800,7 @@ async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<
         &output_path,
     )
     .await?;
-    let payload = write_tool_frontend_payload(&gs, None)?;
-    let reply = state
-        .debug_bridge
-        .query_frontend("apply_gui_state", payload)
-        .await?;
-    // A refused push must not be reported as a landed write — the baseline is
-    // already at S1 (see [`frontend_ok`]).
-    frontend_ok(reply, "apply_gui_state")?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
     Ok(reify_export_envelope(&output_path))
 }
 
@@ -5677,6 +5689,34 @@ structure def Part {
         assert_eq!(
             pushed, canonical,
             "the no-session arm must push the on-disk canonical form"
+        );
+
+        // The branch that `Cargo.toml` cannot reach: a `load_from_source`
+        // session routinely names a file that does NOT exist on disk — that is
+        // what distinguishes the flow — and `canonicalize_debug_open_path`
+        // answers such a path with the caller's spelling UNCHANGED. Without
+        // the CWD join this arm hands the frontend `"no-such-dir/part.ri"`,
+        // which `canonicalizeKey` passes through verbatim: a second tab under
+        // a key the real one never had (#3892/#3893).
+        let absent = resolve_update_source_push_path(None, "no-such-dir/part.ri");
+        assert!(
+            absent.starts_with('/'),
+            "a NON-EXISTENT relative spelling must still be absolutised — \
+             canonicalize cannot resolve it, so the CWD join is the only \
+             thing standing between it and a tab-forking key; got {absent:?}"
+        );
+        assert!(
+            absent.ends_with("no-such-dir/part.ri"),
+            "absolutising must preserve the caller's spelling, not rewrite it; \
+             got {absent:?}"
+        );
+
+        // An absolute spelling that does not exist is already a usable key and
+        // must survive byte-for-byte — the CWD join must never prefix it.
+        let absolute_absent = resolve_update_source_push_path(None, "/no-such-dir/part.ri");
+        assert_eq!(
+            absolute_absent, "/no-such-dir/part.ri",
+            "an already-absolute path must pass through unchanged"
         );
     }
 
