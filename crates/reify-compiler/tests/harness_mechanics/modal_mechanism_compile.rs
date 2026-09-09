@@ -175,7 +175,7 @@ mod modal_analysis_fns_stdlib_compile {
     /// per-time-sample displacement series `deviation_from_nominal(...) ->
     /// List<Length>` (trajectory.ri).
     ///
-    /// RED before the retype: both declare `List<Real>` (= `List<Real>`, a
+    /// RED before the retype: both declare `List<Real>` (= `List<Scalar<dimensionless>>`, a
     /// dimensionless scalar list).
     #[test]
     fn displacement_at_overloads_return_list_of_length() {
