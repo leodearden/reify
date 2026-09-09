@@ -63,14 +63,13 @@ module symmetry_mirror
 //       circular_pattern(g, axis_z(vec3(0mm,0mm,0mm)), 4, 360deg)
 //           -> error: failed to compile geometry operation: circular_pattern:
 //              expected an Axis value, got undef
-//   Under `reify check` that error DOES reach stderr, but check still exits 0
-//   and still prints "All constraints satisfied." underneath it; `reify eval`
-//   exits 1. Same for `point3` — `axis_z(point3(0mm, 0mm))` produces the same
-//   "expected an Axis value, got undef" from `circular_pattern`, because the
-//   `undef` propagates up the whole chain and only the outermost consumer
-//   speaks. So the error names the op that CONSUMED the `undef`, never the
-//   miscounted call that produced it, and check's exit status will not tell
-//   you at all. Count the arguments.
+//   `reify check` prints that error and still exits 0 — the same exit-status
+//   split as above; `reify eval` exits 1. Same for `point3`:
+//   `axis_z(point3(0mm, 0mm))` produces the same "expected an Axis value, got
+//   undef" from `circular_pattern`, because the `undef` propagates up the whole
+//   chain and only the outermost consumer speaks. So the error names the op
+//   that CONSUMED the `undef`, never the miscounted call that produced it, and
+//   check's exit status will not tell you at all. Count the arguments.
 
 structure def SymmetryMirror {
     param arm_len   : Length = 40mm

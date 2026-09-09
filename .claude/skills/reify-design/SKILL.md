@@ -68,9 +68,8 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   `box_centered` is an op-identical alias for `box`.) → `hollow_primitives.ri`
 - **Symmetric parts**: `mirror` returns a reflected copy — `let twin = union(g, mirror(g, plane_yz(0mm)))`.
   Plane ctors take exactly one offset arg; the 7-arg scalar form needs a *dimensioned*
-  origin (`0mm`, never bare `0`), and `reify check` now rejects the bare-`0` form outright
-  (exit 1, one error per origin component, no verdict line). A wrong-arity datum ctor is
-  the one that stays quiet: it yields `undef` silently and only the consuming op complains.
+  origin (`0mm`, never bare `0`) — `reify check` rejects that one outright. What stays
+  quiet is a wrong-arity datum ctor: it yields `undef`, and only the consuming op complains.
   → `symmetry_mirror.ri`
 - **Bolt circles**: `circular_pattern(hole, axis_z(point3(…)), n, 360deg)` — angle is the TOTAL
   sweep (step = total/count). Never construct geometry inside `generate` lambdas: silent `undef`
@@ -102,14 +101,13 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   bare `0` is not exempt), while axis components, `scale` factors and counts stay bare.
   → `dimensioned_arguments.ri`
 
-A green `reify check` is weaker than it looks — but read its stderr, because the failure
-mode is the EXIT CODE, not silence. Measured 2026-09-07: statically-visible length slots
-(`box`, `translate`, `fillet`, the 7-arg `mirror` pivot) exit **1** under `check`. The
-eval-only constructors (`helix`, `polygon`, …), the decoded-value routes
-(`mirror(g, plane_yz(0))`) and the wrong-arity datum constructors (`plane_yz(0mm, 0mm)`,
-`axis_z(vec3(…))`) all **print `error:` lines** — yet `check` exits **0** and still prints
-"All constraints satisfied." underneath them. So gate on `reify eval`, and never on
-`check`'s exit status alone.
+A green `reify check` is weaker than it looks, and the failure mode is the EXIT CODE
+rather than silence: for several classes of geometry error `check` prints `error:` lines on
+stderr and still exits **0** with "All constraints satisfied." underneath them. So read
+check's stderr, and gate on `reify eval`, never on `check`'s exit status alone. Which
+constructors fall on which side of that split is owned by
+`crates/reify-mcp/src/tools/chunks/units.md` §"Dimensioned Geometry Arguments" → "Which
+command catches it", whose SYNC ledger also records which half an executable test pins.
 
 ## Workflow
 
@@ -200,9 +198,9 @@ repeating.
    ```sh
    cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::
    ```
-   Also run `reify eval` on the new file, not just `reify check` — check is
-   silent about several classes of geometry error (see the note at the end of
-   the idiom index).
+   Also run `reify eval` on the new file, not just `reify check` — check can
+   exit 0 with geometry errors sitting on its stderr (see the note at the end
+   of the idiom index).
 
 **A file that cannot reach a clean compile must NOT be added.** The corpus is
 compile-gated by construction, and an exemplar that doesn't work is worse than

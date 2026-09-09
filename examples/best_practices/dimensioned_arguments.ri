@@ -12,43 +12,35 @@ module dimensioned_arguments
 //
 //     let plate = box(20, 20, 10)     // don't — written hoping bare means mm
 //
-// WHY THE REJECTION IS THE FEATURE. There is exactly one sane thing a bare
-// number could silently mean, and it is the SI base unit: metres. So a `20`
-// written by an author who meant `20mm` would build a 20-METRE plate — a 1000x
-// scale error that nothing downstream catches, because the model stays
-// perfectly self-consistent at the wrong size. `scale_error` below makes that
+// WHY THE REJECTION IS THE FEATURE, in one line: the only thing a bare number
+// could sanely mean is the SI base unit, so a `20` written by an author who
+// meant `20mm` would build a 20-METRE plate. `scale_error` below makes that
 // factor executable rather than rhetorical: it is `20m / 20mm`, pinned at 1000.
 //
-// WHAT LEGITIMATELY STAYS BARE. Not every geometry argument is a length.
-// Unit-vector and axis-direction components, `scale` factors, repeat counts,
-// NURBS weights and indices are dimensionless by construction, and a unit on
-// one of them says something the author does not mean. That half is an
-// authoring rule you uphold, NOT one the compiler enforces — the gate runs in
-// one direction only, so `scale(g, 2mm)` is accepted. `twice` below is the
-// idiom written the way you mean it.
+// WHAT LEGITIMATELY STAYS BARE, in one line: axis-direction components,
+// `scale` factors, repeat counts, NURBS weights and indices are dimensionless
+// by construction, and the gate runs in ONE direction only — `scale(g, 2mm)`
+// is accepted — so writing them bare is an authoring rule you uphold rather
+// than one you are told about. `twice` below is it written the way you mean it.
 //
-// WHERE THE TABLES LIVE — deliberately NOT restated here. The rejected-form /
-// migration table, the per-argument diagnostic wording (the
-// `pass a dimensioned length such as `5mm`` tail is
-// `reify-core::units::LENGTH_MIGRATION_HINT`), the bare-`0`-is-not-special-cased
-// case, and the `reify check` EXIT-CODE split all live in one place:
-// `crates/reify-mcp/src/tools/chunks/units.md`, section
+// EVERYTHING ELSE ABOUT THE RULE HAS ONE OWNER, and is deliberately NOT
+// restated here: `crates/reify-mcp/src/tools/chunks/units.md`, section
 // "Dimensioned Geometry Arguments" — topic `units` of `reify_language_reference`.
-// That section's tables are gated byte-exactly by
+// It holds the rejected-form / migration table, the per-argument diagnostic
+// wording (the `pass a dimensioned length such as `5mm`` tail is
+// `reify-core::units::LENGTH_MIGRATION_HINT`), the bare-`0`-is-not-special-cased
+// case, the `reify check` EXIT-CODE split under "Which command catches it", and
+// a SYNC ledger recording which of those an executable test pins and which is
+// prose. Its tables are gated byte-exactly by
 // `crates/reify-compiler/tests/harness_doc_chunks/units_chunk_smoke.rs`, which
-// runs the real compiler over both columns. Re-quoting them here would be a
-// second copy to keep in sync — exactly the rot this corpus exists to avoid.
+// runs the real compiler over both columns; a second copy here would be a
+// second thing to re-measure — exactly the rot this corpus exists to avoid.
 // Which ARGUMENT of which constructor is length-semantic is catalogued per
 // position in the `geometry` chunk, under "Dimensioned arguments".
 //
-// THE ONE THING WORTH CARRYING HERE, because it decides how you gate a design:
-// `reify eval` and `reify build` reject every bare number in a length ARGUMENT
-// slot, exit 1, every time. `reify check` is NOT equivalent — it prints the
-// same `error:` lines, but its exit code depends on which layer owns it: 1 for
-// the compile-layer constructors (`box`, `translate`, `fillet`, the 7-arg
-// `mirror` pivot), 0 for the eval-only ones (`helix`, `polygon`, ...) even
-// though the errors are right there on stderr. Measured 2026-09-07. So read
-// check's STDERR, and gate on `reify eval`, never on check's exit status alone.
+// The one operational consequence to carry away: gate a design on `reify eval`
+// or `reify build`, which reject a bare length argument and exit 1. A green
+// `reify check` is not the same answer — read its stderr.
 //
 // Verified contracts:
 //
