@@ -171,15 +171,27 @@ assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty a
 # this host) while still firing well inside the 30m outer envelope, which is the
 # only way the attribution survives.
 # ---------------------------------------------------------------------------
-# _amb_run_under_ambient YAML SUITE BUDGET_SECS
-# Run SUITE under the production verify_env ambient extracted from YAML, bounded
-# by BUDGET_SECS, with the child's stderr merged into stdout. Echoes that
-# combined output.
+# _amb_run_under_ambient YAML BUDGET_SECS CMD...
+# Run CMD under the production verify_env ambient extracted from YAML, bounded
+# by BUDGET_SECS. Echoes whatever CMD writes to stdout.
 #
-# Returns the suite's OWN exit code, or one of two codes of its own:
+# How CMD's STDERR is captured is the CALLER's decision, made with a `2>&1` at
+# the call site. Merging it in here would be wrong twice: it would decide for
+# every caller, and it would hide the merge from
+# tests/infra/test_slot_timeout_marker.sh Section G, which reads each
+# deadline-capable site to check its stderr never reaches the inherited fd 2 --
+# a redirect it cannot see is one it must report as a leak.
+#
+# Returns CMD's OWN exit code, or one of two codes of its own:
 #   99   the ambient was not applied, so the run proves nothing (the
 #        non-vacuity preflight -- see the section comment above);
-#   124  the backstop fired, i.e. the suite WEDGED.
+#   124  the backstop fired, i.e. CMD WEDGED.
+#
+# CMD is a COMMAND, not a suite path, and that is load-bearing in two ways. It
+# keeps `bash <the suite>` written out at the call site, where a reader -- and
+# tests/infra/test_slot_timeout_marker.sh's deadline-capability derivation,
+# which reads exactly that shape -- can see WHICH suite this file drives. And it
+# leaves the choice of interpreter to the caller instead of baking one in.
 #
 # The export loop and the preflight run inside this function's own subshell, so
 # no ambient export leaks back to the caller. verify_env_exports is a shell
@@ -189,13 +201,14 @@ assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty a
 # or at any call site compares a measured magnitude. Its only job is to end a
 # hang early enough that the outcome is still attributable to THIS suite.
 _amb_run_under_ambient() {
-    local _yaml="$1" _suite="$2" _budget="$3"
+    local _yaml="$1" _budget="$2"
+    shift 2
     (
         while IFS= read -r _kv; do
             export "$_kv"
         done < <(verify_env_exports "$_yaml")
         [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ] || { echo "AMBIENT-NOT-APPLIED"; exit 99; }
-        timeout "$_budget" bash "$_suite" 2>&1
+        timeout "$_budget" "$@"
     )
 }
 
@@ -249,7 +262,7 @@ _amb_fixture_suite() {
 # _amb_nested_rc BUDGET SUITE -- echo _amb_run_under_ambient's exit code.
 _amb_nested_rc() {
     local _rc=0
-    _amb_run_under_ambient "$_AMB_YAML" "$2" "$1" >/dev/null 2>&1 || _rc=$?
+    _amb_run_under_ambient "$_AMB_YAML" "$1" bash "$2" >/dev/null 2>&1 || _rc=$?
     echo "$_rc"
 }
 
@@ -275,7 +288,7 @@ _amb_probe_suite="$(_amb_fixture_suite 'echo "HEAVY=${REIFY_GATE_EXCLUDE_HEAVY:-
 # and a fresh shell would report command-not-found -- which grep would then read
 # as a plain absence, making the case pass or fail for the wrong reason.
 _amb_ambient_reaches_child() {
-    _amb_run_under_ambient "$_AMB_YAML" "$1" 60 2>&1 | grep -qxF "HEAVY=1"
+    _amb_run_under_ambient "$_AMB_YAML" 60 bash "$1" 2>&1 | grep -qxF "HEAVY=1"
 }
 assert "the production ambient genuinely reaches the nested child (REIFY_GATE_EXCLUDE_HEAVY=1 observed inside it)" \
     _amb_ambient_reaches_child "$_amb_probe_suite"
@@ -333,7 +346,18 @@ echo ""
 echo "--- End-to-end: test_occt_flock_gate.sh under the real verify_env ambient ---"
 
 amb_rc=0
-amb_out="$(_amb_run_under_ambient "$_AMB_YAML" "$SCRIPT_DIR/$_AMB_SUITE_NAME" "$_AMB_NESTED_BACKSTOP_SECS")" || amb_rc=$?
+# The nested suite is named LITERALLY here, and its stderr merged HERE, rather
+# than either being assembled or hidden inside the helper.
+# test_slot_timeout_marker.sh's F and G blocks DERIVE which suites are
+# deadline-capable, and whether each such site leaks stderr, by reading these two
+# shapes out of the tree: `bash <path>` for the invocation, and a `2>&1` inside a
+# stdout-diverting `$(` opener for the capture. An invocation assembled from
+# variables, or a redirect buried in a callee, is invisible to that derivation --
+# which is also to say invisible to a reader.
+amb_out="$(
+    _amb_run_under_ambient "$_AMB_YAML" "$_AMB_NESTED_BACKSTOP_SECS" \
+        bash "$SCRIPT_DIR/test_occt_flock_gate.sh" 2>&1
+)" || amb_rc=$?
 
 # Emitted BEFORE the assert, so a wedge is attributed even to a reader who sees
 # nothing but this file's own output.
