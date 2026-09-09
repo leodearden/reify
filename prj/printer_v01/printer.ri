@@ -1983,9 +1983,8 @@ pub structure GantryFea {
         n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
         sigma: 0.0, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
-    let span_b = span * 1.0
-    let r_modal_cant = modal_analysis(mi.material, span,   h_eq, h_eq, opts_cant)
-    let r_modal_ss   = modal_analysis(mi.material, span_b, h_eq, h_eq, opts_ss)
+    let r_modal_cant = modal_analysis(mi.material, span, h_eq, h_eq, opts_cant)
+    let r_modal_ss   = modal_analysis(mi.material, span, h_eq, h_eq, opts_ss)
     let f1_tube_cant : Frequency = first_frequency(r_modal_cant)
     let f1_tube_ss   : Frequency = first_frequency(r_modal_ss)
     /// Euler-Bernoulli cantilever f1 = (λ₁²/2π)·√(EI/μL⁴), λ₁² = 3.5160.
