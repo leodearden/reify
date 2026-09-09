@@ -5092,4 +5092,98 @@ version = "9.9.9"
             "BucklingResultCache FORMAT_VERSION must be 1"
         );
     }
+
+    // ── PersistedDiagnostic wire-mirror tests (task 7245) ─────────────────────
+    //
+    // The mirror is the piece that lets a warm on-disk serve replay the
+    // solver diagnostics a cold serve emitted. It follows the proven
+    // `DiagnosticOnDisk` idiom in crates/reify-shell-extract/src/result.rs:407
+    // (explicit u8 severity discriminant, `InvalidData` on an unknown byte)
+    // but EXTENDS it with `code`, which that mirror deliberately drops —
+    // `DiagnosticCode` is what this task's acceptance is stated in terms of
+    // (`W_SHELL_TOO_THICK`) and what LSP / `--json` consumers key off.
+
+    /// The canonical too-thick warning, shaped exactly as the solver emits it
+    /// (`Diagnostic::warning(..).with_code(..)`, no labels, no candidates) —
+    /// see elastic_static.rs's `FailurePolicy::TetFallbackWithWarning` arm.
+    fn shell_too_thick_warning() -> reify_core::Diagnostic {
+        reify_core::Diagnostic::warning(
+            "shell candidate too thick for shell elements; falling back to tet mesh",
+        )
+        .with_code(reify_core::DiagnosticCode::ShellTooThick)
+    }
+
+    #[test]
+    fn persisted_diagnostic_round_trips_severity_message_and_code() {
+        let original = shell_too_thick_warning();
+        let restored = diagnostic_from_persisted(&diagnostic_to_persisted(&original))
+            .expect("a well-formed mirror must decode");
+
+        assert_eq!(
+            restored.severity,
+            reify_core::Severity::Warning,
+            "severity must round-trip"
+        );
+        assert_eq!(
+            restored.message, original.message,
+            "message must round-trip verbatim"
+        );
+        assert_eq!(
+            restored.code,
+            Some(reify_core::DiagnosticCode::ShellTooThick),
+            "code must round-trip — this is the field the shell-extract mirror \
+             drops and the one this task exists to carry"
+        );
+    }
+
+    #[test]
+    fn persisted_diagnostic_round_trips_absent_code_as_none() {
+        let original = reify_core::Diagnostic::info("adaptive refinement converged");
+        let restored = diagnostic_from_persisted(&diagnostic_to_persisted(&original))
+            .expect("a well-formed mirror must decode");
+
+        assert_eq!(restored.severity, reify_core::Severity::Info);
+        assert_eq!(restored.message, original.message);
+        assert_eq!(
+            restored.code, None,
+            "an uncoded diagnostic must round-trip as None, not as a defaulted code"
+        );
+    }
+
+    #[test]
+    fn persisted_diagnostic_rejects_out_of_range_severity_discriminant() {
+        // A corrupted or tampered entry must be rejected loudly rather than
+        // silently defaulting to Info — the same posture as
+        // `severity_from_u8` in reify-shell-extract.
+        let corrupt = PersistedDiagnostic {
+            severity: 7,
+            message: "corrupt".to_string(),
+            code: None,
+        };
+        let err = diagnostic_from_persisted(&corrupt)
+            .expect_err("an unknown severity discriminant must not decode");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains('7'),
+            "the rejection must name the offending discriminant, got: {err}"
+        );
+    }
+
+    #[test]
+    fn persisted_diagnostic_encoding_is_byte_deterministic() {
+        // `PersistentlyCacheable` requires byte-deterministic encoding; the
+        // mirror is part of that body, so it must be deterministic too.
+        let mirror = vec![
+            diagnostic_to_persisted(&shell_too_thick_warning()),
+            diagnostic_to_persisted(&reify_core::Diagnostic::error("solve did not converge")),
+        ];
+        let a = bincode::serialize(&mirror).expect("mirror must encode");
+        let b = bincode::serialize(&mirror).expect("mirror must encode");
+        assert_eq!(a, b, "re-encoding the same mirror must be byte-identical");
+        assert!(!a.is_empty(), "a non-empty mirror must produce bytes");
+    }
 }
