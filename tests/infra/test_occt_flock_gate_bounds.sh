@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deterministic unit tests for the occt_flock_gate_lib.sh helpers.
-# The bounds / event-log predicates (occt_serial3_n2_within_bounds,
-# occt_max_concurrent_holders) run on SYNTHETIC inputs only — no real wrapper
+# The event-log predicates (occt_max_concurrent_holders,
+# occt_serial3_n2_serialized) run on SYNTHETIC inputs only — no real wrapper
 # invocations, no sleeps, cannot flake under load.
 #
 # The occt_wait_until_slot_held barrier test (task 5258) DOES spawn a real
@@ -10,9 +10,27 @@
 # held within a tiny bound — NEVER an elapsed-time magnitude, so it too cannot
 # flake under load.
 #
-# See tests/infra/occt_flock_gate_lib.sh for the helpers and their rationale
-# (esc-3939-94: bounds upper edge raised 1200->2000->5000ms for load tolerance;
-# task 5258: the causal flock-probe barrier + plan-grep-or-dump helpers).
+# WHY THE MILLISECOND BAND IS GONE (PRD docs/prds/infra-test-wallclock-deflake.md
+# decision D1, task 6247): the retired `occt_serial3_n2_within_bounds` predicate
+# asserted that three N=2 invocations finished inside an absolute [700,5000]ms
+# window.  That ceiling was ratcheted 1200 -> 2000 -> 5000 as the merge-queue
+# grew busier and was STILL observed at 5791ms.  D1 abandons absolute wall-clock
+# upper bounds for this class rather than re-tuning them once more: what the
+# tests actually want to know is whether the third invocation was SERIALIZED,
+# and that is a causal fact readable from the slot event log.
+#
+# The band was also non-discriminating in the direction that matters, as
+# occt_flock_gate_lib.sh's own COVERAGE GAP note admitted: an N->1
+# over-serialization regression lands three serial invocations at ~1200ms,
+# comfortably INSIDE [700,5000], so the band could not see it.
+# occt_serial3_n2_serialized closes that gap by asserting the maximum concurrent
+# hold count is EXACTLY 2 — which separates correct N=2 (2) from
+# over-serialization (1) and from a lost cap (3), all three of which the band
+# accepted alike.
+#
+# See tests/infra/occt_flock_gate_lib.sh for the helpers and their rationale,
+# and tests/infra/slot_holder_handshake_lib.sh for the shared causal primitives
+# the barrier and the event-log predicate now delegate to.
 
 set -euo pipefail
 
@@ -26,50 +44,60 @@ source "$SCRIPT_DIR/occt_flock_gate_lib.sh"
 
 echo "=== occt_flock_gate_lib.sh bounds predicate unit tests ==="
 
-# Helper for negative (must-reject) assertions: succeeds when predicate rejects.
-reject_bound() { ! occt_serial3_n2_within_bounds "$1"; }
-
-# -- Tests: values that must be ACCEPTED (within [LOW,HIGH]ms) ----------------
+# ============================================================================
+# Unit tests for occt_serial3_n2_serialized (causal serialization predicate)
+# PRD docs/prds/infra-test-wallclock-deflake.md §2/T3 + D1 (task 6247).
+#
+# The causal replacement for the retired [700,5000]ms band.  Purely synthetic
+# log inputs — no real wrapper invocations, no sleeps, cannot flake under load.
+# Every rejection uses the `bash -c "! ..."` form so the EXPORTED helper runs
+# for real in the child shell; an unexported helper would make the negation a
+# vacuous command-not-found and every rejection would pass for the wrong reason.
+# ============================================================================
 echo ""
-echo "--- Accepted values (within [${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms) ---"
+echo "--- occt_serial3_n2_serialized: causal serialization predicate ---"
 
-assert "accepts 700 (lower edge, exact lower bound)" \
-    occt_serial3_n2_within_bounds 700
+# ACCEPT: three invocations at N=2 — two hold concurrently, the third waits.
+# This is the correct-behaviour shape the retired band was trying to describe.
+_f_ok3="$(mktemp)"
+printf '100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n300 1111 RELEASE\n400 2222 RELEASE\n500 3333 ACQUIRE slot-1\n600 3333 RELEASE\n' \
+    > "$_f_ok3"
+assert "serial3_n2_serialized: three invocations at N=2 (max 2) => accepted" \
+    occt_serial3_n2_serialized "$_f_ok3"
+rm -f "$_f_ok3"
 
-assert "accepts 800 (typical idle N=2 serialized result ~800ms)" \
-    occt_serial3_n2_within_bounds 800
+# REJECT: N->1 over-serialization (max 1).  THIS IS THE COVERAGE GAP the ms band
+# admitted it could not see: three fully-serial invocations land ~1200ms, inside
+# [700,5000], so the band accepted the regression.
+_f_over="$(mktemp)"
+printf '100 1111 ACQUIRE slot-1\n200 1111 RELEASE\n300 2222 ACQUIRE slot-1\n400 2222 RELEASE\n500 3333 ACQUIRE slot-1\n600 3333 RELEASE\n' \
+    > "$_f_over"
+assert "serial3_n2_serialized: N->1 over-serialization (max 1) => rejected (closes the ms-band coverage gap)" \
+    bash -c "! occt_serial3_n2_serialized '$_f_over'"
+rm -f "$_f_over"
 
-assert "accepts 1473 (esc-3939-94 loaded serialized run — core regression guard)" \
-    occt_serial3_n2_within_bounds 1473
+# REJECT: all three holding at once (max 3) — the under-serialization regression
+# the retired >=700ms floor used to cover.  That coverage is preserved here.
+_f_under="$(mktemp)"
+printf '100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n300 3333 ACQUIRE slot-3\n400 1111 RELEASE\n500 2222 RELEASE\n600 3333 RELEASE\n' \
+    > "$_f_under"
+assert "serial3_n2_serialized: all three holding at once (max 3) => rejected (slot cap lost)" \
+    bash -c "! occt_serial3_n2_serialized '$_f_under'"
+rm -f "$_f_under"
 
-assert "accepts 2000 (former upper edge — still accepted post-5000ms raise)" \
-    occt_serial3_n2_within_bounds 2000
-
-assert "accepts 3317 (esc task/3443 loaded run — raised 2000->5000 to clear)" \
-    occt_serial3_n2_within_bounds 3317
-
-assert "accepts 5000 (upper edge, exact upper bound)" \
-    occt_serial3_n2_within_bounds 5000
-
-# -- Tests: values that must be REJECTED (outside [LOW,HIGH]ms) ---------------
-echo ""
-echo "--- Rejected values (outside [${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms) ---"
-
-assert "rejects 400 (all-parallel N>=3, no serialization — lower-bound proof must stay tight)" \
-    reject_bound 400
-
-assert "rejects 699 (just below lower bound)" \
-    reject_bound 699
-
-assert "rejects 6000 (beyond load-tolerance ceiling — ceiling still bounded)" \
-    reject_bound 6000
+# REJECT: empty log (max 0) — a wrapper that never ran, or an event log that was
+# never wired, must not pass vacuously.  The band had no equivalent guard.
+_f_none="$(mktemp)"
+assert "serial3_n2_serialized: empty log (max 0) => rejected (a wrapper that never ran cannot pass)" \
+    bash -c "! occt_serial3_n2_serialized '$_f_none'"
+rm -f "$_f_none"
 
 # ============================================================================
 # Unit tests for occt_max_concurrent_holders (R-technique predicate)
 # PRD docs/prds/infra-test-wallclock-deflake.md §2/T3
 #
 # Purely synthetic log inputs — no real wrapper invocations, no sleeps, cannot
-# flake under load.  Mirrors the occt_serial3_n2_within_bounds pattern above.
+# flake under load.  Mirrors the occt_serial3_n2_serialized pattern above.
 #
 # Log format (lib_slot_acquire.sh REIFY_SLOT_EVENT_LOG contract):
 #   <epoch_ns> <pid> ACQUIRE slot-N
@@ -108,10 +136,15 @@ rm -f "$_f_3inv"
 
 # (d) SCRAMBLED physical line order: epoch-ns field still orders to A/A/R/R → 2
 # [proves helper sorts by ns field, not physical append order]
+# The physical order below deliberately DISAGREES with the ns order: read as
+# written it is R/A/A/R, whose running max is 1, while the ns-sorted sequence is
+# A/A/R/R, whose running max is 2.  The previous fixture was a pure A/A/R/R
+# shuffle, which yields 2 under BOTH readings and so could not tell a sorting
+# predicate from a non-sorting one — it passed with the sort removed (task 6247).
 _f_scr="$(mktemp)"
-printf '200 2222 ACQUIRE slot-2\n100 1111 ACQUIRE slot-1\n400 2222 RELEASE\n300 1111 RELEASE\n' \
+printf '300 1111 RELEASE\n100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n400 2222 RELEASE\n' \
     > "$_f_scr"
-assert "max_concurrent_holders: SCRAMBLED lines (epoch-ns orders A/A/R/R) → 2" \
+assert "max_concurrent_holders: SCRAMBLED lines (epoch-ns orders A/A/R/R) → 2 (physical order alone would give 1)" \
     test "$(occt_max_concurrent_holders "$_f_scr")" -eq 2
 rm -f "$_f_scr"
 
