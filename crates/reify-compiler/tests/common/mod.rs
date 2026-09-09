@@ -189,13 +189,13 @@ pub fn assert_simple_unit(
 ///
 /// Source compiled: `structure def S { param x : <param_type> = <literal> }`
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
+#[track_caller]
 pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVector) {
     let source = format!(
         "structure def S {{ param x : {} = {} }}",
         param_type, literal
     );
-    let module = compile_with_stdlib_helper(&source);
-    single_cell_si_value(&source, module, "x")
+    single_cell_si_value(&source, compile_with_stdlib_helper, "x")
 }
 
 /// Compile a structure with a single untyped-`let` binding and return the
@@ -203,74 +203,42 @@ pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, Dimension
 ///
 /// Source compiled: `structure def S { let x = <quantity> }`
 ///
-/// An untyped-`let` counterpart to [`stdlib_param_si_value`], for probes whose
-/// quantity has no obvious named type — e.g. a `rad^-1` component, or an
-/// Energy-shaped expression the caller wants to bind untyped. Guessing a type
-/// for `stdlib_param_si_value` in that situation would either fail to compile
-/// or silently measure a different quantity, so this compiles the bare `let`
-/// form directly instead.
-///
-/// Uses `reify_test_support::compile_source_with_stdlib_allow_parse_errors`
-/// rather than the plain `compile_source_with_stdlib` helper: the plain one
-/// parses via `parse_with_stdlib_or_panic`, which asserts
-/// `parsed.errors.is_empty()` and would panic inside the helper with a
-/// message naming no `quantity` — hiding which probe was bad. Routing parse
-/// errors into `module.diagnostics` instead keeps the `errs.is_empty()`
-/// assertion below as the one place a bad probe is reported.
+/// Uses `compile_source_with_stdlib_allow_parse_errors` rather than the plain
+/// `compile_source_with_stdlib` helper, which panics on a parse error before
+/// this function's own error assertion can report which probe was bad.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
+#[track_caller]
 pub fn stdlib_let_si_value(quantity: &str) -> (f64, DimensionVector) {
     let source = format!("structure def S {{ let x = {quantity} }}");
-    let module = reify_test_support::compile_source_with_stdlib_allow_parse_errors(&source);
-    single_cell_si_value(&source, module, "x")
+    single_cell_si_value(
+        &source,
+        reify_test_support::compile_source_with_stdlib_allow_parse_errors,
+        "x",
+    )
 }
 
-/// Shared core of [`stdlib_param_si_value`] and [`stdlib_let_si_value`]: given
-/// `module` (already compiled from `source`, expected to define a
-/// single-member `structure def S`), assert a clean compile and return
-/// `member`'s `(si_value, dimension)` from its default expression.
+/// Shared core of [`stdlib_param_si_value`] and [`stdlib_let_si_value`]:
+/// compiles `source` via `compile`, asserts a clean compile, and returns
+/// `member`'s `(si_value, dimension)` from its default expression in the `S`
+/// template.
 ///
-/// The two callers differ only in the source template they format and the
-/// compile helper they invoke; this is everything after that — the shared
-/// error filter, template/cell lookup, and [`expect_scalar`] tail.
-///
-/// The panic messages below report the observable fact (no such cell, or a
-/// cell with no `default_expr`) without attributing a cause: this helper is
-/// shared by probes with different invariants in mind, so it cannot know
-/// which one a future caller's failure actually violates. A caller that
-/// wants a specific attribution (e.g. `unit_middot_mul_tests.rs`'s INV-SF-7
-/// "silently dropped during lowering" framing) carries that in its own
-/// call-site context instead.
+/// Takes `compile` rather than an already-compiled module so `source` and the
+/// module it produces cannot drift apart — the two callers differ only in
+/// the source template they format and the compile helper they invoke; this
+/// is everything after that.
+#[track_caller]
 fn single_cell_si_value(
     source: &str,
-    module: CompiledModule,
+    compile: impl FnOnce(&str) -> CompiledModule,
     member: &str,
 ) -> (f64, DimensionVector) {
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let module = compile(source);
+    let errs = reify_test_support::errors_only(&module);
     assert!(
         errs.is_empty(),
         "source `{source}` produced errors: {errs:?}"
     );
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("S template not found");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == member)
-        .unwrap_or_else(|| {
-            panic!("no `{member}` value cell for source `{source}` despite a clean compile")
-        });
-    let expr = cell
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("`{member}` cell has no default_expr"));
-    expect_scalar(expr)
+    expect_scalar(reify_test_support::get_let_expr_in(&module, "S", member))
 }
 
 /// Extract an `(op, left, right)` triple from a `BinOp` expression.
