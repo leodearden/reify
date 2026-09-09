@@ -23,14 +23,10 @@ use std::path::{Path, PathBuf};
 /// The native libraries Reify binaries may link against.
 ///
 /// INVARIANT: every variant listed here MUST have a corresponding gate arm in
-/// `scripts/check-manifold-deps.sh` (a `# BEGIN <dep>-candidates` marker
-/// block plus the presence check that consumes it). A variant WITHOUT one
-/// degrades silently: [`find`] returns `None`, the crate's build.rs answers
-/// with a `cargo:warning` and a bare `return`, and every `#[cfg(has_<dep>)]`
-/// item — including the whole test surface — stops being compiled. The suite
-/// then reports zero tests REPORTED rather than zero tests FAILED, and the
-/// gate goes green over a kernel nothing exercised. A passing suite and a
-/// DELETED suite are indistinguishable from outside.
+/// `scripts/check-manifold-deps.sh` (a `# BEGIN <dep>-candidates` marker block
+/// plus the presence check that consumes it). A variant WITHOUT one ships a
+/// SILENT stub kernel — that script's header states the rule under
+/// "THE SILENT-VACUITY RULE".
 ///
 /// `tests/infra/test_occt_deps_preflight.sh` pins that invariant in two parts,
 /// because a DECLARED arm and a GATING arm are not the same thing. The lexical

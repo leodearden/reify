@@ -9,19 +9,11 @@
 # scripts/verify-pipeline-infra-tests.txt both already reference this path;
 # renaming would churn two gates for no behavioural gain.
 #
-# WHY this guard exists. `reify_build_utils::find(NativeDep::X)` returns `None`
-# when EITHER the header dir or the lib dir is unresolved, and each kernel's
-# build.rs responds with a `cargo:warning` plus a bare `return` — no
-# `has_occt` / `has_gmsh` / `has_openvdb` cfg. That silently DELETES every
-# `#[cfg(has_X)]`-gated module and integration binary: the suite reports ZERO
-# tests, not zero failures, and the verify gate stays green over a kernel
-# nothing exercised. A passing suite and a DELETED suite are indistinguishable
-# from outside. This test pins the preflight that converts that vacuity into a
-# red gate.
-#
-# All three build.rs scripts stay deliberately fail-OPEN — their stub modules
-# are a sanctioned, tested configuration — so the GATE lives outside the
-# build, in scripts/check-manifold-deps.sh, which is what this file tests.
+# WHY this guard exists: a missing native dep is SILENT, not merely cryptic,
+# and all three build.rs scripts stay deliberately fail-OPEN — so the GATE
+# lives outside the build, in scripts/check-manifold-deps.sh. That script's
+# header states the mechanism under "THE SILENT-VACUITY RULE"; this file pins
+# the preflight that converts the vacuity into a red gate.
 #
 # Script under test: scripts/check-manifold-deps.sh (emitted by
 # scripts/verify.sh as a plan entry whenever RUN_RUST=1, so the arms it guards
@@ -1060,8 +1052,7 @@ assert "guard exits 0 for an accepted SONAME ('$_ACCEPTED_FIRST', Debian two-hop
 # The RECORDING half of the arm. Every other green-path assert runs through
 # _guard_exits_zero, which discards stdout — so without this one, deleting the
 # guard's [ok] line (or regressing it to name the wrong dir) leaves the whole
-# suite passing. That is the same "a passing suite and a deleted suite are
-# indistinguishable from outside" failure this task exists to close.
+# suite passing: the silent-vacuity rule one level up.
 #
 # The needle carries the trailing " at " so this arm's FIRST-LEVEL-only rule is
 # pinned HERE and not merely transitively. The fixture is a Debian two-hop
@@ -1153,21 +1144,15 @@ assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') projects (major.minor) i
     bash -c 'printf "%s\n" "$1" | grep -qxF -- "$2"' _ "$_ACCEPTED_MAJMIN" "$_SETUP_DEV_MAJMIN"
 
 # ---------------------------------------------------------------------------
-# 8. GMSH PRESENCE — the same silent vacuity, one dep over (task #6493).
+# 8. GMSH PRESENCE — the silent-vacuity rule, one dep over (task #6493).
 #
-# reify_build_utils::find(NativeDep::Gmsh) returns None when EITHER half is
-# unresolved, and crates/reify-kernel-gmsh/build.rs answers with a
-# `cargo:warning` plus a bare `return` — byte-for-byte the same fail-OPEN shape
-# OCCT had before task #6343. 81 has_gmsh-gated items then vanish: the suite
-# reports zero tests REPORTED, not zero tests FAILED, and the gate goes green
-# over a mesher nothing exercised.
-#
-# build.rs stays deliberately fail-OPEN (its cfg(not(has_gmsh)) stub modules
-# are a sanctioned, tested configuration). The GATE lives here, in
+# crates/reify-kernel-gmsh/build.rs is byte-for-byte the fail-OPEN
+# find()/warning/return shape OCCT had before task #6343, and 81
+# has_gmsh-gated items vanish with it. The GATE therefore lives in
 # check-manifold-deps.sh, exactly as it does for OCCT.
 #
-# EVERY case supplies healthy OCCT overrides: the OCCT arm runs AHEAD of the
-# Gmsh arm in the same script, so without them a `_guard_env_exits_nonzero`
+# EVERY case supplies healthy OCCT overrides, for the sequential-arms reason
+# this file's KNOWN CAVEAT states: without them a `_guard_env_exits_nonzero`
 # assert would pass on the OCCT arm's exit and test nothing. Every negative
 # case pairs its exit-code assert with an output assert naming a GMSH-specific
 # string, so a failure that really came from upstream stays attributable.
@@ -1213,17 +1198,10 @@ assert "guard exits 0 when BOTH Gmsh override dirs carry their sentinels (positi
         GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
 
 # ---------------------------------------------------------------------------
-# 9. OPENVDB PRESENCE — the third instance of the same vacuity (task #6493).
+# 9. OPENVDB PRESENCE — the third instance of the same rule (task #6493).
 #
-# crates/reify-kernel-openvdb/build.rs is byte-for-byte the same fail-OPEN
-# shape as gmsh's and as occt's before task #6343: find() -> None,
-# `cargo:warning`, bare `return`, exit 0, no cfg. Every
-# `#[cfg(has_openvdb)]`-gated item then stops being compiled and the suite
-# reports zero tests REPORTED rather than zero FAILED.
-#
-# build.rs stays deliberately fail-OPEN — reify-kernel-openvdb's
-# cfg(not(has_openvdb)) stub modules are a sanctioned, tested configuration.
-# The GATE lives in check-manifold-deps.sh.
+# crates/reify-kernel-openvdb/build.rs is byte-for-byte gmsh's fail-OPEN shape,
+# so the GATE lives in check-manifold-deps.sh for the same reason.
 #
 # EVERY case supplies healthy OCCT *and* Gmsh overrides: both arms run AHEAD of
 # the OpenVDB arm in the same script, so without them a
@@ -1288,9 +1266,8 @@ _assert_dep_parity OpenVdb openvdb-candidates OPENVDB
 # nothing about WHICH gmsh or openvdb produced it. Worse, every other
 # green-path assert in this file runs through `_guard_env_exits_zero`, which
 # discards stdout — so deleting an arm's `[ok]` line, or regressing it to name
-# the wrong dir, would leave the entire suite passing. That is the same
-# "a passing suite and a deleted suite are indistinguishable from outside"
-# failure this whole task exists to close, one level up.
+# the wrong dir, would leave the entire suite passing: the silent-vacuity rule
+# one level up.
 #
 # The SONAME is asserted as RECORDED ONLY. It is deliberately NOT compared
 # against an accepted set: OCCT's version pin is justified by a mechanism these
@@ -1327,26 +1304,12 @@ assert "guard RECORDS the resolved OpenVDB version and both resolved dirs on the
 # --- the OTHER half of the asymmetry: an UNREADABLE SONAME is NOT fatal here -
 #
 # dep_presence_arm ends with `ok "$label ${ver:-unknown} at ..."`, and the
-# `unknown` branch is a load-bearing contract, not a fallback nobody meant: the
-# arm banner, dep_presence_arm's own banner and this section's banner all state
-# that an undeterminable SONAME must stay NON-fatal for gmsh and openvdb,
-# because neither build.rs splices a version into any link directive and there
-# is therefore no unverified-link hazard to gate on.
-#
-# Section 6 pins the OCCT side of that contract behaviourally
-# (_mk_plainfile_lib_fixture => guard exits NON-zero, "could not determine").
-# Until these four asserts, the gmsh/openvdb side was pinned only in prose — no
-# case anywhere drove either dep with a regular-file sentinel, so both the
-# `${ver:-unknown}` branch AND the `exit 0` it has to preserve were entirely
-# unexercised.
-#
-# WHAT THAT WOULD HAVE COST: a future refactor hoisting OCCT's hard-fail into
-# the shared helper — exactly the direction dep_hint/dep_presence_arm's
-# deduplication already moves — would red EVERY RUN_RUST=1 verify on any host
-# whose gmsh or openvdb is repackaged with a plain-file dev sentinel, and no
-# test would catch it before the merge gate. The same fixture that pins OCCT's
-# hard-fail now pins these two NOT hard-failing, so the two expectations cannot
-# be silently unified.
+# `unknown` branch is a load-bearing contract, not a fallback nobody meant.
+# Section 6 pins the OCCT side behaviourally (_mk_plainfile_lib_fixture =>
+# guard exits NON-zero, "could not determine"); these four asserts pin the
+# opposite expectation for gmsh and openvdb over the IDENTICAL on-disk shape,
+# from the SAME fixture, so a later refactor hoisting OCCT's hard-fail into the
+# shared helper cannot silently unify them.
 #
 # Both cases still supply healthy fixtures for every OTHER arm: an exit-0
 # assert is only meaningful if the arms ahead of AND behind this one also pass.
@@ -1384,8 +1347,7 @@ assert "guard RECORDS 'OpenVDB unknown at ' rather than hard-failing on the unde
 # `# BEGIN <dep>-candidates` marker-block NAMES already present for the parity
 # checks, the Rust side from the `// BEGIN native-dep-variants` markers around
 # the enum body. Adding a variant without an arm therefore reds HERE, at the
-# cheapest possible place, instead of degrading that dep to a stub kernel that
-# reports zero tests rather than zero failures.
+# cheapest possible place.
 #
 # Compared as SETS. Order carries no meaning for this one — unlike the
 # candidate lists, where order IS the invariant — because arm PRESENCE is the
@@ -1400,9 +1362,8 @@ assert "guard RECORDS 'OpenVDB unknown at ' rather than hard-failing on the unde
 # more. A fourth variant shipping candidate arrays inside a correctly named
 # marker block but NO consuming presence check — no dep_find_dir call, no
 # hint+exit — would satisfy it, satisfy section 10's parity asserts, and
-# satisfy the assert message, while the dep still degraded to a silent stub
-# kernel reporting zero tests. That is this task's own vacuity class, one level
-# up: a DECLARED arm and a GATING arm are not the same thing.
+# satisfy the assert message, while still shipping ungated. A DECLARED arm and
+# a GATING arm are not the same thing.
 #
 # So the loop below is BEHAVIOURAL. For each dep DERIVED from the guard's own
 # marker blocks it drives the guard with every other dep healthy and that dep's

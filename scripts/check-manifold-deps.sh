@@ -3,6 +3,23 @@
 # any expensive compile, each converting a silent or cryptic downstream
 # failure into a fast, actionable message.
 #
+# THE SILENT-VACUITY RULE — why arms 3-5 exist. Stated ONCE here, and
+# REFERENCED rather than restated by the two kernel build.rs files,
+# reify_build_utils::NativeDep's doc and tests/infra/test_occt_deps_preflight.sh:
+#
+#   A missing native dep is not merely cryptic, it is SILENT.
+#   `reify_build_utils::find(NativeDep::X)` returns None when EITHER the header
+#   dir or the lib dir is unresolved; that kernel's build.rs answers with a
+#   `cargo:warning` and a bare `return`, setting no `has_<dep>` cfg; and every
+#   `#[cfg(has_<dep>)]` item — the crate's whole test surface included — then
+#   stops being compiled AT ALL. The suite reports ZERO tests rather than zero
+#   failures, so a passing suite and a DELETED suite are indistinguishable from
+#   outside and the gate goes green over a kernel nothing exercised.
+#
+#   The build.rs files stay deliberately fail-OPEN — their stub modules are a
+#   sanctioned, tested configuration — which is exactly why the GATE has to
+#   live out here instead.
+#
 #   1. manifold prebuilt. The `[target.x86_64-unknown-linux-gnu.manifold]`
 #      override in .cargo/config.toml makes Cargo link prebuilt static libs
 #      from /opt/reify-deps/manifold/lib instead of building manifold from
@@ -13,33 +30,19 @@
 #
 #   2. tbb pin dir (task #5192, mechanism A''). See that arm's own banner.
 #
-#   3. OCCT presence + SONAME (task #6343). A missing OCCT is not merely cryptic, it is
-#      SILENT: `reify_build_utils::find(NativeDep::Occt)` returns None,
-#      `crates/reify-kernel-occt/build.rs` emits a `cargo:warning` and returns
-#      without setting `has_occt`, and the crate degrades to stub types — which
-#      also deletes its `#[cfg(all(test, has_occt))]` module and its ~25
-#      `#![cfg(has_occt)]` integration binaries. The suite then reports ZERO
-#      tests rather than zero failures, so the gate stays green over a kernel
-#      nothing exercised. This arm makes that state red here. It also pins the
-#      resolved SONAME, because reify pins OCCT nowhere else in-tree: a distro
-#      upgrade that moves the version relinks the kernel with nothing louder
-#      than a `cargo:warning`, and the has_occt suite that would have caught
-#      the regression is exactly what disappears when OCCT goes missing.
+#   3. OCCT presence + SONAME (task #6343). The rule above, plus a version
+#      pin: reify pins OCCT nowhere else in-tree, so a distro upgrade that
+#      moves the version relinks the kernel with nothing louder than a
+#      `cargo:warning` — and the has_occt suite that would have caught the
+#      regression is exactly what disappears when OCCT goes missing.
 #
-#   4. Gmsh presence (task #6493). Byte-for-byte the same silent vacuity as
-#      arm 3: `reify_build_utils::find(NativeDep::Gmsh)` returns None,
-#      `crates/reify-kernel-gmsh/build.rs` emits a `cargo:warning` and returns
-#      without setting `has_gmsh`, and every `#[cfg(has_gmsh)]`-gated item in
-#      the workspace stops being compiled at all. PRESENCE is fatal here;
-#      the resolved SONAME is RECORDED but deliberately NOT pinned to an
-#      accepted set — see that arm's own banner for why the OCCT pin's
-#      justification does not carry over.
+#   4. Gmsh presence (task #6493). The rule again, one dep over. PRESENCE is
+#      fatal; the resolved SONAME is RECORDED but deliberately NOT pinned to an
+#      accepted set — see that arm's own banner for why OCCT's pin does not
+#      carry over.
 #
-#   5. OpenVDB presence (task #6493). The third instance of arm 4's shape,
-#      one dep over: `crates/reify-kernel-openvdb/build.rs` is byte-for-byte
-#      the same fail-OPEN find()/warning/return, and every
-#      `#[cfg(has_openvdb)]`-gated item disappears with it. Presence fatal,
-#      SONAME recorded and not pinned, for the same reasons.
+#   5. OpenVDB presence (task #6493). The third instance of arm 4's shape.
+#      Presence fatal, SONAME recorded and not pinned, same reasons.
 #
 # Arms run in DECLARATION ORDER and the first failure exits, so an arm can
 # only assume the arms above it passed. tests/infra/test_occt_deps_preflight.sh
@@ -220,9 +223,8 @@ OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
 # relinks the kernel against a new OCCT. That is the exact event build.rs's
 # read_soname_version fallback anticipates — and if the move instead lands
 # reify in stub mode, the has_occt suite that would have caught the resulting
-# geometry regressions is itself deleted by the same cfg. A passing suite and
-# a DELETED suite are indistinguishable from outside, which is why this has to
-# be caught before the compile rather than inferred from test results.
+# geometry regressions is deleted by the same cfg (the silent-vacuity rule in
+# this file's header), so it cannot be inferred from test results either.
 #
 # ON A LEGITIMATE BUMP: widening this array is the sanctioned response — but
 # only AFTER re-validating the OCCT-sensitive pins against the new version
@@ -398,32 +400,21 @@ dep_searched_desc() {
 # dep_presence_arm <PREFIX> <Label> <hint_fn>
 #
 # The ENTIRE body of a presence-only arm — override read, both resolutions,
-# report-both-halves, hint+exit, SONAME recording — for the deps whose gate is
-# presence and nothing more. Driven by DATA: every per-dep value is read out of
-# the `<PREFIX>_*` names its `# BEGIN <dep>-candidates` marker block already
-# declares, via indirect expansion, so an arm is one call and there is exactly
-# one copy of the logic.
+# report-both-halves, hint+exit, SONAME recording — so that logic exists once
+# rather than once per dep.
 #
-# WHY THIS IS A FUNCTION AND NOT TWO COPIES: the Gmsh and OpenVDB arms were
-# near-verbatim duplicates of each other (~45 lines of executable shell apiece,
-# differing only in prefix, human label and hint fn). A later change — a bypass
-# env, a different error format, an extra diagnostic — then has to be applied
-# twice and can silently be applied once, which is the drift class the leaf
-# primitives above (dep_find_dir / dep_soname_ver / dep_searched_desc) already
-# exist to prevent one level down. The DIAGNOSTICS this body invokes are shared
-# for the same reason and by the same rule — see dep_hint() below, of which each
-# dep's `<dep>_hint` is now a data-only wrapper.
+# DATA-DRIVEN, via indirect expansion: every per-dep value is read out of the
+# `<PREFIX>_*` names that dep's `# BEGIN <dep>-candidates` marker block already
+# declares, so an arm is one call and a new dep adds no logic. <PREFIX> is
+# UPPERCASE (GMSH, OPENVDB), the same token the marker block and the override
+# env vars use; the lowercase form in the error text is DERIVED from it, so the
+# two cannot disagree.
 #
-# WHAT IT DOES NOT COVER, deliberately: the OCCT arm stays written out inline
-# below. Its SONAME pin is FATAL and sits BETWEEN resolution and the `ok` line
+# OCCT IS DELIBERATELY EXCLUDED, and its arm stays written out inline below:
+# OCCT's SONAME pin is FATAL and sits BETWEEN resolution and the `ok` line
 # (accepted-set comparison, two distinct multi-line diagnostics, a different
-# install hint per failure mode), so folding it in here would mean a parameter
-# for every one of those differences — a worse trade than the duplication this
-# removes. Presence-only arms share a body; OCCT's does not exist twice.
-#
-# <PREFIX> is UPPERCASE (GMSH, OPENVDB) and is the same token the marker block
-# and the override env vars use. The lowercase form used in the error text is
-# DERIVED from it rather than passed, so the two can never disagree.
+# install hint per failure mode), so folding it in would need a parameter per
+# difference.
 #
 # Exits 1 (terminating the whole script, which is the contract — arms run in
 # declaration order and the first failure exits) when either half is
@@ -526,28 +517,20 @@ dep_presence_arm() {
 
 # dep_hint <PREFIX> <conda-ver> <apt-ver> <subject> <surfaces-line>... — the
 # complete diagnostic block a presence-only arm prints just before it exits:
-# how to install the dep, then WHY its absence is fatal rather than a warning.
-#
-# WHY THIS IS ONE FUNCTION AND NOT FOUR: gmsh_install_hint/openvdb_install_hint
-# and gmsh_hint/openvdb_hint were four near-verbatim bodies (~28 lines) whose
-# only differences were the dep name, two version numbers, which gated surfaces
-# disappear, and the trailing noun. That is the same drift class
-# dep_presence_arm's own banner argues against one level down — a change to the
-# install instructions (a new setup-dev.sh entry point, a bypass env var) had to
-# be applied twice and could silently be applied once. The executable body was
-# deduplicated while the diagnostics it invokes were left as copies; this closes
-# that gap. The per-dep wrappers below now carry DATA ONLY.
-#
-# NOT SHARED WITH OCCT, deliberately: occt_hint/occt_install_hint stay written
-# out inline. OCCT is called from three different failure paths (both halves
-# unresolved, undeterminable SONAME, SONAME drift) with genuinely different
-# prose per path, and it is an apt-provisioned system dep rather than a
-# conda-forge one — so it shares no sentence with these two.
+# how to install the dep, then the silent-vacuity rule from this file's header,
+# rendered for the operator staring at the red gate. The `<dep>_hint` wrappers
+# below carry DATA ONLY.
 #
 # <PREFIX> is UPPERCASE, the same token the marker block and the override env
 # vars use; the lowercase dep name, the crate name and the cfg name are all
 # DERIVED from it rather than passed, so they can never disagree with the arm
 # that printed them.
+#
+# NOT SHARED WITH OCCT, deliberately: occt_hint/occt_install_hint stay inline.
+# OCCT is reached from three failure paths (both halves unresolved,
+# undeterminable SONAME, SONAME drift) with genuinely different prose per path,
+# and it is apt-provisioned rather than conda-forge — it shares no sentence
+# with these two.
 #
 # The surfaces clause is taken as TRAILING VARARGS, one per output line, so each
 # dep keeps its own hand-wrapping instead of rendering as a single over-long
@@ -653,9 +636,7 @@ ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED
 
 # ---------- Gmsh presence preflight (task #6493) ----------
 #
-# See arm 4 in the file header. Same fail-OPEN build.rs, same silent deletion
-# of the gated test surface, same reason it has to be caught before the
-# compile rather than inferred from test results.
+# See arm 4 in the file header for the rule this arm enforces.
 #
 # Note this gates the VERIFY PIPELINE, not `cargo build` — gmsh-free stub
 # builds stay sanctioned, and crates/reify-kernel-gmsh carries real
@@ -700,8 +681,7 @@ dep_presence_arm GMSH Gmsh gmsh_hint
 
 # ---------- OpenVDB presence preflight (task #6493) ----------
 #
-# See arm 5 in the file header. Same fail-OPEN build.rs, same silent deletion
-# of the gated surface, same reason it has to be caught before the compile.
+# See arm 5 in the file header for the rule this arm enforces.
 #
 # Note this gates the VERIFY PIPELINE, not `cargo build` — openvdb-free stub
 # builds stay sanctioned, and crates/reify-kernel-openvdb carries real
