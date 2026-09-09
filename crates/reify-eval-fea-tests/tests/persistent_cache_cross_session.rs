@@ -91,7 +91,9 @@
 //! only because a buckling solve is ~1000 s in debug).
 
 use reify_core::Severity;
-use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, ElasticResult, read_entry};
+use reify_eval::persistent_cache::{
+    ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, read_entry,
+};
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -355,9 +357,11 @@ fn cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it() {
     );
 
     let value_a = find_elastic_result(&engine_a);
-    let decoded_a: ElasticResult = read_entry(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
-        .expect("read_entry must not error on a freshly written entry")
-        .expect("the session-1 entry must decode to Some");
+    let decoded_a: ElasticResult =
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
+            .expect("read_entry must not error on a freshly written entry")
+            .expect("the session-1 entry must decode to Some")
+            .value;
 
     // ── Session 2 (Engine B): warm lookup, must NOT solve and must NOT write ─
 
@@ -414,9 +418,11 @@ fn cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it() {
     );
 
     // (2) Both sessions' entries decode to PartialEq-equal ElasticResults.
-    let decoded_b: ElasticResult = read_entry(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
-        .expect("read_entry must not error after the warm session")
-        .expect("the entry must still decode to Some after the warm session");
+    let decoded_b: ElasticResult =
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
+            .expect("read_entry must not error after the warm session")
+            .expect("the entry must still decode to Some after the warm session")
+            .value;
     assert!(
         decoded_a == decoded_b,
         "the decoded ElasticResult must be unchanged across the cross-session hit",
@@ -616,7 +622,7 @@ fn engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prun
     // relocated entry is NOT served under the version it does not belong to.
     // A stale generation can never be mistaken for a live one.
     assert!(
-        read_entry::<ElasticResult>(tmp.path(), FAKE_EVH, &old_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), FAKE_EVH, &old_hash)
             .expect("a mismatched echo is a miss, never an Err")
             .is_none(),
         "an entry sitting under a version dir it was not written for must read as \
@@ -658,7 +664,7 @@ fn engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prun
         "the live engine-version subdir must survive the orphan prune",
     );
     assert!(
-        read_entry::<ElasticResult>(tmp.path(), ENGINE_VERSION_HASH, &new_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &new_hash)
             .expect("read_entry must not error on the live entry")
             .is_some(),
         "the live generation's entry must still be readable after the orphan prune",
@@ -700,7 +706,13 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     // ── (a) One GOOD entry that must survive everything below ───────────────
 
     let fixture = make_elastic_result_fixture(42);
-    write_entry(root, ENGINE_VERSION_HASH, &good_hash, &fixture)
+    // Seeded through the same `WithDiagnostics` envelope production writes, so
+    // this fixture models a real entry rather than a shape no writer produces.
+    let seed = WithDiagnostics {
+        diagnostics: Vec::new(),
+        value: fixture.clone(),
+    };
+    write_entry(root, ENGINE_VERSION_HASH, &good_hash, &seed)
         .expect("seeding the good entry must succeed");
     let good_meta = entry_meta_path(root, ENGINE_VERSION_HASH, &good_hash);
     assert!(
@@ -742,7 +754,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
 
     // A crashed write is a plain MISS — never an error, never a partial value.
     assert!(
-        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &victim_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(root, ENGINE_VERSION_HASH, &victim_hash)
             .expect("a never-published entry is a miss, never an Err")
             .is_none(),
         "a tempfile that never reached persist() must read as a cache MISS",
@@ -777,7 +789,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     // would enshrine the defect and silently retire the documented policy.
 
     let torn_bin = entry_bin_path(root, ENGINE_VERSION_HASH, &torn_hash);
-    write_entry(root, ENGINE_VERSION_HASH, &torn_hash, &fixture)
+    write_entry(root, ENGINE_VERSION_HASH, &torn_hash, &seed)
         .expect("seeding the entry that will be torn must succeed");
     let header_len = u64::try_from(ENTRY_HEADER_ENCODED_LEN).expect("header len fits in u64");
     let intact_len = std::fs::metadata(&torn_bin)
@@ -814,7 +826,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     }
 
     assert!(
-        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &torn_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(root, ENGINE_VERSION_HASH, &torn_hash)
             .expect("a body-torn entry is a miss, never an Err")
             .is_none(),
         "a .bin torn mid-body must read as a cache MISS — the corruption-recovery \
@@ -854,9 +866,11 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     );
 
     // THE SURVIVORSHIP CLAIM: the live entry is untouched by all of the above.
-    let survivor: ElasticResult = read_entry(root, ENGINE_VERSION_HASH, &good_hash)
-        .expect("read_entry must not error on the good entry")
-        .expect("the good entry must survive the crashed-writer sweep");
+    let survivor: ElasticResult =
+        read_entry::<WithDiagnostics<ElasticResult>>(root, ENGINE_VERSION_HASH, &good_hash)
+            .expect("read_entry must not error on the good entry")
+            .expect("the good entry must survive the crashed-writer sweep")
+            .value;
     assert!(
         survivor == fixture,
         "the surviving entry must decode PartialEq-equal to what was written",
