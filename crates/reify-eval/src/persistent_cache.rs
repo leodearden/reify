@@ -143,7 +143,7 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 /// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
 /// this constant in the same commit. Pinned by
 /// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal` and
-/// `entry_format_version_const_is_one`.
+/// `entry_format_version_const_is_two`.
 ///
 /// Starting at 1 follows the Reify convention that 0 means "uninitialised /
 /// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
@@ -3109,15 +3109,65 @@ version = "9.9.9"
     }
 
     #[test]
-    fn entry_format_version_const_is_one() {
-        // Pins the start-at-1 convention (0 = uninitialised / unknown).
+    fn entry_format_version_const_is_two() {
         // An intentional on-disk-layout bump must touch this assertion — that
         // is the point: it forces a deliberate acknowledgement that cached bytes
         // from the previous version are now incompatible. Mirrors the
         // `elastic_result_format_version_is_one` pattern for body-format
         // versioning; these two consts are intentionally distinct namespaces
         // (entry-header layout vs. body encoding).
-        assert_eq!(ENTRY_FORMAT_VERSION, 1);
+        //
+        // v1 → v2 (task 7245): the body gained a length-framed diagnostics
+        // prefix ahead of the `PersistentlyCacheable` body, so v1 entries are
+        // not readable and must be rejected before the body decode is attempted.
+        assert_eq!(ENTRY_FORMAT_VERSION, 2);
+    }
+
+    #[test]
+    fn read_entry_rejects_pre_envelope_v1_entry_as_a_clean_miss() {
+        // The migration contract for the v1 → v2 bump: a cache written before
+        // the diagnostics envelope existed degrades to a cold recompute. Never
+        // an `Err` (which would surface as an infrastructure failure), and never
+        // a garbage decode — `verify_format_version` runs BEFORE the body decode
+        // precisely so a stale layout cannot reach the decoder.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667b";
+
+        // The fixture's staleness is the whole premise. Written as a literal 1
+        // (never `ENTRY_FORMAT_VERSION`) so this test keeps its meaning across
+        // any future bump.
+        assert_ne!(
+            1, ENTRY_FORMAT_VERSION,
+            "this fixture only models a STALE entry while ENTRY_FORMAT_VERSION \
+             differs from 1; the envelope bump is what makes v1 entries stale"
+        );
+
+        // Hand-write the pre-envelope layout: a v1 header followed by a BARE
+        // `ElasticResult` body with no diagnostics prefix.
+        std::fs::create_dir_all(shard_dir(root, eng, inp)).unwrap();
+        let legacy = make_sample_result();
+        let header = CacheEntryHeader {
+            format_version: 1,
+            engine_version_hash: cache_key_to_ascii_32(eng).unwrap(),
+            input_hash: cache_key_to_ascii_32(inp).unwrap(),
+            solve_time_ms: legacy.solve_time_ms(),
+            byte_size: legacy.uncompressed_byte_size(),
+            written_at: 0,
+        };
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        header.write_to(&mut f).unwrap();
+        legacy.serialize_to_writer(&mut f).unwrap();
+        drop(f);
+        write_sidecar(&entry_meta_path(root, eng, inp)).unwrap();
+
+        let got = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .expect("a stale entry must be a miss, never an Err");
+        assert!(
+            got.is_none(),
+            "a v1 entry must read as a clean miss so the caller cold-recomputes"
+        );
     }
 
     #[test]
