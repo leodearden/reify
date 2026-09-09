@@ -815,6 +815,127 @@ fn diagnostic_from_persisted(p: &PersistedDiagnostic) -> io::Result<reify_core::
     Ok(out)
 }
 
+/// Upper bound on the encoded diagnostics block, checked before allocating.
+///
+/// Same discipline as [`check_f64_vec_len`] on the slab lengths: a corrupt or
+/// tampered length frame must be rejected as `InvalidData` (which `read_entry`
+/// turns into a clean miss) rather than driving an unbounded allocation. A
+/// dispatch's diagnostics are a handful of short strings, so 1 MiB is orders of
+/// magnitude of headroom.
+const MAX_DIAGNOSTICS_BLOCK_BYTES: u64 = 1 << 20;
+
+/// Encode the diagnostics mirror block for `diagnostics`.
+///
+/// Single source of truth for the block bytes, shared by
+/// [`PersistentlyCacheable::serialize_to_writer`] and
+/// [`PersistentlyCacheable::uncompressed_byte_size`] so the header's declared
+/// size and the bytes actually written can never drift apart.
+fn encode_diagnostics_block(diagnostics: &[reify_core::Diagnostic]) -> Vec<u8> {
+    let mirror: Vec<PersistedDiagnostic> =
+        diagnostics.iter().map(diagnostic_to_persisted).collect();
+    bincode::serialize(&mirror).expect(
+        "PersistedDiagnostic is a plain owned record (u8 + String + Option<enum>); \
+         bincode::serialize into a Vec cannot fail.",
+    )
+}
+
+/// A persistable value paired with the diagnostics its solve emitted.
+///
+/// # Why an envelope rather than a field on each record type
+///
+/// Diagnostics are an orthogonal dimension to the per-target value payload.
+/// One envelope generic over `V: PersistentlyCacheable` gives a single codec
+/// (SPOT) that covers `ElasticResult`, `BucklingResultCache`,
+/// `ShellExtractionResult` and any future persistable target by construction,
+/// instead of three copies of the same encode/decode. On the elastic side a
+/// per-record field is also blocked outright: `elastic_result_from_value` is
+/// pinned by a hash-identity contract, so diagnostics must not enter the
+/// `Value` — and that bridge has no diagnostics to populate a field with
+/// anyway, since they arrive separately from the trampoline.
+///
+/// This mirrors the in-memory cache's own stance (#5062): diagnostics are entry
+/// METADATA, explicitly not part of the result hash.
+///
+/// # Wire layout — the prefix is load-bearing
+///
+/// ```text
+/// [u64 LE block length][bincode Vec<PersistedDiagnostic>][V's body]
+/// ```
+///
+/// The diagnostics block is written BEFORE `V`'s body, never appended after
+/// it. `ElasticResult`'s body ends with a CONDITIONAL probe-byte tail:
+/// `read_aposteriori_tail` (reify-compute-contract/src/elastic_result.rs:408)
+/// does a greedy `r.read(&mut probe)` and treats `probe_n == 0` as "no tail".
+/// For the very common entry with `aposteriori: None` AND a non-empty
+/// diagnostics list, a suffix would have that read swallow the block's first
+/// byte and decode it as an aposteriori discriminant — a silent wrong-data
+/// path, the worst failure mode for a cache. A prefix is fully self-delimiting
+/// and cannot interact with any `V`'s internal greedy tails. Pinned by
+/// `with_diagnostics_prefix_survives_absent_aposteriori_tail`.
+///
+/// A prefix is not backward-readable, which is why [`ENTRY_FORMAT_VERSION`] is
+/// 2: `verify_format_version` runs BEFORE the body decode, so every v1 entry
+/// becomes a clean miss and a one-time cold recompute.
+#[derive(Debug, Clone)]
+pub struct WithDiagnostics<V> {
+    /// Diagnostics emitted by the solve that produced `value`, replayed
+    /// verbatim on a warm serve. Lossy in exactly two documented ways — see
+    /// [`PersistedDiagnostic`].
+    pub diagnostics: Vec<reify_core::Diagnostic>,
+    /// The persisted result payload.
+    pub value: V,
+}
+
+impl<V: PersistentlyCacheable> PersistentlyCacheable for WithDiagnostics<V> {
+    /// Tracks the wrapped type's body format. The on-the-wire stale-entry guard
+    /// is [`ENTRY_FORMAT_VERSION`] in the entry header, which is what actually
+    /// rejects pre-envelope entries; this const is not written to disk today.
+    const FORMAT_VERSION: u32 = V::FORMAT_VERSION;
+
+    fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
+        let block = encode_diagnostics_block(&self.diagnostics);
+        w.write_all(&(block.len() as u64).to_le_bytes())?;
+        w.write_all(&block)?;
+        self.value.serialize_to_writer(w)
+    }
+
+    fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self> {
+        let mut len_frame = [0u8; 8];
+        r.read_exact(&mut len_frame)?;
+        let block_len = u64::from_le_bytes(len_frame);
+        if block_len > MAX_DIAGNOSTICS_BLOCK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "diagnostics block length {block_len} exceeds limit \
+                     {MAX_DIAGNOSTICS_BLOCK_BYTES} (corrupted or tampered cache entry?)"
+                ),
+            ));
+        }
+        let mut block = vec![0u8; block_len as usize];
+        r.read_exact(&mut block)?;
+        let mirror: Vec<PersistedDiagnostic> =
+            bincode::deserialize(&block).map_err(io::Error::other)?;
+        let diagnostics = mirror
+            .iter()
+            .map(diagnostic_from_persisted)
+            .collect::<io::Result<Vec<_>>>()?;
+        let value = V::deserialize_from_reader(r)?;
+        Ok(Self { diagnostics, value })
+    }
+
+    fn uncompressed_byte_size(&self) -> u64 {
+        // The block is stored uncompressed, so it counts verbatim alongside its
+        // 8-byte length frame; only `V`'s body passes through zstd.
+        8 + encode_diagnostics_block(&self.diagnostics).len() as u64
+            + self.value.uncompressed_byte_size()
+    }
+
+    fn solve_time_ms(&self) -> u64 {
+        self.value.solve_time_ms()
+    }
+}
+
 /// Convert a 32-character ASCII `&str` cache key component into a fixed
 /// `[u8; 32]` byte array for storage in [`CacheEntryHeader`] echo fields.
 ///
