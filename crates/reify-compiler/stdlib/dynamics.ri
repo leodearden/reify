@@ -22,9 +22,14 @@
 //   - structure def TrajectorySample      (t, values, vels, accels)
 //   - structure def MotionTrajectory      (mechanism, samples)
 //
-// Module placement: registered last in `stdlib_loader.rs` after `std.process`.
-// Hard dependencies: `std.units` (Mass / Length / Time) and `std.trajectory`
-// (for the `JointValue` alias used by TrajectorySample).
+// Module placement: see the ordering notes on the `std.dynamics` entry in
+// `stdlib_loader.rs` (`std.kinematic` and `std.ports` must precede) —
+// encoding note 3 below covers the `Frame3`/`origin` half of that
+// constraint. The last-module slot belongs to `std.determinacy.purposes`,
+// pinned by crates/reify-compiler/tests/stdlib_loader_tests.rs::std_determinacy_purposes_is_last_stdlib_module.
+// Hard dependencies: all four are load-bearing — `std.units`, `std.trajectory`,
+// `std.kinematic`, and `std.ports` — see the same `std.dynamics` entry in
+// `stdlib_loader.rs` for what each supplies.
 //
 // Encoding notes:
 //   1. `JointForceValue` is a marker trait + refining structures. This is
