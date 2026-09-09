@@ -142,7 +142,6 @@ _ERR10="$(mktemp)"
 # Background holder: acquire slot-1 and hold it for 45s (exceeds outer timeout 30s).
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK10}.slot-1" &
 _HOLDER10=$!
-sleep 0.2   # give holder time to acquire
 assert "Test 10: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
     holder_wait_until_held "${_LOCK10}.slot-1"
 
@@ -166,7 +165,6 @@ _ERR11="$(mktemp)"
 
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK11}.slot-1" &
 _HOLDER11=$!
-sleep 0.2
 assert "Test 11: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
     holder_wait_until_held "${_LOCK11}.slot-1"
 
@@ -343,35 +341,48 @@ echo "--- Test T19: WAIT=unlimited queues behind 2s holder, exits 0, emits STOP/
 _LOCK19="$(mktemp)"
 _ERR19="$(mktemp)"
 
-# Background holder: hold slot-1 for 2s then release.
-( flock -x 9; sleep 2 ) 9>>"${_LOCK19}.slot-1" &
-_HOLDER19=$!
-sleep 0.2   # give holder time to acquire
+# The holder holds slot-1 until THIS TEST releases it, and the wrapper runs in
+# the BACKGROUND, so the hold strictly CONTAINS the wrapper's queued wait
+# (task 6247).  The retired shape — a `sleep 2` holder plus a `sleep 0.2` grace
+# and a foreground wrapper — raced on both sides at once: the grace could be
+# outrun (wrapper finds the slot free, no markers at all) and it also ate into
+# the hold, so the residual contention window could fall below one
+# HEARTBEAT_SECS tick and T19e would fail with the mechanism perfectly healthy.
+_HOLD19="$(mktemp -d)"
+_HOLDER19="$(holder_spawn_gated "${_LOCK19}.slot-1" "$_HOLD19/ready" "$_HOLD19/release")"
 assert "Test T19: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
     holder_wait_until_held "${_LOCK19}.slot-1"
 
-_START19_NS="$(date +%s%N)"
 _EXIT19=0
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK19" \
     REIFY_TEST_SEMAPHORE_CONCURRENCY=1 REIFY_TEST_SEMAPHORE_WAIT=unlimited \
     REIFY_CLOCK_HEARTBEAT_SECS=1 \
-    timeout 30 "$LIB" true 2>"$_ERR19" || _EXIT19=$?
-_END19_NS="$(date +%s%N)"
-_ELAPSED19_MS=$(( (_END19_NS - _START19_NS) / 1000000 ))
+    timeout 30 "$LIB" true 2>"$_ERR19" &
+_WRAP19=$!
 
-# CAUSAL WINDOW (task 6247): was the holder STILL holding at the point the
-# heartbeat marker appeared?  T19e asserts a heartbeat tick happened while the
-# wrapper was queued, and that is only meaningful if the contention window
-# actually contained a tick.  With the wrapper run in the FOREGROUND this can
-# only be sampled after it has already returned — by which time a self-timed
-# hold is long over — so the fact is unobservable-as-true here by construction.
+# Wait for the wrapper to emit a heartbeat while it is queued.  This is a
+# BROKEN-INFRA BACKSTOP budget, not a timing assertion: T19e below is what
+# reports a missing heartbeat, so an exhausted budget yields a clean RED.
 _HELD19_AT_HB=0
-if grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_ERR19" && _slot_held_now "${_LOCK19}.slot-1"; then
-    _HELD19_AT_HB=1
-fi
+_hb19=0
+_hb19_budget="$(load_tolerant_attempts 100)"
+while [ "$_hb19" -lt "$_hb19_budget" ]; do
+    if grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_ERR19" 2>/dev/null; then
+        # Sample the slot WHILE the wrapper is still queued: the holder must
+        # still be holding, which is what makes the tick a caused consequence
+        # of the contention rather than a coincidence of two timers.
+        if _slot_held_now "${_LOCK19}.slot-1"; then
+            _HELD19_AT_HB=1
+        fi
+        break
+    fi
+    sleep 0.2
+    _hb19=$(( _hb19 + 1 ))
+done
 
-kill "$_HOLDER19" 2>/dev/null || true
-wait "$_HOLDER19" 2>/dev/null || true
+holder_release "$_HOLD19/release" "$_HOLDER19" || true
+wait "$_WRAP19" || _EXIT19=$?
+rm -rf "$_HOLD19"
 rm -f "$_LOCK19" "${_LOCK19}.slot-1"
 
 assert "Test T19a: WAIT=unlimited exits 0 (queued-then-ran, not 75; got $_EXIT19)" \
@@ -395,7 +406,6 @@ _ERR20="$(mktemp)"
 
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK20}.slot-1" &
 _HOLDER20=$!
-sleep 0.2
 assert "Test T20: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
     holder_wait_until_held "${_LOCK20}.slot-1"
 
@@ -682,28 +692,39 @@ echo "--- Test CD-4: integration — slot_acquire emits balanced STOP→START vi
 _CD4_LOCK="$(mktemp)"
 _CD4_ERR="$(mktemp)"
 
-# Background holder: hold slot-1 for ~1s then release.
-( flock -x 9; sleep 1 ) 9>>"${_CD4_LOCK}.slot-1" &
-_CD4_HOLDER=$!
-sleep 0.2   # give holder time to acquire the lock
+# Test-released holder plus a backgrounded wrapper, exactly as T19 (task 6247).
+# CD-4 was gated on the tightest hold in this file — a bare `sleep 1` — so it
+# was the most exposed of all six sites to a pause that outran or overran it.
+_CD4_HOLD="$(mktemp -d)"
+_CD4_HOLDER="$(holder_spawn_gated "${_CD4_LOCK}.slot-1" "$_CD4_HOLD/ready" "$_CD4_HOLD/release")"
 assert "Test CD-4: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
     holder_wait_until_held "${_CD4_LOCK}.slot-1"
 
 _CD4_EXIT=0
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_CD4_LOCK" \
     REIFY_TEST_SEMAPHORE_CONCURRENCY=1 REIFY_TEST_SEMAPHORE_WAIT=unlimited \
-    timeout 15 "$LIB" true 2>"$_CD4_ERR" || _CD4_EXIT=$?
+    timeout 15 "$LIB" true 2>"$_CD4_ERR" &
+_CD4_WRAP=$!
 
-# CAUSAL WINDOW (task 6247), the twin of T19f: was the holder still holding
-# when the STOP marker appeared?  CD-4 is gated on the tightest hold in this
-# file, so it is the most exposed to a pause that outruns or overruns it.
+# BROKEN-INFRA BACKSTOP budget, not a timing assertion: CD-4b reports a missing
+# STOP marker, so an exhausted budget yields a clean RED rather than a hang.
 _HELD_CD4_AT_STOP=0
-if grep -q '@@REIFY_CLOCK_STOP@@' "$_CD4_ERR" && _slot_held_now "${_CD4_LOCK}.slot-1"; then
-    _HELD_CD4_AT_STOP=1
-fi
+_cd4=0
+_cd4_budget="$(load_tolerant_attempts 100)"
+while [ "$_cd4" -lt "$_cd4_budget" ]; do
+    if grep -q '@@REIFY_CLOCK_STOP@@' "$_CD4_ERR" 2>/dev/null; then
+        if _slot_held_now "${_CD4_LOCK}.slot-1"; then
+            _HELD_CD4_AT_STOP=1
+        fi
+        break
+    fi
+    sleep 0.2
+    _cd4=$(( _cd4 + 1 ))
+done
 
-kill "$_CD4_HOLDER" 2>/dev/null || true
-wait "$_CD4_HOLDER" 2>/dev/null || true
+holder_release "$_CD4_HOLD/release" "$_CD4_HOLDER" || true
+wait "$_CD4_WRAP" || _CD4_EXIT=$?
+rm -rf "$_CD4_HOLD"
 rm -f "$_CD4_LOCK" "${_CD4_LOCK}.slot-1"
 
 assert "Test CD-4a: contended slot_acquire exits 0 (helper wiring intact; got $_CD4_EXIT)" \
@@ -789,7 +810,6 @@ make_counting_stub "$_CE2_STUBDIR" shuf "$_CE2_SHUF_COUNT"
 # mirrors the Test 10/T20 holder-outlives-outer-timeout convention).
 ( flock -x 9; sleep 45 ) 9>>"${_CE2_LOCK}.slot-1" &
 _CE2_HOLDER=$!
-sleep 0.2   # give holder time to acquire
 assert "Test CE-2: holder confirmed holding slot-1 before the wrapper starts (causal barrier)" \
     holder_wait_until_held "${_CE2_LOCK}.slot-1"
 
