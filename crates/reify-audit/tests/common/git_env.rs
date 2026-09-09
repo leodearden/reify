@@ -1,94 +1,68 @@
 //! Git-environment helpers shared by the reify-audit integration test
 //! binaries.
 //!
-//! Everything here is deliberately thin, and nothing here duplicates a
-//! variable list: the *sanitized* set lives once in
-//! [`reify_audit::git_env::REPO_REDIRECT_VARS`], and the *poisoned* set lives
-//! once in [`hook_git_env`] (which asserts it is a subset of the sanitized
-//! one, so the two cannot drift apart silently).
-//!
 //! - [`git_cmd`] — the constructor every fixture-repo helper should use.
-//! - [`decoy_repo`] / [`poison_with_hook_git_env`] — build a stand-in for the
-//!   parent repository a hook would point at, and apply the hook's exported
-//!   environment to a command.
-//! - [`replay_self_under_hook_git_env`] — the outer harness that proves the
-//!   fix under a real *ambient* environment rather than a per-child one.
-//! - [`replay_self_under_hook_git_env_expecting_envelope`],
-//!   [`announce_replay_mark`], [`replay_child_expects_envelope`],
-//!   [`spawn_replay_child_lacking_audit_prereqs`] — the envelope-mark half:
-//!   spawn side, the child's breadcrumb back to it, the child-side predicate,
-//!   and the fixture that bounds when it may fire.
+//! - [`decoy_repo`] / [`poison_with_hook_git_env`] — a stand-in for the parent
+//!   repository a hook would point at, and that hook's exported environment
+//!   applied to a command.
+//! - [`replay_self_under_hook_git_env`] / [`replay_child_command`] — re-run
+//!   this binary's own tests with that environment genuinely ambient.
+//! - [`ReplayMark`] / [`replay_child_expects_envelope`] /
+//!   [`assert_not_in_replay_child`] — what a replay child may conclude about
+//!   the parent that spawned it.
 //!
-//! Generic git-environment plumbing only. A helper that hard-codes one
-//! script's path, argv or skip protocol belongs in the binary that consumes it
-//! — this module is compiled into every `tests/*.rs` in this crate, so a
-//! domain-specific helper here is a dozen copies of a `.parent()` walk plus a
-//! reachability hazard from binaries that never wanted it.
+//! Generic git-environment plumbing only: this module is compiled into every
+//! `tests/*.rs` in this crate, so a helper hard-coding one script's path, argv
+//! or skip protocol belongs in the binary that consumes it.
 //!
-//! # The earned-mark rule, and where it is written
-//!
-//! What the envelope mark claims, why only it may tighten a graceful skip into
-//! a hard failure, and the regression that forced the split: all of it is
-//! written in ONE place, `tests/g_allow.rs`'s
-//! `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`, which
-//! is also the live guard holding it. Every mention of the rule in this file
-//! is a bare pointer there and re-derives none of it — the "one home" claim is
-//! only worth making if a reader who edits that home has in fact edited every
-//! statement of the rule.
+//! Nothing here duplicates a variable list: the *sanitized* set lives once in
+//! [`reify_audit::git_env::REPO_REDIRECT_VARS`], and the *poisoned* set lives
+//! once in [`hook_git_env`], which asserts it is a subset of the sanitized one.
 //!
 //! # Why a replay harness
 //!
 //! The reported condition is a hook environment: `hooks/pre-commit` ->
 //! `hooks/project-checks` -> `scripts/verify.sh` -> the workspace test run,
 //! with `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` exported into the whole
-//! process tree. Reproducing that *inside* a test would mean mutating the
-//! test process's own environment, and `std::env::set_var` is process-global:
-//! under nextest's process-per-test isolation it would appear to work, hiding
-//! the hazard, while under `cargo test`'s thread-per-test model it would race
-//! and intermittently poison sibling tests — trading a deterministic bug for
-//! a flaky one.
-//!
-//! So instead of poisoning ourselves, we re-exec ourselves poisoned: spawn
-//! `current_exe()` with the poison in the CHILD's environment, where it is
-//! genuinely ambient for every test that child runs.
+//! process tree. Reproducing that *inside* a test would mean mutating the test
+//! process's own environment, and `std::env::set_var` is process-global: under
+//! nextest's process-per-test isolation it would appear to work, hiding the
+//! hazard, while under `cargo test`'s thread-per-test model it would race and
+//! intermittently poison sibling tests — trading a deterministic bug for a
+//! flaky one. So instead of poisoning ourselves, we re-exec ourselves poisoned:
+//! spawn `current_exe()` with the poison in the CHILD's environment, where it
+//! is genuinely ambient for every test that child runs.
 //!
 //! # Why the replay counts tests
 //!
-//! libtest exits 0 when a filter matches ZERO tests. Asserting only
-//! on the child's exit status would therefore turn this harness into a silent
-//! green the instant a filter stops matching — a rename, a dropped `mod`
-//! wrapper, or a test moving to another binary — which is precisely the
-//! failure class this whole change set exists to close. So the replay lists
-//! the selection first, requires it to be non-empty and at least the caller's
-//! declared floor, and then requires the poisoned run to actually account for
-//! every listed test.
+//! libtest exits 0 when a filter matches ZERO tests, so asserting only on the
+//! child's exit status would turn this harness into a silent green the instant
+//! a filter stops matching — a rename, a dropped `mod` wrapper, a test moving
+//! to another binary. The replay therefore lists the selection first, requires
+//! it to meet the caller's declared floor, and then requires the poisoned run
+//! to account for every listed test.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-/// Environment variable marking the replayed child process, so the replay
-/// test does not recurse when the child re-runs it.
+/// Environment variable marking the replayed child process, so the replay test
+/// does not recurse when the child re-runs it.
 const REPLAY_GUARD: &str = "REIFY_AUDIT_HOOK_ENV_REPLAY";
 
-/// [`REPLAY_GUARD`]'s value for a child spawned by a parent that has verified
-/// NOTHING about this environment beyond the fact that it is replaying.
+/// [`REPLAY_GUARD`]'s value for a child whose parent verified NOTHING about
+/// this environment beyond the fact that it is replaying.
 const REPLAY_PLAIN_MARK: &str = "1";
 
-/// [`REPLAY_GUARD`]'s value for a child carrying the envelope claim — see the
-/// earned-mark rule in this module's doc for what that claim is.
-///
-/// Kept private alongside [`REPLAY_GUARD`], for the same single-source reason:
-/// [`ReplayMark::value`] and [`replay_child_expects_envelope`] are its only
-/// readers, so no call site can re-read or re-stamp the marker under its own
-/// name — a caller names [`ReplayMark::Envelope`] instead.
+/// [`REPLAY_GUARD`]'s value for a child whose parent had itself seen an audit
+/// envelope in this same environment moments before spawning it.
 const REPLAY_ENVELOPE_MARK: &str = "envelope";
 
 /// Which claim a replay child's [`REPLAY_GUARD`] value carries.
 ///
-/// The public spelling of the two private marks: a caller names the claim and
-/// this enum resolves it to the value, so no call site re-spells a mark and a
-/// drift is a compile error rather than something a runtime check must catch.
+/// Callers name the claim and this enum resolves it to the value, so each mark
+/// keeps exactly one spelling and a drift between stamping and reading it is a
+/// compile error rather than something a runtime check must catch.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayMark {
@@ -100,8 +74,7 @@ pub enum ReplayMark {
 }
 
 impl ReplayMark {
-    /// The value stamped into [`REPLAY_GUARD`] for a child carrying this
-    /// claim.
+    /// The value stamped into [`REPLAY_GUARD`] for a child carrying this claim.
     fn value(self) -> &'static str {
         match self {
             ReplayMark::Plain => REPLAY_PLAIN_MARK,
@@ -110,37 +83,22 @@ impl ReplayMark {
     }
 }
 
-/// True when this process is a replay child, spawned by EITHER variant. It
-/// answers exactly one question — "am I inside any replay child?" — and
-/// nothing more.
+/// True when this process is a replay child, spawned under EITHER mark.
 ///
-/// PRIVATE on purpose: this is not the predicate that may tighten a graceful
-/// skip into a hard failure (that is [`replay_child_expects_envelope`]), and a
-/// predicate the sibling test binaries cannot name is one they cannot misuse.
-/// Both readers are in this module:
-///
-/// - [`assert_not_in_replay_child`], which exposes the weak question to
-///   callers as a REFUSAL rather than as a `bool` — nothing they can branch a
-///   skip on.
-/// - [`replay_with_mark`]'s re-entrancy guard, which asks the same question
-///   for the same reason: child-ness alone decides whether to recurse.
+/// PRIVATE on purpose: a `bool` answering mere child-ness is usable to tighten
+/// a graceful skip, which only [`replay_child_expects_envelope`] may do.
+/// Callers get the weak question as the refusal [`assert_not_in_replay_child`]
+/// instead. The only other reader is [`replay_self_under_hook_git_env_with_mark`]'s
+/// re-entrancy guard, which asks the same question for the same reason.
 fn in_replay_child() -> bool {
     std::env::var_os(REPLAY_GUARD).is_some()
 }
 
 /// Refuse to proceed if this process is a replay child of ANY mark.
 ///
-/// For a helper that is unsound inside a replay child — one that would panic
-/// three frames down in another crate rather than take the skip its caller
-/// expects. `helper` names the caller and `consequence` says what would go
-/// wrong; both land in the panic message, so the diagnosis stays with the
-/// helper that knows it.
-///
-/// Returns nothing, deliberately. A `bool` here would be exactly the weak
-/// "am I in a replay child?" predicate [`in_replay_child`] is private to
-/// withhold — usable to tighten a graceful skip, which only
-/// [`replay_child_expects_envelope`] may do. A refusal cannot be repurposed
-/// that way.
+/// For a helper that is unsound or pointless inside a replay child. `helper`
+/// names the caller and `consequence` says what would go wrong; both land in
+/// the panic message, so the diagnosis stays with the helper that knows it.
 #[allow(dead_code)]
 pub fn assert_not_in_replay_child(helper: &str, consequence: &str) {
     assert!(
@@ -150,56 +108,25 @@ pub fn assert_not_in_replay_child(helper: &str, consequence: &str) {
     );
 }
 
-/// True when this process is a replay child carrying [`ReplayMark::Envelope`]
-/// — the one predicate the earned-mark rule permits a test to tighten a
-/// graceful skip on. Rule, rationale and the regression behind it: see this
-/// module's doc.
+/// True when this process is a replay child whose parent had itself seen an
+/// audit envelope in this same environment.
 ///
-/// The spawn-side fact the rule rests on, which is local to this file:
-/// [`replay_self_under_hook_git_env_expecting_envelope`] is the only thing
-/// that stamps that mark, and it asserts the child it spawned reported
-/// [`ENVELOPE_BREADCRUMB`] back — so "this child was stamped by a caller that
-/// had seen an envelope" is checked, not merely documented.
+/// The one predicate a test may tighten a graceful skip on, since only here
+/// does a skip have no innocent reading. Mere child-ness may not: see
+/// `g_allow.rs`'s
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`, the
+/// live guard holding that boundary.
 #[allow(dead_code)]
 pub fn replay_child_expects_envelope() -> bool {
     std::env::var(REPLAY_GUARD).as_deref() == Ok(REPLAY_ENVELOPE_MARK)
 }
 
-/// The line a replay child emits when [`replay_child_expects_envelope`] holds
-/// in it, and which
-/// [`replay_self_under_hook_git_env_expecting_envelope`] reads back out of that
-/// child's stderr.
-const ENVELOPE_BREADCRUMB: &str = "replay child: replay_child_expects_envelope() == true";
-
-/// Emit [`ENVELOPE_BREADCRUMB`] iff this process is a replay child carrying the
-/// envelope mark. A no-op everywhere else, so it is safe to call
-/// unconditionally from a test's first line.
-///
-/// Call it from every test a
-/// [`replay_self_under_hook_git_env_expecting_envelope`] caller selects: that
-/// spawner asserts the breadcrumb came back, and the round trip is the ONLY
-/// thing pinning the envelope path end-to-end. Without it, stamping
-/// [`ReplayMark::Plain`] there instead is a one-token change that leaves every
-/// test in this crate green while disarming the whole mechanism (measured).
-/// Deleting this call reddens the same assertion — fail-closed both ways.
-///
-/// Keyed on the PREDICATE rather than on the mark's name, deliberately: the
-/// breadcrumb then also dies if [`replay_child_expects_envelope`] stops
-/// recognising the value the spawner stamps, which a check that merely
-/// re-prints `mark` cannot see.
-#[allow(dead_code)]
-pub fn announce_replay_mark() {
-    if replay_child_expects_envelope() {
-        eprintln!("{ENVELOPE_BREADCRUMB}");
-    }
-}
-
 /// A pre-sanitized `git -C <dir>` command for fixture-repo setup.
 ///
 /// Thin by design: the sanitized variable list lives once, in
-/// [`reify_audit::git_env::REPO_REDIRECT_VARS`]. A fixture helper that shells
-/// a bare `Command::new("git")` is exactly as vulnerable as production code
-/// was — an ambient `GIT_INDEX_FILE` overrides `-C <tempdir>`, so
+/// [`reify_audit::git_env::REPO_REDIRECT_VARS`]. A fixture helper that shells a
+/// bare `Command::new("git")` is exactly as vulnerable as production code was —
+/// an ambient `GIT_INDEX_FILE` overrides `-C <tempdir>`, so
 /// `git -C <tempdir> add .` writes the PARENT repository's index (observed as
 /// `git ["add", "."] exited Some(128)`, colliding with the parent's
 /// `index.lock`).
@@ -238,11 +165,10 @@ impl DecoyRepo {
 /// Build a [`DecoyRepo`]: `git init` into a fresh tempdir, then plant a stale
 /// `index.lock`.
 ///
-/// The init itself goes through [`git_cmd`] like every other repo-targeting
-/// call. That is load-bearing, not decorative: a caller of this function may
-/// itself be re-run inside a poisoned replay child, where a bare
-/// `Command::new("git")` would re-init the *harness's* decoy instead of
-/// creating this one.
+/// The init goes through [`git_cmd`] like every other repo-targeting call.
+/// That is load-bearing: a caller of this function may itself be re-run inside
+/// a poisoned replay child, where a bare `Command::new("git")` would re-init
+/// the *harness's* decoy instead of creating this one.
 #[allow(dead_code)]
 pub fn decoy_repo() -> DecoyRepo {
     let dir = tempfile::tempdir().expect("create decoy repo tempdir");
@@ -268,13 +194,13 @@ pub fn decoy_repo() -> DecoyRepo {
     }
 }
 
-/// The exact `(name, value)` set git exports into a hook's entire process
-/// tree, pointed at `decoy`.
+/// The exact `(name, value)` set git exports into a hook's entire process tree,
+/// pointed at `decoy`.
 ///
 /// The single home for the poisoned list on the test side. Every var here is
 /// asserted to be one [`reify_audit::git_env::sanitize`] removes, so adding a
-/// fourth var without teaching the sanitizer about it fails loudly here
-/// instead of silently reducing coverage.
+/// fourth var without teaching the sanitizer about it fails loudly here instead
+/// of silently reducing coverage.
 fn hook_git_env(decoy: &DecoyRepo) -> Vec<(&'static str, PathBuf)> {
     let vars = vec![
         ("GIT_DIR", decoy.git_dir().to_path_buf()),
@@ -307,117 +233,56 @@ pub fn poison_with_hook_git_env<'a>(cmd: &'a mut Command, decoy: &DecoyRepo) -> 
     cmd
 }
 
-/// Re-run this test binary's `filters`-matching tests under a poisoned
-/// *ambient* git environment, and assert they all still pass.
-///
-/// `filters` are libtest positional filters, OR-combined. A single `""`
-/// selects every test in the binary.
-///
-/// `expected_min` is the caller's declared floor on how many tests the
-/// selection must contain — the guard against a vacuous pass. Set it to the
-/// count you actually intend to cover; the selection may grow past it freely,
-/// but it may not silently shrink below it.
-///
-/// Call this from a test whose own name does NOT match `filters`, so the
-/// replay cannot select itself. The `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is
-/// the second line of defence: inside the replayed child this function
-/// returns immediately, so even a self-matching filter terminates.
-///
-/// `current_exe()` is the libtest binary itself, which accepts filter
-/// positionals plus `--list`/`--test-threads`/`--nocapture`. Under nextest
-/// this is the per-test binary, and nextest's own process-per-test invocation
-/// is unaffected because the child is spawned by us, not by nextest.
+/// [`replay_self_under_hook_git_env_with_mark`] stamping [`ReplayMark::Plain`]
+/// — the variant for a caller that has verified nothing about this environment.
 #[allow(dead_code)]
 pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
-    let _child_stderr = replay_with_mark(filters, expected_min, ReplayMark::Plain);
+    replay_self_under_hook_git_env_with_mark(filters, expected_min, ReplayMark::Plain);
 }
 
-/// [`replay_self_under_hook_git_env`], but stamping [`ReplayMark::Envelope`].
+/// Re-run this test binary's `filters`-matching tests under a poisoned
+/// *ambient* git environment, stamping `mark`, and assert they all still pass.
 ///
-/// PRECONDITION: call this only after this process has itself verified, in
-/// this same environment, that the audit under replay produces an envelope.
-/// That is the whole content of the mark; stamping it unconditionally renames
-/// the weaker mark rather than tightening anything. Why the mark must be
-/// earned: see the earned-mark rule in this module's doc.
+/// `filters` are libtest positional filters, OR-combined; a single `""` selects
+/// every test in the binary. `expected_min` is the caller's declared floor on
+/// how many tests the selection must contain — the guard against a vacuous
+/// pass. Set it to the count you actually intend to cover; the selection may
+/// grow past it freely, but it may not silently shrink below it.
 ///
-/// Everything else — the re-entrancy guard, the `--list` non-vacuity floor,
-/// the decoy, the poison, the status assertion and both post-run count checks
-/// — is shared verbatim with the plain variant, so the two spawn paths cannot
-/// drift apart.
+/// PRECONDITION for [`ReplayMark::Envelope`]: pass it only after this process
+/// has itself verified, in this same environment, that the audit under replay
+/// produces an envelope. That is the whole content of that mark; stamping it
+/// unconditionally renames the weaker mark rather than tightening anything.
 ///
-/// The breadcrumb assertion below makes this function's stamp checkable rather
-/// than merely documented; see [`announce_replay_mark`], which the selected
-/// test must call. It lives here and not in [`replay_with_mark`] on purpose: a
-/// check keyed on that function's `mark` parameter would simply not run under
-/// the one-token mutation it exists to catch.
+/// Call this from a test whose own name does NOT match `filters`, so the replay
+/// cannot select itself. The [`REPLAY_GUARD`] guard is the second line of
+/// defence: inside the replayed child this function returns immediately, so
+/// even a self-matching filter terminates.
+///
+/// `current_exe()` is the libtest binary itself, which accepts filter
+/// positionals plus `--list`/`--test-threads`/`--nocapture`. Under nextest this
+/// is the per-test binary, and nextest's own process-per-test invocation is
+/// unaffected because the child is spawned by us, not by nextest.
 #[allow(dead_code)]
-pub fn replay_self_under_hook_git_env_expecting_envelope(filters: &[&str], expected_min: usize) {
-    let Some(child_stderr) = replay_with_mark(filters, expected_min, ReplayMark::Envelope) else {
-        // We are ourselves a replay child, so nothing was spawned and there is
-        // no breadcrumb to read.
-        return;
-    };
-
-    assert!(
-        child_stderr.contains(ENVELOPE_BREADCRUMB),
-        "the replay child spawned for filters {:?} never reported \
-         {ENVELOPE_BREADCRUMB:?}, so nothing establishes that it carried the \
-         envelope mark — and a child that does not carry it can never reach the \
-         tightening this variant exists to arm. Two causes, both real: this \
-         function stamps a mark other than `ReplayMark::Envelope` (or \
-         `replay_child_expects_envelope` no longer recognises the value it \
-         stamps), or the selected test dropped its \
-         `common::git_env::announce_replay_mark()` call. Use \
-         `replay_self_under_hook_git_env` if you did not mean to arm the \
-         tightening.\n\
-         --- child stderr (truncated) ---\n{:.800}",
-        filters,
-        child_stderr,
-    );
-}
-
-/// The `Command` shape EVERY replay child is spawned with: this test binary,
-/// the caller's `filters`, `--test-threads=1 --nocapture` so the child's
-/// libtest summary and its stderr notes both reach the parent intact, and
-/// `mark` stamped into [`REPLAY_GUARD`].
-///
-/// One body with two callers — [`replay_with_mark`], which adds the decoy
-/// poison, and [`spawn_replay_child_lacking_audit_prereqs`], which adds a
-/// deprived `PATH` — so the fixture cannot drift from the real replay whose
-/// behaviour it claims to pin. An argument or a second guard variable added
-/// here reaches both; added at one call site it would silently make the two
-/// children different processes while the test that compares them kept
-/// passing.
-fn replay_child_command(filters: &[&str], mark: ReplayMark) -> Command {
-    let mut cmd = Command::new(std::env::current_exe().expect("current_exe"));
-    cmd.args(filters)
-        .args(["--test-threads=1", "--nocapture"])
-        .env(REPLAY_GUARD, mark.value());
-    cmd
-}
-
-/// The shared body of both replay variants; `mark` is the value stamped into
-/// [`REPLAY_GUARD`] for the child, and the ONLY difference between them.
-///
-/// Returns the child's stderr, or `None` when this process is itself a replay
-/// child and so spawned nothing. Only
-/// [`replay_self_under_hook_git_env_expecting_envelope`] reads it, to check its
-/// own spawn against [`ENVELOPE_BREADCRUMB`].
-fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) -> Option<String> {
+pub fn replay_self_under_hook_git_env_with_mark(
+    filters: &[&str],
+    expected_min: usize,
+    mark: ReplayMark,
+) {
     // Re-entrancy guard: we ARE the replayed child. Do not recurse. The
     // question is child-ness and nothing more, so it goes through the one
     // predicate that answers it — never a second hand-rolled read of
     // `REPLAY_GUARD`, which a change to what counts as "set" would reach only
     // half of.
     if in_replay_child() {
-        return None;
+        return;
     }
 
     let exe = std::env::current_exe().expect("current_exe");
 
     // Non-vacuity, step 1: what does this selection actually cover? Listing
-    // runs in a CLEAN environment on purpose — the selection is what we want
-    // to compare the poisoned run against.
+    // runs in a CLEAN environment on purpose — the selection is what we want to
+    // compare the poisoned run against.
     let listed = list_matching_tests(&exe, filters);
     assert!(
         listed.len() >= expected_min.max(1),
@@ -490,49 +355,26 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) -> 
         expected_min.max(1),
         stdout,
     );
-
-    Some(stderr.into_owned())
 }
 
-/// Spawn ONE replay child in an environment that genuinely CANNOT run the
-/// orphan audit, stamping `mark` as the replay guard's value.
+/// The `Command` shape EVERY replay child is spawned with: this test binary,
+/// the caller's `filters`, `--test-threads=1 --nocapture` so the child's
+/// libtest summary and its stderr notes both reach the parent intact, and
+/// `mark` stamped into [`REPLAY_GUARD`].
 ///
-/// The fixture behind
-/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`. Its
-/// whole purpose is to hold everything fixed except `mark`, so the caller's
-/// two children differ only in what the mark claims. The body is
-/// [`replay_child_command`] — see its doc for why that is shared.
-///
-/// `PATH` is an EMPTY [`tempfile::tempdir`], which makes
-/// `reify_test_support::run_orphan_audit`'s FIRST probe —
-/// `Command::new("python3")` — fail with `NotFound` and take its documented
-/// skip path. That is a SUPPORTED environment, not a broken one. The caller
-/// asserts on the skip note the child actually emits rather than trusting a
-/// copy of it quoted here.
-///
-/// Deliberately NOT poisoned with the hook git environment. With `PATH`
-/// deprived the child skips long before it reaches the audit script, so a
-/// decoy would add a tempdir and no signal — the discrimination this fixture
-/// buys is the MARK's meaning, not the poison's.
-///
-/// Spawn failures are hard failures: `current_exe()` is this very binary, so
-/// a failure to exec it is a broken harness rather than an environmental
-/// condition the caller could sensibly skip on.
+/// Public so a binary needing the same child in a DIFFERENT environment (see
+/// `g_allow.rs`'s deprived-`PATH` fixture) builds it from this one body, and so
+/// cannot drift from the real replay whose behaviour it claims to pin. An
+/// argument or a second guard variable added here reaches both; added at one
+/// call site it would silently make the two children different processes while
+/// the test that compares them kept passing.
 #[allow(dead_code)]
-pub fn spawn_replay_child_lacking_audit_prereqs(
-    filters: &[&str],
-    mark: ReplayMark,
-) -> std::process::Output {
-    // Held until after `output()` returns, so the child sees a PATH that
-    // exists and is empty rather than one pointing at a deleted directory.
-    let empty_path = tempfile::tempdir().expect("create empty PATH dir for the deprived child");
-
-    // The deprived `PATH` is the ONLY thing this fixture adds to the shape
-    // every replay child is spawned with — see [`replay_child_command`].
-    replay_child_command(filters, mark)
-        .env("PATH", empty_path.path())
-        .output()
-        .expect("re-exec self with the orphan audit's prerequisites removed")
+pub fn replay_child_command(filters: &[&str], mark: ReplayMark) -> Command {
+    let mut cmd = Command::new(std::env::current_exe().expect("current_exe"));
+    cmd.args(filters)
+        .args(["--test-threads=1", "--nocapture"])
+        .env(REPLAY_GUARD, mark.value());
+    cmd
 }
 
 /// The test names `filters` select in `exe`, via libtest's `--list`.
@@ -562,15 +404,15 @@ fn list_matching_tests(exe: &Path, filters: &[&str]) -> Vec<String> {
 }
 
 /// Extract one count from libtest's summary line — e.g. `5` for `"passed"`
-/// given `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out`.
+/// given `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured;
+/// 30 filtered out; finished in 0.92s`.
 ///
 /// Takes the LAST such line, since `--nocapture` interleaves test output that
 /// could in principle contain the same prefix. Parses the count as a NUMBER
 /// rather than substring-matching `"1 passed"`, which would also match
 /// `"21 passed"`.
 ///
-/// Public because a caller that spawns its own child (see
-/// [`spawn_replay_child_lacking_audit_prereqs`]) must read the same summary
+/// Public because a caller that spawns its own child must read the same summary
 /// this module reads, and one parser with two readers cannot drift the way two
 /// parsers would.
 #[allow(dead_code)]
@@ -589,7 +431,7 @@ pub fn libtest_summary_count(stdout: &str, field: &str) -> Option<usize> {
 }
 
 /// `(passed, ignored)` from libtest's summary line — the pair
-/// [`replay_self_under_hook_git_env`]'s two non-vacuity checks need.
+/// [`replay_self_under_hook_git_env_with_mark`]'s two non-vacuity checks need.
 fn parse_passed_and_ignored(stdout: &str) -> Option<(usize, usize)> {
     Some((
         libtest_summary_count(stdout, "passed")?,
