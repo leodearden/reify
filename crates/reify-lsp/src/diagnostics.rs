@@ -69,6 +69,28 @@ pub struct DiagnosticsResult {
     pub geometry_output: Option<Vec<u8>>,
 }
 
+/// The value-cell decls [`first_unrepresentable_cell`]'s stage-1 absence proof
+/// scans — see that function's "## Cost" section for WHICH collections these
+/// are and why that set is sound.
+///
+/// Extracted so the production scan has ONE definition, shared with
+/// `tests::stage_one_absence_proof_covers_every_graph_cell_type`. That test
+/// asserts a property OF this scan; if it kept its own copy of the
+/// collections, a future narrowing of the scan would leave the test asserting
+/// the property of the wider copy and passing while production went unsound —
+/// which is the precise shape of the defect that motivated it.
+fn stage_one_scanned_cells(
+    compiled: &reify_compiler::CompiledModule,
+) -> impl Iterator<Item = &reify_compiler::ValueCellDecl> {
+    compiled.templates.iter().flat_map(|t| {
+        t.value_cells.iter().chain(
+            t.guarded_groups
+                .iter()
+                .flat_map(|g| g.members.iter().chain(g.else_members.iter())),
+        )
+    })
+}
+
 /// `Some((id, cell_type))` when the evaluation graph `compiled` would build
 /// carries a value cell whose `cell_type` has no runtime `Value` counterpart
 /// — the exact condition `reify-eval`'s `#[cfg(debug_assertions)]`
@@ -171,15 +193,15 @@ pub struct DiagnosticsResult {
 /// non-test `graph.value_cells.insert` arms, and every one clones its
 /// `cell_type` verbatim from a decl stage 1 sees, or is safe by construction.
 ///
-/// 1. The top-level `template.value_cells` loop.
-/// 2-4. The collection, keyed and non-collection sub-component elaboration
-///    arms — all three draw from `child_template.value_cells`, bound ONCE via
-///    `find_template(templates, ..)` on the SAME slice stage 1 iterates, which
-///    is why they need no separate coverage.
-/// 5. The guard cell of a guarded group, whose `cell_type` is the literal
-///    `Type::Bool` at its insert site rather than a clone of any decl — safe
-///    by construction, and the one arm stage 1 does not scan.
-/// 6-7. `guarded_groups[*].members` and `[*].else_members`.
+/// - **Arm 1** — the top-level `template.value_cells` loop.
+/// - **Arms 2-4** — the collection, keyed and non-collection sub-component
+///   elaboration arms: all three draw from `child_template.value_cells`, bound
+///   ONCE via `find_template(templates, ..)` on the SAME slice stage 1
+///   iterates, which is why they need no separate coverage.
+/// - **Arm 5** — the guard cell of a guarded group, whose `cell_type` is the
+///   literal `Type::Bool` at its insert site rather than a clone of any decl:
+///   safe by construction, and the one arm stage 1 does not scan.
+/// - **Arms 6-7** — `guarded_groups[*].members` and `[*].else_members`.
 ///
 /// Arms 6-7 are why the scan chains the guarded collections instead of reading
 /// `value_cells` alone: the compiler collects a guarded member into
@@ -250,16 +272,7 @@ pub(crate) fn first_unrepresentable_cell(
     // this direction (see the "## Cost" doc section): it may find a candidate
     // on a module whose graph is in fact safe, so it may only ever return
     // early with `None`, never report a hit of its own.
-    if compiled
-        .templates
-        .iter()
-        .flat_map(|t| {
-            t.value_cells.iter().chain(
-                t.guarded_groups
-                    .iter()
-                    .flat_map(|g| g.members.iter().chain(g.else_members.iter())),
-            )
-        })
+    if stage_one_scanned_cells(compiled)
         .all(|c| reify_eval::is_representable_cell_type(&c.cell_type))
     {
         return None;
@@ -1477,6 +1490,186 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
              one (task #6851). Stage 1 may only ever prove ABSENCE, so it has \
              to scan every collection `EvaluationGraph::from_templates` draws \
              cells from, not just `value_cells`"
+        );
+    }
+
+    /// Close the RECURRENCE behind the guarded-group hole: make stage 1's
+    /// soundness IMPLICATION executable, so a future `from_templates` arm
+    /// cannot silently re-open it.
+    ///
+    /// Widening the scan fixed the shape that shipped a panic, but not the
+    /// underlying defect: `reify-lsp` mirrors, in prose, an enumeration owned
+    /// by `reify-eval` — "every `cell_type` reaching `graph.value_cells` is
+    /// cloned from a decl stage 1 scans" — with nothing coupling the two. That
+    /// mirror is exactly what drifted. This test asserts the implication
+    /// DIRECTLY rather than restating the arm list a third time: for each
+    /// input, every `cell_type` in the graph must also be among the types
+    /// [`super::stage_one_scanned_cells`] yields, with `Type::Bool` the single
+    /// allowed exception (a guarded group's guard cell is a literal
+    /// `Type::Bool` at its insert site, cloned from no decl, and safe by
+    /// construction). A new arm drawing from a new collection trips this on
+    /// whichever corpus input reaches it, without anyone having to remember to
+    /// update a list.
+    ///
+    /// **Green on arrival, and honest about it.** Like
+    /// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`,
+    /// this locks that something STAYS true rather than driving a change. It
+    /// WOULD have gone red on the defect it follows: at the pre-fix scan,
+    /// `GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC`'s graph carries
+    /// `TypeParam("T")` and the unwidened scan yields no such type, and the
+    /// same holds for the `both branches` input, whose guarded members are
+    /// deliberately typed `Int` and `Enum("Finish")` — types NO cell in
+    /// `value_cells` carries, so dropping either half of the `members` /
+    /// `else_members` chain trips it.
+    ///
+    /// **Corpus-bounded, and the bound is real.** The property is over TYPES,
+    /// so a future arm whose cells happen to carry a type some scanned decl
+    /// already has would pass here. Full enforcement needs `reify-eval` to
+    /// expose its enumeration as an iterator over the cell decls a template
+    /// contributes, so both consumers share one definition instead of two —
+    /// outside this leaf's `Modules: reify-lsp` scope, filed as follow-up
+    /// task **#7347**. Until then the corpus is what
+    /// carries the coverage, which is why each input asserts a WITNESS cell id
+    /// proving its arm actually fired: a compiler change that stops producing
+    /// an arm's cells makes this loudly stale rather than quietly vacuous.
+    #[test]
+    fn stage_one_absence_proof_covers_every_graph_cell_type() {
+        // (arm under test, source, witness cell ids proving the arm fired).
+        // Between them these span every non-test `graph.value_cells.insert`
+        // arm in `crates/reify-eval/src/graph.rs`; the witnesses are measured,
+        // not guessed.
+        let corpus: [(&str, &str, &[&str]); 6] = [
+            (
+                "guarded group, both branches (members + else_members + guard cell)",
+                r#"enum Shape { Round, Square }
+enum Finish { Raw, Coated }
+structure Fitting {
+    let shape = Shape.Round
+    param size : Real = 10.0
+    where shape == Shape.Round {
+        param ribs : Int = 3
+    } else {
+        param finish : Finish = Finish.Raw
+    }
+}
+"#,
+                &["Fitting.__guard_", "Fitting.ribs", "Fitting.finish"],
+            ),
+            (
+                "collection sub-component",
+                r#"structure def Screw { param d : Real = 3.0 }
+structure Rack {
+    sub screws : List<Screw>
+    constraint screws.count == 2
+}
+"#,
+                &["Rack.screws[0].d"],
+            ),
+            (
+                "keyed sub-component",
+                r#"structure def Vent { param area : Real = 1.0 }
+structure Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5.0 }
+        "exhaust" => { area = 8.0 }
+    }
+}
+"#,
+                &["Manifold.vents[\"intake\"].area"],
+            ),
+            (
+                "plain (non-collection) sub-component",
+                r#"structure def Inner { param x : Real = 1.0 }
+structure Outer { sub i = Inner() }
+"#,
+                &["Outer.i.x"],
+            ),
+            (
+                "successful generic monomorphisation",
+                r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    param seal : T
+    constraint bore > 0.1
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#,
+                &["Assembly.b.seal"],
+            ),
+            (
+                "guarded member left unsubstituted by a FAILED `auto:` resolution",
+                GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                &["Bearing.seal"],
+            ),
+        ];
+
+        for (arm, src, witnesses) in corpus {
+            let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
+            let compiled =
+                reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+            let graph = reify_eval::graph::EvaluationGraph::from_templates(&compiled.templates);
+
+            let cell_ids: Vec<String> = graph.value_cells.keys().map(|id| id.to_string()).collect();
+            for witness in witnesses {
+                assert!(
+                    cell_ids.iter().any(|id| id.contains(witness)),
+                    "corpus staleness ({arm}): no graph cell id contains \
+                     `{witness}`, so this input no longer exercises the arm it \
+                     was chosen for and its coverage here is vacuous. Fix the \
+                     input rather than the witness. graph cell ids: {cell_ids:#?}"
+                );
+            }
+
+            let scanned: std::collections::HashSet<reify_core::Type> =
+                super::stage_one_scanned_cells(&compiled)
+                    .map(|decl| decl.cell_type.clone())
+                    .collect();
+            for (id, node) in graph.value_cells.iter() {
+                assert!(
+                    node.cell_type == reify_core::Type::Bool || scanned.contains(&node.cell_type),
+                    "stage-1 absence proof is UNSOUND ({arm}): graph cell \
+                     `{id}` has cell_type {:?}, which `stage_one_scanned_cells` \
+                     never yields — so a module whose ONLY unrepresentable cell \
+                     is this one short-circuits to `None` and the engine \
+                     panics on it. Add the collection this cell comes from to \
+                     the stage-1 scan (see `first_unrepresentable_cell`'s \
+                     \"## Cost\" section), not an exception here. scanned \
+                     types: {scanned:#?}",
+                    node.cell_type
+                );
+            }
+        }
+
+        // The two stages must also AGREE on the shape that motivated all of
+        // this: stage 1 must decline to short-circuit, and stage 2 must then
+        // name the offender. Asserting only the property above would leave a
+        // stage 1 that scans the right collections but whose result is wired
+        // up wrongly (e.g. inverted, or dropped) undetected here.
+        let parsed = reify_compiler::parse_with_stdlib(
+            GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+            ModulePath::single("test"),
+        );
+        let compiled =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+        assert!(
+            !super::stage_one_scanned_cells(&compiled)
+                .all(|c| reify_eval::is_representable_cell_type(&c.cell_type)),
+            "stage 1 must find a candidate on the guarded auto-fail fixture — \
+             if it proves ABSENCE here it short-circuits to `None` and stage 2 \
+             never runs, which is the exact defect this test family follows"
+        );
+        assert_eq!(
+            super::first_unrepresentable_cell(&compiled).map(|(id, ty)| (id.to_string(), ty)),
+            Some((
+                "Bearing.seal".to_string(),
+                reify_core::Type::TypeParam("T".to_string())
+            )),
+            "stage 2 must then name the offender. The fixture's graph has \
+             exactly ONE unrepresentable cell, so this equality is independent \
+             of `graph.value_cells`' hash iteration order — see \
+             `first_unrepresentable_cell`'s note that \"first\" is otherwise \
+             arbitrary"
         );
     }
 
