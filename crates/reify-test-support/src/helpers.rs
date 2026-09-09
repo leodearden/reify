@@ -761,31 +761,28 @@ pub fn get_let_expr_in_template<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    let mut matching = template
+    let matching: Vec<_> = template
         .value_cells
         .iter()
-        .filter(|vc| vc.id.member == cell_name);
-    let cell = matching.next().unwrap_or_else(|| {
-        panic!(
+        .filter(|vc| vc.id.member == cell_name)
+        .collect();
+    let cell = match matching.as_slice() {
+        [] => panic!(
             "no value cell named '{cell_name}' in template '{}'",
             template.name
-        )
-    });
-    if matching.next().is_some() {
-        let entities: Vec<&str> = template
-            .value_cells
-            .iter()
-            .filter(|vc| vc.id.member == cell_name)
-            .map(|vc| vc.id.entity.as_str())
-            .collect();
-        panic!(
-            "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
-             member, under entities {entities:?}; get_let_expr* resolves on id.member alone, \
-             so disambiguate by searching `template.value_cells` for the desired id.entity",
-            template.name,
-            entities.len()
-        );
-    }
+        ),
+        [only] => *only,
+        many => {
+            let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
+            panic!(
+                "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
+                 member, under entities {entities:?}; get_let_expr* resolves on id.member alone, \
+                 so disambiguate by searching `template.value_cells` for the desired id.entity",
+                template.name,
+                many.len()
+            )
+        }
+    };
     cell.default_expr.as_ref().unwrap_or_else(|| {
         panic!("value cell '{cell_name}' in '{}' has no default expr", template.name)
     })
@@ -1783,6 +1780,33 @@ mod tests {
         );
     }
 
+    /// Two value cells sharing member name "x" under different entities on
+    /// one "Bracket" template — the ambiguity fixture shared by the two
+    /// tests below. Both cells carry a default so a resolution failure can
+    /// only be the collision, never a missing default.
+    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build()
+    }
+
     /// The two panic branches of `get_let_expr_in_template` ("no value cell
     /// named" / "has no default expr") are intentionally NOT re-tested here.
     /// `get_let_expr_in` delegates to `get_let_expr_in_template`, and
@@ -1796,35 +1820,11 @@ mod tests {
     /// `id.member` alone, so a template holding two value cells that share a
     /// member name under different entities is unresolvable by member name
     /// alone — there is no principled way to pick between them. This pins
-    /// that the lookup aborts rather than silently returning one of the two
-    /// (task #7295; superseded the former first-match-wins pin of the same
-    /// fixture — see the doc comment above `get_let_expr_in_template` for
-    /// the full rationale and the realistic producer of such a collision).
+    /// that the lookup aborts rather than silently returning one of the two.
     #[test]
     #[should_panic(expected = "ambiguous cell name")]
     fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
-        use reify_core::Type;
-        use reify_ir::{CompiledExpr, Value};
-
-        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
-            .param(
-                "First",
-                "x",
-                Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(
-                    Value::Real(1.5),
-                    Type::dimensionless_scalar(),
-                )),
-            )
-            .param(
-                "Second",
-                "x",
-                Type::Int,
-                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
-            )
-            .build();
-
-        let _ = super::get_let_expr_in_template(&template, "x");
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
     }
 
     /// Pins that the ambiguity panic is actionable: it enumerates the
@@ -1836,28 +1836,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "[\"First\", \"Second\"]")]
     fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
-        use reify_core::Type;
-        use reify_ir::{CompiledExpr, Value};
-
-        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
-            .param(
-                "First",
-                "x",
-                Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(
-                    Value::Real(1.5),
-                    Type::dimensionless_scalar(),
-                )),
-            )
-            .param(
-                "Second",
-                "x",
-                Type::Int,
-                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
-            )
-            .build();
-
-        let _ = super::get_let_expr_in_template(&template, "x");
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
     }
 
     /// The realistic producer of a same-member collision is a scoped
@@ -1865,25 +1844,16 @@ mod tests {
     /// None`) sitting alongside the parent's own same-named `let`/defaulted
     /// `param` cell — real `.ri` source produces exactly this with zero
     /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
-    /// `let area = ...`.
+    /// `let area = ...`. With the `sub` declared first, as below, the scoped
+    /// `Manifold.v` cell precedes `Manifold`'s own cell in `value_cells`, so
+    /// the ambiguity check must fire before the `default_expr` deref — not
+    /// after — or this fixture would report a missing default instead of an
+    /// ambiguity.
     ///
-    /// Before this task this was worse than "silently wrong value": with the
-    /// `sub` declared first (as below), `get_let_expr_in` used to panic
-    /// `"value cell 'area' in 'Manifold' has no default expr"` — naming the
-    /// right member but the wrong cell, while a perfectly good
-    /// `Manifold.area` (default `2mm`) sat one slot later in the very same
-    /// `value_cells` vector, with nothing in that message hinting a second
-    /// `area` existed. Swapping the two declarations used to silently flip
-    /// the result instead of erroring at all. This pins that the ambiguity
-    /// check now fires FIRST — before the `default_expr` deref — turning
-    /// that misleading wrong-cell panic into an accurate one.
-    ///
-    /// The zero-diagnostics assertion below is a precondition guard, not
-    /// incidental: if the compiler ever stops producing the scoped
-    /// `Manifold.v` cell, this test must fail loudly on that assumption
-    /// rather than silently passing (or failing) for an unrelated reason —
-    /// mirrors the precondition guard in
-    /// `test_get_let_expr_in_panics_on_missing_default_expr`.
+    /// The zero-diagnostics assertion below is a precondition guard: it
+    /// keeps a fixture that stops compiling cleanly from being misread as
+    /// this test failing to detect the ambiguity, rather than failing on the
+    /// precondition with a message naming the actual diagnostics.
     #[test]
     #[should_panic(expected = "ambiguous cell name")]
     fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
@@ -1895,11 +1865,7 @@ mod tests {
             }
         "#;
         let module = super::compile_source(source);
-        assert!(
-            super::errors_only(&module).is_empty(),
-            "expected zero diagnostics compiling the Vent/Manifold fixture, got {:?}",
-            super::errors_only(&module)
-        );
+        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
 
         let _ = super::get_let_expr_in(&module, "Manifold", "area");
     }
