@@ -67,14 +67,18 @@ _HS_ESC='holder-sle''ep:allow'
 _HS_SPAWN='( floc''k -x 9; sle''ep 45 ) 9>>"$_lock" &'
 _HS_PROBE='whil''e ! ( floc''k -n -x 9 ) 9>>"$_lock"; do'
 
-_TMPDIRS=()
-trap '[ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"' EXIT
+# Every fixture lives under ONE root, removed by ONE handler. A per-fixture
+# cleanup LIST cannot work here: `_hs_fixture` is always called as `$( ... )`,
+# so anything it appended would be appended to the SUBSHELL's copy and
+# discarded on substitution, leaving each fixture directory behind.
+_HS_ROOT="$(mktemp -d)"
+trap 'rm -rf "$_HS_ROOT"' EXIT
 
-# _hs_fixture LINE... -- write a fixture script into a fresh mktemp -d and echo
-# the directory. Each LINE is emitted verbatim, so a case reads as the shell it
-# plants rather than as a printf format.
+# _hs_fixture LINE... -- write a fixture script into a fresh directory under
+# _HS_ROOT and echo that directory. Each LINE is emitted verbatim, so a case
+# reads as the shell it plants rather than as a printf format.
 _hs_fixture() {
-    local _d; _d="$(mktemp -d)"; _TMPDIRS+=("$_d")
+    local _d; _d="$(mktemp -d -p "$_HS_ROOT")"
     local _l
     printf '#!/usr/bin/env bash\n' > "$_d/fixture.sh"
     for _l in "$@"; do printf '%s\n' "$_l" >> "$_d/fixture.sh"; done
@@ -123,15 +127,11 @@ _detect_bare_holder_sleep_grace() {
     local _spawn_re; _spawn_re='floc''k[[:space:]]+-x.*&[[:space:]]*$'
     local _loop_re;  _loop_re='(^|[^[:alnum:]_])(whil''e|unti''l|don''e)([^[:alnum:]_]|$)'
 
-    local _viof; _viof="$(mktemp)"
-    local _detector_cleanup_done=0
-    _detector_cleanup() {
-        if [ "$_detector_cleanup_done" = "0" ]; then
-            rm -f "$_viof"
-            _detector_cleanup_done=1
-        fi
-    }
-    trap '_detector_cleanup' RETURN
+    # Violations accumulate in a local array, not a temp file: nothing outlives
+    # the call, so there is no cleanup path to get wrong. (A `trap ... RETURN`
+    # cleanup would fire only after these locals are popped, which is both a
+    # `set -u` abort and a leak of whatever it was meant to remove.)
+    local -a _viol=()
 
     local f
     for f in "$dir"/*.sh; do
@@ -163,9 +163,9 @@ _detect_bare_holder_sleep_grace() {
                 case "$prev" in [[:space:]]*'#'*|'#'*) above="$prev" ;; esac
 
                 if [[ "$inline" =~ $_lex_re ]] || [[ "$above" =~ $_lex_re ]]; then
-                    echo "${f}:${lineno}: ${line}" >> "$_viof"
+                    _viol+=("${f}:${lineno}: ${line}")
                 elif [ "$dist" -ge 1 ] && [ "$dist" -le 3 ] && [ "$window_loop" -eq 0 ]; then
-                    echo "${f}:${lineno}: ${line}" >> "$_viof"
+                    _viol+=("${f}:${lineno}: ${line}")
                 fi
             fi
 
@@ -180,12 +180,10 @@ _detect_bare_holder_sleep_grace() {
         done < "$f"
     done
 
-    if [ -s "$_viof" ]; then
-        cat "$_viof" >&2
-        _detector_cleanup
+    if [ "${#_viol[@]}" -gt 0 ]; then
+        printf '%s\n' "${_viol[@]}" >&2
         return 1
     fi
-    _detector_cleanup
     return 0
 }
 
@@ -257,7 +255,7 @@ _c1="$(_hs_fixture '_x=1' 'echo hello')"
 assert "C1: a fixture with no sleep at all returns 0" \
     test "$(_hs_scan_rc "$_c1")" -eq 0
 
-_c2="$(mktemp -d)"; _TMPDIRS+=("$_c2")
+_c2="$(mktemp -d -p "$_HS_ROOT")"
 assert "C2: an empty directory returns 0" \
     test "$(_hs_scan_rc "$_c2")" -eq 0
 
