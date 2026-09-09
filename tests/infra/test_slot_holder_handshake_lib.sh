@@ -88,6 +88,13 @@ assert "holder_wait_until_held: confirms a live owner with no grace pause (retur
 assert "holder_wait_until_held: the probe agrees the slot is really taken" \
     slot_probe_held "$_SLOT_A"
 
+# Pins the `export -f`: run in a CHILD shell against the still-held slot, where
+# an unexported helper would be command-not-found and fail.  Without this the
+# `bash -c "! ..."` negative controls below could pass vacuously for exactly
+# that reason.
+assert "holder_wait_until_held: the exported helper really runs in a child shell" \
+    bash -c "holder_wait_until_held '$_SLOT_A'"
+
 kill "$_PID_A" 2>/dev/null || true
 wait "$_PID_A" 2>/dev/null || true
 
@@ -114,6 +121,11 @@ assert "holder_wait_for_marker: returns 0 once a background writer creates the m
 
 assert "holder_wait_for_marker: the marker really exists on return" \
     test -e "$_MARK_B"
+
+# Same export pin as (a): a child shell must see the real helper, so the
+# never-created negative control below cannot pass as command-not-found.
+assert "holder_wait_for_marker: the exported helper really runs in a child shell" \
+    bash -c "holder_wait_for_marker '$_MARK_B'"
 
 wait "$_PID_B" 2>/dev/null || true
 
@@ -230,10 +242,16 @@ assert "holder_max_concurrent: THREE invocations at N=2 -> 2 (cap honored, never
 
 # Proves the predicate orders by the epoch-ns field, not by physical append
 # order: concurrent O_APPEND writers may land lines in any order.
+#
+# The physical order below is deliberately one that DISAGREES with the ns
+# order: read as written it is R/A/A/R, whose running max is 1, while the
+# ns-sorted sequence is A/A/R/R, whose running max is 2.  A fixture whose two
+# readings happen to agree (any pure A/A/R/R shuffle) cannot tell a sorting
+# predicate from a non-sorting one and would pass either way.
 _LOG_SCR="$_TMPD/e-scrambled.log"
-printf '200 2222 ACQUIRE slot-2\n100 1111 ACQUIRE slot-1\n400 2222 RELEASE\n300 1111 RELEASE\n' \
+printf '300 1111 RELEASE\n100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n400 2222 RELEASE\n' \
     > "$_LOG_SCR"
-assert "holder_max_concurrent: SCRAMBLED lines whose ns field reorders to A/A/R/R -> 2" \
+assert "holder_max_concurrent: SCRAMBLED lines whose ns field reorders to A/A/R/R -> 2 (physical order alone would give 1)" \
     test "$(holder_max_concurrent "$_LOG_SCR")" -eq 2
 
 _LOG_EMPTY="$_TMPD/e-empty.log"
