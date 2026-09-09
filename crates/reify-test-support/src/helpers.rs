@@ -740,45 +740,49 @@ pub fn run_modify_pipeline(
 /// lowest-level helper in the family: [`get_let_expr_in`] resolves a named template from a
 /// module and then delegates to this function.
 ///
-/// **Ambiguity hazard:** matches on `id.member` alone; `id.entity` is not
-/// considered. A template holding two value cells with the same member name
-/// under different entities (e.g. two composed sub-entities that both
-/// declare a `width`) resolves to whichever one appears first in
-/// `value_cells` — *silently*, with no panic or other signal that the match
-/// was ambiguous. A caller querying such a template by member name alone can
-/// assert against the wrong cell and never know it. This is deliberate
-/// first-match-wins behavior, pinned by
-/// `test_get_let_expr_in_template_matches_member_ignoring_entity`; if a
-/// specific entity's cell matters, disambiguate before calling, e.g. by
-/// searching `template.value_cells` directly for the desired `id.entity`.
-///
-/// This is not new behavior introduced by this function: it is the exact
-/// walk `get_let_expr_in` performed inline before delegating here (task
-/// #5831), so the ~150 pre-existing `get_let_expr`/`get_let_expr_in` call
-/// sites across reify-compiler and reify-expr (none in this task's
-/// file-lock scope) already depend on first-match-wins today, whether or
-/// not any of them currently hits an ambiguous template. A fail-fast
-/// panic-on-ambiguity variant was raised in review and deliberately
-/// deferred rather than applied here: flipping it would change long-lived
-/// shared test-infrastructure behavior across that whole call-site surface,
-/// which needs its own verification pass, not a same-task amendment — see
-/// the follow-up ticket filed from task #5831.
+/// **Ambiguity:** matches on `id.member` alone; `id.entity` is not
+/// considered. A template holding two value cells that share a member name
+/// under different entities cannot be resolved this way, and this function
+/// panics, naming the colliding entities (see # Panics). The realistic
+/// producer is a scoped sub/connect `Auto` cell (`id.entity =
+/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
+/// same-named cell — real `.ri` source produces this with zero diagnostics,
+/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
+/// If a specific entity's cell matters, disambiguate before calling, e.g.
+/// by searching `template.value_cells` directly for the desired
+/// `id.entity`.
 ///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value cell shares that member name (see Ambiguity above).
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in_template<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    let cell = template
+    let matching: Vec<_> = template
         .value_cells
         .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{}'", template.name)
-        });
+        .filter(|vc| vc.id.member == cell_name)
+        .collect();
+    let cell = match matching.as_slice() {
+        [] => panic!(
+            "no value cell named '{cell_name}' in template '{}'",
+            template.name
+        ),
+        [only] => *only,
+        many => {
+            let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
+            panic!(
+                "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
+                 member, under entities {entities:?}; get_let_expr* resolves on id.member alone, \
+                 so disambiguate by searching `template.value_cells` for the desired id.entity",
+                template.name,
+                many.len()
+            )
+        }
+    };
     cell.default_expr.as_ref().unwrap_or_else(|| {
         panic!("value cell '{cell_name}' in '{}' has no default expr", template.name)
     })
@@ -794,7 +798,7 @@ pub fn get_let_expr_in_template<'a>(
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - Panics from [`get_let_expr_in_template`] if the cell or its default expr is absent.
+/// - Panics from [`get_let_expr_in_template`] if the cell is absent, ambiguous, or its default expr is absent.
 #[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -819,7 +823,7 @@ pub fn get_let_expr_in<'a>(
 ///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
-/// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+/// - Panics from [`get_let_expr_in`] if the cell is absent, ambiguous, or its default expr is absent.
 #[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -1776,26 +1780,15 @@ mod tests {
         );
     }
 
-    /// The two panic branches of `get_let_expr_in_template` ("no value cell
-    /// named" / "has no default expr") are intentionally NOT re-tested here.
-    /// `get_let_expr_in` delegates to `get_let_expr_in_template`, and
-    /// `test_get_let_expr_in_panics_on_missing_cell` /
-    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
-    /// exercise both branches through that delegation — duplicating them at
-    /// this layer would add coverage of the new entry point only, not of new
-    /// behavior (task #5831 review).
-    ///
-    /// What IS specific to this layer: `get_let_expr_in_template` matches on
-    /// `id.member` alone, so a template with two cells sharing a member name
-    /// under different entities is ambiguous. This test pins that the first
-    /// match in `value_cells` order wins, per the doc comment above the
-    /// function.
-    #[test]
-    fn test_get_let_expr_in_template_matches_member_ignoring_entity() {
+    /// Two value cells sharing member name "x" under different entities on
+    /// one "Bracket" template — the ambiguity fixture shared by the two
+    /// tests below. Both cells carry a default so a resolution failure can
+    /// only be the collision, never a missing default.
+    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
         use reify_core::Type;
         use reify_ir::{CompiledExpr, Value};
 
-        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+        crate::builders::TopologyTemplateBuilder::new("Bracket")
             .param(
                 "First",
                 "x",
@@ -1811,17 +1804,70 @@ mod tests {
                 Type::Int,
                 Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
             )
-            .build();
+            .build()
+    }
 
-        let expr = super::get_let_expr_in_template(&template, "x");
-        assert_eq!(
-            expr.result_type,
-            Type::dimensionless_scalar(),
-            "get_let_expr_in_template matches by member name alone (ignoring id.entity); \
-             expected the FIRST cell named 'x' (entity 'First', dimensionless_scalar), \
-             got result_type {:?}",
-            expr.result_type
-        );
+    /// The two panic branches of `get_let_expr_in_template` ("no value cell
+    /// named" / "has no default expr") are intentionally NOT re-tested here.
+    /// `get_let_expr_in` delegates to `get_let_expr_in_template`, and
+    /// `test_get_let_expr_in_panics_on_missing_cell` /
+    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
+    /// exercise both branches through that delegation — duplicating them at
+    /// this layer would add coverage of the new entry point only, not of new
+    /// behavior (task #5831 review).
+    ///
+    /// What IS specific to this layer: `get_let_expr_in_template` matches on
+    /// `id.member` alone, so a template holding two value cells that share a
+    /// member name under different entities is unresolvable by member name
+    /// alone — there is no principled way to pick between them. This pins
+    /// that the lookup aborts rather than silently returning one of the two.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// Pins that the ambiguity panic is actionable: it enumerates the
+    /// colliding `id.entity` values, in `value_cells` order, in its message.
+    /// Without this, a maintainer hitting the panic from
+    /// `test_get_let_expr_in_template_panics_on_ambiguous_member` learns only
+    /// that a collision occurred, not which entities collided — forcing them
+    /// to reproduce it by hand before they can disambiguate.
+    #[test]
+    #[should_panic(expected = "[\"First\", \"Second\"]")]
+    fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// The realistic producer of a same-member collision is a scoped
+    /// sub/connect `Auto` cell (`id.entity = "Parent.sub"`, `default_expr:
+    /// None`) sitting alongside the parent's own same-named `let`/defaulted
+    /// `param` cell — real `.ri` source produces exactly this with zero
+    /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
+    /// `let area = ...`. With the `sub` declared first, as below, the scoped
+    /// `Manifold.v` cell precedes `Manifold`'s own cell in `value_cells`, so
+    /// the ambiguity check must fire before the `default_expr` deref — not
+    /// after — or this fixture would report a missing default instead of an
+    /// ambiguity.
+    ///
+    /// The zero-diagnostics assertion below is a precondition guard: it
+    /// keeps a fixture that stops compiling cleanly from being misread as
+    /// this test failing to detect the ambiguity, rather than failing on the
+    /// precondition with a message naming the actual diagnostics.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
+        let source = r#"
+            structure def Vent { param area : Length = 1mm }
+            structure def Manifold {
+                sub v : Vent { area = auto }
+                let area = 2mm
+            }
+        "#;
+        let module = super::compile_source(source);
+        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+
+        let _ = super::get_let_expr_in(&module, "Manifold", "area");
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
