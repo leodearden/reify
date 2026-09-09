@@ -558,9 +558,9 @@ structure def ImpulseForce : ForcingFunction {
     param time : Time
 
     // `impulse : Impulse` keeps the explicit dimensioned-zero form
-    // `0 * 1N * 1s` because it spells out N·s = kg·m·s⁻¹ = Impulse right at the
-    // constraint site; a bare `0` would compile too. DIMENSIONED-ZERO
-    // CONVENTION — docs/notes/dimensioned-zero-coercion.md.
+    // `0 * 1N * 1s` because it spells out N·s = kg·m·s⁻¹ = Impulse right
+    // at the constraint site; a bare `0` would compile too.
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     //
     // By convention, `direction` carries the sign (unit vector); `impulse`
     // carries the positive scalar magnitude. Declaring the lower bound at the

@@ -2,13 +2,14 @@
 
 **Task #6038 | 2026-09-02** — supersedes the stale esc-3115-112 rationale (`task #3115`).
 
-Operational digest for the §7.2 syntactic-zero operand coercion landed by **task-4485/β**.
+Operational digest for the syntactic-zero operand coercion landed by **task-4485/β**.
 Implementation authority is `coerce_zero_operand`'s rustdoc in
 `crates/reify-compiler/src/expr.rs` (with `type_compat::is_syntactic_zero_literal`); design
-authority is `docs/prds/v0_6/type-hygiene.md` §35. This note exists so the stdlib `.ri` comments
-that lean on the mechanism can point at a **stable path** rather than at one structure's
-constraint comment — the previous canonical statement lived inside `StepForce.magnitude > 0N` in
-`modal_analysis.ri`, and renaming or deleting `StepForce` would have silently broken six pointers.
+authority is `docs/prds/v0_6/type-hygiene.md` §7.2 "Polymorphic-zero contract (compile-time
+literal rewrite)". This note exists so the stdlib `.ri` comments that lean on the mechanism can
+point at a **stable path** rather than at one structure's constraint comment — the previous
+canonical statement lived inside `StepForce.magnitude > 0N` in `modal_analysis.ri`, and renaming
+or deleting `StepForce` would have silently broken six pointers.
 
 ---
 
@@ -83,4 +84,4 @@ that way.
 `modal_analysis.ri` (`StepForce.magnitude`, `ImpulseForce.impulse`, `HarmonicForce.amplitude` /
 `.frequency`), `dynamics.ri` (`MassProperties.mass >= 0kg`), `trajectory.ri`
 (`JointLimit.max_force`, `ZVShaper.target_frequency`), `structural_physical.ri` (`trait Physical`,
-`StiffnessRequirement`), `materials_electrical.ri` (`trait Insulating`).
+`trait Flexible`), `materials_electrical.ri` (`trait Insulating`).
