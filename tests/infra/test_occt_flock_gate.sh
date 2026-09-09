@@ -806,6 +806,7 @@ echo ""
 echo "--- Test 20: REIFY_OCCT_CONCURRENCY=2 serializes the 3rd invocation when both slots are busy ---"
 
 _LOCK20="$(mktemp)"
+_LOG20="$(mktemp)"
 _START20_NS="$(date +%s%N)"
 
 # Spawn three concurrent invocations each sleeping 0.4s with N=2 slots.
@@ -828,6 +829,23 @@ rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
 assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
     occt_serial3_n2_within_bounds "$_ELAPSED20_MS"
 
+# CAUSAL serialization proof (task 6247, PRD infra-test-wallclock-deflake.md
+# D1/T3), read off the slot event log instead of the clock: exactly 2 of the
+# three invocations may hold a slot at any instant. An N->1 over-serialization
+# regression gives 1 and a lost cap gives 3, both of which the millisecond band
+# above accepts — which is why it is retired in favour of this.
+_ACQ20="$(grep -c ' ACQUIRE ' "$_LOG20" 2>/dev/null || true)"
+_REL20="$(grep -c ' RELEASE' "$_LOG20" 2>/dev/null || true)"
+assert "Test 20: exactly 2 slots held at once across the three N=2 invocations (causal proof)" \
+    occt_serial3_n2_serialized "$_LOG20"
+# NON-VACUITY CONTROL: a bypassed or DISABLEd wrapper records no events at all,
+# and an empty log must not read as success. Counted facts, not magnitudes.
+assert "Test 20: the event log records 3 ACQUIRE events (got ${_ACQ20}) — no invocation was bypassed" \
+    test "$_ACQ20" -eq 3
+assert "Test 20: the event log records 3 RELEASE events (got ${_REL20}) — every slot was given back" \
+    test "$_REL20" -eq 3
+rm -f "$_LOG20"
+
 # -- Test 21: REIFY_OCCT_MAX_CONCURRENCY sets N when CONCURRENCY is unset ------
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
 # Sub-test A: two concurrent wrappers → R-proof ≥2 slots simultaneously held
@@ -848,6 +866,7 @@ _LOCK21A="$(mktemp)"
 _LOG21A="$(mktemp)"
 _BARRIER21A="$(mktemp -d)"
 _LOCK21B="$(mktemp)"
+_LOG21B="$(mktemp)"
 
 # Sub-test A: 2 invocations with MAX_CONCURRENCY=2 → R-proof ≥2 slots simultaneously.
 # Barrier: each wrapper touches ready-$$ after ACQUIRE, waits bounded for go signal.
@@ -899,6 +918,18 @@ assert "Test 21A: ≥2 slots held simultaneously with MAX_CONCURRENCY=2 (causal 
 
 assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms, got ${_ELAPSED21B_MS}ms)" \
     occt_serial3_n2_within_bounds "$_ELAPSED21B_MS"
+
+# CAUSAL serialization proof — the exact twin of Test 20's, on the
+# MAX_CONCURRENCY path. See the note there for why the band above is retired.
+_ACQ21B="$(grep -c ' ACQUIRE ' "$_LOG21B" 2>/dev/null || true)"
+_REL21B="$(grep -c ' RELEASE' "$_LOG21B" 2>/dev/null || true)"
+assert "Test 21B: exactly 2 slots held at once across the three MAX_CONCURRENCY=2 invocations (causal proof)" \
+    occt_serial3_n2_serialized "$_LOG21B"
+assert "Test 21B: the event log records 3 ACQUIRE events (got ${_ACQ21B}) — no invocation was bypassed" \
+    test "$_ACQ21B" -eq 3
+assert "Test 21B: the event log records 3 RELEASE events (got ${_REL21B}) — every slot was given back" \
+    test "$_REL21B" -eq 3
+rm -f "$_LOG21B"
 
 # -- Test 22: LOCK_WAIT bound fires when ALL N slots are externally held ------
 # Mirrors Test 14's pattern but with N=2 (full contention across all slots).
