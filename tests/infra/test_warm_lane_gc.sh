@@ -100,6 +100,13 @@ SCRIPT="$REPO_ROOT/scripts/warm-lane-gc.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh (task 6247) — causal holder-handshake primitives.
+# A fixed pause after backgrounding a holder can be OUTRUN under load: the
+# holder is not yet holding, so the code under test finds the resource FREE and
+# silently stops testing contention at all.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
 echo "=== scripts/warm-lane-gc.sh hermetic tests (task 4717) ==="
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -776,10 +783,18 @@ git -C "$G_REPO" worktree add -q "$G_WORKTREES/_lane-locked"
 mkdir -p "$G_WORKTREES/_lane-locked/target"
 touch "$G_WORKTREES/_lane-locked/target/DIVERGENT_MARKER"
 touch "$G_WORKTREES/_lane-locked.lock"
+G_LOCK_READY="$G_WORKTREES/_lane-locked.lock.ready-marker"
 ( flock -x 9 && sleep 300 ) 9>"$G_WORKTREES/_lane-locked.lock" &
 G_LOCK_PID=$!
 _BGPIDS+=("$G_LOCK_PID")
-sleep 0.1
+# Causal handshake (task 6247), the straight port of Block F's F4_READY/F5_READY
+# shape above. The retired `sleep 0.1` — half the grace used anywhere else in
+# this file — races the background subshell's lock acquisition: if the flock is
+# not yet held when `run_helper reclaim` sweeps, GC reclaims the lane and
+# deletes its marker, failing G7 (DIVERGENT_MARKER intact) and G12
+# (preserved=3) for a reason that has nothing to do with GC's logic.
+assert "Fixture 5: live-consumer flock provably held before the sweep (causal barrier)" \
+    holder_wait_for_marker "$G_LOCK_READY" 150
 
 # Fixture 6: protected _merge-verify (protect-glob)
 git -C "$G_REPO" worktree add -q "$G_WORKTREES/_merge-verify"
