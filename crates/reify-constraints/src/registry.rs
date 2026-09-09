@@ -333,6 +333,11 @@ impl SolverRegistry {
             //
             // # What the spread COSTS, and why it is kept anyway (task #5721)
             //
+            // This is the ONE cost accounting for the spreads.  The other two
+            // registry sites cross-reference it rather than restate it, and it
+            // names the constants instead of inlining their current values so a
+            // reader is sent to a definition that cannot go stale.
+            //
             // `..problem.clone()` clones all six `ResolutionProblem` fields and
             // immediately discards the four this literal overrides
             // (`auto_params`, `constraints`, `objective`, `dependent_cells`),
@@ -343,18 +348,18 @@ impl SolverRegistry {
             // clones of the whole model's lists.
             //
             // It is kept because that cost is paid ONCE PER COMPONENT, not per
-            // trial, and the sub-problem it builds then drives a best-of-K
-            // multistart of `K = 2 * (dim + 1)` starts (`multistart_points`),
-            // each running Nelder-Mead for up to
-            // `min(FEASIBLE_OPT_ITERS_PER_DIM * (dim + 1), MAX_ITERS)`
-            // iterations warm-started, or `MAX_ITERS = 5000` cold — so 9k–30k
-            // cost evaluations at dim=2.  EVERY one of those evaluations
+            // trial, while the sub-problem it builds then drives a best-of-K
+            // multistart (`multistart_points` in solver.rs, K rising with the
+            // component's dimension), each start running Nelder-Mead for up to
+            // a `FEASIBLE_OPT_ITERS_PER_DIM`-scaled iteration budget when
+            // warm-started, or `MAX_ITERS` cold.  EVERY one of those iterations
             // re-evaluates the entire `constraints` list via
-            // `compute_total_violation` (plus a `build_trial_values` fold).  So
-            // the spread pays roughly ONE clone of a list that is then
-            // EVALUATED ~10⁴ times: conservatively under 0.01% of the
-            // component's solve, and nowhere near the per-trial hot path
-            // `fold_dependent_cells`' own cost model identifies.
+            // `compute_total_violation` (plus a `build_trial_values` fold).  At
+            // the constants those three names carry today that is roughly FOUR
+            // ORDERS OF MAGNITUDE more evaluations of the list than clones of
+            // it, for a two-dimensional component — a cold path, not the
+            // per-trial hot path `fold_dependent_cells`' own cost model
+            // identifies.
             //
             // Restructuring to hoist the invariant tail out of the loop would
             // therefore trade a real drift guard for a speedup on a path that
@@ -363,8 +368,8 @@ impl SolverRegistry {
             // a per-site decision, which is exactly what #5720 had to fix for
             // `dependent_cells` — is covered by the compile-time tripwire
             // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
-            // in this file's `mod tests`, which is ADDITIVE to the spread, not
-            // a replacement for it.
+            // (this file's `mod tests`) and its solver.rs sibling, which are
+            // ADDITIVE to the spread, not a replacement for it.
             //
             // # Why `dependent_cells` is FILTERED per component (task #5720)
             //
@@ -773,8 +778,8 @@ fn solve_lexicographic(
     // #5721), and the cheapest: it runs exactly once, overrides only
     // `objective`, and therefore discards nothing meaningful from the
     // `..base.clone()`.  It is the shape the staged loop below was made to
-    // mirror in #5189.  Cost accounting for all three sites lives at the staged
-    // loop's β comment.
+    // mirror in #5189.  Cost accounting is not restated here: it lives at ONE
+    // site, the β comment on `solve_inner`'s `sub_problem`.
     if priority_order.len() == 1 {
         let ws_objective = ObjectiveSet {
             terms: obj.terms.clone(),
@@ -832,24 +837,16 @@ fn solve_lexicographic(
         // Override only what genuinely differs per stage.
         //
         // COST, and why the spread is kept (task #5721).  `..base.clone()`
-        // clones all six `ResolutionProblem` fields and discards the four this
-        // literal overrides (`auto_params`, `constraints`, `current_values`,
-        // `objective`), keeping `functions` (an `Arc` refcount bump) and
-        // `dependent_cells` (a real `CompiledExpr` deep clone).  It runs ONCE
-        // PER DISTINCT PRIORITY RANK, and each stage then hands its sub-problem
-        // to a full solve — the same `K = 2 * (dim + 1)` multistart × up to
-        // `MAX_ITERS` Nelder-Mead iterations analysed at the per-component site
-        // in `solve_inner`, every iteration re-evaluating the whole
-        // `accumulated_constraints` list.  The discarded clone is under 0.01%
-        // of a stage's work, so the drift guard is deliberately KEPT here too.
-        // The third spread in this function — the degenerate single-priority
-        // `ws_problem` above, which overrides only `objective` and runs exactly
-        // once — discards nothing meaningful and needs no separate accounting.
-        // All three sites are enumerated in the doc of
+        // runs ONCE PER DISTINCT PRIORITY RANK and each stage then hands its
+        // sub-problem to a full solve, so the same accounting applies as at the
+        // per-component site — which is where it lives, deliberately once: the
+        // β comment on `solve_inner`'s `sub_problem`.  The guard is KEPT here
+        // for the same reason.  Every site is enumerated by the compile-time
+        // tripwires — this file's
         // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
-        // (this file's `mod tests`), the compile-time tripwire that catches the
-        // failure mode the spread itself cannot: a NEW field inherited
-        // WHOLESALE at every site instead of getting a per-site decision.
+        // and its solver.rs sibling — which catch the failure mode the spread
+        // itself cannot: a NEW field inherited WHOLESALE instead of getting a
+        // per-site decision.
         let stage_problem = ResolutionProblem {
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
@@ -1090,20 +1087,23 @@ fn build_band_constraints(
 mod tests {
     use super::ResolutionProblem;
 
-    /// COMPILE-TIME DRIFT TRIPWIRE for the three `ResolutionProblem` spread
-    /// sites in this file (task #5721 item 2).
+    /// COMPILE-TIME DRIFT TRIPWIRE for the `ResolutionProblem` field set
+    /// (task #5721 item 2) — registry half of a two-file pin.
     ///
-    /// Three sub-problems in this module are built with functional-update
-    /// syntax, inheriting every field the literal does not name:
+    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// functional-update syntax, inheriting every field their literal does not
+    /// name:
     ///
-    /// 1. `solve_inner`'s per-component `sub_problem` — `..problem.clone()`,
-    ///    overriding `auto_params`, `constraints`, `objective` and
-    ///    `dependent_cells`, inheriting `current_values` and `functions`.
-    /// 2. `solve_lexicographic`'s per-rank `stage_problem` — `..base.clone()`,
-    ///    overriding `auto_params`, `constraints`, `current_values` and
-    ///    `objective`, inheriting `functions` and `dependent_cells`.
-    /// 3. `solve_lexicographic`'s degenerate single-priority `ws_problem` —
-    ///    `..base.clone()`, overriding only `objective`.
+    /// - `registry.rs`: `solve_inner`'s `sub_problem`,
+    ///   `solve_lexicographic`'s `stage_problem` and its degenerate
+    ///   single-priority `ws_problem`
+    /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
+    ///   `rob_problem` and `blend_problem`
+    ///
+    /// Anchors only, deliberately. An earlier revision restated each literal's
+    /// override/inherit set here, and that prose is exactly what drifts — this
+    /// very task had to edit it when site 1 stopped overriding
+    /// `current_values`. Read the literal; the list above only says where.
     ///
     /// The spread is deliberately KEPT (see the β/#5189 comments at each site):
     /// it is the runtime drift guard that stops a newly-added field from being
@@ -1114,14 +1114,21 @@ mod tests {
     /// `dependent_cells`, which needed a per-component FILTER rather than a
     /// blanket pass-through.
     ///
-    /// This test is the compile-time signal for that second mode. The
+    /// This test is the compile-time signal for that second mode: the
     /// exhaustive destructure carries NO `..` rest pattern, so adding a seventh
-    /// field to `ResolutionProblem` fails to COMPILE here (E0027) and the
-    /// author has to come read the list above and make a per-site decision.
+    /// field to `ResolutionProblem` fails to COMPILE here (E0027).
+    ///
+    /// An IDENTICAL pin lives in `solver.rs`, beside that file's three spreads
+    /// (`resolution_problem_field_set_is_pinned_at_the_solver_spread_sites`).
+    /// The duplication is the point: the pin's value is WHERE the break lands,
+    /// and a single copy would break only here while handing the author a list
+    /// of which half the sites live in another file.
     ///
     /// It is ADDITIVE to the runtime drift guard, NOT a replacement for it:
     /// removing a spread in favour of this test would restore the
-    /// silently-dropped-field mode the spreads exist to prevent.
+    /// silently-dropped-field mode the spreads exist to prevent. Cost
+    /// accounting for the spreads lives at ONE site — the β comment on
+    /// `solve_inner`'s `sub_problem`.
     ///
     /// Destructuring a REFERENCE keeps this free — no `ResolutionProblem` is
     /// constructed, and binding every field to `_` raises no unused warning.

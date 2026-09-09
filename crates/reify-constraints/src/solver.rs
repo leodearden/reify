@@ -265,8 +265,11 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 /// entry and keep the solver's own value.
 ///
 /// An empty `dependent_cells` returns without touching `values` OR running any
-/// of the guard work — that zero-cost skip is what keeps every non-clustered
-/// solve byte-identical to its pre-joint-drive behaviour (PRD §6.2).
+/// of the guard work — that skip is what keeps every non-clustered solve
+/// byte-identical to its pre-joint-drive BEHAVIOUR (PRD §6.2).  What the
+/// #5721 split's returned vector does and does not cost on that skip is
+/// accounted for on [`fold_dependent_cells_skipping_collisions`]; it is no
+/// longer a claim about identical codegen.
 ///
 /// # Hot-path cost model (task #5720)
 ///
@@ -335,6 +338,7 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 ///   folded rather than at the first collision.  That is unobservable: a
 ///   `debug_assert!` unwinds, and `values` is a `&mut` borrow the caller drops
 ///   on unwind, so no partially-folded map can escape.
+#[inline]
 pub(crate) fn fold_dependent_cells(
     values: &mut ValueMap,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
@@ -362,21 +366,43 @@ pub(crate) fn fold_dependent_cells(
 /// list exactly as the wrapper's contract describes and RETURNS, in stored
 /// order, the ids it skipped because `is_solver_owned` claimed them.
 ///
-/// Do NOT call this from production code.  It exists so the SKIP half of the
-/// collision contract — "pass the entry over and keep the solver's own value"
-/// — is assertable in every profile, which it is not through the wrapper: in
-/// debug the wrapper's `debug_assert!` unwinds before a caller can inspect the
-/// map.  Every production caller goes through [`fold_dependent_cells`] and
-/// keeps the debug alarm.
+/// Do NOT call this from production code — every production caller goes
+/// through [`fold_dependent_cells`] and keeps the debug alarm.  That rule is
+/// enforced by the VISIBILITY, not by this paragraph (task #5721 review): the
+/// function is private rather than `pub(crate)`, so a future sibling module —
+/// cpsat already calls the wrapper — cannot pick the alarm-free variant and
+/// quietly drop the drift alarm this split exists to strengthen.  The only
+/// non-production caller is this file's `mod tests`, which reaches it through
+/// `super::`, so private is sufficient.
+///
+/// It exists so the SKIP half of the collision contract — "pass the entry over
+/// and keep the solver's own value" — is assertable in every profile, which it
+/// is not through the wrapper: in debug the wrapper's `debug_assert!` unwinds
+/// before a caller can inspect the map.
 ///
 /// An empty returned vector is the ONLY correct steady state; a non-empty one
 /// means reify-eval's `build_dependent_cells` membership drifted.
 ///
-/// Cost is unchanged on the Nelder-Mead hot path.  The empty-`dependent_cells`
-/// early return is preserved verbatim (PRD §6.2's byte-identical zero-cost
-/// skip), and `Vec::new()` does not allocate, so a clean fold — the
-/// overwhelmingly common case — still allocates nothing.
-pub(crate) fn fold_dependent_cells_skipping_collisions(
+/// # What the returned vector costs on the hot path
+///
+/// The empty-`dependent_cells` early return is preserved: it still touches
+/// neither `values` nor any of the guard work, which is what keeps every
+/// non-clustered solve behaviourally unchanged (PRD §6.2).  What it is no
+/// longer, strictly, is byte-identical CODEGEN — the skip now constructs and
+/// drops a `Vec`.  `Vec::new()` does not allocate, so a clean fold — the
+/// overwhelmingly common case — still allocates nothing, but the construct and
+/// its drop branch are not literally nothing, and in release the
+/// `debug_assert!` that consumes the vector is compiled out entirely.  Both
+/// this function and its wrapper therefore carry `#[inline]`, so the empty
+/// round trip reliably vanishes instead of depending on LLVM to inline an
+/// unannotated call on the Nelder-Mead path.
+///
+/// On a genuinely DRIFTED list a release build now does one `id.clone()` plus
+/// a heap allocation per trial where it previously did nothing at all.  That is
+/// the degraded mode, not the steady state, and it is what buys the release
+/// profile the observable seam its half of the contract is asserted through.
+#[inline]
+fn fold_dependent_cells_skipping_collisions(
     values: &mut ValueMap,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
     functions: &[CompiledFunction],
@@ -2868,6 +2894,66 @@ fn solve_cost_robustness_tradeoff(
         ..problem.clone()
     };
     solve_core_with_sd_tolerance(&blend_problem, initial, NM_SD_TOLERANCE, false, dispatch)
+}
+
+// ---------------------------------------------------------------------------
+// Solver half of the `ResolutionProblem` field-set pin (task #5721 review).
+// Placed HERE, beside the three anchor/blend spreads above, so the compile
+// break lands in the file whose sites it affects.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod resolution_problem_spread_pin {
+    use super::ResolutionProblem;
+
+    /// COMPILE-TIME DRIFT TRIPWIRE for the `ResolutionProblem` field set —
+    /// solver half; twin of `registry.rs`'s
+    /// `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`,
+    /// whose doc carries the full rationale.
+    ///
+    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// functional-update syntax, inheriting every field their literal does not
+    /// name:
+    ///
+    /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
+    ///   `rob_problem` and `blend_problem` — the three directly above
+    /// - `registry.rs`: `solve_inner`'s `sub_problem`,
+    ///   `solve_lexicographic`'s `stage_problem` and its degenerate
+    ///   single-priority `ws_problem`
+    ///
+    /// Anchors only, deliberately: restating each literal's override/inherit
+    /// set is the prose that drifts. Read the literal.
+    ///
+    /// The exhaustive destructure carries NO `..` rest pattern, so adding a
+    /// seventh field fails to COMPILE (E0027) in BOTH files, and the author of
+    /// that field is forced to visit every site and decide whether wholesale
+    /// inheritance is right — the failure mode the spreads themselves cannot
+    /// catch (they stop a new field being silently DROPPED, not one being
+    /// silently INHERITED, which is what #5720 had to retrofit for
+    /// `dependent_cells`). Both guards are kept; this is ADDITIVE.
+    ///
+    /// The duplicated pin is deliberate rather than a shared helper: its whole
+    /// value is WHERE the compile error lands, and one copy would hand the
+    /// author a single file's list while half the sites live in the other.
+    ///
+    /// Destructuring a REFERENCE keeps this free — no `ResolutionProblem` is
+    /// constructed, and binding every field to `_` raises no unused warning.
+    #[test]
+    fn resolution_problem_field_set_is_pinned_at_the_solver_spread_sites() {
+        fn pin(p: &ResolutionProblem) {
+            let ResolutionProblem {
+                auto_params: _,
+                constraints: _,
+                current_values: _,
+                objective: _,
+                functions: _,
+                dependent_cells: _,
+            } = p;
+        }
+
+        // Reference `pin` so it is not dead code; calling it would need a
+        // constructed problem, which the tripwire deliberately does not need.
+        let _ = pin as fn(&ResolutionProblem);
+    }
 }
 
 /// Returns `true` if `a` and `b` agree within the project's uniqueness
