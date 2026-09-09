@@ -388,6 +388,23 @@ unsafe fn take_gmsh_buf<T: Copy>(ptr: *mut T, n: usize) -> Vec<T> {
     v
 }
 
+/// Free a gmsh-allocated out-buffer without copying it into a `Vec` first —
+/// for out-params a caller requested but will never read (e.g. `paramCoord`
+/// with `returnParametricCoord=0`), where [`take_gmsh_buf`]'s copy would be
+/// wasted work.
+///
+/// # Safety
+/// Same contract as [`take_gmsh_buf`]: `ptr` must be null, or a valid
+/// pointer previously returned by a gmsh out-param call, not aliased and
+/// not already freed.
+unsafe fn free_gmsh_buf<T>(ptr: *mut T) {
+    if !ptr.is_null() {
+        unsafe {
+            gmshFree(ptr as *mut c_void);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Safe Rust wrappers
 // ---------------------------------------------------------------------------
@@ -598,9 +615,11 @@ pub fn get_nodes_all() -> Result<(Vec<u64>, Vec<f64>), GeometryError> {
     let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
     let coords: Vec<f64> = unsafe { take_gmsh_buf(coord_ptr, coord_n) };
     // paramCoord was requested with returnParametricCoord=0 above, so its
-    // contents are unused — still route it through take_gmsh_buf so a
-    // gmsh-allocated (possibly empty) buffer is freed rather than leaked.
-    let _ = unsafe { take_gmsh_buf(param_ptr, param_n) };
+    // contents are never read — free-only, via free_gmsh_buf, rather than
+    // paying take_gmsh_buf's copy for a buffer we immediately discard.
+    // SAFETY: param_ptr is either null or was just populated by the
+    // gmshModelMeshGetNodes call above.
+    unsafe { free_gmsh_buf(param_ptr) };
     check_ierr("gmshModelMeshGetNodes", ierr)?;
     Ok((node_tags, coords))
 }
@@ -881,9 +900,11 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
     let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
     let coords: Vec<f64> = unsafe { take_gmsh_buf(coord_ptr, coord_n) };
     // paramCoord was requested with returnParametricCoord=0 above, so its
-    // contents are unused — still route it through take_gmsh_buf so a
-    // gmsh-allocated (possibly empty) buffer is freed rather than leaked.
-    let _ = unsafe { take_gmsh_buf(param_ptr, param_n) };
+    // contents are never read — free-only, via free_gmsh_buf, rather than
+    // paying take_gmsh_buf's copy for a buffer we immediately discard.
+    // SAFETY: param_ptr is either null or was just populated by the
+    // gmshModelMeshGetNodes call above.
+    unsafe { free_gmsh_buf(param_ptr) };
     check_ierr("gmshModelMeshGetNodes(entity)", ierr)?;
     Ok((node_tags, coords))
 }
@@ -892,14 +913,16 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 /// in-memory buffer, drained by [`logger_get`].
 ///
 /// This capture is INDEPENDENT of the `"General.Terminal"` option — every
-/// production mesher in this crate sets that option to `0` to silence
-/// gmsh's own stdout/stderr writes (`kernel_real.rs:187`,
-/// `mesh_boundary.rs:609`, `refine_volume.rs:203`, `mesh_profile_2d.rs:88`),
-/// which would otherwise leave gmsh diagnostics unreachable from Rust. A
-/// probe against `/opt/reify-deps/lib/libgmsh.so.4.15.2` measured 85
-/// captured lines across one `mesh_generate(3)` call with
-/// `General.Terminal = 0` — the capture buffer is a separate switch gmsh
-/// keeps regardless of that option.
+/// production mesher in this crate (`kernel_real::mesh_to_volume`,
+/// `mesh_boundary::mesh_surface_to_volume_with_attribution`,
+/// `refine_volume::refine_volume_with_size_field`,
+/// `mesh_profile_2d::mesh_plane_2d`) sets that option to `0` to silence
+/// gmsh's own stdout/stderr writes, which would otherwise leave gmsh
+/// diagnostics unreachable from Rust. A probe against
+/// `/opt/reify-deps/lib/libgmsh.so.4.15.2` measured 85 captured lines
+/// across one `mesh_generate(3)` call with `General.Terminal = 0` — the
+/// capture buffer is a separate switch gmsh keeps regardless of that
+/// option.
 ///
 // G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_start() -> Result<(), GeometryError> {
@@ -924,11 +947,11 @@ pub fn logger_stop() -> Result<(), GeometryError> {
 /// empty `Vec` with `ierr=0` (not an error); likewise after [`logger_stop`]
 /// has drained the buffer. `gmshLoggerGet` returns a `char***` — gmsh
 /// allocates both the outer array of `log_n` pointers and every string it
-/// points at, so both levels are freed here via `gmshFree` before
-/// `check_ierr`, mirroring the free-before-check ordering in
-/// [`get_nodes_all`] and [`get_elements_by_type`] (this avoids leaking the
-/// buffers on the `ierr != 0` path, since `check_ierr` returns early via
-/// `?`).
+/// points at, so both levels are freed here (the outer array via
+/// [`take_gmsh_buf`], each string via `gmshFree`) before `check_ierr`,
+/// mirroring the free-before-check ordering in [`get_nodes_all`] and
+/// [`get_elements_by_type`] (this avoids leaking the buffers on the `ierr
+/// != 0` path, since `check_ierr` returns early via `?`).
 ///
 // G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_get() -> Result<Vec<String>, GeometryError> {
@@ -938,22 +961,22 @@ pub fn logger_get() -> Result<Vec<String>, GeometryError> {
     unsafe {
         gmshLoggerGet(&mut log_ptr, &mut log_n, &mut ierr);
     }
-    let mut lines: Vec<String> = Vec::new();
-    if !log_ptr.is_null() && log_n > 0 {
-        let entries = unsafe { std::slice::from_raw_parts(log_ptr, log_n) };
-        for &s in entries {
-            if s.is_null() {
-                continue;
-            }
-            lines.push(unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned());
-            unsafe {
-                gmshFree(s as *mut c_void);
-            }
+    // SAFETY: log_ptr is either null or was just populated by the
+    // gmshLoggerGet call above, owning at least log_n contiguous,
+    // initialised `*mut c_char` entries — take_gmsh_buf's precondition.
+    // `*mut c_char` is `Copy`, so the outer array is a plain take_gmsh_buf
+    // call; only the per-string free below is special (each entry is
+    // itself a separate gmsh allocation take_gmsh_buf's `T: Copy` bound
+    // cannot express).
+    let entries: Vec<*mut c_char> = unsafe { take_gmsh_buf(log_ptr, log_n) };
+    let mut lines: Vec<String> = Vec::with_capacity(entries.len());
+    for s in entries {
+        if s.is_null() {
+            continue;
         }
-    }
-    if !log_ptr.is_null() {
+        lines.push(unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned());
         unsafe {
-            gmshFree(log_ptr as *mut c_void);
+            gmshFree(s as *mut c_void);
         }
     }
     check_ierr("gmshLoggerGet", ierr)?;
@@ -970,11 +993,11 @@ pub fn logger_get() -> Result<Vec<String>, GeometryError> {
 ///
 /// Measured type codes (geo-built unit box, no recombination/extrusion):
 /// dim 3 -> `4` = P1 4-node tet, `11` = P2 10-node tet (agreeing with
-/// `kernel_real.rs:229-236`); dim 2 -> `2` = 3-node triangle (measured
-/// `[2]` on the same box). Whole-mesh `(-1, -1)` measured `[1, 2, 4, 15]`
-/// at P1 and `[8, 9, 11, 15]` at P2 — that pins gmsh's whole B-rep
-/// decomposition and is far more version-sensitive than a dim-scoped
-/// census.
+/// `kernel_real::mesh_to_volume`'s element-order comment); dim 2 -> `2` =
+/// 3-node triangle (measured `[2]` on the same box). Whole-mesh `(-1, -1)`
+/// measured `[1, 2, 4, 15]` at P1 and `[8, 9, 11, 15]` at P2 — that pins
+/// gmsh's whole B-rep decomposition and is far more version-sensitive than
+/// a dim-scoped census.
 ///
 // G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn get_element_types(dim: i32, tag: i32) -> Result<Vec<i32>, GeometryError> {
