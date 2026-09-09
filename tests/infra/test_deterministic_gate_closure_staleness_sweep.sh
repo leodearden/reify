@@ -22,8 +22,8 @@
 #   A — CLI contract + empty-input degradation
 #   B — the liveness guard
 #   C — the RETIRED gate_closure class (task 7349)
-#   D — trigger class B (merge_verify_red)
-#   E — trigger class C (unmet_dependency)
+#   D — trigger class B (merge_verify_red) — the only surviving class
+#   E — the retired unmet_dependency class (task 7349)
 #   F — the #5316 corruption suppressors
 #   G — --emit-requests + the read-only proof
 #   R — request retraction (the only block that mutates its fixture between runs)
@@ -410,7 +410,7 @@ EMPTY_REPO="$REPO_DIR"
 
 # The canonical all-zero summary, asserted as one exact string so a counter
 # rename or reordering is caught rather than silently tolerated.
-ZERO_SWEEP="SWEEP: candidates=0 merge_verify_red=0 unmet_dependency=0 corrupt_hold=0 live_skipped=0 no_class=0 unknown=0"
+ZERO_SWEEP="SWEEP: candidates=0 merge_verify_red=0 corrupt_hold=0 live_skipped=0 no_class=0 unknown=0"
 
 # Every value-taking flag, in one place: the A1 usage-completeness check and
 # the A3 missing-value sweep both iterate this list, so a future flag cannot
@@ -485,7 +485,7 @@ assert "A5b: a 0-byte DB stub warns on stderr" _err_has '\[warn\]'
 # --- A6: empty fixture, table format ----------------------------------------
 run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --format table
 assert "A6: empty fixture exits 0" _rc_is 0
-assert "A6: trailing SWEEP: line carries all seven counters at zero" _sweep_line_is "$ZERO_SWEEP"
+assert "A6: trailing SWEEP: line carries all six counters at zero" _sweep_line_is "$ZERO_SWEEP"
 
 # --- A7: empty fixture, json format -----------------------------------------
 run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --format json
@@ -493,7 +493,7 @@ assert "A7: --format json exits 0" _rc_is 0
 assert "A7: stdout is a single valid JSON object" _out_json_check 'isinstance(d, dict)'
 assert "A7: candidates == []" _out_json_check 'd["candidates"] == []'
 assert "A7: summary keys exactly match the A6 counter set" _out_json_check \
-    'sorted(d["summary"]) == ["candidates","corrupt_hold","live_skipped","merge_verify_red","no_class","unknown","unmet_dependency"]'
+    'sorted(d["summary"]) == ["candidates","corrupt_hold","live_skipped","merge_verify_red","no_class","unknown"]'
 assert "A7: every summary counter is 0" _out_json_check 'all(v == 0 for v in d["summary"].values())'
 
 # --- A8: flag <-> env parity for the task-DB knob ---------------------------
@@ -514,7 +514,7 @@ assert "A8b: an explicit --db overrides REIFY_LANE_TASK_DB" _rc_is 0
 assert "A8b: the overridden (bad) env path never warns" _not _err_has '\[warn\].*env-not-here'
 
 # --- A9: every --class value is accepted -------------------------------------
-for _c in all merge_verify_red unmet_dependency; do
+for _c in all merge_verify_red; do
     run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --class "$_c"
     assert "A9[$_c]: accepted on the empty fixture (exit 0)" _rc_is 0
 done
@@ -599,7 +599,7 @@ assert "B1: a 60s-old heartbeat with a live claimant is LIVE" \
 assert "B1: a LIVE row is not classified (class=-, action=none)" \
     _json_is 't[9101]["class"] == "-" and t[9101]["action"] == "none"'
 assert "B1: a LIVE row is counted in live_skipped, not in any class counter" \
-    _json_is 's["live_skipped"] == 4 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+    _json_is 's["live_skipped"] == 4 and s["merge_verify_red"] == 0'
 
 # --- B1c/B1d: a CLAIMED in-progress row with no heartbeat is LIVE ------------
 # `merge_verify_red == 0` above is the sharpest signal for these: 9107 carries
@@ -964,127 +964,68 @@ assert "D10c: --repo is honoured — a non-git --repo degrades class B to unknow
     _json_is 't[9301]["verdict"] == "unknown" and s["merge_verify_red"] == 0'
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block E — trigger class C: unmet_dependency
+# Block E — the RETIRED unmet_dependency class (task 7349)
 #
-# A `blocked` task whose every dependency has since reached a terminal status.
-# Reproduces 5372's live shape (blocked, its one dependency 5271 `done`).
+# `unmet_dependency` was the sweep's class C: a `blocked` task whose every
+# dependency had reached a terminal status, reported STALE with
+# action=redispatch. It is retired not because the predicate was wrong but
+# because it had a SECOND OWNER. dark-factory's
+# Scheduler._phase_redispatch_stranded_blocked (scheduler.py:6458) runs the
+# same adjudication at TICK cadence — status=blocked, no live claimant, deps
+# satisfied (accepting BOTH terminal spellings) -> set_task_claimant(None) then
+# set_task_status('pending') — byte-identical to what the consumer's
+# _apply_repend did for a class-C request.
 #
-# E5 IS THE LOAD-BEARING ASSERT OF THIS ENTIRE SUITE. Measured live on
-# 2026-07-26, ALL TEN in-progress tasks had every dependency `done` — task
-# 5321 itself among them. A "dependency premise resolved => re-dispatch" rule
-# that spanned in-progress would therefore have emitted re-dispatch requests
-# for ten actively-running agents: the capability would DESTROY work rather
-# than recover it. Class C is `blocked`-only for exactly that reason, and E5
-# pins it independently of the heartbeat guard — a stale heartbeat plus fully
-# satisfied dependencies still must not fire.
+# Class C's entire non-overlapping delta was DF's two DELIBERATE refusals: the
+# `task_kind == 'deterministic'` carve-out ("owned exclusively by the
+# deterministic gate flow") and the open-pending-escalation veto ("a false 'no
+# open escalation' would redispatch a deliberately parked task"). reify class C
+# had neither check, so it was not filling a coverage gap — it was a second
+# owner overriding those refusals.
 #
-# The two fail-safe directions are pinned too: an empty dependency set must
-# not read as "all satisfied" (E4), and a depends_on id that resolves to no
-# row must not read as satisfied (E6) — including the tag-scoped variant,
-# where the row exists only under a DIFFERENT tag (E7). `tasks` is
-# PRIMARY KEY (tag, id), so an unqualified lookup would silently conflate
-# tags the moment a second one exists.
+# What this block pins is that the 5372 shape is now adjudicated NO-CLASS, on
+# BOTH terminal spellings, so neither can quietly keep firing.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block E: trigger class C (unmet_dependency) ---"
+echo "--- Block E: the retired unmet_dependency class ---"
 
 _mk_tasks_db
 E_DB="$DB"
-# E8's row needs a class-B premise as well as its dependency, so this repo
-# carries a resolvable one: main advances past E_C1 and touches the path the
-# proposal references.
 _mk_repo
 E_REPO="$REPO_DIR"
-E_C1="$(_commit_touching docs/e-premise.md)"
-_commit_touching docs/e-resolver.md >/dev/null
-E_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
-    "$E_C1" '["docs/e-resolver.md"]' 2026-07-24T10:00:00Z)"
 
-# Dependency targets, one per terminal / non-terminal status.
 _add_task 9490 done      '{}'
 _add_task 9491 cancelled '{}'
-_add_task 9492 pending   '{}'
-_add_task 9493 in-progress '{}' "$(_now_iso -90000)" ""
-_add_task 9494 blocked   '{}'
-_add_task 9495 deferred  '{}'
-# 9496 exists ONLY under a different tag (E7). It is `done` there, so a
-# tag-blind lookup would wrongly read task 9410's dependency as satisfied.
-_add_task 9496 done      '{}' "" "" other
 
-# E1 — the 5372 shape: one dependency, and it is done.
+# The 5372 shape: blocked, one dependency, and it is terminal.
 _add_task 9401 blocked '{}'; _add_dep 9401 9490
-# E2 — several dependencies, all terminal, done and cancelled mixed.
+# The same shape with the OTHER terminal spelling alongside it.
 _add_task 9402 blocked '{}'; _add_dep 9402 9490; _add_dep 9402 9491
-# E3 — one non-terminal dependency is enough to keep the premise unresolved.
-_add_task 9403 blocked '{}'; _add_dep 9403 9490; _add_dep 9403 9492
-_add_task 9404 blocked '{}'; _add_dep 9404 9493
-_add_task 9405 blocked '{}'; _add_dep 9405 9494
-_add_task 9406 blocked '{}'; _add_dep 9406 9495
-# E4 — zero dependency rows: an empty set is NOT "all satisfied".
-_add_task 9407 blocked '{}'
-# E5 — the flood guard: in-progress, stale heartbeat, every dependency done.
-_add_task 9408 in-progress '{}' "$(_now_iso -90000)" ""; _add_dep 9408 9490
-# E6 — a depends_on id with no row in tasks at all.
-_add_task 9409 blocked '{}'; _add_dep 9409 9999
-# E7 — a depends_on whose row exists only under tag='other'.
-_add_task 9410 blocked '{}'; _add_dep 9410 9496
-# E8 — matches class B AND class C: B must win, and the row must be counted
-# exactly once. Silently downgrading B's `reverify` to C's `redispatch` would
-# re-dispatch a task whose merge-verify premise has resolved and which needs
-# its gate re-run, not its agent re-run.
-_add_task 9411 blocked "{\"dry_run_proposals\":[$E_PROP_B]}"; _add_dep 9411 9490
 
 E_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-ereq-XXXXXX")"
 _TMPDIRS+=("$E_REQ")
 
-run_sweep --db "$E_DB" --repo "$E_REPO" \
-    --emit-requests "$E_REQ" --format json
-assert "E0: the class-C fixture sweep exits 0" _rc_is 0
+run_sweep --db "$E_DB" --repo "$E_REPO" --emit-requests "$E_REQ" --format json
+assert "E0: the retired-class fixture sweep exits 0" _rc_is 0
 
-# --- E1/E2: every dependency terminal => STALE + redispatch ------------------
-assert "E1: a blocked task whose only dependency is done is a class-C hit (the 5372 shape)" \
-    _json_is 't[9401]["class"] == "unmet_dependency" and t[9401]["verdict"] == "STALE"'
-assert "E1: the emitted action is redispatch" _json_is 't[9401]["action"] == "redispatch"'
-assert "E1: evidence names the satisfied dependency id and its status" \
-    _json_is '"9490=done" in t[9401]["evidence"]'
-assert "E2: done and cancelled are both terminal" \
-    _json_is 't[9402]["verdict"] == "STALE" and "9491=cancelled" in t[9402]["evidence"]'
+# --- E1/E2: the 5372 shape matches nothing, on either terminal spelling ------
+assert "E1: a blocked task whose only dependency is done is no longer a trigger class" \
+    _json_is 't[9401]["class"] == "-" and t[9401]["verdict"] == "NO-CLASS" and t[9401]["action"] == "none"'
+assert "E1: ... and emits no re-dispatch request" _no_request_for "$E_REQ" 9401
+assert "E2: a cancelled dependency is not a live spelling either" \
+    _json_is 't[9402]["class"] == "-" and t[9402]["verdict"] == "NO-CLASS" and t[9402]["action"] == "none"'
+assert "E2: ... and emits no re-dispatch request" _no_request_for "$E_REQ" 9402
 
-# --- E3: any non-terminal dependency keeps the premise unresolved ------------
-assert "E3: pending / in-progress / blocked / deferred dependencies all block the hit" \
-    _json_is 'all(t[i]["verdict"] == "UNRESOLVED" for i in (9403, 9404, 9405, 9406))'
-assert "E3: an UNRESOLVED class-C row is still reported as class C" \
-    _json_is 't[9403]["class"] == "unmet_dependency"'
+# --- E3: counted as adjudicated-negative, and the counter is gone ------------
+assert "E3: both rows are counted in no_class, and no unmet_dependency counter is rendered" \
+    _json_is 's["no_class"] == 2 and "unmet_dependency" not in s'
+assert "E3: the fixture emits nothing at all" \
+    test "$(find "$E_REQ" -maxdepth 1 -type f | wc -l)" = "0"
 
-# --- E4: an empty dependency set is not "all satisfied" ----------------------
-assert "E4: a blocked task with zero dependency rows is not class C" \
-    _json_is 't[9407]["class"] != "unmet_dependency"'
-
-# --- E5: THE FLOOD GUARD ------------------------------------------------------
-assert "E5: an in-progress task with a stale heartbeat and all deps done is NOT class C" \
-    _json_is 't[9408]["class"] != "unmet_dependency"'
-assert "E5: the flood-guard row is not counted in unmet_dependency" \
-    _json_is 's["unmet_dependency"] == 2'
-assert "E5: the flood-guard row emits no re-dispatch request" _no_request_for "$E_REQ" 9408
-
-# --- E6/E7: an unresolvable dependency is not a satisfied one ----------------
-assert "E6: a depends_on with no row in tasks degrades to unknown, never STALE" \
-    _json_is 't[9409]["verdict"] == "unknown"'
-assert "E6: an unresolvable dependency warns on stderr" _err_has '\[warn\].*9409'
-assert "E7: dependency lookup is tag-scoped — a done row under another tag does not satisfy" \
-    _json_is 't[9410]["verdict"] == "unknown"'
-
-# --- E8: class precedence — merge_verify_red > unmet_dependency --------------
-assert "E8: a row matching both B and C reports merge_verify_red as its primary class" \
-    _json_is 't[9411]["class"] == "merge_verify_red" and t[9411]["verdict"] == "STALE"'
-assert "E8: B's reverify action is not downgraded to C's redispatch" \
-    _json_is 't[9411]["action"] == "reverify"'
-assert "E8: the secondary class is still disclosed in evidence" \
-    _json_is '"also:unmet_dependency" in t[9411]["evidence"]'
-assert "E8: a multi-class row increments exactly one class counter" \
-    _json_is 's["merge_verify_red"] == 1 and s["unmet_dependency"] == 2'
-assert "E8: a multi-class row appears exactly once in the report" \
-    _json_is 'len([c for c in d["candidates"] if c["task_id"] == 9411]) == 1'
+# --- E4: the retired name leaves the --class vocabulary (cf. C3) -------------
+run_sweep --db "$E_DB" --repo "$E_REPO" --class unmet_dependency
+assert "E4: --class unmet_dependency is now a usage error (exit 2)" _rc_is 2
+assert "E4: ... and the error names the surviving vocabulary" _err_has 'merge_verify_red'
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block F — the #5316 corruption signatures, wired in as SUPPRESSORS
@@ -1699,12 +1640,9 @@ assert "G10: ... and the corruption suppressor still firing on the python3 engin
 #       its request file survives forever — so a consumer following the
 #       documented "diff the directory" contract keeps seeing an actionable
 #       request for an already-closed task;
-#   (b) if a row's PRIMARY class changes between runs the directory ends up
-#       holding redispatch-<id>-merge_verify_red.json (action=reverify) AND
-#       redispatch-<id>-unmet_dependency.json
-#       (action=redispatch) at the same time — two contradictory instructions
-#       with no ordering hint, since the bodies deliberately carry NO
-#       wall-clock field (G4's idempotence property).
+#   (b) a stale request left behind by an EARLIER version of the sweep keeps
+#       instructing the consumer forever. Task 7349's retired classes are the
+#       live instance of this, and R8 (added with the drain) pins it.
 #
 # Each run therefore retracts what is no longer a hit before it emits. This is
 # the one block whose fixture DB is MUTATED between runs — that is the point:
@@ -1712,7 +1650,7 @@ assert "G10: ... and the corruption suppressor still firing on the python3 engin
 # above is observable in a single run.
 #
 # The three scoping rules matter as much as the retraction: R4 pins that a
-# --class-restricted run cannot delete another class's requests, R5 that a
+# --class-restricted run retracts only what it adjudicated, R5 that a
 # DEGRADED READ retracts nothing (an unreadable DB reports zero candidates
 # too, and wiping on that would be the sweep destroying its own output on a
 # transient fault), and R7 that a consumer's own files are never touched.
@@ -1730,12 +1668,13 @@ R_TIP="$(_commit_touching docs/r-resolver.md)"
 R_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
     "$R_C1" '["docs/r-resolver.md"]' 2026-07-24T10:00:00Z)"
 
-_add_task 9990 done '{}'
-# Three confirmed hits, spanning two classes, so R2/R3's class change and R4's
-# class restriction each have a class the other run does not adjudicate.
-_add_task 9901 blocked '{}'; _add_dep 9901 9990
+# Four confirmed hits, one per retraction scenario below (R1, R4, R6) plus one
+# survivor that stays live to the end, so R5's and R7's "untouched" asserts are
+# never satisfied by an empty directory.
+_add_task 9901 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
 _add_task 9902 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
 _add_task 9903 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
+_add_task 9904 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
 
 R_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-rreq-XXXXXX")"
 _TMPDIRS+=("$R_REQ")
@@ -1743,7 +1682,7 @@ _TMPDIRS+=("$R_REQ")
 run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R0: the retraction fixture sweep exits 0" _rc_is 0
-assert "R0: one request per class is emitted" _request_count_is "$R_REQ" 3
+assert "R0: one request per hit is emitted" _request_count_is "$R_REQ" 4
 R_SNAP_B="$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{print $1}')"
 
 # --- R1: a remediated hit's request is retracted -----------------------------
@@ -1756,41 +1695,23 @@ assert "R1: the second sweep still exits 0" _rc_is 0
 assert "R1: the remediated task's request is retracted" _no_request_for "$R_REQ" 9901
 assert "R1: the retraction is announced on stderr" _err_has 'Retracted superseded request.*9901'
 assert "R1: the still-live hits are untouched" \
-    test -f "$R_REQ/redispatch-9902-merge_verify_red.json" -a -f "$R_REQ/redispatch-9903-merge_verify_red.json"
+    test -f "$R_REQ/redispatch-9902-merge_verify_red.json" -a -f "$R_REQ/redispatch-9904-merge_verify_red.json"
 assert "R1: a surviving request is still byte-identical (retraction is not rewrite)" \
     test "$R_SNAP_B" = "$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{print $1}')"
-assert "R1: exactly the two surviving requests remain" _request_count_is "$R_REQ" 2
+assert "R1: exactly the three surviving requests remain" _request_count_is "$R_REQ" 3
 
-# --- R2/R3: a class change never leaves two contradictory instructions -------
-# 9903 loses its class-B proposal and gains a satisfied dependency, so
-# unmet_dependency now wins and its merge_verify_red request is superseded.
-_sq "$R_DB" "UPDATE tasks SET metadata='{}' WHERE tag='master' AND id=9903;"
-_add_dep 9903 9990
-run_sweep --db "$R_DB" --repo "$R_REPO" \
-    --emit-requests "$R_REQ" --format json
-# Named in full, NOT via _no_request_for: that helper globs
-# redispatch-<arg>-*.json, so passing it an <id>-<class> pair would build the
-# pattern redispatch-9903-merge_verify_red-*.json and pass vacuously.
-assert "R2: the reclassified task's OLD class request is retracted" \
-    _not test -f "$R_REQ/redispatch-9903-merge_verify_red.json"
-assert "R2: ... and its new class request is emitted" \
-    test -f "$R_REQ/redispatch-9903-unmet_dependency.json"
-assert "R3: the task maps to EXACTLY ONE request — no contradictory pair" \
-    test "$(find "$R_REQ" -maxdepth 1 -name 'redispatch-9903-*.json' | wc -l)" = "1"
-assert "R3: and that one carries the new class's action" \
-    _json_check "$R_REQ/redispatch-9903-unmet_dependency.json" 'd["action"] == "redispatch"'
-
-# --- R4: a --class-restricted run retracts only its own class ----------------
-# 9902 stops being a hit, but an unmet_dependency-only sweep did not
-# adjudicate class B at all, so it has no standing to retract that request.
+# --- R4: a --class-restricted run retracts only what it adjudicated ----------
+# With one trigger class left, the discriminating cross-class case is a RETIRED
+# class's file, which R8 pins. What survives here is that a restricted run is
+# still a REAL run: it retracts its own class's superseded request rather than
+# treating "restricted" as "retract nothing".
 _sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9902;"
 run_sweep --db "$R_DB" --repo "$R_REPO" \
-    --class unmet_dependency --emit-requests "$R_REQ" --format json
+    --class merge_verify_red --emit-requests "$R_REQ" --format json
 assert "R4: a --class-restricted sweep exits 0" _rc_is 0
-assert "R4: it does NOT retract a request of a class it never adjudicated" \
-    test -f "$R_REQ/redispatch-9902-merge_verify_red.json"
-assert "R4: and it keeps its own class's live request" \
-    test -f "$R_REQ/redispatch-9903-unmet_dependency.json"
+assert "R4: it retracts its own class's superseded request" _no_request_for "$R_REQ" 9902
+assert "R4: and it keeps its own class's live requests" \
+    test -f "$R_REQ/redispatch-9903-merge_verify_red.json" -a -f "$R_REQ/redispatch-9904-merge_verify_red.json"
 
 # --- R5: a degraded DB read retracts nothing ---------------------------------
 run_sweep --db "$R_REPO/definitely-not-here.db" --repo "$R_REPO" \
@@ -1800,11 +1721,12 @@ assert "R5: an unreadable --db retracts NOTHING (zero candidates is not evidence
     _request_count_is "$R_REQ" 2
 assert "R5: ... and says so on stderr" _err_has '\[warn\].*no superseded request was retracted'
 
-# --- R6: a full sweep then does retract the now-stale class-B request --------
+# --- R6: a plain --class all run retracts a superseded request ---------------
+_sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9903;"
 run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
-assert "R6: a full sweep retracts the class-B request R4 was not entitled to" \
-    _no_request_for "$R_REQ" 9902
+assert "R6: a full sweep retracts the newly-superseded request" \
+    _no_request_for "$R_REQ" 9903
 assert "R6: only the one live hit remains" _request_count_is "$R_REQ" 1
 
 # --- R7: a consumer's own files in the directory are never touched -----------
@@ -1822,7 +1744,7 @@ assert "R7: a redispatch-shaped file with a non-numeric id survives" \
 assert "R7: a redispatch-shaped file naming an unknown class survives" \
     test -f "$R_REQ/redispatch-9999-some_other_class.json"
 assert "R7: and the live hit is still emitted alongside them" \
-    test -f "$R_REQ/redispatch-9903-unmet_dependency.json"
+    test -f "$R_REQ/redispatch-9904-merge_verify_red.json"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block T — tag scoping
