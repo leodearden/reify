@@ -85,8 +85,13 @@
 //! and 4 were OPEN at task 5772 and are now bounded rather than unbounded (task
 //! 6517); they are restated as the narrower limits that actually hold, not
 //! deleted, because a limit that stopped being total did not stop existing.
-//! Item 5 is the reverse case — a limit item 3's bound does NOT reach, stated
-//! for the same reason.
+//! Item 5 is the reverse case — a limit item 3's bound does NOT reach.
+//!
+//! Each item states its LIMIT and points at the one place that argues it. The
+//! arguments are not repeated here: [`Lane`] owns why the lanes are split and
+//! what the split gives up, [`OnAbandon`] owns the discard policy,
+//! [`dispatch_async`] owns the cancellation mechanism, and
+//! [`crate::lsp_bridge::lane_for_method`] owns which methods go where.
 //!
 //! 1. **Four LSP methods do not get the large stack.**
 //!    `InProcessLsp::handle_request`'s `textDocument/definition`,
@@ -105,61 +110,41 @@
 //! 2. **`main.rs::mcp_tool_call`** remains unrouted; it is task 5466's scope, and
 //!    joins the ENGINE lane as a lane choice rather than a redesign.
 //! 3. **Concurrency WITHIN a lane is BOUNDED, not unlimited.** LSP work runs on
-//!    TWO lanes: [`LSP_LANE`], a single-consumer ORDERED lane carrying the
-//!    state-mutating and lifecycle methods (plus anything unrecognised), and
-//!    [`LSP_POOL`], a [`LSP_POOL_SIZE`]-consumer QUERY POOL carrying the eight
-//!    read-only queries. Head-of-line blocking among queries is therefore
-//!    bounded at [`LSP_POOL_SIZE`] — the fifth simultaneous in-flight query
-//!    queues — rather than total, as it was when one consumer served all of LSP.
-//!    That is a bound on CONSUMERS; queries against the SAME document have a
-//!    tighter one that this does not reach, which is item 5.
-//!    Notifications still serialize against each other, which is a REQUIREMENT
-//!    (reordering two `didChange`es is corruption, not staleness) rather than a
-//!    residual limit. The routing lives in
-//!    [`crate::lsp_bridge::lane_for_method`]; what the split buys and what it
-//!    gives up is on [`Lane`].
+//!    TWO lanes — the single-consumer ORDERED [`LSP_LANE`] and the
+//!    [`LSP_POOL_SIZE`]-consumer [`LSP_POOL`] — so head-of-line blocking among
+//!    queries is bounded at [`LSP_POOL_SIZE`] (the fifth simultaneous in-flight
+//!    query queues) rather than total, as it was when one consumer served all
+//!    of LSP. Notifications still serialize against each other, which is a
+//!    REQUIREMENT rather than a residual limit. That bound is on CONSUMERS;
+//!    item 5 is the tighter one it does not reach. See [`Lane`].
 //! 4. **Drop-cancellation is PARTIAL, and on today's production path it is
-//!    UNREACHABLE.** An abandoned job is dropped at the lane before it starts
-//!    — but only on an [`OnAbandon::Discard`] destination ([`LSP_POOL`]), and
-//!    only when the awaiting side's future was genuinely dropped. Two limits,
-//!    both measured rather than assumed:
-//!    * A request already picked up by a consumer runs to completion. There is
-//!      no cancellation point inside [`tokio::runtime::Handle::block_on`], and
-//!      the four `spawn_blocking` arms of item 1 are uninterruptible once
-//!      started regardless. The residual "abandoned-after-start still runs" now
-//!      costs one of [`LSP_POOL_SIZE`] consumers rather than the only LSP
-//!      consumer in the process.
-//!    * An abandoned frontend `invoke` does NOT drop the command future in
-//!      `tauri` 2.11.2 — it is spawned detached and its handle discarded — so
-//!      the only trigger reachable in the shipped app is runtime/app teardown.
-//!      The check is a structural guarantee, not a live saving. Exact citations
-//!      are in [`dispatch_async`]'s "Drop-cancellation" section; see also
-//!      [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
+//!    UNREACHABLE.** A job abandoned before a consumer picks it up is dropped
+//!    unrun — but only on an [`OnAbandon::Discard`] destination ([`LSP_POOL`]).
+//!    One already picked up runs to completion, now costing one of
+//!    [`LSP_POOL_SIZE`] consumers rather than the only LSP consumer in the
+//!    process. And an abandoned frontend `invoke` does not drop the command
+//!    future in `tauri` 2.11.2, so the only trigger reachable in the shipped app
+//!    is runtime/app teardown: a structural guarantee, not a live saving. Both
+//!    limits are measured in [`dispatch_async`]'s "Drop-cancellation" section.
 //! 5. **[`LSP_POOL_SIZE`] bounds CROSS-document query concurrency more tightly
-//!    than SAME-document concurrency.** Item 3's bound is a bound on CONSUMERS,
-//!    not on parses, and the difference bites in the commonest case rather than
-//!    an edge one — a single cursor move issues hover, `documentHighlight` and
-//!    completion against ONE uri. Measured in `reify-lsp`:
+//!    than SAME-document concurrency.** Item 3's bound is on CONSUMERS, not on
+//!    parses, and the difference bites in the commonest case rather than an edge
+//!    one — a single cursor move issues hover, `documentHighlight` and
+//!    completion against ONE uri. Measured in `crates/reify-lsp/src/document.rs`:
 //!    `DocumentState::parsed_module` holds a `std::sync::Mutex` across the whole
-//!    `parse_with_stdlib` call (`crates/reify-lsp/src/document.rs`), and
-//!    `DocumentStore::update` replaces the entire `DocumentState` — its parse
-//!    cache included — on every `didChange` (same file, and the stated
-//!    invalidation point). So immediately after each keystroke that document's
-//!    cache is COLD, and the pool consumers that reach it concurrently
-//!    serialize on a blocking lock, each holding one 256 MiB consumer while
-//!    parked in it. The effective depth against a same-document burst is
-//!    therefore nearer ONE parse than four-way concurrency; against queries on
-//!    DIFFERENT documents the [`LSP_POOL_SIZE`] bound holds exactly as item 3
-//!    states it. Neither a regression (before task 6517 all LSP work serialized
-//!    anyway) nor unsoundness (the `Mutex` recovers poisoning), and not
-//!    closable from this crate: the fix is to compute the parse OUTSIDE the
-//!    lock and install it afterwards — a double parse under a race, no
-//!    serialization — which is a change in `reify-lsp`, filed as a task 6517
-//!    follow-up (`suggestion_hash` `6517-lsp-same-document-parse-mutex`). It is
-//!    stated rather than left implicit because it is the first thing a latency
-//!    measurement would hit, and a module this insistent that a limit which
-//!    stopped being total did not stop existing should not leave its own
-//!    tightest one unsaid.
+//!    `parse_with_stdlib` call, and `DocumentStore::update` replaces the entire
+//!    `DocumentState` — its parse cache included — on every `didChange`. So
+//!    immediately after each keystroke that document's cache is COLD, and the
+//!    pool consumers that reach it concurrently serialize on a blocking lock,
+//!    each holding one 256 MiB consumer while parked in it. The effective depth
+//!    against a same-document burst is therefore nearer ONE parse than four-way
+//!    concurrency; against DIFFERENT documents item 3's bound holds exactly.
+//!    Neither a regression (before task 6517 all LSP work serialized anyway) nor
+//!    unsoundness (the `Mutex` recovers poisoning), and not closable from this
+//!    crate: the fix is to compute the parse OUTSIDE the lock and install it
+//!    afterwards — a double parse under a race, no serialization — which is a
+//!    change in `reify-lsp`, filed as a task 6517 follow-up (`suggestion_hash`
+//!    `6517-lsp-same-document-parse-mutex`).
 //!
 //! So the invariant this module establishes is: "compile-bearing and
 //! high-frequency engine work, plus the inline LSP dispatch arms, run on a large
@@ -647,10 +632,7 @@ fn assert_not_reentrant(sender: &JobSender) {
         "re-entrant submission to the `{}` large-stack lane: a job running ON \
          that lane submitted to it again. The consumer running the outer job \
          cannot answer the inner one — it only returns to its dequeue loop after \
-         the outer job returns, and the outer job is waiting for the inner. On a \
-         single-consumer lane that wedges the lane outright; on a size-N pool, N \
-         such submissions wedge every consumer, so it is rejected uniformly \
-         rather than conditionally on how many consumers happen to be idle. Run \
+         the outer job returns, and the outer job is waiting for the inner. Run \
          the inner work inline, or submit it to another lane.",
         sender.lane
     );
@@ -694,14 +676,11 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// its diagnostics eval) genuinely ran concurrently with an in-flight
 /// `didChange`. Task 6517 replaces that with two lanes: [`LSP_LANE`] keeps ONE
 /// consumer for the state-mutating and lifecycle methods, and [`LSP_POOL`] runs
-/// the eight read-only queries on [`LSP_POOL_SIZE`] consumers. Head-of-line
-/// blocking among queries is bounded at [`LSP_POOL_SIZE`] rather than total, and
-/// the sharpest case — a workspace-wide `references` or `rename` holding a
-/// consumer for its full duration while its deep frames run on the blocking
-/// pool's ~2 MiB threads (module docs item 1) — now costs one of
-/// [`LSP_POOL_SIZE`] consumers instead of the only one. [`LSP_POOL_SIZE`] is
-/// the bound on CONSUMERS; module docs item 5 states the tighter one that holds
-/// among queries against the SAME document, which this number does not reach.
+/// the eight read-only queries on [`LSP_POOL_SIZE`] consumers. The sharpest case
+/// — a workspace-wide `references` or `rename` holding a consumer for its full
+/// duration while its deep frames run on the blocking pool's ~2 MiB threads
+/// (module docs item 1) — now costs one of [`LSP_POOL_SIZE`] consumers instead
+/// of the only one.
 ///
 /// A pool needed two arguments before it could be an instance of this mechanism
 /// rather than a second design. Both are discharged:
@@ -737,18 +716,11 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// hypothetical non-awaiting client. It self-corrects on the next request, which
 /// is why it is disclosed here rather than fixed here.
 ///
-/// One consequence of that staleness is worth naming rather than leaving
-/// implicit: `rename` returns an unversioned `WorkspaceEdit.changes` map, so a
-/// `WorkspaceEdit` computed against text a concurrent `didChange` has since
-/// replaced is applied by the client with no version guard. That window predates
-/// task 5772 and is not introduced here, but routing `rename` to the pool
-/// re-opens it deliberately, so it is tracked rather than absorbed: task #7118
-/// (versioned `documentChanges` plus a client-side version check). Cited as a
-/// TASK rather than as the ticket this task filed — that ticket was resolved
-/// `combined` against #7118, so it is the task, not the ticket id, that stays
-/// resolvable. Named here for the same reason the module docs name #6195 and
-/// 5466: a disclosed limit with nothing behind it is indistinguishable from one
-/// nobody intends to close.
+/// One entry in the pooled set costs MORE than staleness, and
+/// [`crate::lsp_bridge::lane_for_method`] carries that disclosure in full: a
+/// `rename` result is APPLIED rather than displayed, against an unversioned
+/// `WorkspaceEdit.changes` map, so a stale one lands as wrong-offset edits.
+/// Tracked as task #7118, and enforced by a cited marker on that arm.
 ///
 /// # One consumer or N: a POOL is an instance, not a variant (task 6517)
 ///
@@ -888,13 +860,10 @@ impl Lane {
     /// test in the same binary is concurrently using it.
     ///
     /// [`OnAbandon::Run`], like [`Lane::new`] — a pool is not cancellable by
-    /// virtue of being a pool. Concurrency-safety is a property of the WORK
-    /// routed to a destination, not of how many consumers drain it, and only the
-    /// caller that classified that work can say so. See [`OnAbandon`], and
-    /// [`Lane::cancelling_pool`] for the opt-in.
-    ///
-    /// A zero-size pool is a COMPILE error, not a runtime one; see
-    /// [`Lane::declare`].
+    /// virtue of being a pool, because concurrency-safety is a property of the
+    /// WORK routed to a destination and not of how many consumers drain it. See
+    /// [`OnAbandon`], and [`Lane::cancelling_pool`] for the opt-in. A zero-size
+    /// pool is a COMPILE error; see [`Lane::declare`].
     ///
     /// The `allow` is scoped to `not(test)` for the same reason [`Lane::size`]'s
     /// is: since the one production pool became a [`Lane::cancelling_pool`],
@@ -912,19 +881,17 @@ impl Lane {
     /// gone away may be DISCARDED unrun ([`OnAbandon::Discard`]).
     ///
     /// Distinctly named, and required at the declaration, because this is the
-    /// one lane property whose wrong value loses state silently: see
-    /// [`OnAbandon`] for what discarding a queued `didOpen` costs. A caller
-    /// naming this constructor is asserting that every method routed here is
-    /// read-only against server-side state — which for the one production
-    /// instance ([`LSP_POOL`]) is exactly what
+    /// one lane property whose wrong value loses state silently ([`OnAbandon`]).
+    /// A caller naming this constructor is asserting that every method routed
+    /// here is read-only against server-side state — which for the one
+    /// production instance ([`LSP_POOL`]) is exactly what
     /// [`crate::lsp_bridge::lane_for_method`]'s `matches!` arm decides.
     ///
-    /// It is a POOL constructor rather than a general one because there is no
-    /// use for a discarding size-1 lane in this crate: the shape this module
-    /// gives size-1 lanes is order-sensitive work, which is precisely what must
-    /// not be discarded. Adding one later is a one-line `declare` call, and
-    /// would then be a decision someone made rather than a default they
-    /// inherited.
+    /// A POOL constructor rather than a general one because this crate has no
+    /// use for a discarding size-1 lane: the shape this module gives size-1
+    /// lanes is order-sensitive work, which is precisely what must not be
+    /// discarded. Adding one later is a one-line `declare` call, and would then
+    /// be a decision someone made rather than a default they inherited.
     pub(crate) const fn cancelling_pool(name: &'static str, size: usize) -> Self {
         Self::declare(name, size, OnAbandon::Discard)
     }
@@ -1102,18 +1069,14 @@ impl Lane {
                             CURRENT_LANE.with(|l| l.set(Some(name)));
                             loop {
                                 // Take the lock, dequeue, RELEASE it — then run
-                                // the job. The lock SERIALISES the dequeue so no
-                                // two consumers take the same job; it does not
-                                // order them — `std::sync::Mutex` is not fair,
-                                // so which blocked consumer wins is arbitrary.
-                                // Dequeue order is FIFO because `std::sync::mpsc`
-                                // is. Releasing the lock before the body is what
-                                // lets `size` bodies run at once. Poisoning is
-                                // recovered rather than propagated, mirroring
-                                // `JobSender::send` — and a job body cannot
-                                // poison this lock anyway, because the job's own
-                                // `catch_unwind` is INSIDE the job and the lock
-                                // is not held while it runs.
+                                // the job. Releasing before the body is what
+                                // lets `size` bodies run at once; see `Lane`'s
+                                // "One consumer or N" for what the lock does and
+                                // does not order. Poisoning is recovered rather
+                                // than propagated, mirroring `JobSender::send` —
+                                // and a job body cannot poison this lock anyway,
+                                // because the job's own `catch_unwind` is INSIDE
+                                // the job and the lock is not held while it runs.
                                 let dequeued = {
                                     let guard = rx
                                         .lock()
@@ -1183,13 +1146,9 @@ pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
 /// dispatcher). A prose copy beside it is a second list that nothing checks.
 ///
 /// Separate from [`ENGINE_LANE`] so a hover never queues behind a geometry
-/// evaluation — see [`Lane`]'s "Why more than one lane".
-///
-/// SIZE 1, and that is a correctness requirement rather than a leftover: LSP
-/// notifications are order-sensitive against each other, so a second consumer
-/// would let `didChange` #2 overtake `didChange` #1 and produce text neither the
-/// client nor the server ever had. Which methods land here is
-/// [`crate::lsp_bridge::lane_for_method`]'s decision, not this module's.
+/// evaluation — see [`Lane`]'s "Why more than one lane". SIZE 1 is a
+/// correctness requirement rather than a leftover; [`Lane`]'s ORDERING
+/// paragraph is why.
 pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 
 /// The LSP QUERY POOL: the eight read-only query methods, on [`LSP_POOL_SIZE`]
@@ -1200,20 +1159,13 @@ pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 /// repeated here because it is load-bearing against [`LSP_POOL_SIZE`]; the
 /// membership is not.
 ///
-/// This is what BOUNDS head-of-line blocking among LSP queries instead of
-/// leaving them serialized: a query that gains nothing from the large stack —
-/// the four arms that hop to `spawn_blocking`, per the module docs' item 1 —
-/// occupies one of [`LSP_POOL_SIZE`] consumers rather than the only one.
-///
-/// The classification key is LSP PROTOCOL semantics, and lives with the
-/// LSP-aware module: see [`crate::lsp_bridge::lane_for_method`].
-///
-/// Declared with [`Lane::cancelling_pool`], so this is also the ONE destination
-/// in the process that may discard an abandoned job unrun ([`OnAbandon`]). The
-/// two properties are licensed by the same fact and by nothing else: every
-/// method routed here is read-only against server-side state, so running the job
-/// and not running it are indistinguishable to everything except the caller that
-/// stopped listening. A method reclassified into this pool inherits BOTH.
+/// This is what bounds head-of-line blocking among LSP queries instead of
+/// leaving them serialized (module docs item 3), and — being declared with
+/// [`Lane::cancelling_pool`] — it is also the ONE destination in the process
+/// that may discard an abandoned job unrun ([`OnAbandon`]). Both properties are
+/// licensed by the same fact and by nothing else: every method routed here is
+/// read-only against server-side state. A method reclassified into this pool
+/// inherits BOTH.
 pub(crate) static LSP_POOL: Lane =
     Lane::cancelling_pool(LSP_POOL_THREAD_PREFIX, LSP_POOL_SIZE);
 
@@ -1565,16 +1517,10 @@ where
 ///    does not cancel a blocking task. Claiming more than "dropped from the
 ///    queue" would be false.
 /// 3. **It applies ONLY to an [`OnAbandon::Discard`] destination — today, only
-///    [`LSP_POOL`].** The blanket version of this rule was a defect, and the
-///    reasoning that produced it is worth keeping visible: "a closed receiver
-///    means the whole command future is gone, and a pre-5772 abandoned request
-///    never wrote that state either" is a parity argument, and it does not
-///    hold. Pre-5772 cancellation could take effect only at an `.await` point
-///    AFTER the handler had begun; this check drops the whole job while it is
-///    still QUEUED behind a busy consumer — a strictly wider window, and one
-///    that for a `textDocument/didOpen` leaves the file permanently dark to
-///    hover/completion/diagnostics. See [`OnAbandon`] for the full failure
-///    chain and for why [`OnAbandon::Run`] is the default.
+///    [`LSP_POOL`].** The blanket version of this rule was a defect. What it
+///    costs, why the parity argument that licensed it does not hold, and why
+///    [`OnAbandon::Run`] is the default are on [`OnAbandon`], which is where the
+///    policy lives; repeating the chain here would be a second copy of it.
 /// 4. **Why the blocking seam [`dispatch`] gets no equivalent.**
 ///    [`std::sync::mpsc::Sender`] has no `is_closed`, and — more to the point —
 ///    its submitter is parked in `recv()` for the whole call, so it cannot be
@@ -1627,41 +1573,21 @@ where
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
-        // CANCEL AT THE LANE (task 6517), and only where the DESTINATION says it
-        // is safe. A closed `reply_tx` means the awaiting side's
-        // `dispatch_async` future was dropped, so nothing is waiting for this
-        // answer; on an `OnAbandon::Discard` destination that licenses returning
-        // here, which drops `fut` WITHOUT polling it. On an `OnAbandon::Run`
-        // destination — every ordered, state-mutating lane — the job runs
-        // regardless and only its ANSWER is thrown away, because discarding a
-        // queued `didOpen` loses a document nothing recovers. See [`OnAbandon`]
-        // and this function's "Drop-cancellation" section.
+        // CANCEL AT THE LANE (task 6517), and only where the DESTINATION says
+        // it is safe — see [`OnAbandon`] for why the policy travels with the
+        // queue, and this function's "Drop-cancellation" section for what the
+        // check is and is not.
         //
-        // The drop is deliberately given the SAME two protections the driven
-        // path has, because this is the one place `fut` is disposed of by a path
-        // `handle.block_on` never runs:
-        //
-        // * INSIDE the runtime context (`handle.enter()`). `dispatch_async` is
-        //   generic over `Fut`, and a tokio resource's destructor —
-        //   `Sleep`, `Interval`, `TcpStream`, anything holding a driver handle —
-        //   panics "there is no reactor running" when dropped on a plain `std`
-        //   thread with no ambient runtime, which is exactly what a lane
-        //   consumer is. `block_on` installs that context for the non-cancelled
-        //   path; the guard installs it here. Today's only caller
-        //   (`lsp_bridge::lsp_request_future`) captures an `Arc` and two
-        //   `String`s, so this is latent rather than live — and it is a line,
-        //   whereas discovering it later is a dead consumer.
-        // * INSIDE a `catch_unwind`, so a panicking destructor cannot escape
-        //   into the consumer's receive loop and kill it. Losing a consumer is
-        //   worse here than anywhere else in the module: on the size-1
-        //   `LSP_LANE` it costs the ordered lane its ONLY consumer, after which
-        //   every later submission takes the `spawn_on_large_stack` recovery
-        //   path — the per-call 256 MiB mapping this module exists to
-        //   eliminate. The payload is dropped rather than re-raised because
-        //   there is, by construction, no submitter left to re-raise it on:
-        //   `reply_tx` is already closed. `AssertUnwindSafe` is sound for the
-        //   same reason it is below — the closure OWNS `fut` and is consumed by
-        //   this call, so nothing observes it afterwards.
+        // The two guards are the part that is not inferable from the code. This
+        // is the ONE path that disposes of `fut` without `handle.block_on`, so
+        // it is the only one that must restore both by hand: `handle.enter()`,
+        // because a tokio resource's destructor panics "there is no reactor
+        // running" on a lane consumer's plain `std` thread; and `catch_unwind`,
+        // because a panicking destructor escaping here would kill a consumer,
+        // which on the size-1 `LSP_LANE` costs the ordered lane its only one.
+        // The payload is dropped rather than re-raised because `reply_tx` is
+        // already closed — by construction there is no submitter left to raise
+        // it on. `AssertUnwindSafe` is sound for the same reason it is below.
         if on_abandon == OnAbandon::Discard && reply_tx.is_closed() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _enter = handle.enter();
