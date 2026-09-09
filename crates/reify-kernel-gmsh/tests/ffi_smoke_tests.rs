@@ -18,6 +18,39 @@
 use reify_kernel_gmsh::ffi;
 use reify_kernel_gmsh::init;
 
+/// RAII reset of the process-global gmsh diagnostics state this file's
+/// logger and census tests perturb: `Mesh.ElementOrder`, `General.Terminal`,
+/// and the logger-capture buffer. Mirrors
+/// `reify_kernel_gmsh::mesh_size_clamp::MeshSizeClampReset`'s shape —
+/// [`Self::armed`] borrows the live `GMSH_LOCK` guard so `drop`'s restore
+/// FFI writes land on every exit path (assertion failure or panic included)
+/// while the lock is still held, not just the success path a trailing
+/// statement would cover.
+///
+/// One guard type serves both tests: restoring `Mesh.ElementOrder` /
+/// `General.Terminal` to `1.0` when a test never changed them, and calling
+/// `logger_stop()` when a test never started the logger, are each no-ops
+/// this type ignores the result of — matching `drop`'s existing best-effort
+/// discipline.
+struct DiagnosticsTestReset<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
+
+impl<'g> DiagnosticsTestReset<'g> {
+    fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+impl Drop for DiagnosticsTestReset<'_> {
+    fn drop(&mut self) {
+        // Best-effort, like the trailing `ffi::clear()` calls below: a
+        // failure here cannot be reported from `drop` and must not mask the
+        // test's real pass/fail outcome.
+        let _ = ffi::logger_stop();
+        let _ = ffi::option_set_number("Mesh.ElementOrder", 1.0);
+        let _ = ffi::option_set_number("General.Terminal", 1.0);
+    }
+}
+
 /// Build a unit box (`(0,0,0)`-`(1,1,1)`) from the built-in-CAD `geo_*`
 /// primitives `ffi.rs` already binds, returning the assigned volume tag.
 /// Shared by the logger-capture test and the element-type census test
@@ -266,13 +299,12 @@ fn geo_add_point_line_curve_loop_plane_surface_and_set_recombine_round_trip() {
 
 /// Pins that `logger_start` / `logger_get` / `logger_stop` capture gmsh's
 /// Info/Progress stream even when `General.Terminal = 0` — the option every
-/// production mesher sets (kernel_real.rs:187, mesh_boundary.rs:609,
-/// refine_volume.rs:203, mesh_profile_2d.rs:88) to silence gmsh's own
-/// stdout/stderr writes. `General.Terminal` and the logger-capture buffer
-/// are independent switches on the gmsh side — this test is the whole
-/// reason the capture family exists rather than `gmshLoggerGetLastError`
-/// alone (which only ever holds the *last error*, not the Info/Progress
-/// stream).
+/// production mesher sets to silence gmsh's own stdout/stderr writes (see
+/// the production-mesher list on `ffi::logger_start`'s doc comment).
+/// `General.Terminal` and the logger-capture buffer are independent
+/// switches on the gmsh side — this test is the whole reason the capture
+/// family exists rather than `gmshLoggerGetLastError` alone (which only
+/// ever holds the *last error*, not the Info/Progress stream).
 ///
 /// MEASURED baseline (C probe against
 /// `/opt/reify-deps/lib/libgmsh.so.4.15.2`, this exact geo box,
@@ -285,6 +317,12 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
     let _guard = init::GMSH_LOCK
         .lock()
         .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
+    // Declared after `_guard` so it drops first (Rust drops locals in
+    // reverse declaration order) — its `General.Terminal` restore and
+    // `logger_stop()` land while GMSH_LOCK is still held, on every exit
+    // path including a panic mid-assertion. See its doc for why one guard
+    // covers both this test and the census test below.
+    let _diag_reset = DiagnosticsTestReset::armed(&_guard);
 
     init::ensure_initialized();
     ffi::clear().expect("ffi::clear failed");
@@ -336,13 +374,10 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
         "expected at least one captured line containing \"Meshing\", got: {log:?}",
     );
 
-    // MANDATORY teardown before the guard drops: General.Terminal is a
-    // process-global gmsh option (see the census test below's identical
-    // Mesh.ElementOrder teardown for the same hazard) — restore gmsh's own
-    // default so a later test does not silently inherit silenced
-    // stdout/stderr from this one, regardless of thread-scheduling order.
-    ffi::option_set_number("General.Terminal", 1.0)
-        .expect("ffi::option_set_number(General.Terminal=1) failed (teardown)");
+    // `_diag_reset` restores General.Terminal=1.0 on drop below (see its
+    // doc); General.Terminal is a process-global gmsh option (also see the
+    // census test below), so a later test must not inherit this one's
+    // silenced stdout/stderr regardless of thread-scheduling order.
     ffi::clear().expect("ffi::clear failed (cleanup)");
 }
 
@@ -351,9 +386,9 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
 /// with no recombination/extrusion. A box meshed this way holds only
 /// tetrahedra in dim 3, and `Mesh.ElementOrder=2` promotes every one of
 /// them to the 10-node tet, so the dim-3 type set is a singleton either
-/// way — corroborated by production code: `kernel_real.rs:229-236` already
-/// sets `Mesh.ElementOrder` from `ElementOrderTag` and its comment states
-/// "4 = P1 4-node tet, 11 = P2 10-node tet".
+/// way — corroborated by production code: `kernel_real::mesh_to_volume`
+/// already sets `Mesh.ElementOrder` from `ElementOrderTag` and its comment
+/// states "4 = P1 4-node tet, 11 = P2 10-node tet".
 ///
 /// MEASURED (C probe against `/opt/reify-deps/lib/libgmsh.so.4.15.2`, same
 /// geo box): P1 `getElementTypes(3,-1) ierr=0 n=1 -> [4]`; P2
@@ -383,17 +418,20 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
 /// with a non-default value at least once.
 ///
 /// Also sets `General.Terminal = 0.0` up front (mirroring the
-/// logger-capture test above, which restores it to `1.0` in its own
-/// teardown): `General.Terminal` is a process-global gmsh option, so this
-/// test's own gmsh meshing chatter must not depend on whether the scheduler
-/// happens to run it before or after that test. The teardown below restores
-/// `1.0` for the same order-independence reason `Mesh.ElementOrder` is
-/// restored.
+/// logger-capture test above): `General.Terminal` is a process-global gmsh
+/// option, so this test's own gmsh meshing chatter must not depend on
+/// whether the scheduler happens to run it before or after that test.
+/// `DiagnosticsTestReset` restores `1.0` on drop, for the same
+/// order-independence reason it restores `Mesh.ElementOrder`.
 #[test]
 fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
     let _guard = init::GMSH_LOCK
         .lock()
         .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
+    // Declared after `_guard` so it drops first, restoring Mesh.ElementOrder
+    // and General.Terminal while GMSH_LOCK is still held on every exit path
+    // — see its doc comment (shared with the logger-capture test above).
+    let _diag_reset = DiagnosticsTestReset::armed(&_guard);
 
     init::ensure_initialized();
 
@@ -407,6 +445,16 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
 
     // P1 leg.
     ffi::clear().expect("ffi::clear failed (P1 setup)");
+    // Negative control: an unmeshed model drives get_element_types' null /
+    // n==0 out-buffer path (through the shared take_gmsh_buf helper) — the
+    // one branch nothing else in this suite exercises, since every other
+    // call here reads back a census after meshing.
+    assert!(
+        ffi::get_element_types(3, -1)
+            .expect("ffi::get_element_types(3,-1) failed (empty model)")
+            .is_empty(),
+        "expected get_element_types to return an empty Vec on a freshly cleared model",
+    );
     ffi::model_add("census_p1").expect("ffi::model_add failed (P1)");
     ffi::option_set_number("Mesh.ElementOrder", 1.0)
         .expect("ffi::option_set_number(Mesh.ElementOrder=1) failed");
@@ -454,15 +502,9 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
         "P2 dim-3 element-type census must be exactly [11] (10-node tet), got {p2_types:?}",
     );
 
-    // MANDATORY teardown before the guard drops: Mesh.ElementOrder is
-    // process-global and survives gmshClear(), so a later test must not
-    // inherit order 2.
-    ffi::option_set_number("Mesh.ElementOrder", 1.0)
-        .expect("ffi::option_set_number(Mesh.ElementOrder=1) failed (teardown)");
-    // Likewise General.Terminal (set above): restore gmsh's own default so
-    // a later test does not silently inherit silenced stdout/stderr from
-    // this one.
-    ffi::option_set_number("General.Terminal", 1.0)
-        .expect("ffi::option_set_number(General.Terminal=1) failed (teardown)");
+    // `_diag_reset` restores Mesh.ElementOrder=1.0 and General.Terminal=1.0
+    // on drop below: both are process-global gmsh options that survive
+    // gmshClear(), so a later test must not inherit order 2 or silenced
+    // stdout/stderr from this one.
     ffi::clear().expect("ffi::clear failed (teardown)");
 }
