@@ -13,29 +13,42 @@
 # docs/notes/deterministic-gate-closure-staleness-sweep.md
 #
 # A task is STRANDED when the premise that blocked it has since resolved but
-# nothing re-dispatched or closed it. Two trigger classes are swept in one
-# pass:
+# nothing re-dispatched or closed it. ONE trigger class is swept:
 #
 #   merge_verify_red   — a post-merge-verification-failed block whose recorded
 #                        main_sha is an ancestor of --main-ref, where main has
 #                        advanced and ≥1 recorded files_referenced path was
 #                        touched in main_sha..main-ref ⇒ action=reverify.
-#   unmet_dependency   — a `blocked` task with ≥1 dependency row where every
-#                        depends_on has reached a terminal status
-#                        (done/cancelled) ⇒ action=redispatch.
 #
-# A THIRD class, `gate_closure`, was retired by task 7349: a `blocked`
-# deterministic always-escalates gate task with no live pending escalation was
-# reported STALE with action=close, which the consumer turned into
-# set_task_status('cancelled'). All nine firings in the retained journal were
-# collateral. Retiring it removed the sweep's only read of the escalation
-# store, and with it `--escalations` and the GATED verdict.
+# TWO further classes were retired by task 7349:
+#
+#   gate_closure       — a `blocked` deterministic always-escalates gate task
+#                        with no live pending escalation, reported STALE with
+#                        action=close, which the consumer turned into
+#                        set_task_status('cancelled'). All nine firings in the
+#                        retained journal were collateral. Retiring it removed
+#                        the sweep's only read of the escalation store, and
+#                        with it `--escalations` and the GATED verdict.
+#   unmet_dependency   — a `blocked` task whose every dependency had reached a
+#                        terminal status, reported STALE with
+#                        action=redispatch. Retired for OWNERSHIP, not
+#                        correctness: dark-factory's
+#                        Scheduler._phase_redispatch_stranded_blocked runs the
+#                        same adjudication at tick cadence, and reify's
+#                        version differed from it only by lacking DF's two
+#                        deliberate refusals (the `deterministic` carve-out
+#                        and the open-escalation veto) — so it was a second
+#                        owner overriding them, not a coverage gap. Retiring
+#                        it removed the enumeration query's only join.
+#
+# Both retired names stay RECOGNISED by the request-retraction loop, as a
+# drain — see the --emit-requests consumer contract below.
 #
 # Usage:
 #   scripts/deterministic-gate-closure-staleness-sweep.sh \
 #       [--db PATH] [--tag TAG] [--repo DIR] \
 #       [--main-ref REF] [--format table|json] \
-#       [--class all|merge_verify_red|unmet_dependency] \
+#       [--class all|merge_verify_red] \
 #       [--stale-heartbeat-min N] [--emit-requests DIR] [-h|--help]
 #
 # For each candidate row, emits: task_id · status · class · verdict · action ·
@@ -58,8 +71,7 @@
 #                  dependency id that resolves to no row); never upgraded to
 #                  STALE.
 # A trailing SWEEP: line (table) / summary object (json) carries the counters
-# candidates, merge_verify_red, unmet_dependency, corrupt_hold, live_skipped,
-# no_class, unknown.
+# candidates, merge_verify_red, corrupt_hold, live_skipped, no_class, unknown.
 #
 # Options (env defaults shown):
 #   --db PATH             Taskmaster SQLite store (env: REIFY_LANE_TASK_DB;
@@ -80,7 +92,9 @@
 #                         REIFY_GATE_STALENESS_MAIN_REF; default: main).
 #   --format table|json   Output format (default: table).
 #   --class C             Restrict the sweep to one trigger class: all,
-#                         merge_verify_red, unmet_dependency (default: all).
+#                         merge_verify_red (default: all). One class survives
+#                         today, so the flag exists for the request-retraction
+#                         scoping rule it drives rather than to narrow output.
 #   --stale-heartbeat-min N
 #                         Minutes; a candidate whose heartbeat_at is newer than
 #                         N minutes is LIVE and is skipped by the liveness
@@ -120,9 +134,9 @@
 #        WITH a claimant is a claimed runner that has not yet written (or has
 #        lost) its heartbeat, and is LIVE; without one it is eligible. A
 #        `blocked` row with no heartbeat stays eligible regardless of its
-#        claimant — blocked rows legitimately carry no heartbeat, and class C
-#        is `blocked`-only per L4, so scoping the claimant rule to
-#        `in-progress` is what keeps that class visible at all.
+#        claimant — blocked rows legitimately carry no heartbeat, so scoping
+#        the claimant rule to `in-progress` is what keeps a `blocked` row
+#        visible at all.
 #   L2 — an unreadable oracle — a recorded main_sha that does not resolve in
 #        --repo, a --main-ref that does not resolve at all, a dependency id
 #        that resolves to no row under this tag —
@@ -133,19 +147,20 @@
 #        no class is NO-CLASS, a complete adjudication with a negative result;
 #        conflating the two would bury a handful of genuine oracle failures
 #        under the majority of the store, which matches no class at all.
-#   L3 — every candidate contributes to EXACTLY ONE class counter and appears
-#        exactly once in the report. Classes are tried in the fixed precedence
-#        order merge_verify_red > unmet_dependency; the first
-#        match becomes the row's primary class and is the only one
-#        adjudicated, and any further match is disclosed in `evidence` as
-#        `also:<class>` without incrementing a counter. So `--class all`
-#        never double-counts a multi-class row.
-#   L4 — class C (unmet_dependency) is `blocked`-ONLY; class B
-#        (merge_verify_red) spans `blocked` AND `in-progress`. Measured on
-#        2026-07-26, all ten live `in-progress` tasks had every dependency
-#        `done` (task 5321 itself among them), so a class C that spanned
-#        `in-progress` would re-dispatch actively-running agents — it would
-#        destroy work rather than recover it.
+#   L3 — every candidate contributes to AT MOST ONE class counter and appears
+#        exactly once in the report. With a single trigger class this is no
+#        longer a precedence rule (there is nothing to order, and no
+#        `also:<class>` disclosure to make); it is the counting property that
+#        survives, and it is what keeps the summary internally consistent with
+#        the rows printed above it.
+#   L4 — merge_verify_red spans `blocked` AND `in-progress`: a merge-verify red
+#        can strand a row in either state. The enumeration's
+#        `status IN ('blocked','in-progress')` filter is therefore correct as
+#        written and must not be narrowed. (The retired class C was
+#        `blocked`-ONLY, for a measured reason: on 2026-07-26 all ten live
+#        `in-progress` tasks had every dependency `done`, so an
+#        `in-progress`-spanning class C would have re-dispatched ten actively
+#        running agents.)
 #   L5 — a #5316 corruption flag SUPPRESSES auto-re-dispatch. A flagged row
 #        whose verdict would otherwise be STALE is reported as CORRUPT-HOLD
 #        with action=human_gate, is counted in `corrupt_hold` INSTEAD OF its
@@ -223,8 +238,7 @@ Usage: $(basename "$0") [--db PATH] [--tag TAG] [--repo DIR]
     --main-ref REF        Git ref for "main" (default:
                           \$REIFY_GATE_STALENESS_MAIN_REF or main).
     --format table|json   Output format (default: table).
-    --class C             all | merge_verify_red | unmet_dependency
-                          (default: all).
+    --class C             all | merge_verify_red (default: all).
     --stale-heartbeat-min N
                           A heartbeat newer than N minutes marks the row LIVE
                           and skips it (default:
@@ -303,9 +317,9 @@ case "$FORMAT" in
 esac
 
 case "$CLASS" in
-    all|merge_verify_red|unmet_dependency) : ;;
+    all|merge_verify_red) : ;;
     *)
-        err "Unknown --class: '$CLASS' (expected all, merge_verify_red or unmet_dependency)."
+        err "Unknown --class: '$CLASS' (expected all or merge_verify_red)."
         err "Run '$(basename "$0") --help' for usage."
         exit 2 ;;
 esac
@@ -324,7 +338,6 @@ info "gate-closure-staleness-sweep: db=$DB tag=$TAG class=$CLASS format=$FORMAT 
 # ── summary counters ──────────────────────────────────────────────────────────
 N_CANDIDATES=0
 N_MERGE_VERIFY_RED=0
-N_UNMET_DEPENDENCY=0
 N_CORRUPT_HOLD=0
 N_LIVE_SKIPPED=0
 N_NO_CLASS=0
@@ -411,9 +424,8 @@ fi
 
 # ── the enumeration query ─────────────────────────────────────────────────────
 # ONE query per SWEEP, not one per candidate per oracle. Every scalar the
-# classifiers need — the two metadata fields, the Signature-1 marker count and
-# the dependency roll-up — is selected alongside the row, so a candidate costs
-# zero further DB opens. The previous shape re-opened the store and re-ran
+# classifier needs — the two metadata fields and the Signature-1 marker count —
+# is selected alongside the row, so a candidate costs zero further DB opens. The previous shape re-opened the store and re-ran
 # `WHERE tag=... AND id=... LIMIT 1` against the SAME metadata blob once per
 # field, plus a json_each query and a dependency join: several sqlite processes
 # per candidate, which is not "timer-friendly on a large store" at a few
@@ -430,9 +442,9 @@ fi
 #     can contain a newline (and, in principle, the US field separator). Every
 #     free-form column is therefore flattened, so no value can forge a field or
 #     a row boundary in the US-separated stream below.
-#   * every clause is tag-scoped, including the correlated dependency subquery
-#     (`d.tag = t.tag`): `tasks` is PRIMARY KEY (tag, id), so an unqualified
-#     lookup silently conflates tags the moment a second one exists.
+#   * every clause is tag-scoped: `tasks` is PRIMARY KEY (tag, id), so an
+#     unqualified lookup silently conflates tags the moment a second one
+#     exists.
 _TAG_SQL="${TAG//\'/\'\'}"
 # The json_valid-guarded metadata expression, and two small SQL builders that
 # keep the SELECT list readable.
@@ -442,10 +454,7 @@ _jx_sql()   { printf "coalesce(json_extract(%s,'%s'),'')" "$_MD_SQL" "$1"; }
 
 # Column order (US-separated, one line per candidate):
 #   id · status · heartbeat_at · claimant_run_id · dry_run_proposals
-#   · done_provenance.commit · sig1_hits · dep_rollup
-# dep_rollup is `<depends_on>=<status>` pairs joined by ',', ordered by
-# depends_on; an EMPTY status means the depends_on resolves to no row under
-# this tag, which must never read as a satisfied dependency.
+#   · done_provenance.commit · sig1_hits
 _ENUM_SQL="SELECT
     t.id,
     coalesce(t.status,''),
@@ -454,13 +463,7 @@ _ENUM_SQL="SELECT
     $(_flat_sql "$(_jx_sql '$.dry_run_proposals')"),
     $(_flat_sql "$(_jx_sql '$.done_provenance.commit')"),
     (SELECT count(*) FROM json_each($_MD_SQL,'\$.failing_tests')
-      WHERE $_CORRUPT_MARKER_SQL),
-    $(_flat_sql "coalesce((SELECT group_concat(pair,',') FROM (
-        SELECT d.depends_on || '=' || coalesce(dt.status,'') AS pair
-          FROM dependencies d
-          LEFT JOIN tasks dt ON dt.tag = d.tag AND dt.id = d.depends_on
-         WHERE d.tag = t.tag AND d.task_id = t.id
-         ORDER BY d.depends_on)),'')")
+      WHERE $_CORRUPT_MARKER_SQL)
   FROM tasks t
  WHERE t.tag='$_TAG_SQL' AND t.status IN ('blocked','in-progress')
  ORDER BY t.id;"
@@ -694,69 +697,6 @@ _classify_merge_verify_red() {
     _MVR_EVIDENCE="premise resolved: ${first_path} was touched by ${resolving:-?} in ${b_main_sha}..${MAIN_REF}"
 }
 
-# ── class C: unmet_dependency ─────────────────────────────────────────────────
-# `blocked`-ONLY, per invariant L4. This is not a stylistic scoping choice:
-# measured on 2026-07-26, every one of the ten live `in-progress` tasks had
-# all of its dependencies `done` (task 5321 itself among them), so a class C
-# that spanned `in-progress` would emit a re-dispatch request for every
-# actively-running agent.
-#
-# The dependency roll-up arrives from the enumeration query's correlated
-# subquery — one tag-scoped LEFT JOIN evaluated with the row, not a lookup per
-# dependency and not a second DB open per candidate. `tasks` is
-# PRIMARY KEY (tag, id), so that join is tag-scoped on BOTH sides (`d.tag =
-# t.tag`); an unqualified `id =` would silently conflate tags the moment a
-# second tag exists. An EMPTY status in a pair means the depends_on resolves to
-# no row under this tag — that degrades the row to `unknown`, because an
-# unresolvable dependency must never read as a satisfied one.
-#
-# _classify_unmet_dependency <task_id> <status> <dep_rollup> <adjudicate:0|1>
-# dep_rollup is `<depends_on>=<status>` pairs joined by ','.
-_classify_unmet_dependency() {
-    local id="$1" status="$2" rollup="$3" adjudicate="$4"
-    local pair dep_id dep_status pairs="" n=0 unresolved=0 unresolvable=0
-    local -a rollup_pairs=()
-    _UD_MATCHED=0
-    _UD_VERDICT="unknown"
-    _UD_ACTION="none"
-    _UD_EVIDENCE=""
-
-    [ "$status" = "blocked" ] || return 0
-    # An EMPTY dependency set is NOT "all satisfied" — it is not class C at all.
-    [ -n "$rollup" ] || return 0
-    _UD_MATCHED=1
-    [ "$adjudicate" = 1 ] || return 0
-
-    # read -a, not an unquoted split: no pathname expansion can reach the pairs.
-    IFS=',' read -r -a rollup_pairs <<<"$rollup"
-    for pair in "${rollup_pairs[@]}"; do
-        dep_id="${pair%%=*}"
-        dep_status="${pair#*=}"
-        [ -n "${dep_id:-}" ] || continue
-        n=$((n + 1))
-        pairs="${pairs:+$pairs, }${dep_id}=${dep_status:-<no row>}"
-        case "$dep_status" in
-            done|cancelled) ;;
-            "")             unresolvable=$((unresolvable + 1)) ;;
-            *)              unresolved=$((unresolved + 1)) ;;
-        esac
-    done
-
-    if [ "$unresolvable" -gt 0 ]; then
-        warn "Task $id: $unresolvable dependency id(s) resolve to no row under tag='$TAG' — reporting unknown, not STALE (an unresolvable dependency must never read as a satisfied one)."
-        _UD_EVIDENCE="dependencies: ${pairs}; ${unresolvable} unresolvable under tag='$TAG'"
-        return 0
-    fi
-    if [ "$unresolved" -gt 0 ]; then
-        _UD_VERDICT="UNRESOLVED"
-        _UD_EVIDENCE="dependencies: ${pairs}; ${unresolved} of ${n} not yet terminal"
-        return 0
-    fi
-    _UD_VERDICT="STALE"
-    _UD_ACTION="redispatch"
-    _UD_EVIDENCE="all ${n} dependency(ies) terminal: ${pairs}"
-}
-
 # ── #5316 corruption signatures (invariant L5) ────────────────────────────────
 # Both signatures are catalogued in docs/notes/offline-lane-red-corruption-
 # remediation.md; they are lifted here from prose into executable checks and
@@ -828,7 +768,7 @@ _compute_flags() {
 
 # ── classify ──────────────────────────────────────────────────────────────────
 while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
-                         md_proposals md_prov md_sig1_hits md_dep_rollup; do
+                         md_proposals md_prov md_sig1_hits; do
     [ -n "${task_id:-}" ] || continue
 
     # L1: the liveness guard is the FIRST predicate, and it short-circuits —
@@ -861,34 +801,17 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
     row_evidence="no trigger class matched this candidate"
     row_flags="-"
 
-    # ── class-precedence dispatcher (invariant L3) ───────────────────────────
-    # Fixed order: merge_verify_red > unmet_dependency. The FIRST match becomes
-    # the row's primary class and is the only one adjudicated; any further
-    # match is disclosed as `also:<class>` in evidence but never adjudicated
-    # and never counted, so a multi-class row increments exactly one counter
-    # and appears exactly once.
-    _primary=""
-    _also=""
-
+    # ── classification (invariant L3) ────────────────────────────────────────
+    # One trigger class, so this is a direct call rather than a precedence
+    # dispatcher: there is no order to fix, no `also:<class>` disclosure to
+    # make, and no way for a row to reach two counters. What L3 still asserts
+    # is the counting property — at most one class counter per candidate, and
+    # exactly one row in the report.
     _classify_merge_verify_red "$task_id" "$md_proposals" 1
     if [ "$_MVR_MATCHED" = 1 ]; then
-        _primary="merge_verify_red"
+        row_class="merge_verify_red"
         row_verdict="$_MVR_VERDICT"; row_action="$_MVR_ACTION"; row_evidence="$_MVR_EVIDENCE"
     fi
-
-    if [ -z "$_primary" ]; then _adj=1; else _adj=0; fi
-    _classify_unmet_dependency "$task_id" "$status" "$md_dep_rollup" "$_adj"
-    if [ "$_UD_MATCHED" = 1 ]; then
-        if [ -z "$_primary" ]; then
-            _primary="unmet_dependency"
-            row_verdict="$_UD_VERDICT"; row_action="$_UD_ACTION"; row_evidence="$_UD_EVIDENCE"
-        else
-            _also="$_also also:unmet_dependency"
-        fi
-    fi
-
-    if [ -n "$_primary" ]; then row_class="$_primary"; fi
-    if [ -n "$_also" ]; then row_evidence="${row_evidence}; ${_also# }"; fi
 
     # ── #5316 corruption suppression (invariant L5) ──────────────────────────
     # Flags are computed for EVERY non-live row, not just for hits, so the
@@ -917,7 +840,6 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
         STALE)
             case "$row_class" in
                 merge_verify_red) N_MERGE_VERIFY_RED=$((N_MERGE_VERIFY_RED + 1)) ;;
-                unmet_dependency) N_UNMET_DEPENDENCY=$((N_UNMET_DEPENDENCY + 1)) ;;
             esac ;;
         CORRUPT-HOLD) N_CORRUPT_HOLD=$((N_CORRUPT_HOLD + 1)) ;;
         NO-CLASS) N_NO_CLASS=$((N_NO_CLASS + 1)) ;;
@@ -929,8 +851,8 @@ $_CANDIDATES
 EOF
 
 # ── emit: table (default) or json ─────────────────────────────────────────────
-_SUMMARY_JSON="$(printf '{"candidates":%d,"merge_verify_red":%d,"unmet_dependency":%d,"corrupt_hold":%d,"live_skipped":%d,"no_class":%d,"unknown":%d}' \
-    "$N_CANDIDATES" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
+_SUMMARY_JSON="$(printf '{"candidates":%d,"merge_verify_red":%d,"corrupt_hold":%d,"live_skipped":%d,"no_class":%d,"unknown":%d}' \
+    "$N_CANDIDATES" "$N_MERGE_VERIFY_RED" \
     "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_NO_CLASS" "$N_UNKNOWN")"
 
 if [ "$FORMAT" = "json" ]; then
@@ -963,8 +885,8 @@ else
         printf '%-8s %-12s %-18s %-13s %-11s %-52s %s\n' \
             "$c_id" "$c_status" "$c_class" "$c_verdict" "$c_action" "$c_evidence" "$c_flags"
     done < "$ROWS_TSV"
-    printf 'SWEEP: candidates=%d merge_verify_red=%d unmet_dependency=%d corrupt_hold=%d live_skipped=%d no_class=%d unknown=%d\n' \
-        "$N_CANDIDATES" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
+    printf 'SWEEP: candidates=%d merge_verify_red=%d corrupt_hold=%d live_skipped=%d no_class=%d unknown=%d\n' \
+        "$N_CANDIDATES" "$N_MERGE_VERIFY_RED" \
         "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_NO_CLASS" "$N_UNKNOWN"
 fi
 
