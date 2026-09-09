@@ -27,6 +27,11 @@
 //!   (`Ok(None)`, not `Err`), a fresh tempfile inside the 1-hour
 //!   `STALE_TEMPFILE_AGE` grace is preserved, an aged one is swept, and a live
 //!   sibling entry in the same shard is untouched throughout.
+//! * **case 6** (`cross_session_hit_replays_the_shell_too_thick_warning`)
+//!   — a HIT replays the diagnostics the cold solve emitted, so a `W_*` warning
+//!   is not first-run-only. Uses `examples/fea_shell_too_thick_auto.ri`, whose
+//!   cold emission is pinned elsewhere; the claim added here is that the WARM
+//!   serve says the same thing, and says it exactly once.
 //!
 //! Keep this list in step with the `#[test]` fns below; it is the file's index.
 //!
@@ -860,4 +865,134 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
         good_meta.is_file(),
         "the good entry's .meta sidecar must survive the sweep intact",
     );
+}
+
+/// The too-thick fixture source (50 × 20 × 20 mm, bare `ElasticOptions()` so
+/// `shell_force` defaults to `Auto`). Its COLD emission of the
+/// `DiagnosticCode::ShellTooThick` warning is already pinned green by
+/// `crates/reify-eval/tests/harness_topology_selector/shell_too_thick_at_auto_falls_back.rs`;
+/// case 6 below adds the claim that the WARM serve says the same thing.
+fn shell_too_thick_source() -> &'static str {
+    include_str!("../../../examples/fea_shell_too_thick_auto.ri")
+}
+
+/// Count the `W_SHELL_TOO_THICK` warnings in a diagnostics list.
+///
+/// Filtering on `(severity, code)` rather than message substrings is the house
+/// idiom — a reworded message must not break the assertion.
+fn count_shell_too_thick_warnings(diagnostics: &[reify_core::Diagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(reify_core::DiagnosticCode::ShellTooThick)
+        })
+        .count()
+}
+
+/// Case 6 — a cross-session HIT replays the solver's diagnostics, so a `W_*`
+/// warning is not first-run-only.
+///
+/// This is the acceptance for the defect: with a persistent cache dir
+/// configured, session 1 warns that the body is too thick for shell elements
+/// and session 2 — served entirely from disk — used to say nothing at all. The
+/// user-visible symptom is a warning that disappears on the second `reify eval`
+/// of the same file and never comes back until the cache is cleared.
+///
+/// Two engines on one dir, not two evals on one engine: a second eval through
+/// the same engine is served by the IN-MEMORY `NodeCache` and never reaches
+/// `run_compute_dispatch`, so it would exercise #5062's in-memory replay rather
+/// than this one.
+///
+/// The hit/miss counter assertions are load-bearing in a second way: they stop
+/// the test passing by accidentally re-solving. The fix must replay the
+/// warning, not disable caching.
+#[test]
+fn cross_session_hit_replays_the_shell_too_thick_warning() {
+    let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
+    let source = shell_too_thick_source();
+
+    // ── Session 1 (Engine A): cold solve, warns, writes the entry ───────────
+
+    let mut engine_a = make_simple_engine();
+    engine_a.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_a);
+
+    let compiled_a = parse_and_compile_with_stdlib(source);
+    let result_a = engine_a.eval(&compiled_a);
+
+    let errors_a: Vec<_> = result_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_a.is_empty(),
+        "session 1 must succeed via the tet fallback, got Errors: {errors_a:?}",
+    );
+    assert!(
+        count_shell_too_thick_warnings(&result_a.diagnostics) >= 1,
+        "session 1 (cold) must emit the ShellTooThick warning, or this test is \
+         vacuous; got: {:?}",
+        result_a.diagnostics,
+    );
+    assert!(
+        has_bin_file(tmp.path()),
+        "a .bin must exist under the cache dir after the session-1 cold solve",
+    );
+
+    // ── Session 2 (Engine B): brand-new engine, same dir — warm serve ───────
+
+    let mut engine_b = make_simple_engine();
+    engine_b.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_b);
+
+    let compiled_b = parse_and_compile_with_stdlib(source);
+    let result_b = engine_b.eval(&compiled_b);
+
+    let errors_b: Vec<_> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_b.is_empty(),
+        "session 2 must succeed, got Errors: {errors_b:?}",
+    );
+    assert_eq!(
+        engine_b.persistent_hit_count(),
+        1,
+        "session 2 must be served from disk — otherwise the warning below would \
+         be a fresh emission, not a replay",
+    );
+    assert_eq!(
+        engine_b.persistent_miss_count(),
+        0,
+        "session 2 must not fall through to a solve; the fix must replay the \
+         warning, not disable caching",
+    );
+
+    // THE ACCEPTANCE.
+    assert_eq!(
+        count_shell_too_thick_warnings(&result_b.diagnostics),
+        1,
+        "session 2 must replay exactly one ShellTooThick warning — a warm serve \
+         has to say what the cold serve said; got: {:?}",
+        result_b.diagnostics,
+    );
+
+    // Double-emission guard (#5062 / INV-EVAL-3): each diagnostic has exactly
+    // one owner per serve — replayed XOR freshly-pushed, never both. Structural
+    // here rather than bookkeeping: the persistent-lookup arm returns on a HIT
+    // and falls through to the trampoline only on a MISS.
+    let mut seen: std::collections::HashSet<(String, Option<reify_core::DiagnosticCode>)> =
+        std::collections::HashSet::new();
+    for d in &result_b.diagnostics {
+        assert!(
+            seen.insert((d.message.clone(), d.code)),
+            "diagnostic emitted more than once on a single serve: {d:?}; full \
+             list: {:?}",
+            result_b.diagnostics,
+        );
+    }
 }

@@ -1640,3 +1640,69 @@ fn cli_check_sweeps_stale_persistent_cache_tempfile_at_startup() {
         "stale .tmp.* file must be removed by startup sweep; path={stale_path:?}"
     );
 }
+
+/// A stable substring of the `W_SHELL_TOO_THICK` warning text, as emitted by
+/// the elastic trampoline's `ShellForce::Auto` fallback arm.
+///
+/// The CLI renders diagnostic messages, not `DiagnosticCode` mnemonics, so the
+/// user-observable assertion has to be on the text. Kept to the invariant
+/// clause so a reworded suffix does not break it.
+const SHELL_TOO_THICK_TEXT: &str = "too thick for shell solve";
+
+/// Run `reify eval <fixture>` against a pinned cache dir and return the merged
+/// stdout+stderr, asserting the run succeeded.
+///
+/// Merged because the acceptance is "the user still sees the warning", which
+/// does not depend on which stream carries it.
+fn run_eval_with_cache_dir(fixture: &std::path::Path, cache_dir: &std::path::Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["eval", fixture.to_str().expect("fixture path is UTF-8")])
+        .env("REIFY_CACHE_DIR", cache_dir)
+        // Remove the vars the cache resolver also consults, so a stale dev-shell
+        // env cannot redirect the run away from `cache_dir`.
+        .env_remove("REIFY_CACHE_MAX_BYTES")
+        .env_remove("XDG_CACHE_HOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "reify eval must exit 0 (the too-thick body falls back to tet);\n\
+         stdout: {stdout}\nstderr: {stderr}",
+    );
+    format!("{stdout}\n{stderr}")
+}
+
+/// The literal reported defect: run `reify eval` twice against one cache dir
+/// and the `W_SHELL_TOO_THICK` warning must appear on BOTH runs.
+///
+/// Run 1 solves cold and writes the persistent entry; run 2 is a separate
+/// process that is served entirely from that entry. Before the diagnostics
+/// envelope, run 2 printed nothing — the warning was first-run-only and stayed
+/// gone until the cache was cleared, which is exactly the shape a user hits
+/// (edit nothing, re-run, the warning vanishes).
+#[test]
+fn shell_too_thick_warning_survives_a_second_eval_against_a_warm_cache() {
+    let cache_dir = tempdir().expect("tempdir");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/fea_shell_too_thick_auto.ri");
+
+    let first = run_eval_with_cache_dir(&fixture, cache_dir.path());
+    assert!(
+        first.contains(SHELL_TOO_THICK_TEXT),
+        "run 1 (cold) must warn that the body is too thick, or this test is \
+         vacuous; output was:\n{first}",
+    );
+
+    let second = run_eval_with_cache_dir(&fixture, cache_dir.path());
+    assert!(
+        second.contains(SHELL_TOO_THICK_TEXT),
+        "run 2 (warm, served from the on-disk cache) must print the SAME \
+         warning — a `W_*` warning must not be first-run-only; output was:\n{second}",
+    );
+}
