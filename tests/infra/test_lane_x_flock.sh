@@ -176,7 +176,6 @@ _OUT12F="$(mktemp)"
 # Background holder: acquire slot-1 and hold it for 45s (exceeds outer timeouts).
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK12}.slot-1" &
 _HOLDER12=$!
-sleep 0.2   # give holder time to acquire
 assert "Test 12: holder confirmed holding slot-1 before the invocation starts (causal barrier)" \
     holder_wait_until_held "${_LOCK12}.slot-1"
 
@@ -270,7 +269,6 @@ _LOCK15="$(mktemp)"
 
 ( flock -x 9; sleep 45 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
-sleep 0.2
 assert "Test 15: holder confirmed holding slot-1 before the invocation starts (causal barrier)" \
     holder_wait_until_held "${_LOCK15}.slot-1"
 
@@ -333,19 +331,28 @@ rm -f "$_ERR17"
 echo ""
 echo "--- Test 18: DISABLE=1 does not acquire a slot — two concurrent invocations do not serialize ---"
 
-# Same 1.0s sleep / wide-margin rationale as Test 14: a structural gap between
-# the concurrent-ceiling here (<1500ms) and the serial-floor there (>=1800ms)
-# against an ~1000ms/~2000ms expected split keeps this a jitter-proof
-# concurrency proof rather than a coin flip against subshell startup overhead.
+# Each payload brackets its 1.0s body with an interval record, so the test can
+# read OVERLAP straight off the log instead of pricing the whole thing in
+# milliseconds (task 6247). The two nested `printf`s are each a single small
+# append to a file opened O_APPEND, so concurrent writes stay atomic and the
+# ns-sorted order remains canonical — the same contract holder_max_concurrent
+# relies on for scripts/lib_slot_acquire.sh's own event log.
 _LOCK18="$(mktemp)"
 _LOG18="$(mktemp)"
-_START18_NS="$(date +%s%N)"
 
 REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK18" \
-    "$LIB" bash -c 'sleep 1.0' &
+    "$LIB" bash -c '
+        printf "%s %s ACQUIRE slot-1\n" "$(date +%s%N)" "$$" >> "'"$_LOG18"'"
+        sleep 1.0
+        printf "%s %s RELEASE\n" "$(date +%s%N)" "$$" >> "'"$_LOG18"'"
+    ' &
 _PID18A=$!
 REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK18" \
-    "$LIB" bash -c 'sleep 1.0' &
+    "$LIB" bash -c '
+        printf "%s %s ACQUIRE slot-1\n" "$(date +%s%N)" "$$" >> "'"$_LOG18"'"
+        sleep 1.0
+        printf "%s %s RELEASE\n" "$(date +%s%N)" "$$" >> "'"$_LOG18"'"
+    ' &
 _PID18B=$!
 
 _EXIT18A=0
@@ -353,13 +360,7 @@ _EXIT18B=0
 wait "$_PID18A" || _EXIT18A=$?
 wait "$_PID18B" || _EXIT18B=$?
 
-_END18_NS="$(date +%s%N)"
-_ELAPSED18_MS=$(( (_END18_NS - _START18_NS) / 1000000 ))
-
 rm -f "$_LOCK18" "${_LOCK18}.slot-1"
-
-assert "Test 18a: two DISABLE=1 1.0s invocations run concurrently, not serially (elapsed < 1500ms, got ${_ELAPSED18_MS}ms)" \
-    test "$_ELAPSED18_MS" -lt 1500  # wallclock:allow
 
 # CAUSAL overlap proof (task 6247), replacing the ceiling above. Each payload
 # records when it entered and left its own interval; two intervals that overlap
