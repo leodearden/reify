@@ -165,17 +165,52 @@ pub struct DiagnosticsResult {
 /// elaboration (`crates/reify-eval/src/graph.rs`).
 ///
 /// Stage 1 is an allocation-free `all(is_representable_cell_type)` scan over
-/// `compiled.templates`' own `value_cells`, used ONLY to prove ABSENCE. It is
-/// sound in that one direction because every `cell_type` that reaches
-/// `graph.value_cells` is cloned verbatim from some template's `value_cells`
-/// — both in the top-level loop and in the collection/keyed sub-component
-/// elaboration arms, which draw their child cells from the SAME `templates`
-/// slice via `find_template`. So "no template cell is unrepresentable"
-/// strictly implies "no graph cell is unrepresentable", and the common case
-/// (every healthy document, every keystroke) returns without building a
-/// graph. The converse does NOT hold — a template cell can be unrepresentable
-/// while the graph is safe, which is exactly the successful-monomorphisation
-/// case rejected above — so stage 1 is never allowed to answer `true`.
+/// the cell decls `compiled.templates` carry, used ONLY to prove ABSENCE. Its
+/// soundness is a claim about `from_templates`, so it is derived from that
+/// function rather than restated: `crates/reify-eval/src/graph.rs` has SEVEN
+/// non-test `graph.value_cells.insert` arms, and every one clones its
+/// `cell_type` verbatim from a decl stage 1 sees, or is safe by construction.
+///
+/// 1. The top-level `template.value_cells` loop.
+/// 2-4. The collection, keyed and non-collection sub-component elaboration
+///    arms — all three draw from `child_template.value_cells`, bound ONCE via
+///    `find_template(templates, ..)` on the SAME slice stage 1 iterates, which
+///    is why they need no separate coverage.
+/// 5. The guard cell of a guarded group, whose `cell_type` is the literal
+///    `Type::Bool` at its insert site rather than a clone of any decl — safe
+///    by construction, and the one arm stage 1 does not scan.
+/// 6-7. `guarded_groups[*].members` and `[*].else_members`.
+///
+/// Arms 6-7 are why the scan chains the guarded collections instead of reading
+/// `value_cells` alone: the compiler collects a guarded member into
+/// `CompiledGuardedGroup::members`, a Vec that NEVER appears in
+/// `TopologyTemplate::value_cells`, so `value_cells` is a strict subset of
+/// what reaches the graph. Scanning the subset made the absence proof unsound
+/// in exactly one direction — the direction stage 1 uses. Measured on
+/// `auto_type_param_fixtures::GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC`: stage 1
+/// found every cell it scanned representable and returned `None`, while the
+/// graph carried `Bearing.seal : TypeParam("T")` and the eval pass panicked.
+/// Pinned by case (5) of
+/// `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`
+/// and, per-arm over a corpus, by
+/// `tests::stage_one_absence_proof_covers_every_graph_cell_type`.
+///
+/// `ports.members` is deliberately NOT scanned. It IS a type-param
+/// substitution target — `substitute_value_cell_collection`'s own doc names
+/// `value_cells`, `guarded_groups.members/else_members` and `ports.members`
+/// together — but it never reaches `graph.value_cells`: `graph.rs` does not
+/// mention `ports` at all. Stage 1's obligation is the graph's cells, not the
+/// substituter's, and the two collections differ; the next reader would
+/// otherwise re-derive that from scratch.
+///
+/// So "no scanned cell is unrepresentable" strictly implies "no graph cell is
+/// unrepresentable", and the common case (every healthy document, every
+/// keystroke) returns without building a graph. The converse does NOT hold — a
+/// template cell can be unrepresentable while the graph is safe, which is
+/// exactly the successful-monomorphisation case rejected above — so stage 1 is
+/// never allowed to answer `true`. Widening it is therefore always safe: more
+/// collections can only cause more fall-through to the authoritative stage-2
+/// walk, never a hit of stage 1's own.
 ///
 /// Stage 2, reached only when stage 1 finds a candidate, is the exact
 /// `from_templates` walk. It is the SAME construction the gated eval would
@@ -218,7 +253,13 @@ pub(crate) fn first_unrepresentable_cell(
     if compiled
         .templates
         .iter()
-        .flat_map(|t| &t.value_cells)
+        .flat_map(|t| {
+            t.value_cells.iter().chain(
+                t.guarded_groups
+                    .iter()
+                    .flat_map(|g| g.members.iter().chain(g.else_members.iter())),
+            )
+        })
         .all(|c| reify_eval::is_representable_cell_type(&c.cell_type))
     {
         return None;
@@ -1065,8 +1106,8 @@ mod tests {
         AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, BT8_CONSTANT_CONSTRAINT_SRC,
         GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC, NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC,
         UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
-        assert_auto_fail_fixture_is_newly_reachable,
-        assert_bt8_fixture_still_diverges, assert_guarded_group_fixture_is_newly_reachable,
+        assert_auto_fail_fixture_is_newly_reachable, assert_bt8_fixture_still_diverges,
+        assert_guarded_group_fixture_is_newly_reachable,
     };
 
     // Additional imports for the eval-diagnostics regression-lock cluster.
