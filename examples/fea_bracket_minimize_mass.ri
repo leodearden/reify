@@ -152,20 +152,30 @@ structure FeaBracketMinimizeMass {
     // single worst scalar in it.
     //
     // That reduction is read here through the result's own `max_von_mises`
-    // member rather than spelled out as `max(von_mises(result.stress))`. The two
-    // compute the identical quantity — `max_von_mises` is the element-max von
-    // Mises over exactly the same solid stress field — so the reduction still
-    // genuinely happens; only the spelling differs.
+    // member rather than spelled out as `max(von_mises(result.stress))`. Both
+    // are genuine peak-von-Mises reductions of the same solve, but they are not
+    // the identical number: `max_von_mises` is the raw ELEMENT-max, while
+    // `.stress` is that same field volume-weighted-averaged onto nodes and then
+    // barycentrically resampled onto a Regular3D grid. Von Mises is convex and
+    // both resamplings are convex combinations, so the field reduction is `<=`
+    // the element max. Either is a sound design predicate against yield; the
+    // element max is the more conservative of the two.
     //
-    // The explicit spelling is currently blocked by a COMPILE-TIME TYPING GAP,
-    // not by a semantic one: `analysis_fn_result_type` derives von_mises's
-    // dimension via `tensor_quantity`, which matches `Type::Tensor`/`Type::Matrix`
-    // but has no `Type::Field` arm. A Field-valued argument therefore falls to
-    // the DIMENSIONLESS default, `von_mises(.stress)` types as `Real`, and
-    // `< yield_limit` fails with "dimension mismatch in comparison: Real vs
-    // Scalar[kg·m^-1·s^-2]" — an Error, so the zero-Error examples gate rejects
-    // it. Filed as follow-up ticket tkt_0RSVXM8TTBE200NJ7HD8BH24Q2; when that
-    // lands, this constraint can move to the explicit form unchanged in meaning.
+    // The eval-side half of the explicit spelling is now CLOSED. Until task
+    // #7129, `von_mises` refused a `FieldSourceKind::Sampled` backing — which is
+    // exactly what `solve_elastic_static` returns as `.stress` — so
+    // `von_mises(result.stress)` evaluated to `Undef` and any reduction of it
+    // silently followed. That is fixed: the wrapper now constructs over a
+    // Sampled stress field and `max`/`min`/`argmax`/`argmin` reduce it for real.
+    //
+    // What remains is a COMPILE-TIME TYPING GAP only: `analysis_fn_result_type`
+    // derives von_mises's dimension via `tensor_quantity`, which matches
+    // `Type::Tensor`/`Type::Matrix` but has no `Type::Field` arm. A Field-valued
+    // argument therefore falls to the DIMENSIONLESS default,
+    // `von_mises(.stress)` types as `Real`, and `< yield_limit` fails with
+    // "dimension mismatch in comparison: Real vs Scalar[kg·m^-1·s^-2]" — an
+    // Error, so the zero-Error examples gate rejects it. Tracked as #6577; when
+    // that lands, this constraint can move to the explicit form.
     //
     // The FEA call is INLINED here rather than bound to a top-level
     // `let fea = solve_elastic_static(...)`. That is not a style choice. A

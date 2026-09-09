@@ -127,8 +127,13 @@ pub structure IdlerPulley {
 /// the drum, not because the channel traps them.
 ///
 /// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
-/// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
-/// band = active_turns·lead ≈ 63mm (= the shuttle stroke); helix angle ≈ 2.7°.
+/// max per-belt feed = X+Y travel = 500+800 = 1.3m → `active_turns` ≈ 8.62;
+/// helix angle ≈ 2.7°. Three DIFFERENT axial figures follow, each its own cell:
+///   - `band` = active_turns·lead ≈ 60.3mm — the departure tangent's migration
+///     over the full feed, i.e. what the shuttle tracks;
+///   - `Fairlead.stroke` = that rounded up to a whole turn, 9·lead = 63mm;
+///   - `groove_len` = (active_turns + dead_total)·lead ≈ 88.3mm — the whole
+///     grooved extent, band plus the dead anchor wraps.
 pub structure Capstan {
     param rope_dia    : Length = 6mm
     /// D/d ratio
@@ -172,15 +177,20 @@ pub structure Capstan {
     let land_r     = seat_c
     let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
-    let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
+    let groove_len : Length = lead * (active_turns + dead_total)   // total grooved extent = band + dead anchor wraps
+    /// Axial migration of the departure tangent over the full `feed` — one `lead`
+    /// per active turn. This is what the fairlead shuttle has to track, and it is
+    /// NOT `groove_len`: that is the total grooved extent, this band PLUS the
+    /// `dead_total` anchor wraps.
+    let band       : Length = lead * active_turns
     let bore_r     = bore_dia / 2
 
     // The rope channel: a circular section of radius groove_r, posed normal to the
     // helix start tangent (rotate -90° about +X takes the profile's +Z normal onto
     // +Y) and stood off onto the helix start point at +seat_c, swept along the
-    // helical spine and re-centred on the band. The spine runs at the seat's ARC
-    // CENTRE, which is where the section is centred — not at pitch_r, which is where
-    // the seated rope's centreline ends up.
+    // helical spine (which spans `groove_len`) and re-centred on the drum mid-plane.
+    // The spine runs at the seat's ARC CENTRE, which is where the section is centred
+    // — not at pitch_r, which is where the seated rope's centreline ends up.
     aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), seat_c, 0mm, 0mm)
     aux let groove_path    = helix(seat_c, lead, groove_len)
     aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
@@ -281,7 +291,10 @@ pub structure Fairlead {
     param x_corner : Length = 30mm
     /// Up/down half-spacing of the lead turn points.
     param y_corner : Length = 50mm
-    /// Band-migration travel range the shuttle covers (= Capstan active band).
+    /// Band-migration travel range the shuttle covers: `Capstan.band` (60.3mm at
+    /// the defaults) rounded UP to a whole turn, 9·lead = 63mm. It can't be
+    /// derived through the `sub` (override drop, task 4147), so it is hand-set
+    /// here and `CapstanDrive` asserts the coverage as a constraint instead.
     param stroke   : Length = 63mm
 
     let rot_to_x = orient_axis_angle(vec3(0mm, 1mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
@@ -310,4 +323,20 @@ pub structure Fairlead {
 pub structure CapstanDrive {
     sub capstan = Capstan()  at transform3(orient_identity(), vec3(0mm,   0mm, 0mm))
     sub shuttle = Fairlead() at transform3(orient_identity(), vec3(150mm, 0mm, 0mm))
+
+    // The shuttle must cover the capstan's full band migration, or the fairlead
+    // runs out of travel before the wrap band does (fleet angle opens, the
+    // fairlead side-loads instead of guiding). This is the one cross-structure
+    // relation in the file and it can only live here: `stroke` can't be passed
+    // through the `sub` (override drop, task 4147), so it is a hand-set param on
+    // Fairlead and the assembly asserts it stays consistent.
+    //
+    // TWO-SIDED on purpose, because `stroke` is a hand-set number: the lower
+    // bound alone is satisfied by any stroke at all above the band (200mm would
+    // pass), so on its own it pins coverage but not the design intent. The
+    // stroke IS the band rounded up to a whole turn, ceil(active_turns)·lead,
+    // and ceil(x)·lead < x·lead + lead holds for every x — so the pair says
+    // "covers the band, with less than one whole turn of margin".
+    constraint shuttle.stroke >= capstan.band
+    constraint shuttle.stroke < capstan.band + capstan.lead
 }

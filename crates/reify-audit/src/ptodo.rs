@@ -180,69 +180,292 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 // §8.2 citation resolution (canonical vs malformed)
 // -----------------------------------------------------------------------
 
-/// §8.2 canonical citation: a `#` immediately followed by a run of 1..=5 ASCII
-/// digits whose run length is ≤5 (the char after the run is not a digit, so a
-/// 6-digit number is not matched on its 5-digit prefix) AND whose value is ≥1.
-/// An all-zero run (`#0`, `#00`) is rejected — task ids start at 1, so a `#0`
-/// cite is not canonical and falls through to the structural `untracked`
-/// classification (mirrors the ≥1 guard in [`extract_cites`]).
-fn has_canonical_cite(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'#' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            let run = j - (i + 1);
-            // ≥1 guard: the run must carry a non-zero digit (`#0`/`#00` → 0 → not
-            // a valid task id). `#007` (= 7) is still canonical.
-            if (1..=5).contains(&run) && bytes[i + 1..j].iter().any(|&b| b != b'0') {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
+/// §8.2 PRD-relative families.  Which of the three registers a `#N` sits in is
+/// load-bearing in exactly ONE place — [`has_malformed_cite`] — so the
+/// recogniser reports the family rather than a bare boolean and the two
+/// questions cannot drift apart.
+///
+/// "Not a canonical cite" and "a botched citation" are different claims.  Only
+/// [`PrdCiteFamily::TaskCite`] spells an attempt to cite a task, so only it can
+/// be MALFORMED; a `§7#5` or `invariant #2` mention is an ordinary
+/// cross-reference into a document and asserts no tracking at all.  Treating
+/// the latter as `malformed-cite` would DEMOTE a marker that never claimed to
+/// be tracked from `untracked` (High, hard gate per §8.4) to Medium/advisory
+/// purely because its text names a PRD section or row — a demotion §6.6's
+/// `live ⊆ baseline` ratchet is as blind to as it is to a lost finding.  Pinned
+/// by `marker_with_prd_reference_only_is_untracked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrdCiteFamily {
+    /// Families 1 and 2 — a glued PRD-artifact namespace (`§7#5`, `T#11`,
+    /// `OQ#1`) or a spaced PRD-local noun (`invariant #2`, `rows #1`,
+    /// `design decision #5`).  A cross-reference INTO a document.
+    Reference,
+    /// Family 3 — `task(s) #N`.  The one register whose spelling is a citation
+    /// attempt, and therefore the one that can be malformed.
+    TaskCite,
 }
 
-/// §8.2 cite extraction (β liveness lane): every canonical `#NNNN` id on the
-/// line, in source order. Mirrors [`has_canonical_cite`]'s `#`+digit-run scan
-/// but parses each 1..=5-digit run to `u32` (runs of length 0 or >5 are
-/// skipped, so `#abc`, a bare `#`, and a 6-digit `#123456` yield nothing —
-/// consistent with the canonical-cite recogniser). The id-0 case (`#0`, `#00`)
-/// is also skipped — task ids start at 1, so a `#0` cite is not a valid id and
-/// is dropped here (keeping it lock-step with [`has_canonical_cite`]'s ≥1 guard,
-/// so `#0` classifies structurally as `untracked` rather than spuriously
-/// `unknown-id`).
-fn extract_cites(line: &str) -> Vec<u32> {
+/// §8.2 upper bound on a PRD-relative `#N`: a document-local index is small.
+/// Governs all three families via the single early return in
+/// [`prd_relative_cite_family`], so a family added later inherits it.
+///
+/// Named rather than inlined so the recogniser and the premise check that
+/// justifies its accepted loss (`prd_relative_bound_covers_only_terminal_task_ids`)
+/// cannot drift apart.  The 99/100 STEP itself is pinned with literals in
+/// `prd_relative_cite_positives`/`_negatives`, deliberately independent of this
+/// const, so widening the bound reds those tests instead of moving silently.
+const PRD_RELATIVE_MAX_ID: u32 = 99;
+
+/// §8.2 PRD-relative index: `Some(family)` when the `#` at `cite_start` (with
+/// parsed value `id`) names an index INSIDE a PRD document — a task/invariant/
+/// row/open-question number local to some `docs/prds/**` file — rather than a
+/// canonical task id.  Inspects ONLY the bytes to the LEFT of the `#`.
+///
+/// CLAUDE.md's TODO-citation convention already bans this register
+/// ("PRD-relative indices (`task-5`) … resolve to `malformed-cite`"); this is
+/// the recogniser that implements it for the `#N` spelling.  Three families:
+///
+/// 1. **Glued PRD-artifact namespace** — `§7#5`, or an uppercase artifact
+///    abbreviation (`OQ`/`DD`/`Q`/`T`) with a left word boundary, so an
+///    identifier merely ENDING in one of those letters (`ELEMENT#3`) does not
+///    match.
+/// 2. **Spaced PRD-local noun** — exactly one space between the `#` and an
+///    `invariant(s)` / `row(s)` / `boundary` / `open-question` /
+///    `design_decision` token, or the two-word `design decision` (matched by
+///    its own arm, since `decision` alone is not PRD-local).  Both spellings
+///    of the last are live PRD idioms and both are pinned by
+///    `prd_relative_cite_positives`.
+/// 3. **`task(s)`** — exactly one space between the `#` and a `task`/`tasks`
+///    token.  This is the only family that reports
+///    [`PrdCiteFamily::TaskCite`]; the other two report
+///    [`PrdCiteFamily::Reference`].
+///
+/// The following properties are load-bearing; each is stated in the code below
+/// and pinned by a test. Deliberately uncounted — a count in the prose drifts
+/// the moment a bullet is added. Corpus measurements, the enumerated
+/// alternatives and the adoption ruling are owned by **PRD §8.2 / §16 Row 2**;
+/// only the decisions a reader must not silently break are restated here:
+///
+/// - **The `id <= 99` bound is UNIFORM across all three families**, applied
+///   once as an early return rather than per family. It is a property of the
+///   PRD-relative REGISTER — a document-local index is small — not of the
+///   `task` noun, so a fourth family added later inherits it. It keys on DIGIT
+///   COUNT, not on a `PRD` left-context window, because a window measurably
+///   fails in BOTH directions. Pinned by `prd_relative_cite_negatives`,
+///   including the 99/100 boundary itself.
+/// - **The bound DOES overlap the real id space; that loss is accepted, and the
+///   premise making it acceptable is CHECKED rather than dated.** Every
+///   master-tag id inside the bound is terminal, and the range is CLOSED (ids
+///   are allocated monotonically upward and the head is far past the bound), so
+///   a covered `task #42` cite could only ever have been an `orphaned` finding.
+///   That first half is a claim about DB STATE, not about this code, so
+///   `prd_relative_bound_covers_only_terminal_task_ids` re-establishes it
+///   against the real DB instead of trusting a dated comment.
+/// - **An UNBOUNDED family is fail-DANGEROUS in the one direction §6.6's
+///   ratchet cannot see.** A real task id in family-2 register
+///   (`invariant #5238`, `done`) is either DOWNGRADED to the Medium advisory
+///   `malformed-cite` or ERASED outright in the cite-anchored δ-B lane, purely
+///   on which noun precedes the `#` — and `live ⊆ baseline` catches a GAINED
+///   finding, never a LOST one. Pinned by
+///   `prd_relative_families_are_digit_bounded_end_to_end`.
+/// - **Classification is per-`#N`-OCCURRENCE, never per-line.** Live lines
+///   carry both idioms at once, so a per-line verdict would either drop a real
+///   cite or resurrect a PRD-relative one. Pinned by
+///   `prd_relative_cite_is_per_occurrence_not_per_line`.
+///
+/// Widening the family list is gated by §14/§16's methodology: a fresh
+/// live-corpus enumeration, a hand-inspected FP count and a dated §16 row.
+///
+/// The G-allow owner-cite lane's own narrower `PRD `-immediately-left check
+/// ([`is_g_allow_cite_exempt`] rule (c)) is deliberately NOT refactored to
+/// delegate here: it is a decoupled lane with its own `g-allow-orphaned`
+/// baseline exposure, and [`extract_g_allow_owner_cites`] never calls
+/// [`extract_cites`], so widening it would silently change which owner cites
+/// are exempt. Pinned by the `extract_g_allow_owner_cites_*` tests.
+fn prd_relative_cite_family(bytes: &[u8], cite_start: usize, id: u32) -> Option<PrdCiteFamily> {
+    // The shared digit bound, applied ONCE for all three families — see the
+    // "UNIFORM" and "fail-DANGEROUS" paragraphs above.  Placed here rather than
+    // inside a family arm so a family added later cannot forget it.
+    if id > PRD_RELATIVE_MAX_ID {
+        return None;
+    }
+
+    /// The token alphabet for the spaced-noun families: [`is_word_byte`] plus
+    /// `-`, so a hyphenated PRD noun (`open-question`) is read as ONE token.
+    fn is_token_byte(b: u8) -> bool {
+        is_word_byte(b) || b == b'-'
+    }
+
+    /// The whole token ending at `end` (exclusive), scanning left over
+    /// [`is_token_byte`].  Returns the token slice and its start offset; the
+    /// token is empty when `end` is preceded by a non-token byte.
+    fn token_before(bytes: &[u8], end: usize) -> (&[u8], usize) {
+        let mut s = end;
+        while s > 0 && is_token_byte(bytes[s - 1]) {
+            s -= 1;
+        }
+        (&bytes[s..end], s)
+    }
+
+    let left = &bytes[..cite_start];
+
+    // ---- family 1: glued PRD-artifact namespace ------------------------
+    // `§<digits/dots>#N` — scan back over the section number, then require the
+    // section sign itself (U+00A7 = 0xC2 0xA7).
+    let mut s = left.len();
+    while s > 0 && (left[s - 1].is_ascii_digit() || left[s - 1] == b'.') {
+        s -= 1;
+    }
+    if s >= 2 && left[s - 2] == 0xC2 && left[s - 1] == 0xA7 {
+        return Some(PrdCiteFamily::Reference);
+    }
+    // `OQ#N` / `DD#N` / `Q#N` / `T#N` — an uppercase artifact abbreviation with
+    // a left word boundary.  All candidates are tried: `OQ#1` would fail the
+    // boundary check as `Q` (preceded by the word byte `O`) yet passes as `OQ`.
+    for abbrev in [b"OQ".as_slice(), b"DD".as_slice(), b"Q".as_slice(), b"T".as_slice()] {
+        if let Some(head) = left.strip_suffix(abbrev)
+            && head.last().is_none_or(|&b| !is_word_byte(b))
+        {
+            return Some(PrdCiteFamily::Reference);
+        }
+    }
+
+    // ---- families 2 and 3: exactly one space, then a PRD-local noun -----
+    // "Exactly one space" is the conservative reading: a wider separator rule
+    // would classify MORE cites as PRD-relative, and every such classification
+    // suppresses a cite, so the narrow form is the fail-safe direction.
+    if left.last() != Some(&b' ') || (left.len() >= 2 && left[left.len() - 2] == b' ') {
+        return None;
+    }
+    let (token, token_start) = token_before(left, left.len() - 1);
+
+    // Family 3 is matched FIRST and kept in its own table, because it is the
+    // one register that spells a citation ATTEMPT — see [`PrdCiteFamily`].
+    // It is safe under the shared bound only because of the hoisted `id > 99`
+    // early return at the top of this fn, which is not re-spelled per family.
+    if [b"task".as_slice(), b"tasks".as_slice()]
+        .iter()
+        .any(|n| token.eq_ignore_ascii_case(n))
+    {
+        return Some(PrdCiteFamily::TaskCite);
+    }
+
+    // Family 2's noun table.  Compared on the raw bytes (`eq_ignore_ascii_case`)
+    // rather than via a lowercased `String`, so classifying a cite allocates
+    // nothing — the `decision` arm below always did this, and the two halves
+    // now agree.  `design_decision` is the snake_case spelling of the two-word
+    // `design decision` handled by that arm; both are live PRD idioms.
+    const PRD_LOCAL_NOUNS: [&[u8]; 7] = [
+        b"invariant",
+        b"invariants",
+        b"row",
+        b"rows",
+        b"boundary",
+        b"open-question",
+        b"design_decision",
+    ];
+    if PRD_LOCAL_NOUNS.iter().any(|n| token.eq_ignore_ascii_case(n)) {
+        return Some(PrdCiteFamily::Reference);
+    }
+    // `design decision #5` — the bare noun `decision` is only PRD-local when
+    // `design` immediately qualifies it (one space, as above).
+    (token.eq_ignore_ascii_case(b"decision")
+        && token_start > 0
+        && left[token_start - 1] == b' '
+        && token_before(left, token_start - 1)
+            .0
+            .eq_ignore_ascii_case(b"design"))
+    .then_some(PrdCiteFamily::Reference)
+}
+
+/// §8.2 boolean face of [`prd_relative_cite_family`]: `true` when the `#N` is
+/// PRD-relative in ANY family.
+///
+/// This is the right question for the two halves of canonical-cite recognition
+/// ([`has_canonical_cite`] / [`extract_cites`]) — a `#N` in any of the three
+/// registers names a position inside a document, so none of them can anchor
+/// tracking.  [`has_malformed_cite`] deliberately asks the NARROWER question;
+/// see [`PrdCiteFamily`].
+fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
+    prd_relative_cite_family(bytes, cite_start, id).is_some()
+}
+
+/// §8.2 cite occurrences — the SINGLE `#`+digit-run scanner. Yields
+/// `(byte_offset_of_the_hash, id)` for every numerically well-formed cite on
+/// the line, in source order.
+///
+/// [`has_canonical_cite`], [`extract_cites`] and [`has_malformed_cite`]'s `#N`
+/// pass are all expressed over this one iterator, so the grammar they share —
+/// a run of 1..=5 ASCII digits (a 6-digit number is *not* matched on its
+/// 5-digit prefix) whose value is ≥1 (`#0`/`#00` is not a task id) — holds by
+/// CONSTRUCTION. It was previously three hand-rolled copies required to stay
+/// lock-step by three doc comments, which is a promise rather than a guarantee.
+/// The three callers now differ in exactly one thing: what each does with a
+/// [`prd_relative_cite`] occurrence — skip it, drop it, or report it.
+///
+/// A consumed digit run is skipped whole; a malformed run (a bare `#`, `#abc`,
+/// `#123456`) advances one byte, so a `#N` immediately after it is still seen.
+///
+/// The G-allow owner-cite lane deliberately does NOT scan through here — see
+/// [`extract_g_allow_owner_cites`], which carries its own exemption grammar.
+fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
     let bytes = line.as_bytes();
-    let mut out = Vec::new();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'#' {
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            if bytes[i] != b'#' {
+                i += 1;
+                continue;
+            }
             let mut j = i + 1;
             while j < bytes.len() && bytes[j].is_ascii_digit() {
                 j += 1;
             }
-            let run = j - (i + 1);
-            if (1..=5).contains(&run) {
-                // `line[i + 1..j]` is a 1..=5-digit ASCII run; it always fits
-                // in u32 (max 99999), so the parse cannot fail. Skip id 0 (`#0`,
-                // `#00`) — task ids start at 1, so it is not a valid cite.
-                if let Ok(id) = line[i + 1..j].parse::<u32>()
-                    && id >= 1
-                {
-                    out.push(id);
-                }
-                i = j; // skip past the consumed digit run
+            if !(1..=5).contains(&(j - (i + 1))) {
+                i += 1;
                 continue;
             }
+            let at = i;
+            i = j; // skip past the consumed digit run
+            // A 1..=5-digit ASCII run always fits in u32 (max 99999), so the
+            // parse cannot fail. `#0`/`#00` parses to 0 — task ids start at 1,
+            // so it is not a cite and is dropped here for every caller.
+            if let Ok(id) = line[at + 1..j].parse::<u32>()
+                && id >= 1
+            {
+                return Some((at, id));
+            }
         }
-        i += 1;
-    }
-    out
+        None
+    })
+}
+
+/// §8.2 canonical citation: `true` when the line carries at least one
+/// [`cite_occurrences`] cite (`#` + 1..=5 digits, value ≥1) that is NOT a
+/// PRD-relative index.
+///
+/// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
+/// document, not a task, so it cannot anchor tracking. The filter is applied
+/// per-OCCURRENCE, so a line carrying both idioms still reports the genuine
+/// cite. An all-PRD-relative (or all-zero) line falls through to the structural
+/// `untracked` / `malformed-cite` classification.
+fn has_canonical_cite(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    cite_occurrences(line).any(|(at, id)| !prd_relative_cite(bytes, at, id))
+}
+
+/// §8.2 cite extraction (β liveness lane): every canonical id on the line, in
+/// source order.
+///
+/// Shares [`cite_occurrences`] with [`has_canonical_cite`] and applies the same
+/// [`prd_relative_cite`] filter, so the two are lock-step by construction: a
+/// cite that is not canonical is also not extracted.
+fn extract_cites(line: &str) -> Vec<u32> {
+    let bytes = line.as_bytes();
+    cite_occurrences(line)
+        .filter(|&(at, id)| !prd_relative_cite(bytes, at, id))
+        .map(|(_, id)| id)
+        .collect()
 }
 
 /// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned
@@ -253,9 +476,61 @@ fn is_greek(c: char) -> bool {
 
 /// §8.2/§6.4 malformed citation: the case-insensitive token `task` immediately
 /// followed — after an optional single space — by a Greek letter, OR
-/// `task-`/`task_`/`task `+ ASCII digit (PRD-relative / legacy forms). Banned
+/// `task-`/`task_`/`task `+ ASCII digit (legacy forms), OR a `task(s) #N`
+/// sitting in PRD-relative left-context ([`PrdCiteFamily::TaskCite`]). Banned
 /// from day one; δ migrates valid cites to canonical `#NNNN`.
+///
+/// The `#N` register DELEGATES to [`prd_relative_cite_family`] rather than
+/// re-spelling its families, so this half of the §8.2 grammar cannot drift from
+/// the [`has_canonical_cite`] / [`extract_cites`] half. Without it, a marker
+/// line whose only cite is `task #N` loses its anchor and collapses into
+/// `untracked`, which §8.4 rates High (hard gate) where a malformed cite is
+/// Medium (advisory) — over-reporting an author who cited imprecisely.
+///
+/// **The delegation is deliberately NARROWER than `has_canonical_cite`'s**: it
+/// accepts only [`PrdCiteFamily::TaskCite`], never [`PrdCiteFamily::Reference`].
+/// A `§7#5` / `invariant #2` mention makes the `#N` unusable as an anchor (so
+/// canonical-cite recognition must reject it) without being a citation attempt
+/// (so it must not soften the verdict).
+///
+/// **The `#N` pass is SELF-SUFFICIENT, not precondition-dependent** — see the
+/// comment on its second conjunct below.
+///
+/// The `#N` register is scanned in a SEPARATE pass from the `char` loop: the
+/// Greek arm needs `char` indices (Greek letters are multi-byte) while
+/// [`prd_relative_cite`] takes a byte offset. Both passes are O(n) per line.
+///
+/// `is_g_allow_cite_exempt` rule (c) and [`extract_g_allow_owner_cites`] are
+/// deliberately NOT refactored to delegate here — see
+/// [`prd_relative_cite_family`]'s rustdoc for why that lane stays decoupled.
 fn has_malformed_cite(line: &str) -> bool {
+    // Pass 1 (§8.2 `task(s) #N` register): the shared [`cite_occurrences`]
+    // scan, with the verdict INVERTED relative to `has_canonical_cite` — the
+    // line is malformed when ANY occurrence lands in `task(s)` left-context
+    // AND no occurrence on the line is a genuine cite.
+    //
+    // The second conjunct is what makes this pass SELF-SUFFICIENT rather than
+    // dependent on a caller-side precondition. Arm (3) happens to consult this
+    // fn only after `has_canonical_cite` returned false, but nothing encodes
+    // that, and on a line carrying both idioms (`// TODO: see #4553; supersedes
+    // PRD task #10`) the unguarded form would DEMOTE a properly-tracked marker
+    // to the Medium advisory — the LOST direction §6.6's subset ratchet is blind
+    // to. A `debug_assert!` cannot express it: `malformed_cite_*` legitimately
+    // calls this fn on canonically-cited lines. Short-circuit order keeps the
+    // extra scan off the hot path. Pinned by
+    // `malformed_cite_prd_relative_is_self_sufficient`.
+    //
+    // `Reference` occurrences are deliberately NOT accepted here — see this
+    // fn's rustdoc and [`PrdCiteFamily`].
+    let bytes = line.as_bytes();
+    if cite_occurrences(line)
+        .any(|(at, id)| prd_relative_cite_family(bytes, at, id) == Some(PrdCiteFamily::TaskCite))
+        && !has_canonical_cite(line)
+    {
+        return true;
+    }
+
+    // Pass 2 (Greek + legacy `task-N`/`task_N`/`task N` registers), unchanged.
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
     let mut i = 0;
@@ -882,6 +1157,11 @@ enum LineClass {
 ///    `//` rationale carries deferral prose → canonical cite → `Cited(ids)`;
 ///    else `Structural(Untracked)`.
 /// 6. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+/// 7. lane δ-B (`.rs`): an ordinary comment line (trimmed, starts `//` — so
+///    `//`, `///` and `//!` alike) that carries BOTH a canonical `#NNNN` cite
+///    and deferral prose, and is not a `// G-allow:` marker →
+///    `Cited(on-line cites)`. Cite-ANCHORED: it emits no structural kind, so an
+///    uncited deferral comment produces no entry.
 fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
@@ -926,7 +1206,12 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
                 // canonical cite → tracked; β resolves the on-line cites. No
                 // above-line lookback here (that is a stub-macro convention),
                 // so an unrelated cite on the prior line cannot mask this one.
-                out.push((line_no, LineClass::Cited(extract_cites(line)), line.trim().to_string()));
+                // Deduped like arm (4): `resolve_liveness_keyed` emits one
+                // finding per id, so a line naming the same id twice would
+                // otherwise report it twice.
+                let mut ids = extract_cites(line);
+                dedup_in_place(&mut ids);
+                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
             } else if has_malformed_cite(line) {
                 out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
@@ -993,6 +1278,61 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
         } else if phantom_phrase(line) && !has_canon {
             // (6) phantom tracking — claim of tracking with no canonical cite.
             out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
+        } else if is_rust
+            && line.trim_start().starts_with("//")
+            && has_canon
+            && has_deferral_prose(line)
+            && g_allow_marker_body(line).is_none()
+        {
+            // (7) lane δ-B (.rs only): an ordinary FULL-LINE comment — no
+            // TODO-family marker, no attribute — that both DEFERS work and
+            // NAMES the task it is deferred to. Population enumeration, FP
+            // measurements and the adoption ruling: PRD §16 Row 2.
+            //
+            // Four choices a reader must not silently undo:
+            //
+            // (i) APPENDED LAST, after arm (6), so every earlier arm keeps
+            // every line it owned. The `else if` chain is what guarantees
+            // at-most-one entry per line, which `fingerprint` and the §6.6
+            // baseline machinery assume.
+            //
+            // (ii) CITE-ANCHORED, hence NO structural kind. δ-A has an
+            // attribute to anchor on and can report the uncited case as
+            // `Untracked`; δ-B has only the comment, so the cite IS the anchor
+            // — which is what stops the lane firing on every prose comment
+            // containing "pending". It emits only `Cited` and reaches ONLY the
+            // unchanged β liveness lane, leaving §8.3's taxonomy, `VALID_KINDS`
+            // and the §8.4 severity map untouched.
+            //
+            // (iii) The `g_allow_marker_body` guard delegates the ENTIRE
+            // `// G-allow:` register to its owner lane, which has its own
+            // `g-allow-orphaned` kind; without it such a line emits TWO
+            // findings under two kinds once its owner cite goes terminal. The
+            // guard deliberately also covers the case that lane does NOT report
+            // — a G-allow line whose cites are ALL provenance-exempt has no
+            // owner, so neither lane claims it. That is two rules composing,
+            // not a hole: `extract_cites` is blind to the sibling grammar's
+            // exemptions, so admitting the line would anchor δ-B on exactly the
+            // cites that grammar classified as provenance (`#N (done)`,
+            // `re-homed from cancelled #N`, `PRD #N`), in the fail-dangerous
+            // direction. Pinned by
+            // `scan_file_delta_b_negative_g_allow_owner_less`.
+            //
+            // (iv) FULL-LINE comments only (`trim_start().starts_with("//")`):
+            // a trailing comment after code is out of scope. Decided, not
+            // overlooked — it is what makes the whole-line predicates sound
+            // (on a δ-B line the entire line IS comment text), and the live
+            // exposure it forgoes is a single line arm (5) already owns. Pinned
+            // by `scan_file_delta_b_negative_trailing_comment`.
+            //
+            // FP control is entirely inherited, not new: `has_deferral_prose`'s
+            // guards kill the identifier class (`mark_pending_with_cause`) and
+            // §8.2's `prd_relative_cite` kills the PRD-relative class
+            // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
+            // 48% false-positive rate; those two guards are what changed.
+            let mut ids = extract_cites(line);
+            dedup_in_place(&mut ids);
+            out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
         }
 
         prev = Some(line);
@@ -2208,6 +2548,228 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.2 PRD-relative indices — the non-canonical `#N` register
+    //
+    // A PRD-relative `#N` (`PRD task #10`, `invariant #2`, `§7#5`) names an
+    // index INSIDE a PRD document, not a task id.  CLAUDE.md's TODO-citation
+    // convention already rules these out ("PRD-relative indices … resolve to
+    // `malformed-cite`"); these tests pin that the shared cite grammar
+    // implements it.  Measured basis for the population and the digit bound
+    // lives on `prd_relative_cite`.
+    // -------------------------------------------------------------------
+
+    /// Every measured PRD-relative form must be invisible to BOTH halves of the
+    /// cite grammar — `has_canonical_cite` false AND `extract_cites` empty —
+    /// because the two are required to stay lock-step.
+    ///
+    /// The first six are the class-(b) false positives lane δ-B would otherwise
+    /// report at High `orphaned` (all three ids resolve to REAL `done` tasks, so
+    /// each spuriously orphans); they are pinned VERBATIM from the live corpus.
+    /// The remainder are the sibling forms found by the same catalogue sweep.
+    #[test]
+    fn prd_relative_cite_positives() {
+        let lines = [
+            // ---- class (b), verbatim from the live corpus ----
+            // crates/reify-stdlib/src/fea.rs
+            "/// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for",
+            // crates/reify-stdlib/src/fea.rs
+            "/// Diagnostic emission is deferred to PRD task #10.",
+            // crates/reify-stdlib/src/fea.rs
+            "///    is deferred to PRD task #10 (Diagnostic mapping for multi-case-",
+            // crates/reify-stdlib/src/fea.rs
+            "// Empty Map → Undef. Diagnostic emission deferred to PRD task #10",
+            // crates/reify-solver-elastic/src/boundary/dirichlet.rs
+            "/// a uniaxial-stretch scenario is deferred to the downstream PRD task #12",
+            // crates/reify-eval/src/geometry_ops.rs
+            "//   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:",
+            // ---- sibling forms from the catalogue re-sweep ----
+            // Bare `invariant #N` needs no `PRD` token — all 52 repo-wide
+            // occurrences are single-digit PRD-local (engine_build.rs).
+            "///    `topology_attribute_table` debug_assert (invariant #4) never runs.",
+            "//! …) — all §7 rows #1 pinned end-to-end.",
+            // Glued PRD-artifact namespaces (`§X#N`, `Q#N`, `OQ#N`, `DD#N`, `T#N`).
+            "//! Step 3 tests: §7#5 positive path + all-three-kind parity + non-regression.",
+            "    // Repeatable per PRD §11 Open Q#4: each --purpose occurrence is one",
+            "/// returns a VALUE (Type::Feature), not a Selector — PRD D1 OQ#1.",
+            "/// subprocess (never FFI, PRD DD#4), composes a deterministic settings profile,",
+            "//! consumer (PRD T#11). Output is a [`crate::assembly::ElementStiffness`]",
+            // Spaced PRD-local nouns.
+            "//!   task μ (PRD §10 open-question #2).",
+            "//! lib.rs (see task 2035 design decision #5): both are used only by",
+            "// PRD docs/prds/v0_6/stdlib-namespace.md §7 boundary #3. The observable the PRD",
+            // Plural `tasks` under the ≤ 99 bound.
+            "/// until PRD tasks #10 land the engine",
+            // The snake_case spelling of the family-2 `design decision` noun,
+            // which the two-word case above does NOT exercise (that one is
+            // matched by the trailing `decision`-qualified-by-`design` arm,
+            // this one by the noun table itself).
+            "/// see design_decision #5 for the landed shape",
+            // The digit bound's own boundary, inclusive side: `#99` is the
+            // largest id the recogniser suppresses.  Its `#100` mirror is in
+            // `prd_relative_cite_negatives`.
+            "/// deferred to PRD task #99 (the last id inside the bound)",
+        ];
+        for line in lines {
+            assert!(
+                !has_canonical_cite(line),
+                "PRD-relative index must not be a canonical cite: {line}"
+            );
+            assert_eq!(
+                extract_cites(line),
+                Vec::<u32>::new(),
+                "PRD-relative index must extract no ids: {line}"
+            );
+        }
+    }
+
+    /// The mirror image: the rule must not suppress a single GENUINE cite.
+    /// Corpus-derived shapes plus synthetic four-digit controls — the
+    /// `#4553` family below is deliberately synthetic, because family 1 has
+    /// ZERO live four-digit exposure and pinning it is what makes the bound a
+    /// property rather than luck.
+    ///
+    /// Provenance comments name a FILE, never a line: nothing verifies a line
+    /// number here, and this test already caught one rotting (the
+    /// `detectors.rs` entry, whose prose this branch itself rewrote).
+    #[test]
+    fn prd_relative_cite_negatives() {
+        let cases: &[(&str, u32)] = &[
+            // crates/reify-compute-contract/src/elastic_result.rs
+            ("/// The `.ri` / gate exposure is deferred to consumer task #3787.", 3787),
+            // crates/reify-core/src/diagnostics.rs
+            ("/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring", 2947),
+            // crates/reify-eval/src/compute_targets/elastic_static.rs
+            ("/// resolution (deferred to P2 / task #4092): reads each support's raw", 4092),
+            // crates/reify-eval/src/engine_build.rs
+            ("/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel", 3437),
+            // crates/reify-eval/src/detectors.rs — the class-(c) line this
+            // branch truth-corrected, quoted at its CURRENT text ("resolved
+            // by", not the pre-fix "deferred to"). The correction changed the
+            // prose, never the citation, which is what this case asserts.
+            ("// comment for that drift-risk trade-off (resolved by task μ, #5062).", 5062),
+            // crates/reify-eval/src/engine_edit.rs
+            ("//      not yet in any `diff_*` helper (tracked by #4686);", 4686),
+            // The three-digit legacy ids that must survive the `task #N ≤ 99`
+            // guard — the only genuine sub-4-digit `task #N` cites in the repo.
+            // crates/reify-compiler/src/stdlib_loader.rs
+            ("        // Reconstruction of lost work from task #333 per PRD §Slice B.", 333),
+            // crates/reify-lsp/tests/incremental_eval_benchmark.rs
+            ("//! Re-establishes the deliverable from task #479 that was lost when commit 00a86da53", 479),
+            // crates/reify-expr/tests/field_eval_tests.rs
+            ("/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient", 630),
+            // The digit bound's own boundary, exclusive side.  `#99` (its
+            // mirror in `prd_relative_cite_positives`) is suppressed and `#100`
+            // is not: the single most load-bearing constant in the recogniser,
+            // pinned at the step rather than only at 2-vs-3 digits.
+            ("/// deferred to PRD task #100 (the first id outside the bound)", 100),
+            // ---- the digit bound must be UNIFORM across all three families ----
+            // The one tracked line repo-wide that puts a REAL task id in
+            // family-2 register: `git grep -nE '(invariants?|rows?|boundary)
+            // #[0-9]{3,}'` over ALL tracked files returns exactly this hit, and
+            // #5238 is `done` — terminal — and owns that very file.  An
+            // unbounded family does not merely mute such a cite: it DOWNGRADES
+            // a High `orphaned` finding on a marker line and ERASES the
+            // candidate outright on a δ-B one, both invisible to §6.6 — so the
+            // bound has to be pinned here.
+            // crates/reify-eval/tests/engine_eval_commit_migration.rs
+            ("/// This is the invariant #5238 nearly lost: both let evaluators used to emit", 5238),
+            // Synthetic four-digit forms for every family that carried no
+            // bound of its own.  Family 1 has ZERO live four-digit exposure
+            // (measure with the detector's own allowlisted crate excluded —
+            // `':!crates/reify-audit/*'` — or the five lines directly below
+            // match their own sweep), so pinning it here is what makes the
+            // shape a PROPERTY rather than luck.  Method and counts: PRD §16
+            // Row 2.
+            ("//! superseded by §7#4553 in the ratchet", 4553),
+            ("//! superseded by T#4553 in the ratchet", 4553),
+            ("//! superseded by Q#4553 in the ratchet", 4553),
+            ("//! superseded by OQ#4553 in the ratchet", 4553),
+            ("//! superseded by DD#4553 in the ratchet", 4553),
+            // Family 2 — every spaced PRD-local noun, four-digit.
+            ("/// see row #4553 for the landed shape", 4553),
+            ("/// see rows #4553 for the landed shape", 4553),
+            ("/// see boundary #4553 for the landed shape", 4553),
+            ("/// see open-question #4553 for the landed shape", 4553),
+            ("/// see design decision #4553 for the landed shape", 4553),
+        ];
+        for (line, id) in cases {
+            assert!(
+                has_canonical_cite(line),
+                "genuine cite must stay canonical: {line}"
+            );
+            assert_eq!(extract_cites(line), vec![*id], "genuine cite id: {line}");
+        }
+    }
+
+    /// Classification is per-`#N`-OCCURRENCE, never per-line: six live lines
+    /// carry BOTH idioms, so a per-line verdict would either lose a real cite or
+    /// resurrect a PRD-relative one.
+    #[test]
+    fn prd_relative_cite_is_per_occurrence_not_per_line() {
+        // crates/reify-mesh-morph/src/eligibility.rs
+        let co_cite = "/// visibility scheme (PRD task #11, task #2948) maintain separate counters";
+        assert!(has_canonical_cite(co_cite));
+        assert_eq!(extract_cites(co_cite), vec![2948]);
+        // crates/reify-mesh-morph/tests/chain_degradation.rs
+        let provenance = "//! Provenance: task #2951 (PRD task #14).";
+        assert!(has_canonical_cite(provenance));
+        assert_eq!(extract_cites(provenance), vec![2951]);
+    }
+
+    /// The digit bound is a property of the PRD-relative REGISTER — a
+    /// document-local index is small — NOT of the `task` noun.  Whether a `#N`
+    /// resolves as a cite must therefore not depend on which PRD-local noun
+    /// happens to precede it.
+    ///
+    /// Pinned END TO END rather than only on the grammar, because what an
+    /// unbounded family actually costs is a DISPOSITION, and the disposition is
+    /// invisible at `has_canonical_cite` level.  All three lines carry the same
+    /// genuine cite, #5238 (`done` — terminal), so each would resolve to a High
+    /// `orphaned` finding through the unchanged β liveness lane.
+    #[test]
+    fn prd_relative_families_are_digit_bounded_end_to_end() {
+        // (i) Marker lane, arm (3).  A four-digit cite must anchor the line as
+        // `Cited` (→ β liveness → High `orphaned`, the hard gate), NOT be
+        // downgraded to the Medium advisory `malformed-cite` merely because
+        // `invariant` precedes it.  Asserted on both faces: `scan_file` shows
+        // the `Cited` anchor, `classify_file` shows the structural lane is
+        // silent (it discards `Cited`), which is what excludes `MalformedCite`.
+        let marker = "// TODO: the invariant #5238 nearly lost";
+        assert_eq!(
+            scan_file(marker, true),
+            vec![(1, LineClass::Cited(vec![5238]), marker.to_string())],
+            "family 2 must not swallow a four-digit cite on a marker line"
+        );
+        assert_eq!(
+            classify_file(marker, true),
+            vec![],
+            "a genuine cite must not degrade to Kind::MalformedCite: {marker}"
+        );
+
+        // (ii) Lane δ-B, arm (7).  δ-B is cite-ANCHORED, so an unbounded family
+        // does not downgrade the finding — it erases the candidate entirely.
+        // Routed through `scan_file`, NOT `classify_file`: the latter discards
+        // `Cited` entries and would report "nothing" either way, so only this
+        // assertion can actually fail.
+        let delta_b = "/// hydration is blocked on the invariant #5238 landing";
+        assert_eq!(
+            scan_file(delta_b, true),
+            vec![(1, LineClass::Cited(vec![5238]), delta_b.to_string())],
+            "cite-anchored δ-B must still see a four-digit cite in family-2 register"
+        );
+
+        // (iii) Control — family 3's own bound already saves this shape, so the
+        // disposition must be IDENTICAL whichever PRD-local noun precedes the
+        // cite.  That equality is the property under test.
+        let control = "// TODO: see task #5238 nearly lost";
+        assert_eq!(
+            scan_file(control, true),
+            vec![(1, LineClass::Cited(vec![5238]), control.to_string())],
+            "family 3's existing bound must keep this line's cite canonical"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // §8.2/§6.4 malformed citations — Greek / PRD-relative / legacy
     // -------------------------------------------------------------------
 
@@ -2231,6 +2793,140 @@ mod tests {
         // `task` embedded in a larger word (no left boundary) must NOT match,
         // even when followed by a separator + digit (`multitask 5`).
         assert!(!has_malformed_cite("// TODO: schedule multitask 5 jobs"));
+    }
+
+    /// A PRD-relative `task(s) #N` on a REAL marker line is a banned citation
+    /// form — the behaviour CLAUDE.md's TODO-citation convention already
+    /// mandates ("PRD-relative indices … resolve to `malformed-cite`") and
+    /// which §8.2's grammar missed for the `#N` spelling.
+    ///
+    /// The two OTHER families are the negative half, and the asymmetry is
+    /// deliberate: `§7#5` / `invariant #2` are cross-references into a
+    /// document, not citation attempts, so a marker carrying one and nothing
+    /// else never claimed to be tracked and must stay `untracked` (High) rather
+    /// than soften to the Medium advisory merely because its prose names a PRD
+    /// section.  See [`PrdCiteFamily`]; the end-to-end disposition is pinned by
+    /// `marker_with_prd_reference_only_is_untracked`.
+    ///
+    /// Every line here is a lone PRD-relative cite: a marker whose `#N` is NOT
+    /// in PRD-relative context (`// TODO(#10): …`) is `Cited` at arm (3) and
+    /// never consults this fn at all, so pinning such a line here would assert
+    /// a state the detector cannot reach.
+    ///
+    /// **Vacuous on the live corpus today, deliberately.** A sweep of every
+    /// marker-lane line (`#[ignore]`, TODO/FIXME/HACK, stub macro, δ-A) found
+    /// ZERO carrying a PRD-relative-shaped cite, under both a narrow and the
+    /// full rule.  That is why this arm is pinned hermetically here rather than
+    /// by a corpus assertion — and it is also why this change adds no new
+    /// `malformed-cite` finding to the live corpus.
+    #[test]
+    fn malformed_cite_prd_relative() {
+        // Family 3 — `task #N` under the ≤ 99 digit bound, the only register
+        // that spells a citation attempt.
+        assert!(has_malformed_cite("// TODO: wire the diagnostic per PRD task #10"));
+        assert!(has_malformed_cite("// FIXME: subsumed by PRD tasks #12"));
+        // Family 2 — a spaced PRD-local noun. NOT a citation attempt.
+        assert!(!has_malformed_cite("// FIXME: blocked on PRD invariant #2"));
+        // Family 1 — a glued PRD-artifact namespace. NOT a citation attempt.
+        assert!(!has_malformed_cite("// HACK: see §7#5"));
+        assert!(!has_malformed_cite("// HACK: see OQ#1"));
+        // Mirror image: a genuine cite is NOT malformed, and neither are the
+        // three-digit legacy ids the digit bound has to let through.
+        assert!(!has_malformed_cite("// TODO(#4092): real task"));
+        assert!(!has_malformed_cite(
+            "        // Reconstruction of lost work from task #333 per PRD §Slice B."
+        ));
+        assert!(!has_malformed_cite(
+            "//! Re-establishes the deliverable from task #479 that was lost when commit 00a86da53"
+        ));
+        assert!(!has_malformed_cite(
+            "/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient"
+        ));
+    }
+
+    /// Pass 1 must stand on its own, not on a caller-side precondition.
+    ///
+    /// A line can carry BOTH a genuine cite and a `task(s) #N` occurrence.
+    /// Arm (3) reaches `has_malformed_cite` only after [`has_canonical_cite`]
+    /// returned false, so today no such line ever gets here — but that is a
+    /// property of ONE call site, not of this fn, and the cost of losing it is
+    /// a SEVERITY: a properly-tracked marker demoted from `Cited` (whose cite
+    /// reaches the β liveness lane, High when orphaned) to the Medium advisory
+    /// `malformed-cite`. §6.6's ratchet asserts `live ⊆ baseline`, which sees a
+    /// GAINED finding and never a DEMOTED one, so nothing downstream would
+    /// report it. Pinned here at the recogniser AND end-to-end below.
+    #[test]
+    fn malformed_cite_prd_relative_is_self_sufficient() {
+        // Both idioms on one line: the `#4553` is genuine, the `#10` is family
+        // 3. The genuine cite wins — the line is not malformed.
+        let mixed = "// TODO: see #4553; supersedes PRD task #10";
+        assert!(has_canonical_cite(mixed));
+        assert!(!has_malformed_cite(mixed));
+        // …and end to end, the marker stays `Cited` on its genuine id alone —
+        // reaching the β liveness lane, not the structural taxonomy.
+        assert_eq!(
+            scan_file(mixed, true),
+            vec![(1, LineClass::Cited(vec![4553]), mixed.to_string())]
+        );
+        assert!(classify_file(mixed, true).is_empty());
+        // The control: strip the genuine cite and the same line IS malformed,
+        // so the guard suppresses nothing it should not.
+        assert!(has_malformed_cite("// TODO: supersedes PRD task #10"));
+    }
+
+    /// `scan_file` precedence for the same shape, end to end: a marker line
+    /// whose only cite is PRD-relative must land in the `malformed-cite`
+    /// branch of arm (3) — NOT `Cited` (step-2 removed the canonical anchor)
+    /// and NOT `Untracked`.
+    ///
+    /// The `Untracked` collapse is the one that matters: §8.4 rates a malformed
+    /// cite Medium/advisory while `untracked` is High and hard-fails the merge
+    /// gate, so reporting an author who cited imprecisely as untracked debt
+    /// would over-report at the gate.  Same reasoning task #6087 applied to
+    /// lane δ-A's malformed branch.
+    #[test]
+    fn classify_file_marker_with_prd_relative_cite_is_malformed() {
+        let got = classify_file("// TODO: deferred to PRD task #10", true);
+        assert_eq!(
+            got,
+            vec![(
+                1,
+                Kind::MalformedCite,
+                "// TODO: deferred to PRD task #10".to_string()
+            )]
+        );
+    }
+
+    /// The mirror image of the test above, and the boundary that keeps §8.2's
+    /// `#N` fix from LOWERING the gate: a marker whose only `#N` is a family-1
+    /// or family-2 PRD REFERENCE made no citation attempt, so it must land in
+    /// `untracked` (High, hard gate per §8.4) — not in the Medium advisory
+    /// `malformed-cite`.
+    ///
+    /// Pinned end to end rather than only on `has_malformed_cite`, because what
+    /// a wider pass-1 predicate actually costs is a SEVERITY, and severity is
+    /// invisible at the recogniser — see
+    /// `malformed_cite_prd_relative_is_self_sufficient` for why the §6.6 ratchet
+    /// would not report that regression.
+    ///
+    /// Vacuous on the live corpus today (no marker-lane line carries a 1–2-digit
+    /// `#N` in either register), which is why it is pinned hermetically here.
+    #[test]
+    fn marker_with_prd_reference_only_is_untracked() {
+        for line in [
+            // Family 1 — glued PRD-artifact namespace.
+            "// TODO: revisit §7#5 handling",
+            "// HACK: mirrors OQ#1 until the rewrite",
+            // Family 2 — spaced PRD-local noun.
+            "// FIXME: fix invariant #2 first",
+            "// TODO: widen boundary #3 once the shape settles",
+        ] {
+            assert_eq!(
+                classify_file(line, true),
+                vec![(1, Kind::Untracked, line.to_string())],
+                "a PRD reference is not a citation attempt: {line}"
+            );
+        }
     }
 
     // -------------------------------------------------------------------
@@ -2519,6 +3215,294 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.1 lane δ-B — cited deferral in an ordinary comment (.rs)
+    // -------------------------------------------------------------------
+
+    /// The deliverable signal at unit level: an ordinary `///` comment that
+    /// states the work is deferred AND names the task becomes `Cited`, so the
+    /// UNCHANGED β liveness lane resolves it.
+    ///
+    /// Both lines are lifted VERBATIM from the live corpus
+    /// (`crates/reify-core/src/diagnostics.rs`, the `HexWedgeMeshOutcome`
+    /// rustdoc). Cite #2947 is `cancelled` — a terminal status — so β turns each
+    /// into a High `orphaned` finding. These two lines ARE the reason this lane
+    /// exists: neither carries a TODO-family marker, neither sits on an
+    /// attribute, so no existing arm can reach them. Note they are `///` doc
+    /// comments with no attribute above, which is why δ-A provably cannot cover
+    /// this shape.
+    #[test]
+    fn scan_file_delta_b_cited_deferral_positives() {
+        for line in [
+            "/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring",
+            "/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![(1, LineClass::Cited(vec![2947]), line.trim().to_string())],
+                "δ-B positive not classified Cited([2947]): {line}"
+            );
+        }
+    }
+
+    /// The lane fires on all three Rust comment openers, not just `///` — the
+    /// predicate is `trim_start().starts_with("//")`, so a plain `//` and a
+    /// `//!` module doc are equally in scope.
+    #[test]
+    fn scan_file_delta_b_all_comment_openers() {
+        for line in [
+            "    // hydration is blocked on task #2947 landing first",
+            "//! Envelope assembly is deferred to task #2947.",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![(1, LineClass::Cited(vec![2947]), line.trim().to_string())],
+                "δ-B opener not recognised: {line}"
+            );
+        }
+    }
+
+    /// Class (a) — the IDENTIFIER false-positive class, killed by
+    /// [`has_deferral_prose`]'s guard 3. Every line is VERBATIM from
+    /// `crates/reify-eval/src/cache.rs`; every one carries a genuine canonical
+    /// cite, so nothing but the prose guard stands between them and a High
+    /// `orphaned` finding. This class was 100% of what sank δ-B's first
+    /// proposal (task #6087) and is now fully eliminated.
+    #[test]
+    fn scan_file_delta_b_negatives_identifier_class() {
+        for line in [
+            "            // cause via mark_pending_with_cause (task #2330 §9.2 invariant).",
+            "    /// / `mark_pending_with_cause` (tasks #2326, #2335) and all Failed transitions",
+            "    // --- pending_cause / mark_failed / mark_pending_with_cause tests (task #2330 step-3) ---",
+            "    // --- mark_pruned_pending producer tests (task #4739 γ) ---",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![],
+                "δ-B over-fired on an identifier-class line: {line}"
+            );
+        }
+    }
+
+    /// Class (b) — the PRD-RELATIVE false-positive class, killed by
+    /// [`prd_relative_cite`] (§8.2). Every line is VERBATIM from the live
+    /// corpus and every one carries BOTH deferral prose and a `#N`, so the
+    /// prose guard alone does NOT save them — only the cite grammar does. That
+    /// is precisely why SCOPE-1 is a prerequisite of this lane rather than an
+    /// unrelated tidy-up: without it these six live lines would each become a
+    /// spurious High `orphaned` finding naming a PRD document index.
+    #[test]
+    fn scan_file_delta_b_negatives_prd_relative_class() {
+        for line in [
+            // crates/reify-stdlib/src/fea.rs — family 3, `task #10`.
+            "/// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for",
+            "/// Diagnostic emission is deferred to PRD task #10.",
+            "///    is deferred to PRD task #10 (Diagnostic mapping for multi-case-",
+            "    // Empty Map → Undef. Diagnostic emission deferred to PRD task #10",
+            // crates/reify-solver-elastic/src/boundary/dirichlet.rs — `task #12`.
+            "    /// a uniaxial-stretch scenario is deferred to the downstream PRD task #12",
+            // crates/reify-eval/src/geometry_ops.rs — family 2, `invariant #2`.
+            "            //   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:",
+            // Two more PRD-relative live shapes that carry no deferral prose —
+            // belt and braces: they must stay silent on BOTH guards.
+            "    /// (v0.3.x multi-load-case FEA PRD task #10).",
+            "    /// rather than partially constructing a sub-handle (PRD invariant #2).",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![],
+                "δ-B over-fired on a PRD-relative line: {line}"
+            );
+        }
+    }
+
+    /// Class (c) — δ-B is cite-ANCHORED. A deferral comment with NO canonical
+    /// cite is not a δ-B candidate at all, so the lane emits no structural kind
+    /// and cannot degenerate into "flag every comment containing `pending`".
+    /// Contrast δ-A, which anchors on the attribute and therefore CAN emit
+    /// `Untracked` for the uncited case.
+    #[test]
+    fn scan_file_delta_b_negative_uncited_deferral() {
+        for line in [
+            "/// wiring is pending the morph rewrite",
+            "// the envelope path is blocked on the solver rewrite",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![],
+                "δ-B is cite-anchored and must not emit a structural kind: {line}"
+            );
+        }
+    }
+
+    /// Class (d) — a `// G-allow:` line carrying both a cite and deferral prose
+    /// belongs to the G-allow lane, which runs its own independent
+    /// `scan_g_allow_markers` → `resolve_g_allow_owner_liveness` pass. Without
+    /// the guard the same line would emit TWO findings under two different
+    /// kinds (`orphaned` and `g-allow-orphaned`) once its owner cite goes
+    /// terminal. VERBATIM from `crates/reify-ir/src/value.rs` (two live sites,
+    /// both citing #5235, which is `pending` today — so this is latent, not
+    /// live, which is exactly when it is cheapest to close).
+    #[test]
+    fn scan_file_delta_b_negative_g_allow_line() {
+        let line = "// G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then";
+        assert_eq!(
+            scan_file(line, true),
+            vec![],
+            "δ-B must delegate G-allow lines to their owner lane"
+        );
+    }
+
+    /// Class (d), the seam: a `// G-allow:` line whose cites are ALL
+    /// provenance-EXEMPT (rules (a)/(b)/(c)) yields no owner, so the G-allow
+    /// lane skips it for having nothing to resolve and δ-B skips it for being a
+    /// G-allow line — NEITHER lane claims it. That is the composition of two
+    /// rules, not an oversight, and this test pins it as a decision: on such a
+    /// line the owner-cite grammar IS the cite grammar, and `extract_cites` is
+    /// blind to its exemptions, so admitting the line into δ-B would anchor it
+    /// on precisely the cites the sibling grammar classified as provenance.
+    /// Both halves are asserted, because the property is about the PAIR.
+    #[test]
+    fn scan_file_delta_b_negative_g_allow_owner_less() {
+        let line =
+            "// G-allow: envelope assembly is deferred to #4092 (done); re-homed from cancelled #3429";
+        // The owner lane is silent: every cite is provenance-exempt.
+        let body = g_allow_marker_body(line).expect("a G-allow body");
+        assert_eq!(
+            extract_g_allow_owner_cites(body),
+            Vec::<u32>::new(),
+            "both cites must be provenance-exempt for this to be the seam case"
+        );
+        // …and so is δ-B, by the `g_allow_marker_body` guard.
+        assert_eq!(
+            scan_file(line, true),
+            vec![],
+            "an owner-less G-allow line stays delegated to the G-allow lane"
+        );
+        // The same prose WITHOUT the `// G-allow:` prefix is a δ-B candidate —
+        // so the guard, not the prose or the cites, is what silences it.
+        let plain = "// envelope assembly is deferred to #4092";
+        assert_eq!(
+            scan_file(plain, true),
+            vec![(1, LineClass::Cited(vec![4092]), plain.to_string())]
+        );
+    }
+
+    /// δ-B is scoped to FULL-LINE comments: a trailing comment after code is
+    /// not a candidate, because both of the lane's predicates match the WHOLE
+    /// line and are only sound while the whole line is comment text.
+    ///
+    /// Decided, not overlooked: the only live line of that shape is one whose
+    /// "code" is the `#[allow(dead_code)]` attribute arm (5) already owns
+    /// (`scan_file_delta_b_allow_dead_code_lane_wins`), so the restriction
+    /// costs no recall. Count and measuring predicate: PRD §16 Row 2 — stated
+    /// once there rather than re-spelled at each of the three sites that turn
+    /// on it. δ-A reads a trailing comment because its anchor is an attribute,
+    /// which cannot appear mid-expression.
+    #[test]
+    fn scan_file_delta_b_negative_trailing_comment() {
+        let trailing = "let x = f(); // wiring is deferred to task #2947";
+        assert_eq!(
+            scan_file(trailing, true),
+            vec![],
+            "a trailing comment after code is out of δ-B's scope"
+        );
+        // The control: the same comment as a full line IS a candidate, so the
+        // code prefix is the only difference the assertion above turns on.
+        let full_line = "// wiring is deferred to task #2947";
+        assert_eq!(
+            scan_file(full_line, true),
+            vec![(1, LineClass::Cited(vec![2947]), full_line.to_string())]
+        );
+    }
+
+    /// Precedence 1: a line carrying BOTH a comment marker and a cited deferral
+    /// stays owned by arm (3) — ONE entry, no double-count. The `else if` chain
+    /// is what the fingerprint/§6.6 baseline machinery relies on for
+    /// at-most-one-entry-per-line.
+    #[test]
+    fn scan_file_delta_b_marker_lane_wins() {
+        let line = "// TODO(#1234): blocked on task #2947 landing";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![1234, 2947]), line.to_string())]
+        );
+    }
+
+    /// Precedence 2: a δ-A line stays owned by arm (5). δ-B is appended LAST,
+    /// after the phantom arm, so it can never steal a line an earlier arm owns.
+    /// (Independently, the attribute line does not start with `//`, so δ-B's
+    /// own predicate would reject it too — belt and braces.)
+    #[test]
+    fn scan_file_delta_b_allow_dead_code_lane_wins() {
+        let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![4744]), line.to_string())]
+        );
+    }
+
+    /// The §6.8 inline escape opts a δ-B line out of the whole sweep, like
+    /// every other lane.
+    #[test]
+    fn scan_file_delta_b_escape_wins() {
+        let line = "/// wiring is blocked on task #2947 // ptodo:allow";
+        assert_eq!(scan_file(line, true), vec![]);
+    }
+
+    /// δ-B is `.rs`-only. Asserted through `scan_file` rather than
+    /// `classify_file`, because `classify_file` discards `Cited` entries and so
+    /// would report "nothing" even if the lane HAD fired — the assertion has to
+    /// be able to fail.
+    #[test]
+    fn scan_file_delta_b_non_rust() {
+        let line = "// wiring is blocked on task #2947";
+        assert_eq!(scan_file(line, false), vec![]);
+        assert_eq!(classify_file(line, false), vec![]);
+    }
+
+    /// A repeated cite id on one line yields ONE id, not two. `resolve_liveness`
+    /// emits a finding per id, so without the dedup a single δ-B line naming the
+    /// same terminal task twice reports two byte-identical `orphaned` rows.
+    /// Pinned for arm (3) as well: δ-B widens the population from marker lines
+    /// to all prose comments, where repeating an id in one sentence is natural.
+    #[test]
+    fn scan_file_dedups_repeated_cite_on_one_line() {
+        let delta_b = "/// blocked on #2947; #2947 tracks the dispatcher";
+        assert_eq!(
+            scan_file(delta_b, true),
+            vec![(1, LineClass::Cited(vec![2947]), delta_b.to_string())]
+        );
+        let marker = "// TODO(#2947): see #2947 for the dispatcher";
+        assert_eq!(
+            scan_file(marker, true),
+            vec![(1, LineClass::Cited(vec![2947]), marker.to_string())]
+        );
+        // Distinct ids still come through in source order — the dedup drops
+        // repeats, never collapses the multi-cite case.
+        let two = "/// blocked on #2947 and #4092; #2947 first";
+        assert_eq!(
+            scan_file(two, true),
+            vec![(1, LineClass::Cited(vec![2947, 4092]), two.to_string())]
+        );
+    }
+
+    /// δ-B emits NO structural kind, ever — the whole lane is invisible to α
+    /// and reaches only the unchanged β liveness lane. Pinned as its own
+    /// assertion because it is the property that keeps §8.3's taxonomy (and
+    /// therefore `VALID_KINDS`, `fingerprint` and the §8.4 severity map)
+    /// byte-unchanged by this lane.
+    #[test]
+    fn scan_file_delta_b_emits_no_structural_kind() {
+        let content = [
+            "/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring",
+            "/// wiring is pending the morph rewrite",
+            "//! Envelope assembly is deferred to task #2947.",
+        ]
+        .join("\n");
+        assert_eq!(classify_file(&content, true), vec![]);
+    }
+
+    // -------------------------------------------------------------------
     // §8.3 γ cite-first path — reason with canonical cite → Cited (β lane)
     // -------------------------------------------------------------------
 
@@ -2552,6 +3536,95 @@ mod tests {
         assert_eq!(
             tasks_db_path(std::path::Path::new("/repo")),
             std::path::PathBuf::from("/repo/.taskmaster/tasks/tasks.db"),
+        );
+    }
+
+    /// §8.2 PREMISE CHECK for [`PRD_RELATIVE_MAX_ID`] — runs wherever the real
+    /// task DB is reachable, graceful-skips where it is not.
+    ///
+    /// The bound suppresses EVERY `#N` with `N <= PRD_RELATIVE_MAX_ID` in a
+    /// PRD-relative register, without demanding a `PRD` token or any other
+    /// document context. Its safety is therefore not a property of the grammar:
+    /// it rests on a claim about DB state — every master-tag id inside the bound
+    /// is terminal, so nothing live can be lost — plus the closure argument that
+    /// ids are allocated monotonically upward and the head is far past the
+    /// bound. The grammar tests pin the 99/100 STEP; only this test re-
+    /// establishes the premise that makes the step's cost acceptable.
+    ///
+    /// It matters because the failure is SILENT and in the direction §6.6
+    /// cannot see. Reopen (or newly allocate under some tag) an id inside the
+    /// bound, and a genuine `task #42` cite stops anchoring: on a marker line it
+    /// is DEMOTED to the Medium advisory, and on a δ-B line — which is cite-
+    /// ANCHORED — the candidate is ERASED outright. The `live ⊆ baseline`
+    /// ratchet catches a GAINED finding and never a LOST one, so no other check
+    /// in this crate would report it.
+    ///
+    /// Mirrors the β liveness lane's own query exactly (`tag = 'master'`, and
+    /// [`is_terminal_status`] rather than a re-spelled `{done, cancelled}`), so
+    /// "terminal" here cannot drift from what the lane means by it. An id that
+    /// exists ONLY under a non-master tag is invisible to the lane too (it
+    /// resolves to `unknown-id`, Medium), so it is deliberately out of scope.
+    ///
+    /// NOT `#[ignore]`d: the skip is already handled by the body, which returns
+    /// early when the DB is absent or unopenable and fails loudly on a vacuous
+    /// (empty-result) one. `#[ignore]` on top of that would only mean the check
+    /// runs when someone remembers to type `--ignored` — so it runs for free in
+    /// a checkout carrying `.taskmaster/` (where the β liveness lane reads the
+    /// same DB) and is a no-op in a task worktree, where `.taskmaster/` is
+    /// untracked. Point it elsewhere with `REIFY_PTODO_TASKS_DB`.
+    ///
+    /// On failure the fix is NOT to widen this test: either re-terminate the id,
+    /// or narrow [`PRD_RELATIVE_MAX_ID`] / make the register demand a `PRD`
+    /// token, and re-measure per PRD §16 Row 2.
+    #[test]
+    fn prd_relative_bound_covers_only_terminal_task_ids() {
+        // `CARGO_MANIFEST_DIR` is <repo>/crates/reify-audit; the DB path itself
+        // honours REIFY_PTODO_TASKS_DB via the production resolver.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let db = tasks_db_path(&root);
+        if !db.exists() {
+            eprintln!("ptodo: skipping §8.2 premise check — no task DB at {db:?}");
+            return;
+        }
+        let conn = match open_tasks_db(&db) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("ptodo: skipping §8.2 premise check — cannot open {db:?}: {e}");
+                return;
+            }
+        };
+        let mut stmt = conn
+            .prepare("SELECT id, status FROM tasks WHERE tag = 'master' AND id <= ?1")
+            .expect("prepare premise query");
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([i64::from(PRD_RELATIVE_MAX_ID)], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .expect("run premise query")
+            .collect::<rusqlite::Result<_>>()
+            .expect("read premise rows");
+
+        // A DB that answers but carries no covered id would make this test
+        // vacuously green and the premise unverified — fail instead of passing.
+        assert!(
+            !rows.is_empty(),
+            "§8.2 premise check is vacuous: no master-tag task id <= {PRD_RELATIVE_MAX_ID} \
+             in {db:?}. Either the DB is not the real one, or the id space no longer \
+             looks like the one the bound was derived from — re-measure before trusting it."
+        );
+
+        let live: Vec<String> = rows
+            .iter()
+            .filter(|(_, status)| !is_terminal_status(status))
+            .map(|(id, status)| format!("#{id} status={status}"))
+            .collect();
+        assert!(
+            live.is_empty(),
+            "§8.2 PRD-relative bound (id <= {PRD_RELATIVE_MAX_ID}) now covers \
+             NON-TERMINAL task id(s): {live:?}. A `task #N` cite to one of these \
+             is silently erased by `prd_relative_cite_family` — demoted on a \
+             marker line, dropped entirely on a δ-B line — and §6.6's subset \
+             ratchet cannot see the loss. See that fn's rustdoc and PRD §16 Row 2."
         );
     }
 
