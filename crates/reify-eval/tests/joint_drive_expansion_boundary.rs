@@ -1868,7 +1868,7 @@ fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
 /// Both assertions below are COMPARATIVE (strict inequality), never an
 /// absolute converged value or a tuned tolerance — the house norm for
 /// `.ri`-layer tests (see `bt5_...`'s doc comment for the full penalty-method
-/// / seed-fallback rationale this fixture inherits unchanged).
+/// / robustness-floor-clamp rationale this fixture inherits unchanged).
 ///
 /// # Achievability — DERIVED, not guessed
 ///
@@ -1946,13 +1946,14 @@ fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_
 /// This SUM comparison, by itself, does not distinguish ONE merged cluster
 /// spanning both children from a hypothetical regression to TWO independent
 /// single-child clusters that each still carried a copy of the parent's
-/// objective: because the merged figures are the solver's `initially_feasible`
-/// SEED rather than a converged argmin (see `bt5_...`'s "eval-layer
-/// convergence boundary" note), either cluster shape would drive both autos to
-/// the same 0.01 seed and satisfy this assertion — and the sibling BT4(i) —
-/// identically. A mis-expanded or wrong-sense objective would likewise still
-/// suppress the synthesised centrality objective and still land both autos at
-/// 0.01.
+/// objective: both children's autos are bracketed `>= 0.0`, so either cluster
+/// shape drives both autos into the SAME robustness-floored lower bracket —
+/// the `effective_constraints` clamp `bt5_...`'s "eval-layer convergence
+/// boundary" note describes, not a converged argmin or a seed fallback — and
+/// satisfies this assertion, and the sibling BT4(i), identically. A
+/// mis-expanded or wrong-sense objective would likewise still suppress the
+/// synthesised centrality objective and still land both autos at that same
+/// floor.
 ///
 /// That structural claim — a parent plus TWO children sharing ONE spanning
 /// objective union into EXACTLY ONE cluster, never two — is proven at the
