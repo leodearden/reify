@@ -2,7 +2,7 @@
 # scripts/deterministic-gate-closure-staleness-sweep.sh — Standalone,
 # timer-friendly staleness sweep over stranded `blocked` / `in-progress`
 # Taskmaster rows. Read-only advisory observability: it NEVER mutates task
-# state (no write to tasks.db, no write to the escalation store) and never
+# state (no write to tasks.db) and never
 # gates dispatch/reclaim/merge. Its only side effect on any invocation is the
 # request files it drops under --emit-requests.
 #
@@ -13,13 +13,9 @@
 # docs/notes/deterministic-gate-closure-staleness-sweep.md
 #
 # A task is STRANDED when the premise that blocked it has since resolved but
-# nothing re-dispatched or closed it. Three trigger classes are swept in one
+# nothing re-dispatched or closed it. Two trigger classes are swept in one
 # pass:
 #
-#   gate_closure       — a `blocked` deterministic always-escalates gate task
-#                        whose gating escalation was resolved/dismissed
-#                        elsewhere (no live `esc-<id>-*.json` with
-#                        status=pending remains) ⇒ action=close.
 #   merge_verify_red   — a post-merge-verification-failed block whose recorded
 #                        main_sha is an ancestor of --main-ref, where main has
 #                        advanced and ≥1 recorded files_referenced path was
@@ -28,11 +24,18 @@
 #                        depends_on has reached a terminal status
 #                        (done/cancelled) ⇒ action=redispatch.
 #
+# A THIRD class, `gate_closure`, was retired by task 7349: a `blocked`
+# deterministic always-escalates gate task with no live pending escalation was
+# reported STALE with action=close, which the consumer turned into
+# set_task_status('cancelled'). All nine firings in the retained journal were
+# collateral. Retiring it removed the sweep's only read of the escalation
+# store, and with it `--escalations` and the GATED verdict.
+#
 # Usage:
 #   scripts/deterministic-gate-closure-staleness-sweep.sh \
-#       [--db PATH] [--tag TAG] [--escalations DIR] [--repo DIR] \
+#       [--db PATH] [--tag TAG] [--repo DIR] \
 #       [--main-ref REF] [--format table|json] \
-#       [--class all|gate_closure|merge_verify_red|unmet_dependency] \
+#       [--class all|merge_verify_red|unmet_dependency] \
 #       [--stale-heartbeat-min N] [--emit-requests DIR] [-h|--help]
 #
 # For each candidate row, emits: task_id · status · class · verdict · action ·
@@ -40,7 +43,6 @@
 #   STALE        — premise resolved; the row is a confirmed hit (the ONLY
 #                  verdict that emits a re-dispatch request).
 #   UNRESOLVED   — the class matched but its premise has NOT resolved yet.
-#   GATED        — class A only: a live pending escalation still gates it.
 #   LIVE         — the liveness guard fired (fresh heartbeat); skipped
 #                  entirely, no class predicate ran.
 #   CORRUPT-HOLD — an otherwise-confirmed hit carrying a #5316 corruption
@@ -51,12 +53,13 @@
 #                  blocked / in-progress rows match no class, so folding them
 #                  into `unknown` would swamp the one signal that counter
 #                  exists to carry.
-#   unknown      — a class matched but its ORACLE could not be read (a missing
-#                  escalations dir, an unresolvable SHA, a dependency id that
-#                  resolves to no row); never upgraded to STALE.
+#   unknown      — a class matched but its ORACLE could not be read (an
+#                  unresolvable SHA, a --main-ref that does not resolve, a
+#                  dependency id that resolves to no row); never upgraded to
+#                  STALE.
 # A trailing SWEEP: line (table) / summary object (json) carries the counters
-# candidates, gate_closure, merge_verify_red, unmet_dependency, corrupt_hold,
-# live_skipped, no_class, unknown.
+# candidates, merge_verify_red, unmet_dependency, corrupt_hold, live_skipped,
+# no_class, unknown.
 #
 # Options (env defaults shown):
 #   --db PATH             Taskmaster SQLite store (env: REIFY_LANE_TASK_DB;
@@ -70,12 +73,6 @@
 #                         default: master). Task ids are unique only within a
 #                         tag (PRIMARY KEY (tag, id)), so every query is
 #                         tag-scoped.
-#   --escalations DIR     Live escalation store holding esc-<task>-<n>.json
-#                         (env: REIFY_GATE_STALENESS_ESCALATIONS_DIR; default:
-#                         <repo>/data/escalations). Only the live directory is
-#                         read — archive*/ subdirectories are deliberately NOT
-#                         searched, because an archived escalation is by
-#                         construction no longer gating.
 #   --repo DIR            Git repo used for ancestor / touched-path
 #                         adjudication (env: REIFY_GATE_STALENESS_REPO;
 #                         default: the repo containing this script).
@@ -83,8 +80,7 @@
 #                         REIFY_GATE_STALENESS_MAIN_REF; default: main).
 #   --format table|json   Output format (default: table).
 #   --class C             Restrict the sweep to one trigger class: all,
-#                         gate_closure, merge_verify_red, unmet_dependency
-#                         (default: all).
+#                         merge_verify_red, unmet_dependency (default: all).
 #   --stale-heartbeat-min N
 #                         Minutes; a candidate whose heartbeat_at is newer than
 #                         N minutes is LIVE and is skipped by the liveness
@@ -107,8 +103,8 @@
 #
 # Exit codes:
 #   0  — Always, on every valid invocation (advisory/observability — this
-#        script must never gate anything). An unreadable DB, a missing
-#        escalations dir, an unresolvable SHA, or an unwritable
+#        script must never gate anything). An unreadable DB, an unresolvable
+#        SHA, a --main-ref that does not resolve, or an unwritable
 #        --emit-requests dir all degrade gracefully rather than aborting.
 #   2  — Usage error: unknown flag, missing flag value, invalid --format /
 #        --class / --stale-heartbeat-min.
@@ -124,11 +120,12 @@
 #        WITH a claimant is a claimed runner that has not yet written (or has
 #        lost) its heartbeat, and is LIVE; without one it is eligible. A
 #        `blocked` row with no heartbeat stays eligible regardless of its
-#        claimant — blocked rows legitimately carry no heartbeat, and classes
-#        A and C are `blocked`-only per L4, so scoping the claimant rule to
-#        `in-progress` is what keeps those two classes visible at all.
-#   L2 — an unreadable escalation oracle (missing dir, UNREADABLE/unsearchable
-#        dir, unparseable file, unrecognized status)
+#        claimant — blocked rows legitimately carry no heartbeat, and class C
+#        is `blocked`-only per L4, so scoping the claimant rule to
+#        `in-progress` is what keeps that class visible at all.
+#   L2 — an unreadable oracle — a recorded main_sha that does not resolve in
+#        --repo, a --main-ref that does not resolve at all, a dependency id
+#        that resolves to no row under this tag —
 #        degrades that row to `unknown`, never to `STALE`. A failed oracle
 #        lookup must never manufacture an actionable verdict — the same
 #        posture as warm-lane-audit.sh invariant A3. `unknown` means EXACTLY
@@ -138,13 +135,13 @@
 #        under the majority of the store, which matches no class at all.
 #   L3 — every candidate contributes to EXACTLY ONE class counter and appears
 #        exactly once in the report. Classes are tried in the fixed precedence
-#        order gate_closure > merge_verify_red > unmet_dependency; the first
+#        order merge_verify_red > unmet_dependency; the first
 #        match becomes the row's primary class and is the only one
 #        adjudicated, and any further match is disclosed in `evidence` as
 #        `also:<class>` without incrementing a counter. So `--class all`
 #        never double-counts a multi-class row.
-#   L4 — classes A (gate_closure) and C (unmet_dependency) are `blocked`-ONLY.
-#        Only class B (merge_verify_red) spans `in-progress`. Measured on
+#   L4 — class C (unmet_dependency) is `blocked`-ONLY; class B
+#        (merge_verify_red) spans `blocked` AND `in-progress`. Measured on
 #        2026-07-26, all ten live `in-progress` tasks had every dependency
 #        `done` (task 5321 itself among them), so a class C that spanned
 #        `in-progress` would re-dispatch actively-running agents — it would
@@ -160,7 +157,7 @@
 #        establishes that remediation there is a human git-history
 #        adjudication a detector can flag but not perform.
 #   L6 — READ-ONLY on all task state. Every sqlite handle is opened
-#        -readonly / mode=ro, the escalation store is only ever read, and the
+#        -readonly / mode=ro, and the
 #        ONLY side effect of any invocation is the request files written
 #        under --emit-requests. The sweep never writes tasks.db: CLAUDE.md
 #        requires all task operations to go through the fused-memory MCP
@@ -209,7 +206,7 @@ err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 # ── usage ─────────────────────────────────────────────────────────────────────
 _usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") [--db PATH] [--tag TAG] [--escalations DIR] [--repo DIR]
+Usage: $(basename "$0") [--db PATH] [--tag TAG] [--repo DIR]
                        [--main-ref REF] [--format table|json] [--class C]
                        [--stale-heartbeat-min N] [--emit-requests DIR]
 
@@ -221,16 +218,13 @@ Usage: $(basename "$0") [--db PATH] [--tag TAG] [--escalations DIR] [--repo DIR]
     --db PATH             Taskmaster SQLite store (default: \$REIFY_LANE_TASK_DB).
     --tag TAG             Taskmaster tag namespace (default: \$REIFY_LANE_TASK_TAG
                           or master).
-    --escalations DIR     Live escalation store (default:
-                          \$REIFY_GATE_STALENESS_ESCALATIONS_DIR or
-                          <repo>/data/escalations).
     --repo DIR            Git repo for ancestor/touched-path adjudication
                           (default: \$REIFY_GATE_STALENESS_REPO or this repo).
     --main-ref REF        Git ref for "main" (default:
                           \$REIFY_GATE_STALENESS_MAIN_REF or main).
     --format table|json   Output format (default: table).
-    --class C             all | gate_closure | merge_verify_red |
-                          unmet_dependency (default: all).
+    --class C             all | merge_verify_red | unmet_dependency
+                          (default: all).
     --stale-heartbeat-min N
                           A heartbeat newer than N minutes marks the row LIVE
                           and skips it (default:
@@ -252,7 +246,6 @@ EOF
 # the repo, not a parallel one.
 DB="${REIFY_LANE_TASK_DB:-/home/leo/src/reify/.taskmaster/tasks/tasks.db}"
 TAG="${REIFY_LANE_TASK_TAG:-master}"
-ESCALATIONS="${REIFY_GATE_STALENESS_ESCALATIONS_DIR:-}"
 REPO="${REIFY_GATE_STALENESS_REPO:-}"
 MAIN_REF="${REIFY_GATE_STALENESS_MAIN_REF:-main}"
 FORMAT="table"
@@ -271,9 +264,6 @@ while [ $# -gt 0 ]; do
         --tag)
             [ $# -ge 2 ] || { err "--tag requires a value"; exit 2; }
             TAG="$2"; shift 2 ;;
-        --escalations)
-            [ $# -ge 2 ] || { err "--escalations requires a value"; exit 2; }
-            ESCALATIONS="$2"; shift 2 ;;
         --repo)
             [ $# -ge 2 ] || { err "--repo requires a value"; exit 2; }
             REPO="$2"; shift 2 ;;
@@ -313,9 +303,9 @@ case "$FORMAT" in
 esac
 
 case "$CLASS" in
-    all|gate_closure|merge_verify_red|unmet_dependency) : ;;
+    all|merge_verify_red|unmet_dependency) : ;;
     *)
-        err "Unknown --class: '$CLASS' (expected all, gate_closure, merge_verify_red or unmet_dependency)."
+        err "Unknown --class: '$CLASS' (expected all, merge_verify_red or unmet_dependency)."
         err "Run '$(basename "$0") --help' for usage."
         exit 2 ;;
 esac
@@ -328,13 +318,11 @@ fi
 
 # ── resolve repo-relative defaults (after parsing, so --repo is honoured) ─────
 if [ -z "$REPO" ]; then REPO="$(cd "$SCRIPT_DIR/.." && pwd)"; fi
-if [ -z "$ESCALATIONS" ]; then ESCALATIONS="$REPO/data/escalations"; fi
 
 info "gate-closure-staleness-sweep: db=$DB tag=$TAG class=$CLASS format=$FORMAT stale_heartbeat_min=$STALE_HEARTBEAT_MIN main_ref=$MAIN_REF"
 
 # ── summary counters ──────────────────────────────────────────────────────────
 N_CANDIDATES=0
-N_GATE_CLOSURE=0
 N_MERGE_VERIFY_RED=0
 N_UNMET_DEPENDENCY=0
 N_CORRUPT_HOLD=0
@@ -418,16 +406,16 @@ if command -v python3 >/dev/null 2>&1; then _PYTHON_BIN="python3"; fi
 if [ -z "$_SQLITE_BIN" ] && [ -z "$_PYTHON_BIN" ]; then
     warn "Neither sqlite3 nor python3 is on PATH — the task DB cannot be read at all; reporting zero candidates."
 elif [ -z "$_PYTHON_BIN" ]; then
-    warn "python3 is not on PATH — the escalation oracle (class A), the proposal parser (class B) and --format json cannot run; rows will degrade to unknown."
+    warn "python3 is not on PATH — the proposal parser (class B) and --format json cannot run; rows will degrade to unknown."
 fi
 
 # ── the enumeration query ─────────────────────────────────────────────────────
 # ONE query per SWEEP, not one per candidate per oracle. Every scalar the
-# classifiers need — the four metadata fields, the Signature-1 marker count and
+# classifiers need — the two metadata fields, the Signature-1 marker count and
 # the dependency roll-up — is selected alongside the row, so a candidate costs
 # zero further DB opens. The previous shape re-opened the store and re-ran
-# `WHERE tag=... AND id=... LIMIT 1` against the SAME metadata blob four times
-# per row, plus a json_each query and a dependency join: ~6 sqlite processes
+# `WHERE tag=... AND id=... LIMIT 1` against the SAME metadata blob once per
+# field, plus a json_each query and a dependency join: several sqlite processes
 # per candidate, which is not "timer-friendly on a large store" at a few
 # hundred stranded rows.
 #
@@ -453,8 +441,8 @@ _flat_sql() { printf "replace(replace(%s,char(10),' '),char(31),' ')" "$1"; }
 _jx_sql()   { printf "coalesce(json_extract(%s,'%s'),'')" "$_MD_SQL" "$1"; }
 
 # Column order (US-separated, one line per candidate):
-#   id · status · heartbeat_at · claimant_run_id · task_kind · always_escalates
-#   · dry_run_proposals · done_provenance.commit · sig1_hits · dep_rollup
+#   id · status · heartbeat_at · claimant_run_id · dry_run_proposals
+#   · done_provenance.commit · sig1_hits · dep_rollup
 # dep_rollup is `<depends_on>=<status>` pairs joined by ',', ordered by
 # depends_on; an EMPTY status means the depends_on resolves to no row under
 # this tag, which must never read as a satisfied dependency.
@@ -463,8 +451,6 @@ _ENUM_SQL="SELECT
     coalesce(t.status,''),
     coalesce(t.heartbeat_at,''),
     coalesce(t.claimant_run_id,''),
-    $(_flat_sql "$(_jx_sql '$.task_kind')"),
-    $(_flat_sql "$(_jx_sql '$.always_escalates')"),
     $(_flat_sql "$(_jx_sql '$.dry_run_proposals')"),
     $(_flat_sql "$(_jx_sql '$.done_provenance.commit')"),
     (SELECT count(*) FROM json_each($_MD_SQL,'\$.failing_tests')
@@ -550,9 +536,9 @@ _is_live() {
         #
         # The `in-progress` scoping is load-bearing, not incidental. `blocked`
         # rows legitimately carry no heartbeat while still holding a claimant
-        # (see the enumeration note above), and classes A and C are
+        # (see the enumeration note above), and class C is
         # `blocked`-ONLY per L4 — so extending this rule to `blocked` would
-        # blind the sweep to those two classes wholesale, which is exactly the
+        # blind the sweep to that class wholesale, which is exactly the
         # failure the NULL-heartbeat rule was written to avoid in the first
         # place.
         if [ "$status" = "in-progress" ] && [ -n "$claimant" ]; then
@@ -567,81 +553,6 @@ _is_live() {
         return 0
     fi
     [ $(( _NOW_EPOCH - hb_epoch )) -lt "$_LIVENESS_WINDOW_SEC" ]
-}
-
-# ── class A: gate_closure ─────────────────────────────────────────────────────
-# Escalation-state oracle. Reads ONLY the live escalation dir: an archived
-# escalation is by construction no longer gating, and the live-dir absence is
-# precisely the signal. Matches `esc-<id>-*.json` and never the
-# `*.json.lock` sidecars the store also holds.
-#
-# Sets _ESC_STATE to one of:
-#   gated    — at least one live escalation has status=pending
-#   clear    — zero matching files, or all of them terminal
-#   unknown  — the dir is missing/unreadable, or a file failed to parse
-_esc_state() {
-    local id="$1" f found=0 pending=0 st
-    _ESC_STATE="unknown"
-    # -d alone is NOT enough: stat succeeds on a mode-000 dir (it needs +x on
-    # the PARENT, not on the dir), but the glob below then fails to expand for
-    # want of +r, `[ -e ]` swallows the unexpanded pattern, and found=0 lands in
-    # `clear` — reporting STALE for a task whose gate is still live, without
-    # ever entering the loop where the terminal allowlist could defend. An
-    # unreadable/unsearchable dir must therefore degrade exactly like a missing
-    # one (root-owned dir swept by another uid, a stale mount, mode 000).
-    if [ ! -d "$ESCALATIONS" ] || [ ! -r "$ESCALATIONS" ] || [ ! -x "$ESCALATIONS" ]; then
-        warn "Task $id: escalations dir is missing or unreadable: $ESCALATIONS — reporting unknown (a failed oracle must never manufacture a STALE verdict)."
-        return 0
-    fi
-    for f in "$ESCALATIONS"/esc-"$id"-*.json; do
-        [ -e "$f" ] || continue
-        found=$((found + 1))
-        # The parse sentinel is a LITERAL TOKEN, deliberately not a NUL: bash
-        # strips a NUL byte from `$(...)` and warns while doing it, and that
-        # warning lands on this script's OWN stderr — the same channel `warn()`
-        # writes to — so a consumer cannot tell the tool's diagnostics from the
-        # shell's. `__PARSE_ERROR__` survives command substitution intact, so
-        # the comparison below is a real one rather than the ""-matches-""
-        # degenerate case a stripped NUL collapses both sides into.
-        st="$(python3 -c 'import json,sys
-try:
-    sys.stdout.write(str(json.load(open(sys.argv[1])).get("status","")))
-except Exception:
-    sys.stdout.write("__PARSE_ERROR__")' "$f" 2>/dev/null || printf '__PARSE_ERROR__')"
-        # TERMINAL ALLOWLIST, not a pending-only match (L2). `pending` gates and
-        # `resolved`/`dismissed` clear; EVERY other value — unrecognized, JSON
-        # null (which reaches here as the literal "None"), empty/absent, or the
-        # `__PARSE_ERROR__` sentinel — is a FAILED ORACLE READ and degrades to
-        # `unknown`. A pending-only match would sink all of those into `clear`,
-        # yielding STALE / close / an emitted request telling the consumer to
-        # CANCEL a task whose gate may still be live — failing open toward the
-        # sweep's single most destructive action.
-        #
-        # A record that is valid JSON but carries no `status` key at all yields
-        # the empty string and so reaches the `*)` arm, NOT the parse-error arm
-        # (under the old NUL sentinel it reached the latter, because bash had
-        # collapsed both sides to ""). The VERDICT is `unknown` on either path —
-        # only the diagnostic prose differs. The allowlist is not weakened by
-        # the token change either: an escalation whose status were literally
-        # `__PARSE_ERROR__` still degrades to `unknown`, never to `STALE`, so
-        # the collision is harmless by construction.
-        case "$st" in
-            __PARSE_ERROR__)
-                warn "Task $id: unparseable escalation file $(basename "$f") — reporting unknown, not STALE."
-                return 0 ;;
-            pending) pending=$((pending + 1)) ;;
-            resolved|dismissed) : ;;
-            *)
-                warn "Task $id: escalation file $(basename "$f") carries an unrecognized status '$st' — reporting unknown, not STALE."
-                return 0 ;;
-        esac
-    done
-    if [ "$pending" -gt 0 ]; then
-        _ESC_STATE="gated"
-    else
-        _ESC_STATE="clear"
-        _ESC_FOUND="$found"
-    fi
 }
 
 # ── class B: merge_verify_red ─────────────────────────────────────────────────
@@ -689,45 +600,6 @@ PY
 # case where --repo is not a git repo at all), which degrades every class-B
 # row to `unknown` — the adjudication is scoped to --repo and nothing else.
 _MAIN_REF_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${MAIN_REF}^{commit}" 2>/dev/null || true)"
-
-# _classify_gate_closure <task_id> <status> <task_kind> <always_escalates>
-# <adjudicate:0|1> — sets _GC_MATCHED plus, when matched and adjudicating,
-# _GC_VERDICT / _GC_ACTION / _GC_EVIDENCE. `blocked`-only (invariant L4).
-# task_kind / always_escalates arrive from the enumeration row; this function
-# opens no DB handle of its own.
-_classify_gate_closure() {
-    local id="$1" status="$2" task_kind="$3" always="$4" adjudicate="$5"
-    _GC_MATCHED=0
-    _GC_VERDICT="unknown"
-    _GC_ACTION="none"
-    _GC_EVIDENCE=""
-
-    [ "$status" = "blocked" ] || return 0
-    [ "$task_kind" = "deterministic" ] || return 0
-    # SQLite renders the JSON `true` as 1, so accept either spelling.
-    case "$always" in
-        1|true) _GC_MATCHED=1 ;;
-        *)      return 0 ;;
-    esac
-    [ "$adjudicate" = 1 ] || return 0
-
-    _esc_state "$id"
-    case "$_ESC_STATE" in
-        gated)
-            _GC_VERDICT="GATED"
-            _GC_EVIDENCE="a live status=pending escalation still gates this task" ;;
-        clear)
-            _GC_VERDICT="STALE"
-            # `close`, not `redispatch`: per #5316 §5 the correct closure for a
-            # satisfied deterministic gate is a transition to `cancelled`, not
-            # a re-run.
-            _GC_ACTION="close"
-            _GC_EVIDENCE="no live pending escalation remains in $ESCALATIONS (found ${_ESC_FOUND:-0} terminal file(s))" ;;
-        *)
-            _GC_VERDICT="unknown"
-            _GC_EVIDENCE="escalation state could not be read; not upgraded to STALE" ;;
-    esac
-}
 
 # _classify_merge_verify_red <task_id> <dry_run_proposals> <adjudicate:0|1> —
 # sets _MVR_MATCHED plus, when matched and adjudicating, _MVR_VERDICT /
@@ -956,8 +828,7 @@ _compute_flags() {
 
 # ── classify ──────────────────────────────────────────────────────────────────
 while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
-                         md_task_kind md_always md_proposals md_prov \
-                         md_sig1_hits md_dep_rollup; do
+                         md_proposals md_prov md_sig1_hits md_dep_rollup; do
     [ -n "${task_id:-}" ] || continue
 
     # L1: the liveness guard is the FIRST predicate, and it short-circuits —
@@ -991,34 +862,18 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
     row_flags="-"
 
     # ── class-precedence dispatcher (invariant L3) ───────────────────────────
-    # Fixed order: gate_closure > merge_verify_red > unmet_dependency. The
-    # FIRST match becomes the row's primary class and is the only one
-    # adjudicated; any further match is disclosed as `also:<class>` in
-    # evidence but never adjudicated and never counted, so a multi-class row
-    # increments exactly one counter and appears exactly once.
-    #
-    # The order is load-bearing, not alphabetical: class A's action is `close`
-    # (a satisfied deterministic gate is transitioned to `cancelled`, per
-    # #5316 §5) while class C's is `redispatch`. Letting C win would RE-RUN a
-    # gate task that should simply be closed.
+    # Fixed order: merge_verify_red > unmet_dependency. The FIRST match becomes
+    # the row's primary class and is the only one adjudicated; any further
+    # match is disclosed as `also:<class>` in evidence but never adjudicated
+    # and never counted, so a multi-class row increments exactly one counter
+    # and appears exactly once.
     _primary=""
     _also=""
 
-    _classify_gate_closure "$task_id" "$status" "$md_task_kind" "$md_always" 1
-    if [ "$_GC_MATCHED" = 1 ]; then
-        _primary="gate_closure"
-        row_verdict="$_GC_VERDICT"; row_action="$_GC_ACTION"; row_evidence="$_GC_EVIDENCE"
-    fi
-
-    if [ -z "$_primary" ]; then _adj=1; else _adj=0; fi
-    _classify_merge_verify_red "$task_id" "$md_proposals" "$_adj"
+    _classify_merge_verify_red "$task_id" "$md_proposals" 1
     if [ "$_MVR_MATCHED" = 1 ]; then
-        if [ -z "$_primary" ]; then
-            _primary="merge_verify_red"
-            row_verdict="$_MVR_VERDICT"; row_action="$_MVR_ACTION"; row_evidence="$_MVR_EVIDENCE"
-        else
-            _also="$_also also:merge_verify_red"
-        fi
+        _primary="merge_verify_red"
+        row_verdict="$_MVR_VERDICT"; row_action="$_MVR_ACTION"; row_evidence="$_MVR_EVIDENCE"
     fi
 
     if [ -z "$_primary" ]; then _adj=1; else _adj=0; fi
@@ -1061,7 +916,6 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
     case "$row_verdict" in
         STALE)
             case "$row_class" in
-                gate_closure)     N_GATE_CLOSURE=$((N_GATE_CLOSURE + 1)) ;;
                 merge_verify_red) N_MERGE_VERIFY_RED=$((N_MERGE_VERIFY_RED + 1)) ;;
                 unmet_dependency) N_UNMET_DEPENDENCY=$((N_UNMET_DEPENDENCY + 1)) ;;
             esac ;;
@@ -1075,8 +929,8 @@ $_CANDIDATES
 EOF
 
 # ── emit: table (default) or json ─────────────────────────────────────────────
-_SUMMARY_JSON="$(printf '{"candidates":%d,"gate_closure":%d,"merge_verify_red":%d,"unmet_dependency":%d,"corrupt_hold":%d,"live_skipped":%d,"no_class":%d,"unknown":%d}' \
-    "$N_CANDIDATES" "$N_GATE_CLOSURE" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
+_SUMMARY_JSON="$(printf '{"candidates":%d,"merge_verify_red":%d,"unmet_dependency":%d,"corrupt_hold":%d,"live_skipped":%d,"no_class":%d,"unknown":%d}' \
+    "$N_CANDIDATES" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
     "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_NO_CLASS" "$N_UNKNOWN")"
 
 if [ "$FORMAT" = "json" ]; then
@@ -1109,8 +963,8 @@ else
         printf '%-8s %-12s %-18s %-13s %-11s %-52s %s\n' \
             "$c_id" "$c_status" "$c_class" "$c_verdict" "$c_action" "$c_evidence" "$c_flags"
     done < "$ROWS_TSV"
-    printf 'SWEEP: candidates=%d gate_closure=%d merge_verify_red=%d unmet_dependency=%d corrupt_hold=%d live_skipped=%d no_class=%d unknown=%d\n' \
-        "$N_CANDIDATES" "$N_GATE_CLOSURE" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
+    printf 'SWEEP: candidates=%d merge_verify_red=%d unmet_dependency=%d corrupt_hold=%d live_skipped=%d no_class=%d unknown=%d\n' \
+        "$N_CANDIDATES" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
         "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_NO_CLASS" "$N_UNKNOWN"
 fi
 

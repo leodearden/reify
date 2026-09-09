@@ -21,7 +21,7 @@
 #   S — scaffolding + fixture-builder self-checks
 #   A — CLI contract + empty-input degradation
 #   B — the liveness guard
-#   C — trigger class A (gate_closure)
+#   C — the RETIRED gate_closure class (task 7349)
 #   D — trigger class B (merge_verify_red)
 #   E — trigger class C (unmet_dependency)
 #   F — the #5316 corruption suppressors
@@ -306,13 +306,13 @@ _not() { ! "$@"; }
 # is load-dependent, which made it a genuine heisenflake here.
 _matches() { grep -qE "$1" <<<"$2"; }
 
-# _snapshot_readonly <db> <esc_dir> — emit a sha256 of the DB plus a sorted
-# listing (path/size/mtime) of the escalations dir AND of the DB's directory,
-# so the read-only proof also catches a stray -wal/-shm sidecar.
+# _snapshot_readonly <db> — emit a sha256 of the DB plus a sorted listing
+# (path/size/mtime) of the DB's own directory, so the read-only proof also
+# catches a stray -wal/-shm sidecar.
 _snapshot_readonly() {
-    local db="$1" esc_dir="$2"
+    local db="$1"
     sha256sum "$db" 2>/dev/null | awk '{print $1}'
-    find "$(dirname "$db")" "$esc_dir" -mindepth 0 -printf '%p %s %T@\n' 2>/dev/null | LC_ALL=C sort
+    find "$(dirname "$db")" -mindepth 0 -printf '%p %s %T@\n' 2>/dev/null | LC_ALL=C sort
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -387,9 +387,9 @@ run_sweep --help
 assert "S6a: run_sweep populates RC without aborting" test -n "${RC:-}"
 
 # S7 — _snapshot_readonly is stable across two reads of an unmodified fixture.
-_s7_before="$(_snapshot_readonly "$DB" "$ESC_DIR")"
+_s7_before="$(_snapshot_readonly "$DB")"
 assert "S7: _snapshot_readonly is stable when nothing mutates" \
-    test "$_s7_before" = "$(_snapshot_readonly "$DB" "$ESC_DIR")"
+    test "$_s7_before" = "$(_snapshot_readonly "$DB")"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI contract + empty-input degradation
@@ -405,8 +405,6 @@ echo "--- Block A: CLI contract + empty-input degradation ---"
 # An empty fixture: production schema present, zero rows.
 _mk_tasks_db
 EMPTY_DB="$DB"
-_mk_esc_dir
-EMPTY_ESC="$ESC_DIR"
 _mk_repo
 EMPTY_REPO="$REPO_DIR"
 
@@ -471,7 +469,7 @@ run_sweep --db "$EMPTY_DB" --stale-heartbeat-min -1
 assert "A4d: --stale-heartbeat-min -1 exits 2" _rc_is 2
 
 # --- A5: unreadable DB degrades, never aborts -------------------------------
-run_sweep --db "$EMPTY_REPO/definitely-not-here.db" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$EMPTY_REPO/definitely-not-here.db" --repo "$EMPTY_REPO"
 assert "A5a: a nonexistent --db still exits 0 (advisory-only)" _rc_is 0
 assert "A5a: a nonexistent --db reports zero candidates" _sweep_line_is "$ZERO_SWEEP"
 assert "A5a: a nonexistent --db warns on stderr" _err_has '\[warn\]'
@@ -479,18 +477,18 @@ assert "A5a: a nonexistent --db warns on stderr" _err_has '\[warn\]'
 _A5_STUB="$(mktemp "${TMPDIR:-/tmp}/gate-staleness-stub-XXXXXX.db")"
 _TMPDIRS+=("$_A5_STUB")
 : > "$_A5_STUB"
-run_sweep --db "$_A5_STUB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$_A5_STUB" --repo "$EMPTY_REPO"
 assert "A5b: a 0-byte DB stub still exits 0" _rc_is 0
 assert "A5b: a 0-byte DB stub reports zero candidates" _sweep_line_is "$ZERO_SWEEP"
 assert "A5b: a 0-byte DB stub warns on stderr" _err_has '\[warn\]'
 
 # --- A6: empty fixture, table format ----------------------------------------
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format table
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --format table
 assert "A6: empty fixture exits 0" _rc_is 0
 assert "A6: trailing SWEEP: line carries all seven counters at zero" _sweep_line_is "$ZERO_SWEEP"
 
 # --- A7: empty fixture, json format -----------------------------------------
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format json
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --format json
 assert "A7: --format json exits 0" _rc_is 0
 assert "A7: stdout is a single valid JSON object" _out_json_check 'isinstance(d, dict)'
 assert "A7: candidates == []" _out_json_check 'd["candidates"] == []'
@@ -499,10 +497,10 @@ assert "A7: summary keys exactly match the A6 counter set" _out_json_check \
 assert "A7: every summary counter is 0" _out_json_check 'all(v == 0 for v in d["summary"].values())'
 
 # --- A8: flag <-> env parity for the task-DB knob ---------------------------
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO"
 _A8_FLAG_OUT="$OUT"
 _SWEEP_ENV=(REIFY_LANE_TASK_DB="$EMPTY_DB")
-run_sweep --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --repo "$EMPTY_REPO"
 _SWEEP_ENV=()
 assert "A8a: REIFY_LANE_TASK_DB produces byte-identical stdout to --db" \
     test "$OUT" = "$_A8_FLAG_OUT"
@@ -510,14 +508,14 @@ assert "A8a: REIFY_LANE_TASK_DB produces byte-identical stdout to --db" \
 # An explicit --db must WIN over the env value: point the env at a
 # nonexistent path and the flag at the good fixture — no [warn] must fire.
 _SWEEP_ENV=(REIFY_LANE_TASK_DB="$EMPTY_REPO/env-not-here.db")
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO"
 _SWEEP_ENV=()
 assert "A8b: an explicit --db overrides REIFY_LANE_TASK_DB" _rc_is 0
 assert "A8b: the overridden (bad) env path never warns" _not _err_has '\[warn\].*env-not-here'
 
 # --- A9: every --class value is accepted -------------------------------------
-for _c in all gate_closure merge_verify_red unmet_dependency; do
-    run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --class "$_c"
+for _c in all merge_verify_red unmet_dependency; do
+    run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --class "$_c"
     assert "A9[$_c]: accepted on the empty fixture (exit 0)" _rc_is 0
 done
 
@@ -538,8 +536,6 @@ echo "--- Block B: the liveness guard ---"
 
 _mk_tasks_db
 B_DB="$DB"
-_mk_esc_dir
-B_ESC="$ESC_DIR"
 _mk_repo
 B_REPO="$REPO_DIR"
 
@@ -592,7 +588,7 @@ _add_task 9107 in-progress "$B_PROPOSAL" "" "$B_CLAIMANT"
 # live store's blocked rows legitimately carry no heartbeat.
 _add_task 9108 blocked '{}' "" "$B_CLAIMANT"
 
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 
 assert "B0: the liveness fixture sweep exits 0" _rc_is 0
@@ -624,13 +620,13 @@ assert "B1d: ... and does not claim a heartbeat matched the window" \
 # --- B2: a LIVE row never yields a request file ------------------------------
 B_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-req-XXXXXX")"
 _TMPDIRS+=("$B_REQ")
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --emit-requests "$B_REQ"
 assert "B2: a LIVE row emits no re-dispatch request" _no_request_for "$B_REQ" 9101
 assert "B2: a claimant-based LIVE row emits no re-dispatch request either" \
     _no_request_for "$B_REQ" 9107
 
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 
 # --- B3/B4: genuinely stranded rows stay eligible ----------------------------
@@ -650,20 +646,20 @@ assert "B5b: outside the window (25h > 24h) => eligible" _json_is 't[9105]["verd
 
 # --- B6: flag <-> env parity for the window ---------------------------------
 _SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" --format json
+run_sweep --db "$B_DB" --repo "$B_REPO" --format json
 _SWEEP_ENV=()
 assert "B6a: REIFY_GATE_STALENESS_HEARTBEAT_MIN=0 makes a 60s heartbeat eligible" \
     _json_is 't[9101]["verdict"] != "LIVE"'
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 _SWEEP_ENV=()
 assert "B6b: an explicit --stale-heartbeat-min overrides the env value" \
     _json_is 't[9101]["verdict"] == "LIVE"'
 
 # --- B7: an unparseable heartbeat fails SAFE --------------------------------
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 assert "B7: an unparseable heartbeat degrades to LIVE, never to eligible" \
     _json_is 't[9106]["verdict"] == "LIVE"'
@@ -788,8 +784,6 @@ echo "--- Block D: trigger class B (merge_verify_red) ---"
 
 _mk_tasks_db
 D_DB="$DB"
-_mk_esc_dir
-D_ESC="$ESC_DIR"
 
 # Fixture main history (linear):
 #   c0 root
@@ -884,7 +878,7 @@ _add_task 9315 in-progress "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C1" "$D_FILES
 D_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-dreq-XXXXXX")"
 _TMPDIRS+=("$D_REQ")
 
-run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_REPO" \
+run_sweep --db "$D_DB" --repo "$D_REPO" \
     --emit-requests "$D_REQ" --format json
 assert "D0: the class-B fixture sweep exits 0" _rc_is 0
 
@@ -946,14 +940,14 @@ assert "D: merge_verify_red counts exactly the four STALE class-B rows" \
     _json_is 's["merge_verify_red"] == 4'
 
 # --- D10: --repo / --main-ref are honoured, and the real repo is never read --
-run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_REPO" \
+run_sweep --db "$D_DB" --repo "$D_REPO" \
     --main-ref "$D_C1" --format json
 assert "D10a: --main-ref is honoured (pinning main-ref at main_sha => UNRESOLVED)" \
     _json_is 't[9301]["verdict"] == "UNRESOLVED" and s["merge_verify_red"] == 0'
 _D10_FLAG_OUT="$OUT"
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_MAIN_REF="$D_C1" REIFY_GATE_STALENESS_REPO="$D_REPO")
-run_sweep --db "$D_DB" --escalations "$D_ESC" --format json
+run_sweep --db "$D_DB" --format json
 _SWEEP_ENV=()
 assert "D10b: REIFY_GATE_STALENESS_MAIN_REF/_REPO match the --main-ref/--repo flags" \
     test "$OUT" = "$_D10_FLAG_OUT"
@@ -965,7 +959,7 @@ assert "D10b: REIFY_GATE_STALENESS_MAIN_REF/_REPO match the --main-ref/--repo fl
 # reach the real repo.
 D_NOGIT="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-nogit-XXXXXX")"
 _TMPDIRS+=("$D_NOGIT")
-run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_NOGIT" --format json
+run_sweep --db "$D_DB" --repo "$D_NOGIT" --format json
 assert "D10c: --repo is honoured — a non-git --repo degrades class B to unknown" \
     _json_is 't[9301]["verdict"] == "unknown" and s["merge_verify_red"] == 0'
 
@@ -996,10 +990,15 @@ echo "--- Block E: trigger class C (unmet_dependency) ---"
 
 _mk_tasks_db
 E_DB="$DB"
-_mk_esc_dir
-E_ESC="$ESC_DIR"
+# E8's row needs a class-B premise as well as its dependency, so this repo
+# carries a resolvable one: main advances past E_C1 and touches the path the
+# proposal references.
 _mk_repo
 E_REPO="$REPO_DIR"
+E_C1="$(_commit_touching docs/e-premise.md)"
+_commit_touching docs/e-resolver.md >/dev/null
+E_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$E_C1" '["docs/e-resolver.md"]' 2026-07-24T10:00:00Z)"
 
 # Dependency targets, one per terminal / non-terminal status.
 _add_task 9490 done      '{}'
@@ -1029,16 +1028,16 @@ _add_task 9408 in-progress '{}' "$(_now_iso -90000)" ""; _add_dep 9408 9490
 _add_task 9409 blocked '{}'; _add_dep 9409 9999
 # E7 — a depends_on whose row exists only under tag='other'.
 _add_task 9410 blocked '{}'; _add_dep 9410 9496
-# E8 — matches class A AND class C: A must win, and the row must be counted
-# exactly once. Class A's action is `close` (a satisfied deterministic gate is
-# cancelled, per #5316 §5); silently downgrading it to class C's `redispatch`
-# would re-run a gate task that should simply be closed.
-_add_task 9411 blocked "$C_GATE_META"; _add_dep 9411 9490
+# E8 — matches class B AND class C: B must win, and the row must be counted
+# exactly once. Silently downgrading B's `reverify` to C's `redispatch` would
+# re-dispatch a task whose merge-verify premise has resolved and which needs
+# its gate re-run, not its agent re-run.
+_add_task 9411 blocked "{\"dry_run_proposals\":[$E_PROP_B]}"; _add_dep 9411 9490
 
 E_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-ereq-XXXXXX")"
 _TMPDIRS+=("$E_REQ")
 
-run_sweep --db "$E_DB" --escalations "$E_ESC" --repo "$E_REPO" \
+run_sweep --db "$E_DB" --repo "$E_REPO" \
     --emit-requests "$E_REQ" --format json
 assert "E0: the class-C fixture sweep exits 0" _rc_is 0
 
@@ -1075,15 +1074,15 @@ assert "E6: an unresolvable dependency warns on stderr" _err_has '\[warn\].*9409
 assert "E7: dependency lookup is tag-scoped — a done row under another tag does not satisfy" \
     _json_is 't[9410]["verdict"] == "unknown"'
 
-# --- E8: class precedence — gate_closure > merge_verify_red > unmet_dependency
-assert "E8: a row matching both A and C reports gate_closure as its primary class" \
-    _json_is 't[9411]["class"] == "gate_closure" and t[9411]["verdict"] == "STALE"'
-assert "E8: A's close action is not downgraded to C's redispatch" \
-    _json_is 't[9411]["action"] == "close"'
+# --- E8: class precedence — merge_verify_red > unmet_dependency --------------
+assert "E8: a row matching both B and C reports merge_verify_red as its primary class" \
+    _json_is 't[9411]["class"] == "merge_verify_red" and t[9411]["verdict"] == "STALE"'
+assert "E8: B's reverify action is not downgraded to C's redispatch" \
+    _json_is 't[9411]["action"] == "reverify"'
 assert "E8: the secondary class is still disclosed in evidence" \
     _json_is '"also:unmet_dependency" in t[9411]["evidence"]'
 assert "E8: a multi-class row increments exactly one class counter" \
-    _json_is 's["gate_closure"] == 1 and s["unmet_dependency"] == 2'
+    _json_is 's["merge_verify_red"] == 1 and s["unmet_dependency"] == 2'
 assert "E8: a multi-class row appears exactly once in the report" \
     _json_is 'len([c for c in d["candidates"] if c["task_id"] == 9411]) == 1'
 
@@ -1118,11 +1117,6 @@ echo "--- Block F: the #5316 corruption suppressors ---"
 
 _mk_tasks_db
 F_DB="$DB"
-# No escalation files are ever written into F_ESC: nothing this block asserts
-# reads the escalation store, and the class-B rows here must reach STALE so
-# F6's suppression is observable on a real hit.
-_mk_esc_dir
-F_ESC="$ESC_DIR"
 
 # Fixture history:
 #   c0 root
@@ -1189,7 +1183,7 @@ _add_task 9615 blocked "{\"failing_tests\":[\"Options:\"],\"done_provenance\":{\
 F_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-freq-XXXXXX")"
 _TMPDIRS+=("$F_REQ")
 
-run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" \
+run_sweep --db "$F_DB" --repo "$F_REPO" \
     --emit-requests "$F_REQ" --format json
 assert "F0: the corruption-suppressor fixture sweep exits 0" _rc_is 0
 
@@ -1243,7 +1237,7 @@ assert "F7: a flagged non-stale row is not counted in corrupt_hold" \
 # --- F8: multiple flags, stable order ----------------------------------------
 assert "F8: two signatures on one row are reported in a deterministic order" \
     _json_is 't[9615]["flags"] == ["corrupt_autofile", "misattributed_provenance"]'
-run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" --format table
+run_sweep --db "$F_DB" --repo "$F_REPO" --format table
 assert "F8: the table report renders flags as a comma-separated list" \
     _out_has 'corrupt_autofile,misattributed_provenance'
 
@@ -1271,7 +1265,7 @@ assert "F8: the table report renders flags as a comma-separated list" \
 F9_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-f9req-XXXXXX")"
 _TMPDIRS+=("$F9_REQ")
 
-run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" \
+run_sweep --db "$F_DB" --repo "$F_REPO" \
     --main-ref no-such-ref --emit-requests "$F9_REQ" --format json
 assert "F9a: an unresolvable --main-ref degrades rather than aborting" _rc_is 0
 
@@ -1368,8 +1362,6 @@ _all_requests_parse() {
 }
 _mk_tasks_db
 G_DB="$DB"
-_mk_esc_dir
-G_ESC="$ESC_DIR"
 _mk_repo
 G_REPO="$REPO_DIR"
 G_C1="$(_commit_touching docs/g-premise.md)"
@@ -1408,13 +1400,13 @@ G_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greq-XXXXXX")"
 _TMPDIRS+=("$G_REQ")
 
 # --- G8 read-only proof: snapshot the store BEFORE the emitting run ----------
-G_BEFORE="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+G_BEFORE="$(_snapshot_readonly "$G_DB")"
 
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ" --format json
 assert "G0: the emission fixture sweep exits 0" _rc_is 0
 
-G_AFTER="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+G_AFTER="$(_snapshot_readonly "$G_DB")"
 
 # --- G1: one file per confirmed hit, named for the task and its class -------
 assert "G1: the first hit emits redispatch-9701-merge_verify_red.json" \
@@ -1468,7 +1460,7 @@ G_SNAP1="$(_request_snapshot "$G_REQ")"
 assert "G5: every emitted request file parses as JSON" _all_requests_parse "$G_REQ"
 assert "G5: no mktemp intermediate survives the first run" _only_request_files "$G_REQ"
 
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ" --format json
 assert "G4: a second sweep still exits 0" _rc_is 0
 assert "G4: re-emission leaves the request set byte-identical" \
@@ -1479,14 +1471,14 @@ assert "G5: no mktemp intermediate survives the second run either" _only_request
 # --- G6: request emission never gates the sweep ------------------------------
 G_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gparent-XXXXXX")"
 _TMPDIRS+=("$G_PARENT")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_PARENT/created-on-demand" --format json
 assert "G6: a nonexistent DIR whose parent exists is created" \
     test -d "$G_PARENT/created-on-demand"
 assert "G6: and it receives the same three requests" \
     _request_count_is "$G_PARENT/created-on-demand" 3
 
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_PARENT/no/such/parent" --format json
 assert "G6: a DIR whose parent does not exist still exits 0" _rc_is 0
 assert "G6: ... warns on stderr" _err_has '\[warn\]'
@@ -1497,7 +1489,7 @@ if [ "$(id -u)" != 0 ]; then
     G_RO="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gro-XXXXXX")"
     _TMPDIRS+=("$G_RO")
     chmod 500 "$G_RO"
-    run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    run_sweep --db "$G_DB" --repo "$G_REPO" \
         --emit-requests "$G_RO" --format json
     assert "G6: a non-writable DIR still exits 0" _rc_is 0
     assert "G6: a non-writable DIR warns on stderr" _err_has '\[warn\]'
@@ -1512,7 +1504,7 @@ fi
 # --- G7: --emit-requests honours --class ------------------------------------
 G_REQ_A="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greqa-XXXXXX")"
 _TMPDIRS+=("$G_REQ_A")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --class merge_verify_red --emit-requests "$G_REQ_A" --format json
 assert "G7: a --class-restricted sweep emits that class's requests and nothing else" \
     _request_count_is "$G_REQ_A" 3
@@ -1534,7 +1526,7 @@ assert "G7: and they are the merge_verify_red requests" \
 #     wrapper function) — it can silently pass on exactly the regression it
 #     exists to catch.
 # The three asserts below are behavioural and cannot be fooled by either.
-assert "G8a: the fixture tasks.db and escalation store are byte-identical after an emitting sweep" \
+assert "G8a: the fixture tasks.db is byte-identical after an emitting sweep" \
     test "$G_BEFORE" = "$G_AFTER"
 assert "G8b: no -wal / -shm sidecar was created alongside the fixture DB" \
     _not test -e "$G_DB-wal"
@@ -1551,10 +1543,10 @@ if [ "$(id -u)" != 0 ]; then
     G_DB_DIR="$(dirname "$G_DB")"
     chmod 400 "$G_DB"
     chmod 500 "$G_DB_DIR"
-    G_RO_BEFORE="$(_snapshot_readonly "$G_DB" "$G_ESC")"
-    run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    G_RO_BEFORE="$(_snapshot_readonly "$G_DB")"
+    run_sweep --db "$G_DB" --repo "$G_REPO" \
         --emit-requests "$G_RO_REQ" --format json
-    G_RO_AFTER="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+    G_RO_AFTER="$(_snapshot_readonly "$G_DB")"
     chmod 700 "$G_DB_DIR"
     chmod 600 "$G_DB"
     assert "G8c: a physically read-only store (db 400, dir 500) still exits 0" _rc_is 0
@@ -1571,7 +1563,7 @@ fi
 G_REQ_ENV="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greqenv-XXXXXX")"
 _TMPDIRS+=("$G_REQ_ENV")
 _SWEEP_ENV=(REIFY_GATE_STALENESS_REQUESTS_DIR="$G_REQ_ENV")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 _SWEEP_ENV=()
 assert "G9: REIFY_GATE_STALENESS_REQUESTS_DIR emits the same request set as the flag" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ_ENV")"
@@ -1605,7 +1597,7 @@ _TMPDIRS+=("$G_NONE")
 
 # (a) CONTROL: this fixture demonstrably emits into G_NONE when pointed at it.
 _SWEEP_ENV=(REIFY_GATE_STALENESS_REQUESTS_DIR="$G_NONE")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 _SWEEP_ENV=()
 assert "G9: CONTROL — pointed at it, the sweep emits all three requests into G_NONE" \
     _request_count_is "$G_NONE" 3
@@ -1616,7 +1608,7 @@ assert "G9: CONTROL — G_NONE is back to empty before the flagless run" \
     _request_count_is "$G_NONE" 0
 
 # (c) FLAGLESS: same fixture, same dir, knob removed — the ONLY difference.
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 assert "G9: with neither the flag nor its env knob set, the sweep writes nothing" \
     _request_count_is "$G_NONE" 0
 assert "G9: ... and the previously-emitted request set is left untouched" \
@@ -1632,7 +1624,7 @@ _TMPDIRS+=("$G_SANDBOX")
 _SWEEP_ENV=(-u REIFY_GATE_STALENESS_REQUESTS_DIR HOME="$G_SANDBOX")
 _G_OLDPWD="$PWD"
 cd "$G_SANDBOX"
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 cd "$_G_OLDPWD"
 _SWEEP_ENV=()
 assert "G9: a flagless sweep still exits 0 with cwd and HOME inside a sandbox" _rc_is 0
@@ -1677,13 +1669,13 @@ assert "G10: the CLI arm's sqlite3 actually runs (else this block is vacuous)" \
     env LD_LIBRARY_PATH= "$_G_CLI_BIN" "$G_DB" "SELECT 1;"
 
 _SWEEP_ENV=(LD_LIBRARY_PATH= REIFY_GATE_STALENESS_SQLITE_BIN="$_G_CLI_BIN")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ_CLI" --format json
 _SWEEP_ENV=()
 G_OUT_CLI="$OUT"
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_SQLITE_BIN=)
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ_PY" --format json
 _SWEEP_ENV=()
 assert "G10: the python3 engine alone still exits 0" _rc_is 0
@@ -1730,8 +1722,6 @@ echo "--- Block R: request retraction ---"
 
 _mk_tasks_db
 R_DB="$DB"
-_mk_esc_dir
-R_ESC="$ESC_DIR"
 _mk_repo
 R_REPO="$REPO_DIR"
 R_C1="$(_commit_touching docs/r-premise.md)"
@@ -1750,7 +1740,7 @@ _add_task 9903 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
 R_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-rreq-XXXXXX")"
 _TMPDIRS+=("$R_REQ")
 
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R0: the retraction fixture sweep exits 0" _rc_is 0
 assert "R0: one request per class is emitted" _request_count_is "$R_REQ" 3
@@ -1760,7 +1750,7 @@ R_SNAP_B="$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{pr
 # 9901 is closed out of band (exactly what a consumer acting on the request
 # does), so it is no longer enumerated at all.
 _sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9901;"
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R1: the second sweep still exits 0" _rc_is 0
 assert "R1: the remediated task's request is retracted" _no_request_for "$R_REQ" 9901
@@ -1776,7 +1766,7 @@ assert "R1: exactly the two surviving requests remain" _request_count_is "$R_REQ
 # unmet_dependency now wins and its merge_verify_red request is superseded.
 _sq "$R_DB" "UPDATE tasks SET metadata='{}' WHERE tag='master' AND id=9903;"
 _add_dep 9903 9990
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 # Named in full, NOT via _no_request_for: that helper globs
 # redispatch-<arg>-*.json, so passing it an <id>-<class> pair would build the
@@ -1794,7 +1784,7 @@ assert "R3: and that one carries the new class's action" \
 # 9902 stops being a hit, but an unmet_dependency-only sweep did not
 # adjudicate class B at all, so it has no standing to retract that request.
 _sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9902;"
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --class unmet_dependency --emit-requests "$R_REQ" --format json
 assert "R4: a --class-restricted sweep exits 0" _rc_is 0
 assert "R4: it does NOT retract a request of a class it never adjudicated" \
@@ -1803,7 +1793,7 @@ assert "R4: and it keeps its own class's live request" \
     test -f "$R_REQ/redispatch-9903-unmet_dependency.json"
 
 # --- R5: a degraded DB read retracts nothing ---------------------------------
-run_sweep --db "$R_REPO/definitely-not-here.db" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_REPO/definitely-not-here.db" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R5: an unreadable --db still exits 0" _rc_is 0
 assert "R5: an unreadable --db retracts NOTHING (zero candidates is not evidence)" \
@@ -1811,7 +1801,7 @@ assert "R5: an unreadable --db retracts NOTHING (zero candidates is not evidence
 assert "R5: ... and says so on stderr" _err_has '\[warn\].*no superseded request was retracted'
 
 # --- R6: a full sweep then does retract the now-stale class-B request --------
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R6: a full sweep retracts the class-B request R4 was not entitled to" \
     _no_request_for "$R_REQ" 9902
@@ -1823,7 +1813,7 @@ assert "R6: only the one live hit remains" _request_count_is "$R_REQ" 1
 : > "$R_REQ/consumer-bookkeeping.txt"
 : > "$R_REQ/redispatch-notanid-gate_closure.json"
 : > "$R_REQ/redispatch-9999-some_other_class.json"
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R7: a consumer's own non-request file survives" \
     test -f "$R_REQ/consumer-bookkeeping.txt"
@@ -1870,8 +1860,6 @@ echo "--- Block T: tag scoping ---"
 
 _mk_tasks_db
 T_DB="$DB"
-_mk_esc_dir
-T_ESC="$ESC_DIR"
 _mk_repo
 T_REPO="$REPO_DIR"
 
@@ -1903,7 +1891,7 @@ _add_task 9802 blocked "$T_HIT" "" "" alt
 T_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-treq-XXXXXX")"
 _TMPDIRS+=("$T_REQ")
 
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" \
+run_sweep --db "$T_DB" --repo "$T_REPO" \
     --tag master --emit-requests "$T_REQ" --format json
 assert "T0: the two-tag fixture sweep exits 0" _rc_is 0
 
@@ -1935,7 +1923,7 @@ assert "T6: exactly the three master hits emit, and nothing from the other tag" 
 assert "T6: no request is emitted for the other tag's task" _no_request_for "$T_REQ" 9802
 
 # --- T7: --tag really does select the namespace ------------------------------
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --tag alt --format json
+run_sweep --db "$T_DB" --repo "$T_REPO" --tag alt --format json
 assert "T7: --tag alt sweeps the other namespace (its rows appear, master's do not)" \
     _json_is '9802 in t and 9803 not in t'
 assert "T7: the dual-tag ids now adjudicate from the ALT rows — unresolved and flagged" \
@@ -1944,13 +1932,13 @@ _T7_ALT_OUT="$OUT"
 
 # --- T8/T9: flag <-> env parity for the tag knob (mirrors A8a/A8b) -----------
 _SWEEP_ENV=(REIFY_LANE_TASK_TAG=alt)
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --format json
+run_sweep --db "$T_DB" --repo "$T_REPO" --format json
 _SWEEP_ENV=()
 assert "T8: REIFY_LANE_TASK_TAG produces byte-identical stdout to --tag" \
     test "$OUT" = "$_T7_ALT_OUT"
 
 _SWEEP_ENV=(REIFY_LANE_TASK_TAG=alt)
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --tag master --format json
+run_sweep --db "$T_DB" --repo "$T_REPO" --tag master --format json
 _SWEEP_ENV=()
 assert "T9: an explicit --tag overrides REIFY_LANE_TASK_TAG" \
     _json_is 'sorted(t) == [9801, 9803, 9805] and t[9801]["verdict"] == "STALE"'
