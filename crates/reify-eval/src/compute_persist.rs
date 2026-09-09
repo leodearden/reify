@@ -1413,4 +1413,69 @@ mod tests {
             "a silent solve must replay no diagnostics, got {got_diags:?}"
         );
     }
+
+    #[test]
+    fn persistent_round_trip_preserves_fea_under_constrained_span() {
+        // The counter-example to "solver diagnostics never carry a span".
+        // Built from the live call site rather than a synthetic diagnostic:
+        // compute_targets/elastic_static.rs's present-but-unhonored-support arm
+        // computes `first_instance_source_span(&value_inputs[5])` and pushes
+        // exactly this diagnostic, which `fea_diagnostic_to_core` decorates with
+        // a `DiagnosticLabel` whenever the span is `Some`.
+        //
+        // Why this path is persisted at all: `UnderConstrained` is NOT an error
+        // (`FeaFailure::is_error`, crates/reify-solver-elastic/src/diagnostics.rs
+        // lists only SingularStiffness / LoadOnInterior / SelectorNoMatch), so
+        // the solve completes and the entry IS written. A warm serve that
+        // dropped the label would replay a diagnostic the editor cannot anchor.
+        let diag = crate::compute_targets::fea_diagnostics::fea_diagnostic_to_core(
+            &reify_solver_elastic::FeaFailure::UnderConstrained { support_count: 2 },
+            Some(reify_core::SourceSpan::new(41, 57)),
+        );
+        // Guard the premise itself: fea_diagnostics.rs attaches a label only
+        // when the span is `Some`, so this test is vacuous if that ever changes.
+        assert_eq!(
+            diag.labels.len(),
+            1,
+            "premise: the live call site produces a labelled diagnostic, got {diag:?}"
+        );
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0004_7245_0004_7245_0004_7245_0004_u128);
+        let value = crate::compute_targets::elastic_static::value_from_elastic_result(
+            &minimal_elastic_result(13.0),
+        );
+
+        super::persistent_write(
+            tmp.path(),
+            "solver::elastic_static",
+            cache_key,
+            &value,
+            std::slice::from_ref(&diag),
+        );
+
+        let (_, got_diags) =
+            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
+                .expect("the entry just written must be a hit");
+
+        assert_eq!(got_diags.len(), 1, "got {got_diags:?}");
+        let got = &got_diags[0];
+        assert_eq!(
+            got.code,
+            Some(reify_core::DiagnosticCode::FeaUnderConstrained),
+            "code must survive the warm serve"
+        );
+        assert_eq!(got.severity, reify_core::Severity::Warning);
+        assert_eq!(
+            got.labels.len(),
+            1,
+            "the label must survive the warm serve, got {got:?}"
+        );
+        assert_eq!(got.labels[0].span.start, 41, "span start must survive");
+        assert_eq!(got.labels[0].span.end, 57, "span end must survive");
+        assert_eq!(
+            got.labels[0].message, diag.labels[0].message,
+            "label message must survive"
+        );
+    }
 }

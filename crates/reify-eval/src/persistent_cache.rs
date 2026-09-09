@@ -5771,12 +5771,16 @@ version = "9.9.9"
     }
 
     #[test]
-    fn with_diagnostics_round_trip_drops_labels_and_candidates() {
-        // The documented lossiness of `PersistedDiagnostic`. Solver-trampoline
-        // diagnostics carry neither labels nor candidates, so this loss is
-        // unobservable on the persisted path — but it must be a deliberate,
-        // pinned decision rather than an accident, because carrying them would
-        // require serde on `DiagnosticLabel`/`SourceSpan`, which have none.
+    fn with_diagnostics_round_trip_preserves_labels_and_candidates() {
+        // `PersistedDiagnostic` is a COMPLETE mirror: every field a live
+        // `Diagnostic` carries survives the on-disk round trip. This test
+        // replaces an earlier one that pinned labels/candidates as deliberately
+        // dropped, on the premise that solver-trampoline diagnostics never
+        // carry them — which is false. elastic_static.rs's
+        // present-but-unhonored-support arm computes a source span and pushes a
+        // span-carrying `FeaUnderConstrained` warning (see the sibling test in
+        // compute_persist.rs). A warm serve that silently un-decorated a
+        // diagnostic would replay a strictly worse one than the cold serve.
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "abcdef0123456789abcdef0123456789";
@@ -5805,18 +5809,17 @@ version = "9.9.9"
             .unwrap()
             .expect("entry must be a hit");
 
-        assert_eq!(read_back.diagnostics[0].message, "decorated");
+        let got = &read_back.diagnostics[0];
+        assert_eq!(got.message, "decorated");
+        assert_eq!(got.code, Some(reify_core::DiagnosticCode::ShellTooThick));
+        assert_eq!(got.labels.len(), 1, "the label must survive, got {got:?}");
+        assert_eq!(got.labels[0].span.start, 3, "label span start must survive");
+        assert_eq!(got.labels[0].span.end, 9, "label span end must survive");
+        assert_eq!(got.labels[0].message, "here", "label message must survive");
         assert_eq!(
-            read_back.diagnostics[0].code,
-            Some(reify_core::DiagnosticCode::ShellTooThick)
-        );
-        assert!(
-            read_back.diagnostics[0].labels.is_empty(),
-            "labels are deliberately not carried"
-        );
-        assert!(
-            read_back.diagnostics[0].candidates.is_empty(),
-            "candidates are deliberately not carried"
+            got.candidates,
+            vec!["foo::Bar".to_string()],
+            "candidates must survive"
         );
     }
 }
