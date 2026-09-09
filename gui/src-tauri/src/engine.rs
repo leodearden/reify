@@ -783,9 +783,9 @@ pub(crate) fn module_key(name: &str) -> String {
 /// while the reify-debug write tools receive a caller-supplied REAL path
 /// (`/tmp/x/part.ri`), which is what their ToolDefs advertise. So a bare `==`
 /// between the two is **VACUOUS**: it matches nothing and silently drops every
-/// diagnostic, which is exactly the bug this predicate exists to close (task
-/// #5097 δ, review finding). It accepts either spelling on the loose side and
-/// still discriminates on the stem — `"other.ri"` does not match
+/// diagnostic, which is exactly the bug this predicate exists to close. It
+/// accepts either spelling on the loose side and still discriminates on the
+/// stem — `"other.ri"` does not match
 /// `/tmp/x/part.ri`.
 ///
 /// The comparison spelling is built with [`module_key`] itself rather than a
@@ -807,7 +807,7 @@ pub(crate) fn module_key(name: &str) -> String {
 /// Both are pinned by `source_key_matches_path_is_directional`, including the
 /// asymmetry itself, so a future tightening (rejecting an absolute `spelling`,
 /// or taking stems on both sides) cannot silently break the active-file guard
-/// while the diagnostics filter stays green (task #5097 δ, review finding).
+/// while the diagnostics filter stays green.
 ///
 /// Gated to match its consumers: `debug_server` is the only one and is itself
 /// `#[cfg(feature = "gui")]` in lib.rs, so an ungated definition is dead code

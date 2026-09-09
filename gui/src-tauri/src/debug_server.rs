@@ -1771,47 +1771,27 @@ pub fn write_tool_frontend_payload(
 /// Refuse a `query_frontend` reply that carries the bridge's in-band
 /// `{error: string}` envelope, converting it to `Err`.
 ///
-/// `DebugBridge::query_frontend` resolves `Ok(Value)` for ANY well-formed JSON
-/// reply — including `{"error": "unknown command: …"}`, which `bridge.ts`
-/// returns for an unregistered command AND for any handler that throws
-/// (docs/debug-mcp-contract.md §2a). A push that was REFUSED therefore looks
-/// exactly like one that landed.
+/// WHY: `query_frontend` resolves `Ok(Value)` for ANY well-formed JSON reply,
+/// including the `{"error": …}` `bridge.ts` returns for an unregistered
+/// command or a throwing handler (docs/debug-mcp-contract.md §2a) — so a
+/// REFUSED push is indistinguishable from a landed one. By push time the write
+/// seam has already advanced `last_state` to S1, so reading a refusal as
+/// success leaves the baseline ahead of a frontend still holding S0 (bug #7)
+/// while the client is told the write landed. Nothing at this layer can undo
+/// the engine mutation; surfacing the refusal is what remains.
 ///
-/// For the δ write tools that is worse than a swallowed error message: the
-/// seam has ALREADY refreshed `last_state` to S1 by the time the push goes
-/// out, so a refused push leaves the baseline at S1 while the frontend still
-/// holds S0 — the stale-baseline desync (bug #7) the seam exists to prevent —
-/// and the AI client is told the write landed. Surfacing the refusal as `Err`
-/// cannot undo the engine mutation (nothing at this layer can), but it stops
-/// the tool from reporting success over a frontend that never applied the
-/// state, and the `Err` reaches the client through the existing `isError`
-/// path.
+/// A non-string `error` is refused too, rendered via `to_string()`: unlike
+/// [`reify_write_str_param`], "wrong type" and "absent" end in OPPOSITE
+/// outcomes here, so folding a mistyped `error` into "no error" would reopen
+/// the silent-success hole. Absent/`null` `error`, and any non-object reply,
+/// pass through untouched.
 ///
-/// NOT reachable with today's payloads — the Rust side always builds a
-/// well-formed `file`/`guiState` object for a command the bridge registers —
-/// so this is a guard against a future frontend refactor, not a fix for a
-/// live bug (task #5097 δ, review finding).
+/// `handle_open_file`, `handle_load_fixture` and `handle_set_fea_case` are
+/// deliberately NOT routed through this: the first two return the frontend's
+/// reply VERBATIM because the visual-regression harness reads that object,
+/// where an `{error}` reply is itself the answer.
 ///
-/// A non-string `error` value is refused too, rendered via `to_string()`:
-/// unlike [`reify_write_str_param`], where "wrong type" and "absent" both end
-/// in the same refusal, here they end in OPPOSITE outcomes, so folding a
-/// mistyped `error` into "no error" would restore exactly the silent-success
-/// hole this closes. An absent or `null` `error` — and any non-object reply,
-/// which `Value::get` answers `None` for — passes through untouched.
-///
-/// **The two debug-native funnels are deliberately NOT routed through this.**
-/// `handle_open_file` and `handle_load_fixture` return the frontend's reply
-/// VERBATIM because the visual-regression harness reads that object, where an
-/// `{error}` reply is itself the answer. `handle_set_fea_case` predates this
-/// cluster and keeps its existing behaviour; it is named here so its omission
-/// reads as a decision rather than an oversight.
-///
-/// Pure/deterministic: no engine, no Tauri handle, no I/O — the same headless
-/// testability contract as [`write_tool_frontend_payload`], pinned by
-/// `frontend_ok_refuses_the_bridge_error_envelope` and, across a real
-/// `DebugTransport` round-trip, by
-/// `frontend_error_envelope_is_refused_after_the_transport`
-/// (tests/debug_boundary_tests.rs).
+/// Pure/deterministic: no engine, no Tauri handle, no I/O.
 pub(crate) fn frontend_ok(reply: Value, command: &str) -> Result<Value, String> {
     match reply.get("error") {
         None | Some(Value::Null) => Ok(reply),
@@ -1890,43 +1870,35 @@ pub async fn set_fea_case_on_engine(
 /// rationale above [`open_source_into_engine_and_refresh_baseline`] for
 /// why/how.
 ///
-/// (a) **One seam, ONE stated exception.** The FOUR engine-mutating/I-O write
-/// tools (`reify_set_parameter`, `reify_update_source`, `reify_save_file`,
-/// `reify_export`) reach the baseline refresh through here, including the two
-/// that commit no new engine state. The fifth, `reify_open_file`, reaches the
-/// SAME refresh through
-/// [`open_source_into_engine_and_refresh_baseline`] instead — see (d) for the
-/// ordering constraint that forces it. So the structural claim θ (task 5100)
-/// anchors on is "every write tool refreshes the baseline through one of the
-/// two shared `*_and_refresh_baseline` seams", with `reify_open_file` the one
-/// name to enumerate — NOT "all five route through this function", which is
-/// false. A write tool that refreshes the baseline its own way, outside both
+/// (a) **One seam, ONE stated exception.** Four of the five write tools reach
+/// the baseline refresh through here; `reify_open_file` reaches the SAME
+/// refresh through [`open_source_into_engine_and_refresh_baseline`] — see (d).
+/// So the structural claim θ (task 5100) anchors on is "every write tool
+/// refreshes the baseline through one of the two shared
+/// `*_and_refresh_baseline` seams", NOT "all five route through this
+/// function". A tool that refreshes the baseline its own way, outside both
 /// seams, is the defect that anchor exists to catch.
 ///
 /// (b) **The `StateDelta` is deliberately DISCARDED.** `compute_delta` is
-/// called for its SIDE EFFECT — advancing `last_state` — only. The full
+/// called for its SIDE EFFECT — advancing `last_state` — only; the full
 /// `GuiState` reaches the frontend via the caller's synchronous
 /// `query_frontend` push, not `emit_delta` (§6.2 caveat (i) / D7). Do NOT add
-/// a second emit path here or in any caller: mechanism 1 of the §6.2 pair is
-/// already satisfied by construction, because every mutation routed through
-/// here (`update_source`, `load_file`, and `apply_param_to_source_str`
-/// transitively via `update_source`) reaches
-/// `EngineSession::post_engine_call_telemetry`, the one shared
-/// gui-state-sync choke-point. Reconcile any further divergence at
-/// `gui-state-sync`, which owns that seam.
+/// a second emit path here or in any caller: every mutation routed through
+/// here already reaches `EngineSession::post_engine_call_telemetry`, the one
+/// shared gui-state-sync choke-point, so §6.2's mechanism 1 holds by
+/// construction. Reconcile further divergence at `gui-state-sync`, which owns
+/// that seam.
 ///
 /// (c) It inherits the SERIAL-DEBUG-OPS assumption its sibling wrappers
-/// document: the refresh lands BEFORE the caller's frontend push, so a
-/// normal command interleaved in that window would diff against S1 while the
-/// frontend is still at S0.
+/// document: the refresh lands BEFORE the caller's frontend push, so a normal
+/// command interleaved in that window would diff against S1 while the frontend
+/// is still at S0.
 ///
-/// (d) **Why [`open_source_into_engine_and_refresh_baseline`] is NOT
-/// re-expressed through this.** That one must run
-/// `UnresolvedGuiState::resolve` — which does `std::fs::canonicalize` — AFTER
-/// the engine lock is released (#5193), and a closure that returns a
-/// `GuiState` from INSIDE the lock cannot express that ordering. Folding it
-/// in would either hold the mutex across N filesystem syscalls or drop the
-/// abs-path rewrite; both are worse than two call sites.
+/// (d) [`open_source_into_engine_and_refresh_baseline`] is not re-expressed
+/// through this because it must run `UnresolvedGuiState::resolve` — which does
+/// `std::fs::canonicalize` — AFTER the engine lock is released (#5193), and a
+/// closure returning a `GuiState` from INSIDE the lock cannot express that
+/// ordering.
 ///
 /// `f` runs via [`run_on_engine`], i.e. on a real OS thread, because
 /// `EngineSession` reaches OCCT's `blocking_send`, which panics inside any
@@ -2052,7 +2024,7 @@ fn reify_write_str_param(params: &Value, field: &str) -> Result<String, String> 
 /// "absent" is a live semantic — `reify_save_file`'s default target, the ACTIVE
 /// file. A bare `params[field].as_str().map(...)` would silently read
 /// `file_path: 120` as "no target supplied" and overwrite the user's canonical
-/// `.ri` when the caller plainly meant a save-as (task #5097 δ, review finding).
+/// `.ri` when the caller plainly meant a save-as.
 ///
 /// An explicit `null` is treated as ABSENT: JSON has no other way to spell
 /// "field present, no value", and a client that serializes `Option::None` that
@@ -2086,7 +2058,7 @@ fn reify_write_optional_str_param(params: &Value, field: &str) -> Result<Option<
 // client got `output_path is required`. Extracted here, the two halves are
 // tied together by `reify_write_tool_params_match_their_advertised_schemas`,
 // which builds each tool's params object out of its own schema's property
-// names (task #5097 δ, review finding).
+// names.
 //
 // `reify_open_file`'s extractor is `open_file_path_param`, which lives beside
 // `handle_reify_open_file` because accepting BOTH spellings is what makes it
@@ -2132,9 +2104,9 @@ pub(crate) fn reify_export_params(params: &Value) -> Result<(String, String), St
 // and so cannot be driven headlessly (see the test module's note), which left
 // the response SHAPES — the half of the contract an AI client actually reads —
 // untested: dropping `new_value`, or letting `diagnostics_count` drift from
-// `diagnostics`, changed the wire shape with the whole suite green (task #5097
-// δ amendment, review finding). Extracted here, each shape is pinned directly
-// by `reify_write_tool_envelopes_match_the_reify_mcp_shapes`.
+// `diagnostics`, changed the wire shape with the whole suite green. Extracted
+// here, each shape is pinned directly by
+// `reify_write_tool_envelopes_match_the_reify_mcp_shapes`.
 //
 // The fifth envelope, `reify_open_file_envelope`, lives beside
 // `handle_reify_open_file` because it is what distinguishes that tool from its
@@ -2250,7 +2222,7 @@ pub async fn reify_set_parameter_on_engine_and_refresh_baseline(
 /// `gs.compile_diagnostics` would quietly widen it. The cost is one more
 /// `run_on_engine` thread, and the two lists are read from different
 /// snapshots — harmless under the serial-debug-ops assumption below, and
-/// stated here rather than left implicit (task #5097 δ, review finding).
+/// stated here rather than left implicit.
 ///
 /// # When `new_value` is null
 ///
@@ -2265,7 +2237,7 @@ pub async fn reify_set_parameter_on_engine_and_refresh_baseline(
 /// The arm is in any case all but unreachable: `apply_param_to_source_str`
 /// refuses an unknown `cell_id` before anything is committed. The divergence
 /// is stated in docs/debug-mcp-contract.md's AI-write-tools section alongside
-/// the other exceptions (task #5097 δ, review finding).
+/// the other exceptions.
 ///
 /// NOTE: as on `handle_set_fea_case`, step 1 refreshes `last_state` BEFORE
 /// step 3's push lands S1 on the frontend, so a normal command interleaved in
@@ -2527,8 +2499,7 @@ pub(crate) fn resolve_update_source_push_path(
 /// It exists because `EngineSession::get_diagnostics` stamps every
 /// `file_path` with the stem-only module key `"<stem>.ri"` while this
 /// surface's callers supply a real filesystem path — a bare `==` between them
-/// matches NOTHING and silently drops the whole warning stream (task #5097 δ,
-/// review finding).
+/// matches NOTHING and silently drops the whole warning stream.
 pub(crate) fn filter_diagnostics_for_file(
     diags: Vec<reify_core::DiagnosticInfo>,
     requested: &str,
@@ -2631,35 +2602,16 @@ async fn handle_reify_update_source(
 /// stray-relative-file bug in its other spelling: it would answer
 /// `success: true` having written somewhere the caller cannot predict.
 ///
-/// **Pure I/O: this commits no new engine state.** It still routes through
+/// **Pure I/O: this commits no new engine state.** It routes through
 /// [`write_on_engine_and_refresh_baseline`] anyway, so §6.2 invariant (a)
 /// holds for the four seam-routed write tools without a per-tool exception.
 /// The delta is normally empty — nothing changed — but the `build_gui_state()`
 /// it diffs is a genuine REBUILD, not a cached snapshot, and a rebuild is not
-/// guaranteed bit-identical. That is precisely why [`handle_reify_save_file`]
-/// pushes the returned `GuiState` to the frontend rather than dropping it: a
-/// baseline refreshed from a rebuild the frontend never saw would swallow the
-/// difference.
-///
-/// # The cost of that uniformity, stated rather than assumed
-///
-/// It is not free, and it is SELF-INFLICTED by the choice above: the rebuild
-/// is needed only because a pure-I/O tool routes through the seam, and the
-/// push is needed only because the rebuild refreshed the baseline. So an AI
-/// `reify_save_file` on a heavy design pays a full `tessellate_snapshot` plus
-/// material resolution, and then a frontend `engine.initFromState(…)` (a store
-/// re-init and mesh rebuild) — to write bytes that were already in memory.
-/// A cheap committed-buffer accessor (the shape of `canonical_file_path()` /
-/// `holds_rejected_source()`) would avoid both, and would be SAFE precisely
-/// because nothing changed: leave `last_state` untouched, push nothing.
-///
-/// It is deliberately not done here. The four-tools-one-seam structure is the
-/// claim θ (task 5100) anchors on and the reason §6.2 invariant (a) needs no
-/// per-tool exception; trading it for a per-tool fast path is a design change,
-/// not an optimisation. The cost has NOT been measured on a real (non-mock)
-/// kernel — the number belongs in this doc once it exists, and until then this
-/// paragraph is the honest statement of what is being traded (task #5097 δ,
-/// review finding).
+/// guaranteed bit-identical. That is why [`handle_reify_save_file`] pushes the
+/// returned `GuiState` rather than dropping it: a baseline refreshed from a
+/// rebuild the frontend never saw would swallow the difference. What that
+/// uniformity costs, and why a per-tool fast path was not taken instead, is
+/// docs/debug-mcp-contract.md §"reify_save_file and reify_export are pure I/O".
 ///
 /// **It persists the SESSION's buffer, not a caller-supplied one** — and
 /// `files[0].content` is not unconditionally the committed text: after a
@@ -2709,7 +2661,7 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
             // into whatever CWD the GUI process happens to have: an
             // unpredictable stray file, reported as `success: true`. REFUSE
             // instead of guessing — the caller can always name a target
-            // explicitly (task #5097 δ, review finding).
+            // explicitly.
             (None, None) => {
                 return Err(
                     "no active file to save; supply file_path (this session was loaded \
@@ -2729,17 +2681,12 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
 /// result envelope `{"success": true}`.
 ///
 /// **It pushes the rebuilt `GuiState` even though it commits no new engine
-/// state**, for the same reason [`handle_reify_export`] does: the seam's
-/// `build_gui_state()` is not observationally free. It calls
-/// `mark_demand_pruned_pending()`, re-runs `tessellate_snapshot` and resolves
-/// material appearance, and a rebuild is not bit-identical (see the mock's
-/// per-tessellation handle-id counter, called out in
-/// `reify_save_file_writes_the_session_buffer`). Refreshing the baseline from
-/// that rebuild while pushing NOTHING would advance `last_state` past what the
-/// frontend holds, and the next normal command's delta would omit the
-/// difference — the stale-baseline desync (bug #7) inverted. Pushing keeps the
-/// invariant the seam exists for: the baseline can never move past the
-/// frontend (task #5097 δ, review finding).
+/// state**, as [`handle_reify_export`] does: the seam's `build_gui_state()` is
+/// not observationally free (it re-runs `tessellate_snapshot` and resolves
+/// material appearance, and is not bit-identical), so refreshing the baseline
+/// from a rebuild the frontend never saw would advance `last_state` past what
+/// the frontend holds — the stale-baseline desync (bug #7) inverted. The
+/// baseline can never move past the frontend.
 async fn handle_reify_save_file(
     state: &DebugServerState,
     params: Value,
