@@ -28,6 +28,7 @@
 #   G — --emit-requests + the read-only proof
 #   R — request retraction (the only block that mutates its fixture between runs)
 #   T — tag scoping
+#   Z — end-to-end acceptance for the task-7349 retirement
 #
 # The suite is free of `sleep` / wall-clock upper bounds by construction
 # (offset-timestamp fixtures instead), so
@@ -1931,5 +1932,86 @@ run_sweep --db "$T_DB" --repo "$T_REPO" --tag master --format json
 _SWEEP_ENV=()
 assert "T9: an explicit --tag overrides REIFY_LANE_TASK_TAG" \
     _json_is 'sorted(t) == [9801, 9803, 9805] and t[9801]["verdict"] == "STALE"'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block Z — end-to-end acceptance for the task-7349 retirement
+#
+# Every other block pins one half of the change against its own fixture. This
+# one pins the SIGNAL the task was filed for, as a SINGLE sweep over a SINGLE
+# store: the two shapes that actually fired collaterally on the live instance
+# are adjudicated to nothing, their leftover requests are drained, and the one
+# surviving class still works end to end. Deliberately written as one
+# integration assert so a future partial regression in any one of the three
+# cannot hide behind the per-class blocks.
+#
+# Row 1 is the shape behind all nine collateral gate_closure firings across six
+# tasks. Row 2 is the shape that fired on task 5318 (its one dependency 5214
+# `done`) while esc-5318-7 was still pending — ~9h before the human ruled. Row 3
+# is a genuine merge_verify_red candidate, which must still be reported AND
+# emitted: this task retires two classes, it does not disable the sweep.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block Z: end-to-end acceptance (task 7349) ---"
+
+_mk_tasks_db
+Z_DB="$DB"
+_mk_repo
+Z_REPO="$REPO_DIR"
+Z_C1="$(_commit_touching docs/z-premise.md)"
+Z_TIP="$(_commit_touching docs/z-resolver.md)"
+
+# (1) the collateral gate_closure shape: deterministic, always-escalates, with
+#     no live escalation anywhere.
+_add_task 9501 blocked '{"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"}'
+# (2) the 5318 shape: blocked, one dependency, and it is terminal.
+_add_task 9590 done '{}'
+_add_task 9502 blocked '{}'; _add_dep 9502 9590
+# (3) a genuine merge_verify_red hit: main advanced past the recorded main_sha
+#     and touched the referenced path.
+_add_task 9503 blocked "{\"dry_run_proposals\":[$(_d_prop \
+    'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$Z_C1" '["docs/z-resolver.md"]' 2026-07-24T10:00:00Z)]}"
+
+Z_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-zreq-XXXXXX")"
+_TMPDIRS+=("$Z_REQ")
+
+# Leftovers from a pre-retirement sweep, in the shape the live directory held:
+# these are what kept instructing the consumer to cancel and to re-pend.
+_z_leftover() {
+    printf '{"schema_version":1,"task_id":%s,"class":"%s","verdict":"STALE","action":"%s","evidence":"pre-retirement leftover","main_ref_sha":"%s","emitted_by":"scripts/deterministic-gate-closure-staleness-sweep.sh"}\n' \
+        "$1" "$2" "$3" "$Z_TIP" > "$Z_REQ/redispatch-$1-$2.json"
+}
+_z_leftover 9501 gate_closure close
+_z_leftover 9502 unmet_dependency redispatch
+
+run_sweep --db "$Z_DB" --repo "$Z_REPO" --emit-requests "$Z_REQ" --format json
+assert "Z0: the acceptance sweep exits 0" _rc_is 0
+
+# --- the two retired shapes are adjudicated, and match nothing ---------------
+assert "Z1: the collateral gate-closure shape is NO-CLASS / none" \
+    _json_is 't[9501]["class"] == "-" and t[9501]["verdict"] == "NO-CLASS" and t[9501]["action"] == "none"'
+assert "Z2: the 5318 satisfied-dependency shape is NO-CLASS / none" \
+    _json_is 't[9502]["class"] == "-" and t[9502]["verdict"] == "NO-CLASS" and t[9502]["action"] == "none"'
+assert "Z3: both are counted in no_class, and neither retired counter is rendered" \
+    _json_is 's["no_class"] == 2 and "gate_closure" not in s and "unmet_dependency" not in s'
+
+# --- the leftovers are drained in the same run -------------------------------
+assert "Z4: the leftover gate_closure request is gone" \
+    _not test -f "$Z_REQ/redispatch-9501-gate_closure.json"
+assert "Z4: the leftover unmet_dependency request is gone" \
+    _not test -f "$Z_REQ/redispatch-9502-unmet_dependency.json"
+
+# --- the surviving class still works, end to end -----------------------------
+assert "Z5: the merge_verify_red candidate is still a confirmed hit" \
+    _json_is 't[9503]["class"] == "merge_verify_red" and t[9503]["verdict"] == "STALE" and s["merge_verify_red"] == 1'
+assert "Z5: exactly one request file remains" _request_count_is "$Z_REQ" 1
+assert "Z5: and it is the merge_verify_red request" \
+    test -f "$Z_REQ/redispatch-9503-merge_verify_red.json"
+assert "Z5: it carries EXACTLY the documented consumer field set" \
+    _json_check "$Z_REQ/redispatch-9503-merge_verify_red.json" \
+    'set(d) == set(["schema_version","task_id","class","action","verdict","evidence","main_ref_sha","emitted_by"])'
+assert "Z5: with action=reverify — the only action this sweep can still ask for" \
+    _json_check "$Z_REQ/redispatch-9503-merge_verify_red.json" \
+    'd["task_id"] == 9503 and d["class"] == "merge_verify_red" and d["action"] == "reverify"'
 
 test_summary
