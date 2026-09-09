@@ -226,6 +226,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: 'Turn 41: grep exit 2 with 2>/dev/null. Turns 82–88: agent retried with different sed/perl approaches and grep variants, each hitting exit 2 again. Pattern matches: exit-code-2 (path/IO error) misdiagnosed as pattern-not-found, retried by varying only the search string.'
+  - date: '2026-09-08'
+    project: reify
+    session: 21c44738-f21a-4c53-8b0e-cfb72d9f7169
+    origin_phase: unknown
+    manifested_phase: verify
+    note: find . -name "solver_elastic.ri" returns empty (FILE=); grep then invoked on empty string, producing exit 2 (IO/path error, not exit 1); 5 not_found signals across session suggest retry loop varying search terms
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -1376,6 +1382,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Watcher-rearm.sh hit CEILING timeout (exit 124) on 3 consecutive invocations with timeout parameter as the only change (3600→3600→232). Session ended cleanly at rotation deadline, not user interrupt as entry title suggests.
+  - date: '2026-09-08'
+    project: reify
+    session: 6ae57eec-efa8-4552-8283-66beb7189511
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Autonomous watcher executed 5 identical retries of watcher-rearm.sh --timeout 3600, all hitting exit 124 (ceiling), with no parameter or strategy variation
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -1747,6 +1759,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: If agent was polling background task output via sleep+tail, the output file for turn 33 does not exist
+  - date: '2026-09-08'
+    project: reify
+    session: ff09b74c-6977-4e59-aef9-0c29edc9050a
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Background polling for async recon reports using sleep+ls; default 2min Bash timeout killed the 120s sleep (exit 143). Should use Monitor or set explicit longer timeout for background wait loops.
+  - date: '2026-09-08'
+    project: reify
+    session: 48cc285a-d387-4de3-abea-4bd1456c4e6a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 85: Agent attempted sleep+tail polling chain (sleep 60; tail /tmp/.../tasks/bs0wt6in6.output), blocked by guard. Exact match to documented sleep+tail chaining pattern.'
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -2042,6 +2066,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Autonomous escalation watcher running under rotation limits (4h, 50 escalations) blindly retried foreground bounded-wait after repeated CEILING exits instead of switching to background monitoring or graceful exit. Sequence: exit 124 → date check → retry identically → exit 124 (repeat) → exit 137 SIGKILL.'
+  - date: '2026-09-08'
+    project: reify
+    session: 6ae57eec-efa8-4552-8283-66beb7189511
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Exit 137 (SIGKILL) from watcher-rearm.sh at turn 217, agent then enters retry loop without switching to background or adjusting timeout
 - id: entry-cand-20260722-3
   title: Watcher script path resolved relative to target project cwd instead of dark-factory tooling root
   severity: medium
@@ -2493,6 +2523,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Watcher invokes watcher-rearm.sh with 3600s timeout on turns 156, 167, 176, each hitting CEILING (exit 124), then re-issues the identical command without backoff or escalation. Turn 187 finally decrements timeout to 953s as rotation deadline approached.
+  - date: '2026-09-08'
+    project: reify
+    session: 6ae57eec-efa8-4552-8283-66beb7189511
+    origin_phase: unknown
+    manifested_phase: ops
+    note: After hitting ceiling at exit 124, identical watcher-rearm.sh command re-issued in retry loop without ceiling-aware timeout reduction
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -2892,6 +2928,12 @@ entries:
     origin_phase: architect
     manifested_phase: implement
     note: Agent in warm-lane worktree assumes GUI project-relative paths (gui/ directory, src/__tests__/ paths) that don't exist in actual layout. Turns 73, 257, 261 all fail on paths that appear to be from parent project context leaked into worktree briefing/context
+  - date: '2026-09-08'
+    project: reify
+    session: cc8b27ac-b8ad-4e4c-b34a-79e5d928decc
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent in warm-lanes worktree attempted relative-path `cd` into reify-eval test directory; path resolution failed with 'no such file or directory'. Session has 4 total not_found signals, suggesting cross-project context (likely memory briefing) injected unqualified file paths into an unrelated project's worktree without accounting for root offset.
 - id: entry-cand-20260729-6
   title: Escalation-watcher session spawned without DARK_FACTORY_ROOT set, forcing a filesystem-wide find that times out
   severity: medium
@@ -2967,6 +3009,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Escalation esc-5791-6 filed for warm-lanes task; if escalation-watcher spawned without DARK_FACTORY_ROOT, it may fail to resolve dark-factory tooling paths needed for context assembly
+  - date: '2026-09-08'
+    project: reify
+    session: 09c35d2d-acc6-4ecf-995c-0ad2d8127258
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Two consecutive escalate_info MCP calls (turns 550, 556) timing out in warm-lanes worktree context; matches pattern of filesystem-wide search when escalation infrastructure lacks proper project-root configuration for non-dark-factory target
 - id: entry-cand-20260728-7
   title: Warm-lane .task-meta path assumed at warm-lanes root instead of under worktrees/
   severity: medium
@@ -4501,6 +4549,12 @@ entries:
     origin_phase: architect
     manifested_phase: verify
     note: 'Turn 24: exit code 2 when accessing .task/iterations.jsonl — matches pattern of agent probing undocumented .task-meta/<lane>/iterations.jsonl and hitting path/IO error'
+  - date: '2026-09-08'
+    project: reify
+    session: 9074e198-34b7-4533-beed-7cfe58d9eabe
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Orchestrated task in warm-lanes worktree encountered 2 ''not found'' errors, consistent with agent probing missing .task-meta/<lane>/iterations.jsonl path. Related: entry-cand-20260725-6 (iterations.jsonl missing at expected path).'
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -16747,3 +16801,120 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: Bash ls/cat of crates/reify-audit/pdoccover-baseline.txt from within warm-lanes worktree returned exit code 2
+- id: cand-20260908-1
+  title: pkill -f with broad pattern matching invoking shell causes exit 144
+  cause: Using pkill -f with search pattern that includes the running shell command itself; pattern matches and kills the invoking process
+  area: shell/process-management
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: 09c35d2d-acc6-4ecf-995c-0ad2d8127258
+    origin_phase: implement
+    manifested_phase: verify
+    evidence_quote: 'Turn 316: pkill -f "while pgrep -f .cargo-nextest nextest run..." exits 144; memory notes: ''🪰 `pkill -f` matched my own shell (exit 144) — kill by PID'''
+- id: cand-20260908-2
+  title: Harness library sourcing fails in warm-lanes worktree
+  cause: scripts/harness-layout-lib.sh source command fails with exit 1 in non-dark-factory worktree context; possible missing script, broken dependency, or undefined function harness_layout_unit_lines
+  area: warm-lanes/bootstrap
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: 09c35d2d-acc6-4ecf-995c-0ad2d8127258
+    origin_phase: architect
+    manifested_phase: unknown
+    evidence_quote: 'Turn 321: source scripts/harness-layout-lib.sh 2>/dev/null && for h in harness_layout_unit_lines exits 1; error suppressed by redirect'
+- id: cand-20260908-3
+  title: Autonomous escalation-watcher guard throttling cascades to watcher-rearm ceiling recurrence
+  cause: 'Autonomous session recorded 3 guard trips (df_guard: 3) during escalation processing. Anti-chaining guard throttling slows escalation completion time, increasing likelihood of watcher-rearm hitting its bounded timeout (exit 124). After ceiling, identical retries recur without timeout adaptation or guard-aware backoff strategy, creating a pathological loop.'
+  area: escalation-watcher autonomous loop + anti-chaining guard interaction + bounded-wait timeout semantics
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: 6ae57eec-efa8-4552-8283-66beb7189511
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'signal_counts: {df_guard: 3, tool_error: 1}; retry pattern: ''Bash x5 (1 designed-outcome)... exit 124 [watcher-rearm-declared] CEILING''; turn 217: exit 137 SIGKILL; no timeout reduction between retries'
+- id: cand-20260908-4
+  title: Session digest references non-existent turns
+  cause: Orchestrated task session digest records turn references (44, 180) that do not exist in the session transcript, indicating data corruption, truncation, or stale cross-references in the digest index
+  area: session-digest-consistency
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: 15664eec-2cbb-494a-b491-1e6100b4e285
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'not_found signals: turn 44 does not exist, turn 180 does not exist; session size 485 bytes with n_user_turns=0 but digest names non-existent turn indices'
+- id: cand-20260908-5
+  title: Guard advises Monitor for polling, but Monitor schema not preloaded in agent's discovered-tool set
+  cause: Agent blocked from sleep+tail chain receives guard advice to use Monitor instead, but Monitor (a deferred tool) was never loaded into the agent's context. Subsequent attempt to call Monitor fails with InputValidationError due to missing schema (agent guesses parameter names like `timeout` instead of `timeout_ms`, omits required `description` field).
+  area: Deferred tool availability; guard-advice recovery flow; orchestrated-task context assembly
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: 48cc285a-d387-4de3-abea-4bd1456c4e6a
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Blocked: sleep 60 followed by: tail... use Monitor... → InputValidationError: This tool''s schema was not sent to the API — it was not in the discovered-tool set derived from message history... An unexpected parameter `timeout` was provided... The parameter `description` type is expected as `string` but provided as `unknown`'
+- id: cand-20260908-6
+  title: MCP tool parameter value contains raw XML envelope markup from serialization
+  cause: When constructing a parameter for add_design_decision tool, raw MCP XML markup (specifically `<parameter name=...>`) was included as literal text in the field value instead of being properly escaped or quoted, indicating the caller serialized part of the tool-call envelope structure into the parameter payload
+  area: MCP tool-call construction, parameter value escaping
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: 52f101e3-4cc9-4349-aa42-93a62f5d5bf1
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: mcp__plan-tools__add_design_decision rejected with error_type 'mcp_markup_detected'; error states it 'carries raw MCP envelope markup in decision'; matched_pattern shows '<parameter name=' found as literal text in the decision field
+- id: cand-20260908-7
+  title: Normative documentation broadened in scope while only a subset of affected code paths was actually fixed
+  cause: Implementation updated normative documentation from conditional to unconditional language without verifying all code paths covered by that documentation were actually fixed. The free-standing path (`form_find_free_surfaces`) retains the pre-6119 defect, but the doc now claims the fix applies unconditionally to all paths it documents.
+  area: documentation/specification
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: a70fbdd0-cd44-4a74-8f2d-cca64b41ad70
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: 'The diff replaces the old conditional wording with an UNCONDITIONAL claim that covariance ''holds on the SURFACES path too ... that iteration''s stopping rule is judged on a residual normalised by |D| itself''. That is false for `form_find_free_surfaces`: it still stops on `all_node_equilibrium_residual(...) <= FREE_SURFACE_EQUILIBRIUM_TOL` ... A user reading the stdlib contract will believe a whole-gauge rescale of a free-standing membrane structure is a no-op when it can still change the iteration count / stop geometry / convergence outcome.'
+- id: cand-20260908-8
+  title: Documentation example contradicts actual compiler behavior without surfacing the real limiting case
+  cause: Author documented a supposed limitation (volume(box(...)) not being resolved/hoisted) without verifying against the actual compiler code (task-5345 hoist in units.rs:937) that implements the opposite. The contradiction was only caught during review when a reviewer cross-checked the prose against the code.
+  area: Documentation / Code-doc sync
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: cda11677-b15c-476f-be81-8883a146d854
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: geometry.md:519 asserts 'An inline call (volume(box(10mm, 10mm, 10mm))) ... yields undef with no diagnostic' — but volume is one of four WHOLE_HANDLE_GEOMETRY_QUERY_NAMES the very next sentence exempts, and the compiler's task-5345 hoist (units.rs:937, pinned by geometry_query_inline_arg_tests.rs) desugars exactly that call into a synthetic let so it DOES resolve. The pre-existing sibling trap at geometry.md:383 using intersects(box(...), bracket) got this right.
+- id: cand-20260908-9
+  title: Amendment-round review confuses deferred concerns with resolved ones
+  cause: When reviewing prior-round suggestions, an agent cannot reliably distinguish whether each prior concern was actually resolved (fixed in code) versus merely deferred (routed to a follow-up task). Both categories appear in the prior-suggestions list, but only resolved ones should be skipped; deferred concerns remain open and should be re-flagged.
+  area: Task/escalation review cycles, amendment-round adjudication
+  first_seen: '2026-09-08'
+  disposition: pending
+  sightings:
+  - date: '2026-09-08'
+    project: reify
+    session: e9871ea0-9121-44f9-941a-c9df7befd808
+    origin_phase: review
+    manifested_phase: review
+    evidence_quote: Classify 'settled' ONLY when you are confident the concern was actually resolved earlier, never merely because it resembles something raised before... Some were acted on, but others were merely DEFERRED (routed to a follow-up task) and are still OPEN and unaddressed. A current suggestion that matches only a DEFERRED, still-open prior concern has NOT been settled and must still be emitted.
