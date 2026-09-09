@@ -109,6 +109,9 @@ done
 
 say() { printf 'jcodemunch-index-reify: %s\n' "$*"; }
 die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }
+# Non-fatal degradation. stderr, like die/refuse, so it can never be mistaken
+# for one of the machine-read summary fields on stdout.
+warn() { printf 'jcodemunch-index-reify: WARNING: %s\n' "$*" >&2; }
 
 # ── Identity resolution ──────────────────────────────────────────────────────
 #
@@ -128,19 +131,9 @@ die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }
 # against throwaway paths. Existence is checked later, only where it matters —
 # immediately before the indexer actually runs.
 #
-# ONE DERIVATION, NOT TWO (task #6459). This formula used to be reimplemented
-# a second time in Rust (`crates/reify-audit/src/jcodemunch_index.rs::
-# resolve_repo_id`), which GATES on the index this script WRITES — a
-# divergence between the two would make the gate probe an identity the
-# indexer never wrote, refusing E_JC_INDEX_EMPTY against a phantom. Below,
-# `resolve_repo_id` shells out to `reify-audit --print-repo-id` (the single
-# Rust implementation) whenever that binary is built, and only falls back to
-# the inline bash pipeline in this function when it is not — this script must
-# stay usable on a cold checkout, before anything has ever been built. The
-# fallback is kept honest by `resolve_repo_id_agrees_with_the_indexer_scripts_
-# readlink_f_semantics` in jcodemunch_index.rs's own test suite, which
-# recomputes this exact bash pipeline (`~`-expand then `readlink -f`) via the
-# real coreutils and asserts the Rust derivation matches it.
+# sha1_hex is only half of a COLD-CHECKOUT fallback: the derivation proper
+# prefers `reify-audit --print-repo-id`. See "one derivation, not two" at the
+# resolution site below for which producer runs when.
 sha1_hex() {
     if command -v sha1sum >/dev/null 2>&1; then
         printf '%s' "$1" | sha1sum | cut -d' ' -f1
@@ -161,35 +154,84 @@ esac
 PROJECT_ROOT="$(readlink -f -- "$PROJECT_ROOT")" \
     || die "could not resolve --project-root to an absolute path"
 
-# Locate a built reify-audit binary relative to the checkout THIS SCRIPT lives
-# in (not $PROJECT_ROOT — the two can differ entirely, e.g. an operator
-# pointing --project-root at some other tree). REIFY_AUDIT_BIN is a test-only
-# override seam, matching the REIFY_JC_INDEXER_CMD convention above.
-REIFY_AUDIT_BIN="${REIFY_AUDIT_BIN:-}"
-if [ -z "$REIFY_AUDIT_BIN" ]; then
+# ── One derivation, not two (task #6459) ─────────────────────────────────────
+#
+# The formula documented above is implemented ONCE, in Rust
+# (crates/reify-audit/src/jcodemunch_index.rs::resolve_repo_id), and the
+# reify-audit binary exposes it as `--print-repo-id`. reify-audit is also the
+# GATE side — it refuses E_JC_INDEX_EMPTY against the identity it derives — so
+# a second, independently maintained derivation here is a standing chance for
+# the gate to probe an identity this script's indexer never wrote.
+#
+# Producer preference:
+#   1. $REIFY_JC_REPO_ID_BIN, when a caller set one;
+#   2. a reify-audit built in the checkout THIS SCRIPT lives in — deliberately
+#      not $PROJECT_ROOT, which can be a different tree entirely (an operator
+#      pointing --project-root elsewhere);
+#   3. the inline bash pipeline below, so a COLD CHECKOUT (nothing built yet)
+#      still resolves an identity.
+#
+# NOT NAMED REIFY_AUDIT_BIN, though it holds the same kind of path: that name
+# is already a PRODUCTION variable elsewhere in this repo (scripts/reify-audit-
+# predone-wrapper.sh defaults it to ~/.cargo/bin/reify-audit; scripts/reify-
+# audit-freshness.sh guards on it; .claude/skills/audit exports it, sometimes
+# to a multi-word `cargo run …` form). Reusing it would let any /audit shell
+# silently retarget this script's identity derivation at a foreign — possibly
+# stale — binary. This seam is script-scoped so it cannot collide; it is not
+# test-only, because an operator-visible variable that changes which index
+# identity gets asserted is an operational lever whether or not it is used.
+#
+# Which producer answered is reported in the summary (`repo-id-from`), and a
+# binary that was found but FAILED is named with its exit code and stderr
+# before the fallback runs. Silence there would collapse three different
+# situations into one indistinguishable outcome: a cold checkout, a broken
+# binary, and a STALE binary deriving a different identity than this tree's.
+REIFY_JC_REPO_ID_BIN="${REIFY_JC_REPO_ID_BIN:-}"
+if [ -n "$REIFY_JC_REPO_ID_BIN" ]; then
+    REPO_ID_BIN_ORIGIN="env REIFY_JC_REPO_ID_BIN"
+else
+    REPO_ID_BIN_ORIGIN="binary built in this checkout"
     _jc_own_repo_root="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null || true)"
     if [ -n "$_jc_own_repo_root" ]; then
         if [ -x "$_jc_own_repo_root/target/release/reify-audit" ]; then
-            REIFY_AUDIT_BIN="$_jc_own_repo_root/target/release/reify-audit"
+            REIFY_JC_REPO_ID_BIN="$_jc_own_repo_root/target/release/reify-audit"
         elif [ -x "$_jc_own_repo_root/target/debug/reify-audit" ]; then
-            REIFY_AUDIT_BIN="$_jc_own_repo_root/target/debug/reify-audit"
+            REIFY_JC_REPO_ID_BIN="$_jc_own_repo_root/target/debug/reify-audit"
         fi
     fi
 fi
 
 REPO_ID=""
-if [ -n "$REIFY_AUDIT_BIN" ]; then
-    REPO_ID="$("$REIFY_AUDIT_BIN" --print-repo-id --project-root "$PROJECT_ROOT" 2>/dev/null)" || REPO_ID=""
+REPO_ID_SOURCE="inline bash fallback (no reify-audit binary found)"
+if [ -n "$REIFY_JC_REPO_ID_BIN" ]; then
+    # Own temp file: $SCRATCH_ERR is not minted until the DB gates, far below.
+    _jc_id_err="$(mktemp "${TMPDIR:-/tmp}/jc-index-reify-repo-id-XXXXXX.err")"
+    _jc_id_rc=0
+    REPO_ID="$("$REIFY_JC_REPO_ID_BIN" --print-repo-id --project-root "$PROJECT_ROOT" 2>"$_jc_id_err")" \
+        || _jc_id_rc=$?
+    if [ "$_jc_id_rc" -eq 0 ] && [ -n "$REPO_ID" ]; then
+        REPO_ID_SOURCE="$REIFY_JC_REPO_ID_BIN --print-repo-id ($REPO_ID_BIN_ORIGIN)"
+    else
+        warn "$REPO_ID_BIN_ORIGIN '$REIFY_JC_REPO_ID_BIN' --print-repo-id exited $_jc_id_rc: $(tr '\n' ' ' <"$_jc_id_err" | sed 's/[[:space:]]*$//')"
+        warn "the single Rust derivation did NOT answer; the identity below comes from this script's inline fallback instead"
+        REPO_ID=""
+        REPO_ID_SOURCE="inline bash fallback ($REPO_ID_BIN_ORIGIN '$REIFY_JC_REPO_ID_BIN' exited $_jc_id_rc)"
+    fi
+    rm -f "$_jc_id_err"
 fi
 if [ -z "$REPO_ID" ]; then
-    # Cold checkout (or a REIFY_AUDIT_BIN that failed to run): the one
-    # remaining bash copy of the derivation, held honest by the readlink-f
-    # agreement test named above.
+    # The one remaining bash copy of the derivation. jcodemunch_index.rs's
+    # `resolve_repo_id_agrees_with_the_indexer_scripts_readlink_f_semantics`
+    # pins only the `readlink -f` half of it (both its sides are computed in
+    # Rust); the basename/sha1/cut half is pinned by
+    # `index_script_repo_id_agrees_between_the_rust_and_bash_producers` in
+    # crates/reify-audit/tests/cli.rs, which drives THIS script down both
+    # branches over one root and compares the two repo-id lines.
     REPO_ID="local/$(basename -- "$PROJECT_ROOT")-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
 fi
 case "$REPO_ID" in
     local/?*) ;;
-    *) die "resolved a malformed jcodemunch repo id '$REPO_ID' (expected local/<name>) from ${REIFY_AUDIT_BIN:-the bash fallback}" ;;
+    *) die "resolved a malformed jcodemunch repo id '$REPO_ID' (expected local/<name>) from $REPO_ID_SOURCE" ;;
 esac
 
 REPO_NAME="${REPO_ID#local/}"
@@ -283,6 +325,7 @@ esac
 
 say "project-root  $PROJECT_ROOT"
 say "repo-id       $REPO_ID"
+say "repo-id-from  $REPO_ID_SOURCE"
 say "db-path       $DB_PATH"
 say "file-cap      $FILE_CAP ($FILE_CAP_SOURCE)"
 

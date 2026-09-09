@@ -632,6 +632,21 @@ fn selected_detectors(pattern: Option<&str>) -> impl Iterator<Item = &'static De
         .filter(move |detector| detector.selected_by(pattern))
 }
 
+/// The jcodemunch repo identity this invocation acts on: `--jcodemunch-repo`
+/// when given, otherwise derived from `--project-root` per §4.2.
+///
+/// One function rather than two expressions because the whole point of
+/// `--print-repo-id` (task #6459) is that the identity it PRINTS is the
+/// identity the gate INTERROGATES — `scripts/jcodemunch-index-reify.sh` asks
+/// this binary which index to write so the two can never disagree. Deriving
+/// them at two call sites would put the override precedence in two places and
+/// reopen that divergence in-process, one refactor later.
+fn effective_repo_id(args: &Args) -> String {
+    args.jcodemunch_repo
+        .clone()
+        .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)))
+}
+
 // -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
@@ -666,15 +681,14 @@ fn main() -> ExitCode {
     // needs only --project-root (and an optional --jcodemunch-repo override),
     // so it returns before any task loading, runs.db open, or git op — none
     // of which this mode touches. This is the single derivation
-    // `scripts/jcodemunch-index-reify.sh` now shells out to instead of
-    // re-deriving jcodemunch's repo-identity formula a second time in bash
-    // (task #6459) — see `Args::print_repo_id`.
+    // `scripts/jcodemunch-index-reify.sh` shells out to for the identity it
+    // writes, rather than maintaining a second bash copy of jcodemunch's
+    // repo-identity formula (task #6459). That script does retain an inline
+    // cold-checkout fallback for the case where nothing has been built yet;
+    // the two are pinned to agree by `index_script_repo_id_agrees_between_
+    // the_rust_and_bash_producers` in this crate's tests/cli.rs.
     if args.print_repo_id {
-        let repo_id = args
-            .jcodemunch_repo
-            .clone()
-            .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)));
-        println!("{repo_id}");
+        println!("{}", effective_repo_id(&args));
         return ExitCode::SUCCESS;
     }
 
@@ -730,10 +744,7 @@ fn main() -> ExitCode {
     // Resolve the jcodemunch repo identity ONCE, before the seam is
     // constructed, so the identity queried and the identity gated cannot
     // diverge. `--jcodemunch-repo` overrides; otherwise derive per §4.2.
-    let jcodemunch_repo_id = args
-        .jcodemunch_repo
-        .clone()
-        .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)));
+    let jcodemunch_repo_id = effective_repo_id(&args);
 
     // Construct jcodemunch seam:
     // - Noop for --no-jcodemunch, P5/pre-done, and P2-only runs (never connects).

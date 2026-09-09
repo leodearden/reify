@@ -302,6 +302,94 @@ mod cli {
         assert_eq!(printed, "leodearden/reify");
     }
 
+    /// One run of `scripts/jcodemunch-index-reify.sh --dry-run`, as the
+    /// `(repo-id, repo-id-from)` pair it prints in its summary.
+    ///
+    /// `--dry-run` is the hermetic mode: it prints the summary and the argv it
+    /// WOULD run, then exits, so no uvx, sqlite3 or network is involved. A
+    /// tempdir `CODE_INDEX_PATH` keeps the host store (and its config.jsonc)
+    /// out of the run entirely.
+    fn index_script_repo_id(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> (String, String) {
+        let script = repo_root().join("scripts/jcodemunch-index-reify.sh");
+        let out = Command::new("bash")
+            .arg(&script)
+            .args(["--dry-run", "--project-root"])
+            .arg(project_root)
+            .env("REIFY_JC_REPO_ID_BIN", repo_id_bin)
+            .env("CODE_INDEX_PATH", code_index)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to invoke {}: {e}", script.display()));
+
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--dry-run must exit 0; got {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+
+        let field = |name: &str| -> String {
+            let prefix = format!("jcodemunch-index-reify: {name} ");
+            stdout
+                .lines()
+                .find_map(|l| l.strip_prefix(&prefix))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| {
+                    panic!("no `{name}` summary line in:\n{stdout}\nstderr:\n{stderr}")
+                })
+        };
+        (field("repo-id"), field("repo-id-from"))
+    }
+
+    /// The two producers of jcodemunch's repo identity must agree.
+    ///
+    /// `scripts/jcodemunch-index-reify.sh` prefers this binary's
+    /// `--print-repo-id` (the single Rust derivation) and keeps an inline bash
+    /// pipeline for a cold checkout. Which one answers is AMBIENT — it depends
+    /// on whether `target/{release,debug}/reify-audit` happens to exist — so
+    /// the script's own suite silently covers a different branch run to run and
+    /// never covers both. This drives BOTH branches over one throwaway root and
+    /// asserts the printed identity is byte-identical, which is the
+    /// cross-language contract task #6459 is actually about.
+    ///
+    /// Non-vacuous by construction: `repo-id-from` is asserted too, so a leg
+    /// that silently fell back to bash when it was supposed to be exercising
+    /// the binary fails here rather than agreeing with itself.
+    #[test]
+    fn index_script_repo_id_agrees_between_the_rust_and_bash_producers() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let project_root = tmp.path().join("some-project");
+        std::fs::create_dir(&project_root).expect("create project root");
+        let code_index = tmp.path().join("code-index");
+
+        let bin = Path::new(env!("CARGO_BIN_EXE_reify-audit"));
+        let (rust_id, rust_from) = index_script_repo_id(&project_root, &code_index, bin);
+        assert!(
+            rust_from.contains("--print-repo-id"),
+            "the binary leg must be answered by reify-audit; got repo-id-from `{rust_from}`"
+        );
+
+        // A path that cannot exec forces the cold-checkout branch.
+        let absent = tmp.path().join("no-such-reify-audit");
+        let (bash_id, bash_from) = index_script_repo_id(&project_root, &code_index, &absent);
+        assert!(
+            bash_from.contains("inline bash fallback"),
+            "the fallback leg must be answered by the inline pipeline; got repo-id-from `{bash_from}`"
+        );
+
+        assert_eq!(
+            rust_id, bash_id,
+            "the Rust and bash producers derived different identities for {} \
+             — the gate would then probe an identity the indexer never wrote",
+            project_root.display()
+        );
+    }
+
     /// `--task <id> --pre-done` on a done/merged task with an empty `events`
     /// table should produce a P5PhantomDone High finding and exit non-zero.
     #[test]
