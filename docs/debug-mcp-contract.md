@@ -26,7 +26,7 @@ separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
 ### Source of truth
 
 **`tool_defs()` in `gui/src-tauri/src/debug_server.rs`** is the canonical,
-authoritative list of advertised MCP tools (currently **56**).  Every `ToolDef`
+authoritative list of advertised MCP tools (currently **66**).  Every `ToolDef`
 entry there becomes visible to MCP clients via `tools/list`.
 
 Do **not** maintain a separate exhaustive list here — that list would itself be
@@ -45,6 +45,7 @@ a drift surface.  The invariant is enforced at test time (see below).
 | Menus | `open_menu`, `menu_state` |
 | Tree | `expand_tree_node`, `collapse_tree_node` |
 | Diagnostics / wait / state | `get_diagnostics`, `inject_diagnostics`, `reset_app_state`, `list_console_errors`, `store_state`, `wait_for`, `wait_for_idle`, `wait_for_selector` |
+| AI write tools (task 5097) | `reify_set_parameter`, `reify_update_source`, `reify_open_file`, `reify_save_file`, `reify_export` |
 
 > **Full realized scene (task 5348):** `engine_state` and `mesh_stats` report the
 > FULL realized scene — one mesh entry per rendered body, a full-scope snapshot via
@@ -66,6 +67,219 @@ a drift surface.  The invariant is enforced at test time (see below).
 > false`) are default-hidden — whereas the two debug reads always report the full
 > realized scene. Hiding a body, or a fixture carrying an aux component, breaks
 > the equality legitimately.
+
+### AI write tools (INV-GUI-2 AI path, task 5097)
+
+Five tools carry the **reify-mcp tool identities**
+(`crates/reify-mcp/src/tools/write.rs`) onto this surface, because the GUI's
+Claude sidecar reaches the reify-debug HTTP MCP server — not the reify-mcp
+registry — via the `mcp__reify-debug__*` allowlist in
+`gui/sidecar/src/session.ts`.
+
+| Tool | Writes disk? | Routes to |
+|------|--------------|-----------|
+| `reify_set_parameter` | **Yes** — rewrites the parameter's default literal in the `.ri` | `EngineSession::apply_param_to_source_str` |
+| `reify_update_source` | No — in-memory recompile only | `EngineSession::update_source` |
+| `reify_open_file` | No | the existing `open_path_into_engine` funnel |
+| `reify_save_file` | **Yes** — the session buffer | `commands::save_file_impl` |
+| `reify_export` | **Yes** — the export artifact | `EngineSession::export` |
+
+**The `reify_` prefix is deliberate** (PRD §12 Q1). It preserves the tool
+identities an AI client may already have learned on the reify-mcp surface,
+without clashing with the debug-native bare names (`open_file`,
+`engine_state`, …) that the visual-regression harness depends on.
+
+**Two seams, ONE stated exception, no second emit path.** The FOUR
+engine-mutating/I-O tools (`reify_set_parameter`, `reify_update_source`,
+`reify_save_file`, `reify_export`) route their engine work through
+`write_on_engine_and_refresh_baseline`. The fifth, `reify_open_file`, shares
+the `open_file` funnel and so reaches the same refresh through
+`open_source_into_engine_and_refresh_baseline` — it must, because that path
+runs `UnresolvedGuiState::resolve` (`std::fs::canonicalize`) AFTER the engine
+lock is released (#5193), an ordering a closure returning a `GuiState` from
+inside the lock cannot express. So the structural claim to anchor on is
+"every write tool refreshes the baseline through one of the two shared
+`*_and_refresh_baseline` seams", with `reify_open_file` the one name to
+enumerate — *not* "all five route through `write_on_engine_and_refresh_baseline`".
+
+Both seams refresh the delta baseline via `crate::diff::compute_delta` (§6.2
+invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
+`GuiState` reaches the frontend through the caller's synchronous
+`query_frontend("apply_gui_state", …)` push, never `emit_delta`. There is no
+private emit path on the debug surface; do not add one.
+
+**Every write tool inspects its push REPLY.** `DebugBridge::query_frontend`
+resolves `Ok(Value)` for any well-formed JSON reply — including the in-band
+`{error: string}` envelope `bridge.ts` returns for an unregistered command or a
+handler that threw (§2a) — so a REFUSED push is indistinguishable from a landed
+one at the transport. All five tools therefore route their reply through
+`frontend_ok`, which converts that envelope into
+`Err("<command> push refused by the frontend: …")`. That routing is
+STRUCTURAL, not a per-handler discipline: the four `apply_gui_state` tools
+reach it through the shared `push_gui_state` helper (payload + push + reply
+check as one step), and `reify_open_file` through the shared `open_file`
+funnel — so there are two call sites to keep correct, not five. The
+consequence is specific to this cluster: the seam has already refreshed `last_state` to S1 by the time
+the push goes out, so a refused push read as success leaves the baseline ahead
+of the frontend — bug #7 again — while the AI client is told the write landed.
+The two DEBUG-NATIVE funnels are deliberately exempt: `open_file` and
+`load_fixture` return the frontend's reply verbatim because the
+visual-regression harness reads that object, where an `{error}` reply is itself
+the answer.
+
+**`reify_open_file` and `open_file` are ONE funnel under two names**, not two
+implementations. Both resolve their path with `open_file_path_param` — which
+accepts either the reify-mcp spelling `file_path` or the debug-native `path`
+(preferring `file_path` when both are supplied) and keeps the debug-native
+`"path is required"` refusal — and both do their engine work in
+`open_path_into_engine`.
+
+What the two names legitimately DO differ in is the **result envelope**, and
+they must: `open_file` answers with the frontend handler's own `{ok, path}`
+reply (what the visual-regression harness reads), while `reify_open_file`
+answers `{success: true, source}` — the two keys
+`crates/reify-mcp/src/tools/write.rs` returns for that tool name. Carrying the
+reify-mcp identities onto this surface is pointless if a client that learned
+`result.success` / `result.source` finds neither. `source` is the text the
+funnel already read off disk, so the envelope costs no extra I/O and no extra
+engine call (`reify_open_file_envelope`, pinned by
+`reify_open_file_envelope_matches_the_reify_mcp_shape`).
+
+**`reify_set_parameter` vs `reify_update_source` — the durability split.**
+`reify_set_parameter` is the INV-GUI-3 path: it edits the user's canonical
+document on disk, splicing ONLY the default literal's own span, and its
+`value` is a **unit-bearing literal** (`"120mm"`, `"45deg"`) whose unit is
+parsed by exactly the same dimension-aware parse the property-panel edit box
+uses (#5757), with the value written back preserving the REPLACED literal's
+unit. `reify_update_source` is the live-buffer edit: it recompiles in memory
+and writes no disk, so nothing reconciles the editor buffer on its own —
+which is why its `apply_gui_state` push carries the optional
+`file: {path, content}` member (see `write_tool_frontend_payload`). That
+member's `path` is the SESSION's canonical path
+(`resolve_update_source_push_path`), never the caller's raw spelling: the
+active-file guard below deliberately accepts non-canonical spellings, and
+`canonicalizeKey` returns any non-absolute path unchanged, so echoing one back
+would fork a second editor tab while the real one kept stale text (the
+duplicate-tab shape of #3892).
+
+**`reify_update_source` is ACTIVE-FILE ONLY.** `EngineSession::update_source`
+deliberately ignores the caller's path once a `load_file` has set
+`self.file_path` — it derives `module_name` from the session's own entry path
+and commits with `FilePathUpdate::Preserve` (task 3370). That is right for the
+editor, which only ever edits the active buffer, but this surface takes
+`file_path` from an AI client, so on a multi-file project a
+`reify_update_source(file_path = "…/lib.ri")` would overwrite the ACTIVE
+buffer with lib.ri's text and still answer `success: true` — after which the
+diagnostics filter matches nothing, the pushed `file` member opens a tab whose
+content the engine does not hold, and a later `reify_save_file` writes that
+text to the active path ON DISK. So the mismatch is **refused**, not
+redirected: `update_source_target_matches_active` accepts the active path
+verbatim, its stem-only `"<stem>.ri"` module key, or any on-disk spelling that
+`canonicalize`s to it, and anything else returns `"reify_update_source can only
+update the active file <path>"` having mutated nothing (no engine state, no
+baseline advance, no disk). The guard is evaluated with **no engine lock held**
+— the session's entry path is read under a short lock of its own, then
+`update_source_target_matches_active` (up to two `std::fs::canonicalize`
+syscalls) runs outside it, and the write seam is entered only once the target is
+accepted. Holding the engine mutex across filesystem I/O is the exact pattern
+#5193 forbids, and the one that keeps `open_source_into_engine_and_refresh_baseline`
+out of the write seam in the first place. Editing a NON-active file is §11 out of scope:
+Claude uses its own native Write/Edit tools and the FS-watcher reloads them.
+
+**Diagnostics filtering.** `reify_update_source` returns diagnostics filtered
+to the named file via `filter_diagnostics_for_file`, which matches BOTH the
+caller's path spelling AND the stem-only `"<stem>.ri"` module key the engine
+actually stamps on every `DiagnosticInfo.file_path`
+(`EngineSession::get_diagnostics` → `resolve_source` → `module_key`) — a bare
+`==` between the two matches nothing and would silently drop the whole
+warning stream.
+`reify_set_parameter`, by contrast, returns its diagnostics **unfiltered**,
+which is exactly what `crates/reify-mcp/src/tools/write.rs` does for that tool
+name; keep it that way so the two surfaces' envelopes stay in parity.
+
+Both tools read their diagnostics with a SECOND engine call rather than
+reusing the `GuiState.compile_diagnostics` the write seam just returned, and
+the two are not interchangeable: `build_gui_state` derives
+`compile_diagnostics` from `EngineSession::build_compile_diagnostics`, which is
+`get_diagnostics()` **plus** live-edit compile-failure diags, a synthesized
+`hot-reload-error` entry, and build/realization-time geometry errors folded in
+from `tess_diag_cache`. reify-mcp returns the narrower `ctx.get_diagnostics()`
+for both tool names, so the extra round-trip is what holds the envelopes in
+parity — deriving them from the `GuiState` would quietly widen both.
+
+**`reify_set_parameter` nulls an absent value where reify-mcp errors.** If the
+committed cell is missing from the rebuilt `GuiState`, this surface answers
+`{success: true, new_value: null, unit: null, …}` — the key set stays invariant
+— while `TauriToolContext::set_parameter` on the reify-mcp surface returns
+`"parameter '<cell_id>' not found in result"`. The divergence is deliberate:
+by the time the cell is looked up here the splice has been written to the
+user's `.ri`, the recompile has committed and the `GuiState` has been pushed to
+the frontend, so an `Err` would report failure for a write that LANDED. The arm
+is close to unreachable anyway — `apply_param_to_source_str` refuses an unknown
+`cell_id` before committing anything — but a client that learned "success
+implies a value" on the other surface should read this paragraph, not infer it.
+
+**`reify_save_file` and `reify_export` are pure I/O — but they still push.**
+Neither commits new engine state, yet both route through
+`write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds across the
+four seam-routed tools without a per-tool exception. The seam's
+`build_gui_state()` is a genuine REBUILD, not a cached snapshot: it calls
+`mark_demand_pruned_pending()`, re-runs `tessellate_snapshot` and resolves
+material appearance, and a rebuild is not guaranteed bit-identical. Refreshing
+the baseline from a rebuild the frontend never saw would advance `last_state`
+past what the frontend holds and the next normal command's delta would omit the
+difference — the stale-baseline desync (bug #7) inverted. So both handlers push
+the returned `GuiState` via `query_frontend("apply_gui_state", …)` exactly as
+the mutating tools do; the baseline can never move past the frontend.
+
+That uniformity has a **stated cost**, self-inflicted by the choice: the
+rebuild is needed only because a pure-I/O tool routes through the seam, and the
+push is needed only because the rebuild refreshed the baseline. On a heavy
+design an AI `reify_save_file` therefore pays a full `tessellate_snapshot` plus
+material resolution, and then a frontend `engine.initFromState(…)` (store
+re-init + mesh rebuild), to write bytes already in memory. A cheap
+committed-buffer accessor would avoid both and would be safe — nothing changed,
+so nothing need be pushed — but it trades the four-tools-one-seam structure
+that §6.2 invariant (a) and task 5100's structural claim rest on, which is a
+design change rather than an optimisation. The cost has **not** been measured
+on a real (non-mock) kernel; the number belongs here once it exists.
+
+**`reify_save_file` never guesses its target.** `file_path` is the one
+OPTIONAL write-tool param, so "absent" carries the live meaning *save the
+ACTIVE file* — which makes two silent-fallback shapes reachable, and both are
+refused rather than guessed:
+
+- A **wrong-typed** `file_path` (`120`, `true`, an object) is refused with
+  `"file_path must be a string"`. It goes through
+  `reify_write_optional_str_param`, not a bare `as_str().map(…)`: folding
+  "mistyped" into "absent" would turn an intended save-as into an overwrite of
+  the user's canonical `.ri`. (The REQUIRED-param helper
+  `reify_write_str_param` deliberately *does* fold the two, because there both
+  arms end in the same refusal.)
+- **Neither** an explicit target nor a session path — a `load_from_source`
+  session, which has a buffer but no canonical path — is refused with
+  `"no active file to save; supply file_path …"`. Falling back to
+  `GuiState.files[0].path` there would write the stem-only `source_map` key
+  (`"part.ri"`) as a RELATIVE path into whatever CWD the GUI process happens
+  to have, and report `success: true`.
+
+**`reify_save_file` refuses a buffer the engine rejected.** It persists the
+SESSION's buffer, not a caller-supplied one — and `GuiState.files[0].content`
+is *not* unconditionally the committed text. After a failed
+`reify_update_source`, `EngineSession::record_compile_failure` has stored the
+REJECTED source and `build_files_with_live_edit` splices it into that entry, so
+`files[]` and `compile_diagnostics` describe the same snapshot (right for a
+read-only `engine_state` read; catastrophic for a write-back). So the save
+consults `EngineSession::holds_rejected_source` FIRST — ahead of
+`build_gui_state`, making the refusal atomic — and returns
+`"refusing to save: the in-memory buffer does not compile …"` for BOTH the
+default target and an explicit "save as" target; writing non-compiling text to
+a new path while answering `success: true` is the same lie, just less
+destructive. The interlock is transient, not a wedge: any `reify_update_source`
+that compiles clears the failure via `commit_state`, as does a native
+Write/Edit the FS-watcher reloads. The human GUI save path is unaffected — it
+carries the frontend's own content rather than reading it back out of the
+engine.
 
 ### REST-only handlers (not advertised in tools/list)
 
@@ -105,6 +319,34 @@ A new frontend-mediated tool requires three coordinated changes:
    Add a `command_name: (params) => result` entry in the handler map.
    The handler receives the JSON params object and returns either a value
    or a `{error: string}` envelope (see §2).
+
+4. **Engine-side WRITE tools take a different, wider path** (task 5097).
+   A tool that MUTATES engine or document state has no `buildHandlers()`
+   entry at all — it resolves in Rust — but it must touch five surfaces,
+   all in the same commit or the tree is red:
+   - the `ToolDef` in `tool_defs()` (literal `ToolDef { name: "..." }` form
+     is mandatory: `gui/src/__tests__/toolDefNames.ts` parses the source
+     text with a regex, and the `expectedNameCount` cross-check counts raw
+     `ToolDef {` literals);
+   - a named `dispatch_tool` arm;
+   - the mutation routed through `write_on_engine_and_refresh_baseline`, so
+     the delta baseline is refreshed (§0 "AI write tools" above);
+   - the name added to BOTH `PURE_ENGINE_SIDE` in
+     `gui/src/__tests__/debugParity.test.ts` and `KNOWN_DEBUG_TOOL_NAMES` in
+     `gui/test/visual/assertions.ts` — each is mechanically enforced
+     (parity case (c)/(f); assertions.test.ts case (a), task-5934), so
+     omitting either reds the suite rather than silently drifting.
+   - the params read through a PURE extractor
+     (`reify_<tool>_params`), never bare `params["…"]` literals in the
+     handler body. The handlers need a `DebugServerState`/`AppHandle` and so
+     cannot be driven headlessly, which leaves the param NAMES they read
+     otherwise unchecked: a handler reading `params["path"]` while its
+     ToolDef advertised `output_path` would keep every guard above green
+     while every AI client got `output_path is required`.
+     `reify_write_tool_params_match_their_advertised_schemas` closes that by
+     building each tool's params object out of its own `input_schema`
+     property names (and, separately, out of just its `required` list) and
+     feeding it through the extractor the handler calls.
 
 ### Dispatch flow
 

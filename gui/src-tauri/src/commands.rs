@@ -462,13 +462,33 @@ pub fn reload_for_watch_impl(
     }
 }
 
+/// Map an export-format SPELLING to the [`reify_ir::ExportFormat`] it names.
+///
+/// Extracted from [`export_impl`] so the Tauri command and the reify-debug
+/// `reify_export` write tool (task 5097 δ) consult ONE map: which spellings
+/// are accepted is a contract an AI client and the GUI must agree on, and two
+/// hand-copied `match`es have nothing structural stopping one from gaining a
+/// format the other lacks.
+///
+/// `mcp_context.rs`'s `TauriToolContext::export` calls this too, so all three
+/// export surfaces read ONE map. Re-homing that context is η's Phase 3, but
+/// the format map is not waiting on it: leaving a third hand-copied `match`
+/// there is exactly the drift this extraction exists to prevent.
+///
+/// The `Err` text is the message every caller surfaces verbatim —
+/// `TauriToolContext::export` wraps it in `ToolError::InvalidParams`
+/// unchanged.
+pub fn parse_export_format(format: &str) -> Result<reify_ir::ExportFormat, String> {
+    match format {
+        "step" | "stp" => Ok(reify_ir::ExportFormat::Step),
+        "stl" => Ok(reify_ir::ExportFormat::Stl),
+        _ => Err(format!("Unknown export format: {}", format)),
+    }
+}
+
 /// Export geometry to a file.
 pub fn export_impl(engine: &Mutex<EngineSession>, format: &str, path: &str) -> Result<(), String> {
-    let export_format = match format {
-        "step" | "stp" => reify_ir::ExportFormat::Step,
-        "stl" => reify_ir::ExportFormat::Stl,
-        _ => return Err(format!("Unknown export format: {}", format)),
-    };
+    let export_format = parse_export_format(format)?;
     crate::engine_lock::with_engine_lock(engine, |s| s.export(export_format, Path::new(path)))
         .and_then(std::convert::identity)
 }
