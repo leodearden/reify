@@ -1021,3 +1021,142 @@ fn disjoint_fuse_merges_nothing_and_the_abutting_control_still_merges() {
          cubes unify into a genuine 20x10x10 prism with 6 faces"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The short-circuit must be predicated on the OPERANDS, not the result.
+//
+// The guard above is structurally blind to the case that matters: with exactly
+// two operands, "the operands could not merge" and "the result's solids are
+// pairwise disjoint" happen to coincide. They come apart as soon as a boolean
+// merges SOME of its operands into a cluster while other bodies stay far away.
+// Then the result's top-level solids ARE pairwise disjoint — one merged prism,
+// one lone cube — and yet the prism carries brand-new coplanar seams, created
+// by the very boolean being normalized. A RESULT-side disjointness test skips
+// unification on exactly the seams this module exists to remove.
+//
+// The sound condition is a property of the INPUTS: if no two operand solids can
+// touch, nothing merged, and the result is a re-wrap of shapes this boolean did
+// not alter.
+//
+// All three cases are anchored on FACE COUNT, never volume or mass: a surviving
+// coplanar seam re-describes the boundary without moving it, so the volume is
+// bit-identical in both arms and a mass assertion would be a guaranteed false
+// green (the same measured constraint recorded for symptom 3 at the top of this
+// module).
+// ---------------------------------------------------------------------------
+
+/// The n-ary realizer path: one `fuse_all` over a cluster plus a far body.
+///
+/// MEASURED: 16 faces with the result-side predicate (the merged prism keeps
+/// its 4 phantom seam faces), 12 with the operand-side one.
+#[test]
+fn n_ary_fuse_of_a_cluster_plus_a_far_body_unifies_the_cluster() {
+    let mut kernel = OcctKernel::new();
+    let a = cube(&mut kernel, 10.0); // [-5, +5]
+    let b_raw = cube(&mut kernel, 10.0);
+    let abutting = translated(&mut kernel, b_raw, 10.0, 0.0, 0.0); // [5, 15] — merges with `a`
+    let c_raw = cube(&mut kernel, 10.0);
+    let far = translated(&mut kernel, c_raw, 40.0, 0.0, 0.0); // [35, 45] — merges with nothing
+
+    let fused = kernel
+        .fuse_all(&[a, abutting, far])
+        .expect("n-ary fuse of a cluster plus a far body should succeed")
+        .id;
+
+    assert_eq!(
+        kernel.extract_faces(fused).expect("extract_faces").len(),
+        12,
+        "the two abutting cubes must unify into a genuine 20x10x10 prism (6 \
+         faces) beside the untouched far cube (6) — the far body's presence \
+         must not buy the cluster an exemption from unification. A result-side \
+         disjointness test sees two non-touching solids here and skips the \
+         pass, leaving the cluster's 4 phantom seam faces (16 total)"
+    );
+}
+
+/// The binary-op path to the same shape: `GeometryOp::Union` gates nothing on
+/// operand repr, so the inner union stores a two-solid COMPSOLID and the outer
+/// one merges `abutting` into `a` while `far` stays separate.
+///
+/// MEASURED: 16 faces with the result-side predicate, 12 with the operand-side
+/// one.
+#[test]
+fn nested_binary_fuse_of_a_cluster_plus_a_far_body_unifies_the_cluster() {
+    let mut kernel = OcctKernel::new();
+    let a = cube(&mut kernel, 10.0); // [-5, +5]
+    let b_raw = cube(&mut kernel, 10.0);
+    let far = translated(&mut kernel, b_raw, 40.0, 0.0, 0.0); // [35, 45]
+    let c_raw = cube(&mut kernel, 10.0);
+    let abutting = translated(&mut kernel, c_raw, 10.0, 0.0, 0.0); // [5, 15]
+
+    let inner = kernel
+        .execute(&GeometryOp::Union {
+            left: a,
+            right: far,
+        })
+        .expect("inner union of two disjoint cubes should succeed")
+        .id;
+    assert_eq!(
+        kernel.extract_faces(inner).expect("extract_faces").len(),
+        12,
+        "the genuinely-disjoint inner fuse must continue to merge nothing: two \
+         bbox-disjoint cubes keep all 12 faces, which is what makes skipping \
+         unification on disjoint OPERANDS correctness-neutral"
+    );
+
+    let outer = kernel
+        .execute(&GeometryOp::Union {
+            left: inner,
+            right: abutting,
+        })
+        .expect("outer union against the abutting cube should succeed")
+        .id;
+    assert_eq!(
+        kernel.extract_faces(outer).expect("extract_faces").len(),
+        12,
+        "the outer fuse merges `abutting` into `a` and leaves `far` alone, so \
+         its result is a 20x10x10 prism (6 faces) plus the far cube (6). Its \
+         two result solids are pairwise disjoint, so a result-side predicate \
+         skips the pass and the freshly-created seam survives (16 faces)"
+    );
+}
+
+/// The grid-pattern realizer reduced to its minimum: rows that abut internally
+/// but are mutually disjoint. The result is a COMPSOLID of two row-prisms that
+/// ARE pairwise bbox-disjoint, so the result-side predicate fires on a shape
+/// whose every seam was introduced by this very fuse.
+///
+/// MEASURED: 20 faces with the result-side predicate, 12 with the operand-side
+/// one.
+#[test]
+fn grid_pattern_fuse_unifies_within_rows_when_rows_are_disjoint() {
+    let mut kernel = OcctKernel::new();
+    let mut instances = Vec::new();
+    for row in 0..2 {
+        for col in 0..2 {
+            let raw = cube(&mut kernel, 10.0);
+            // x-pitch 10 abuts within a row; y-pitch 40 keeps the rows apart.
+            instances.push(translated(
+                &mut kernel,
+                raw,
+                f64::from(col) * 10.0,
+                f64::from(row) * 40.0,
+                0.0,
+            ));
+        }
+    }
+
+    let fused = kernel
+        .fuse_all(&instances)
+        .expect("2x2 grid fuse should succeed")
+        .id;
+
+    assert_eq!(
+        kernel.extract_faces(fused).expect("extract_faces").len(),
+        12,
+        "each row must unify into one 20x10x10 prism (6 faces), giving 12 for \
+         the two rows. The two row-prisms are pairwise bbox-disjoint, so a \
+         result-side predicate skips unification and every row keeps its 4 \
+         phantom seam faces (20 total)"
+    );
+}
