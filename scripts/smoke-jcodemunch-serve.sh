@@ -77,6 +77,17 @@ done
 
 SERVE_URL="http://127.0.0.1:8901/mcp"
 MCP_TIMEOUT=15
+# The QUERY budget is deliberately an order of magnitude above the handshake's,
+# and must not be collapsed back into it.  The retired long-lived serve unit
+# (deliberately unnamed here: it no longer ships) kept an in-process cache warm
+# ACROSS smoke runs, so a query came back in 3-7 s and could safely share
+# MCP_TIMEOUT.  scripts/with-jcodemunch-serve.sh spawns a FRESH serve per
+# invocation and this script issues exactly ONE query per serve, so that single
+# query is now ALWAYS the cold one: measured 34-100 s across four observations
+# on two hosts.  The larger number costs a dead port nothing, because it is only
+# ever paid by a serve that already ACCEPTED the connection — a refused
+# connection fails instantly at the handshake below, which keeps MCP_TIMEOUT.
+QUERY_TIMEOUT="${SMOKE_QUERY_TIMEOUT:-180}"
 WATCHER_SERVICE="jcodemunch-watcher"
 
 # Resolved during L-SERVE spike (task 4102, step-4) against the running serve.
@@ -187,14 +198,20 @@ http_code2=$(curl -s \
     -o "$SMOKE_TMPDIR/query_body.txt" \
     -D "$SMOKE_TMPDIR/query_headers.txt" \
     -w "%{http_code}" \
-    --max-time "$MCP_TIMEOUT" \
+    --max-time "$QUERY_TIMEOUT" \
     -X POST "$SERVE_URL" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "mcp-session-id: $SESSION_ID" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_changed_symbols\",\"arguments\":{\"repo\":\"$REPO_ID\",\"since_sha\":\"$SINCE_SHA\",\"until_sha\":\"$UNTIL_SHA\"}}}" \
     2>/dev/null) || {
-    echo "FAIL [2]: curl to $SERVE_URL tools/call failed." >&2
+    echo "FAIL [2]: curl to $SERVE_URL tools/call failed (${QUERY_TIMEOUT}s budget)." >&2
+    echo "       The handshake above already succeeded, so the serve is up and" >&2
+    echo "       this is most likely the budget running out.  Every serve the" >&2
+    echo "       wrapper spawns is cold, and a cold query has measured 34-100 s." >&2
+    echo "       Buy more time for one run without editing this file:" >&2
+    echo "         SMOKE_QUERY_TIMEOUT=360 bash scripts/with-jcodemunch-serve.sh --port 8901 \\" >&2
+    echo "             -- bash scripts/smoke-jcodemunch-serve.sh --repo local/reify-4ae45bbd" >&2
     exit 1
 }
 
