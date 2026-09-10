@@ -12,5 +12,8 @@ structure def Pipeline {
     sub p1 = Pipe()
     sub p2 = Pipe()
     sub p3 = Pipe()
-    chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet
+    // Each hop links one pipe's outlet to the next pipe's inlet. Flow through a
+    // pipe (inlet to outlet) is internal to that pipe, not a connection.
+    chain p1.outlet -> p2.inlet
+    chain p2.outlet -> p3.inlet
 }
