@@ -200,7 +200,8 @@ export const PIN_ABSENT = "absent";
 // ─── Failure records ─────────────────────────────────────────────────────────
 
 /**
- * @typedef {'outage'|'shape'|'vacuity'|'subject'|'stale'|'value'|'constraint'} RailGateFailureGate
+ * @typedef {'outage'|'shape'|'vacuity'|'subject'|'stale'|'value'|'constraint'
+ *           |'canonical'|'coverage'|'reload'|'rejection'} RailGateFailureGate
  *   Which gate rejected the run. Load-bearing beyond labelling: `outage`,
  *   `shape` and `vacuity` mean the invariant was never TESTED, while `value` and
  *   `constraint` mean it was tested and violated. A caller that cannot tell those
@@ -222,6 +223,7 @@ const OBJECT = "object";
 const NUMBER = "finite-number";
 const NON_EMPTY_STRING = "non-empty-string";
 const KNOWN_PHASE = "one-of-RAIL_GATE_PHASES";
+const IN_BAND_ERROR = "in-band-error-envelope";
 
 /** Token → prose, used only when rendering. */
 const SHAPE_PROSE = Object.freeze({
@@ -230,6 +232,7 @@ const SHAPE_PROSE = Object.freeze({
   [NUMBER]: "a finite number",
   [NON_EMPTY_STRING]: "a non-empty string",
   [KNOWN_PHASE]: `one of ${Object.keys(RAIL_GATE_PHASES).join(", ")}`,
+  [IN_BAND_ERROR]: "an in-band {error} envelope (docs/debug-mcp-contract.md §2a)",
 });
 
 /**
@@ -320,6 +323,31 @@ export function formatFailures(failures) {
           `${describeValue(f.expected)} — the constraint-status sync did not carry this pin's ` +
           `flip across the write-tool payload (INV-GUI-2)`
         );
+      case "canonical":
+        return (
+          `${failurePath(f)} is ${describeValue(f.observed)}, expected ` +
+          `${describeValue(f.expected)} — the AI edit did not land in the SOURCE, so the value ` +
+          `the engine reports is ephemeral and the next reload would lose it (INV-GUI-3)`
+        );
+      case "coverage":
+        return (
+          `${failurePath(f)} is ${describeValue(f.observed)}, expected ` +
+          `${describeValue(f.expected)} — a GuiState field beyond meshes/values did not survive ` +
+          `the AI edit, or the reload that produced it failed and every field is LAST GOOD ` +
+          `(INV-GUI-1)`
+        );
+      case "reload":
+        return (
+          `${failurePath(f)} moved to ${describeValue(f.observed)} from ${describeValue(f.expected)} ` +
+          `ACROSS the watcher debounce — the write was applied twice, or the reload is looping ` +
+          `(PRD §7 B5)`
+        );
+      case "rejection":
+        return (
+          `${failurePath(f)} is ${describeValue(f.observed)}, expected ${describeValue(f.expected)} ` +
+          `— a refused write must fail structurally and leave disk, source_map and engine ` +
+          `byte-identical (§6.1 atomicity)`
+        );
       default:
         return `${failurePath(f)}: unrecognised gate ${describeValue(f.gate)} (observed ${describeValue(f.observed)})`;
     }
@@ -384,11 +412,16 @@ const ENTITY_OPEN = /^\s*(?:pub\s+)?structure\s+(?:def\s+)?([A-Za-z_]\w*)\b/;
 
 /**
  * A member declaration: the keyword, the name, an optional `: Type` annotation,
- * and whether a default literal follows. `[^=]*` on the annotation is what keeps
- * the `=` group meaning "there is a default", rather than matching an `=` buried
- * inside the type.
+ * and the default literal when one follows. `[^=]*` on the annotation is what
+ * keeps the `=` group meaning "there is a default", rather than matching an `=`
+ * buried inside the type.
+ *
+ * The trailing group captures the literal TEXT — `800mm`, not just "there was
+ * one" — because B2 is a unit-PRESERVING assertion: `1.1m` and `1100mm` are the
+ * same length and different literals, and only the second is what
+ * `reify_set_parameter` was asked to write.
  */
-const MEMBER_DECL = /^\s*(param|let)\s+([A-Za-z_]\w*)\s*(?::[^=]*)?(=)?/;
+const MEMBER_DECL = /^\s*(param|let)\s+([A-Za-z_]\w*)\s*(?::[^=]*)?(?:=\s*(.*?))?\s*$/;
 
 /**
  * Index every top-level `param`/`let` in a `.ri` source, keyed `Entity.member`.
@@ -406,10 +439,10 @@ const MEMBER_DECL = /^\s*(param|let)\s+([A-Za-z_]\w*)\s*(?::[^=]*)?(=)?/;
  * direction a gate must err in.
  *
  * @param {unknown} source
- * @returns {Map<string, {declared: string, hasDefaultLiteral: boolean}>}
+ * @returns {Map<string, {declared: string, hasDefaultLiteral: boolean, defaultLiteral: string|undefined}>}
  */
 function scanDeclarations(source) {
-  /** @type {Map<string, {declared: string, hasDefaultLiteral: boolean}>} */
+  /** @type {Map<string, {declared: string, hasDefaultLiteral: boolean, defaultLiteral: string|undefined}>} */
   const declarations = new Map();
   if (typeof source !== "string") return declarations;
 
@@ -435,6 +468,7 @@ function scanDeclarations(source) {
           declarations.set(key, {
             declared: /** @type {string} */ (decl[1]),
             hasDefaultLiteral: decl[3] !== undefined,
+            defaultLiteral: decl[3],
           });
         }
       }
@@ -486,6 +520,299 @@ export function findEditableParams(source, cellNames) {
   });
 }
 
+// ─── The remaining PRD §7 rows ───────────────────────────────────────────────
+//
+// B4 is not here, and its absence is deliberate rather than an omission. Its
+// postcondition is about a `StateDelta`, and PRD §6.2 caveat (i) — restated on
+// `write_on_engine_and_refresh_baseline` — says the debug path DISCARDS the
+// delta and pushes the full `GuiState` instead. So no debug tool can hand a
+// delta to a predicate here, and B4 is asserted where `compute_delta` and
+// `last_state` both are: `debug_boundary_tests::
+// a_subsequent_command_does_not_re_report_an_ai_advanced_baseline`.
+//
+// Each predicate below returns a plain failure LIST rather than a verdict, so
+// {@link checkRailLengtheningGate} can fold them all into one `{ok, failures}`
+// and the driver keeps a single decision seam and a single rendering site.
+
+/**
+ * PRD §7 B2 — the AI edit is canonical ON DISK (INV-GUI-3).
+ *
+ * `reify_set_parameter` rewrites a param's DEFAULT LITERAL, so the assertion is
+ * on the literal TEXT and is unit-preserving: `1.1m` is the same length as
+ * `1100mm` and is not what the tool was asked to write. A cell that is not a
+ * `param` with a default reports how it IS declared (`let`, `absent`), because
+ * that names the reason the write could not have landed rather than merely
+ * reporting a missing string.
+ *
+ * The no-op half is asserted as source BYTE-IDENTITY either side of the save,
+ * not by reading a flag: `reify_save_file`'s envelope is a bare
+ * `{success: true}` (debug_server.rs `reify_save_file_envelope`) and carries no
+ * "changed" field to read instead.
+ *
+ * @param {{source?: unknown, expected?: unknown, saveFile?: unknown,
+ *          sourceAfterSave?: unknown}} observed
+ * @returns {RailGateFailure[]}
+ */
+export function checkSourceCanonical(observed) {
+  const src = asObject(observed) ?? {};
+  /** @type {RailGateFailure[]} */
+  const failures = [];
+
+  if (typeof src.source !== "string" || src.source.length === 0) {
+    failures.push(shapeFailure("reify_open_file", "source", src.source, NON_EMPTY_STRING));
+  }
+
+  const declarations = scanDeclarations(src.source);
+  for (const [cell, want] of Object.entries(asObject(src.expected) ?? {})) {
+    const found = declarations.get(cell);
+    // One reading, three reasons it can differ: wrong literal, wrong keyword,
+    // or not there at all. Reporting them in the same slot keeps the record
+    // shape uniform while still naming which one happened.
+    const reading =
+      found === undefined
+        ? PIN_ABSENT
+        : found.declared !== "param" || found.defaultLiteral === undefined
+          ? found.declared
+          : found.defaultLiteral;
+    if (reading !== want) {
+      failures.push({
+        gate: "canonical",
+        tool: "reify_open_file",
+        field: `source[${cell}]`,
+        observed: reading,
+        expected: want,
+      });
+    }
+  }
+
+  const save = usablePayload(src.saveFile, "reify_save_file", failures);
+  if (save !== null) {
+    if (save.success !== true) {
+      failures.push({
+        gate: "canonical",
+        tool: "reify_save_file",
+        field: "success",
+        observed: save.success,
+        expected: true,
+      });
+    }
+    if (src.sourceAfterSave !== src.source) {
+      failures.push({
+        gate: "canonical",
+        tool: "reify_save_file",
+        field: "source-after-save",
+        observed: src.sourceAfterSave,
+        expected: src.source,
+      });
+    }
+  }
+  return failures;
+}
+
+/** `engine_state` list fields that are neither `meshes` nor `values`. */
+const COVERAGE_LIST_FIELDS = Object.freeze([
+  "constraints",
+  "files",
+  "compile_diagnostics",
+  "tessellation_diagnostics",
+]);
+
+/**
+ * Of those, the ones printer.ri must actually populate. The two diagnostics
+ * lists are legitimately EMPTY on a clean design, so requiring content from
+ * them would red the gate on a design with nothing wrong with it.
+ */
+const COVERAGE_NON_EMPTY_FIELDS = Object.freeze(["constraints", "files"]);
+
+/** What "populated" means for those — presence of any entry at all. */
+const COVERAGE_MIN_ENTRIES = 1;
+
+/**
+ * PRD §7 B3 — fields beyond `meshes`/`values` stay live across the AI edit
+ * (INV-GUI-1).
+ *
+ * `stale` / `reload_error` are checked alongside the lists, and they are the
+ * load-bearing half: a populated field proves nothing if the reload that would
+ * have refreshed it FAILED, because then every field is the last good one and
+ * a presence check passes on stale data — the same trap `LIVE_FRESHNESS` closes
+ * for individual cells.
+ *
+ * @param {unknown} engineState  The `engine_state` payload.
+ * @returns {RailGateFailure[]}
+ */
+export function checkFieldCoverage(engineState) {
+  /** @type {RailGateFailure[]} */
+  const failures = [];
+  const engine = usablePayload(engineState, "engine_state", failures);
+  if (engine === null) return failures;
+
+  for (const field of COVERAGE_LIST_FIELDS) {
+    const value = engine[field];
+    if (!Array.isArray(value)) {
+      failures.push(shapeFailure("engine_state", field, value, ARRAY));
+      continue;
+    }
+    if (COVERAGE_NON_EMPTY_FIELDS.includes(field) && value.length === 0) {
+      failures.push({
+        gate: "coverage",
+        tool: "engine_state",
+        field,
+        observed: value.length,
+        expected: COVERAGE_MIN_ENTRIES,
+      });
+    }
+  }
+
+  for (const [field, observedValue, want] of /** @type {const} */ ([
+    ["stale", engine.stale, false],
+    ["reload_error", engine.reload_error, null],
+  ])) {
+    if (observedValue !== want) {
+      failures.push({
+        gate: "coverage",
+        tool: "engine_state",
+        field,
+        observed: observedValue,
+        expected: want,
+      });
+    }
+  }
+  return failures;
+}
+
+/**
+ * PRD §7 B5 — the FS watcher's post-debounce re-read adds no churn.
+ *
+ * The AI write already wrote disk, so the watcher re-read must be a no-op: any
+ * cell, freshness or pin that MOVES across the debounce window is a double
+ * apply or a reload loop. Compares the two observations against each other
+ * rather than against the phase table on purpose — B5 is about the difference
+ * being empty, whatever the values are, so it still holds at a phase whose
+ * expected numbers are themselves wrong.
+ *
+ * @param {{before?: unknown, after?: unknown}} observed
+ * @returns {RailGateFailure[]}
+ */
+export function checkIdempotentReload(observed) {
+  const src = asObject(observed) ?? {};
+  /** @type {RailGateFailure[]} */
+  const failures = [];
+  const before = asObject(src.before);
+  const after = asObject(src.after);
+  for (const [field, side] of /** @type {const} */ ([
+    ["before", before],
+    ["after", after],
+  ])) {
+    if (side === null) failures.push(shapeFailure("engine_state", field, src[field], OBJECT));
+  }
+  if (before === null || after === null) return failures;
+
+  const beforeCells = asObject(before.cells) ?? {};
+  const afterCells = asObject(after.cells) ?? {};
+  for (const cell of TRACKED_CELLS) {
+    const was = asObject(beforeCells[cell]) ?? {};
+    const now = asObject(afterCells[cell]) ?? {};
+    for (const key of /** @type {const} */ (["mm", "freshness"])) {
+      // `Object.is` so a NaN reading on both sides reads as unchanged rather
+      // than as churn it is not.
+      if (!Object.is(now[key], was[key])) {
+        failures.push({
+          gate: "reload",
+          tool: "engine_state",
+          field: `values[${cell}].${key}`,
+          observed: now[key],
+          expected: was[key],
+        });
+      }
+    }
+  }
+
+  for (const [pin, was, now] of /** @type {const} */ ([
+    [RAIL_SPAN_PIN, before.railSpanPinStatus, after.railSpanPinStatus],
+    [TOOL_DOCK_PIN, before.toolDockPinStatus, after.toolDockPinStatus],
+  ])) {
+    if (now !== was) {
+      failures.push({
+        gate: "reload",
+        tool: "engine_state",
+        field: `constraints[${pin}].status`,
+        observed: now,
+        expected: was,
+      });
+    }
+  }
+  return failures;
+}
+
+/**
+ * PRD §7 B7 — a refused write fails structurally and mutates nothing.
+ *
+ * Both halves matter and they fail independently, so both are always evaluated:
+ * a write that SUCCEEDED where a rejection was required is as much a B7
+ * violation as one that left the source half-rewritten, and a run that did both
+ * reports two records rather than the first one found.
+ *
+ * "Structured" is the §2a in-band `{error}` envelope carrying a non-empty
+ * message — an empty one is a refusal the caller cannot act on or diagnose.
+ *
+ * @param {{tool?: unknown, error?: unknown, sourceBefore?: unknown,
+ *          sourceAfter?: unknown}} observed
+ * @returns {RailGateFailure[]}
+ */
+export function checkRejectionAtomicity(observed) {
+  const src = asObject(observed) ?? {};
+  /** @type {RailGateFailure[]} */
+  const failures = [];
+  const tool = typeof src.tool === "string" && src.tool.length > 0 ? src.tool : "reify_set_parameter";
+
+  if (!isInBandError(src.error)) {
+    failures.push({
+      gate: "rejection",
+      tool,
+      field: "error",
+      observed: src.error,
+      expected: IN_BAND_ERROR,
+    });
+  } else if (/** @type {any} */ (src.error).error.trim().length === 0) {
+    failures.push({
+      gate: "rejection",
+      tool,
+      field: "error",
+      observed: /** @type {any} */ (src.error).error,
+      expected: NON_EMPTY_STRING,
+    });
+  }
+
+  if (src.sourceAfter !== src.sourceBefore) {
+    failures.push({
+      gate: "rejection",
+      tool,
+      field: "source",
+      observed: src.sourceAfter,
+      expected: src.sourceBefore,
+    });
+  }
+  return failures;
+}
+
+/**
+ * The PRD rows that are checked only when the caller supplies their reading —
+ * name → the {@link RailGateInputs} field carrying it, and the predicate.
+ *
+ * `list` marks a row a run can exercise more than once: B7 is driven twice (a
+ * derived `let`, then a dimension-mismatched value), and both rejections must be
+ * graded rather than only the last one supplied.
+ */
+const EXTRA_GATES = Object.freeze({
+  sourceCanonical: { check: checkSourceCanonical, list: false },
+  fieldCoverage: { check: checkFieldCoverage, list: false },
+  idempotentReload: { check: checkIdempotentReload, list: false },
+  rejectionAtomicity: { check: checkRejectionAtomicity, list: true },
+});
+
+/** Shape token for an unrecognised entry in `requires`. */
+const KNOWN_EXTRA = `one-of-${Object.keys(EXTRA_GATES).join("|")}`;
+
 // ─── The verdict ─────────────────────────────────────────────────────────────
 
 /**
@@ -504,6 +831,13 @@ export function findEditableParams(source, cellNames) {
  * @property {unknown} cells             Cell id → {@link RailGateCellReading}.
  * @property {unknown} railSpanPinStatus Folded status of {@link RAIL_SPAN_PIN}.
  * @property {unknown} toolDockPinStatus Folded status of {@link TOOL_DOCK_PIN}.
+ * @property {unknown} [requires]           Names of {@link EXTRA_GATES} rows this run promises
+ *                                          to exercise; a promised row with no reading fails.
+ * @property {unknown} [sourceCanonical]    B2 reading — see {@link checkSourceCanonical}.
+ * @property {unknown} [fieldCoverage]      B3 reading — see {@link checkFieldCoverage}.
+ * @property {unknown} [idempotentReload]   B5 reading — see {@link checkIdempotentReload}.
+ * @property {unknown} [rejectionAtomicity] B7 reading, or a list of them — see
+ *                                          {@link checkRejectionAtomicity}.
  *
  * @typedef {object} RailGateResult
  * @property {boolean} ok                 True only when every gate passed.
@@ -641,6 +975,37 @@ export function checkRailLengtheningGate(inputs) {
           expected: want,
         });
       }
+    }
+  }
+
+  // ── Gate 9: the remaining PRD rows ──────────────────────────────────────
+  // Supplying a reading is what asks for it to be graded. `requires` is the
+  // other direction and exists only to close the silent-skip hole: a driver
+  // that MEANT to exercise a row and passed nothing would otherwise be graded
+  // as a pass on a row it never ran — the same vacuity trap gate 2 closes for
+  // an empty scene.
+  const requires = Array.isArray(src.requires) ? src.requires : [];
+  for (const name of requires) {
+    if (!Object.prototype.hasOwnProperty.call(EXTRA_GATES, name)) {
+      failures.push(shapeFailure("railLengtheningGate", "requires", name, KNOWN_EXTRA));
+    }
+  }
+  for (const [name, { check, list }] of Object.entries(EXTRA_GATES)) {
+    const reading = src[name];
+    if (reading === undefined) {
+      if (requires.includes(name)) {
+        failures.push({
+          gate: "vacuity",
+          tool: "railLengtheningGate",
+          field: name,
+          observed: undefined,
+          expected: "a reading to grade",
+        });
+      }
+      continue;
+    }
+    for (const one of list && Array.isArray(reading) ? reading : [reading]) {
+      failures.push(...check(one));
     }
   }
 

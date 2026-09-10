@@ -1141,3 +1141,87 @@ describe("the four new predicates never throw, for ANY argument", () => {
     });
   }
 });
+
+describe("checkRailLengtheningGate — (o) the four rows fold into ONE verdict", () => {
+  it("still passes the three measured states, which promise no extra rows", () => {
+    for (const inputs of [BASELINE, AFTER_Y_RAIL, AFTER_RAIL_SPAN]) {
+      expect((checkRailLengtheningGate(inputs) as Verdict).ok).toBe(true);
+    }
+  });
+
+  it("grades a supplied reading and reports it in the ONE failures list", () => {
+    const verdict = checkRailLengtheningGate({
+      ...AFTER_RAIL_SPAN,
+      sourceCanonical: {
+        source: EDITED_SOURCE.replace("= 1100mm", "= 800mm"),
+        expected: EDITED_LITERALS,
+        saveFile: { success: true },
+        sourceAfterSave: EDITED_SOURCE.replace("= 1100mm", "= 800mm"),
+      },
+    }) as Verdict;
+    expect(verdict.ok).toBe(false);
+    expect(forGate(verdict.failures, "canonical")).toHaveLength(1);
+  });
+
+  it("faults a PROMISED row that was never exercised — the silent-skip hole", () => {
+    const verdict = checkRailLengtheningGate({
+      ...AFTER_RAIL_SPAN,
+      requires: ["rejectionAtomicity"],
+    }) as Verdict;
+    expect(verdict.ok).toBe(false);
+    expect(forGate(verdict.failures, "vacuity")).toHaveLength(1);
+    expect(verdict.failures[0]).toMatchObject({
+      gate: "vacuity",
+      field: "rejectionAtomicity",
+      observed: undefined,
+    });
+  });
+
+  it("faults an unrecognised name in `requires` rather than ignoring it", () => {
+    const verdict = checkRailLengtheningGate({
+      ...AFTER_RAIL_SPAN,
+      requires: ["noSuchRow"],
+    }) as Verdict;
+    expect(forField(verdict.failures, "requires")).toHaveLength(1);
+    expect(verdict.failures[0].gate).toBe("shape");
+  });
+
+  it("grades EVERY B7 rejection when a list is supplied, not just the last", () => {
+    const bad = { tool: "reify_set_parameter", error: { success: true }, sourceBefore: "a", sourceAfter: "a" };
+    const verdict = checkRailLengtheningGate({
+      ...AFTER_RAIL_SPAN,
+      requires: ["rejectionAtomicity"],
+      rejectionAtomicity: [bad, bad],
+    }) as Verdict;
+    expect(forGate(verdict.failures, "rejection")).toHaveLength(2);
+  });
+
+  it("passes when a promised row IS supplied and clean", () => {
+    const verdict = checkRailLengtheningGate({
+      ...AFTER_RAIL_SPAN,
+      requires: ["sourceCanonical", "fieldCoverage", "idempotentReload", "rejectionAtomicity"],
+      sourceCanonical: {
+        source: EDITED_SOURCE,
+        expected: EDITED_LITERALS,
+        saveFile: { success: true },
+        sourceAfterSave: EDITED_SOURCE,
+      },
+      fieldCoverage: {
+        meshes: [{}],
+        values: [{}],
+        constraints: [{ node_id: "a" }],
+        files: [{ path: "printer.ri" }],
+        compile_diagnostics: [],
+        tessellation_diagnostics: [],
+        stale: false,
+        reload_error: null,
+      },
+      idempotentReload: { before: { cells: {} }, after: { cells: {} } },
+      rejectionAtomicity: [
+        { tool: "reify_set_parameter", error: { error: "no default literal" }, sourceBefore: "a", sourceAfter: "a" },
+      ],
+    }) as Verdict;
+    expect(verdict.failures).toEqual([]);
+    expect(verdict.ok).toBe(true);
+  });
+});

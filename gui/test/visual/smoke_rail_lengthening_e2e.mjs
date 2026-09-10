@@ -49,7 +49,10 @@ import { fileURLToPath } from 'node:url';
 
 import {
   PRINTER_RELPATH,
+  RAIL_SPAN_CELL,
   SUBJECT_BASENAME,
+  X_RAIL_LEN_CELL,
+  Y_RAIL_LEN_CELL,
   checkRailLengtheningGate,
   extractGateInputs,
   formatFailures,
@@ -71,6 +74,18 @@ const SUBJECT_DIR = path.dirname(path.join(REPO_ROOT, PRINTER_RELPATH));
  * TIMEOUT charged to the wrong subsystem.
  */
 const IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * The FS watcher's debounce window, and how far past it to wait.
+ *
+ * `reify_set_parameter` writes disk, so the watcher fires on the AI's own edit.
+ * B5 is that the resulting reload changes nothing — but only a read taken AFTER
+ * the window has elapsed can tell "idempotent" from "hasn't happened yet", and a
+ * read taken exactly at the boundary would make the gate flaky in the direction
+ * that PASSES. The margin buys the difference.
+ */
+const WATCHER_DEBOUNCE_MS = 100;
+const WATCHER_DEBOUNCE_MARGIN = 10;
 
 // ─── Port resolution (mirrors endpoint.ts / lib_portable.sh logic) ────────────
 // Inline rather than imported: a bare-`node` driver cannot load endpoint.ts.
@@ -181,7 +196,7 @@ function requireLiveRead(phase, diagnosis) {
  *
  * @returns {Promise<{inputs: object, verdict: {ok: boolean, failures: object[]}}>}
  */
-async function gradePhase(phase, subject) {
+async function observePhase(phase, subject) {
   const engineState = await rpc('engine_state');
   const storeAfterOpen = await rpc('store_state');
   const demandDispatch = await rpc('demand_dispatch');
@@ -221,9 +236,74 @@ async function gradePhase(phase, subject) {
     );
   }
 
+  return inputs;
+}
+
+/**
+ * Observe the live state and grade it, folding in whatever extra PRD rows this
+ * phase exercises.
+ *
+ * `extras` is merged into the inputs rather than checked separately so the
+ * verdict stays ONE `{ok, failures}` — the driver has a single decision seam and
+ * a single place where a record becomes English, which is the whole point of
+ * keeping the decision in ./railLengtheningGate.mjs.
+ */
+async function gradePhase(phase, subject, extras = {}) {
+  const inputs = { ...(await observePhase(phase, subject)), ...extras };
   const verdict = checkRailLengtheningGate(inputs);
   console.log(`  graded '${phase}': ok=${verdict.ok}`);
   return { inputs, verdict };
+}
+
+/**
+ * Issue one AI parameter write, returning the RAW envelope.
+ *
+ * Deliberately undiagnosed: half this gate's calls EXPECT an in-band error (B7),
+ * so routing them through `requireLiveRead` would abort the run on the very
+ * outcome being asserted. The success calls are checked by their phase verdict
+ * instead — if a write silently failed, every cell reads its old value and the
+ * value gate says so with the number it actually found.
+ */
+async function setParameter(cellId, value) {
+  const envelope = await rpc('reify_set_parameter', { cell_id: cellId, value });
+  console.log(`  reify_set_parameter(${cellId}, ${value}) -> ${JSON.stringify(envelope)}`);
+  return envelope;
+}
+
+/** The `.ri` text currently ON DISK, re-read through `reify_open_file`. */
+async function readSource(phase, subject) {
+  const opened = await rpc('reify_open_file', { file_path: subject });
+  requireLiveRead(phase, describeRpcFailure(opened, 'reify_open_file (source re-read)'));
+  return opened?.source;
+}
+
+/**
+ * The B2 reading: the on-disk literals, plus the save that must not change them.
+ *
+ * `reify_save_file` is issued BETWEEN the two source reads because B2's second
+ * half is that the save is a NO-OP — the engine's buffer already matches disk,
+ * so writing it must leave the bytes alone.
+ */
+async function readSourceCanonical(phase, subject, expected) {
+  const source = await readSource(phase, subject);
+  const saveFile = await rpc('reify_save_file', { file_path: subject });
+  console.log(`  reify_save_file -> ${JSON.stringify(saveFile)}`);
+  const sourceAfterSave = await readSource(phase, subject);
+  return { source, expected, saveFile, sourceAfterSave };
+}
+
+/**
+ * The B7 reading: a write that must be REFUSED, with the source either side.
+ *
+ * The source is read before and after through the same `reify_open_file` path,
+ * so "no partial mutation" is asserted against what is actually on disk rather
+ * than against what the engine says it holds.
+ */
+async function attemptRefusedWrite(phase, subject, cellId, value) {
+  const sourceBefore = await readSource(phase, subject);
+  const envelope = await setParameter(cellId, value);
+  const sourceAfter = await readSource(phase, subject);
+  return { tool: `reify_set_parameter(${cellId}, ${value})`, error: envelope, sourceBefore, sourceAfter };
 }
 
 /** Report a phase verdict, failing the run when it did not hold. */
@@ -266,8 +346,78 @@ async function main() {
     await waitForIdle('open');
 
     log('Grading the baseline…');
-    const baseline = await gradePhase('baseline', subject);
+    const baseline = await gradePhase('baseline', subject, {
+      requires: ['fieldCoverage'],
+      fieldCoverage: await rpc('engine_state'),
+    });
     requirePhase('baseline', baseline.verdict);
+
+    // ── Edit 1: the rails overrun the frame ─────────────────────────────────
+    log(`Setting ${Y_RAIL_LEN_CELL} to 1100mm via reify_set_parameter…`);
+    await setParameter(Y_RAIL_LEN_CELL, '1100mm');
+    await waitForIdle('the y_rail_len edit');
+
+    // B1 lives in observePhase's READ ORDER, not in a predicate: engine_state,
+    // store_state and demand_dispatch are all read BEFORE reify_open_file, so
+    // the lengthened geometry and the moved cell are observed on state the
+    // engine already held. Nothing reloaded the file to produce them.
+    log('Grading after-y-rail (B1 live sync, B2 on-disk, B3 coverage, the pin flip)…');
+    const afterYRail = await gradePhase('after-y-rail', subject, {
+      requires: ['sourceCanonical', 'fieldCoverage'],
+      sourceCanonical: await readSourceCanonical('after-y-rail', subject, {
+        [Y_RAIL_LEN_CELL]: '1100mm',
+      }),
+      fieldCoverage: await rpc('engine_state'),
+    });
+    requirePhase('after-y-rail', afterYRail.verdict);
+
+    // ── B5: the FS watcher re-fires on the write, and must change nothing ────
+    log(`Waiting past the ${WATCHER_DEBOUNCE_MS}ms watcher debounce, then re-reading…`);
+    await sleep(WATCHER_DEBOUNCE_MS * WATCHER_DEBOUNCE_MARGIN);
+    await waitForIdle('the watcher re-read');
+    const reReadInputs = await observePhase('after-y-rail', subject);
+    const settled = await gradePhase('after-y-rail', subject, {
+      requires: ['idempotentReload'],
+      idempotentReload: { before: afterYRail.inputs, after: reReadInputs },
+    });
+    requirePhase('after-y-rail (post-debounce)', settled.verdict);
+
+    // ── Edit 2: the frame catches up ────────────────────────────────────────
+    log(`Setting ${RAIL_SPAN_CELL} to 1100mm via reify_set_parameter…`);
+    await setParameter(RAIL_SPAN_CELL, '1100mm');
+    await waitForIdle('the rail_span_m edit');
+
+    // The rail-span pin returns to Satisfied, travel_avail reads 810mm, and the
+    // ToolDock pin goes Violated — a REQUIRED cascade, not a tolerated one. See
+    // RAIL_GATE_PHASES: this phase's expectations encode all three.
+    log('Grading after-rail-span (the pin recovers, travel_avail 810, ToolDock cascades)…');
+    const afterRailSpan = await gradePhase('after-rail-span', subject, {
+      requires: ['sourceCanonical', 'fieldCoverage'],
+      sourceCanonical: await readSourceCanonical('after-rail-span', subject, {
+        [Y_RAIL_LEN_CELL]: '1100mm',
+        [RAIL_SPAN_CELL]: '1100mm',
+      }),
+      fieldCoverage: await rpc('engine_state'),
+    });
+    requirePhase('after-rail-span', afterRailSpan.verdict);
+
+    // ── B7: two refusals, neither of which may touch disk ───────────────────
+    // Two DIFFERENT reasons on purpose. x_rail_len is a derived `let` with no
+    // default literal for `resolve_param_default_span` to return a span for, so
+    // it is refused before any value is parsed; '45deg' is a well-formed literal
+    // of the WRONG DIMENSION on a Length cell, so it is refused after. A gate
+    // that only ever exercised one would not notice the other path losing its
+    // atomicity.
+    log('Attempting two writes that must be REFUSED, leaving disk byte-identical…');
+    const rejections = [
+      await attemptRefusedWrite('after-rail-span', subject, X_RAIL_LEN_CELL, '900mm'),
+      await attemptRefusedWrite('after-rail-span', subject, RAIL_SPAN_CELL, '45deg'),
+    ];
+    const refused = await gradePhase('after-rail-span', subject, {
+      requires: ['rejectionAtomicity'],
+      rejectionAtomicity: rejections,
+    });
+    requirePhase('after-rail-span (B7 rejections)', refused.verdict);
   } finally {
     // Removed whatever happened above, so a crashed run leaves no half-edited
     // copy of an engineering design behind and the next run starts clean.
