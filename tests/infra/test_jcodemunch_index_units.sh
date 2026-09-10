@@ -13,6 +13,7 @@
 #   C — installer happy path, idempotence, and the watcher guardrail
 #   D — installer CLI guard, source pre-flight, and fail-open
 #   E — repo-side retirement invariants for the old serve unit (task η)
+#   F — smoke-script connection-failure hint contract
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -473,5 +474,60 @@ assert "E5: smoke script still references jcodemunch-watcher.service (retirement
 
 assert "E5b: no tracked file under deploy/ references jcodemunch-watcher" \
     bash -c '! git -C "$1" grep -q "jcodemunch-watcher" -- deploy/' _ "$REPO_ROOT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — smoke-script connection-failure hint contract
+#
+# scripts/smoke-jcodemunch-serve.sh's "start the serve first" hint was stale on
+# three independent axes: an unresolvable pinned git source, a wrong Python
+# version, and a systemd unit this diff deletes. F1-F4 ban each axis; F5 requires
+# the replacement recipe; F6 stops the correction becoming a fifth copy of the pin.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: smoke-script hint contract ---"
+
+# F1/F2: axis 1 — the unresolvable pinned git source
+assert "F1: smoke script names no v1.108.27 pin" \
+    bash -c '! grep -q "v1[.]108[.]27" "$1"' _ "$SMOKE"
+
+assert "F2: smoke script names no git+https://github.com/jgravelle source" \
+    bash -c '! grep -q "git+https://github[.]com/jgravelle" "$1"' _ "$SMOKE"
+
+# F3: axis 2 — the wrong Python version
+assert "F3: smoke script names no --python 3.12" \
+    bash -c '! grep -q -- "--python 3[.]12" "$1"' _ "$SMOKE"
+
+# F4: axis 3 — the unit this diff deletes
+assert "F4: smoke script names no jcodemunch-serve.service unit" \
+    bash -c '! grep -q "jcodemunch-serve[.]service" "$1"' _ "$SMOKE"
+
+# F5: the hint must actually tell the operator what to run instead. Deleting the
+# stale recipe without supplying the replacement would leave a worse hint than
+# the stale one — the failure mode this block is really guarding against.
+assert "F5: connection-failure hint names scripts/with-jcodemunch-serve.sh as the replacement recipe" \
+    bash -c 'grep -q "with-jcodemunch-serve[.]sh" "$1"' _ "$SMOKE"
+
+# F6: the corrected hint must carry NO version literal of its own.
+# scripts/with-jcodemunch-serve.sh:248-257 enumerates the four sites that copy
+# the pin and warns against a fifth; a hint that restated the version would be
+# that fifth copy, and would go stale again on the next bump.
+assert "F6: smoke script restates no jcodemunch version (no 'jcodemunch-mcp==' and no '1.108.' literal)" \
+    bash -c '
+        ! grep -q "jcodemunch-mcp==" "$1" || exit 1
+        ! grep -q "1[.]108[.]"       "$1" || exit 1
+    ' _ "$SMOKE"
+
+# F7: the edit must leave a script that still parses and still answers --help,
+# proven without needing a live serve.
+assert "F7: smoke script parses and --help exits 0" \
+    bash -c '
+        bash -n "$1" || exit 1
+        bash "$1" --help >/dev/null 2>&1
+    ' _ "$SMOKE"
+
+# F8: watcher guardrail — the hint rewrite must not spill into assertion 3's site
+assert "F8: assertion-3 site still names jcodemunch-watcher.service" \
+    bash -c 'grep -q "jcodemunch-watcher[.]service is not active" "$1"' _ "$SMOKE"
 
 test_summary
