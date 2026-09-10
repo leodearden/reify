@@ -118,7 +118,7 @@ impl AnalysisContext {
         // Containment (root cause owned by task **#6851**): a FAILED `auto:`
         // type-parameter resolution leaves an unsubstituted `Type::TypeParam`
         // value cell that panics `engine.check` in debug builds — see
-        // `crate::diagnostics::first_unrepresentable_cell`'s doc comment for
+        // `crate::diagnostics::eval_guard::first_unrepresentable_cell`'s doc comment for
         // the mechanism. Skip the eval/check pass and hand back an
         // empty `CheckResult`; `compiled.diagnostics` already carries the
         // user-visible `E_AUTO_TYPE_PARAM_*` error, so hover / completion /
@@ -144,7 +144,7 @@ impl AnalysisContext {
         // loud compile error in exactly the place that must then decide what
         // the skipped-eval value should be.
         if let Some((cell_id, cell_type)) =
-            crate::diagnostics::first_unrepresentable_cell(&compiled)
+            crate::diagnostics::eval_guard::first_unrepresentable_cell(&compiled)
         {
             // Observability: this is the most consequential of the three guard
             // sites — hover / completion lose every computed value here — so
@@ -1117,8 +1117,8 @@ mod tests {
     /// `auto:` resolution, or "the values survived" is trivially true.
     ///
     /// Deliberately the mirror of, not a duplicate of,
-    /// `auto_resolution_failure_does_not_panic_analysis_context` below: that
-    /// one pins the guard FIRING (empty `CheckResult`) on the shape that needs
+    /// `auto_resolution_failure_does_not_panic_analysis_context`: that one
+    /// pins the guard FIRING (empty `CheckResult`) on the shape that needs
     /// containment, this one pins it NOT firing on the shape that does not.
     #[test]
     fn failed_auto_resolution_with_unused_type_param_still_populates_check_values() {

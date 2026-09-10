@@ -55,7 +55,7 @@ use reify_core::{DiagnosticCode, ModulePath};
 /// the compiler-side fix (its "fix-site 1": stop leaving the sub pointing at
 /// an un-substituted generic). What landed in this file is its **fix-site 2**,
 /// caller-side defence-in-depth, scoped to `reify-lsp`'s three production
-/// entry points only — [`crate::diagnostics::compiled_graph_has_unrepresentable_cell`]
+/// entry points only — [`crate::diagnostics::eval_guard::compiled_graph_has_unrepresentable_cell`]
 /// skips the eval/check pass when the graph would carry such a cell.
 /// `crates/reify-cli/src/mcp_context.rs`'s three ungated `engine.eval` sites
 /// remain #6851's to fix.
