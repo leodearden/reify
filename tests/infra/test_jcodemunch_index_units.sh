@@ -11,6 +11,7 @@
 #   A — tracked service unit (deploy/systemd/reify-jcodemunch-index.service)
 #   B — tracked timer unit   (deploy/systemd/reify-jcodemunch-index.timer)
 #   C — installer happy path, idempotence, and the watcher guardrail
+#   D — installer CLI guard, source pre-flight, and fail-open
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -71,20 +72,25 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/systemctl"
 
-# ── run_installer: stub PATH + throwaway XDG_CONFIG_HOME, capturing OUT/ERR/RC ─
+# ── run_installer <xdg> [args...] ─────────────────────────────────────────────
+# Runs the installer with the stub PATH and a throwaway XDG_CONFIG_HOME,
+# capturing OUT / ERR_OUT / RC. Any arguments after <xdg> are forwarded to the
+# installer, so the CLI-guard cases share this one entry point.
+#
 # The XDG_CONFIG_HOME argument is MANDATORY and must be non-empty: an empty value
 # would let the installer's `${XDG_CONFIG_HOME:-$HOME/.config}` fall through to
 # the real home and install units onto the developer's host from a test run.
 run_installer() {
     local xdg="${1:-}"
     [ -n "$xdg" ] || { echo "run_installer: XDG_CONFIG_HOME argument is required" >&2; return 99; }
+    shift
     local rc=0
     > "$ERR_FILE"
     OUT="$(
         REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
         XDG_CONFIG_HOME="$xdg" \
         PATH="$STUB_DIR:$PATH" \
-            bash "$INSTALLER" 2>"$ERR_FILE"
+            bash "$INSTALLER" "$@" 2>"$ERR_FILE"
     )" || rc=$?
     ERR_OUT="$(cat "$ERR_FILE")"
     RC=$rc
@@ -290,5 +296,119 @@ assert "C8: no systemctl call from the installer names jcodemunch-watcher" \
 
 assert "C8b: the installer source contains no jcodemunch-watcher token at all" \
     bash -c '! grep -q "jcodemunch-watcher" "$1"' _ "$INSTALLER"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — installer CLI guard, source pre-flight, and fail-open
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: installer CLI guard, pre-flight, fail-open ---"
+
+D_XDG="$(mktemp -d /tmp/test-jc-index-units-d-xdg-XXXXXX)"
+_TMPDIRS+=("$D_XDG")
+
+# D1: both help spellings exit 0 and print a usage line naming the script
+for _flag in --help -h; do
+    reset_calls
+    run_installer "$D_XDG" "$_flag"
+    assert "D1: '$_flag' exits 0 and prints a usage line naming the script" \
+        bash -c '
+            [ "$1" = "0" ] || exit 1
+            printf "%s" "$2" | grep -qi "usage" || exit 1
+            printf "%s" "$2" | grep -q "install-jcodemunch-index-units.sh"
+        ' _ "$RC" "$ERR_OUT$OUT"
+done
+
+# D2: an unexpected positional exits 2 and the message names the offending
+# argument. Exit 2 specifically, matching install-warm-lane-units.sh — the two
+# installers must not disagree on what a CLI misuse exit code means.
+reset_calls
+run_installer "$D_XDG" --frobnicate
+
+assert "D2: unexpected argument exits 2 and the message names it" \
+    bash -c '
+        [ "$1" = "2" ] || exit 1
+        printf "%s" "$2" | grep -q -- "--frobnicate"
+    ' _ "$RC" "$ERR_OUT$OUT"
+
+# ── D3/D4: source pre-flight. A missing tracked unit must fail LOUDLY and name
+# the path; a silent skip here would "succeed" while installing nothing.
+_make_partial_repo() {
+    # $1 = which source to omit ("service" or "timer"); echoes the temp repo root
+    local omit="$1" root
+    root="$(mktemp -d /tmp/test-jc-index-units-pf-XXXXXX)"
+    _TMPDIRS+=("$root")
+    mkdir -p "$root/deploy/systemd"
+    [ "$omit" = "service" ] || cp "$SERVICE_SRC" "$root/deploy/systemd/"
+    [ "$omit" = "timer" ]   || cp "$TIMER_SRC"   "$root/deploy/systemd/"
+    echo "$root"
+}
+
+D3_XDG="$(mktemp -d /tmp/test-jc-index-units-d3-xdg-XXXXXX)"
+_TMPDIRS+=("$D3_XDG")
+D3_REPO="$(_make_partial_repo service)"
+
+reset_calls
+REIFY_TEST_REPO_ROOT="$D3_REPO" run_installer "$D3_XDG"
+
+# The ERROR:-prefixed line is the discriminator, not just "the path appears in
+# stderr": without an explicit pre-flight, `cp` failing under `set -e` also names
+# the path, so a laxer assertion would pass on an installer that has no pre-flight
+# at all and merely crashes partway through.
+assert "D3: missing .service source exits 1 with an ERROR: line naming the missing path" \
+    bash -c '
+        [ "$1" = "1" ] || exit 1
+        printf "%s" "$2" | grep -q "ERROR.*reify-jcodemunch-index[.]service"
+    ' _ "$RC" "$ERR_OUT"
+
+D4_XDG="$(mktemp -d /tmp/test-jc-index-units-d4-xdg-XXXXXX)"
+_TMPDIRS+=("$D4_XDG")
+D4_REPO="$(_make_partial_repo timer)"
+
+reset_calls
+REIFY_TEST_REPO_ROOT="$D4_REPO" run_installer "$D4_XDG"
+
+assert "D4: missing .timer source exits 1 with an ERROR: line naming the missing path" \
+    bash -c '
+        [ "$1" = "1" ] || exit 1
+        printf "%s" "$2" | grep -q "ERROR.*reify-jcodemunch-index[.]timer"
+    ' _ "$RC" "$ERR_OUT"
+
+# D5: fail-open on a bus-less host must be a GENUINE skip, not a half-install:
+# exit 0 with a warning, nothing copied, and no daemon-reload/enable attempted.
+# (The stub still records the show-environment probe itself, so this asserts on
+# the two mutating verbs specifically rather than on an empty calls file.)
+D5_XDG="$(mktemp -d /tmp/test-jc-index-units-d5-xdg-XXXXXX)"
+_TMPDIRS+=("$D5_XDG")
+
+reset_calls
+REIFY_TEST_NO_USER_BUS=1 run_installer "$D5_XDG"
+
+assert "D5: no --user bus → exit 0, WARN naming the bus, nothing copied, no daemon-reload/enable" \
+    bash -c '
+        [ "$1" = "0" ] || exit 1
+        printf "%s" "$2" | grep -qi "warn" || exit 1
+        printf "%s" "$2" | grep -qi "bus"  || exit 1
+        [ ! -e "$3/systemd/user/reify-jcodemunch-index.service" ] || exit 1
+        [ ! -e "$3/systemd/user/reify-jcodemunch-index.timer" ]   || exit 1
+        ! grep -q "daemon-reload" "$4" || exit 1
+        ! grep -q "enable"        "$4" || exit 1
+    ' _ "$RC" "$ERR_OUT" "$D5_XDG" "$CALLS_FILE"
+
+# D6: pre-flight ORDERING is load-bearing. A broken checkout must be reported
+# even on a bus-less host — if the fail-open ran first it would mask the missing
+# source behind a cheerful exit 0 and the operator would never learn.
+D6_XDG="$(mktemp -d /tmp/test-jc-index-units-d6-xdg-XXXXXX)"
+_TMPDIRS+=("$D6_XDG")
+D6_REPO="$(_make_partial_repo service)"
+
+reset_calls
+REIFY_TEST_REPO_ROOT="$D6_REPO" REIFY_TEST_NO_USER_BUS=1 run_installer "$D6_XDG"
+
+assert "D6: missing source is reported even with no bus (pre-flight precedes fail-open)" \
+    bash -c '
+        [ "$1" = "1" ] || exit 1
+        printf "%s" "$2" | grep -q "ERROR.*reify-jcodemunch-index[.]service"
+    ' _ "$RC" "$ERR_OUT"
 
 test_summary
