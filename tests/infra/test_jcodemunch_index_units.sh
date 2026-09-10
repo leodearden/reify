@@ -470,14 +470,23 @@ assert "D6: missing source is reported even with no bus (pre-flight precedes fai
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block E — repo-side retirement invariants for the old serve unit (task η)
+# Block E — serve-unit retirement invariants (task η) AND the operator-doc
+#           record-correction invariants that followed it (task 6117, μ)
 #
-# SCOPE, deliberately narrow: deploy/ + scripts/ + .jcodemunch.jsonc, NOT
-# repo-wide. docs/architecture-audit/jcodemunch-serve-activation.md and
-# .claude/skills/audit/** still describe the serve unit as live; correcting that
-# runbook is task 6117 (μ)'s, per the capability manifest's
-# runbook-edit-belongs-to-μ resolution. A repo-wide assertion here would
-# false-RED this task on μ's still-pending edits.
+# SCOPE: two layers. The deploy/scripts layer (E1-E5b, η) and the operator-facing
+# doc layer (E-DOC*, E-SKILL*, E-CLI*, E-MODES*, μ). Every doc-layer assertion
+# names its file EXPLICITLY in the `git grep … -- <path>` pathspec; none of them
+# is repo-wide, and that is load-bearing for two independent reasons:
+#
+#   (a) scripts/smoke-jcodemunch-serve.sh and scripts/with-jcodemunch-serve.sh
+#       legitimately carry `jcodemunch-serve` in their own basenames and bodies,
+#       so a repo-wide absence grep for that token false-REDs a healthy tree.
+#       E3 already carves them out by name for exactly this reason.
+#   (b) docs/legibility/confusion-codebook.yaml:13890 — an absence-check test
+#       that itself carries the forbidden token becomes the only remaining source
+#       occurrence, and so self-defeats a manifest `expect: absent` grep the
+#       moment that grep is broadened. THIS FILE carries every token banned
+#       below, so it must never fall inside any absence assertion's path set.
 #
 # Assertions run over TRACKED files via `git grep`, so a stray build artifact or
 # an untracked scratch file can neither mask nor manufacture a violation.
@@ -529,6 +538,38 @@ assert "E5: smoke script still references jcodemunch-watcher.service (retirement
 
 assert "E5b: no tracked file under deploy/ references jcodemunch-watcher" \
     bash -c '! git -C "$1" grep -q "jcodemunch-watcher" -- deploy/' _ "$REPO_ROOT"
+
+
+echo ""
+echo "--- Block E (doc layer): operator-record truth invariants (μ) ---"
+
+# E-DOC1..E-DOC4 pin docs/architecture-audit/jcodemunch-serve-activation.md to the
+# substrate that actually landed. The pair is deliberately absence + PRESENCE:
+# an absence-only pair would go green if the whole section were simply deleted,
+# and μ's charter is to CORRECT the record, not to erase it.
+
+# E-DOC1: the runbook must not assert the retired persistent unit is live.
+assert "E-DOC1: activation doc does not name jcodemunch-serve.service" \
+    bash -c '! git -C "$1" grep -qE "jcodemunch-serve\.service" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
+
+# E-DOC2: pattern and path are byte-identical to the capability manifest's
+# `nonexistent-db-claim-removed` delivered_check, so the in-repo gate and the
+# PRD gate cannot drift apart. It bans the DB *filename* only — naming the
+# retired IDENTITY `leodearden/reify` in prose is what the 2026-08-17 premise
+# correction requires, so no assertion here forbids it.
+assert "E-DOC2: activation doc does not name the retired DB filename" \
+    bash -c '! git -C "$1" grep -q "leodearden-reify[.]db" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
+
+# E-DOC3: the replacement identity is stated positively.
+assert "E-DOC3: activation doc names the per-path identity reify actually uses (local/reify-)" \
+    bash -c 'git -C "$1" grep -q "local/reify-" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
+
+# E-DOC4: the load-bearing half of the 2026-08-17 premise correction — the doc
+# must justify the per-path identity by the FORCED LEVER (jcodemunch ships
+# git_root_identity: True by default; reify overrides it), never by a
+# "no such index exists" claim, which was false.
+assert "E-DOC4: activation doc names the forced lever JCODEMUNCH_GIT_ROOT_IDENTITY" \
+    bash -c 'git -C "$1" grep -q "JCODEMUNCH_GIT_ROOT_IDENTITY" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
