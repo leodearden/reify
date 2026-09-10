@@ -65,6 +65,46 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 > `REIFY_VITE_PORT` comment. `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses the check but
 > restores the silent-wrong-vite behaviour, so it is not a fix.
 
+### The AI-write integration gate (task 5098)
+
+```bash
+# From repo root — drives printer_v01's Y-rail lengthening through reify_set_parameter
+npm --prefix gui run test:smoke:rail-lengthening
+```
+
+Self-launching, like the other `test:smoke:*` runners in `gui/package.json`
+(that file is the list — this section names only the one gate). It exercises
+PRD `ai-native-editing.md` §7 rows B1–B3, B5 and B7 end to end: two
+`reify_set_parameter` edits (`CoreXY.y_rail_len`, then `AFrame.rail_span_m`,
+both 800mm → 1100mm), asserting the viewport and property panel follow WITHOUT
+a file reload, the `.ri` on disk carries the new default literal
+unit-preservingly, the rail-span pin flips `Violated` and back to `Satisfied`,
+the post-debounce watcher re-read adds no churn, and two refused writes leave
+disk byte-identical. **Not CI-gated** — needs a live GUI, same as §2.
+
+**It drives a COPY.** `reify_set_parameter` rewrites the `.ri` source on disk,
+which is the point of the on-disk assertion, so the runner copies
+`prj/printer_v01/` to a `mkdtemp` dir and removes it in a `finally`. The tracked
+design is never the subject; a crashed run leaves no half-edited engineering
+model behind.
+
+**What it does and does not claim.** It asserts the GUI value-flow chain on the
+two edited cells and their LIVE DEPENDENTS — `AFrame.travel_avail` (510mm →
+810mm), the two named constraint pins, and the fields beyond `meshes`/`values`.
+It does **not** claim printer_v01 re-derives as a whole, and three known places
+do not follow the rails: the tendon web's `rail_half` is its own `400mm` literal
+hand-kept equal to `BearingRod.length / 2` (`printer.ri`), the rear-web spans are
+`#6592`-inert (per-instance sizing does not thread to the sub-bearing level), and
+the interim socket bridges INVERT at 1100mm rails — `brf_y1` is independent of
+`rail_span_m`, so the box depth goes negative rather than merely to zero, which
+takes `AFrame.vol_vs_analytic` `Indeterminate`. A green run means the value-flow
+chain carried the edit, not that the design is consistent at the new length.
+
+Its decision function is pure and IS CI-gated, separately:
+`gui/test/visual/railLengtheningGate.mjs` is covered by
+`railLengtheningGate.test.ts` on every verify run, so a regression in what the
+gate *decides* is caught without a GUI — only the live *execution* needs one.
+
 ---
 
 ## 3. Tool catalogue by group

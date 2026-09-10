@@ -219,6 +219,36 @@ is close to unreachable anyway — `apply_param_to_source_str` refuses an unknow
 `cell_id` before committing anything — but a client that learned "success
 implies a value" on the other surface should read this paragraph, not infer it.
 
+**Constraint statuses ride the write-tool payload.** A write tool's push is a
+whole `GuiState`, so a constraint that CHANGED STATUS because of the edit
+travels on the same frame as the values and meshes that moved — there is no
+separate constraint channel to fall out of sync with. `GuiState.constraints` is
+declared `diffed keyed(key=node_id, item="constraint", update="constraint-update",
+changed=changed_constraints)` (`types.rs`), so it rides the same delta
+choke-point as `values` and `meshes`, and each `ConstraintData` carries
+`{node_id, expression, status, label, parameter_ids}` with `status` drawn from
+exactly `Satisfied` / `Violated` / `Indeterminate` (`engine.rs`). Prefer
+`parameter_ids` — `collect_value_refs(expr)`, spelled `{Entity}.{member}`, the
+same spelling `reify_set_parameter` takes as its `cell_id` — over the positional
+`node_id` when naming a constraint you care about: `Printer#constraint[45]`
+renumbers when a constraint is added anywhere above it. Pinned end to end
+(serialize → `DebugTransport` → deserialize) by
+`debug_boundary_tests::write_tool_payload_carries_a_flipped_constraint_status`,
+which routes one parameter edit through `write_tool_frontend_payload` and
+asserts the flipped status and its `parameter_ids` survive the wire
+byte-identical.
+
+**The no-stale-baseline invariant is NOT observable from this surface, by
+design.** §6.2 caveat (i) — restated on `write_on_engine_and_refresh_baseline` —
+has the debug path DISCARD the `StateDelta` and push the full `GuiState`
+instead, so no tool here returns a delta or a changed-set, and none is
+missing: a client cannot ask whether the baseline advanced, and does not need
+to. The invariant (a command following an AI write diffs against the
+AI-ADVANCED baseline, not a pre-AI stale one — INV-GUI-2, survey bug #7) is
+pinned where `compute_delta` and `last_state` both are, by
+`debug_boundary_tests::a_subsequent_command_does_not_re_report_an_ai_advanced_baseline`.
+Read an absent delta tool as this design decision, not as a gap to fill.
+
 **`reify_save_file` and `reify_export` are pure I/O — but they still push.**
 Neither commits new engine state, yet both route through
 `write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds across the
