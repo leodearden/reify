@@ -346,3 +346,113 @@ while IFS="$_FS" read -r _id _st _files; do
     done <<< "${_files//$_LS/$'\n'}"
 done <<< "$_TASK_ROWS"
 unset _id _st _files _path
+
+# ── repo preflight ────────────────────────────────────────────────────────────
+# A non-git --repo or an unresolvable --main-ref is NOT fatal (R3/R4): every
+# branch degrades to UNKNOWN and the report is still produced. Resolved once
+# here rather than per branch.
+_MAIN_SHA=""
+if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    warn "Not inside a git work tree: $REPO_DIR — every branch will report scope=UNKNOWN."
+else
+    _MAIN_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$MAIN_REF" 2>/dev/null || true)"
+    [ -n "$_MAIN_SHA" ] || \
+        warn "Cannot resolve --main-ref '$MAIN_REF' in $REPO_DIR — every branch will report scope=UNKNOWN."
+fi
+
+_BRANCH_PREFIX_RE="$(task_citation_regex_escape "$BRANCH_PREFIX")"
+
+# ── per-branch measurement ────────────────────────────────────────────────────
+# Row fields, in the order the header documents. Set by _measure_branch and
+# consumed by the emitters; declared here so the field list has ONE definition.
+R_TASK=""; R_STATUS=""; R_MERGE_BASE=""; R_BEHIND=""; R_COMMITS=""
+R_PEER_COMMITS=""; R_CHANGED=""; R_FOREIGN=""; R_PEER_FILES=""; R_PEERS=""
+R_SCOPE=""; R_SIGNATURE=""
+# The changed-path list behind R_CHANGED. Not a report column (the report
+# carries counts), but the input the scope verdict consumes.
+_CHANGED_FILES=""
+
+# _row_unknown <id> — the degraded row. Every failure path funnels here, so
+# "we could not measure this branch" has exactly one shape (R4).
+#
+# _measure_branch calls this FIRST and only overwrites on success, which is
+# what makes every early return safe. That also makes resetting _CHANGED_FILES
+# here load-bearing in fleet mode: without it a degraded branch would inherit
+# the previous branch's changed set.
+_row_unknown() {
+    R_TASK="$1"
+    R_STATUS="${_STATUS["$1"]:-unknown}"
+    R_MERGE_BASE="-"; R_BEHIND="-"; R_COMMITS="-"; R_PEER_COMMITS="-"
+    R_CHANGED="-"; R_FOREIGN="-"; R_PEER_FILES="-"; R_PEERS="-"
+    R_SCOPE="UNKNOWN"; R_SIGNATURE="-"
+    _CHANGED_FILES=""
+}
+
+# _measure_branch <id>
+# Populates the R_* fields for refs/heads/<prefix><id>. Returns 0 always: an
+# unmeasurable branch is a reported outcome, not a script error.
+#
+# Exactly four git invocations per branch, all read-only. `git diff` takes the
+# two-dot form against the ALREADY-RESOLVED merge base rather than the
+# three-dot form against main, so the merge base is computed once, not twice.
+_measure_branch() {
+    local id="$1" ref tip
+    _row_unknown "$id"
+
+    [ -n "$_MAIN_SHA" ] || return 0
+
+    ref="refs/heads/${BRANCH_PREFIX}${id}"
+    tip="$(git -C "$REPO_DIR" rev-parse --verify "$ref" 2>/dev/null || true)"
+    if [ -z "$tip" ]; then
+        warn "No such branch: $ref — reporting scope=UNKNOWN for task $id."
+        return 0
+    fi
+
+    local mb behind commits changed
+    mb="$(git -C "$REPO_DIR" merge-base "$tip" "$_MAIN_SHA" 2>/dev/null || true)"
+    if [ -z "$mb" ]; then
+        warn "No merge base between $ref and '$MAIN_REF' — reporting scope=UNKNOWN for task $id."
+        return 0
+    fi
+    behind="$(git -C "$REPO_DIR" rev-list --count "${mb}..${_MAIN_SHA}" 2>/dev/null || true)"
+    commits="$(git -C "$REPO_DIR" rev-list --count "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
+    if ! changed="$(git -C "$REPO_DIR" diff --name-only "$mb" "$tip" 2>/dev/null)"; then
+        warn "Cannot diff ${mb}..${tip} — reporting scope=UNKNOWN for task $id."
+        return 0
+    fi
+    if [ -z "$behind" ] || [ -z "$commits" ]; then
+        warn "Cannot count revisions for $ref — reporting scope=UNKNOWN for task $id."
+        return 0
+    fi
+
+    R_MERGE_BASE="$(git -C "$REPO_DIR" rev-parse --short "$mb" 2>/dev/null || printf '%s' "$mb")"
+    R_BEHIND="$behind"
+    R_COMMITS="$commits"
+    R_CHANGED="$(printf '%s' "$changed" | grep -c . || true)"
+    # Filled by the scope verdict (step-12) and the citation census (step-14).
+    R_PEER_COMMITS=0; R_FOREIGN=0; R_PEER_FILES=0; R_PEERS="-"; R_SCOPE="CLEAN"
+    R_SIGNATURE="-"
+    _CHANGED_FILES="$changed"
+    return 0
+}
+
+# ── emit ──────────────────────────────────────────────────────────────────────
+# ONE definition of the row's field order, shared by both output formats, so
+# the two cannot drift apart.
+_emit_row_table() {
+    printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
+        "$R_TASK" "$R_STATUS" "$R_MERGE_BASE" "$R_BEHIND" "$R_COMMITS" \
+        "$R_PEER_COMMITS" "$R_CHANGED" "$R_FOREIGN" "$R_PEER_FILES" \
+        "$R_PEERS" "$R_SCOPE" "$R_SIGNATURE"
+}
+
+# ── single-branch mode ────────────────────────────────────────────────────────
+# --task names one branch explicitly, so it always gets a row — including the
+# degraded one. That is the deliberate asymmetry with fleet mode, which drops a
+# branchless task silently: here the caller asked about this branch by name and
+# is owed an answer.
+if [ "$TASK_MODE" -eq 1 ]; then
+    _measure_branch "$TASK_ID"
+    _emit_row_table
+    exit 0
+fi
