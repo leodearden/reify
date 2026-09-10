@@ -31,6 +31,13 @@ pub fn scalar_or_real(dim: DimensionVector) -> Type {
 /// re-signatured from `&[CompiledExpr]` to `&[Type]` — reify-builtins cannot
 /// see reify-ir. Same `Tensor|Matrix ⇒ Scalar{dimension}` match, same
 /// DIMENSIONLESS default.
+///
+/// Deliberately **non-recursive**, and deliberately blind to [`Type::Field`]:
+/// that is [`field_tensor_arg`]'s job. Teaching this helper to look inside a
+/// Field codomain would yield a `Scalar` compile-time type for a call eval
+/// answers with a `Value::Field` — trading a dimension bug for a KIND LIE that
+/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) rejects and
+/// `engine_admin.rs` surfaces as `EngineError::TypeKindMismatch`.
 fn tensor_quantity(args: &[Type], i: usize) -> DimensionVector {
     match args.get(i) {
         Some(Type::Tensor { quantity, .. }) | Some(Type::Matrix { quantity, .. }) => {
@@ -43,15 +50,80 @@ fn tensor_quantity(args: &[Type], i: usize) -> DimensionVector {
     }
 }
 
+/// The `(domain, element dimension)` of arg `i` when it is a [`Type::Field`]
+/// whose codomain is a 3x3 tensor/matrix of scalars. `None` otherwise.
+///
+/// Ported from `crates/reify-compiler/src/analysis_signatures.rs:204` (task
+/// #6577) and re-signatured `&[CompiledExpr]` → `&[Type]`, the same
+/// re-signaturing [`tensor_quantity`] already received.
+///
+/// Deliberately mirrors eval's gate — `analysis::tensor_element_dimension`
+/// (`crates/reify-expr/src/analysis.rs`), reached via `validate_tensor_field` —
+/// so the compile-time type and the `Value::Field` eval produces agree under
+/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`). The
+/// [`Type::Int`] quantity branch is carried over for the same reason:
+/// `tensor_element_dimension` maps it to `DIMENSIONLESS`.
+///
+/// The mirror covers eval's SHAPE gate only. `validate_tensor_field` also gates
+/// on the `(source, lambda)` pair, admitting `(Analytical | Composed, Lambda)`
+/// and — since task #7129 landed — `(Sampled, SampledField)`, which is the
+/// backing `solve_elastic_static` hands back as `.stress`. A field's source kind
+/// is not a type-level concept, so there is deliberately no counterpart to that
+/// half here. It errs in the safe direction anyway: when the shape matches but
+/// eval declines the pair, eval yields `Value::Undef`, which
+/// `value_type_kind_matches` accepts for ANY type, so the `Type::Field` claim
+/// still holds.
+fn field_tensor_arg(args: &[Type], i: usize) -> Option<(&Type, DimensionVector)> {
+    let Some(Type::Field { domain, codomain }) = args.get(i) else {
+        return None;
+    };
+    let dim = match codomain.as_ref() {
+        Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity,
+        }
+        | Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity,
+        } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            Type::Int => DimensionVector::DIMENSIONLESS,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((domain.as_ref(), dim))
+}
+
 /// `von_mises` / `max_shear`: scalar reduction carrying the tensor's quantity.
 ///
 /// A Pressure tensor → `Scalar<Pressure>`; a dimensionless tensor → `Real`.
 /// Mirrors `trace` / `magnitude` in `math_fn_result_type`.
 ///
+/// # Field arguments (task #6577)
+///
+/// A `Field<D, Tensor<2,3,Q>>` argument yields `Field<D, scalar_or_real(Q)>` —
+/// the SAME codomain the concrete path computes, wrapped over the argument's own
+/// domain. Eval does not reduce a field eagerly: it wraps it LAZILY and hands
+/// back a `Value::Field` (`compute_von_mises` / `compute_max_shear` →
+/// `wrap_tensor_field`, `crates/reify-expr/src/analysis.rs`), and
+/// `value_type_kind_matches` maps a `Value::Field` onto [`Type::Field`] alone.
+/// The consumer half needs no counterpart: `max` / `min` already reduce a
+/// `Type::Field` codomain via `reduce_field_codomain`, so
+/// `max(von_mises(stress))` is still `Scalar<Pressure>`.
+///
 /// Returns `Some(..)` unconditionally: legacy behaviour never rejected an
 /// argument shape, and α preserves it exactly. Wiring the `None` ⇒
 /// `E_BuiltinArgShape` path is τ-numeric's work (PRD §3 decision 5).
 pub(crate) fn tensor_scalar_reduction(args: &[Type]) -> Option<Type> {
+    if let Some((domain, dim)) = field_tensor_arg(args, 0) {
+        return Some(Type::Field {
+            domain: Box::new(domain.clone()),
+            codomain: Box::new(scalar_or_real(dim)),
+        });
+    }
     Some(scalar_or_real(tensor_quantity(args, 0)))
 }
 
