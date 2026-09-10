@@ -2671,6 +2671,172 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
     );
 }
 
+// ─── γ (task #5305): the sites γ deferred, with their owners ─────────────────
+
+/// The repo-relative prefix of the `examples/` corpus.
+///
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// is keyed relative to that directory; every key in THIS module is
+/// repo-relative. This const is the whole of the difference.
+const EXAMPLES_PREFIX: &str = "examples/";
+
+/// Whether a [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// entry describes the REPO-RELATIVE site `(file, param)`.
+///
+/// The single place the two tables' key forms are bridged. The debt list is
+/// `examples/`-keyed by construction — its own doc forbids the repo-relative
+/// spelling, and the gate that consumes it walks `EXAMPLES_DIR` only — so
+/// neither table can change shape and the join has to happen here. A file
+/// outside `examples/` can never match a debt entry, which is exactly why
+/// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] has to exist as a sibling table.
+///
+/// The `(file, param)` matching RULE is not restated here; it is
+/// `examples_smoke`'s `debt_entry_matches`, called through.
+fn debt_entry_describes(entry: &(&str, &str, &str), file: &str, param: Option<&str>) -> bool {
+    file.strip_prefix(EXAMPLES_PREFIX)
+        .is_some_and(|key| super::examples_smoke::debt_entry_matches(entry, key, param))
+}
+
+/// True when `cite` is the repo's canonical `#NNNN` task-cite form.
+///
+/// Greek-letter aliases (`task ε`), PRD-relative indices (`task-5`) and prose
+/// forms (`task 6941`) all resolve to `malformed-cite` under the repo's
+/// TODO-citation convention, and a malformed cite is liveness-checkable by
+/// nothing — which is the whole value of naming an owner.
+fn is_canonical_task_cite(cite: &str) -> bool {
+    cite.strip_prefix('#')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry names a file that exists and
+/// is a `.ri`.
+///
+/// Mirrors `ctor_conformance_migration_debt_entries_exist_under_examples_dir`:
+/// cheap, and it separates a MIS-TYPED path from an ALREADY-RETIRED site. Both
+/// would otherwise surface only as the corpus-wide staleness failure inside the
+/// `#[ignore]`d generator, which reads as "already retired" and invites deleting
+/// an entry that is still load-bearing.
+#[test]
+fn ctor_conformance_corpus_residual_entries_name_existing_ri_files() {
+    for (path, param, owner, _why) in CTOR_CONFORMANCE_CORPUS_RESIDUAL {
+        assert!(
+            path.ends_with(".ri"),
+            "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' (param '{param}', owner \
+             {owner}) is not a `.ri` path"
+        );
+        let full = std::path::Path::new(WORKSPACE_ROOT).join(path);
+        assert!(
+            full.exists(),
+            "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' (param '{param}', owner \
+             {owner}) does not exist under {WORKSPACE_ROOT}"
+        );
+    }
+}
+
+/// Every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry names its owner in the
+/// canonical `#NNNN` cite form.
+///
+/// A deferral without a liveness-checkable owner is a permanent hole dressed up
+/// as a temporary one — the failure mode `CTOR_CONFORMANCE_GATE_REMEDY`'s remedy
+/// 3 forbids by name ("never without an owner").
+#[test]
+fn ctor_conformance_corpus_residual_entries_cite_a_canonical_task() {
+    let malformed: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .filter(|(_, _, owner, _)| !is_canonical_task_cite(owner))
+        .map(|(path, param, owner, _)| format!("  {path} :: param '{param}'  (owner {owner})"))
+        .collect();
+
+    assert!(
+        malformed.is_empty(),
+        "CTOR_CONFORMANCE_CORPUS_RESIDUAL has {} entry/entries whose owner is not a \
+         canonical `#NNNN` task cite:\n{}\n\n\
+         A Greek-letter leaf label, a PRD-relative index or a `task NNNN` prose form is \
+         a malformed cite: nothing can liveness-check it. Put the leaf label in the \
+         `why` column and the task id in the owner column.",
+        malformed.len(),
+        malformed.join("\n"),
+    );
+}
+
+/// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] is sorted and duplicate-free on
+/// `(path, param)`.
+///
+/// Sorted so a reader can find a site and a diff shows one line per change;
+/// duplicate-free because the disposition resolver takes the FIRST match, so a
+/// second entry for the same site would be silently unreachable — including one
+/// naming a different owner.
+#[test]
+fn ctor_conformance_corpus_residual_is_sorted_and_duplicate_free() {
+    let keys: Vec<(&str, &str)> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .map(|(path, param, _, _)| (*path, *param))
+        .collect();
+
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        keys, sorted,
+        "CTOR_CONFORMANCE_CORPUS_RESIDUAL must be sorted on (path, param)"
+    );
+
+    let mut deduped = sorted.clone();
+    deduped.dedup();
+    assert_eq!(
+        sorted, deduped,
+        "CTOR_CONFORMANCE_CORPUS_RESIDUAL must carry at most one entry per \
+         (path, param); a second entry for the same site is unreachable"
+    );
+}
+
+/// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// describe DISJOINT sites.
+///
+/// The two tables are siblings, not a merge: one site described in both would
+/// drift, and the resolver would have to pick a winner between two owners.
+/// Compared after normalising the two key forms through
+/// [`debt_entry_describes`], never by eyeballing the spellings.
+#[test]
+fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
+    let overlap: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .filter(|(path, param, _, _)| {
+            super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+                .iter()
+                .any(|entry| debt_entry_describes(entry, path, Some(param)))
+        })
+        .map(|(path, param, owner, _)| format!("  {path} :: param '{param}'  (owner {owner})"))
+        .collect();
+
+    assert!(
+        overlap.is_empty(),
+        "these site(s) are described by BOTH CTOR_CONFORMANCE_CORPUS_RESIDUAL and \
+         CTOR_CONFORMANCE_MIGRATION_DEBT:\n{}\n\n\
+         Pick one. CTOR_CONFORMANCE_MIGRATION_DEBT owns sites under examples/, because \
+         the gate that consumes it walks EXAMPLES_DIR only and its keys are relative to \
+         that directory. CTOR_CONFORMANCE_CORPUS_RESIDUAL owns everything else.",
+        overlap.join("\n"),
+    );
+}
+
+/// Every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry says WHY it is deferred.
+///
+/// The owner cite says who retires the site; the `why` says what would break if
+/// someone "fixed" it instead. These fixtures are measured before-images whose
+/// violation IS their content, so a reader who meets one without that sentence
+/// has every reason to migrate it and delete another PRD's signal.
+#[test]
+fn ctor_conformance_corpus_residual_entries_say_why() {
+    for (path, param, owner, why) in CTOR_CONFORMANCE_CORPUS_RESIDUAL {
+        assert!(
+            !why.trim().is_empty(),
+            "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' :: param '{param}' (owner \
+             {owner}) carries no reason; an unexplained deferral reads as an oversight"
+        );
+    }
+}
+
 // ─── step 11/12: markdown rendering ─────────────────────────────────────────
 
 /// The EXACT command that regenerates the artifact, committed inside it.
