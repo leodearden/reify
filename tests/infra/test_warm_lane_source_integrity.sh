@@ -473,8 +473,8 @@ assert "D0b: FIXTURE — gone.txt is not" test ! -e "$D_LANE/gone.txt"
 
 run_detector_poisoned "$D_POISON/.git" "$D_POISON" --lane "$D_LANE"
 assert "D1: one of each is reported" test "$OUT" = "$(_summary 1 1 "$D_LANE" foreign)"
-# D2 CHANGED (task 7227, review round 2), and the change is the point of the
-# block now. This fixture never showed a lane defect: gone.txt is a path the
+# D2 asserts exit 0, and that is the point of the block. This fixture never
+# showed a lane defect: gone.txt is a path the
 # POISON repo tracks and the lane does not, so "absent under the lane" is its
 # mundane resting state, not a vanishing. The suite previously pinned exit 3
 # here -- the same false sentinel the GIT_DIR-only shape produces at scale in
@@ -1011,11 +1011,10 @@ assert "J3c: ...and it still carries the evidence-preservation hint" \
     _has 'do NOT restore' "$ERR_OUT"
 
 # ── J4: GIT_INDEX_FILE alone, across a SHARED OBJECT STORE ────────────────────
-# The third variable, and the one this script got wrong for two review rounds.
-# GIT_INDEX_FILE redirects neither the gitdir nor the worktree, so both of the
-# other arms report a match and the run was stamped `view=lane` -- positively
-# asserting the lane was measured -- while `git status` compared a SIBLING's
-# index against this lane's files.
+# The third variable. GIT_INDEX_FILE redirects neither the gitdir nor the
+# worktree, so without its own arm both of the others report a match and the
+# run is stamped `view=lane` -- positively asserting the lane was measured --
+# while `git status` compared a SIBLING's index against this lane's files.
 #
 # THE FIXTURE MUST SHARE ONE OBJECT STORE, and that is the whole subtlety.
 # Measured on this host, git 2.43.0: with two INDEPENDENT repos, `git status`

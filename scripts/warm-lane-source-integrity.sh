@@ -42,19 +42,15 @@
 #   bucket — correctly. Its mechanism (an unscrubbed relative GIT_INDEX_FILE
 #   letting an infra-test fixture overwrite the real index) is documented in
 #   scripts/lib_git_env_scrub.sh, which is also where the scrubbing fix
-#   correctly lives; do not re-derive it here. Measured on git 2.43.0, it
-#   reaches this script THREE ways -- an earlier revision of this comment
-#   claimed two, and the third was a live false sentinel for two review rounds:
-#   an index carrying a foreign repo's entries whose OBJECTS the lane's store
-#   lacks makes `git status` itself fatal ("unable to read <oid>") -> exit 2
-#   with git's own error surfaced, never a false all-clear; an index merely
-#   MISSING entries yields X-column (`D `) staged deletions, which the
-#   worktree-column rule below excludes as the intentional removals they are;
-#   and an index from a SIBLING LANE OF THE SAME SHARED STORE resolves every
-#   OID, so nothing is fatal and its paths reach the classifier as ordinary
-#   worktree deletions. Only the third is a false-sentinel risk, and it is the
-#   index arm of the identity check below -- not this bucketing -- that closes
-#   it.
+#   correctly lives; do not re-derive it here. Measured on git 2.43.0 it reaches
+#   this script three ways, each closed elsewhere: an index whose entries name
+#   OBJECTS the lane's store lacks makes `git status` itself fatal ("unable to
+#   read <oid>") -> exit 2 with git's own error surfaced; an index merely MISSING
+#   entries yields X-column (`D `) staged deletions, excluded by the
+#   worktree-column rule; and an index from a SIBLING LANE OF THE SAME SHARED
+#   STORE resolves every OID, so its paths reach the classifier as ordinary
+#   worktree deletions. Only the third can raise a false sentinel, and the index
+#   arm of the identity check below -- not this bucketing -- is what closes it.
 #
 # WHY IT NEVER RESTORES.
 #   The missing copy IS the evidence. Attribution needs a second natural
@@ -80,8 +76,6 @@
 #   entry, found by a pure-filesystem walk-up -- so an invocation from a
 #   subdirectory still classifies the repo-root-relative porcelain paths
 #   correctly, and "never re-resolved through git" holds on BOTH branches.
-#   `git rev-parse --show-toplevel` would reinstate here the exact hazard the
-#   paragraph above rules out for --lane; task 7227 measured it doing so.
 #
 #   NEITHER form scrubs the git environment, and a caller that wants the LANE
 #   measured rather than its own view must do so itself (the session-start
@@ -236,12 +230,8 @@ else
     # GIT_DIR/GIT_WORK_TREE, so under exactly the poisoned view this detector
     # exists to classify it names the FOREIGN worktree, and then every later
     # step -- the root guard, the on-disk re-stat, the `lane=` field -- measures
-    # that tree under this lane's name. Measured on this host against the
-    # pre-fix script, both directions: a lane whose tracked `sub/a.txt` really
-    # was gone printed `deleted=0 phantom=0 lane=foreign` exit 0, and a clean
-    # lane under a foreign view holding a deletion printed `deleted=1
-    # lane=foreign` exit 3 -- a foreign tree's deletion attributed to a lane
-    # that had none. Block I pins both.
+    # that tree under this lane's name. Both resulting flips were measured and
+    # are pinned by Block I.
     #
     # Only RESOLUTION is taken out of git's hands. The `git status` call below
     # keeps the inherited view deliberately, because classifying the agent's own
@@ -347,29 +337,24 @@ fi
 # GIT_WORK_TREE-only shape, and NEITHER sees GIT_INDEX_FILE. Block J pins each
 # arm against a shape the others cannot see.
 #
-# GIT_INDEX_FILE is the highest-consequence axis in reify's topology, and the
-# one this script got wrong for two rounds. `git status` compares the EFFECTIVE
-# INDEX against the lane's files, so a sibling lane's index reports every path
-# that lane tracks and this one does not as ` D`, which then re-stats as
-# genuinely absent here. Whether that reaches the classifier at all depends on
-# the OBJECT STORE, which is why the obvious two-independent-repos fixture is
-# misleading: there, `git status`'s rename detection reads a blob the lane's
-# store does not have and dies ("unable to read <oid>") -> exit 2, and the bug
-# hides. Across two lanes of ONE SHARED store -- reify's actual arrangement,
-# ~253 linked worktrees over /home/leo/src/reify/.git -- every OID resolves,
-# nothing is fatal, and the run produced `deleted=2 ... view=lane` exit 3 under
-# the "do NOT restore" hint, naming plausible reify source paths. Block J4
-# builds the shared-store shape deliberately for that reason.
+# GIT_INDEX_FILE is the highest-consequence axis in reify's topology. `git
+# status` compares the EFFECTIVE INDEX against the lane's files, so a sibling
+# lane's index reports every path that lane tracks and this one does not as
+# ` D`, which then re-stats as genuinely absent here. Whether that reaches the
+# classifier at all depends on the OBJECT STORE, which is why the obvious
+# two-independent-repos fixture is misleading: there, `git status`'s rename
+# detection reads a blob the lane's store does not have and dies ("unable to
+# read <oid>") -> exit 2, and the defect hides. Across two lanes of ONE SHARED
+# store -- reify's actual arrangement, ~253 linked worktrees over
+# /home/leo/src/reify/.git -- every OID resolves, nothing is fatal, and without
+# the index arm the run measured `deleted=2 ... view=lane` exit 3 under the "do
+# NOT restore" hint, naming plausible reify source paths. Block J4 builds the
+# shared-store shape deliberately for that reason.
 #
-# The GIT_DIR-only shape is the dangerous one and is why the sentinel is
-# suppressed below rather than merely annotated: git compares a FOREIGN index
-# against the LANE's files, so every path the foreign repo tracks and this lane
-# does not is reported ` D` and then re-stats as genuinely absent here. The
-# on-disk discriminator cannot help -- those paths really are missing -- so the
-# run produced an exit-3 sentinel naming the lane, listing files that were
-# never the lane's, scaling with the foreign repo's tracked-file count. An
-# inherited GIT_DIR naming another lane of the SHARED .git store would render
-# that as a plausible-looking set of reify source paths.
+# GIT_DIR alone fails the same way, and is why the sentinel is suppressed below
+# rather than merely annotated: the foreign index's paths re-stat as genuinely
+# absent, the on-disk discriminator cannot help because they really are missing,
+# and the count scales with the FOREIGN repo's tracked-file count. Block J1.
 #
 # The lane's own gitdir is resolved PURELY FROM THE FILESYSTEM, for the reason
 # the resolution and root guard above are: asking git for it would ask the
@@ -515,11 +500,9 @@ printf 'source-integrity: deleted=%d phantom=%d lane=%s view=%s\n' \
     "$([ -n "$FOREIGN_VIEW" ] && printf foreign || printf lane)"
 
 # THE SENTINEL IS A CLAIM ABOUT THIS LANE, so it may only be raised from
-# evidence measured through this lane's own repository and worktree. One rule,
-# no per-shape exceptions -- the GIT_DIR-only false sentinel above and the
-# already-shipped mixed case (a foreign-index path absent here, counted
-# `deleted` and exited 3 while the lane itself was intact) are the same defect
-# and are closed by the same line.
+# evidence measured through this lane's own repository and worktree (A3). One
+# rule, no per-shape exceptions: every foreign-view shape above is the same
+# defect, and this one line closes all of them.
 [ -z "$FOREIGN_VIEW" ] || exit 0
 [ "$_n_deleted" -eq 0 ] || exit 3
 exit 0

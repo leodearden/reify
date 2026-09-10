@@ -156,19 +156,13 @@
 #     the lane's source tree is an mtime re-stamp, never a content change and
 #     never a deletion (sizing-lifecycle T1; pinned by
 #     tests/infra/test_seed_warm_lane.sh Block X).
-#     PRECISION MATTERS HERE (task 7227 / esc-7227-3). This sentence used to
-#     read "reset touches only target/", and that verb sent a whole
-#     investigation down a false path: the delegation below runs a seed whose
-#     one source-tree effect is literally `touch` — seed-warm-lane.sh:1243's
-#     `find "$LANE_DIR" ... -exec touch -h -d 2020-01-01`, plus the *.rs
-#     relink touch at :1525 — so a reader who followed the delegation found a
-#     touch over the whole source tree and concluded this header was stale. It
-#     was not stale; it was imprecise. Second half of the same
-#     mis-attribution: the `git clean -xfd -e target` named in that seed's
-#     comments (:136, :323, :1139) is DARK-FACTORY's acquire-step operation
-#     acting on the lane from outside. The seed does not run it, and executes
-#     no git clean/checkout/reset/restore/rm/stash at all — every rm/mv it
-#     performs is scoped to $LANE_TARGET or the pool-level trash sibling.
+#     The re-stamp is the seed's own: seed-warm-lane.sh:1243 walks $LANE_DIR
+#     with `-exec touch -h -d 2020-01-01`, plus the *.rs relink touch at :1525.
+#     The `git clean -xfd -e target` named in that seed's comments (:136, :323,
+#     :1139) is DARK-FACTORY's acquire-step operation acting on the lane from
+#     outside; the seed runs none of git clean/checkout/reset/restore/rm/stash,
+#     and every rm/mv it performs is scoped to $LANE_TARGET or the pool-level
+#     trash sibling (measured, task 7227 / esc-7227-3).
 #     Preserving a flock-free lane's target/ thus yields zero warm-cache value
 #     and only accretes disk. Pass 1 has exactly TWO preserve gates, checked in
 #     this order: (1) the live-consumer flock (inv.2), and (2) a live PROCESS
