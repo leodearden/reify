@@ -1305,22 +1305,27 @@ fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
 /// arms use to accept the expression compiler's numeric-fallback placeholder
 /// (task 5465).
 ///
-/// Its surviving inputs are a BARE numeric literal (`Anchor(origin: 5)`) and
-/// `Type::ScalarParam(_)` — a scalar shape whose DIMENSION is unresolved rather
-/// than absent (see [`arg_type_is_unverifiable`]'s closing note).
+/// Its membership is exactly what the `matches!` below says: `Type::Int`, ANY
+/// `Type::Scalar { .. }` — dimensioned or not, the match is dimension-BLIND —
+/// and `Type::ScalarParam(_)`, a scalar shape whose DIMENSION is unresolved
+/// rather than absent (see [`arg_type_is_unverifiable`]'s closing note). Read
+/// the membership off the predicate, never off an example.
 ///
-/// `point3(…)` / `point2(…)` are NOT among them, and this predicate's
-/// justification must not be re-derived from them: since task 5344
-/// (`3c4ee5e9ac`) such a call carries a real `Type::Point` and takes the arm's
-/// OTHER branch, where its quantity slot is actually compared. Narrative: the
-/// *Point / Vector quantity-slot convention* section of
+/// This is a SHARED helper with four call sites, and each states its own reason
+/// for wanting it: the `Point` arm (below), the `Matrix`/`Tensor` arm, and
+/// `list_bottoms_out_numeric`. Notably the `Matrix`/`Tensor` arm wants the
+/// `Type::Scalar { .. }` leg for rank-0 scalar equivalence (Rules 2a/2b), where
+/// the arg is a REAL dimensioned scalar and not a placeholder at all — so
+/// narrowing this predicate to `Int | ScalarParam` to suit the `Point` arm
+/// would break that accept. Any claim about which args "survive" belongs to a
+/// call site's own branch, not here.
+///
+/// `point3(…)` / `point2(…)` are not among the `Point` arm's placeholder
+/// inputs, and that arm's justification must not be re-derived from them: since
+/// task 5344 (`3c4ee5e9ac`) such a call carries a real `Type::Point` and takes
+/// the arm's OTHER branch, where its quantity slot is actually compared.
+/// Narrative: the *Point / Vector quantity-slot convention* section of
 /// `crates/reify-core/src/ty.rs`.
-///
-/// The bare-literal input is the one that keeps the `Point` branch alive, and it
-/// is a deliberate GHR-γ placeholder exclusion rather than an oversight. It is
-/// pinned by `bare_numeric_literal_at_point_param_stays_clean`
-/// (`struct_ctor_field_conformance_tests.rs`) — measured to be the ONLY test in
-/// either file that fails if this branch is deleted, which is why it exists.
 ///
 /// Deliberately NOT `type_compat.rs::is_scalar_like_leaf`, which also admits
 /// `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and `Geometry` — that
@@ -1693,8 +1698,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //     numeric-fallback placeholder. NOTE this no longer covers
         //     `point3(…)` / `point2(…)`: task 5344 (`3c4ee5e9ac`) gave them a
         //     real `Type::Point`, so they take the branch ABOVE. What still
-        //     arrives here is a BARE numeric literal and `Type::ScalarParam(_)`
-        //     — see [`is_numeric_placeholder_leaf`].
+        //     arrives here is everything [`is_numeric_placeholder_leaf`]
+        //     matches: `Type::Int`, ANY `Type::Scalar { .. }` (dimensioned or
+        //     not — the match is dimension-blind, so a scalar-returning call
+        //     such as `abs(-5kg)` lands here too), and `Type::ScalarParam(_)`.
         //
         // The placeholder predicate is deliberately NARROW — see
         // [`is_numeric_placeholder_leaf`] (`Int | Scalar | ScalarParam`).
@@ -1717,16 +1724,28 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // 5344 it carries a real quantity slot, so the rule below fires through
         // it exactly as it does for a direct call.
         //
-        // THE BOUNDED, DELIBERATE COST: a bare numeric literal at a Point slot
-        // (`Anchor(origin: 5)`) stays silent. That is identical in kind to the
-        // pre-existing `Type::Geometry` placeholder exclusion (geometry
-        // constructors compile to a dimensionless-scalar placeholder, GHR-γ).
-        // It is a standing RULING, not an open item, and there is no pending
-        // narrowing to a `FunctionCall`-shaped check: the branch's only inputs
-        // are a bare numeric literal and `Type::ScalarParam(_)`, neither of which
-        // is a `FunctionCall` (task 5344 `3c4ee5e9ac` moved `point3(…)` off this
-        // branch entirely). Pinned by
-        // `bare_numeric_literal_at_point_param_stays_clean`.
+        // THE BOUNDED, DELIBERATE COST, at its true size: ANY scalar-family
+        // arg at a Point slot stays silent. That is a bare numeric literal
+        // (`Anchor(origin: 5)`), but ALSO a scalar carrying the WRONG dimension
+        // (`Anchor(origin: 5kg)` at `Point3<Length>`) and a scalar-returning
+        // call (`Anchor(origin: abs(-5kg))`) — all measured silent, and pinned
+        // respectively by `bare_numeric_literal_at_point_param_stays_clean`,
+        // `dimensioned_scalar_at_point_param_stays_clean` and
+        // `scalar_returning_call_at_point_param_stays_clean`. Note `5kg` at a
+        // `Scalar<Length>` slot IS rejected; the asymmetry is the cost.
+        //
+        // The placeholder EXCLUSION is a standing ruling, identical in kind to
+        // the pre-existing `Type::Geometry` one (geometry constructors compile
+        // to a dimensionless-scalar placeholder, GHR-γ).
+        //
+        // OPEN ITEM, still live: tightening the dimensioned legs — e.g. a
+        // `FunctionCall`-shaped check, or consulting the quantity slot for a
+        // concrete `Type::Scalar { .. }`. Task 5344 removed `point3(…)` from
+        // this branch but did NOT empty it of `FunctionCall`-shaped or
+        // dimensioned inputs, so that narrowing is as available and as
+        // motivated as it was before. It must be argued from the membership set
+        // above, and it cannot be done by narrowing the shared predicate, which
+        // the `Matrix`/`Tensor` rank-0 accept also depends on.
         //
         // That bounded cost is UNCHANGED by task 5766's quantity rule — see the
         // `else` branch below for why.
@@ -1736,11 +1755,12 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                     Type::Point { n: param_n, .. } => param_n == arg_n,
                     _ => true, // unreachable: outer arm guards param_type as Type::Point
                 },
-                // Numeric-fallback placeholder: a BARE numeric literal or a
-                // `Type::ScalarParam(_)`. NOT `point3(…)` / `point2(…)`, which
-                // have carried a real `Type::Point` since task 5344 and match
-                // the arm above. Pinned by
-                // `bare_numeric_literal_at_point_param_stays_clean`.
+                // Numeric-fallback placeholder: `Int`, ANY `Scalar { .. }`
+                // (dimension-blind) or `ScalarParam(_)`. NOT `point3(…)` /
+                // `point2(…)`, which have carried a real `Type::Point` since
+                // task 5344 and match the arm above. Pinned by
+                // `bare_numeric_literal_at_point_param_stays_clean` and
+                // `dimensioned_scalar_at_point_param_stays_clean`.
                 other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {

@@ -956,9 +956,10 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 // rule at the ctor seam, not a carve-out from it.
 //
 // This is NOT the placeholder tolerance. That still exists
-// (`is_numeric_placeholder_leaf`, in `conformance/mod.rs`), but its inputs are a
-// BARE numeric literal and `Type::ScalarParam(_)` — see
-// `bare_numeric_literal_at_point_param_stays_clean` further down this file.
+// (`is_numeric_placeholder_leaf`, in `conformance/mod.rs`) and covers `Int`, ANY
+// `Type::Scalar { .. }` (dimension-blind) and `Type::ScalarParam(_)` — see
+// `bare_numeric_literal_at_point_param_stays_clean` and
+// `dimensioned_scalar_at_point_param_stays_clean` further down this file.
 // (Premise changed at task 5344 `3c4ee5e9ac`; narrative in the *Point / Vector
 // quantity-slot convention* section of `crates/reify-core/src/ty.rs`.)
 //
@@ -1081,14 +1082,18 @@ structure def Root {
 /// numeric literal", but both said it in prose only. This fixture makes it a
 /// measured, held fact.
 ///
-/// **Why it is needed.** A bare numeric literal is the branch's ONLY remaining
-/// `Point`-side input — the second and far more visible one it once had, every
-/// corpus `point3(…)` arg taking it, went away at 5344. Without THIS fixture
-/// the branch is left looking dead: a reader could reasonably conclude 5344
-/// killed the `Point` case
+/// **Why it is needed.** The branch's most VISIBLE input — every corpus
+/// `point3(…)` arg — went away at 5344, leaving the `Point` case looking dead.
+/// Without THIS fixture a reader could reasonably conclude 5344 killed it
 /// entirely, delete it, and watch every other test in both files stay green
 /// while `Anchor(origin: 5)` silently became a warning against the whole corpus.
 /// This is the regression fence that makes that deletion visible.
+///
+/// It pins the `Int` leg ALONE. The branch's membership is wider — any
+/// `Type::Scalar { .. }`, dimensioned or not, plus `Type::ScalarParam(_)` — so
+/// do not read this fixture as the branch's whole surviving input set;
+/// `dimensioned_scalar_at_point_param_stays_clean` and
+/// `scalar_returning_call_at_point_param_stays_clean` pin the rest.
 ///
 /// That "every other test stays green" is MEASURED, not assumed. Killing the
 /// `other => is_numeric_placeholder_leaf(other)` branch of the `Type::Point` arm
@@ -1124,11 +1129,88 @@ fn bare_numeric_literal_at_point_param_stays_clean() {
     assert!(
         diags.is_empty(),
         "a bare numeric literal at a Point3<Length> param must stay SILENT — this is the \
-         `is_numeric_placeholder_leaf` Point branch's LAST surviving input, and it is a \
-         deliberate GHR-γ placeholder exclusion, not an oversight. If this now fires, that \
-         branch has been narrowed or deleted: re-read the ruling in \
-         crates/reify-core/src/ty.rs and the arm's own comment in conformance/mod.rs before \
-         retargeting, and check Type::ScalarParam(_) at the same time. Got: {diags:#?}"
+         `is_numeric_placeholder_leaf` Point branch's `Int` leg, and it is a deliberate \
+         GHR-γ placeholder exclusion, not an oversight. If this now fires, that branch has \
+         been narrowed or deleted: re-read the ruling in crates/reify-core/src/ty.rs and the \
+         arm's own comment in conformance/mod.rs before retargeting, and check the branch's \
+         other legs (any Type::Scalar {{ .. }}, Type::ScalarParam(_)) at the same time. \
+         Got: {diags:#?}"
+    );
+}
+
+const SRC_DIMENSIONED_SCALAR_AT_POINT_PARAM: &str = r#"module test.dim_scalar_at_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: 5kg)
+}
+"#;
+
+const SRC_SCALAR_CALL_AT_POINT_PARAM: &str = r#"module test.scalar_call_at_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: abs(-5kg))
+}
+"#;
+
+/// THE FULL SIZE of the `Point` arm's placeholder tolerance — the sibling of
+/// `bare_numeric_literal_at_point_param_stays_clean`, and the reason that test's
+/// cell must not be read as the branch's whole membership.
+///
+/// [`is_numeric_placeholder_leaf`] matches `Int | Scalar { .. } | ScalarParam(_)`,
+/// and `Type::Scalar { .. }` is dimension-BLIND. So a scalar of the WRONG
+/// dimension at a `Point` slot — `Anchor(origin: 5kg)` against
+/// `Point3<Length>` — is silent too, even though the very same `5kg` at a
+/// `Scalar<Length>` slot is rejected (`g_i2_cross_dimension_arg_at_dimensioned_slot_warns`).
+/// That asymmetry is the actual bounded cost, and it is strictly larger than a
+/// bare literal.
+///
+/// Pinned so the membership claim in `conformance/mod.rs`'s arm comment cannot
+/// drift back to "a bare numeric literal and `ScalarParam` only": narrowing the
+/// shared predicate to `Int | ScalarParam` to make that claim true would fail
+/// THIS test — and would also break the `Matrix`/`Tensor` arm's rank-0 scalar
+/// accept, which wants a real dimensioned `Scalar` (Rules 2a/2b).
+#[test]
+fn dimensioned_scalar_at_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_DIMENSIONED_SCALAR_AT_POINT_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a DIMENSIONED scalar at a Point3<Length> param is silent today — \
+         `is_numeric_placeholder_leaf` matches any `Type::Scalar {{ .. }}` regardless of \
+         dimension. If this now fires, the Point arm's tolerance has been narrowed: that is a \
+         legitimate tightening, but re-read the ruling in crates/reify-core/src/ty.rs and \
+         check the Matrix/Tensor rank-0 accept, which shares the predicate. Got: {diags:#?}"
+    );
+}
+
+/// A scalar-returning FUNCTION CALL reaches the same branch and is likewise
+/// silent — the measurement that keeps the `FunctionCall`-shaped narrowing an
+/// OPEN option rather than a closed one.
+///
+/// `abs(-5kg)` types as `Scalar[kg]`, so it lands on the placeholder leg exactly
+/// as the bare literal does, with a dimension that disagrees with the param's
+/// `Length`. Task 5344 moved `point3(…)` off this branch, but it did NOT empty
+/// the branch of `FunctionCall`-shaped inputs, so the standing follow-up
+/// ("tighten to a `FunctionCall`-shaped check") remains available and motivated.
+#[test]
+fn scalar_returning_call_at_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_SCALAR_CALL_AT_POINT_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a scalar-returning FunctionCall at a Point3<Length> param is silent today. If this \
+         now fires, the FunctionCall-shaped narrowing has been taken — update the residual \
+         note on the Point arm in conformance/mod.rs. Got: {diags:#?}"
     );
 }
 

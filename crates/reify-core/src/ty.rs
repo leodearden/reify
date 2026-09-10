@@ -237,8 +237,10 @@
 //! A `Vector3<Length>` param fed a *dimensionless* vector stays silent: the
 //! corpus's idiomatic spelling for a *direction* is dimensionless even where a
 //! declaration says `Length`, so rejecting it would false-reject `vec3(0, 1, 0)`.
-//! That is the same bounded-cost class as the `Point` arm's tolerance of a bare
-//! numeric literal, and it is accepted for the same reason.  Task 5848 has since
+//! That is the same bounded-cost class as the `Point` arm's tolerance of a
+//! scalar-family arg (any `Type::Scalar { .. }`, dimensioned or not, plus `Int`
+//! and `ScalarParam` — not a bare literal alone), and it is accepted for the
+//! same reason.  Task 5848 has since
 //! LANDED and retyped the direction fields this paragraph used to name —
 //! `kinematic.ri`'s `axis` and `ports.ri`'s `Frame3.x_axis/y_axis/z_axis` are
 //! `Vec3<Dimensionless>` today — but the residual is structural, not a property
