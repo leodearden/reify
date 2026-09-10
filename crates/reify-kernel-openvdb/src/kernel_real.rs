@@ -627,11 +627,16 @@ impl GeometryKernel for OpenVdbKernel {
     ///   interior-saturation artefact where deep-interior voxels read
     ///   `-half_width × voxel_size` instead of the true SDF value.
     ///
-    /// That policy is bounding-box driven and therefore FEATURE-BLIND: a 1 mm
-    /// flexure in a 100 mm part is entirely sub-voxel at h = 1.5625. A caller
-    /// that knows its thinnest feature should use
-    /// [`Self::ingest_mesh_at_resolution`] with
-    /// [`VoxelResolution::MinFeature`] instead (task 6560).
+    /// That policy is bounding-box driven and therefore FEATURE-BLIND: it puts
+    /// 64 voxels across the part's LONGEST axis whatever is inside it, so the
+    /// shells PRD's 1 mm flexure in a 100 mm part is entirely sub-voxel at
+    /// h = 0.001_5625 m (1.5625 mm). A caller that knows its thinnest feature
+    /// should use [`Self::ingest_mesh_at_resolution`] with
+    /// [`VoxelResolution::MinFeature`] instead (task 6560) — passing that
+    /// feature as a MODEL-SPACE length in `mesh`'s own units (SI metres, per
+    /// `Mesh::vertices`), so the 1 mm flexure is `MinFeature(0.001)`. See
+    /// `VoxelResolution`'s "Units" section: `MinFeature(1.0)` asks for a
+    /// 1 metre feature and is rejected on any part smaller than 4 metres.
     ///
     /// # Returns
     ///
@@ -669,10 +674,13 @@ impl GeometryKernel for OpenVdbKernel {
     ///
     /// Everything [`Self::ingest_mesh`] returns, plus — bridged from
     /// [`crate::VoxelResolutionError`] via its `Display` — a rejection when the
-    /// requested length is not finite and strictly positive, or when the grid
-    /// the request implies would exceed [`crate::DENSIFY_BUDGET_VOXELS`]. That
-    /// budget check is pure Rust and runs BEFORE any FFI work, so an
-    /// impossible request costs no `meshToVolume` allocation.
+    /// requested length is not finite and strictly positive, when the derived
+    /// voxel is coarser than the mesh's thinnest bounding-box extent (so the
+    /// body would be sub-voxel and the grid would resolve nothing), or when the
+    /// dense grid the request implies would exceed
+    /// [`crate::DENSIFY_BUDGET_VOXELS`]. All three checks are pure Rust and run
+    /// BEFORE any FFI work, so an impossible request costs no `meshToVolume`
+    /// allocation.
     ///
     /// # `unsafe impl Sync` audit
     ///

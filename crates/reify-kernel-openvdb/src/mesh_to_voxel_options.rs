@@ -59,7 +59,8 @@ impl Default for MeshToVoxelOptions {
 /// `voxel_size = h = longest_extent / VOXELS_PER_LONGEST_AXIS`.
 ///
 /// Tunable per PRD §6 D7 ("measure first, then tune"). The value 64.0 is the
-/// v0.1 conservative default — it resolves a 100 mm part at ~1.6 mm/voxel,
+/// v0.1 conservative default — it puts 64 voxels across the part's longest
+/// axis, e.g. a 100 mm part at ~1.6 mm/voxel,
 /// which is coarser than a final-quality mesh but correct for α/β/γ
 /// thickness-DFM prototype development.
 ///
@@ -159,6 +160,29 @@ pub enum VoxelResolutionError {
         variant: &'static str,
     },
 
+    /// The derived voxel is larger than the body's SMALLEST bounding-box
+    /// extent, so the body is thinner than one voxel on that axis.
+    ///
+    /// The symmetric counterpart of [`Self::DensifyBudgetExceeded`]: that one
+    /// catches a request too FINE to afford, this one a request too COARSE to
+    /// mean anything. `meshToLevelSet` accepts such a voxel size happily and
+    /// returns a non-null grid, but the body falls between sample planes, so
+    /// the interior never signs negative — the caller would get `Ok(handle)`
+    /// and a silently meaningless SDF, which is the sub-voxel-feature failure
+    /// [`VoxelResolution`] exists to prevent, approached from the other side.
+    ///
+    /// The bound is the body's own geometry, not a tuned tolerance: a voxel
+    /// wider than the thinnest extent cannot place even one sample inside the
+    /// body along that axis.
+    RequestTooCoarse {
+        /// The voxel size the request resolved to (for `MinFeature(t)` this is
+        /// the DERIVED `t / MIN_FEATURE_VOXELS_ACROSS`, not `t`).
+        requested_voxel_size: f64,
+        /// The smallest bounding-box extent it failed to resolve, in the
+        /// mesh's own units.
+        min_extent: f64,
+    },
+
     /// The request is well-formed but the grid it implies would exceed
     /// [`DENSIFY_BUDGET_VOXELS`].
     ///
@@ -195,6 +219,16 @@ impl std::fmt::Display for VoxelResolutionError {
                 f,
                 "invalid VoxelResolution::{variant}({requested}): the requested length \
                  must be finite and strictly positive"
+            ),
+            Self::RequestTooCoarse {
+                requested_voxel_size,
+                min_extent,
+            } => write!(
+                f,
+                "voxel size {requested_voxel_size} exceeds the body's smallest \
+                 bounding-box extent {min_extent}: the body is thinner than one voxel \
+                 on that axis and the grid would resolve nothing; request a finer \
+                 resolution"
             ),
             Self::DensifyBudgetExceeded {
                 requested_voxel_size,
@@ -397,9 +431,21 @@ impl MeshToVoxelOptions {
     /// about the features inside the part. On the shells PRD's own motivating
     /// geometry — a 1 mm flexure in a 100 mm part
     /// (`docs/prds/v0_4/structural-analysis-shells.md`, "Background") — that
-    /// yields 1.5625 mm/voxel and the feature is entirely sub-voxel.
-    /// `for_resolution` is the seam through which a caller that KNOWS its
-    /// thinnest feature can ask for a grid that actually resolves it.
+    /// yields a voxel 1/64 of the part across and the feature is entirely
+    /// sub-voxel. `for_resolution` is the seam through which a caller that
+    /// KNOWS its thinnest feature can ask for a grid that actually resolves it.
+    ///
+    /// # Units
+    ///
+    /// Every length here — the `h` of [`VoxelResolution::TargetVoxelSize`],
+    /// the `t` of [`VoxelResolution::MinFeature`], the derived `voxel_size`,
+    /// and the bounding-box extents they are measured against — is a
+    /// MODEL-SPACE length in `mesh`'s own units (SI metres, per
+    /// `reify_ir::Mesh::vertices`). The PRD's millimetre figures must be
+    /// converted before they reach this function: the 1 mm flexure above is
+    /// `MinFeature(0.001)` on a 0.1 m part, giving `h = 0.000_25` m, and the
+    /// policy itself is scale-invariant, so the same arithmetic holds for a
+    /// model whose numbers happen to be written at any other magnitude.
     ///
     /// # Per-variant behaviour
     ///
@@ -415,11 +461,25 @@ impl MeshToVoxelOptions {
     /// # Errors
     ///
     /// - [`VoxelResolutionError::DegenerateMesh`] — the mesh has no usable
-    ///   bounding box (see [`bbox_extents`]). Checked for EVERY variant,
+    ///   bounding box (the `bbox_extents` conditions). Checked for EVERY variant,
     ///   including the ones that do not derive `h` from the bbox, because the
     ///   band width still is.
     /// - [`VoxelResolutionError::InvalidRequest`] — the requested length was
     ///   not finite and strictly positive.
+    /// - [`VoxelResolutionError::RequestTooCoarse`] — the derived voxel is
+    ///   larger than the body's SMALLEST bounding-box extent, so the body is
+    ///   sub-voxel on that axis and the resulting grid would resolve nothing.
+    /// - [`VoxelResolutionError::DensifyBudgetExceeded`] — the request is
+    ///   well-formed but the dense grid it implies exceeds
+    ///   [`DENSIFY_BUDGET_VOXELS`]. Checked here, pre-FFI, so an impossible
+    ///   request costs no `meshToVolume` allocation.
+    ///
+    /// The last two apply to the request-driven arms only: the
+    /// [`VoxelResolution::HonestFloor`] arm early-returns through
+    /// [`Self::honest_floor`] before either is reached, which is what keeps
+    /// pre-6560 behaviour bit-identical. That matters concretely — the honest
+    /// floor is itself coarser than the thinnest extent on a thin plate, and
+    /// tightening it is a behaviour change this seam deliberately does not make.
     pub fn for_resolution(
         mesh: &Mesh,
         resolution: VoxelResolution,
@@ -459,7 +519,22 @@ impl MeshToVoxelOptions {
         // `honest_floor` DELIBERATELY keeps its longest-extent rule so every
         // pre-existing caller and test is unchanged; only the two request-driven
         // arms use this tighter one.
-        let min_half_extent = 0.5 * extents[0].min(extents[1]).min(extents[2]);
+        let min_extent = extents[0].min(extents[1]).min(extents[2]);
+
+        // Too-COARSE rejection, symmetric to the too-fine budget check below.
+        // A voxel wider than the thinnest extent cannot place a sample inside
+        // the body along that axis, so `meshToLevelSet` returns a non-null grid
+        // whose interior never signs negative — `Ok(handle)` over a silently
+        // meaningless SDF. Rejecting here keeps the two directions of "this
+        // request cannot be served" both loud and both pre-FFI.
+        if voxel_size > min_extent {
+            return Err(VoxelResolutionError::RequestTooCoarse {
+                requested_voxel_size: voxel_size,
+                min_extent,
+            });
+        }
+
+        let min_half_extent = 0.5 * min_extent;
         let narrow_band = min_half_extent / voxel_size + BAND_MARGIN_VOXELS;
 
         if let Err(implied_voxels) = implied_dense_voxels(&extents, voxel_size, narrow_band) {
@@ -751,11 +826,25 @@ mod tests {
     //
     // Pure arithmetic, no FFI: these run in stub builds too.
 
-    /// The shells PRD's own motivating geometry (`structural-analysis-shells.md`,
-    /// "Background"): a 1 mm thin feature inside a 100 mm part. Axis-aligned
-    /// box, x,y ∈ [0,100], z ∈ [0,1] — the same shape as
-    /// `tests/dispatcher_integration.rs:238`. Deliberately NOT origin-centred:
-    /// the real-FFI probe in step-7 depends on the z ∈ [0,1] placement.
+    /// The shells PRD's own motivating PROPORTIONS
+    /// (`structural-analysis-shells.md`, "Background"): a thin feature 1/100 of
+    /// the part across, which the PRD states as a 1 mm feature in a 100 mm part.
+    /// Axis-aligned box, x,y ∈ [0,100], z ∈ [0,1], the same shape as the plate
+    /// fixture in `tests/dispatcher_integration.rs`.
+    ///
+    /// # Units
+    ///
+    /// The coordinates are model-space lengths (SI metres, per `Mesh::vertices`),
+    /// so this body is literally 100 × 100 × 1 METRES — the PRD's millimetre
+    /// figures written at ×1000 so the arithmetic below stays in round numbers.
+    /// That is sound because the whole resolution policy is scale-invariant
+    /// (`h = longest/64`, `h = t/4`, and the band identity are all ratios), so
+    /// every conclusion drawn here holds verbatim for the real 0.1 × 0.1 × 0.001 m
+    /// part with `MinFeature(0.001)`. It is spelled out because a caller must NOT
+    /// copy `MinFeature(1.0)` for a 1 mm feature: see `VoxelResolution`'s "Units".
+    ///
+    /// Deliberately NOT origin-centred: the real-FFI probe in step-7 depends on
+    /// the z ∈ [0,1] placement.
     fn plate_100x100x1() -> Mesh {
         let v: Vec<f32> = vec![
             0.0, 0.0, 0.0, // 0
@@ -815,8 +904,9 @@ mod tests {
     /// **Pins the gate failure this task exists to close.**
     ///
     /// Today's only policy is bbox-driven: `longest_extent / 64`. On the shells
-    /// PRD's own motivating part (1 mm feature in a 100 mm plate) that is
-    /// 1.5625 mm/voxel — COARSER than the whole feature, so the feature is
+    /// PRD's own motivating proportions (a feature 1/100 of the plate across)
+    /// that is 1.5625 model units per voxel — COARSER than the whole feature,
+    /// which is 1 model unit thick, so the feature is
     /// entirely sub-voxel and no amount of downstream sampling can recover it.
     #[test]
     fn honest_floor_is_sub_feature_on_the_shells_prd_motivating_plate() {
@@ -835,7 +925,7 @@ mod tests {
         );
         assert!(
             opts.voxel_size > 1.0,
-            "the 1 mm feature is entirely sub-voxel under honest_floor \
+            "the thin feature is entirely sub-voxel under honest_floor \
              (voxel_size {} > thickness 1.0) — this is the v0.4-shells gate failure",
             opts.voxel_size
         );
@@ -1000,7 +1090,7 @@ mod tests {
     /// The band is derived from the MINIMUM half-extent, not the longest extent.
     ///
     /// This is the assertion that makes thickness-scale resolution affordable
-    /// on a thin feature inside a large part: at h = 0.25 on the 100 mm plate,
+    /// on a thin feature inside a large part: at h = 0.25 on the 100-unit plate,
     /// `honest_floor`'s `longest_extent / 2` rule would demand 200+ band voxels
     /// (100/2 ÷ 0.25 = 200), whereas the containment identity needs only
     /// 0.5 / 0.25 + BAND_MARGIN_VOXELS = 4.
@@ -1076,7 +1166,7 @@ mod tests {
     }
 
     /// The guard must not false-positive on the very request this task exists
-    /// to enable: `MinFeature(1.0)` on the 100 mm plate implies a densify bbox
+    /// to enable: `MinFeature(1.0)` on the 100-unit plate implies a densify bbox
     /// of roughly 408 × 408 × 12 ≈ 2.0M voxels — three orders of magnitude
     /// under the 256M budget.
     #[test]
@@ -1085,6 +1175,92 @@ mod tests {
         assert!(
             MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::MinFeature(1.0)).is_ok(),
             "the thickness-scale request the shells gate needs must stay within budget"
+        );
+    }
+
+    /// A request COARSER than the body's thinnest extent is rejected, not
+    /// silently accepted as a grid that resolves nothing.
+    ///
+    /// The symmetric counterpart of the budget guard above: over-budget catches
+    /// "too fine to afford", this catches "too coarse to mean anything". Both
+    /// are pure Rust and both fire before any FFI allocation.
+    #[test]
+    fn for_resolution_rejects_a_request_coarser_than_the_thinnest_extent() {
+        // (a) A voxel wider than the whole body.
+        let cube = box_mesh(1.0, 1.0, 1.0); // 2 x 2 x 2
+        match MeshToVoxelOptions::for_resolution(&cube, VoxelResolution::TargetVoxelSize(10.0)) {
+            Err(VoxelResolutionError::RequestTooCoarse {
+                requested_voxel_size,
+                min_extent,
+            }) => {
+                assert_eq!(
+                    requested_voxel_size, 10.0,
+                    "the error must name the request"
+                );
+                assert_eq!(
+                    min_extent, 2.0,
+                    "the error must name the extent it could not resolve"
+                );
+            }
+            other => {
+                panic!("expected Err(RequestTooCoarse) for TargetVoxelSize(10.0); got {other:?}")
+            }
+        }
+
+        // (b) The unit-confusion case the `VoxelResolution` "Units" section
+        // warns about: `MinFeature(1.0)` meant as "1 mm" on the REAL metric
+        // part (0.1 x 0.1 x 0.001 m) asks for a 1 METRE feature, deriving
+        // h = 0.25 m — a voxel coarser than the entire body. Before this guard
+        // that returned Ok and a meaningless grid.
+        let metric_plate = box_mesh(0.05, 0.05, 0.000_5); // 0.1 x 0.1 x 0.001
+        match MeshToVoxelOptions::for_resolution(&metric_plate, VoxelResolution::MinFeature(1.0)) {
+            Err(VoxelResolutionError::RequestTooCoarse {
+                requested_voxel_size,
+                min_extent,
+            }) => {
+                assert_eq!(
+                    requested_voxel_size, 0.25,
+                    "the error must name the DERIVED voxel size, not the requested feature"
+                );
+                assert!(
+                    min_extent < 0.25,
+                    "the reported extent ({min_extent}) must be the one the voxel overshot"
+                );
+            }
+            other => panic!("expected Err(RequestTooCoarse) for the mm/m confusion; got {other:?}"),
+        }
+
+        // (c) The correctly-converted request on that same part IS served.
+        assert!(
+            MeshToVoxelOptions::for_resolution(&metric_plate, VoxelResolution::MinFeature(0.001))
+                .is_ok(),
+            "MinFeature(0.001) — the 1 mm feature in model-space metres — must succeed"
+        );
+    }
+
+    /// The coarse guard must not false-positive at its own boundary, and must
+    /// not touch `HonestFloor`.
+    ///
+    /// `honest_floor` on the plate yields h = 1.5625 — itself COARSER than the
+    /// plate's 1.0 thinnest extent. That is exactly the deficiency this task
+    /// documents, and the `HonestFloor` arm early-returns before the guard, so
+    /// pre-6560 behaviour stays bit-identical rather than becoming an error.
+    #[test]
+    fn coarse_guard_admits_the_boundary_and_never_fires_on_honest_floor() {
+        let plate = plate_100x100x1();
+
+        assert!(
+            MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(1.0))
+                .is_ok(),
+            "a voxel exactly equal to the thinnest extent is admitted; the bound is strict"
+        );
+
+        let honest = MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::HonestFloor)
+            .expect("HonestFloor must remain served even though 1.5625 > 1.0");
+        assert_eq!(
+            honest.voxel_size,
+            100.0 / VOXELS_PER_LONGEST_AXIS,
+            "HonestFloor must early-return unchanged, above the coarse bound and all"
         );
     }
 

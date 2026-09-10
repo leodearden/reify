@@ -4347,13 +4347,25 @@ pub trait KernelAttributeHook: Send + Sync {
 /// here lets `reify-eval` and every kernel crate name it directly with no
 /// cycle and no bare-scalar tuple to keep in sync.
 ///
+/// # Units — model space, SI metres
+///
+/// Every length this type carries is a MODEL-SPACE length in the mesh's own
+/// units, i.e. SI metres per [`Mesh::vertices`]. The shells PRD states its
+/// motivating dimensions in millimetres; every worked example below converts
+/// them rather than passing them through, because a millimetre figure handed
+/// over verbatim is a silent 1000x error — `MinFeature(1.0)` meaning "1 mm"
+/// actually asks for a 1 metre feature. Leaving the unit unstated is what
+/// [`Mesh`] records as "the root ambiguity that produced the 1000x STEP/3MF
+/// unit mislabel".
+///
 /// # Why this exists
 ///
 /// The only voxelization resolution policy before this type was
 /// `MeshToVoxelOptions::honest_floor` — `voxel_size = longest_extent / 64`,
 /// derived purely from the bounding box. For the shells PRD's own motivating
 /// case (`docs/prds/v0_4/structural-analysis-shells.md`, "Background" — a
-/// 1 mm flexure in a 100 mm part) that yields 1.5625 mm/voxel and the
+/// 1 mm flexure in a 100 mm part, which in model space is `MinFeature(0.001)`
+/// on a 0.1 m body) that yields 0.001_5625 m/voxel (1.5625 mm) and the
 /// feature is entirely sub-voxel. `VoxelResolution` is the seam through
 /// which a caller that KNOWS its thinnest feature can ask for a grid that
 /// actually resolves it.
@@ -4381,6 +4393,11 @@ pub enum VoxelResolution {
     /// this size (openvdb: `t / MIN_FEATURE_VOXELS_ACROSS`). Prefer this over
     /// [`Self::TargetVoxelSize`] when the caller knows a physical dimension
     /// (a wall thickness, a flexure width) but not a grid spacing.
+    ///
+    /// Metres, per the "Units" section above: a 1 mm wall is
+    /// `MinFeature(0.001)`, NOT `MinFeature(1.0)` — the latter asks for a
+    /// 1 metre feature and, on a part smaller than that, yields a voxel
+    /// coarser than the whole body.
     MinFeature(f64),
 }
 
@@ -4747,12 +4764,17 @@ pub trait GeometryKernel: Send + Sync {
     /// Contrast [`Self::register_mesh_handle`], which delegates for the same
     /// structural reason.
     ///
-    /// `OpenVdbKernel` is the only current override: it maps `resolution`
-    /// through `MeshToVoxelOptions::for_resolution` to a voxel size and
-    /// narrow-band width before calling its `meshToVolume` primitive, and
-    /// rejects a request that is non-finite, non-positive, or would exceed
-    /// its dense-grid budget (`Err(GeometryError::OperationFailed(_))`, with
-    /// the offending value named in the message).
+    /// `OpenVdbKernel` is the only current KERNEL-level override: it maps
+    /// `resolution` through `MeshToVoxelOptions::for_resolution` to a voxel
+    /// size and narrow-band width before calling its `meshToVolume`
+    /// primitive, and rejects a request that is non-finite, non-positive,
+    /// coarser than the body's thinnest bounding-box extent, or beyond its
+    /// dense-grid budget (`Err(GeometryError::OperationFailed(_))`, with the
+    /// offending value named in the message).
+    /// `reify_geometry::SingleKernelHolder` additionally overrides it as a
+    /// pure delegating pass-through — it honours no request itself, but must
+    /// forward one rather than inherit the default, which would route through
+    /// its own `ingest_mesh` override and drop `resolution` silently.
     ///
     /// # Object safety
     ///
@@ -10719,8 +10741,10 @@ mod tests {
     /// (2) is the compile-time contract that keeps every other kernel, stub
     /// and mock in the workspace unchanged: a kernel that cannot honour a
     /// resolution request simply never overrides the method, and the
-    /// delegation makes the request a no-op rather than a hard error. Only
-    /// `OpenVdbKernel` overrides it (task 6560, step-8).
+    /// delegation makes the request a no-op rather than a hard error.
+    /// `OpenVdbKernel` is the only kernel that overrides it (task 6560,
+    /// step-8); `reify_geometry::SingleKernelHolder` also overrides it, as a
+    /// pure delegating pass-through (step-12).
     #[test]
     fn ingest_mesh_at_resolution_default_delegates_to_ingest_mesh() {
         use std::sync::atomic::{AtomicUsize, Ordering};
