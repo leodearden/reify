@@ -1168,7 +1168,8 @@ const GDT_ZONES_EXAMPLE: &str = "examples/tolerancing/gdt_zones.ri";
 const GDT_ZONE_CONSTRUCTORS: &[&str] =
     &["zone_slab", "zone_cylinder", "zone_annulus", "zone_profile"];
 
-/// Every `examples/….ri` path cited in `markdown`, deduped, in source order.
+/// Every repo-root-relative `examples/….ri` path cited in `markdown`, deduped,
+/// in source order.
 ///
 /// Scans for the `examples/` prefix and consumes the longest following run of
 /// path characters, so a citation ends at the surrounding backtick, quote, comma
@@ -1176,14 +1177,26 @@ const GDT_ZONE_CONSTRUCTORS: &[&str] =
 /// trimmed, and a span that does not end in `.ri` is not a file citation at all
 /// (bare `examples/` used as a directory word contributes nothing).
 ///
+/// Anchored on a non-path boundary to the LEFT, for the mirror-image reason
+/// [`chunk_mentions`] is anchored: an `examples/` segment NESTED in a longer path
+/// (`docs/examples/foo.ri`, `crates/reify-eval/tests/examples/bar.ri`) would
+/// otherwise be truncated to `examples/foo.ri` and then reported by the caller as
+/// a file that does not exist — a spurious hard failure, with a misleading fix
+/// instruction, against a chunk edit that was entirely correct. Such a path is
+/// not a repo-root citation, so it contributes nothing.
+///
 /// Loose by design, like [`chunk_mentions`]: it exists only to FIND the pointers
 /// worth checking — the check itself is whether the file is there.
 fn cited_example_paths(markdown: &str) -> Vec<String> {
+    let is_path_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
     let mut out: Vec<String> = Vec::new();
     for (at, _) in markdown.match_indices("examples/") {
+        if markdown[..at].chars().next_back().is_some_and(is_path_char) {
+            continue;
+        }
         let span: String = markdown[at..]
             .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+            .take_while(|c| is_path_char(*c))
             .collect();
         let path = span.trim_end_matches('.');
         if path.ends_with(".ri") && !out.iter().any(|p| p == path) {
@@ -1221,9 +1234,10 @@ fn strip_line_comments(source: &str) -> String {
 ///     404, and the chunk is served verbatim to the in-GUI assistant.
 /// (b) **The GD&T section's "worked example of all four" claim is true**: the
 ///     cited example really does call each of the four zone constructors. This
-///     is the half that is RED on arrival — `zone_slab` appears in no file under
-///     `examples/` at all, so the one constructor with no worked example
-///     anywhere is exactly the one the prose promises one for.
+///     is the half that motivated the guard — `zone_slab` had no worked example
+///     anywhere under `examples/` until task #5700 added a cell for it to the
+///     cited file, so the one constructor the prose promised an example for was
+///     the one that had none. This assertion is what keeps it that way.
 #[test]
 fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
@@ -1275,6 +1289,74 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
          to {GDT_ZONES_EXAMPLE} (preferred: the example is the artifact designers actually run), \
          or narrow the chunk's claim to the constructors the example does exercise.",
         absent.join(", ")
+    );
+}
+
+// Discriminating-power controls for the two pure helpers above, in the same
+// synthetic-data posture as the coverage-guard controls earlier in this file:
+// both helpers are the load-bearing part of the guard, and neither is exercised
+// by the real chunk in a way that would notice it going inert.
+
+#[test]
+fn cited_example_paths_trims_a_trailing_sentence_period_and_dedupes() {
+    let markdown = "Worked example: `examples/tolerancing/gdt_zones.ri`.\n\
+                    See also examples/tolerancing/gdt_zones.ri and examples/half_space.ri.\n";
+    assert_eq!(
+        cited_example_paths(markdown),
+        vec![
+            "examples/tolerancing/gdt_zones.ri".to_string(),
+            "examples/half_space.ri".to_string(),
+        ],
+        "citations are deduped, kept in source order, and stripped of the sentence period \
+         that ends the citing sentence"
+    );
+}
+
+#[test]
+fn cited_example_paths_ignores_a_bare_examples_directory_word() {
+    let markdown = "Runnable designs live under examples/, e.g. the tolerancing/ subdir.";
+    assert!(
+        cited_example_paths(markdown).is_empty(),
+        "`examples/` used as a directory word cites no file, so there is nothing to resolve"
+    );
+}
+
+#[test]
+fn cited_example_paths_ignores_an_examples_segment_nested_in_a_longer_path() {
+    let markdown = "See `crates/reify-eval/tests/examples/bar.ri` and `docs/examples/foo.ri`.";
+    assert!(
+        cited_example_paths(markdown).is_empty(),
+        "an `examples/` segment inside a longer path is not a repo-root citation — truncating \
+         it to `examples/bar.ri` would report a file nobody cited as missing. Got: {:?}",
+        cited_example_paths(markdown)
+    );
+}
+
+#[test]
+fn a_constructor_named_only_in_a_comment_does_not_count_as_exercised() {
+    let described = "// zone_slab(face, width) — face offset ±width/2, capped into a slab\n\
+                     let body = box(10mm, 10mm, 10mm)\n";
+    assert!(
+        chunk_mentions(described, "zone_slab"),
+        "control: the RAW source does mention zone_slab, so the assertion below is about \
+         strip_line_comments and not about chunk_mentions"
+    );
+    assert!(
+        !chunk_mentions(&strip_line_comments(described), "zone_slab"),
+        "a header comment DESCRIBING the call must not satisfy the \"this example exercises \
+         the constructor\" claim — describing a call instead of making one is exactly the \
+         laundering this guard family exists to catch"
+    );
+}
+
+#[test]
+fn a_constructor_actually_called_in_code_survives_comment_stripping() {
+    let called = "// this header names no constructor at all\n\
+                  let slab = zone_slab(rectangle(width: 40mm, height: 20mm), 2mm) // ±1mm\n";
+    assert!(
+        chunk_mentions(&strip_line_comments(called), "zone_slab"),
+        "a real call is CODE: stripping comments must leave it standing, including when a \
+         trailing comment follows it on the same line"
     );
 }
 
