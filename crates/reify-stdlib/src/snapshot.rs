@@ -829,39 +829,58 @@ fn walk_fk(
         // body's `pose` offsets from — `T(body.parent)` for a parent-conflict
         // closing body, `T(at)` for every other body.
         let base_world = match &closing_parent {
-            // Root at the identity whenever `joint_parents` has no ancestor
-            // recorded for the parent — which covers TWO shapes:
+            // The world sentinel is the ONLY parent whose base frame is a bare
+            // identity: it contributes no motion of its own. It is never a key
+            // in `joint_parents`, and since task 7186 step-10 the builder
+            // rejects a world-parented closing edge outright with
+            // `error = "world_parented_closure"`, so this arm is unreachable
+            // from `body()` and survives only for hand-built mechanism Maps.
+            Some(p) if is_world(p) => eval_builtin("transform3_identity", &[]),
+
+            // A REAL joint that was never registered as anyone's `at`.
+            // `body()` validates only that `parent` IS a joint value
+            // (mechanism.rs), not that it is registered, so
+            // `body(m, "C", j2, j3)` with `j3` unused as an `at` builds
+            // cleanly — see `non_world_parented_closing_edge_still_records`.
             //
-            //   1. the world sentinel, which is never a key in `joint_parents`
-            //      (since task 7186 step-10 the builder rejects a
-            //      world-parented closing edge outright with
-            //      `error = "world_parented_closure"`, so this shape is
-            //      unreachable from `body()` and survives only for hand-built
-            //      mechanism Maps); and
-            //   2. a REAL joint that was never registered as anyone's `at`.
-            //      `body()` validates only that `parent` IS a joint value
-            //      (mechanism.rs), not that it is registered, so
-            //      `body(m, "C", j2, j3)` with `j3` unused as an `at` builds
-            //      cleanly — see `non_world_parented_closing_edge_still_records`.
-            //
-            // Both must degrade the same way, because that is what the RESIDUAL
-            // side already does: `append_body` composes
+            // Root it at the identity (it has no ancestors to walk) and then
+            // compose ITS OWN transform. Both halves matter, and the second is
+            // what makes this agree with the residual: `append_body` composes
             // `path_b = [world] ++ walk_to_world(joint_parents, parent)`, and
             // `walk_to_world` yields just `[parent]` for an unregistered
-            // parent, so `chain_transform` (loop_closure.rs) accumulates
-            // chain_b from the identity — i.e. it roots an unregistered parent
-            // at world. Calling `joint_world_transform` here instead would hit
-            // its leading `joint_parents.get(joint)?`, return None, and turn
-            // the WHOLE mechanism's snapshot into `Value::Undef` — the same
-            // silent whole-mechanism failure class the step-10
-            // `world_parented_closure` guard exists to eliminate, and a
-            // regression against pre-7186 behaviour, where the walk always
-            // started at `at` (always registered). Measured before this arm
-            // was widened: the shape above produced `snapshot(m, []) ==
-            // Undef`, while registering `j3` as an `at` first made the same
-            // snapshot non-Undef.
-            Some(p) if is_world(p) || !joint_parents.contains_key(p) => {
-                eval_builtin("transform3_identity", &[])
+            // parent, so chain_b == [parent]; `chain_transform`
+            // (loop_closure.rs) then seeds its accumulator at the identity and
+            // composes `transform_at(parent, ..)` for every chain entry. Its
+            // terminal frame is therefore `T(parent)`, NEVER `I`.
+            //
+            // Returning a bare identity here — as the first cut of this arm
+            // did — silently drops `T(parent)`, so FK and the residual
+            // disagree by exactly that transform. Measured on the fixture in
+            // `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`:
+            // the closure correctly solved j3 = 1.1 m and body B landed at
+            // (1.1, 0, 0), but the closing body rode at (0, 0, 0) — a 1.1 m
+            // geometry error returned as a normal Snapshot Map with no
+            // diagnostic, and a regression against pre-7186, where the walk
+            // began at `at` and reached 1.1 m. Snapshot world transforms feed
+            // distance/interference queries, so that is wrong geometry.
+            //
+            // Calling `joint_world_transform` instead would hit its leading
+            // `joint_parents.get(joint)?` and return None, turning the WHOLE
+            // mechanism's snapshot into `Value::Undef` — the silent
+            // whole-mechanism failure class the step-10 guard exists to
+            // eliminate. Teaching THAT function to treat a missing entry as an
+            // implicit world root would unify the two (a SPOT win), but it
+            // also changes the `None` arm below, where cycle / self-loop
+            // bodies currently rely on the `?` to reject; that is a wider
+            // behaviour change than this fix, and is deliberately not taken
+            // here.
+            Some(p) if !joint_parents.contains_key(p) => {
+                let motion_value = value_for(p, bindings)?;
+                let t_local = eval_builtin("transform_at", &[p.clone(), motion_value]);
+                if t_local.is_undef() {
+                    return None;
+                }
+                t_local
             }
             // `body.parent` is a real joint with its own spanning-tree entry,
             // so this is a normal cached walk — no new recursion hazard, and
@@ -3474,6 +3493,140 @@ mod tests {
             );
         }
     }
+
+    /// **Task 7186 review fix 4.** The geometry pin for a closing edge whose
+    /// `parent` is a REAL joint that was never registered as anyone's `at`.
+    ///
+    /// `mechanism.rs::non_world_parented_closing_edge_still_records` pins that
+    /// this shape BUILDS and that its snapshot is not `Undef`; that is a
+    /// liveness check only, and liveness is exactly what let review fix 3 ship
+    /// a 1.1 m mis-placement green. This test pins WHERE the closing body
+    /// lands, which is the property that was actually broken.
+    ///
+    /// All-prismatic +X so the loop is FEASIBLE and the closing parent has a
+    /// NON-identity solved transform — both are load-bearing. The sibling
+    /// builder test uses a revolute j3 whose midpoint rotation makes the loop
+    /// infeasible, so its free variable converges to 0 and an
+    /// identity-vs-`T(j3)` base-frame error is numerically invisible there.
+    ///
+    ///   j1 = prismatic(+X, 0..1m)    body A at j1, parent world
+    ///   j2 = prismatic(+X, 0..1.2m)  body B at j2, parent j1
+    ///   j3 = prismatic(+X, 0..3m)    body C at j2, parent j3  ← closing edge
+    ///
+    /// j3 is never an `at`, so `joint_parents` has no entry for it.
+    /// chain_a = [j1, j2] resolves off the tree at the range midpoints
+    /// 0.5 + 0.6 = 1.1 m; chain_b = [j3], so the closure pins j3 = 1.1 m.
+    ///
+    /// The closing body must ride at `T(j3) ∘ pose` = (1.1, 0, 0) — the same
+    /// rigid-tie rule `snapshot_rigid_platform_on_two_posts_closes_with_pose_offset`
+    /// pins for the REGISTERED-parent case. Review fix 3 returned a bare
+    /// identity for this arm, dropping j3's own `transform_at` and landing the
+    /// body at (0, 0, 0): a 1.1 m error returned as a normal Snapshot Map with
+    /// no diagnostic, and a regression against pre-7186, where the walk began
+    /// at `at` and reached 1.1 m.
+    ///
+    /// The `chain_transform` parity this arm claims is only honoured by
+    /// composing the parent's own transform: `chain_transform([j3])` seeds the
+    /// accumulator at the identity and THEN composes `transform_at(j3, ..)`,
+    /// so the residual's chain_b terminal is `T(j3)`, never `I`.
+    #[test]
+    fn snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame() {
+        fn prismatic_x_upto(upper_m: f64) -> Value {
+            eval_builtin(
+                "prismatic",
+                &[
+                    axis_x_unit(),
+                    Value::Range {
+                        lower: Some(Box::new(Value::length(0.0))),
+                        upper: Some(Box::new(Value::length(upper_m))),
+                        lower_inclusive: true,
+                        upper_inclusive: true,
+                    },
+                ],
+            )
+        }
+
+        let j1 = prismatic_x_upto(1.0);
+        let j2 = prismatic_x_upto(1.2);
+        // Never used as an `at` — no `joint_parents` entry.
+        let j3 = prismatic_x_upto(3.0);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("A".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("B".to_string()), j2.clone(), j1.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("C".to_string()), j2.clone(), j3.clone()],
+        );
+
+        let s = eval_builtin("snapshot", &[m3, Value::List(vec![])]);
+        assert!(
+            !s.is_undef(),
+            "a recorded, non-rejected closure must still produce a snapshot"
+        );
+
+        // The closure pins j3 to chain_a's tip: 0.5 + 0.6 = 1.1 m.
+        let smap = match &s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        let free_values = match smap.get(&Value::String("free_values".to_string())) {
+            Some(Value::List(fv)) => fv,
+            other => panic!("expected free_values List, got {:?}", other),
+        };
+        assert_eq!(free_values.len(), 1, "exactly one loop closure expected");
+        let loop0 = match &free_values[0] {
+            Value::List(v) => v,
+            other => panic!("expected per-loop free-value List, got {:?}", other),
+        };
+        assert_eq!(loop0.len(), 1, "chain_b = [j3] — j3 is the only free variable");
+        let d3 = match &loop0[0] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][0] must be a Real, got {:?}", other),
+        };
+        assert!(
+            (d3 - 1.1).abs() < 1e-6,
+            "j3 must close at 1.1 m (= midpoint(j1) + midpoint(j2)), got {d3}"
+        );
+
+        // Body 1 "B" (at=j2, tree-parented) sits at the same 1.1 m tip. This
+        // arm was never touched; it is the reference frame body 2 is checked
+        // against.
+        let (_, b) = decompose_transform_for_assert(body_world_transform(&s, 1));
+        assert!(
+            (b[0] - 1.1).abs() < 1e-6,
+            "body B must ride at x = 1.1 m, got {}",
+            b[0]
+        );
+
+        // Body 2 "C" — the closing body, and the assertion whose absence hid
+        // the defect. Rigid tie ⇒ it rides on chain_b's terminal frame
+        // `T(j3) ∘ pose`, coincident with body B once the closure holds.
+        let (_, c) = decompose_transform_for_assert(body_world_transform(&s, 2));
+        for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+            let expected = if i == 0 { 1.1 } else { 0.0 };
+            assert!(
+                (c[i] - expected).abs() < 1e-6,
+                "closing body t{axis} must be {expected} m (coincident with body B — \
+                 a rigid tie onto T(j3)), got {} (a bare-identity base frame yields \
+                 t{axis} = 0 and a 1.1 m geometry error)",
+                c[i]
+            );
+        }
+    }
+
 
     // ── Snapshot Map carries `free_values` (task 2678 step-5) ─────────────
     //

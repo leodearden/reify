@@ -1803,11 +1803,23 @@ mod tests {
     /// This must PASS both before and after the step-10 guard: it is the
     /// assertion that stops the BUILDER's `is_world(parent)` rejection from
     /// being widened into "parent has no recorded ancestor", which would
-    /// over-reject. Note snapshot.rs's FK base-frame arm *does* treat those
-    /// two shapes alike — but that is rooting, not rejecting: it decides
-    /// WHERE an admitted closing body rides, matching how `chain_transform`
-    /// roots chain_b, and it admits strictly more mechanisms rather than
-    /// fewer.
+    /// over-reject.
+    ///
+    /// snapshot.rs's FK base-frame arm keeps the two shapes SEPARATE, and
+    /// deliberately so: a world parent contributes a bare identity, while an
+    /// unregistered real joint is rooted at the identity and then composes
+    /// its OWN `transform_at` — matching `chain_transform`, whose chain_b
+    /// terminal for `[parent]` is `T(parent)`, not `I`. Collapsing them into
+    /// one arm is what shipped a 1.1 m mis-placement; see
+    /// `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`.
+    ///
+    /// SCOPE OF THIS TEST: it pins the BUILDER contract (records, is not
+    /// rejected) plus liveness of the snapshot. It deliberately does NOT pin
+    /// geometry — its `j3` is a revolute whose midpoint rotation makes the
+    /// loop infeasible, so the free variable converges to 0 and a base-frame
+    /// error is numerically invisible here. The geometry is pinned by the
+    /// feasible all-prismatic fixture in snapshot.rs named above; keep the
+    /// two in step.
     #[test]
     fn non_world_parented_closing_edge_still_records() {
         let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1872,6 +1884,13 @@ mod tests {
         // closure but whose `snapshot()` is `Undef` is the same silent
         // whole-mechanism failure the step-10 guard exists to eliminate,
         // just moved one step past the boundary it pins.
+        //
+        // LIVENESS ONLY — read "solvable" here as "not Undef", nothing more.
+        // This assertion cannot see WHERE the bodies land, which is how review
+        // fix 3's 1.1 m mis-placement shipped green past this very test. The
+        // placement is pinned separately by
+        // `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`
+        // (snapshot.rs), on a feasible fixture where it is observable.
         //
         // This is what caught the regression: `walk_fk`'s closing-body arm
         // routed `body.parent` through `joint_world_transform`, whose leading
