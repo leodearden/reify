@@ -229,7 +229,7 @@ pub fn solve_closed_chain(
 ///    remove a genuine constraint row rather than a redundant one. Deciding
 ///    that requires re-deriving the GAP-3 rank policy against the corrected
 ///    chains, which is a policy change beyond a chain-composition fix; it is
-///    filed as a follow-up. Do not "fix" the rank here without that
+///    filed as follow-up task #7312. Do not "fix" the rank here without that
 ///    derivation — `closed_4bar_live_constraint_rank` asserts `m_eff = 2`
 ///    with `assert_eq!` precisely so a silent drift fails loudly.
 ///

@@ -200,8 +200,9 @@ fn sweep_closed_chain_warm_start_e2e() {
     //   (d) Body world_transforms reflect the loop-closure-solved bindings:
     //       body 0 at j_a → driver; body 1 at j_x (parent j_a) → the
     //       chain_a tip `driver + 0.25`; body 2 at j_b (parent world) →
-    //       solved, the chain_b tip; body 3 (closing edge, walked via
-    //       joint_parents which keeps jX → jA) → the chain_a tip again.
+    //       solved, the chain_b tip; body 3 (closing edge) → composed from
+    //       its own `body.parent` = j_b under the rigid-tie rule, i.e. the
+    //       chain_b terminal frame, NOT a `joint_parents` re-walk.
     //       Bodies 1, 2 and 3 therefore all coincide at the closed loop's
     //       shared pivot — that coincidence IS the closure.
     //   (e) Monotonic-increasing trajectory of the free var across steps,
@@ -266,13 +267,24 @@ fn sweep_closed_chain_warm_start_e2e() {
         // (d) Body world_transforms.  Body 0 (at j_a, parent world) carries
         // the swept driver value; body 1 (at j_x, parent j_a) carries the
         // chain_a tip driver + midpoint(jX); body 2 (at j_b, parent world)
-        // carries the solver-driven solved_jB, the chain_b tip; body 3
-        // (closing edge, recorded with parent j_b but walked via
-        // joint_parents, which kept j_x → j_a from m2's earlier
-        // registration) carries the chain_a tip again.  Asserting bodies
-        // 1-3 all equal `solved` is the FK-side statement of the closure:
-        // the two paths must meet at the shared pivot, and it confirms the
-        // FK re-walk consumed the synthesized binding for the free joint.
+        // carries the solver-driven solved_jB, the chain_b tip.
+        //
+        // Body 3 is the CLOSING body (at j_x, parent j_b), and task 7186
+        // review fix 2 changed how `snapshot.rs::walk_fk` composes it: a
+        // parent-conflict closing body (detected by `joint_parents[at]`
+        // disagreeing with `body.parent` — here j_a vs j_b) is composed from
+        // `T(body.parent) ∘ pose` = T(j_b), chain_b's terminal frame, under
+        // the rigid-tie rule `T_tree(at) == T(parent) ∘ pose`.  It is NOT
+        // walked via `joint_parents` (which still keeps j_x → j_a from m2's
+        // earlier registration), so it is no longer a chain_a readback.
+        //
+        // Asserting bodies 1-3 all equal `solved` is therefore the FK-side
+        // statement of the closure AND a convergence cross-check: body 3
+        // rides chain_b while body 1 rides chain_a, and the two frames
+        // coincide exactly when the closure converged.  A drift beyond 1e-6
+        // means the closure did not converge — diagnose that, do NOT retune
+        // the tolerance.  It also confirms the FK re-walk consumed the
+        // synthesized binding for the free joint.
         let [tx0, ty0, tz0] = body_n_translation(snap, 0, &format!("snaps[{i}].body[0]"));
         let [tx1, ty1, tz1] = body_n_translation(snap, 1, &format!("snaps[{i}].body[1]"));
         let [tx2, ty2, tz2] = body_n_translation(snap, 2, &format!("snaps[{i}].body[2]"));

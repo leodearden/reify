@@ -843,10 +843,10 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 
 /// A typed loop-closure chain pair extracted from a v0.2 Mechanism Map.
 ///
-/// The classification is based on the closing joint (the last element of
-/// `chain_b`):
-/// - `WellFormed` — the closing joint appears exactly once in `chain_b`
-///   (its last element only). Produced by the parent-conflict branch of
+/// The classification is based on whether the closing joint (carried in the
+/// record's own `closing_joint` field) occurs in `chain_b`:
+/// - `WellFormed` — the closing joint does NOT appear in `chain_b`; it is
+///   composed on `chain_a` only. Produced by the parent-conflict branch of
 ///   `append_body`. Valid linear kinematic chain, solver-feedable via
 ///   `chain_transform` / `solve_loop_closure` without further filtering.
 ///   A builder-produced `WellFormed` `chain_b` may END in a synthetic 0-DOF
@@ -860,13 +860,13 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 ///   the only shape that would empty it is a closing edge parented to the
 ///   world sentinel, and `append_body` rejects that at build time with
 ///   `error = "world_parented_closure"` (task 7186 step-10).
-/// - `Cycle` — the closing joint appears more than once in `chain_b`
-///   (both at the end and at least once mid-walk). Produced by the
-///   cycle/self-loop branch of `append_body`. **Not** a valid linear
-///   kinematic chain — composing the same joint's transform twice in
-///   different positions is not physically meaningful. Consumers must
-///   not feed `Cycle` chains directly to `chain_transform` /
-///   `solve_loop_closure`.
+/// - `Cycle` — the closing joint appears in `chain_b` (once or more).
+///   Produced by the cycle/self-loop branch of `append_body`, and by the
+///   ancestor case of the parent-conflict branch. **Not** a valid linear
+///   kinematic chain — the same joint would be resolved on `chain_a` and
+///   iterated as a `free_b` variable on `chain_b`, i.e. carry two
+///   independent values at once. Consumers must not feed `Cycle` chains
+///   directly to `chain_transform` / `solve_loop_closure`.
 ///
 /// Both variants carry named fields `chain_a` and `chain_b` (world
 /// sentinel stripped) so consumers can destructure unambiguously:
@@ -879,7 +879,7 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoopClosureChain {
-    /// `chain_b` contains the closing joint AT MOST once. Produced by the
+    /// `chain_b` does NOT contain the closing joint. Produced by the
     /// parent-conflict branch of `append_body`.
     /// Solver-feedable via `chain_transform` / `solve_loop_closure`.
     ///
@@ -888,8 +888,6 @@ pub enum LoopClosureChain {
     /// terminates at the closing edge's `parent`, so the closing joint's
     /// transform is composed exactly once across the pair. (Composing it on
     /// both sides conjugates the residual instead of cancelling out of it.)
-    /// The classification rule below is `> 1`, so a hand-built pair that
-    /// happens to carry the closing joint once still lands here.
     WellFormed {
         chain_a: Vec<reify_ir::Value>,
         chain_b: Vec<reify_ir::Value>,
@@ -899,19 +897,21 @@ pub enum LoopClosureChain {
         /// NOT in `chain_b` for a builder-produced record (task 7186).
         closing_joint: reify_ir::Value,
     },
-    /// `chain_b` contains the closing joint more than once — at the end
-    /// (the appended closing edge) and once mid-walk (as an ancestor of
-    /// `parent` in the cycle case, or because `at == parent` in the
-    /// self-loop case). NOT a valid linear kinematic chain. Produced by
-    /// the cycle/self-loop branch of `append_body`.
+    /// `chain_b` contains the closing joint at least once. NOT a valid
+    /// linear kinematic chain: the same joint would be resolved on `chain_a`
+    /// and iterated as a `free_b` variable on `chain_b`. Produced by the
+    /// cycle/self-loop branch of `append_body` (which appends the closing
+    /// joint to `path_b` as a marker, and reaches it again mid-walk as an
+    /// ancestor of `parent`, or because `at == parent` in the self-loop
+    /// case), and by the parent-conflict branch's ANCESTOR case, where the
+    /// single occurrence is mid-walk with no trailing marker.
     Cycle {
         chain_a: Vec<reify_ir::Value>,
         chain_b: Vec<reify_ir::Value>,
         /// The closing joint: propagated from the loop-closure record's
         /// `closing_joint` field so callers do not need `chain_b.last().unwrap()`
-        /// (a partial function). On this branch it IS the last element of
-        /// `chain_b` (the cycle branch still appends it as the marker), and
-        /// occurs at least once more mid-walk.
+        /// (a partial function). It is NOT reliably `chain_b`'s last element —
+        /// the ancestor case puts its only occurrence mid-walk.
         closing_joint: reify_ir::Value,
     },
 }
@@ -935,20 +935,25 @@ pub enum LoopClosureChain {
 /// The world sentinel is identified by `kind = "world"`.
 ///
 /// **Classification rule:** a chain pair is [`LoopClosureChain::Cycle`] iff
-/// `chain_b` contains the closing joint more than once.
-/// This subsumes both the 2-body cycle case (`chain_b = [j_b, j_a, j_b]`,
-/// `j_b` twice) and the self-loop case (`chain_b = [j, j]`, `j` twice).
-/// Parent-conflict pairs classify as [`LoopClosureChain::WellFormed`]; since
-/// task 7186 their `chain_b` contains the closing joint ZERO times (it is
-/// composed on `chain_a` only — see `mechanism::append_body`).
+/// `chain_b` contains the closing joint AT ALL. This subsumes the 2-body
+/// cycle case (`chain_b = [j_b, j_a, j_b]`), the self-loop case
+/// (`chain_b = [j, j]`), and the ancestor case — an edge that is BOTH a
+/// parent conflict AND has `at` as an ancestor of `parent`, whose `chain_b`
+/// carries the closing joint exactly ONCE, mid-walk.
 ///
-/// One shape's classification changes with that fix: an edge that is BOTH a
-/// parent conflict AND has `at` as an ancestor of `parent` now yields
-/// `chain_b` containing the closing joint exactly ONCE (mid-walk, as that
-/// ancestor) and so classifies `WellFormed` rather than `Cycle`. That is the
-/// correct label: `append_body`'s parent-conflict guard runs before the
-/// cycle guard, so such an edge was always recorded as a parent conflict —
-/// the old `Cycle` label came purely from the now-removed duplicate append.
+/// Builder-produced parent-conflict pairs classify as
+/// [`LoopClosureChain::WellFormed`]; since task 7186 their `chain_b` contains
+/// the closing joint ZERO times (it is composed on `chain_a` only — see
+/// `mechanism::append_body`), so `≥ 1` never fires on them.
+///
+/// **Why `≥ 1` and not `> 1`.** `WellFormed` promises solver-feedability, and
+/// a `chain_b` carrying the closing joint even once cannot honour it:
+/// `extract_loop_closure_chains` (loop_closure.rs) resolves `chain_a`'s copy
+/// through `resolve_joint_value` while `chain_b`'s copy becomes a `free_b`
+/// index, so ONE joint carries two independent values at once — the exact
+/// double-value pathology task 7186 removed from the builder. `> 1` would
+/// re-admit it for the ancestor case and for hand-built pre-7186-shaped
+/// pairs. See `ancestor_parent_conflict_shape_classifies_as_cycle`.
 ///
 /// Returns `None` on any shape error:
 /// - a `loop_closures` entry is not a `Value::Map`
@@ -1012,10 +1017,17 @@ pub fn mechanism_loop_closure_chains(
             None => return None,
         };
 
-        // Classify: Cycle iff the closing joint appears more than once in
-        // chain_b. This subsumes the 2-body cycle ([j_b, j_a, j_b], j_b twice)
-        // and the self-loop ([j, j], j twice) without a chain_b.last() call.
-        let is_cycle = chain_b.iter().filter(|j| *j == &closing_joint).count() > 1;
+        // Classify: Cycle iff the closing joint appears in chain_b AT ALL.
+        // `WellFormed` promises solver-feedability, and a chain_b carrying the
+        // closing joint cannot honour that promise: `extract_loop_closure_chains`
+        // resolves chain_a's copy from bindings/midpoint while chain_b's copy
+        // becomes a `free_b` index, so one joint carries two independent values
+        // at once. That subsumes the 2-body cycle ([j_b, j_a, j_b]), the
+        // self-loop ([j, j]), the ancestor case (parent conflict whose `at` is
+        // also an ancestor of `parent`, one mid-walk occurrence), and any
+        // hand-built pre-7186-shaped pair that still ends chain_b at the
+        // closing joint.
+        let is_cycle = chain_b.iter().any(|j| j == &closing_joint);
         let entry = if is_cycle {
             LoopClosureChain::Cycle {
                 chain_a,
@@ -2466,7 +2478,7 @@ mod tests {
         );
         lc1.insert(
             Value::String("path_b".to_string()),
-            Value::List(vec![world.clone(), j_b.clone(), j_x.clone()]),
+            Value::List(vec![world.clone(), j_b.clone()]),
         );
 
         let mut lc2 = BTreeMap::new();
@@ -2482,7 +2494,7 @@ mod tests {
         );
         lc2.insert(
             Value::String("path_b".to_string()),
-            Value::List(vec![world.clone(), j_b.clone(), j_y.clone()]),
+            Value::List(vec![world.clone(), j_b.clone()]),
         );
 
         let mut mech = BTreeMap::new();
@@ -2499,8 +2511,8 @@ mod tests {
         let pairs = chains.expect("two-entry mechanism must return Some");
         assert_eq!(pairs.len(), 2, "both loop-closure entries must surface");
 
-        // First pair: chain_a = [j_a, j_x], chain_b = [j_b, j_x], closing_joint = j_x.
-        // j_x appears exactly once in chain_b → WellFormed.
+        // First pair: chain_a = [j_a, j_x], chain_b = [j_b], closing_joint = j_x.
+        // j_x appears ZERO times in chain_b → WellFormed.
         let (chain_a0, chain_b0, cj0) = match &pairs[0] {
             super::LoopClosureChain::WellFormed {
                 chain_a,
@@ -2510,11 +2522,11 @@ mod tests {
             other => panic!("expected WellFormed for first pair, got {:?}", other),
         };
         assert_eq!(chain_a0, &vec![j_a.clone(), j_x.clone()]);
-        assert_eq!(chain_b0, &vec![j_b.clone(), j_x.clone()]);
+        assert_eq!(chain_b0, &vec![j_b.clone()]);
         assert_eq!(cj0, &j_x, "first pair closing_joint should be j_x");
 
-        // Second pair: chain_a = [j_a, j_y], chain_b = [j_b, j_y], closing_joint = j_y.
-        // j_y appears exactly once in chain_b → WellFormed.
+        // Second pair: chain_a = [j_a, j_y], chain_b = [j_b], closing_joint = j_y.
+        // j_y appears ZERO times in chain_b → WellFormed.
         let (chain_a1, chain_b1, cj1) = match &pairs[1] {
             super::LoopClosureChain::WellFormed {
                 chain_a,
@@ -2524,8 +2536,109 @@ mod tests {
             other => panic!("expected WellFormed for second pair, got {:?}", other),
         };
         assert_eq!(chain_a1, &vec![j_a.clone(), j_y.clone()]);
-        assert_eq!(chain_b1, &vec![j_b.clone(), j_y.clone()]);
+        assert_eq!(chain_b1, &vec![j_b.clone()]);
         assert_eq!(cj1, &j_y, "second pair closing_joint should be j_y");
+    }
+
+    /// **Task 7186 amendment — the ANCESTOR case must classify as `Cycle`.**
+    ///
+    /// A closing edge can be BOTH a parent conflict AND have its `at` sitting
+    /// on `parent`'s ancestor walk. `append_body`'s parent-conflict guard runs
+    /// first, so the record is a parent conflict — but `path_b`, which walks
+    /// `parent` to the world, passes THROUGH `at` and therefore carries the
+    /// closing joint once, mid-walk.
+    ///
+    /// Shape built below (all through the real builder, no hand-written Maps):
+    ///   `body(m0, solidA, j1, world)`  → joint_parents {j1: world}
+    ///   `body(m1, solidB, j2, j1)`     → joint_parents {j1: world, j2: j1}
+    ///   `body(m2, solidC, j1, j2)`     → parent conflict (tree parent of j1 is
+    ///                                    world, not j2)
+    /// giving `chain_a = [j1]` and `chain_b = [j1, j2]`.
+    ///
+    /// `WellFormed` would be a LIE about this pair: it promises
+    /// solver-feedability, but `extract_loop_closure_chains` resolves
+    /// `chain_a`'s j1 through `resolve_joint_value` while `chain_b`'s j1
+    /// becomes a `free_b` index — one joint carrying two independent values,
+    /// the double-value pathology task 7186 removed from the builder. Hence
+    /// the `≥ 1` rule.
+    #[test]
+    fn ancestor_parent_conflict_shape_classifies_as_cycle() {
+        let j1 = prismatic_x_0_to_1();
+        let j2 = revolute_z_0_to_pi();
+        let world = crate::eval_builtin("world", &[]);
+
+        let m0 = crate::eval_builtin("mechanism", &[]);
+        let m1 = crate::eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = crate::eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j2.clone(),
+                j1.clone(),
+            ],
+        );
+        // Closing edge: at = j1 (tree parent world), parent = j2 (whose
+        // ancestor walk passes through j1).
+        let m3 = crate::eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j1.clone(),
+                j2.clone(),
+            ],
+        );
+
+        match &m3 {
+            Value::Map(map) => assert!(
+                !map.contains_key(&Value::String("error".to_string())),
+                "fixture must not produce an errored mechanism, got {:?}",
+                map.get(&Value::String("error".to_string()))
+            ),
+            other => panic!("expected Mechanism Map, got {other:?}"),
+        }
+
+        let pairs = super::mechanism_loop_closure_chains(&m3)
+            .expect("closed mechanism must yield Some(chains)");
+        assert_eq!(pairs.len(), 1, "exactly one loop-closure record expected");
+
+        let (chain_a, chain_b, closing_joint) = match &pairs[0] {
+            super::LoopClosureChain::Cycle {
+                chain_a,
+                chain_b,
+                closing_joint,
+            } => (chain_a, chain_b, closing_joint),
+            other => panic!(
+                "ancestor parent-conflict pair must classify as Cycle (chain_b carries \
+                 the closing joint mid-walk), got {other:?}"
+            ),
+        };
+        assert_eq!(
+            closing_joint, &j1,
+            "closing joint is the closing edge's `at`"
+        );
+        assert_eq!(chain_a, &vec![j1.clone()], "chain_a = [j1]");
+        assert_eq!(chain_b, &vec![j1.clone(), j2.clone()], "chain_b = [j1, j2]");
+        assert_eq!(
+            chain_b.iter().filter(|j| *j == closing_joint).count(),
+            1,
+            "the closing joint occurs EXACTLY once in chain_b — this is the shape \
+             the old `> 1` rule mislabelled WellFormed"
+        );
+        assert_ne!(
+            chain_b.last(),
+            Some(closing_joint),
+            "and it is NOT chain_b's tail — the ancestor case has no trailing marker"
+        );
     }
 
     /// A malformed second loop-closure entry (e.g. missing `path_a`) makes

@@ -465,9 +465,12 @@ fn make_world_parented_closure_error(mech_map: &BTreeMap<Value, Value>, message:
 /// * `path_b`, on the **cycle / self-loop** branch, retains its
 ///   `[world, ..., at]` marker shape: `at` is appended so the closing node
 ///   is visible twice (once mid-walk as an ancestor of `parent`, once at
-///   the tail). That duplicate is the classification signal
-///   `mechanism_loop_closure_chains` reads to emit `LoopClosureChain::Cycle`,
-///   and those chains are not solver-feedable in the first place.
+///   the tail). Its PRESENCE in `path_b` — not the duplication — is the
+///   classification signal `mechanism_loop_closure_chains` reads to emit
+///   `LoopClosureChain::Cycle`, and those chains are not solver-feedable in
+///   the first place. The same signal catches the parent-conflict ANCESTOR
+///   case, where `walk_to_world(parent)` passes through `at` and so puts the
+///   closing joint mid-walk with no trailing marker.
 ///
 /// On the parent-conflict branch `path_b` — and ONLY `path_b` — may
 /// additionally carry ONE trailing synthetic 0-DOF rigid link
