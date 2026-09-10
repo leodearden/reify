@@ -267,3 +267,137 @@ async fn frontend_error_envelope_is_refused_after_the_transport() {
         .expect("a successful push must not be refused");
     assert_eq!(ok, serde_json::json!({}));
 }
+
+/// CONSTRAINT-STATUS SYNC across the write-tool payload — the headless half of
+/// task 5098's printer_v01 rail-lengthening gate, in miniature.
+///
+/// The live gate drives `reify_set_parameter` at a real printer and watches a
+/// pin flip Satisfied → Violated → Satisfied. That needs a webview and OCCT, so
+/// it can never run in CI. What CAN run in CI is the claim underneath it: that a
+/// constraint whose STATUS changed because a parameter changed survives the
+/// write-tool payload intact — `GuiState.constraints` is a
+/// `diffed keyed(key=node_id)` field on the same delta choke-point as `values`
+/// and `meshes`, and the sibling test above already pins the `values` half.
+///
+/// `bracket_source_with_width("20mm")` supplies the flip for free: the fixture's
+/// `constraint thickness < width / 4` reads 5 < 20 at the default width and
+/// 5 < 5 once narrowed, so ONE parameter edit moves exactly one constraint. No
+/// GUI, no live engine, no printer.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn write_tool_payload_carries_a_flipped_constraint_status() {
+    use reify_test_support::{bracket_source, bracket_source_with_width};
+
+    let narrowed_source = bracket_source_with_width("20mm");
+    let before = boundary_gui_state_from(bracket_source());
+    let after = boundary_gui_state_from(&narrowed_source);
+
+    // Without this the flip search below is vacuous: two empty lists agree, and
+    // "no constraint changed" would read as a pass.
+    assert!(
+        !before.constraints.is_empty() && !after.constraints.is_empty(),
+        "both fixtures must carry constraints, or this test proves nothing"
+    );
+
+    // The flip is found by comparing the SAME node_id across the two states —
+    // the key `diff_gui_state` itself matches on.
+    let prior: std::collections::HashMap<&str, &str> = before
+        .constraints
+        .iter()
+        .map(|c| (c.node_id.as_str(), c.status.as_str()))
+        .collect();
+    let flipped: Vec<&crate::types::ConstraintData> = after
+        .constraints
+        .iter()
+        .filter(|c| prior.get(c.node_id.as_str()).copied() != Some(c.status.as_str()))
+        .collect();
+    assert_eq!(
+        flipped.len(),
+        1,
+        "narrowing width must move exactly one constraint; moved: {:?}",
+        flipped
+            .iter()
+            .map(|c| (&c.node_id, &c.status))
+            .collect::<Vec<_>>()
+    );
+    let flipped = flipped[0];
+    assert_eq!(
+        prior.get(flipped.node_id.as_str()).copied(),
+        Some("Satisfied"),
+        "the flipped constraint must have been Satisfied before the edit"
+    );
+    assert_eq!(flipped.status, "Violated");
+
+    // The selector the live gate uses. `parameter_ids` is
+    // `collect_value_refs(expr)`, spelled `{Entity}.{member}` by
+    // `ValueCellId::Display` — the SAME spelling `reify_set_parameter` takes as
+    // its `cell_id`, which is what lets a pin be named by the cells it is about
+    // instead of by its positional `node_id`.
+    assert!(
+        flipped
+            .parameter_ids
+            .contains(&"Bracket.width".to_string()),
+        "the flipped constraint must name the edited cell; parameter_ids: {:?}",
+        flipped.parameter_ids
+    );
+
+    // ── The payload round trip: serialize → DebugTransport → deserialize ──
+    let payload = crate::debug_server::write_tool_frontend_payload(
+        &after,
+        Some(("/tmp/bracket.ri", narrowed_source.as_str())),
+    )
+    .expect("write_tool_frontend_payload must return Ok");
+    let raw = serde_json::to_string(&payload).expect("payload must serialize");
+
+    let transport = Arc::new(DebugTransport::new());
+    let t = transport.clone();
+    tokio::spawn(async move {
+        loop {
+            if t.resolve(1, raw.clone()).is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+    let (id, rx) = transport.create_request().unwrap();
+    assert_eq!(id, 1, "first id on a fresh transport should be 1");
+    let received = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        .await
+        .expect("resolve timed out")
+        .expect("channel dropped");
+    let received: serde_json::Value =
+        serde_json::from_str(&received).expect("received payload must be JSON");
+
+    // The key set is still EXACTLY guiState + file — carrying a constraint flip
+    // must not have added a channel of its own.
+    let mut keys: Vec<&str> = received
+        .as_object()
+        .expect("payload must be a JSON object")
+        .keys()
+        .map(|k| k.as_str())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["file", "guiState"]);
+
+    let round_tripped: crate::types::GuiState =
+        serde_json::from_value(received["guiState"].clone())
+            .expect("GuiState round-trip must succeed");
+    let delivered = round_tripped
+        .constraints
+        .iter()
+        .find(|c| c.node_id == flipped.node_id)
+        .expect("the flipped constraint must still be in the delivered payload");
+    assert_eq!(
+        (
+            &delivered.node_id,
+            &delivered.status,
+            &delivered.parameter_ids
+        ),
+        (
+            &flipped.node_id,
+            &flipped.status,
+            &flipped.parameter_ids
+        ),
+        "node_id / status / parameter_ids must survive the transport byte-identical"
+    );
+}
