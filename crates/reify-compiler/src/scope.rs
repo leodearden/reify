@@ -177,9 +177,10 @@ pub(crate) struct CompilationScope<'u> {
     /// direction }.
     ///
     /// A fifth sibling of `sub_member_types` / `sub_realization_names`,
-    /// populated at the same Sub pre-pass site from the same resolved child
-    /// template, so it inherits that site's module-first/prelude-fallback
-    /// resolution and its `Keyed<T>` element unwrapping for free.
+    /// populated at both Sub pre-pass sites (plain subs and match-arm subs)
+    /// from the same resolved child template those maps use, so it inherits
+    /// that resolution's module-first/prelude-fallback rule and its `Keyed<T>`
+    /// element unwrapping for free.
     ///
     /// Read by `connect.rs` so that a DOTTED connect endpoint (`e1.p`) can be
     /// direction-checked against the child's declaration. Before this map
@@ -188,10 +189,13 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// ABSENCE CONTRACT: a missing sub key, or a missing port key within a
     /// present sub, means "this port's declaration is not resolvable at this
-    /// point in the compile" — the child structure is declared later in the
-    /// module, or the named member is not a port at all. It does NOT mean the
-    /// direction is `Bidi`. Consumers must treat the miss as "unknown" and
-    /// decline to check, never as a default direction.
+    /// point in the compile". Three causes, all silent by design: the child
+    /// structure is declared later in the module (task #7374); the named member
+    /// is not a port at all; or the sub is a match-arm cluster whose arms
+    /// disagree about that port's direction, which `merge_arm_port_directions`
+    /// (entity.rs) folds out rather than answering with one arbitrary arm. A
+    /// miss does NOT mean the direction is `Bidi` — consumers must treat it as
+    /// "unknown" and decline to check, never as a default direction.
     ///
     /// `BTreeMap` inner for deterministic iteration, matching the
     /// `sub_member_types` precedent.

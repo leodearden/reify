@@ -2175,11 +2175,12 @@ pub(crate) fn compile_entity(
                             // `find_template` here is module-only, so an arm sub
                             // targeting a prelude template (`A => sub s :
                             // DisplayStyle`) left every map below unpopulated.
-                            if let Some(child_tmpl) = find_template_with_prelude(
+                            let child_tmpl = find_template_with_prelude(
                                 compiled_templates,
                                 prelude,
                                 &sub.structure_name,
-                            ) {
+                            );
+                            if let Some(child_tmpl) = child_tmpl {
                                 scope.sub_structure_traits.insert(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
@@ -2200,6 +2201,19 @@ pub(crate) fn compile_entity(
                                     realization_name_set_from_template(child_tmpl),
                                 );
                             }
+                            // Port directions, so that a dotted connect endpoint naming
+                            // an arm sub (`connect s.p -> t.p`) is direction-checked just
+                            // like one naming a plain sub (task #7175). Folded across the
+                            // cluster's arms rather than last-write-wins like the maps
+                            // above — see `merge_arm_port_directions` for why a direction
+                            // cannot be answered by whichever arm compiled last. Called
+                            // unconditionally: an arm whose child template did not
+                            // resolve must retract the cluster's entry, not skip it.
+                            merge_arm_port_directions(
+                                &mut scope.sub_port_directions,
+                                &sub.name,
+                                child_tmpl.map(port_direction_map_from_template),
+                            );
                         }
                         other => {
                             // suggestion 6: only 'sub' arms are supported in task 2372.
@@ -5042,6 +5056,35 @@ fn port_direction_map_from_template(
         .iter()
         .map(|p| (p.name.clone(), p.direction))
         .collect()
+}
+
+/// Fold ONE match-arm's port directions into that cluster's `sub_port_directions`
+/// entry, keeping only what every arm agrees on.
+///
+/// All arms of a cluster declare the same sub NAME, so they all write one entry.
+/// The sibling maps at the same site take the last arm's answer (see
+/// `CompilationScope::match_arm_group_arm_member_types` for why that is
+/// tolerable for member TYPES, which are read to RESOLVE names). A direction is
+/// read to REJECT source, so last-write-wins would turn a connect that is legal
+/// under the selected arm into a hard error whenever the arms disagree.
+///
+/// The entry is therefore the INTERSECTION over arms: a port survives only while
+/// every arm declares it with the SAME direction, and an arm whose child
+/// template did not resolve (`None`) empties the entry outright. Anything
+/// dropped falls back to the absence contract on `sub_port_directions` — "not
+/// resolvable here", hence unchecked — never to a default direction.
+fn merge_arm_port_directions(
+    directions: &mut HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
+    sub_name: &str,
+    arm: Option<BTreeMap<String, reify_core::PortDirection>>,
+) {
+    let arm = arm.unwrap_or_default();
+    match directions.get_mut(sub_name) {
+        Some(agreed) => agreed.retain(|port, dir| arm.get(port) == Some(dir)),
+        None => {
+            directions.insert(sub_name.to_string(), arm);
+        }
+    }
 }
 
 /// Collect the `(declaring_trait, fn_name)` keys of a conformer template's

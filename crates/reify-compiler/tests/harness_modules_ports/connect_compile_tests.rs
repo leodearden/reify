@@ -389,6 +389,180 @@ structure def Manifold {
     );
 }
 
+/// A MATCH-ARM sub is a sub too: `connect src -> s.p` where `s` is declared by
+/// the arms of a `match` block must be direction-checked like any other dotted
+/// endpoint. Both arms declare `p` as `in`, so the arms agree and the In -> In
+/// mistake is caught.
+#[test]
+fn compile_connect_match_arm_sub_dotted_direction_error() {
+    let source = r#"
+enum Mode { Fast, Slow }
+trait T { param d : Length }
+structure def FastLeaf {
+    port p : in T { param d : Length = 1mm }
+}
+structure def SlowLeaf {
+    port p : in T { param d : Length = 2mm }
+}
+structure def Asm {
+    param mode : Mode = Mode.Fast
+    match mode {
+        Fast => sub s : FastLeaf,
+        Slow => sub s : SlowLeaf
+    }
+    port src : in T { param d : Length = 1mm }
+    connect src -> s.p
+}
+"#;
+
+    let module = compile_source(source);
+    let asm = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Asm")
+        .expect("expected template Asm");
+
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
+    assert_compat_constraint_literal(asm, false);
+}
+
+/// When a match-arm cluster's arms DISAGREE about a port's direction, the
+/// connect is left unchecked rather than judged against one arbitrary arm.
+///
+/// Here `src` is `out`, the `Fast` arm's `p` is `in` (a legal Out -> In hop, and
+/// `Fast` is the selected arm) and the `Slow` arm's `p` is `out` (Out -> Out).
+/// The sibling side-maps at this pre-pass site keep the LAST arm's answer, which
+/// would reject this assembly outright; `merge_arm_port_directions` folds the
+/// arms to their intersection instead, so the contested port falls back to the
+/// `sub_port_directions` absence contract — unknown, hence unchecked. Deciding
+/// per-arm is a larger question than #7175; this pins that the fallback is a
+/// silent pass and never a false error.
+#[test]
+fn compile_connect_match_arm_sub_divergent_directions_unchecked() {
+    let source = r#"
+enum Mode { Fast, Slow }
+trait T { param d : Length }
+structure def InLeaf {
+    port p : in T { param d : Length = 1mm }
+}
+structure def OutLeaf {
+    port p : out T { param d : Length = 2mm }
+}
+structure def Asm {
+    param mode : Mode = Mode.Fast
+    match mode {
+        Fast => sub s : InLeaf,
+        Slow => sub s : OutLeaf
+    }
+    port src : out T { param d : Length = 1mm }
+    connect src -> s.p
+}
+"#;
+
+    let module = compile_source(source);
+    assert_no_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
+}
+
+/// KNOWN GAP, pinned so it cannot change unobserved: the dotted check is
+/// DECLARATION-ORDER dependent. Entities compile in source order, so a child
+/// structure declared AFTER its parent is not in `compiled_templates` when the
+/// Sub pre-pass runs; `sub_port_directions` gets no entry and the endpoint stays
+/// unchecked.
+///
+/// This is `compile_connect_dotted_direction_error` verbatim with `Leaf` moved
+/// below `Asm` — same source, opposite verdict. Deferred to #7374; when that
+/// lands this test flips to expecting the error.
+#[test]
+fn compile_connect_dotted_child_declared_later_unchecked() {
+    let source = r#"
+trait T { param d : Length }
+structure def Asm {
+    sub e1 : Leaf
+    sub e2 : Leaf
+    connect e1.p -> e2.p
+}
+structure def Leaf {
+    port p : in T { param d : Length = 1mm }
+}
+"#;
+
+    let module = compile_source(source);
+    let asm = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Asm")
+        .expect("expected template Asm");
+
+    assert_no_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
+    assert_compat_constraint_literal(asm, true);
+}
+
+/// A dotted endpoint naming a member that is NOT a port (`w` is a param) is left
+/// alone: it resolves to `None` and the connect compiles clean.
+///
+/// Deliberate — what a connect endpoint may legally denote is a separate
+/// question from which direction its port declares, and erroring here would
+/// break sub-of-sub endpoint references. Pinned so that widening
+/// `endpoint_direction` cannot start rejecting this shape silently.
+#[test]
+fn compile_connect_dotted_non_port_member_unchecked() {
+    let source = r#"
+trait T { param d : Length }
+structure def Leaf {
+    param w : Length = 1mm
+    port p : in T { param d : Length = 1mm }
+}
+structure def Asm {
+    sub e1 : Leaf
+    sub e2 : Leaf
+    connect e1.w -> e2.w
+}
+"#;
+
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// `self.p` is held to the bare `p` standard by the undefined-port check as well
+/// as by the direction check: `self.typo` names no port on this entity, so it is
+/// diagnosed exactly as bare `typo` would be. Before this, the `self.` spelling
+/// slipped past the guard entirely and the connect compiled with no diagnostic.
+#[test]
+fn compile_connect_self_dotted_undefined_port_error() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 1mm }
+    port b : in T { param d : Length = 2mm }
+    connect self.typo -> b
+}
+"#;
+
+    let (_template, diagnostics) = compile_first_template(source);
+    assert_has_diagnostic(
+        &diagnostics,
+        Severity::Error,
+        "undefined port 'self.typo'",
+    );
+}
+
 // ── Step 23: connector_sub_content_hash_includes_type_and_params ─────
 
 #[test]
@@ -1961,10 +2135,16 @@ structure def S {
     );
 }
 
-/// Case (c): dotted ports (motor.shaft → gear.input) → no undefined-port check,
-/// no auto-match, empty port_mappings.
+/// Case (c): dotted ports (motor.shaft → gear.input) skip the OWN-ENTITY
+/// `CompiledPort` lookup, so they get no undefined-port check, no auto-match and
+/// empty port_mappings.
+///
+/// Their DIRECTION is a separate question and IS resolved, through
+/// `endpoint_direction` against the sub's child template (#7175) — so this
+/// doubles as the compiler-level positive case: `out -> in` across subs stays
+/// clean now that the check actually runs on it.
 #[test]
-fn hoisted_lookup_dotted_no_check() {
+fn hoisted_lookup_dotted_no_own_entity_lookup() {
     let source = r#"
 trait RotaryPort { param d : Length }
 structure def Motor {
@@ -2000,7 +2180,8 @@ structure def Assembly {
         asm.connections[0].right_port, "gear.input",
         "expected dotted right_port"
     );
-    // Dotted ports: no undefined-port error, no auto-match, empty port_mappings
+    // Dotted ports: no undefined-port error, no auto-match, empty port_mappings —
+    // the own-entity lookup is what is skipped, not the direction check.
     let undef_errors: Vec<_> = module
         .diagnostics
         .iter()

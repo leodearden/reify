@@ -4,6 +4,11 @@
 // resolvable — the connect must therefore be rejected exactly as the bare form
 // is (see connect_direction_bare_mismatch.ri, the control).
 //
+// That ordering is load-bearing, not incidental: with `Leaf` below `Asm` the
+// same source compiles clean (#7374), which
+// `compile_connect_dotted_child_declared_later_unchecked` pins in
+// crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs.
+//
 // `reify check` compiles + constraint-checks, so the compile-time direction
 // diagnostic is the user-observable signal: exit non-zero with
 // "incompatible port directions" on stderr.
