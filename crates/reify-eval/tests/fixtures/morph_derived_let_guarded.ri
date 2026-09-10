@@ -1,0 +1,19 @@
+// Test fixture for task 6643 — the VETO half of Stage A's leaf-scoping contract.
+//
+// Geometry-free by design, for the same reason as `morph_derived_let.ri`:
+// Stage A is pure Rust, so its guard must run in every build profile.
+//
+// `where width > depth { ... }` makes the compiler synthesize a `__guard_0`
+// cell (`ValueCellKind::Let` + `Type::Bool`) and register it in
+// `graph.structure_controlling`. Ticking `width` 10mm -> 10.5mm flips it, so
+// this purely dimensional edit must still be VETOED: Rule 2 runs before the
+// kind match, which is what stops leaf scoping from being "skip all Let cells".
+
+structure MorphDerivedLetGuarded {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+
+    where width > depth {
+        param rib: Length = 2mm
+    }
+}
