@@ -1,0 +1,20 @@
+// #7175 end-to-end fixture: a DOTTED sub-port connect whose two endpoints are
+// both `in`. `Leaf` is declared before `Asm`, so the child template is already
+// in the registry when the parent compiles and both endpoint directions are
+// resolvable — the connect must therefore be rejected exactly as the bare form
+// is (see connect_direction_bare_mismatch.ri, the control).
+//
+// `reify check` compiles + constraint-checks, so the compile-time direction
+// diagnostic is the user-observable signal: exit non-zero with
+// "incompatible port directions" on stderr.
+trait T { param d : Length }
+
+structure def Leaf {
+    port p : in T { param d : Length = 1mm }
+}
+
+structure def Asm {
+    sub e1 : Leaf
+    sub e2 : Leaf
+    connect e1.p -> e2.p
+}

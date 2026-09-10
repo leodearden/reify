@@ -181,6 +181,83 @@ structure def S {
     assert_eq!(template.connections.len(), 1);
 }
 
+// ── #7175: dotted sub-port endpoints are direction-checked too ───────
+
+/// The DOTTED counterpart of `compile_connect_direction_error` (above): the
+/// same In -> In mistake written across sub-components rather than on the own
+/// entity's ports. Before #7175 both endpoints resolved to `None` and the
+/// direction match fell through to its catch-all, so this compiled clean and
+/// the connection's compatibility constraint was baked as `Bool(true)` — the
+/// connect read as "checked and fine" when it had never been checked at all.
+#[test]
+fn compile_connect_dotted_direction_error() {
+    let source = r#"
+trait T { param d : Length }
+structure def Leaf {
+    port p : in T { param d : Length = 1mm }
+}
+structure def Asm {
+    sub e1 : Leaf
+    sub e2 : Leaf
+    connect e1.p -> e2.p
+}
+"#;
+
+    let module = compile_source(source);
+    let asm = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Asm")
+        .expect("expected template Asm");
+
+    let dir_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.message.contains("incompatible port directions")
+        })
+        .collect();
+    assert!(
+        !dir_errors.is_empty(),
+        "expected error about incompatible port directions, got: {:?}",
+        module.diagnostics
+    );
+
+    // Still 1 connection (the diagnostic does not drop it).
+    assert_eq!(asm.connections.len(), 1);
+
+    // And the compatibility constraint must now read false — otherwise the
+    // connection still reports as satisfied downstream.
+    assert_compat_constraint_literal(asm, false);
+}
+
+/// Assert the connection's `connect_compat_*` constraint is the literal
+/// `Bool(expected)`.
+///
+/// The direction verdict is baked into that constraint (connect.rs), and it is
+/// what `reify check` reports as satisfied/unsatisfied — so pinning the literal
+/// pins the user-visible verdict, not just the presence of a diagnostic.
+fn assert_compat_constraint_literal(
+    template: &reify_compiler::TopologyTemplate,
+    expected: bool,
+) {
+    let compat_id = &template.connections[0].compatibility_constraint;
+    let compat = template
+        .constraints
+        .iter()
+        .find(|c| c.id == *compat_id)
+        .expect("expected compatibility constraint for connection");
+    assert!(
+        matches!(
+            &compat.expr.kind,
+            reify_ir::CompiledExprKind::Literal(reify_ir::Value::Bool(b)) if *b == expected
+        ),
+        "expected compatibility constraint literal Bool({expected}), got: {:?}",
+        compat.expr.kind
+    );
+}
+
+
 // ── Step 23: connector_sub_content_hash_includes_type_and_params ─────
 
 #[test]
