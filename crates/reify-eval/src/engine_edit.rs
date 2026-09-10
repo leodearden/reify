@@ -22,6 +22,113 @@
 //! `(Undef, Auto)`, destroying solver work and causing `eval(guard=T)` to
 //! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
 //! configuration.
+//!
+//! # Warm-Resolution back-prop sync set
+//!
+//! Four entry points resolve Auto params through the constraint solver and
+//! back-propagate the result: [`Engine::eval`], [`Engine::eval_cached`],
+//! [`Engine::edit_param`], and [`Engine::edit_source`]. Between them there
+//! are six write-back arms, because, per template index, [`Engine::eval`] and
+//! [`Engine::eval_cached`] each take a mutually exclusive merged-cluster
+//! branch through `dispatch_merged_cluster_solve` /
+//! `dispatch_merged_cluster_solve_cached` (task #5118).
+//!
+//! Each arm writes some subset of eight legs. Four are uniform across
+//! all six arms; four are not. Legs 1-4 describe the MAIN resolution
+//! write-back of each arm; wave-2 and post-wave2 phases are covered
+//! per-arm in leg 5.
+//!
+//! 1. `values` — uniform
+//! 2. snapshot map as `Determined` — uniform
+//! 3. cache entry — uniform
+//! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
+//! 5. journal — mechanism differs per arm:
+//!    - [`Engine::eval`] per-template arm — hand-rolled `Started`/`Completed`
+//!      pairs around the solver write-back. Two exceptions: the
+//!      pinned-connector-auto write-back
+//!      (`write_solved_pinned_connector_autos`, task #4710), which fires
+//!      first and is un-journaled by design — its own doc says "Does NOT
+//!      touch the journal" — and, separately, a later post-solve phase,
+//!      `materialize_dependent_cells`, which writes `values` and marks the
+//!      snapshot `Determined` for cross-scope Let-coupled cells with no
+//!      cache entry and no journal call. Its sibling post-solve phase,
+//!      `evaluate_let_bindings`, DOES journal via `commit_cell_result`, so
+//!      it needs no exception entry.
+//!    - [`Engine::eval`]'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve`) — hand-rolled `Started`/
+//!      `Completed` pairs, same shape as the per-template arm. No
+//!      pinned-connector write-back here (the merged builder already
+//!      excludes strict connector-instance autos), so no pinned-connector
+//!      exception — but it shares the per-template arm's
+//!      `materialize_dependent_cells` exception above.
+//!    - [`Engine::eval_cached`] per-template arm — TWO un-journaled
+//!      write-backs: the pinned-connector-auto write-back (same
+//!      exception as the `eval` per-template arm) and, separately, its
+//!      own solver-resolved-value write-back, a bare cache record with
+//!      no journal event. Its wave-2 downstream let-cone re-eval, by
+//!      contrast, DOES journal, via `commit_cell_result`.
+//!    - [`Engine::eval_cached`]'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve_cached`) — `commit_cell_result`
+//!      for both the main write-back and its wave-2. No pinned-connector
+//!      write-back (same exclusion as `eval`'s merged-cluster branch).
+//!    - [`Engine::edit_param`] — `commit_cell_result` for the main
+//!      write-back and the wave-2 downstream reseed's active-member leg
+//!      (both `CacheLeg::Record`); that same wave-2 reseed's
+//!      inactive-guarded-member leg instead calls
+//!      [`deactivate_if_not_auto`] (no cache, no journal). A third phase,
+//!      the post-wave2 driver-ordered guard-member reseed, follows: its
+//!      active-member leg also routes through `commit_cell_result`, but
+//!      with `CacheLeg::Skip("post-wave2 guard-member reseed")` —
+//!      journals, does not cache. No un-journaled *resolution*
+//!      write-back — its inactive-guarded-member leg, like the wave-2
+//!      reseed's, also calls [`deactivate_if_not_auto`], writing
+//!      `values`/snapshot only (no cache, no journal), by design; see
+//!      the canonical Auto-cell lifecycle rule above.
+//!    - [`Engine::edit_source`] — main write-back journals via
+//!      `commit_cell_result`; its wave-2 ("Second propagation wave")
+//!      does NOT — a bare `values`/snapshot insert plus
+//!      `cache.record_evaluation`, no journal event. A third phase, the
+//!      post-wave2 driver-ordered guard-member reseed's active-member
+//!      leg, has NEITHER: a bare `values`/snapshot insert with no cache
+//!      write and no journal call at all.
+//! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
+//!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
+//! 7. `objective_provenance` — `eval`'s two arms only
+//! 8. `resolved_ids` / `all_resolved_ids` — uniform: every arm populates
+//!    a local resolved-ids set seeded from the solver's resolved
+//!    values. In [`Engine::eval`]'s and [`Engine::eval_cached`]'s
+//!    per-template arms it is a superset of that — strict when
+//!    `pinned_connector_autos` is non-empty, equal otherwise:
+//!    `write_solved_pinned_connector_autos` (in `engine_eval.rs`) also
+//!    inserts each pinned connector-instance auto (their merged-cluster
+//!    branches take no pinned-connector write-back, per leg 5 above, so
+//!    this superset is per-template-arm only). For `eval_cached` this
+//!    is load-bearing: its wave-2 dirty-cone seed reads directly from
+//!    this same `resolved_ids` set, so a pinned auto omitted from it
+//!    would also skip re-eval of its downstream cone.
+//!    `eval`'s two arms feed the set into `SnapshotProvenance::Resolution {
+//!    resolved }`; the other four arms (`eval_cached`'s two arms,
+//!    [`Engine::edit_param`], [`Engine::edit_source`]) use it instead to
+//!    seed the wave-2 downstream dirty cone. Omitting a newly resolved
+//!    cell here silently skips its downstream re-eval.
+//!
+//! Legs 6-7 are a deliberate, documented divergence, not drift:
+//! `dispatch_merged_cluster_solve_cached`'s own doc records that its arm
+//! still emits no `resolved_params` and no `objective_provenance` —
+//! consult that doc's `resolved_params`/`objective_provenance` clause
+//! for the rationale before "fixing" `eval_cached` to write them. That
+//! same clause's "migrated per-template sibling" remark — it sits in the
+//! same sentence, joined by "but" — is about a different topic (task
+//! #5118's `commit_cell_result` migration, not legs 6-7) and is not
+//! authoritative for leg 5 above — treat leg 5 as this file's canonical
+//! account of journal behavior per arm.
+//!
+//! Check all eight legs when modifying warm Resolution back-prop.
+//!
+//! A further arm, `resolve_concurrent_edit` — the fourth member of this
+//! roster's original four-site form, before [`Engine::edit_source`] and the
+//! merged-cluster branches were added — was removed with `concurrent.rs` in
+//! ffb85f0627 (task ο, #5065).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1188,7 +1295,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // θ2 (task 4531) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent — making "warm output
+        // SAME unified driver order as cold/build — making "warm output
         // == cold output" structural on the edit surface — and `eval_set` IS that
         // order. `dirty::compute_eval_set` sorts through `dirty::topological_sort`,
         // which delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
@@ -1713,7 +1820,7 @@ impl Engine {
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -1722,8 +1829,11 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_param site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_param` arm of the
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the eight legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
@@ -1860,7 +1970,7 @@ impl Engine {
             // read them may NOT be in the original edit dirty cone. RE-DIRTY the
             // resolved autos' downstream cone and reseed the SAME unified driver
             // (`run_unified_pass_seeded`) for one additional value pass — the
-            // ordering core cold/build/concurrent use — replacing BOTH the legacy
+            // ordering core cold/build use — replacing BOTH the legacy
             // hand-rolled "second propagation wave" (`compute_eval_set`-ordered)
             // AND its cross-phase `reapply_guard_deactivations_post_wave2` cleanup.
             //
@@ -3395,7 +3505,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
         // θ2 (task 4713) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent, and `eval_set` IS that
+        // SAME unified driver order as cold/build, and `eval_set` IS that
         // order — `compute_eval_set` sorts through `dirty::topological_sort`, which
         // delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
         // scheduling core, INV-EVAL-5). Note the sort above already used
@@ -4050,7 +4160,7 @@ impl Engine {
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -4059,8 +4169,11 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_source site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_source` arm of the
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the eight legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 

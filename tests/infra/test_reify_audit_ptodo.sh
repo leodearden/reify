@@ -32,6 +32,14 @@
 #                  non-zero.  Hermetic, mirrors (d); adds a BENIGN control repo
 #                  so the lane's false-positive guards are proven at the binary
 #                  level and not only in unit tests.
+#   (g) LANE δ-B HARD GATE (task #6103) — an ORDINARY comment (no marker token,
+#                  no attribute) that both defers the work and cites a terminal
+#                  task is classified orphaned→High → reify-audit exits
+#                  non-zero.  Hermetic, mirrors (f) including its BENIGN control
+#                  repo — which matters more here than anywhere else: δ-B was
+#                  rejected once (task #6087) at a 48% false-positive rate, so
+#                  its guards are proven at the binary level, not only in unit
+#                  tests.
 #
 # Design invariant (PRD 6.6): fingerprint derivation lives ONLY in the
 # ptodo-baseline-gen binary (the same ptodo::fingerprint path the ratchet uses).
@@ -95,7 +103,7 @@
 # dev-box `run_all.sh` runs, so it stays a graceful skip by design.
 #
 # SELF-MATCH SAFETY: this file must not contain any literal marker tokens that
-# the PTODO structural lane sweeps for.  Marker text in scenarios (b)/(c)/(d)/(f)
+# the PTODO structural lane sweeps for.  Marker text in scenarios (b)/(c)/(d)/(f)/(g)
 # is assembled from shell variables at runtime so the written fixture carries a
 # real token while this .sh source stays clean.
 #
@@ -431,7 +439,7 @@ elif [ "$_guard_rc" -ne 0 ]; then
         # ((a)+(b)) is skipped.  This is not a silent green: those scenarios
         # set $RAN, and the floor after test_summary still refuses a run that
         # executed none of them.
-        echo "test_reify_audit_ptodo.sh: reify-audit freshness guard failed (rc=$_guard_rc) but '$REIFY_AUDIT_BIN' is executable — skipping the precision-sensitive ratchet ((a)+(b)); the (c)+(d)+(e)+(f) hard gate still runs against the stale binary" >&2
+        echo "test_reify_audit_ptodo.sh: reify-audit freshness guard failed (rc=$_guard_rc) but '$REIFY_AUDIT_BIN' is executable — skipping the precision-sensitive ratchet ((a)+(b)); the (c)+(d)+(e)+(f)+(g) hard gate still runs against the stale binary" >&2
         RATCHET_SKIP=1
     else
         # ABSENT: nothing can run.  Leaving RATCHET_SKIP=0 here would look
@@ -481,6 +489,10 @@ FIX_C_TASKS="" # scenario (c) tasks-file bypass (empty JSON array, avoids MCP lo
 _err_tmp=""    # stderr capture file for run_audit (task #4800 defense-in-depth)
 FIX_E=""       # scenario (e) G-allow orphaned-cite fixture temp dir
 GEN_ERR_TMP="" # scenario (a) generator stderr capture (6.6 scan evidence, #6241)
+FIX_F=""       # scenario (f) δ-A hard-gate fixture temp dir
+FIX_F2=""      # scenario (f) δ-A benign control repo temp dir
+FIX_G=""       # scenario (g) δ-B hard-gate fixture temp dir
+FIX_G2=""      # scenario (g) δ-B benign control repo temp dir
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
@@ -495,6 +507,10 @@ cleanup_all() {
     [ -n "$_err_tmp"    ] && rm -f  "$_err_tmp"     || true
     [ -n "$FIX_E"       ] && rm -rf "$FIX_E"        || true
     [ -n "$GEN_ERR_TMP" ] && rm -f  "$GEN_ERR_TMP"  || true
+    [ -n "$FIX_F"       ] && rm -rf "$FIX_F"        || true
+    [ -n "$FIX_F2"      ] && rm -rf "$FIX_F2"       || true
+    [ -n "$FIX_G"       ] && rm -rf "$FIX_G"        || true
+    [ -n "$FIX_G2"      ] && rm -rf "$FIX_G2"       || true
 }
 trap cleanup_all EXIT
 
@@ -1109,9 +1125,189 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_F}, 'done');
     # Emit passing-branch sentinel for scenario (f).  Gated on FAIL counter
     # unchanged — suppressed if any (f) assert failed (fixes silent_pass_on_failure).
     [ "$FAIL" -eq "$_fail_before_f" ] && echo "@@HARDGATE_F_PASSED@@"
+
+    # -----------------------------------------------------------------------
+    # (g) LANE δ-B HARD GATE (task #6103): an ORDINARY comment — no marker
+    #     token, no attribute, nothing but comment text — that both DEFERS the
+    #     work AND cites a TERMINAL task is classified orphaned→High →
+    #     reify-audit exits NON-ZERO.
+    #
+    #     A direct transposition of scenario (f), inheriting the same hard-won
+    #     fixes: the LD_LIBRARY_PATH="" sqlite3 workaround (esc-4581-87), the
+    #     gate-on-binary-not-on-RATCHET_SKIP structure (#4733), and the
+    #     no-silent-green RAN floor (block-level, shared with (c)-(f)).
+    #
+    #     The cite is seeded 'cancelled' rather than 'done' — the live
+    #     deliverable this lane exists to surface
+    #     (crates/reify-core/src/diagnostics.rs, "blocked on VolumeMesh
+    #     realization (task #2947)") cites a CANCELLED task, and (d)/(e)/(f)
+    #     already cover 'done'.  Both are terminal per §8.4.
+    #
+    #     Three assertions, matching (f)'s orphan/control/benign triple:
+    #       (g-orphan)  deferred.rs + cancelled task → orphaned High → exit 1
+    #       (g-control) UPDATE task to pending       → live cite     → exit 0
+    #       (g-benign)  FP-guard control repo        → no finding    → exit 0
+    #
+    #     (g-benign) is the assertion that matters most, and it is deliberately
+    #     built to be DISCRIMINATING rather than merely quiet.  Its repo carries
+    #     a seeded tasks.db in which every cite is TERMINAL, so an over-firing
+    #     lane produces orphaned→High and flips the exit code.  Without that
+    #     seeding the liveness lane would degrade on a missing DB and the repo
+    #     would exit 0 whether the guards held or not — a control that cannot
+    #     fail.  Its four populations are exactly the ones task #6087 measured:
+    #       class (a) the needle inside an IDENTIFIER (mark_pending_with_cause);
+    #       class (b) a PRD-RELATIVE cite (deferred to PRD task #N) — §8.2;
+    #       class (c) a deferral with NO cite (δ-B is cite-anchored);
+    #       class (d) a G-allow marker, which belongs to its own lane.  Its
+    #                 owner cite is written with "PRD " immediately left so the
+    #                 G-allow lane's own rule (c) exempts it and stays silent —
+    #                 which leaves δ-B's g_allow_marker_body guard as the only
+    #                 thing preventing a finding, exactly as in
+    #                 crates/reify-audit/tests/fixtures/ptodo/scenario20_delta_b_cited_deferral.rs.
+    #
+    #     SELF-MATCH SAFETY: this file is swept and is NOT allowlisted.  Lane
+    #     δ-B is .rs-gated so a literal cited-deferral comment here could not
+    #     fire it, but the file's discipline is followed regardless — every
+    #     deferral needle and cite id is assembled from shell variables at
+    #     runtime, so no literal deferral+cite pair ever appears in the
+    #     committed source.
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (g) Lane δ-B hard gate: cited deferral in an ordinary comment + terminal cite → High → non-zero exit ---"
+
+    FIX_G="$(mktemp -d)"
+    git -C "$FIX_G" init -q
+    mkdir -p "$FIX_G/src"
+
+    # Assemble the δ-B anchor at runtime (SELF-MATCH SAFETY, as in (d)/(e)/(f)).
+    DEFER_G="blocked on"
+    CITE_ID_G="7777"
+    printf '/// VolumeMesh realization is %s task #%s (hermetic fixture)\nfn f() {}\n' \
+        "$DEFER_G" "$CITE_ID_G" > "$FIX_G/src/deferred.rs"
+    git -C "$FIX_G" add -A
+
+    # Seed tasks.db AFTER the git add (mirrors (d)/(f)'s untracked-in-worktree
+    # reality).  Schema mirrors crates/reify-audit/tests/common/schema.rs.
+    mkdir -p "$FIX_G/.taskmaster/tasks"
+    # LD_LIBRARY_PATH="" so sqlite3 uses the system lib (esc-4581-87).
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_G/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_G}, 'cancelled');
+"
+
+    # Write an empty JSON array for --tasks-file (bypasses MCP; liveness lane
+    # still reads the sqlite3 tasks.db at <project_root>/.taskmaster/tasks/tasks.db).
+    FIX_G_TASKS_FILE="$FIX_G/tasks.json"
+    printf '[]' > "$FIX_G_TASKS_FILE"
+
+    # Snapshot FAIL before scenario (g) begins.  @@HARDGATE_G_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (g) asserts — i.e. every assert
+    # passed.  A broken gate suppresses the sentinel.
+    _fail_before_g=$FAIL
+
+    # (g-orphan) cancelled task → orphaned → High → exit 1.
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_G" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_G_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_db_orphan=$?
+    set -e
+
+    assert "(g-orphan) cited deferral comment (#${CITE_ID_G}) → cancelled task → orphaned High → reify-audit exits 1" \
+        bash -c '[ "$1" -eq 1 ]' -- "$_exit_db_orphan"
+
+    # (g-control) UPDATE task status to pending → live cite → no High → exit 0.
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_G/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id=${CITE_ID_G};"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_G" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_G_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_db_live=$?
+    set -e
+
+    assert "(g-control) pending-task cited deferral comment → live cite → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_db_live"
+
+    # (g-benign) a repo carrying ONLY lines that must be saved by a guard → no
+    # finding at all → exit 0.  Every cite below is seeded TERMINAL, so an
+    # over-broad lane fires orphaned→High here and the exit code becomes
+    # non-zero: the control can actually fail.
+    FIX_G2="$(mktemp -d)"
+    git -C "$FIX_G2" init -q
+    mkdir -p "$FIX_G2/src"
+
+    DEFER_A="pending"
+    DEFER_B="deferred to"
+    DEFER_C="not yet"
+    {
+        # class (a) — the needle is inside an identifier (has_deferral_prose guard 3).
+        printf '// cause via mark_%s_with_cause (task #2330 §9.2 invariant).\n' "$DEFER_A"
+        printf '// --- mark_pruned_%s producer tests (task #4739) ---\n' "$DEFER_A"
+        # class (b) — the cite is PRD-relative, not a task id (§8.2).
+        printf '/// Diagnostic emission is %s PRD task #10 (Diagnostic mapping for\n' "$DEFER_B"
+        printf '//   is %s a hydrated Value::GeometryHandle (PRD invariant #2:\n' "$DEFER_C"
+        # class (c) — a deferral with no cite at all (δ-B is cite-anchored).
+        printf '/// wiring is %s the morph rewrite\n' "$DEFER_A"
+        # class (d) — a G-allow marker; "PRD " left of the cite keeps the
+        # G-allow lane itself silent (its rule (c)), isolating δ-B's guard.
+        printf '// G-allow: shared envelope assembler; the four surfaces are %s PRD #8888 — no non-test caller until then\n' "$DEFER_G"
+    } > "$FIX_G2/src/benign.rs"
+    git -C "$FIX_G2" add -A
+
+    mkdir -p "$FIX_G2/.taskmaster/tasks"
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_G2/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', 2330, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4739, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 10, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 2, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 8888, 'done');
+"
+
+    FIX_G2_TASKS_FILE="$FIX_G2/tasks.json"
+    printf '[]' > "$FIX_G2_TASKS_FILE"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_G2" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_G2_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_db_benign=$?
+    set -e
+
+    assert "(g-benign) identifier / PRD-relative / uncited / G-allow lines, all cites seeded terminal → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_db_benign"
+
+    # Emit passing-branch sentinel for scenario (g).  Gated on FAIL counter
+    # unchanged — suppressed if any (g) assert failed (fixes silent_pass_on_failure).
+    [ "$FAIL" -eq "$_fail_before_g" ] && echo "@@HARDGATE_G_PASSED@@"
 else
     echo ""
-    echo "test_reify_audit_ptodo.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (c)+(d)+(e)+(f) hard gate could not run" >&2
+    echo "test_reify_audit_ptodo.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (c)+(d)+(e)+(f)+(g) hard gate could not run" >&2
 fi
 
 # -----------------------------------------------------------------------

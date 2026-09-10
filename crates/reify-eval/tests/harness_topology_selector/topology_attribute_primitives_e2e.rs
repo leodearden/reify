@@ -30,7 +30,7 @@
 //! would leave the table empty).
 
 use reify_compiler::compile_with_stdlib;
-use reify_core::{ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::ExportFormat;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
@@ -291,5 +291,143 @@ fn engine_build_records_topology_attributes_for_multi_realization_module() {
          expected ≥28 (6 box faces + 12 box edges + 8 box vertices + 1 box solid-representative \
          + ≥1 sphere face), got {table_len} — \
          the table was likely reset between realizations within a single build"
+    );
+}
+
+// ─── task-6550: Engine::build records topology attributes for tube ───────────
+
+/// After `Engine::build()` on a `tube(...)` realization, the engine's
+/// `topology_attribute_table()` must contain entries for the tube's 4 faces
+/// and its N edges (N ≥ 4: at minimum two cap circles per annulus, plus
+/// OCCT's seam edges), plus the one per-solid representative entry from
+/// `record_solid_attribute` (task #4636).
+///
+/// Per-role distribution — 1×Cap(Top), 1×Cap(Bottom), and 2×Side whose
+/// `local_index` is ordered by descending radial extent so the outer wall is 0
+/// and the bore is 1 — is pinned by the direct-kernel test
+/// `seed_primitive_attributes_tube_classifies_annuli_and_orders_walls_by_radius`
+/// in `topology_attribute_primitives_direct.rs`. See this file's module
+/// rustdoc for why iteration-based assertions live there, not here. This e2e
+/// test pins only the count contract: that the seeder is invoked from
+/// `Engine::execute_realization_ops` for the `tube(...)` constructor (a missed
+/// wire would leave the table empty).
+///
+/// Measured total on OCCT 7.8 is 11 (4 faces + 6 edges + 1 solid); the `>=`
+/// lower bound absorbs per-version seam variance per this file's convention.
+#[test]
+fn engine_build_records_topology_attributes_for_tube_realization() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors("structure A { let body = tube(10mm, 5mm, 20mm) }");
+    let mut engine = engine_with_occt();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&build_result);
+
+    let table = engine.topology_attribute_table();
+    // Named so the decomposition stays readable: 4 faces, at least 4 edges,
+    // and the 1 per-solid representative entry. (Written as a const rather
+    // than inline because clippy::int_plus_one rewrites a literal `>= a + 1`
+    // into `> a`, which would erase exactly that decomposition.)
+    const MIN_TUBE_ENTRIES: usize = 4 + 4 + 1;
+    assert!(
+        table.len() >= MIN_TUBE_ENTRIES,
+        "topology_attribute_table must hold 4 face + ≥4 edge + 1 solid-representative \
+         entries after a tube realization, got {}",
+        table.len()
+    );
+}
+
+/// AMENDMENT PIN (reviewer_comprehensive, task #6550): a selector-bearing
+/// module containing a tube collects exactly two Info
+/// `TopologyAttributeLocalIndexReassigned` diagnostics, and BOTH are false
+/// positives that this task deliberately did not fix.
+///
+/// # Why they fire
+///
+/// `detect_local_index_reassignment_diagnostics` groups a realization's
+/// entries by `(feature_id, role)` and reports the first distinct-`local_index`
+/// pair whose CENTROIDS are within `LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`
+/// (1 nm). A tube produces two such groups:
+///
+/// - `Side` — the outer wall and the bore are both full 360° revolutions about
+///   the z axis, so `BRepGProp::SurfaceProperties` puts both area centroids at
+///   the same on-axis point. Distance 0.
+/// - `NewEdge` — each annulus contributes a pair of CONCENTRIC circles that
+///   likewise share a centroid.
+///
+/// The `Cap(Top)` / `Cap(Bottom)` groups are singletons, so they are skipped.
+///
+/// # Why they are wrong, and why they are pinned rather than fixed
+///
+/// The message says "selector resolution may shuffle after edits". For the two
+/// walls that is precisely backwards: their `local_index` is derived from bbox
+/// RADIAL EXTENT (outer wall 0, bore 1), not from centroid position or TopExp
+/// enumeration order, which is the whole reason the ordering survives an OCCT
+/// upgrade. Teaching the tie scan to fall back to a non-centroid discriminator
+/// is the real fix, and it lives in `topology_attribute_propagation.rs` —
+/// outside this task's module scope. Pinning the current output here means the
+/// false positive is a documented, observable fact: whoever does implement that
+/// fallback will see this test go red and update it deliberately, and any
+/// reader who meets the diagnostic in the wild can find it explained.
+///
+/// The `let fs = faces(body)` binding is load-bearing: it is what opens the
+/// task #5196 L2 selector-presence gate that the tie scan sits behind. Without
+/// it the scan never runs and this fixture emits nothing.
+///
+/// Severity is Info and the build still succeeds — attribute-fragility
+/// detection is auxiliary metadata and never regresses a realization to Failed.
+#[test]
+fn engine_build_tube_trips_the_centroid_tie_scan_false_positive() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled =
+        compile_no_errors("structure A { let body = tube(10mm, 5mm, 20mm) let fs = faces(body) }");
+    let mut engine = engine_with_occt();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&build_result);
+
+    // Filter by CODE only, never severity — the L3 Warning→Info downgrade
+    // (task #5196) would make a severity filter vacuous.
+    let ties: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned))
+        .collect();
+
+    // The scan emits AT MOST ONE diagnostic per (feature_id, role) group, and
+    // this single-realization fixture has exactly two groups that can tie, so
+    // the count is structural rather than an OCCT accident.
+    let by_role = |role: &str| -> usize {
+        ties.iter()
+            .filter(|d| d.message.contains(&format!("role '{role}'")))
+            .count()
+    };
+    assert_eq!(
+        (by_role("Side"), by_role("NewEdge"), ties.len()),
+        (1, 1, 2),
+        "expected exactly one tie diagnostic for the two on-axis Side walls and one for the \
+         concentric NewEdge cap circles, and nothing else; got:\n{ties:#?}"
+    );
+    for d in &ties {
+        assert_eq!(
+            d.severity,
+            Severity::Info,
+            "tie diagnostics are advisory and must stay Info: {d:?}"
+        );
+    }
+
+    // The tied local_index values are deliberately NOT pinned: the Side pair is
+    // always {0, 1}, but which NewEdge indices collide depends on OCCT's seam
+    // ordering, and that variance is not part of any contract.
+    assert!(
+        ties.iter()
+            .all(|d| d.message.contains("A#realization[0]")),
+        "every tie diagnostic must name the tube's own realization: {ties:#?}"
     );
 }

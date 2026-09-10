@@ -31,21 +31,20 @@
 //! | sphere/sphere     | `tangent(Point, Point, r1, r2)` | 1  |
 //!
 //! Safe to police: the one pre-existing `.ri` caller is
-//! `solver_unification_tangent_silent_accept.ri` under `tests/prd-gate/fixtures/`
-//! (spelled split, NOT as one path — `test_verify_scope.sh`'s PG-DRIFT scenario
-//! derives "read by a compiled test target" from a comment-inclusive grep for
-//! `<that dir>/<name>.ri` over every tracked `*.rs`, so writing the joined path
-//! in this very sentence would assert the opposite of what the sentence says),
+//! `tests/prd-gate/fixtures/solver_unification_tangent_silent_accept.ri` (pg-drift:allow —
+//! reviewed: a prose mention only, and the only thing in any tracked `*.rs` that
+//! names this fixture. No compiled target reads it, so it is deliberately in
+//! NEITHER `_RUST_COUPLED_RI_FIXTURES` nor `_GUI_COUPLED_RI_FIXTURES` in
+//! `scripts/verify.sh`, and adding a row to either would be FALSE — task 6986),
 //! a PRD-evidence probe for this very silent no-solve — it calls
 //! `tangent(Axis, Axis)` and `tangent(Plane, Plane)`, both at arity 2, and pins
 //! today's exit-0 `All constraints satisfied.` This gate deliberately turns both
 //! into typed rejections: an arity error (cylinder/cylinder needs two radii) and
-//! an unsupported-combo error. That probe has no automated consumer — no
-//! probe-set entry, no Rust test target reads it, and it is in neither
-//! `_RUST_COUPLED_RI_FIXTURES` nor `_GUI_COUPLED_RI_FIXTURES`
-//! (`scripts/verify.sh`); the GUI grammar corpus walk sweeps the directory but
-//! asserts only over its pinned `EXPECTED_CLEAN` list, which omits this file.
-//! Its PRD (geometry-algebra-solver-unification, signal B1, task #6669) asks for
+//! an unsupported-combo error. That probe has no automated consumer: no
+//! probe-set entry and no Rust test target reads it, and while the GUI grammar
+//! corpus walk sweeps the directory it asserts only over its pinned
+//! `EXPECTED_CLEAN` list, which omits this file. Its PRD
+//! (geometry-algebra-solver-unification, signal B1, task #6669) asks for
 //! `E_RELATION_NOT_LOWERABLE` specifically, so satisfying B1's exact-code
 //! assertion remains that task's job, not this one's.
 //!

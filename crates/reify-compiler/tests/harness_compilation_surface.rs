@@ -24,6 +24,8 @@
 mod compile_api_tests;
 #[path = "harness_compilation_surface/compile_builder_smoke_tests.rs"]
 mod compile_builder_smoke_tests;
+#[path = "harness_compilation_surface/ctor_conformance_corpus_survey.rs"]
+mod ctor_conformance_corpus_survey;
 #[path = "harness_compilation_surface/doc_propagation_tests.rs"]
 mod doc_propagation_tests;
 #[path = "harness_compilation_surface/examples_smoke.rs"]

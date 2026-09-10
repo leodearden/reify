@@ -20,6 +20,19 @@
 //! manually. Extracting once into this module gives a single source of
 //! truth without widening the production surface (the module is gated
 //! behind test-fixtures so it never reaches production link closures).
+//!
+//! # Relationship to the workspace-canonical fixtures
+//!
+//! Since task #6387 the workspace's canonical box/cube fixtures live in
+//! `reify_test_support::fixtures` — `prismatic_box_mesh`,
+//! `unit_cube_mesh`, `unwelded_prismatic_box_mesh` and the curved
+//! `tessellated_cylinder_mesh`, together with the derived
+//! `F32_STORAGE_REL` tolerance. Prefer those in any test that CAN reach
+//! them. This module is the deliberate exception rather than a fourth
+//! copy: see the "Judgment call (task #6387)" section on
+//! [`unit_cube_mesh`] for the link constraint that forces it, and
+//! `tests/cube_fixture_agreement.rs` for the executable guard that keeps
+//! the two definitions in agreement.
 
 use reify_ir::Mesh;
 use crate::kernel::manifold_from_reify_mesh;
@@ -36,6 +49,40 @@ use crate::kernel::manifold_from_reify_mesh;
 ///
 /// Triangle winding follows right-hand-rule outward normals so the
 /// resulting Manifold is well-oriented and Boolean operations succeed.
+///
+/// # Judgment call (task #6387)
+///
+/// This function keeps its own box literal and deliberately does NOT
+/// delegate to `reify_test_support::fixtures::unit_cube_mesh`, even
+/// though that is now the workspace-canonical copy. Three reasons, in
+/// order of how binding they are:
+///
+/// 1. **It would not compile.** This module is gated on
+///    `cfg(any(test, feature = "test-fixtures"))`, and the
+///    `test-fixtures` arm is reached from the crate's PLAIN library
+///    artifact — that is exactly what the self-dev-dep in `Cargo.toml`
+///    exists for, since cross-crate `tests/` binaries are separate
+///    compilation units that do not inherit `cfg(test)`.
+///    `reify-test-support` is only a `[dev-dependencies]` entry here, so
+///    it is absent from that rlib's link closure. Referencing it from
+///    this function is an unresolved-crate error, not a style
+///    preference.
+/// 2. **The fix would be worse than the duplication.** Making it resolve
+///    means promoting `reify-test-support` to a normal, feature-gated
+///    dependency of a kernel ADAPTER crate, dragging `reify-compiler`
+///    and `reify-syntax` into the adapter's graph. That cuts against the
+///    deliberately-inverted adapter -> eval layering this crate's own
+///    manifest comments protect, and is a production-adjacent
+///    dependency-graph change well outside a test-fixture dedup.
+/// 3. **The divergence is watched, not forgotten.**
+///    `crates/reify-kernel-manifold/tests/cube_fixture_agreement.rs` is
+///    the executable guard: it asserts this fixture is bit-identical to
+///    the canonical one at zero offset, and an exact per-component
+///    translation of it at a dyadic offset. Edit either copy in
+///    isolation and that test reds immediately.
+///
+/// So the goal #6387 was filed for — kill DRIFT, not bytes — is met here
+/// by an assertion rather than by deletion.
 pub fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
     let [dx, dy, dz] = offset;
     Mesh {

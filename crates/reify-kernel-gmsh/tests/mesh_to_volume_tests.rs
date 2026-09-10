@@ -8,44 +8,8 @@
 #![cfg(has_gmsh)]
 
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, QueryError};
-
-/// Inline copy of `crates/reify-kernel-manifold/src/test_fixtures.rs:37-67`.
-///
-/// Duplicated rather than dev-dep'ing on `reify-kernel-manifold` to avoid an
-/// awkward layering — gmsh would otherwise dev-depend on manifold solely for
-/// this 30-line fixture. When B-rep test fixtures consolidate into a shared
-/// crate, this helper can move there.
-fn unit_cube_mesh() -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0, 0.0, 0.0, // 0
-            1.0, 0.0, 0.0, // 1
-            1.0, 1.0, 0.0, // 2
-            0.0, 1.0, 0.0, // 3
-            0.0, 0.0, 1.0, // 4
-            1.0, 0.0, 1.0, // 5
-            1.0, 1.0, 1.0, // 6
-            0.0, 1.0, 1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
+use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
+use reify_test_support::fixtures::unit_cube_mesh;
 
 /// Round-trip a unit cube (8 vertices, 12 outward-winding triangles)
 /// through `mesh_to_volume` with the default options + P1 element order.

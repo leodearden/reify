@@ -26,11 +26,13 @@
 //! Future constructor-family typing locks belong in this unit. The affine family, whose
 //! structural template #5344 mirrored, is NOT among the candidates: it was consolidated
 //! before this task, as `harness_units_materials/affine_constructor_typing_tests.rs`, and
-//! correspondingly holds no baseline row. The sibling precedents this crate still carries
-//! as grandfathered standalones are `tests/datum_constructor_tests.rs` and
-//! `tests/math_construction_signatures_tests.rs`; those two are the natural next
-//! absorptions, each shrinking the baseline ratchet by one row; they are left alone here
-//! only because they are outside #5344's file scope.
+//! correspondingly holds no baseline row. `datum_constructor_tests.rs` was a second such
+//! precedent until #5694 absorbed it, and its baseline row, into
+//! `harness_physical_modeling/datum_constructor_tests.rs`. The one sibling
+//! constructor-family precedent this crate still carries as a grandfathered standalone
+//! is `tests/math_construction_signatures_tests.rs`;
+//! it is the natural next absorption, shrinking the baseline ratchet by one more row, and
+//! is left alone here only because it is outside #5344's file scope.
 
 #[path = "harness_constructor_typing/orientation_constructor_typing_tests.rs"]
 mod orientation_constructor_typing_tests;

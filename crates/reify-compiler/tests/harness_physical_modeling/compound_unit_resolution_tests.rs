@@ -9,7 +9,7 @@
 //! All positive and error assertions were RED against the placeholder code —
 //! they turned GREEN only after the wiring in step-2.
 
-mod common;
+use crate::common;
 
 use reify_core::{DimensionVector, Severity};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
