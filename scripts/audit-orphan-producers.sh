@@ -95,6 +95,15 @@ EXCLUDE_SEGMENTS = {".worktrees", "target", "tests", "benches", "examples"}
 # Test-support crates are intentionally only called from test files
 # (which we exclude from the caller search), so their publics would
 # all look like orphans. Skip them at the crate level.
+#
+# Caveat, recorded deliberately: that premise no longer holds for ALL of
+# reify-test-support. Some of its publics are reached from reify-audit's
+# PRODUCTION path, so this sweep cannot see them. The exclusion still earns its
+# keep for the crate's bulk and stays; it is an accepted blind spot, not an
+# assumed-safe one. WHICH publics, what justifies each `pub` in place of a
+# sweep, and the open question about the shape of the arrangement are argued
+# once in `sanitize`'s doc comment (crates/reify-test-support/src/git_env.rs);
+# this comment points there rather than keeping its own copy of the list.
 EXCLUDE_CRATES = {"reify-test-support"}
 # Source-level files included only via `#[cfg(test)] mod NAME;`. Reify's
 # conventions: `test_*.rs`, `*_test_support.rs`, and — for the god-file test
