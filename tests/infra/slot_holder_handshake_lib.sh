@@ -17,11 +17,24 @@
 # The primitives here close both sides: a causal barrier for the first, a
 # TEST-RELEASED owner for the second.
 #
-# The same three facts were previously open-coded in three divergent copies:
-# occt_wait_until_slot_held (tests/infra/occt_flock_gate_lib.sh),
-# _wait_for_reader_lock (tests/infra/test_warm_lane_gc.sh) and an inline
-# `flock -xn` probe in tests/infra/test_run_all.sh.  This lib is their single
-# home; occt_flock_gate_lib.sh delegates to it and keeps its exported names.
+# WHAT WAS CONSOLIDATED HERE, AND WHAT WAS NOT.  The same facts were open-coded
+# in four divergent copies.  MIGRATED (task 6247): occt_wait_until_slot_held in
+# tests/infra/occt_flock_gate_lib.sh, whose occt_*-prefixed forwarder is now
+# deleted and whose call sites use holder_wait_until_held directly; an inline
+# `flock -xn` probe in tests/infra/test_run_all.sh; and _wait_for_reader_lock in
+# tests/infra/test_warm_lane_gc.sh, now deleted with all six of its call sites
+# on holder_wait_for_marker.
+#
+# STILL OUTSTANDING: tests/infra/test_warm_lane_pool.sh carries an
+# identically-named _wait_for_reader_lock twin, layered over a helper of its own
+# and with its own unit tests (its Block RH).  That file was outside task 6247's
+# lock set, so the copy stands; migrating it is follow-up work.  Until then this
+# lib is the single home for its four users, NOT for every marker-poll in
+# tests/infra — do not read the SPOT claim wider than that list.
+#
+# The two argument conventions differ where a caller was migrated: this lib
+# counts POLL ITERATIONS (load-scaled), where _wait_for_reader_lock took a
+# deadline in SECONDS at a 0.05s tick.  30s there is 150 iterations here.
 #
 # WHAT THESE FUNCTIONS ASSERT — AND WHAT THEY DO NOT:
 # every barrier here returns on a CAUSAL OUTCOME (a non-blocking flock probe
@@ -35,8 +48,9 @@
 # bound is deliberately far larger than any legitimate wait and is scaled by
 # tests/infra/load_tolerance_lib.sh so it only ever GROWS under load.  Reaching
 # a bound means the infrastructure is broken, never that something was "too
-# slow".  This is the rationale occt_wait_until_slot_held already carries, kept
-# verbatim in spirit so the two cannot drift.
+# slow".  This is the rationale the retired occt_wait_until_slot_held carried
+# (PRD docs/prds/merge-gate-health.md W4b, task 5258), kept verbatim in spirit
+# now that its call sites read this file instead.
 #
 # Unit tests: tests/infra/test_slot_holder_handshake_lib.sh.
 

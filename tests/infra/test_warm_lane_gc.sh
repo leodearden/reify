@@ -258,32 +258,8 @@ _restore_discard_fail_lane() {
     chmod u+w "$1" 2>/dev/null || true
 }
 
-# _wait_for_reader_lock <ready-marker> <deadline-seconds>
-# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
-# task #4847): polls for the READY marker file in 0.05s ticks, returning 0
-# as soon as it appears, or non-zero once the generous anti-hang deadline
-# (technique T) elapses. The READY marker is touched by a backgrounded lock
-# holder AFTER it acquires its flock, so returning 0 causally guarantees the
-# flock is held at the caller's next statement — replacing a fixed `sleep`
-# that races the background subshell's lock acquisition under load (the
-# subshell may not have won the lock within a short fixed sleep, letting a
-# competing acquisition — e.g. the GC sweep under test — win instead).
-# Mirrors tests/infra/test_warm_lane_pool.sh's identically-named helper.
-_wait_for_reader_lock() {
-    local ready_marker="$1"
-    local deadline_s="$2"
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$ready_marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
-}
-
 # _wait_for_exec_map <pid> <want-exe-realpath> <deadline-seconds>
-# The MMAP analogue of _wait_for_reader_lock: `exec` REPLACES the shell so it
+# The MMAP analogue of holder_wait_for_marker: `exec` REPLACES the shell so it
 # cannot touch a READY marker, so poll /proc/<pid>/exe until it resolves to the
 # exec'd binary — at which point the binary's mapping is provably established —
 # before reclaim scans (causal ordering, technique R, no wall-clock sleep).
@@ -695,8 +671,8 @@ _BGPIDS+=("$F5_LOCK_PID")
 
 # Causal handshake (technique R, #4847): proceed only once BOTH flocks are
 # provably held, so the GC sweep under test cannot race in and win either lock.
-_wait_for_reader_lock "$F4_READY" 30
-_wait_for_reader_lock "$F5_READY" 30
+holder_wait_for_marker "$F4_READY" 150
+holder_wait_for_marker "$F5_READY" 150
 
 F_SEED_LOG="$F_ROOT/seed_calls.log"
 F_SEED_STUB="$F_ROOT/seed_stub.sh"
@@ -1157,7 +1133,7 @@ K5_READY="$K_ROOT/k5-holder.ready"
 ( cd "$K5_WORKTREES/_lane-1/target" && touch "$K5_READY" && exec sleep 300 ) &
 K5_HELPER_PID=$!
 _BGPIDS+=("$K5_HELPER_PID")
-_wait_for_reader_lock "$K5_READY" 30
+holder_wait_for_marker "$K5_READY" 150
 
 K5_SEED_LOG="$K_ROOT/k5-seed-calls.log"
 K5_SEED_STUB="$K_ROOT/k5-seed-stub.sh"
@@ -1578,14 +1554,14 @@ for _p_name in _lane-1 _lane-2; do
 done
 
 # Live helper whose CWD is _lane-1/target — a DESCENDANT of the lane dir. It
-# touches READY only AFTER cd'ing in, so _wait_for_reader_lock proves the cwd is
+# touches READY only AFTER cd'ing in, so holder_wait_for_marker proves the cwd is
 # established before reclaim runs (causal ordering, technique R — no wall-clock
 # sleep). exec sleep so the tracked PID is the one holding the cwd.
 P_READY="$P_ROOT/helper.ready"
 ( cd "$P_WORKTREES/_lane-1/target" && touch "$P_READY" && exec sleep 300 ) &
 P_HELPER_PID=$!
 _BGPIDS+=("$P_HELPER_PID")
-_wait_for_reader_lock "$P_READY" 30
+holder_wait_for_marker "$P_READY" 150
 
 P_SEED_LOG="$P_ROOT/seed_calls.log"
 P_SEED_STUB="$P_ROOT/seed_stub.sh"
@@ -1676,7 +1652,7 @@ PF_READY="$PF_ROOT/fd-holder.ready"
     && touch "$PF_READY" && exec sleep 300 ) &
 PF_HELPER_PID=$!
 _BGPIDS+=("$PF_HELPER_PID")
-_wait_for_reader_lock "$PF_READY" 30
+holder_wait_for_marker "$PF_READY" 150
 
 PF_SEED_LOG="$PF_ROOT/seed_calls.log"
 PF_SEED_STUB="$PF_ROOT/seed_stub.sh"
@@ -1868,7 +1844,7 @@ Q_READY="$Q_ROOT/helper.ready"
 ( cd "$Q_WORKTREES/task-live/target" && touch "$Q_READY" && exec sleep 300 ) &
 Q_HELPER_PID=$!
 _BGPIDS+=("$Q_HELPER_PID")
-_wait_for_reader_lock "$Q_READY" 30
+holder_wait_for_marker "$Q_READY" 150
 
 Q_SEED_LOG="$Q_ROOT/seed_calls.log"
 Q_SEED_STUB="$Q_ROOT/seed_stub.sh"
