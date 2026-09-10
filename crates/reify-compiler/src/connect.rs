@@ -233,13 +233,21 @@ pub(crate) struct ConnectInput<'a> {
 ///
 /// Accepted shapes:
 /// * `p` — a port on the entity being compiled; read from `ctx.ports`.
+/// * `self.p` — the same own port named the long way round; resolves identically
+///   to bare `p`, so writing the dot buys no escape from the check.
 /// * `sub.p` — a port on a sub-component; read from `scope.sub_port_directions`,
 ///   which the entity Sub pre-pass populated from that sub's resolved child
 ///   template.
+/// * `sub[<idx-or-key>].p` — one element of a collection or keyed sub
+///   (`vents[0].inlet`, `vents["intake"].inlet`, also what `forall` substitution
+///   produces). Every element shares the sub's child template, and the pre-pass
+///   keys on the SUB name, so the indexer suffix is stripped before the lookup.
 ///
 /// Splits on the LAST dot rather than the first: a keyed segment may itself
 /// contain one (`vents["a.b"].inlet`), so `rsplit_once` is what isolates the
-/// port name in every shape `resolve_port_name` can produce.
+/// port name in every shape `resolve_port_name` can produce. Symmetrically, the
+/// indexer is stripped at the FIRST `[`, so a key containing a bracket still
+/// leaves the bare sub name behind.
 ///
 /// `None` means "this compile cannot see the port's declaration", NOT "the
 /// direction is Bidi". Callers must decline to check on `None`. Two cases
@@ -251,9 +259,10 @@ pub(crate) struct ConnectInput<'a> {
 ///     match across two phases or move the check to a point where the
 ///     `connect_compat_*` literal is already baked and hashed. A follow-up has
 ///     been filed for it.
-///   * A dotted endpoint naming a NON-port member compiles clean today.
-///     Diagnosing it is a separate question about what a connect endpoint may
-///     legally denote, and erroring here would break sub-of-sub endpoint refs.
+///   * A dotted endpoint naming a NON-port member (measured: `connect e1.w ->
+///     e2.w` where `w` is a param) compiles clean today. Diagnosing it is a
+///     separate question about what a connect endpoint may legally denote, and
+///     erroring here would break sub-of-sub endpoint refs.
 fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core::PortDirection> {
     let own_port = |name: &str| {
         ctx.ports
@@ -261,10 +270,14 @@ fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core
             .find(|p| p.name == name)
             .map(|p| p.direction)
     };
-    match port_ref.rsplit_once('.') {
-        None => own_port(port_ref),
-        Some((base, port)) => ctx.scope.sub_port_directions.get(base)?.get(port).copied(),
+    let Some((base, port)) = port_ref.rsplit_once('.') else {
+        return own_port(port_ref);
+    };
+    if base == "self" {
+        return own_port(port);
     }
+    let sub = base.split_once('[').map_or(base, |(name, _)| name);
+    ctx.scope.sub_port_directions.get(sub)?.get(port).copied()
 }
 
 /// Compile a single connection (from connect statement or chain desugaring).
