@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Deterministic unit tests for the occt_flock_gate_lib.sh helpers.
-# The event-log predicates (occt_max_concurrent_holders,
-# occt_serial3_n2_serialized) run on SYNTHETIC inputs only — no real wrapper
+# occt_serial3_n2_serialized runs on SYNTHETIC inputs only — no real wrapper
 # invocations, no sleeps, cannot flake under load.
 #
-# The occt_wait_until_slot_held barrier test (task 5258) DOES spawn a real
-# background `flock` holder, but it asserts only a CAUSAL OUTCOME — the helper
-# returns 0 once a holder holds the slot, non-zero when a free slot is never
-# held within a tiny bound — NEVER an elapsed-time magnitude, so it too cannot
-# flake under load.
+# SCOPE: this file covers what is OCCT-SPECIFIC. The general causal primitives
+# (holder_max_concurrent, holder_wait_until_held, and the gated-owner pair) live
+# in tests/infra/slot_holder_handshake_lib.sh and are unit-tested ONCE, in
+# tests/infra/test_slot_holder_handshake_lib.sh. They used to be re-exported
+# from occt_flock_gate_lib.sh under occt_* names and re-tested here over the
+# very same five synthetic fixtures; the forwarders and the duplicate fixtures
+# are both gone (task 6247 amendment). Nothing was dropped — the shared file's
+# cases are a superset, and it adds the gated-owner coverage this file never had.
 #
 # WHY THE MILLISECOND BAND IS GONE (PRD docs/prds/infra-test-wallclock-deflake.md
 # decision D1, task 6247): the retired `occt_serial3_n2_within_bounds` predicate
@@ -91,104 +93,6 @@ _f_none="$(mktemp)"
 assert "serial3_n2_serialized: empty log (max 0) => rejected (a wrapper that never ran cannot pass)" \
     bash -c "! occt_serial3_n2_serialized '$_f_none'"
 rm -f "$_f_none"
-
-# ============================================================================
-# Unit tests for occt_max_concurrent_holders (R-technique predicate)
-# PRD docs/prds/infra-test-wallclock-deflake.md §2/T3
-#
-# Purely synthetic log inputs — no real wrapper invocations, no sleeps, cannot
-# flake under load.  Mirrors the occt_serial3_n2_serialized pattern above.
-#
-# Log format (lib_slot_acquire.sh REIFY_SLOT_EVENT_LOG contract):
-#   <epoch_ns> <pid> ACQUIRE slot-N
-#   <epoch_ns> <pid> RELEASE
-# sort -n orders by the leading epoch-ns field (concurrent O_APPEND may scramble
-# physical line order; ns timestamps give the canonical ordering).
-# ============================================================================
-echo ""
-echo "--- occt_max_concurrent_holders: R-technique event-log predicate ---"
-
-# (a) PARALLEL log: two ACQUIRE lines before any RELEASE → 2 [GREEN case]
-_f_par="$(mktemp)"
-printf '100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n300 1111 RELEASE\n400 2222 RELEASE\n' \
-    > "$_f_par"
-assert "max_concurrent_holders: PARALLEL log (A/A/R/R) → 2" \
-    test "$(occt_max_concurrent_holders "$_f_par")" -eq 2
-rm -f "$_f_par"
-
-# (b) SERIALIZED log: A/R/A/R interleave → 1
-# [NON-VACUOUS catch: a >=2 gate must REJECT this, so the live assertion goes
-#  RED under an N→1 serialization regression]
-_f_ser="$(mktemp)"
-printf '100 1111 ACQUIRE slot-1\n200 1111 RELEASE\n300 2222 ACQUIRE slot-1\n400 2222 RELEASE\n' \
-    > "$_f_ser"
-assert "max_concurrent_holders: SERIALIZED log (A/R/A/R) → 1 (proves N→1 regression goes RED)" \
-    test "$(occt_max_concurrent_holders "$_f_ser")" -eq 1
-rm -f "$_f_ser"
-
-# (c) THREE-invocation N=2 log → 2 (cap honored, never 3)
-_f_3inv="$(mktemp)"
-printf '100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n300 1111 RELEASE\n400 2222 RELEASE\n500 3333 ACQUIRE slot-1\n600 3333 RELEASE\n' \
-    > "$_f_3inv"
-assert "max_concurrent_holders: THREE-invocation N=2 log → 2 (cap honored, never 3)" \
-    test "$(occt_max_concurrent_holders "$_f_3inv")" -eq 2
-rm -f "$_f_3inv"
-
-# (d) SCRAMBLED physical line order: epoch-ns field still orders to A/A/R/R → 2
-# [proves helper sorts by ns field, not physical append order]
-# The physical order below deliberately DISAGREES with the ns order: read as
-# written it is R/A/A/R, whose running max is 1, while the ns-sorted sequence is
-# A/A/R/R, whose running max is 2.  The previous fixture was a pure A/A/R/R
-# shuffle, which yields 2 under BOTH readings and so could not tell a sorting
-# predicate from a non-sorting one — it passed with the sort removed (task 6247).
-_f_scr="$(mktemp)"
-printf '300 1111 RELEASE\n100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n400 2222 RELEASE\n' \
-    > "$_f_scr"
-assert "max_concurrent_holders: SCRAMBLED lines (epoch-ns orders A/A/R/R) → 2 (physical order alone would give 1)" \
-    test "$(occt_max_concurrent_holders "$_f_scr")" -eq 2
-rm -f "$_f_scr"
-
-# (e) Empty log → 0
-_f_empty="$(mktemp)"
-assert "max_concurrent_holders: EMPTY log → 0" \
-    test "$(occt_max_concurrent_holders "$_f_empty")" -eq 0
-rm -f "$_f_empty"
-
-# ============================================================================
-# Unit tests for occt_wait_until_slot_held (causal flock-probe barrier)
-# PRD docs/prds/merge-gate-health.md W4b (task 5258).
-#
-# UNLIKE the purely-synthetic predicates above, this barrier spawns a REAL
-# background `flock` holder — but it asserts only the CAUSAL OUTCOME (the helper
-# returns 0 once a holder holds the slot / non-zero when a free slot is never
-# held within the bound), NEVER an elapsed magnitude.  Poll count varies with
-# host load; the 0/non-zero outcome is deterministic, so this cannot flake.
-# ============================================================================
-echo ""
-echo "--- occt_wait_until_slot_held: causal flock-probe barrier ---"
-
-# POSITIVE: a live holder actually holds the slot → barrier confirms (returns 0).
-# Spawn a real background flock holder on a dedicated slot file (${base}.slot-*
-# idiom from the main suite's holders), then assert the barrier detects the held
-# lock.  The barrier's `9>>"$slot"` open self-heals a probe that races ahead of
-# the holder (both converge on the same inode).
-_s_held="$(mktemp)"
-( flock -x 9; sleep 5 ) 9>>"${_s_held}.slot-probe" &
-_HOLDER_PROBE=$!
-assert "occt_wait_until_slot_held: confirms a live holder (returns 0)" \
-    occt_wait_until_slot_held "${_s_held}.slot-probe"
-kill "$_HOLDER_PROBE" 2>/dev/null || true
-wait "$_HOLDER_PROBE" 2>/dev/null || true
-rm -f "$_s_held" "${_s_held}.slot-probe"
-
-# NEGATIVE: a fresh FREE slot is never held → barrier exhausts its (tiny) bound
-# and returns non-zero.  max_iters=2 (~0.4s) keeps the negative case fast.  The
-# `bash -c "! ..."` form runs the EXPORTED helper (export -f in the lib), so the
-# negation reflects the helper's REAL timeout return — not a command-not-found.
-_s_free="$(mktemp)"
-assert "occt_wait_until_slot_held: free slot times out within bound (non-zero)" \
-    bash -c "! occt_wait_until_slot_held '${_s_free}.slot-freeprobe' 2"
-rm -f "$_s_free" "${_s_free}.slot-freeprobe"
 
 # ============================================================================
 # Unit tests for occt_plan_grep_or_dump (plan grep with on-no-match stderr dump)

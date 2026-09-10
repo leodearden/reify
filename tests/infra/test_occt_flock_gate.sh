@@ -203,7 +203,7 @@ _HOLDER14="$(holder_spawn_gated "${_LOCK14}.slot-1" "$_HOLD14/ready" "$_HOLD14/r
 # `assert` so a transient confirm-failure yields a clear FAIL naming the root
 # cause instead of tripping `set -e` and aborting the whole suite.
 assert "Test 14: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK14}.slot-1"
+    holder_wait_until_held "${_LOCK14}.slot-1"
 
 _START14="$(date +%s)"
 _EXIT14=0
@@ -261,7 +261,7 @@ _HOLDER15=$!
 # Causal flock-probe barrier (task 5258): block until the holder holds slot-1.
 # Wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
 assert "Test 15: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK15}.slot-1"
+    holder_wait_until_held "${_LOCK15}.slot-1"
 
 _START15="$(date +%s)"
 _EXIT15=0
@@ -767,35 +767,29 @@ _LOCK19="$(mktemp)"
 _LOG19="$(mktemp)"
 _BARRIER19="$(mktemp -d)"
 
-# Each wrapper: acquire slot → emit ACQUIRE to log → touch ready-$$ → wait
-# (bounded ~20s) for go signal → exit → emit RELEASE to log.
+# Each wrapper: acquire slot → emit ACQUIRE to log → run occt_hold_until_go
+# (touch ready-$$, hold until the test touches `go`) → exit → emit RELEASE to
+# log.  The payload is THE shared one in occt_flock_gate_lib.sh, reached through
+# OCCT_BARRIER_DIR, so its budget and this test's barrier budget scale together.
 REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
     REIFY_SLOT_EVENT_LOG="$_LOG19" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER19"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER19" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID19A=$!
 REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
     REIFY_SLOT_EVENT_LOG="$_LOG19" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER19"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER19" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID19B=$!
 
-# Wait (bounded ~20s) for BOTH ready files — proves both ACQUIREd concurrently.
-# Under N→1 regression only 1 ready file appears; wait elapses → go → serial.
-_w19=0
-while [ "$(ls "$_BARRIER19"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w19" -lt 100 ]; do
-    sleep 0.2; _w19=$(( _w19 + 1 ))
-done
+# Wait for BOTH ready files — proves both ACQUIREd concurrently.  Under an N→1
+# regression only 1 ready file appears; the bounded wait elapses, `go` is
+# touched, and the two run serially → max=1 → clean RED, never a hang.
+# This was a fourth hand-rolled copy of occt_wait_for_ready_count, and the only
+# one whose budget was NOT load-scaled.
+occt_wait_for_ready_count "$_BARRIER19" 2 || true
 touch "$_BARRIER19/go"
 wait "$_PID19A" "$_PID19B"
 
-_MAX19="$(occt_max_concurrent_holders "$_LOG19")"
+_MAX19="$(holder_max_concurrent "$_LOG19")"
 rm -rf "$_BARRIER19"
 rm -f "$_LOCK19" "${_LOCK19}.slot-1" "${_LOCK19}.slot-2" "$_LOG19"
 
@@ -834,25 +828,13 @@ _BARRIER20="$(mktemp -d)"
 
 # Three concurrent invocations, each pinned holding its slot until `go` appears.
 REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER20"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER20"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20A=$!
 REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER20"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER20"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20B=$!
 REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER20"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER20"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20C=$!
 
 occt_wait_for_ready_count "$_BARRIER20" 2 || true
@@ -906,24 +888,16 @@ _LOG21B="$(mktemp)"
 # Test waits for both ready files (proves concurrent holding) then touches go.
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     REIFY_SLOT_EVENT_LOG="$_LOG21A" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21A"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21A" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21A1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     REIFY_SLOT_EVENT_LOG="$_LOG21A" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21A"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21A" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21A2=$!
 occt_wait_for_ready_count "$_BARRIER21A" 2 || true
 touch "$_BARRIER21A/go"
 wait "$_PID21A1" "$_PID21A2"
-_MAX21A="$(occt_max_concurrent_holders "$_LOG21A")"
+_MAX21A="$(holder_max_concurrent "$_LOG21A")"
 rm -rf "$_BARRIER21A"
 rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2" "$_LOG21A"
 
@@ -933,27 +907,15 @@ rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2" "$_LOG21A"
 _BARRIER21B="$(mktemp -d)"
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
     REIFY_SLOT_EVENT_LOG="$_LOG21B" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21B"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21B"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
     REIFY_SLOT_EVENT_LOG="$_LOG21B" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21B"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21B"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B2=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
     REIFY_SLOT_EVENT_LOG="$_LOG21B" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21B"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21B"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B3=$!
 
 occt_wait_for_ready_count "$_BARRIER21B" 2 || true
@@ -1002,9 +964,9 @@ _HOLDER22B="$(holder_spawn_gated "${_LOCK22}.slot-2" "$_HOLD22/ready-b" "$_HOLD2
 # host can outrun.  Two calls reuse the single-slot helper (one per slot); each
 # is wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
 assert "Test 22: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK22}.slot-1"
+    holder_wait_until_held "${_LOCK22}.slot-1"
 assert "Test 22: background holder confirmed holding slot-2 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK22}.slot-2"
+    holder_wait_until_held "${_LOCK22}.slot-2"
 
 _START22="$(date +%s)"
 _EXIT22=0

@@ -30,9 +30,16 @@
 #
 # The causal primitives themselves live in tests/infra/slot_holder_handshake_lib.sh,
 # which is the SPOT home shared with test_test_run_semaphore.sh,
-# test_lane_x_flock.sh, test_warm_lane_gc.sh and test_run_all.sh.  The two
-# helpers below keep their occt_* names (and their `export -f`) so this suite's
-# call sites are unaffected, but the reasoning is stated once, over there.
+# test_lane_x_flock.sh, test_warm_lane_gc.sh and test_run_all.sh.  This lib
+# SOURCES that one and callers use its `holder_*` names directly; there is no
+# occt_*-prefixed forwarder for any of them.  Two such forwarders existed
+# briefly and were removed: a name that only calls another name gives a reader
+# two places to look and a future change two places to edit, for no gain over
+# the rename.
+#
+# What remains here is what is genuinely OCCT-SPECIFIC — the ready-count
+# barrier and gated payload this suite's multi-invocation tests synchronize on,
+# and the exactly-2 specialization of the shared max-concurrency predicate.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_OCCT_FLOCK_GATE_LIB_SH_SOURCED:-}" = "1" ]; then
@@ -79,6 +86,43 @@ occt_wait_for_ready_count() {
 }
 export -f occt_wait_for_ready_count
 
+# occt_hold_until_go [BASE_ITERS=300]
+# THE gated payload every barrier-synchronized wrapper invocation in this suite
+# runs, in one place instead of pasted into each `bash -c` body.
+#
+# Announce "I now hold a slot" by touching ready-$$ in OCCT_BARRIER_DIR, then
+# keep holding until the TEST touches `go`.  Pinning the holders that way is
+# what MAKES the contention happen rather than hoping the spawns overlap, and it
+# is the payload half of the handshake whose waiting half is
+# occt_wait_for_ready_count above.
+#
+# OCCT_BARRIER_DIR arrives through the ENVIRONMENT (a `VAR=... "$WRAPPER"`
+# prefix at the call site), not by interpolating the path into a quoted script
+# body.  The body is then a single identifier, so the ten call sites cannot
+# drift from one another the way ten pasted copies of the loop could.
+#
+# BASE_ITERS x 0.2s (load-scaled) is a BROKEN-INFRA BACKSTOP so a test that dies
+# before touching `go` cannot leave a payload holding a slot forever -- it is
+# NOT a timing assertion.  The base is deliberately LARGER than
+# occt_wait_for_ready_count's, because the hold must outlive the barrier that
+# waits on it: were they equal, a slow-but-healthy run could have the hold
+# expire at the same moment the barrier gave up, and both scale by the same
+# factor so the ordering holds at every load level.
+occt_hold_until_go() {
+    local _dir="${OCCT_BARRIER_DIR:?occt_hold_until_go: OCCT_BARRIER_DIR must be set by the caller}"
+    local _budget
+    _budget="$(load_tolerant_attempts "${1:-300}")"
+    touch "$_dir/ready-$$"
+    local _i=0
+    while [ ! -e "$_dir/go" ] && [ "$_i" -lt "$_budget" ]; do
+        sleep 0.2
+        _i=$(( _i + 1 ))
+    done
+}
+# Exported so it survives the `"$WRAPPER" bash -c` hop at every call site (and
+# so the bounds-file unit cases run the REAL helper in their child shell).
+export -f occt_hold_until_go
+
 # occt_serial3_n2_serialized EVENT_LOG
 # Returns 0 iff the log shows a maximum of EXACTLY 2 slots held at once — the
 # causal signature of three invocations correctly serialized behind a 2-slot
@@ -92,30 +136,6 @@ occt_serial3_n2_serialized() {
 # run the REAL helper in the child shell rather than a vacuous
 # command-not-found.
 export -f occt_serial3_n2_serialized
-
-# occt_max_concurrent_holders EVENT_LOG
-# Echoes the maximum number of slots held simultaneously across a
-# REIFY_SLOT_EVENT_LOG (format and ns-ordering rationale: holder_max_concurrent
-# in tests/infra/slot_holder_handshake_lib.sh).  Retained under this name so the
-# suite's existing call sites and unit tests are unaffected.
-occt_max_concurrent_holders() {
-    holder_max_concurrent "$1"
-}
-
-# occt_wait_until_slot_held SLOT_FILE [MAX_ITERS=100]
-# Causal flock-probe barrier (PRD docs/prds/merge-gate-health.md W4b, task
-# 5258): returns 0 once some other process provably HOLDS the slot's exclusive
-# flock, replacing a fixed post-spawn pause that a loaded host can outrun.
-# Mechanism, self-healing `9>>` open, and the BROKEN-INFRA BACKSTOP rationale
-# for the poll budget: holder_wait_until_held in
-# tests/infra/slot_holder_handshake_lib.sh.  Retained under this name for the
-# suite's existing call sites.
-occt_wait_until_slot_held() {
-    holder_wait_until_held "$@"
-}
-# Exported so the bounds-file negative unit test (`bash -c "! occt_wait_...")
-# runs the REAL helper in the child shell (else it is a vacuous command-not-found).
-export -f occt_wait_until_slot_held
 
 # occt_plan_grep_or_dump PATTERN PLAN ERRFILE
 # Plan-grep with an on-no-match child-stderr dump (task 5258, PRD
@@ -153,5 +173,5 @@ occt_plan_grep_or_dump() {
     return 1
 }
 # Exported so the bounds-file negative unit test runs the real helper in its
-# `bash -c` child shell (matching occt_wait_until_slot_held above).
+# `bash -c` child shell (matching occt_serial3_n2_serialized above).
 export -f occt_plan_grep_or_dump
