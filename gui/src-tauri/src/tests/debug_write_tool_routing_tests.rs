@@ -264,6 +264,66 @@ async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<
 }
 "#;
 
+/// Both compliant shapes the real file uses, side by side:
+///
+/// - `reify_set_parameter` names its seam directly in the handler body — the
+///   shape four of the five write tools take.
+/// - `reify_open_file` reaches the SAME refresh ONE HOP away, through
+///   `open_path_into_engine` (debug_server.rs:1701 → :1525 → :1640). This is
+///   the one stated exception δ documented for θ, and the only shape that
+///   forces the checker to trace a delegation.
+const COMPLIANT_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_open_file" => handle_reify_open_file(state, params).await,
+        "reify_set_parameter" => handle_reify_set_parameter(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_open_file(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let raw_path = open_file_path_param(&params)?;
+    let (frontend, content) = open_path_into_engine(state, &raw_path).await?;
+    frontend_ok(frontend, "open_file")?;
+    Ok(reify_open_file_envelope(&content))
+}
+
+async fn open_path_into_engine(
+    state: &DebugServerState,
+    raw_path: &str,
+) -> Result<(Value, String), String> {
+    let path = canonicalize_open_path(raw_path)?;
+    let gui_state =
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
+            .await?;
+    let frontend = push_gui_state(&state.debug_bridge, &gui_state, None).await?;
+    Ok((frontend, gui_state.source.clone()))
+}
+
+async fn handle_reify_set_parameter(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let (cell_id, value) = reify_set_parameter_params(&params)?;
+    let gs = reify_set_parameter_on_engine_and_refresh_baseline(
+        &state.engine,
+        &state.last_state,
+        &cell_id,
+        &value,
+    )
+    .await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_set_parameter_envelope(None, None, vec![]))
+}
+"#;
+
 #[test]
 fn bypassing_fixture_is_flagged() {
     assert_eq!(
@@ -286,4 +346,9 @@ fn seam_named_only_in_a_comment_does_not_count() {
             kind: BypassKind::NoBaselineRefresh,
         }],
     );
+}
+
+#[test]
+fn compliant_fixtures_in_both_seam_shapes_are_clean() {
+    assert_eq!(write_tool_bypasses(COMPLIANT_SOURCE), vec![]);
 }
