@@ -14,6 +14,7 @@
 #   D — installer CLI guard, source pre-flight, and fail-open
 #   E — repo-side retirement invariants for the old serve unit (task η)
 #   F — smoke-script connection-failure hint contract
+#   H — smoke-script query-budget contract (sits with F; both cover $SMOKE)
 #   G — setup-dev.sh wiring (structural grep, no execution)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
@@ -611,6 +612,92 @@ assert "F6: smoke script parses and --help exits 0" \
 assert "F7: assertion-3 site still names jcodemunch-watcher.service" \
     bash -c 'grep -q "jcodemunch-watcher[.]service is not active" "$1"' _ "$SMOKE"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — smoke-script query-budget contract
+#
+# Block F proved the printed recipe NAMES the wrapper. This block proves the
+# recipe can RUN TO COMPLETION: a hint that gets the operator as far as
+# assertion 2 and then dies on a timeout is still a hint that does not work.
+#
+# WHY the query cannot share the handshake's budget: the retired long-lived
+# jcodemunch-serve.service kept an in-process cache warm ACROSS smoke runs, so a
+# query came back in 3-7 s. scripts/with-jcodemunch-serve.sh spawns a FRESH serve
+# per invocation and this script issues exactly ONE query per serve — so under
+# the transient-serve model that single query is ALWAYS the cold one (measured
+# 34-100 s across four observations on two hosts). A handshake-sized budget
+# SIGTERMs it mid-flight and prints "curl … failed", which reads exactly like the
+# connection-refused case Block F just finished fixing.
+#
+# Structural greps over $SMOKE only — no live serve, same style as F1-F7.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: smoke-script query budget ---"
+
+# The curl invocation starting at <anchor>, through its closing `2>/dev/null)`.
+# Per-site extraction is what makes "the query does not spend MCP_TIMEOUT" and
+# "the handshake still does" separable assertions: a whole-file grep cannot tell
+# the two sites apart, and would go green on the wholesale s/15/180/ H3 rejects.
+smoke_curl_block() {
+    awk -v anchor="$1" '
+        index($0, anchor) == 1 { f = 1 }
+        f { print }
+        f && /2>\/dev\/null\)/ { exit }
+    ' "$SMOKE"
+}
+
+INIT_CURL="$(smoke_curl_block 'http_code=$(curl')"
+QUERY_CURL="$(smoke_curl_block 'http_code2=$(curl')"
+
+# H1: the query site spends a budget of its own, not the handshake's.
+assert "H1: the get_changed_symbols query does not spend the handshake budget" \
+    bash -c '
+        [ -n "$1" ] || exit 1
+        mt=$(printf "%s\n" "$1" | grep -- "--max-time") || exit 1
+        ! printf "%s\n" "$mt" | grep -q "MCP_TIMEOUT"
+    ' _ "$QUERY_CURL"
+
+# H2: ...and that budget is big enough for a cold query. Asserted as a FLOOR
+# rather than against the current literal, so raising it after a slow-host
+# observation is a one-line change that leaves this suite green.
+assert "H2: the query budget's default is at least 120 s (cold query measured 34-100 s)" \
+    bash -c '
+        line=$(grep -E "^QUERY_TIMEOUT=" "$1" | head -1) || exit 1
+        n=$(printf "%s" "$line" | grep -oE "[0-9]+" | tail -1)
+        [ -n "$n" ] || exit 1
+        [ "$n" -ge 120 ]
+    ' _ "$SMOKE"
+
+# H3: the split must stay a SPLIT. Raising MCP_TIMEOUT wholesale would satisfy
+# H1 and H2 while making a genuinely dead port take three minutes to report
+# itself — so the handshake budget stays tight AND the initialize site keeps
+# spending it.
+assert "H3: the handshake budget stays tight (<= 30 s) and the initialize site still uses it" \
+    bash -c '
+        line=$(grep -E "^MCP_TIMEOUT=" "$2" | head -1) || exit 1
+        n=$(printf "%s" "$line" | grep -oE "[0-9]+" | tail -1)
+        [ -n "$n" ] || exit 1
+        [ "$n" -le 30 ] || exit 1
+        [ -n "$1" ] || exit 1
+        printf "%s\n" "$1" | grep -- "--max-time" | grep -q "MCP_TIMEOUT"
+    ' _ "$INIT_CURL" "$SMOKE"
+
+# H4: a slow host must be able to buy more time without editing the script.
+assert 'H4: the query budget is env-overridable — QUERY_TIMEOUT="${SMOKE_QUERY_TIMEOUT:-<int>}"' \
+    bash -c '
+        line=$(grep -E "^QUERY_TIMEOUT=" "$1" | head -1) || exit 1
+        rest=${line##*SMOKE_QUERY_TIMEOUT:-}
+        [ "$rest" != "$line" ] || exit 1
+        dflt=${rest%%\}*}
+        [ -n "$dflt" ] || exit 1
+        case "$dflt" in *[!0-9]*) exit 1 ;; esac
+    ' _ "$SMOKE"
+
+# H5: every --max-time in the file names a budget. This is what stops a curl
+# site added later from carrying a fresh hard-coded 15 alongside the two named
+# ones — the defect H1 repairs, re-committed one site over.
+assert "H5: no --max-time takes a bare integer literal (every site names a budget)" \
+    bash -c '! grep -qE -- "--max-time[[:space:]]+[0-9]" "$1"' _ "$SMOKE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block G — setup-dev.sh wiring (structural grep, no execution)
