@@ -21,6 +21,16 @@
 #      is load-bearing (it decides whether the index is keyed to the canonical
 #      checkout or to the upstream remote identity) and the script owns it.
 #
+# Everything else here — the log helpers, the CLI guard, the REIFY_TEST_REPO_ROOT
+# seam, the bus probe, the linger advisory, the mkdir/cp/daemon-reload/enable
+# tail — is a COPY of install-warm-lane-units.sh's skeleton, and the two have
+# already diverged by accident once (this script shipped without the linger
+# advisory until task 6920's review caught it). The intended consolidation is a
+# shared scripts/lib_systemd_user_install.sh — log helpers, bus probe, linger
+# advisory and an `install_user_units <src>...` primitive — that BOTH installers
+# source. That refactor edits install-warm-lane-units.sh, which task 6920 does
+# not hold a lock for, so it is filed as follow-up rather than done here.
+#
 # Scope: this installer touches ONLY the two reify-*.{service,timer} units it
 # ships. jcodemunch's own host units are never named, enabled, disabled or
 # overwritten by this path — they serve other repos.
@@ -93,6 +103,23 @@ fi
 if ! systemctl --user show-environment &>/dev/null; then
     _warn "no systemd --user bus available — skipping index-unit install (fail-open)"
     exit 0
+fi
+
+# ── linger advisory: an unattended timer needs user lingering ────────────────
+# A systemd --user timer only fires while the user manager is running, and
+# without `loginctl enable-linger <user>` that manager exists only between login
+# and last logout. On a host nobody is interactively logged into, the daily
+# warming pass therefore never runs and the index goes exactly as stale as this
+# timer exists to prevent. Persistent=true in the .timer makes that QUIETER, not
+# better: it catches the missed tick up at the next login instead of on time.
+# Same advisory, same warn-never-fail stance as install-warm-lane-units.sh.
+if command -v loginctl &>/dev/null; then
+    _linger="$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"
+    if [ "$_linger" != "yes" ]; then
+        _warn "user lingering is NOT enabled — reify-jcodemunch-index.timer will"
+        _warn "  run only while $(id -un) is logged in, not unattended.  Enable once with:"
+        _warn "    sudo loginctl enable-linger $(id -un)"
+    fi
 fi
 
 # ── install (plain cp — see departure 1 in the header) ───────────────────────

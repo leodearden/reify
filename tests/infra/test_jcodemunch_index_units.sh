@@ -75,6 +75,20 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/systemctl"
 
+# ── loginctl stub (default: lingering OFF) ────────────────────────────────────
+# Stubbed rather than left to the host so the linger advisory is deterministic:
+# the real loginctl answers whatever THIS developer's account happens to be set
+# to, which would make the assertion below pass or fail by accident. Deliberately
+# does NOT append to CALLS_FILE — that file is the systemctl argv ledger, and
+# `enable-linger` contains "enable", which would collide with D5's assertion that
+# no `enable` was attempted.
+cat > "$STUB_DIR/loginctl" << 'STUB_EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = "show-user" ] && { echo "${REIFY_TEST_LINGER:-no}"; exit 0; }
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/loginctl"
+
 # ── run_installer <xdg> [args...] ─────────────────────────────────────────────
 # Runs the installer with the stub PATH and a throwaway XDG_CONFIG_HOME,
 # capturing OUT / ERR_OUT / RC. Any arguments after <xdg> are forwarded to the
@@ -300,6 +314,40 @@ assert "C8: no systemctl call from the installer names jcodemunch-watcher" \
 assert "C8b: the installer source contains no jcodemunch-watcher token at all" \
     bash -c '! grep -q "jcodemunch-watcher" "$1"' _ "$INSTALLER"
 
+# C9/C10: the linger advisory. A --user timer only fires while the user manager
+# runs, so without lingering the daily pass silently never happens on an
+# unattended host — the exact staleness this timer exists to prevent, and the one
+# place this installer had already drifted from install-warm-lane-units.sh.
+# Asserted in BOTH directions so the advisory cannot degrade into an always-on
+# banner that operators learn to ignore.
+C9_XDG="$(mktemp -d /tmp/test-jc-index-units-c9-xdg-XXXXXX)"
+_TMPDIRS+=("$C9_XDG")
+
+reset_calls
+REIFY_TEST_LINGER=no run_installer "$C9_XDG"
+
+# ADVISORY, not a gate: exit 0 and a fully-installed unit dir are asserted
+# alongside the warning, so a future edit cannot promote this into a hard refusal.
+assert "C9: lingering off → warns naming 'loginctl enable-linger', and still installs (exit 0)" \
+    bash -c '
+        [ "$1" = "0" ] || exit 1
+        printf "%s" "$2" | grep -qi "linger" || exit 1
+        printf "%s" "$2" | grep -q  "loginctl enable-linger" || exit 1
+        [ -f "$3/systemd/user/reify-jcodemunch-index.timer" ]
+    ' _ "$RC" "$ERR_OUT" "$C9_XDG"
+
+C10_XDG="$(mktemp -d /tmp/test-jc-index-units-c10-xdg-XXXXXX)"
+_TMPDIRS+=("$C10_XDG")
+
+reset_calls
+REIFY_TEST_LINGER=yes run_installer "$C10_XDG"
+
+assert "C10: lingering on → exit 0 and NO linger warning (advisory is conditional)" \
+    bash -c '
+        [ "$1" = "0" ] || exit 1
+        ! printf "%s" "$2" | grep -qi "linger"
+    ' _ "$RC" "$ERR_OUT"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — installer CLI guard, source pre-flight, and fail-open
@@ -336,20 +384,25 @@ assert "D2: unexpected argument exits 2 and the message names it" \
 
 # ── D3/D4: source pre-flight. A missing tracked unit must fail LOUDLY and name
 # the path; a silent skip here would "succeed" while installing nothing.
+# Sets _PARTIAL_REPO rather than echoing the path: a `$(...)` call site would run
+# this in a SUBSHELL, and the `_TMPDIRS+=` registration would die with it — the
+# EXIT trap would then reclaim nothing and every suite run would leak three
+# directories into /tmp. Assign through the global and call it as a statement.
+_PARTIAL_REPO=""
 _make_partial_repo() {
-    # $1 = which source to omit ("service" or "timer"); echoes the temp repo root
+    # $1 = which source to omit ("service" or "timer"); sets $_PARTIAL_REPO
     local omit="$1" root
     root="$(mktemp -d /tmp/test-jc-index-units-pf-XXXXXX)"
     _TMPDIRS+=("$root")
     mkdir -p "$root/deploy/systemd"
     [ "$omit" = "service" ] || cp "$SERVICE_SRC" "$root/deploy/systemd/"
     [ "$omit" = "timer" ]   || cp "$TIMER_SRC"   "$root/deploy/systemd/"
-    echo "$root"
+    _PARTIAL_REPO="$root"
 }
 
 D3_XDG="$(mktemp -d /tmp/test-jc-index-units-d3-xdg-XXXXXX)"
 _TMPDIRS+=("$D3_XDG")
-D3_REPO="$(_make_partial_repo service)"
+_make_partial_repo service; D3_REPO="$_PARTIAL_REPO"
 
 reset_calls
 REIFY_TEST_REPO_ROOT="$D3_REPO" run_installer "$D3_XDG"
@@ -366,7 +419,7 @@ assert "D3: missing .service source exits 1 with an ERROR: line naming the missi
 
 D4_XDG="$(mktemp -d /tmp/test-jc-index-units-d4-xdg-XXXXXX)"
 _TMPDIRS+=("$D4_XDG")
-D4_REPO="$(_make_partial_repo timer)"
+_make_partial_repo timer; D4_REPO="$_PARTIAL_REPO"
 
 reset_calls
 REIFY_TEST_REPO_ROOT="$D4_REPO" run_installer "$D4_XDG"
@@ -403,7 +456,7 @@ assert "D5: no --user bus → exit 0, WARN naming the bus, nothing copied, no da
 # source behind a cheerful exit 0 and the operator would never learn.
 D6_XDG="$(mktemp -d /tmp/test-jc-index-units-d6-xdg-XXXXXX)"
 _TMPDIRS+=("$D6_XDG")
-D6_REPO="$(_make_partial_repo service)"
+_make_partial_repo service; D6_REPO="$_PARTIAL_REPO"
 
 reset_calls
 REIFY_TEST_REPO_ROOT="$D6_REPO" REIFY_TEST_NO_USER_BUS=1 run_installer "$D6_XDG"
