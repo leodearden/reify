@@ -2423,10 +2423,8 @@ enum Format {
 }
 
 fn cmd_doc(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("{}", DOC_USAGE);
-        return ExitCode::FAILURE;
-    }
+    // Empty `args` needs no special case: it walks a zero-iteration loop into
+    // the missing-input guard, which reports it like every other usage error.
 
     // Mirrors `cmd_gui`'s explicit-flag pattern: walk args, accept the
     // documented flags, and reject any other `--`-prefixed token with a
@@ -2552,6 +2550,9 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     let input = match input {
         Some(s) => s,
         None => {
+            // Named like every other guard: usage errors and genuine failures
+            // share exit 1, so `Error:` + banner is the one shape callers read.
+            eprintln!("Error: missing input file");
             eprintln!("{}", DOC_USAGE);
             return ExitCode::FAILURE;
         }
