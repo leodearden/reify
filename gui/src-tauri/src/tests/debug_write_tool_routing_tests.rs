@@ -235,6 +235,44 @@ fn strip_comments(source: &str) -> String {
     out
 }
 
+/// Names every top-level fn in `code` whose name ends `_and_refresh_baseline`,
+/// in source order. `code` must already be comment-stripped.
+fn seam_fns(code: &str) -> Vec<&str> {
+    code.lines()
+        .filter_map(|line| parse_fn_name(line.trim_end()))
+        .filter(|name| name.ends_with("_and_refresh_baseline"))
+        .collect()
+}
+
+/// Names the `*_and_refresh_baseline` fns that never actually refresh the
+/// baseline, sorted.
+///
+/// Without this, [`write_tool_bypasses`] would rest on a NAME: any fn called
+/// `…_and_refresh_baseline` would satisfy it, so a seam whose name lies would
+/// green the gate falsely. A seam is accepted if its body reaches
+/// `compute_delta` directly, or — one hop, same cap and same fail-closed
+/// direction as [`reaches_a_seam`] — if it delegates to another
+/// `*_and_refresh_baseline` fn in the same source that does.
+fn unrefreshing_seams(source: &str) -> Vec<String> {
+    let code = strip_comments(source);
+    let refreshes = |name: &str| {
+        fn_body(&code, name).is_some_and(|body| identifiers(body).any(|id| id == "compute_delta"))
+    };
+    let mut liars: Vec<String> = seam_fns(&code)
+        .into_iter()
+        .filter(|name| {
+            !refreshes(name)
+                && !fn_body(&code, name).is_some_and(|body| {
+                    identifiers(body)
+                        .any(|id| id != *name && id.ends_with("_and_refresh_baseline") && refreshes(id))
+                })
+        })
+        .map(str::to_string)
+        .collect();
+    liars.sort();
+    liars
+}
+
 /// Every INV-GUI-2 violation in `source`, one per (write tool, defect).
 fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
     // Stripped ONCE here, at the single entry point, so every helper below
@@ -602,7 +640,8 @@ fn every_refresh_baseline_seam_actually_refreshes() {
     // exist today: write_on_engine_*, open_source_into_engine_* and
     // set_fea_case_on_engine_* reach compute_delta directly, and the four
     // reify_*_on_engine_* reach it via write_on_engine_and_refresh_baseline.
-    let seams = seam_fns(&strip_comments(&source));
+    let code = strip_comments(&source);
+    let seams = seam_fns(&code);
     assert!(
         seams.len() >= 3,
         "seam scan of debug_server.rs found only {} `*_and_refresh_baseline` fn(s) \
