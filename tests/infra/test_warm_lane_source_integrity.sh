@@ -38,7 +38,8 @@
 #   C — PHANTOM DELETION (the foreign-view discriminator, this suite's whole
 #       point): git reports ` D` while the path is still on disk => deleted=0
 #       phantom=N and exit 0. The block asserts BOTH halves of its own fixture
-#       premise first so it cannot decay into a vacuous pass.
+#       premise first so it cannot decay into a vacuous pass. Includes the
+#       dangling-symlink shape, the one a plain `-e` re-stat cannot see.
 #   D — MIXED: one of each in one tree, both measured under a foreign view --
 #       so both are reported and NEITHER raises the sentinel (see A3 in the
 #       script header). This block previously pinned exit 3 here, which was
@@ -83,6 +84,11 @@
 #       alone (git's gitdir still equals the lane's, so only the toplevel arm
 #       sees it), each with a behavioural consequence, plus an unpoisoned
 #       control proving the real sentinel survives all of it.
+#   K — RENAME ENTRIES DO NOT DESYNCHRONISE THE -z STREAM: a rename carries a
+#       second NUL-terminated field, and a reader that leaves it in the stream
+#       parses it as the next entry and reads the rest of the lane off by one.
+#       Pinned on a source name whose second character is `D`, so the misparse
+#       produces a false exit-3 sentinel rather than harmless noise.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; classified
 # `pool` in run-all-classification.manifest (hermetic: temp-dir git repos only,
@@ -114,7 +120,20 @@ echo "=== scripts/warm-lane-source-integrity.sh hermetic tests (task 7227) ==="
 # casualty -- an ambient GIT_DIR makes `git status` succeed anywhere.
 # Block C's poisoning is applied on the `bash` command inside a command
 # substitution, so it cannot leak back out into this shell.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY || true
+#
+# WHICH vars is not this suite's call to make. REIFY_GIT_ENV_SCRUB_VARS is the
+# workspace's single home for that list (mirrored from
+# crates/reify-test-support/src/git_env.rs and held to it by
+# tests/infra/test_infra_git_env_isolation.sh), so it is derived rather than
+# retyped: a private copy would drift silently on the next addition, and the
+# comment above says exactly what that costs. The lib's runner helper does not
+# fit here -- it scrubs a CHILD command's environment, whereas this suite must
+# scrub its OWN shell, so every later `git` call and command substitution
+# inherits the clean environment too.
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$REPO_ROOT/scripts/lib_git_env_scrub.sh"
+# shellcheck disable=SC2086  # deliberate word split: the list is space-delimited
+unset $REIFY_GIT_ENV_SCRUB_VARS || true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shared temp state + cleanup
@@ -399,6 +418,40 @@ assert "C4: the phantom paths are still reported on stderr" \
 assert "C5: ...tagged as phantom so the class is legible without re-deriving it" \
     _has 'phantom' "$ERR_OUT"
 
+# A DANGLING SYMLINK is the phantom shape a plain `-e` re-stat cannot see: the
+# entry exists in the worktree while resolving to nothing, so `[ -e ]` is false
+# and only `[ -L ]` finds it. Misfiled, it becomes a `deleted` -- a false
+# sentinel on a path that is right there.
+#
+# The fixture is a FOREIGN view deliberately, because that is the only place the
+# shape is reachable: measured on git 2.43.0, replacing a tracked regular file
+# in place with a dangling symlink makes the lane's OWN view report ` T` (a
+# typechange), never ` D`. A foreign view has no such constraint -- it reports
+# ` D` for its own missing path and the re-stat lands on whatever the lane holds
+# at that name.
+C_LINK_ROOT="$(_mktmpd Clink)"
+C_LINK_LANE="$C_LINK_ROOT/lane"
+C_LINK_POISON="$C_LINK_ROOT/poison"
+_mk_repo "$C_LINK_LANE"   a.txt
+_mk_repo "$C_LINK_POISON" a.txt link.txt
+rm "$C_LINK_POISON/link.txt"
+ln -s nowhere-at-all "$C_LINK_LANE/link.txt"
+
+C_LINK_STATUS="$(GIT_DIR="$C_LINK_POISON/.git" GIT_WORK_TREE="$C_LINK_POISON" git -C "$C_LINK_LANE" status --porcelain)"
+assert "C6a: FIXTURE — the poisoned view really reports ' D link.txt'" \
+    _has ' D link.txt' "$C_LINK_STATUS"
+assert "C6b: FIXTURE — the lane's entry at that path really is a symlink..." \
+    test -L "$C_LINK_LANE/link.txt"
+assert "C6c: FIXTURE — ...that dangles, so a plain -e re-stat calls it absent" \
+    test ! -e "$C_LINK_LANE/link.txt"
+
+run_detector_poisoned "$C_LINK_POISON/.git" "$C_LINK_POISON" --lane "$C_LINK_LANE"
+assert "C7a: a dangling symlink is bucketed phantom, not deleted" \
+    test "$OUT" = "$(_summary 0 1 "$C_LINK_LANE" foreign)"
+assert "C7b: ...so it raises no sentinel (exit 0)" test "$RC" -eq 0
+assert "C7c: ...and is tagged phantom on stderr, where a misfile would be visible" \
+    _has 'phantom: link.txt' "$ERR_OUT"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — MIXED
 # ──────────────────────────────────────────────────────────────────────────────
@@ -415,8 +468,8 @@ _mk_repo "$D_LANE"   a.txt here.txt
 _mk_repo "$D_POISON" a.txt here.txt gone.txt
 rm "$D_POISON/here.txt" "$D_POISON/gone.txt"
 
-assert "D0: FIXTURE — here.txt is on disk in the lane" test -f "$D_LANE/here.txt"
-assert "D0: FIXTURE — gone.txt is not" test ! -e "$D_LANE/gone.txt"
+assert "D0a: FIXTURE — here.txt is on disk in the lane" test -f "$D_LANE/here.txt"
+assert "D0b: FIXTURE — gone.txt is not" test ! -e "$D_LANE/gone.txt"
 
 run_detector_poisoned "$D_POISON/.git" "$D_POISON" --lane "$D_LANE"
 assert "D1: one of each is reported" test "$OUT" = "$(_summary 1 1 "$D_LANE" foreign)"
@@ -475,9 +528,9 @@ _git_q -C "$E_CONFLICT" add -A
 _git_q -C "$E_CONFLICT" commit -q -m "modify on main"
 _git_q -C "$E_CONFLICT" merge side >/dev/null 2>&1 || true
 
-assert "E5: FIXTURE — the conflict really prints a Y-column D" \
+assert "E5a: FIXTURE — the conflict really prints a Y-column D" \
     _has 'UD c.txt' "$(git -C "$E_CONFLICT" status --porcelain)"
-assert "E5: FIXTURE — ...with the file still on disk" test -f "$E_CONFLICT/c.txt"
+assert "E5b: FIXTURE — ...with the file still on disk" test -f "$E_CONFLICT/c.txt"
 
 run_detector --lane "$E_CONFLICT"
 assert "E6: an unmerged conflict entry is not a deletion of either kind" \
@@ -514,7 +567,7 @@ assert "F9: ...and names the offending flag on stderr" _has 'no-such-flag' "$ERR
 run_detector --lane
 assert "F10: --lane with no value is a usage error (exit 2)" test "$RC" -eq 2
 
-# F11-F14: `--lane ""`. This is NOT a restatement of F10: an explicitly-passed
+# F11-F15: `--lane ""`. This is NOT a restatement of F10: an explicitly-passed
 # EMPTY value is what an unset or empty shell variable expands to at the
 # deployed call site (dark-factory's session-start invocation passing a lane
 # path), and it used to fall through to the walk-up branch instead of being
@@ -538,11 +591,11 @@ assert "F13: ...so no classification line is emitted for a lane nobody named" \
     _lacks 'deleted=' "$OUT"
 assert "F14: ...and the refusal says the value must be non-empty" \
     _has 'non-empty' "$ERR_OUT"
-assert "F11: ...and is actionable on stderr" test -n "$ERR_OUT"
+assert "F15: ...and is actionable on stderr" test -n "$ERR_OUT"
 
 run_detector --help
-assert "F12: --help exits 0" test "$RC" -eq 0
-assert "F13: ...and documents the exit codes" _has 'Exit codes' "$OUT$ERR_OUT"
+assert "F16: --help exits 0" test "$RC" -eq 0
+assert "F17: ...and documents the exit codes" _has 'Exit codes' "$OUT$ERR_OUT"
 
 # Task #7106's OWN mechanism, per scripts/lib_git_env_scrub.sh: an unscrubbed
 # GIT_INDEX_FILE lets one repo's `git add -A` overwrite another repo's index.
@@ -561,16 +614,16 @@ _mk_repo "$F_FOREIGN" foreign-only.txt
 env GIT_INDEX_FILE="$F_VICTIM/.git/index" \
     git -c user.name=t -c user.email=t@t -C "$F_FOREIGN" add -A
 
-assert "F14: FIXTURE — the poisoned index really makes git status fatal in the victim" \
+assert "F18: FIXTURE — the poisoned index really makes git status fatal in the victim" \
     _git_status_fails "$F_VICTIM"
-assert "F15: FIXTURE — ...while every one of the victim's files is still on disk" \
+assert "F19: FIXTURE — ...while every one of the victim's files is still on disk" \
     test -f "$F_VICTIM/src/lib.rs"
 
 run_detector --lane "$F_VICTIM"
-assert "F16: an unreadable index is a wiring error (exit 2), not a false sentinel" \
+assert "F20: an unreadable index is a wiring error (exit 2), not a false sentinel" \
     test "$RC" -eq 2
-assert "F17: ...and no deletion count is reported at all" _lacks 'deleted=' "$OUT"
-assert "F18: ...and git's own error is surfaced rather than swallowed" \
+assert "F21: ...and no deletion count is reported at all" _lacks 'deleted=' "$OUT"
+assert "F22: ...and git's own error is surfaced rather than swallowed" \
     _has 'git:' "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1042,5 +1095,86 @@ assert "J4n: CONTROL — a real deletion in a linked worktree still raises the s
     test "$RC" -eq 3
 assert "J4o: ...as view=lane evidence" \
     test "$OUT" = "$(_summary 1 0 "$J_SHARED/laneA" lane)"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block K — RENAME ENTRIES DO NOT DESYNCHRONISE THE -z STREAM
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block K: rename second-field consumption ---"
+
+# A rename or copy entry carries TWO NUL-terminated fields -- measured on git
+# 2.43.0, `git mv 3D_mesh.rs mesh3d.rs` emits `R  mesh3d.rs\0` `3D_mesh.rs\0` --
+# while every other entry carries one. A reader that leaves the second field in
+# the stream parses it as the NEXT entry and reads everything after it off by
+# one field.
+#
+# The fixture's file NAME is the whole point, and a name without this property
+# would let the block pass with the consumption deleted. Misparsed as an entry,
+# `3D_mesh.rs` yields XY=`3D` and path=`mesh.rs`: Y=D passes the worktree-column
+# test, `mesh.rs` is absent, and the run reports `deleted: mesh.rs` under the
+# "do NOT restore, this is evidence" hint -- a false exit-3 sentinel naming a
+# path that has never existed. `3D_mesh.rs` is an unremarkable name in a CAD
+# workspace, which is what makes the shape reachable rather than contrived.
+#
+# Only R is exercised: `git status` runs rename detection by default but never
+# copy detection (that needs an explicit -C, which status does not pass), so C
+# has no fixture. One arm covers both because the field layout is the same.
+
+K_MV="$(_mktmpd Kmv)/lane"
+_mk_repo "$K_MV" a.txt 3D_mesh.rs
+_git_q -C "$K_MV" mv 3D_mesh.rs mesh3d.rs
+
+assert "K0a: FIXTURE — the staged rename really is an R entry" \
+    _has 'R  3D_mesh.rs -> mesh3d.rs' "$(git -C "$K_MV" status --porcelain)"
+assert "K0b: FIXTURE — the misparse target is absent, so it WOULD be counted" \
+    test ! -e "$K_MV/mesh.rs"
+
+run_detector --lane "$K_MV"
+assert "K1: a staged rename is not a deletion of either kind" \
+    test "$OUT" = "$(_summary 0 0 "$K_MV")"
+assert "K2: ...and raises no sentinel (exit 0)" test "$RC" -eq 0
+assert "K3: ...the source field is never reported as a path of its own" \
+    _lacks 'mesh.rs' "$ERR_OUT"
+
+# RD -- staged rename, new path then removed from the worktree -- is the shape
+# that must still COUNT, and count once. The plain ` D` entry sorted after it is
+# what catches the off-by-one: with the second field left in the stream the
+# rename contributes a phantom third entry and the count goes to 3.
+K_RD="$(_mktmpd Krd)/lane"
+_mk_repo "$K_RD" a.txt 3D_mesh.rs zz_plain.rs
+_git_q -C "$K_RD" mv 3D_mesh.rs mesh3d.rs
+rm "$K_RD/mesh3d.rs" "$K_RD/zz_plain.rs"
+
+K_RD_STATUS="$(git -C "$K_RD" status --porcelain)"
+assert "K4a: FIXTURE — the entry really is RD (staged rename, worktree deleted)" \
+    _has 'RD 3D_mesh.rs -> mesh3d.rs' "$K_RD_STATUS"
+assert "K4b: FIXTURE — ...and a plain ' D' entry really follows it in the stream" \
+    _has ' D zz_plain.rs' "$K_RD_STATUS"
+
+run_detector --lane "$K_RD"
+assert "K5: an RD entry counts once, and the entry after it is still read" \
+    test "$OUT" = "$(_summary 2 0 "$K_RD")"
+assert "K6: ...it is the NEW path that is named, that being the absent one" \
+    _has 'deleted: mesh3d.rs' "$ERR_OUT"
+assert "K7: ...the following plain deletion is reported too, not shifted away" \
+    _has 'deleted: zz_plain.rs' "$ERR_OUT"
+assert "K8: ...and the source field never becomes a deletion of its own" \
+    _lacks 'deleted: mesh.rs' "$ERR_OUT"
+assert "K9: ...so the lane's own evidence still raises the sentinel (exit 3)" \
+    test "$RC" -eq 3
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Label uniqueness
+# ──────────────────────────────────────────────────────────────────────────────
+# A label is a failure report's only handle on WHICH invocation broke, so a
+# reused one is ambiguous exactly when it matters. At this length that cannot be
+# held by eye, and it has already drifted once (task 7227: four labels carried
+# two assertions each). Derived from this file's own source, so the next
+# duplicate is red on the next run rather than at the next review.
+_dup_labels() {
+    grep -oE '^assert "[A-Za-z0-9]+' "$1" | sed 's/^assert "//' | LC_ALL=C sort | uniq -d
+}
+assert "Z1: every assert label in this suite is unique" \
+    test -z "$(_dup_labels "${BASH_SOURCE[0]}")"
 
 test_summary
