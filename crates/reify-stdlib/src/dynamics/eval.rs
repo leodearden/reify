@@ -2176,6 +2176,13 @@ mod tests {
     /// `loop_closures.len() == 1`, `bodies.len() == 4`, `error` present —
     /// all three asserted below so the pin cannot go vacuous by the fixture
     /// silently ceasing to be errored or closed-chain-shaped.
+    ///
+    /// A POSITIVE CONTROL runs the same `sample` against `m4`, the fixture
+    /// minus its errored call, and asserts `Some(forces)` of length 3. `None`
+    /// on its own is a weak signal — it is also what a values/bodies length
+    /// mismatch, a malformed sample, an FK failure, or any `?` short-circuit
+    /// on the path returns — so the control is what attributes the rejection
+    /// to the `error` key rather than to an incidental shape failure.
     #[test]
     fn closed_chain_inverse_dynamics_rejects_errored_mechanism() {
         let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
@@ -2205,7 +2212,7 @@ mod tests {
         let m4 = crate::eval_builtin("body", &[m3, mp(4.0), j_c.clone(), j_a]);
         // World-parented CLOSING edge ⇒ error Map that still carries the
         // loop_closures list recorded above.
-        let errored = crate::eval_builtin("body", &[m4, mp(5.0), j_c, world]);
+        let errored = crate::eval_builtin("body", &[m4.clone(), mp(5.0), j_c, world]);
 
         // Preconditions: the fixture really is errored AND closed-chain-shaped.
         let em = match &errored {
@@ -2264,11 +2271,34 @@ mod tests {
             ],
         );
 
+        // POSITIVE CONTROL, evaluated FIRST so the negative assertion below is
+        // attributable. `m4` is this fixture minus the one errored call: same
+        // 4 bodies, same single loop closure, same `sample` — the ONLY
+        // difference is the absent `error` key. Without this, `.is_none()`
+        // would also be satisfied by a values/bodies length mismatch, a
+        // malformed TrajectorySample, an FK failure, or any `?` short-circuit
+        // inside sample_fields / snapshot_for_sample /
+        // closed_chain_inverse_dynamics, and the pin could go vacuous while
+        // staying green.
+        let ok = inverse_dynamics_sample(&m4, &sample).expect(
+            "positive control: the SAME sample on the SAME mechanism minus the errored \
+             closing call must produce forces — if this fails, the negative assertion \
+             below proves nothing about the error key",
+        );
+        assert_eq!(
+            ok.len(),
+            3,
+            "positive control: one JointForce per spanning-tree DOF \
+             (n_tree = bodies − loop_closures = 4 − 1 = 3), got {}",
+            ok.len()
+        );
+
         assert!(
             inverse_dynamics_sample(&errored, &sample).is_none(),
             "inverse_dynamics_sample must return None for an ERRORED mechanism, even when its \
              loop_closures list is non-empty — a plausible-looking torque vector computed from a \
              mechanism the builder rejected is the silent-wrong-answer class this pin guards. \
+             The positive control above isolates the `error` key as the cause. \
              Today the rejection comes from the shared snapshot_for_sample seam; if that seam \
              stops rejecting errored mechanisms, closed_chain_inverse_dynamics needs the same \
              explicit error guard snapshot_inverse_dynamics already has"
