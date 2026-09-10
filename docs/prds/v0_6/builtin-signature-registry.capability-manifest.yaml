@@ -26,6 +26,27 @@ tasks:
       paths:
       - crates/reify-builtins
       expect: present
+  - name: post-merge-corpus-byte-identity
+    binding: measured 2026-09-10 — `reify check` stdout, stderr AND exit code are
+      byte-identical between main b42c7dd207 and the merged α branch 34165b4be6, for
+      examples/fields_analysis.ri (the analysis corpus named in the 2026-08-17
+      amendment) and tests/prd-gate/fixtures/parse_length_match_resolves.ri (the D3
+      regression fixture). Each binary was built from its own tree and run over the
+      SAME staged inputs, so the comparison isolates the compiler rather than a
+      fixture edit; crates/reify-compiler/stdlib was verified identical between the
+      two trees first. This is PRD §7.3(6) re-baselined against MAIN — post-merge,
+      "today's behaviour" IS main's post-#6577 behaviour, so main's own acceptance
+      tests are part of the bar, and both are GREEN through the registry path —
+      harness_geometry_solver::solver_elastic_static_stdlib_compile (13 passed) and
+      harness_compilation_surface::fea_bracket_minimize_mass_example (1 passed).
+      The parse fixture remains NON-probative for registration (D3 vacuity finding
+      2026-08-04) — it is a regression baseline only, and the registration evidence
+      is the source-level pins in crates/reify-compiler/tests/harness_builtin_registry/registry_seed_result_types.rs.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a cross-tree comparison needs two checkouts built and run over staged
+        inputs; not expressible as a stable grep
   - name: row-without-eval-arm-fails-build
     binding: producer (this leaf) — negative recipe, doc-comment form per registry_drift_tests
       precedent
