@@ -66,9 +66,20 @@
 #   paths are worktree-root-relative, so a SUBDIRECTORY would be joined against
 #   the wrong root and would misclassify in both directions (task 7227 measured
 #   both flips). A --lane that is not a worktree root is refused with exit 2.
-#   With no --lane, the lane is the worktree root of the current directory --
-#   derived, not assumed -- so an invocation from a subdirectory still
-#   classifies the repo-root-relative porcelain paths correctly.
+#   With no --lane, the lane is the nearest ancestor of $PWD carrying a .git
+#   entry, found by a pure-filesystem walk-up -- so an invocation from a
+#   subdirectory still classifies the repo-root-relative porcelain paths
+#   correctly, and "never re-resolved through git" holds on BOTH branches.
+#   `git rev-parse --show-toplevel` would reinstate here the exact hazard the
+#   paragraph above rules out for --lane; task 7227 measured it doing so.
+#
+#   NEITHER form scrubs the git environment, and a caller that wants the LANE
+#   measured rather than its own view must do so itself (the session-start
+#   invocation is dark-factory's, per CLAUDE.md's cross-repo seam pattern).
+#   scripts/lib_git_env_scrub.sh is the scrubber. Unscrubbed, a foreign view
+#   that is itself CLEAN makes git report nothing at all, and the run is
+#   reported as what it is -- see the foreign-view notice below -- rather than
+#   as an all-clear for a lane it never measured.
 #
 # Output contract:
 #   stdout — EXACTLY one machine-readable line, always, on every classified
@@ -126,7 +137,8 @@ Usage: $(basename "$0") [--lane DIR]
     --lane DIR   Lane ROOT directory to inspect, taken literally and never
                  re-resolved through git; a subdirectory is refused, since
                  porcelain paths are worktree-root-relative (default: the
-                 worktree root of the current directory).
+                 nearest ancestor of the current directory carrying a .git
+                 entry, found by a pure-filesystem walk-up).
     -h, --help   Print this message and exit.
 
   Output:
@@ -168,7 +180,33 @@ if [ -n "$LANE_ARG" ]; then
         exit 2
     }
 else
-    LANE="$(git rev-parse --show-toplevel 2>/dev/null)" || LANE=""
+    # A PURE-FILESYSTEM walk-up from $PWD to the nearest ancestor carrying a
+    # .git entry -- never `git rev-parse --show-toplevel`, for the same reason
+    # --lane is taken literally above. rev-parse honours an inherited
+    # GIT_DIR/GIT_WORK_TREE, so under exactly the poisoned view this detector
+    # exists to classify it names the FOREIGN worktree, and then every later
+    # step -- the root guard, the on-disk re-stat, the `lane=` field -- measures
+    # that tree under this lane's name. Measured on this host against the
+    # pre-fix script, both directions: a lane whose tracked `sub/a.txt` really
+    # was gone printed `deleted=0 phantom=0 lane=foreign` exit 0, and a clean
+    # lane under a foreign view holding a deletion printed `deleted=1
+    # lane=foreign` exit 3 -- a foreign tree's deletion attributed to a lane
+    # that had none. Block I pins both.
+    #
+    # Only RESOLUTION is taken out of git's hands. The `git status` call below
+    # keeps the inherited view deliberately, because classifying the agent's own
+    # view is the point.
+    #
+    # The walk-up lands where show-toplevel would in an unpoisoned environment:
+    # a worktree root is exactly a directory carrying a .git entry -- the same
+    # predicate the root guard below applies, for the reasons stated there.
+    LANE=""
+    _dir="$(pwd -P)"
+    while : ; do
+        if [ -e "$_dir/.git" ]; then LANE="$_dir"; break; fi
+        [ "$_dir" != "/" ] || break
+        _dir="$(dirname "$_dir")"
+    done
     [ -n "$LANE" ] || {
         err "no --lane given and the current directory is not inside a git worktree."
         hint "Pass --lane DIR, or run from within the lane."
@@ -200,11 +238,12 @@ fi
 # .git is a regular FILE (_lane-1, _lane-2, _merge-verify) and the main
 # checkout's is a DIRECTORY, so -d or -f alone would reject half the fleet.
 #
-# Both resolution branches are covered deliberately. show-toplevel returns a
-# genuine worktree root, which always carries a .git entry, so the default form
-# is unaffected (Block H7 pins that); the only way it can trip this guard is a
-# resolved toplevel with no .git entry, which is an inherited-GIT_WORK_TREE
-# wiring error and belongs in exit 2 by the contract above.
+# The guard is reached by both resolution branches but can only ever bite the
+# --lane one: the walk-up above stops at the first ancestor carrying a .git
+# entry, so the default form arrives here already satisfying the predicate
+# (Block H7 and Block I pin that it does). It is left applying to both anyway --
+# one predicate over the one value $LANE can hold, rather than a branch-specific
+# rule that a later edit could leave half-enforced.
 [ -e "$LANE/.git" ] || {
     err "--lane is not a worktree ROOT (no .git entry): $LANE"
     hint "Pass the lane directory itself; porcelain paths are worktree-root-relative"
@@ -231,6 +270,27 @@ if ! git -C "$LANE" status --porcelain -z > "$_STATUS_Z" 2> "$_GIT_ERR"; then
     sed 's/^/  git: /' < "$_GIT_ERR" >&2 || true
     hint "Not a usable git worktree. Reporting a wiring error rather than a false all-clear."
     exit 2
+fi
+
+# ── whose tree did git just answer about? ─────────────────────────────────────
+# An inherited view is CLASSIFIED, not scrubbed -- but it must never pass for
+# silence. When the foreign tree happens to be clean, git reports nothing at
+# all, both buckets below stay empty, and the summary line reads exactly like a
+# healthy lane while nothing about the lane was measured (task 7227 measured
+# precisely that: a lane whose `sub/a.txt` was really gone, reported as a zero
+# summary under a clean foreign view). Naming the tree git answered about is
+# what keeps those two apart.
+#
+# This is the ONE place $LANE is compared against a git-resolved root, and it is
+# deliberately not a guard: resolution above stays literal, the exit code below
+# is untouched, and a foreign view stays a reported condition rather than a
+# rejected one -- rejecting it would collapse the phantom classification this
+# script exists for.
+FOREIGN_VIEW=""
+_view_top="$(git -C "$LANE" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$_view_top" ] && [ -d "$_view_top" ]; then
+    _view_top="$(cd "$_view_top" && pwd -P)"
+    [ "$_view_top" = "$LANE" ] || FOREIGN_VIEW="$_view_top"
 fi
 
 # ── classify ──────────────────────────────────────────────────────────────────
@@ -294,6 +354,16 @@ if [ "$_n_phantom" -gt 0 ]; then
     info "A phantom is a view artifact, not a vanished file: git is answering about a"
     info "tree other than the one on disk here — typically a foreign GIT_DIR/GIT_WORK_TREE"
     info "inherited from the environment. It does not raise the exit-3 sentinel."
+fi
+
+if [ -n "$FOREIGN_VIEW" ]; then
+    warn "git answered about a DIFFERENT worktree than this lane (lane: $LANE)"
+    warn "  git's worktree root here is: $FOREIGN_VIEW"
+    info "An inherited GIT_DIR/GIT_WORK_TREE is observed rather than scrubbed, because"
+    info "classifying the agent's own view is the point. But the counts below describe"
+    info "THAT tree's answers, re-stat-ed here — they are not an all-clear for this lane,"
+    info "which git was never asked about. Re-run with the git environment scrubbed"
+    info "(scripts/lib_git_env_scrub.sh) to measure the lane itself."
 fi
 
 printf 'source-integrity: deleted=%d phantom=%d lane=%s\n' \

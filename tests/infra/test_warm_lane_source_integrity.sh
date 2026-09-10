@@ -61,6 +61,16 @@
 #       (false all-clear) and a phantom into a real deletion (false sentinel).
 #       Pinned as a visible exit-2 wiring error, with the true root and the
 #       no-argument-from-a-subdirectory form as controls.
+#   I — DEFAULT-FORM RESOLUTION UNDER A POISONED VIEW: the no-argument form is
+#       the deployed one (a dark-factory agent-session-start invocation), and
+#       inheriting a foreign git view is exactly what happens there -- so it is
+#       pinned under the SAME poisoning Block C applies to --lane, which the
+#       suite otherwise exercised only under a clean environment. Blocks A and
+#       H therefore could not see that resolving the default lane through
+#       `git rev-parse --show-toplevel` handed the whole run to the foreign
+#       tree. Both measured flips are pinned, plus the clean-foreign case where
+#       git reports nothing at all and only the foreign-view notice separates
+#       "clean lane" from "lane never measured".
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; classified
 # `pool` in run-all-classification.manifest (hermetic: temp-dir git repos only,
@@ -148,6 +158,21 @@ run_detector_poisoned() {
     local rc=0
     : > "$ERR_FILE"
     OUT="$(GIT_DIR="$gitdir" GIT_WORK_TREE="$worktree" bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+# ── run_detector_poisoned_in ──────────────────────────────────────────────────
+# run_detector_poisoned with the child's cwd set as well -- the combination
+# Block I needs, and the one the deployed invocation actually runs in: the
+# no-`--lane` default form, from inside a lane, with a foreign view inherited
+# from the environment. Same assignment placement, same reason, as
+# run_detector_poisoned.
+run_detector_poisoned_in() {
+    local gitdir="$1" worktree="$2" dir="$3"; shift 3
+    local rc=0
+    : > "$ERR_FILE"
+    OUT="$(cd "$dir" && GIT_DIR="$gitdir" GIT_WORK_TREE="$worktree" bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
     ERR_OUT="$(cat "$ERR_FILE")"
     RC=$rc
 }
@@ -503,7 +528,7 @@ echo "--- Block H: worktree-root relativity ---"
 #
 # The trap is sharpened by an asymmetry this suite already pins: A7/A8 run the
 # NO-ARGUMENT form from `$A_LANE/nested/deep` and it is correct there, because
-# that path resolves through `git rev-parse --show-toplevel`. So an operator
+# that form walks up to the lane root instead of taking the cwd. So an operator
 # who learns "run it from inside the lane" and then switches to `--lane .` from
 # that same subdirectory gets the opposite behaviour. The header's exit-2
 # contract already claims this class ("a mis-wired invocation is visible");
@@ -572,10 +597,115 @@ assert "H6b: ...as a real deletion, on the very fixture the subdir form flipped"
 run_detector_in "$H_LANE/sub"
 assert "H7a: ASYMMETRY CONTROL — the no-argument form from that same subdirectory" \
     test "$RC" -eq 3
-assert "H7b: ...still resolves the root through show-toplevel and is correct" \
+assert "H7b: ...still walks up to the root and is correct" \
     test "$OUT" = "$(_summary 1 0 "$H_LANE")"
 
 assert "H8: the rejected subdirectory is untouched — nothing was created in it" \
     test ! -e "$H_LANE/sub/.git"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — DEFAULT-FORM RESOLUTION UNDER A POISONED VIEW
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: the no-argument form under a foreign git view ---"
+
+# The default form is the DEPLOYED one -- a dark-factory agent-session-start
+# invocation, where environment inheritance is exactly what happens -- yet
+# Blocks A and H exercised it only under a clean environment while Blocks C, D
+# and H poisoned only the `--lane` form. That gap hid a real defect, measured
+# on this host against the pre-fix script, which resolved the default lane with
+# `git rev-parse --show-toplevel`: rev-parse honours the inherited view, so
+# LANE became the FOREIGN worktree and the root guard, the on-disk re-stat and
+# the `lane=` field all described that tree instead.
+#
+#   I1/I2 — a lane whose own tracked file really is gone must still be reported
+#     against THE LANE. Pre-fix this printed `lane=poison`: the right counts
+#     attributed to the wrong tree, which is an unattributable report -- the
+#     one outcome this whole script exists to prevent.
+#   I3 — the reverse: a foreign tree's deletion must never be charged to a
+#     clean lane. Pre-fix this printed `deleted=1 lane=poison` and exited 3,
+#     a false sentinel naming a lane with nothing wrong with it.
+#   I4 — the sharpest one: when the foreign tree is CLEAN, git reports nothing
+#     at all, so both buckets are empty and the summary is indistinguishable
+#     from a healthy lane. Pre-fix that read `deleted=0 phantom=0 lane=poison`
+#     for a lane whose file really was gone -- the esc-7106-5 signature
+#     silently suppressed. Correct resolution alone does NOT restore the
+#     counts here (git was asked about the other tree and answered honestly
+#     about it), so what is pinned is that the run says so.
+I_ROOT="$(_mktmpd I)"
+I_LANE="$I_ROOT/lane"
+I_POISON="$I_ROOT/poison"
+I_CLEAN="$I_ROOT/cleanview"
+_mk_repo "$I_LANE"   a.txt sub/a.txt
+_mk_repo "$I_POISON" a.txt sub/a.txt
+_mk_repo "$I_CLEAN"  a.txt sub/a.txt
+rm "$I_LANE/sub/a.txt" "$I_POISON/sub/a.txt"
+
+# Fixture premises first (the C0a-C0d convention), so no assertion below can
+# decay into a vacuous pass.
+I_POISONED_STATUS="$(GIT_DIR="$I_POISON/.git" GIT_WORK_TREE="$I_POISON" git -C "$I_LANE" status --porcelain)"
+assert "I0a: FIXTURE — the poisoned view reports ' D sub/a.txt'" \
+    _has ' D sub/a.txt' "$I_POISONED_STATUS"
+assert "I0b: FIXTURE — ...and the lane's own copy really is absent" \
+    test ! -e "$I_LANE/sub/a.txt"
+assert "I0c: FIXTURE — the lane and the poison tree have distinct basenames" \
+    test "$(basename "$I_LANE")" != "$(basename "$I_POISON")"
+
+run_detector_poisoned_in "$I_POISON/.git" "$I_POISON" "$I_LANE"
+assert "I1a: the no-argument form still raises the sentinel under a foreign view" \
+    test "$RC" -eq 3
+assert "I1b: ...and attributes the deletion to THE LANE, not the inherited tree" \
+    test "$OUT" = "$(_summary 1 0 "$I_LANE")"
+assert "I1c: ...so the foreign tree is never named as the lane" \
+    _lacks "lane=$(basename "$I_POISON")" "$OUT"
+
+# From a subdirectory as well: the walk-up must reach the lane ROOT, not stop
+# at the cwd, or every root-relative porcelain path is joined one level too
+# deep -- the Block H flip, arriving by the other branch.
+run_detector_poisoned_in "$I_POISON/.git" "$I_POISON" "$I_LANE/sub"
+assert "I2a: ...and from a subdirectory of the lane too (exit 3)" test "$RC" -eq 3
+assert "I2b: ...still naming the lane root, not the subdirectory or the view" \
+    test "$OUT" = "$(_summary 1 0 "$I_LANE")"
+
+# REVERSE: a clean lane under a view that has a deletion. The deletion belongs
+# to the foreign tree, so the lane must come back with no sentinel -- and the
+# entry classified phantom, which is the proof that scrubbing was confined to
+# resolution and the view itself is still being observed.
+I_CLEANLANE="$I_ROOT/cleanlane"
+_mk_repo "$I_CLEANLANE" a.txt sub/a.txt
+assert "I3a: FIXTURE — the clean lane really has its copy on disk" \
+    test -f "$I_CLEANLANE/sub/a.txt"
+
+run_detector_poisoned_in "$I_POISON/.git" "$I_POISON" "$I_CLEANLANE"
+assert "I3b: a foreign tree's deletion never becomes the lane's sentinel (exit 0)" \
+    test "$RC" -eq 0
+assert "I3c: ...it is classified phantom against the correctly-resolved lane" \
+    test "$OUT" = "$(_summary 0 1 "$I_CLEANLANE")"
+assert "I3d: ...so the poisoned view is still OBSERVED, not scrubbed away" \
+    _has 'phantom' "$ERR_OUT"
+
+# CLEAN FOREIGN VIEW: git has nothing to report, so the counts cannot carry the
+# signal. The run must still say whose tree it answered about, or a session
+# start under a poisoned environment reads as a clean bill of health.
+run_detector_poisoned_in "$I_CLEAN/.git" "$I_CLEAN" "$I_LANE"
+assert "I4a: a clean foreign view yields a zero summary — against the LANE's name" \
+    test "$OUT" = "$(_summary 0 0 "$I_LANE")"
+assert "I4b: ...and the run is not silent: the foreign tree is named on stderr" \
+    _has "$I_CLEAN" "$ERR_OUT"
+assert "I4c: ...stated as a different worktree, so it is legible without re-deriving" \
+    _has 'DIFFERENT worktree' "$ERR_OUT"
+assert "I4d: ...and explicitly not an all-clear for this lane" \
+    _has 'not an all-clear' "$ERR_OUT"
+assert "I4e: stdout stays exactly one machine-readable line regardless" _one_line "$OUT"
+
+# CONTROL: without a foreign view there is no notice at all, or the notice
+# would be noise on every healthy run and A4's silence claim would be a lie.
+run_detector_in "$I_CLEANLANE"
+assert "I5a: CONTROL — an unpoisoned run of the same form is clean (exit 0)" \
+    test "$RC" -eq 0
+assert "I5b: ...and emits no foreign-view notice" _lacks 'DIFFERENT worktree' "$ERR_OUT"
+
+assert "I6: NON-MUTATION — the lane's absent file was not restored by any of it" \
+    test ! -e "$I_LANE/sub/a.txt"
 
 test_summary
