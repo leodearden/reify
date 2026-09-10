@@ -247,7 +247,8 @@ fn zone_slab_compiles() {
     // (geometry.rs:2622 → geometry_modify.rs:86,
     // `compile_modify_2arg(ModifyKind::ZoneSlab, "width")`), so arg 0 is a
     // geometry TARGET — a face/profile, not a solid — offset ±width/2 and
-    // capped into a slab. Grounding site: zone_slab_compile_tests.rs:27.
+    // capped into a slab. Grounding site: zone_slab_compile_tests.rs's
+    // `zone_slab_lowers_to_modify_zone_slab`.
     assert_compiles("zone_slab", "zone_slab(rectangle(40mm, 20mm), 2mm)");
 }
 
@@ -257,7 +258,7 @@ fn zone_cylinder_compiles() {
     // form (geometry.rs:2241). Arg 0 is an axis WIRE (its own length sets the
     // cylinder extent — there is deliberately no length argument); `width` is
     // the Ø-zone DIAMETER, lowered to Sweep{Pipe} with radius = width * 0.5.
-    // Grounding site: examples/tolerancing/gdt_zones.ri:23.
+    // Grounding site: examples/tolerancing/gdt_zones.ri's `cyl_zone` cell.
     assert_compiles(
         "zone_cylinder",
         "zone_cylinder(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 8mm)",
@@ -272,7 +273,7 @@ fn zone_annulus_compiles() {
     // Arg 3 `length` is accepted and validated, but the swept extent still
     // comes from the axis wire (ratified L2 esc-4476-88 Option A), so the
     // 4-arg spelling must be pinned even though the argument is unused.
-    // Grounding site: examples/tolerancing/gdt_zones.ri:28.
+    // Grounding site: examples/tolerancing/gdt_zones.ri's `ann_zone` cell.
     assert_compiles(
         "zone_annulus",
         "zone_annulus(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 20mm, 4mm, 20mm)",
@@ -284,7 +285,8 @@ fn zone_profile_compiles() {
     // geometry.md documents the exactly-2-arg `zone_profile(solid, width)`
     // form (geometry.rs:2355) — Difference(Thicken(solid, +w/2),
     // Thicken(solid, −w/2)) via OCCT Thicken. Arg 0 is a SOLID here (unlike
-    // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri:32.
+    // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri's
+    // `prof_zone` cell.
     assert_compiles("zone_profile", "zone_profile(box(10mm, 10mm, 10mm), 1mm)");
 }
 
@@ -301,7 +303,7 @@ fn nurbs_surface_compiles() {
     // matching nested grid of reals, but u_knots/v_knots are FLAT clamped knot
     // vectors and the degrees are bare integers. Transcribed from the
     // already-evaluating bilinear patch at
-    // crates/reify-eval/tests/nurbs_surface_e2e.rs:47.
+    // crates/reify-eval/tests/nurbs_surface_e2e.rs's `NURBS_SURFACE_BBOX_SOURCE`.
     assert_compiles(
         "nurbs_surface",
         "nurbs_surface(\
@@ -315,7 +317,7 @@ fn isosurface_bare_compiles() {
     // geometry.md documents the 1-arg `isosurface(grid)` form
     // (geometry.rs:2670, `check_arg_count_at_least(..., 1)`). The grid operand
     // is resolved via geom_ref(0); a BRep/Mesh operand is voxelized first.
-    // Grounding site: examples/multi_kernel/voxel_to_mesh.ri:30.
+    // Grounding site: examples/multi_kernel/voxel_to_mesh.ri's `shell` cell.
     assert_compiles("isosurface_bare", "isosurface(box(10mm, 10mm, 10mm))");
 }
 
@@ -331,8 +333,11 @@ fn isosurface_with_named_options_compiles() {
     // than a checked name. Their absence in the bare form above defers to the
     // eval-lowering defaults (iso_level = 0.0, adaptive = false) rather than
     // being defaulted at compile time.
-    // Grounding sites: examples/multi_kernel/voxel_to_mesh_iso.ri:32 and the
-    // arity/named-arg unit tests at geometry.rs:6326/6367.
+    // Grounding site: geometry.rs's unit test
+    // `compile_geometry_call_isosurface_named_3arg_carries_iso_and_adaptive`.
+    // No worked example anywhere passes `adaptive:` —
+    // examples/multi_kernel/voxel_to_mesh_iso.ri grounds the 2-arg `iso:`
+    // spelling only — so that unit test is the 3-arg form's only grounding site.
     assert_compiles(
         "isosurface_with_named_options",
         "isosurface(box(10mm, 10mm, 10mm), iso: 3mm, adaptive: true)",
