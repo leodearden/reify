@@ -632,6 +632,19 @@ assert "E-CLI2: cli-invocation.md documents --jcodemunch-index-dir" \
 assert "E-CLI3: cli-invocation.md documents the E_JC_INDEX_* refusal codes" \
     bash -c 'git -C "$1" grep -q "E_JC_INDEX_" -- .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
 
+# E-MODES1 bans the BARE token, not `jcodemunch-serve\.service` — modes.md:137
+# asserted the retired persistent unit by bare name ("all require
+# `jcodemunch-serve` to be running"), which the .service suffix would miss.
+#
+# The bare token is safe HERE, and only here, because modes.md has no legitimate
+# reason to name scripts/with-jcodemunch-serve.sh: its job is per-pattern dispatch
+# semantics, and the wrapper belongs to cli-invocation.md §4.1, which modes.md
+# already delegates to. IF a future edit genuinely needs to cite the wrapper from
+# modes.md, NARROW this assertion (e.g. to `[^-]jcodemunch-serve`) or replace it —
+# do not delete it.
+assert "E-MODES1: modes.md does not name the retired jcodemunch-serve unit" \
+    bash -c '! git -C "$1" grep -q "jcodemunch-serve" -- .claude/skills/audit/references/modes.md' _ "$REPO_ROOT"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block F — smoke-script connection-failure hint contract
