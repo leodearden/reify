@@ -406,3 +406,74 @@ async fn write_tool_payload_carries_a_flipped_constraint_status() {
         "node_id / status / parameter_ids must survive the transport byte-identical"
     );
 }
+
+/// PRD §7 B4 — **no stale baseline** (INV-GUI-2, gui-state-sync survey bug #7).
+///
+/// The postcondition is "the user command's delta diffs against the AI-advanced
+/// baseline (not a pre-AI stale one); no spurious over-reporting". This is the
+/// one B-row of the ζ gate that the LIVE driver cannot see, and that is by
+/// design rather than a gap in the debug surface: §6.2 caveat (i) — restated on
+/// `write_on_engine_and_refresh_baseline` itself — says the debug path
+/// deliberately DISCARDS the `StateDelta` and pushes the full `GuiState`
+/// instead. So no debug tool can return a delta, and the invariant is only
+/// observable where `compute_delta` and `last_state` both are: here.
+///
+/// `delta_to_events` is the observable, not the `changed_*` fields: it is what
+/// `main.rs::emit_delta` iterates to push to the frontend, so an event IS a
+/// re-report. Zero events is precisely "nothing was over-reported".
+///
+/// BOTH arms are asserted, because only the counterfactual gives the first one
+/// teeth: with the baseline advanced the next command is silent, and with it
+/// left stale the same command re-reports the AI's own edit.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn a_subsequent_command_does_not_re_report_an_ai_advanced_baseline() {
+    use crate::diff::{compute_delta, delta_to_events};
+    use reify_test_support::{bracket_source, bracket_source_with_width};
+
+    let before = boundary_gui_state_from(bracket_source());
+    let after = boundary_gui_state_from(&bracket_source_with_width("20mm"));
+
+    /// Every `cell_id` a delta's events would push to the frontend.
+    fn reported_cells(events: &[(String, serde_json::Value)]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|(_, payload)| payload["cell_id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    // ── Arm 1: the landed path — the write refreshes the baseline ──────────
+    let baseline = std::sync::Mutex::new(Some(before.clone()));
+
+    // The AI write itself, exactly as `write_on_engine_and_refresh_baseline`
+    // performs it: `compute_delta` for its SIDE EFFECT, delta dropped.
+    let ai_edit = delta_to_events(&compute_delta(&baseline, &after));
+    assert!(
+        reported_cells(&ai_edit).iter().any(|c| c == "Bracket.width"),
+        "the AI edit must itself move Bracket.width, or the silence below is \
+         vacuous rather than earned; reported: {:?}",
+        reported_cells(&ai_edit)
+    );
+
+    // The subsequent ordinary command, re-deriving the same state.
+    let next = delta_to_events(&compute_delta(&baseline, &after));
+    assert!(
+        next.is_empty(),
+        "a command following an AI write must diff against the ADVANCED \
+         baseline and report nothing; it re-reported: {:?}",
+        next.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+
+    // ── Arm 2: the counterfactual — baseline left stale (bug #7) ───────────
+    let stale = std::sync::Mutex::new(Some(before.clone()));
+    let over_reported = delta_to_events(&compute_delta(&stale, &after));
+    assert!(
+        reported_cells(&over_reported)
+            .iter()
+            .any(|c| c == "Bracket.width"),
+        "with the refresh skipped the SAME command must re-report the AI's own \
+         edit — if it does not, arm 1's silence proves nothing about the \
+         baseline; reported: {:?}",
+        reported_cells(&over_reported)
+    );
+}

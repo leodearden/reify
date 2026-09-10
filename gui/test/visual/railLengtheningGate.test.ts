@@ -59,7 +59,11 @@ import {
   TRAVEL_AVAIL_CELL,
   X_RAIL_LEN_CELL,
   Y_RAIL_LEN_CELL,
+  checkFieldCoverage,
+  checkIdempotentReload,
   checkRailLengtheningGate,
+  checkRejectionAtomicity,
+  checkSourceCanonical,
   extractGateInputs,
   findEditableParams,
   formatFailures,
@@ -823,4 +827,317 @@ describe("findEditableParams — (j) against the real prj/printer_v01/printer.ri
       { cell: X_RAIL_LEN_CELL, declared: "let", hasDefaultLiteral: true },
     ]);
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The remaining PRD §7 rows. B4 is deliberately ABSENT from this file: the
+// debug path discards the `StateDelta` by design (PRD §6.2 caveat (i), restated
+// on `write_on_engine_and_refresh_baseline`), so no debug tool can return one
+// and no JS predicate could ever be fed. It is asserted where the observable
+// actually lives — `debug_boundary_tests::
+// a_subsequent_command_does_not_re_report_an_ai_advanced_baseline`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The post-edit source the B2 cases read, with both params already rewritten. */
+const EDITED_SOURCE = [
+  "pub structure CoreXY {",
+  "  param y_rail_len : Length = 1100mm",
+  "  let x_rail_len = y_rail_offset * 2",
+  "}",
+  "pub structure AFrame {",
+  "  param rail_span_m : Length = 1100mm",
+  "}",
+  "",
+].join("\n");
+
+const EDITED_LITERALS = {
+  [Y_RAIL_LEN_CELL]: "1100mm",
+  [RAIL_SPAN_CELL]: "1100mm",
+};
+
+describe("checkSourceCanonical — (k) B2, the edit is canonical ON DISK", () => {
+  it("passes when both params carry the expected literal and the save is a no-op", () => {
+    expect(
+      checkSourceCanonical({
+        source: EDITED_SOURCE,
+        expected: EDITED_LITERALS,
+        saveFile: { success: true },
+        sourceAfterSave: EDITED_SOURCE,
+      }),
+    ).toEqual([]);
+  });
+
+  it("faults the cell whose default literal still reads the OLD value", () => {
+    const stale = EDITED_SOURCE.replace("= 1100mm", "= 800mm");
+    const failures = checkSourceCanonical({
+      source: stale,
+      expected: EDITED_LITERALS,
+      saveFile: { success: true },
+      sourceAfterSave: stale,
+    }) as Failure[];
+    expect(forGate(failures, "canonical")).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      gate: "canonical",
+      tool: "reify_open_file",
+      field: `source[${Y_RAIL_LEN_CELL}]`,
+      observed: "800mm",
+      expected: "1100mm",
+    });
+  });
+
+  it("is unit-preserving: the same magnitude in another unit is NOT canonical", () => {
+    const metres = EDITED_SOURCE.replace(`param y_rail_len : Length = 1100mm`, "param y_rail_len : Length = 1.1m");
+    const failures = checkSourceCanonical({
+      source: metres,
+      expected: EDITED_LITERALS,
+      saveFile: { success: true },
+      sourceAfterSave: metres,
+    }) as Failure[];
+    expect(forGate(failures, "canonical")).toHaveLength(1);
+    expect(failures[0].observed).toBe("1.1m");
+  });
+
+  it("faults a cell the source declares as a `let` — it has no default to rewrite", () => {
+    const failures = checkSourceCanonical({
+      source: EDITED_SOURCE,
+      expected: { [X_RAIL_LEN_CELL]: "900mm" },
+      saveFile: { success: true },
+      sourceAfterSave: EDITED_SOURCE,
+    }) as Failure[];
+    expect(failures[0]).toMatchObject({
+      gate: "canonical",
+      field: `source[${X_RAIL_LEN_CELL}]`,
+      observed: "let",
+    });
+  });
+
+  it("faults a save that CHANGED the source — B2's no-op half", () => {
+    const failures = checkSourceCanonical({
+      source: EDITED_SOURCE,
+      expected: EDITED_LITERALS,
+      saveFile: { success: true },
+      sourceAfterSave: `${EDITED_SOURCE}// touched\n`,
+    }) as Failure[];
+    expect(forGate(failures, "canonical")).toHaveLength(1);
+    expect(failures[0].field).toBe("source-after-save");
+  });
+
+  it("reports a failed save as an OUTAGE, not as a canonical violation", () => {
+    const failures = checkSourceCanonical({
+      source: EDITED_SOURCE,
+      expected: EDITED_LITERALS,
+      saveFile: { error: "no active file" },
+      sourceAfterSave: EDITED_SOURCE,
+    }) as Failure[];
+    expect(forGate(failures, "outage")).toHaveLength(1);
+    expect(forGate(failures, "canonical")).toHaveLength(0);
+    expect(failures[0].tool).toBe("reify_save_file");
+  });
+});
+
+describe("checkFieldCoverage — (l) B3, fields beyond meshes/values stay live", () => {
+  const covered = {
+    meshes: [{}],
+    values: [{}],
+    constraints: [{ node_id: "a" }],
+    files: [{ path: "printer.ri" }],
+    compile_diagnostics: [],
+    tessellation_diagnostics: [],
+    stale: false,
+    reload_error: null,
+  };
+
+  it("passes when every non-mesh/non-value field is present and the reload is clean", () => {
+    expect(checkFieldCoverage(covered)).toEqual([]);
+  });
+
+  it("faults `stale: true` — the reload failed, so every field is LAST GOOD", () => {
+    const failures = checkFieldCoverage({ ...covered, stale: true }) as Failure[];
+    expect(forGate(failures, "coverage")).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      gate: "coverage",
+      tool: "engine_state",
+      field: "stale",
+      observed: true,
+      expected: false,
+    });
+  });
+
+  it("faults a non-null reload_error even when stale is false", () => {
+    const failures = checkFieldCoverage({ ...covered, reload_error: "parse error" }) as Failure[];
+    expect(forField(failures, "reload_error")).toHaveLength(1);
+    expect(failures[0].observed).toBe("parse error");
+  });
+
+  it("faults an EMPTY constraints/files list — printer.ri realizes both", () => {
+    const failures = checkFieldCoverage({ ...covered, constraints: [], files: [] }) as Failure[];
+    expect(forField(failures, "constraints").length).toBe(1);
+    expect(forField(failures, "files").length).toBe(1);
+  });
+
+  it("faults a diagnostics field that is missing entirely, as a shape problem", () => {
+    const { tessellation_diagnostics: _drop, ...missing } = covered;
+    const failures = checkFieldCoverage(missing) as Failure[];
+    expect(forField(failures, "tessellation_diagnostics")).toHaveLength(1);
+    expect(failures[0].gate).toBe("shape");
+  });
+
+  it("names more than one field when more than one is wrong — no early return", () => {
+    const failures = checkFieldCoverage({ ...covered, stale: true, constraints: [] }) as Failure[];
+    expect(failures.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("checkIdempotentReload — (m) B5, the watcher re-read adds no churn", () => {
+  const settled = {
+    cells: {
+      [Y_RAIL_LEN_CELL]: { mm: 1100, freshness: "final" },
+      [RAIL_SPAN_CELL]: { mm: 1100, freshness: "final" },
+      [TRAVEL_AVAIL_CELL]: { mm: 810, freshness: "final" },
+    },
+    railSpanPinStatus: "Satisfied",
+    toolDockPinStatus: "Violated",
+  };
+
+  it("passes when the post-debounce re-read is identical to the pre-debounce one", () => {
+    expect(checkIdempotentReload({ before: settled, after: { ...settled } })).toEqual([]);
+  });
+
+  it("faults a cell whose value MOVED across the debounce — a double-apply", () => {
+    const drifted = {
+      ...settled,
+      cells: { ...settled.cells, [TRAVEL_AVAIL_CELL]: { mm: 1110, freshness: "final" } },
+    };
+    const failures = checkIdempotentReload({ before: settled, after: drifted }) as Failure[];
+    expect(forGate(failures, "reload")).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      gate: "reload",
+      tool: "engine_state",
+      field: `values[${TRAVEL_AVAIL_CELL}].mm`,
+      observed: 1110,
+      expected: 810,
+    });
+  });
+
+  it("faults a pin that flipped across the debounce", () => {
+    const flipped = { ...settled, railSpanPinStatus: "Violated" };
+    const failures = checkIdempotentReload({ before: settled, after: flipped }) as Failure[];
+    expect(failures[0]).toMatchObject({
+      gate: "reload",
+      field: `constraints[${RAIL_SPAN_PIN}].status`,
+      observed: "Violated",
+      expected: "Satisfied",
+    });
+  });
+
+  it("faults a freshness that regressed across the debounce", () => {
+    const stale = {
+      ...settled,
+      cells: { ...settled.cells, [Y_RAIL_LEN_CELL]: { mm: 1100, freshness: "stale" } },
+    };
+    const failures = checkIdempotentReload({ before: settled, after: stale }) as Failure[];
+    expect(forField(failures, `values[${Y_RAIL_LEN_CELL}].freshness`)).toHaveLength(1);
+  });
+
+  it("reports churn in EVERY drifted cell, not just the first", () => {
+    const both = {
+      ...settled,
+      cells: {
+        ...settled.cells,
+        [Y_RAIL_LEN_CELL]: { mm: 1, freshness: "final" },
+        [RAIL_SPAN_CELL]: { mm: 2, freshness: "final" },
+      },
+    };
+    expect((checkIdempotentReload({ before: settled, after: both }) as Failure[]).length).toBe(2);
+  });
+});
+
+describe("checkRejectionAtomicity — (n) B7, a refused write mutates nothing", () => {
+  const SRC = "param y_rail_len : Length = 1100mm\n";
+
+  it("passes on a structured error with byte-identical source either side", () => {
+    expect(
+      checkRejectionAtomicity({
+        tool: "reify_set_parameter",
+        error: { error: "cell CoreXY.x_rail_len has no default literal to rewrite" },
+        sourceBefore: SRC,
+        sourceAfter: SRC,
+      }),
+    ).toEqual([]);
+  });
+
+  it("faults a write that SUCCEEDED where a rejection was required", () => {
+    const failures = checkRejectionAtomicity({
+      tool: "reify_set_parameter",
+      error: { success: true, new_value: "900", unit: "mm" },
+      sourceBefore: SRC,
+      sourceAfter: SRC,
+    }) as Failure[];
+    expect(forGate(failures, "rejection")).toHaveLength(1);
+    expect(failures[0].field).toBe("error");
+  });
+
+  it("faults a source that MOVED despite the rejection — a partial mutation", () => {
+    const failures = checkRejectionAtomicity({
+      tool: "reify_set_parameter",
+      error: { error: "dimension mismatch" },
+      sourceBefore: SRC,
+      sourceAfter: "param y_rail_len : Length = 900mm\n",
+    }) as Failure[];
+    expect(forGate(failures, "rejection")).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      gate: "rejection",
+      field: "source",
+      expected: SRC,
+    });
+  });
+
+  it("faults an EMPTY error message — a rejection must say why", () => {
+    const failures = checkRejectionAtomicity({
+      tool: "reify_set_parameter",
+      error: { error: "" },
+      sourceBefore: SRC,
+      sourceAfter: SRC,
+    }) as Failure[];
+    expect(forGate(failures, "rejection")).toHaveLength(1);
+  });
+
+  it("reports BOTH a wrong verdict and a moved source in one call", () => {
+    const failures = checkRejectionAtomicity({
+      tool: "reify_set_parameter",
+      error: { success: true },
+      sourceBefore: SRC,
+      sourceAfter: "changed\n",
+    }) as Failure[];
+    expect(failures.length).toBe(2);
+  });
+});
+
+describe("the four new predicates never throw, for ANY argument", () => {
+  const hostile = [
+    null,
+    undefined,
+    0,
+    "",
+    [],
+    {},
+    { error: "boom" },
+    { source: null, expected: null, saveFile: null, sourceAfterSave: null },
+    { before: null, after: null },
+    { cells: null, railSpanPinStatus: null, toolDockPinStatus: null },
+  ];
+  for (const [name, fn] of [
+    ["checkSourceCanonical", checkSourceCanonical],
+    ["checkFieldCoverage", checkFieldCoverage],
+    ["checkIdempotentReload", checkIdempotentReload],
+    ["checkRejectionAtomicity", checkRejectionAtomicity],
+  ] as const) {
+    it(`${name} returns an array of records instead of throwing`, () => {
+      for (const arg of hostile) {
+        const out = fn(arg as never);
+        expect(Array.isArray(out)).toBe(true);
+        expect(() => formatFailures(out as Failure[])).not.toThrow();
+      }
+    });
+  }
 });
