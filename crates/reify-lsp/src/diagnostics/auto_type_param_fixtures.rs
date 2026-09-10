@@ -170,6 +170,111 @@ structure def Bearing<T: Seal> {
 structure def Assembly { sub b = Bearing<auto: Seal>() }
 "#;
 
+/// Containment fixture for the PRE-EXISTING, compile-CLEAN half of the
+/// guard's blast radius: a generic structure merely DECLARED and never
+/// instantiated.
+///
+/// Nothing here fails, and nothing here involves `auto:` — the compiler emits
+/// ZERO diagnostics under BOTH checkers — yet `Bearing`'s own template reaches
+/// the evaluation graph carrying `Bearing.seal : TypeParam("T")`, which is
+/// exactly what `assert_value_cell_types_representable` panics on. This shape
+/// is therefore NOT newly reachable via task #6798's checker swap (contrast
+/// [`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`], whose whole point is that it
+/// is); it is the pre-existing crash the containment guard also happens to
+/// contain, named in
+/// [`crate::diagnostics::eval_guard::first_unrepresentable_cell`]'s
+/// "## Blast radius" section.
+///
+/// Its load-bearing property is the ABSENCE of a compile diagnostic. The
+/// guard's original justification for degrading quietly was "the compile-stage
+/// `E_AUTO_TYPE_PARAM_*` error is still delivered, and it is the actionable
+/// signal" — false here, which is why the guard must say something in the
+/// editor on its own account. Pinned by
+/// [`assert_compile_clean_typeparam_fixtures_carry_no_error`].
+pub(crate) const DECLARED_ONLY_GENERIC_TYPEPARAM_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    param seal : T
+}
+"#;
+
+/// Containment fixture for the second compile-CLEAN shape: an EXPLICIT generic
+/// instantiation, `Bearing<GasketSeal>()` rather than `Bearing<auto: Seal>()`.
+///
+/// Sibling of [`DECLARED_ONLY_GENERIC_TYPEPARAM_SRC`] and kept alongside it
+/// rather than folded into it: the two reach the same hazard through
+/// different compiler paths (no instantiation at all, versus an instantiation
+/// that names its type argument outright), and measured, this one leaves TWO
+/// unrepresentable cells — `Assembly.b.seal` as well as `Bearing.seal` —
+/// where the declared-only shape leaves one. Both compile CLEAN under both
+/// checkers.
+pub(crate) const EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    param seal : T
+}
+structure def Assembly { sub b = Bearing<GasketSeal>() }
+"#;
+
+/// Anti-vacuity guard for the two compile-CLEAN containment fixtures, pinning
+/// the OPPOSITE claim to [`assert_auto_fail_fixture_is_newly_reachable`]'s.
+///
+/// That guard asserts a fixture's failure is NEWLY reachable (stub clean, real
+/// checker errors). This one asserts these two are compile-clean under BOTH
+/// checkers — i.e. that the crash they contain is PRE-EXISTING, and, the part
+/// the tests actually lean on, that no compile diagnostic accompanies the
+/// skipped eval pass. If a future compiler change started erroring on either
+/// fixture, every "the editor would otherwise be told nothing" assertion over
+/// them would go quietly vacuous.
+pub(crate) fn assert_compile_clean_typeparam_fixtures_carry_no_error() {
+    for (name, src) in [
+        (
+            "DECLARED_ONLY_GENERIC_TYPEPARAM_SRC",
+            DECLARED_ONLY_GENERIC_TYPEPARAM_SRC,
+        ),
+        (
+            "EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC",
+            EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+        ),
+    ] {
+        let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "anti-vacuity guard: {name} must still PARSE — it is ordinary \
+             `.ri`, and a parse error would make every containment assertion \
+             over it vacuous. parse errors: {:#?}",
+            parsed.errors
+        );
+        for (checker_name, compiled) in [
+            (
+                "compile-time stub",
+                reify_compiler::compile_with_stdlib(&parsed),
+            ),
+            (
+                "real SimpleConstraintChecker",
+                reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker),
+            ),
+        ] {
+            let errors: Vec<_> = compiled
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == reify_core::Severity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "anti-vacuity guard: {name} must compile with ZERO \
+                 Error-severity diagnostics under the {checker_name} — the \
+                 ABSENCE of a compile diagnostic is what makes this fixture \
+                 the case the guard cannot ride on someone else's error \
+                 message, and the reason it must report itself in the editor. \
+                 errors: {errors:#?}"
+            );
+        }
+    }
+}
+
 /// Narrowness fixture: a FAILED `auto:` resolution that is provably SAFE to
 /// evaluate, sharing a document with independent eval-time diagnostics.
 ///

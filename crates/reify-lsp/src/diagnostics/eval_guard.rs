@@ -16,7 +16,11 @@
 //! `analysis.rs` call site, but declaring one means a `mod` line in `lib.rs`,
 //! which is outside this task's file scope.)
 
-use reify_core::{Type, ValueCellId};
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use reify_core::{ContentHash, Type, ValueCellId};
+use tower_lsp::lsp_types;
 
 /// The value-cell decls [`first_unrepresentable_cell`]'s stage-1 absence proof
 /// scans — see that function's "## Cost" section for WHICH collections these
@@ -236,6 +240,130 @@ pub(crate) fn first_unrepresentable_cell(
         .map(|(id, node)| (id.clone(), node.cell_type.clone()))
 }
 
+/// Fingerprint of the last skip reported to the server log.
+///
+/// Log throttling, not state: a document left in the guarded state is
+/// re-compiled on every keystroke AND on every hover / completion /
+/// goto-definition / document-symbols request (`server.rs` builds a fresh
+/// `AnalysisContext` per request), so an unthrottled line per call makes the
+/// very files that most need a legible log the least legible ones. Zero is
+/// both the initial value and "nothing reported yet"; a first skip whose
+/// fingerprint is genuinely zero costs one log line, once, in 2^-64 of cases.
+static LAST_REPORTED_SKIP: AtomicU64 = AtomicU64::new(0);
+
+/// Why the eval/check pass was skipped for a document, and the ONE place that
+/// renders that reason for a human — server log and editor alike.
+///
+/// The three production entry points hold three different return types and so
+/// keep three different early-return bodies, but the reason they return early
+/// is one thing and is spelled once here. Before this type the predicate call
+/// and a character-for-character identical two-line `eprintln!` were
+/// triplicated across `compute_diagnostics_with_state`, `compute_diagnostics`
+/// and `AnalysisContext::from_parsed`, with the shared wording enforced only
+/// by convention.
+pub(crate) struct SkippedEval {
+    cell_id: ValueCellId,
+    cell_type: Type,
+}
+
+impl SkippedEval {
+    /// The offending cell, phrased once for both audiences.
+    fn cell_description(&self) -> String {
+        format!(
+            "value cell `{}` has unrepresentable cell_type {:?}",
+            self.cell_id, self.cell_type
+        )
+    }
+
+    /// The EDITOR-visible half of the report: a file-level Warning saying the
+    /// document lost its eval pass.
+    ///
+    /// Without it the guard degrades mutely on the shapes that carry no
+    /// compile diagnostic of their own. The two such shapes are named in
+    /// [`first_unrepresentable_cell`]'s "## Blast radius" section — a
+    /// generic structure merely DECLARED, and an explicit
+    /// `Bearing<GasketSeal>()` instantiation — and both were measured
+    /// compile-CLEAN while their graphs carry a `TypeParam` cell. On those
+    /// inputs "the compile-stage `E_AUTO_TYPE_PARAM_*` error is still the
+    /// actionable signal" is simply false: there is no such error, so every
+    /// eval-time diagnostic, every constraint result and (via the same guard
+    /// in `AnalysisContext::from_parsed`) every hover/completion computed
+    /// value would vanish for the whole document with nothing but a line on
+    /// the server's stderr. Pinned by
+    /// `crate::diagnostics::tests::compile_clean_unrepresentable_graph_is_contained_and_reported`.
+    ///
+    /// Range is the start of the document, matching `convert_diagnostic`'s
+    /// own fallback for a label-less diagnostic: the offender is a value cell
+    /// in the evaluation graph, which carries no source span here.
+    ///
+    /// Warning, not Error: the file may be perfectly valid `.ri` that the
+    /// compiler accepted, and the LSP is reporting its own reduced service
+    /// rather than a defect in the source.
+    pub(crate) fn diagnostic(&self) -> lsp_types::Diagnostic {
+        lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position::new(0, 0),
+                end: lsp_types::Position::new(0, 0),
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+            code: Some(lsp_types::NumberOrString::String(
+                "EvalSkippedUnrepresentableCell".to_string(),
+            )),
+            message: format!(
+                "constraint checking and computed values are unavailable for this \
+                 file: {} — that type has no runtime value (typically an unresolved \
+                 generic type parameter), so evaluation was skipped rather than fed \
+                 a graph it cannot evaluate (task #6851)",
+                self.cell_description()
+            ),
+            source: Some("reify".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// The SERVER-LOG half: one line per distinct (document content,
+    /// offending cell), so a document parked in the guarded state does not
+    /// emit a line per keystroke and per hover.
+    ///
+    /// Still `eprintln!` rather than `tracing::warn!` deliberately, despite
+    /// this crate depending on `tracing`: nothing installs a `Subscriber` on
+    /// the LSP's production path (`crate::run_server`, reached from
+    /// `reify lsp`), so a `tracing` event would be DROPPED in the field.
+    /// `convert.rs`'s `tracing::debug!` is opt-in protocol debugging and can
+    /// afford that; a guard that silently blanks a document's eval pass
+    /// cannot.
+    fn report_to_log(&self, content_hash: ContentHash) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (content_hash, &self.cell_id, &self.cell_type).hash(&mut hasher);
+        let fingerprint = hasher.finish();
+        if LAST_REPORTED_SKIP.swap(fingerprint, Ordering::Relaxed) == fingerprint {
+            return;
+        }
+        eprintln!(
+            "[reify-lsp] skipping eval/check: {} (task #6851)",
+            self.cell_description()
+        );
+    }
+}
+
+/// `Some(reason)` when `compiled`'s evaluation graph must NOT be fed to the
+/// engine, already reported to the server log — the form all three production
+/// entry points call.
+///
+/// Wraps [`first_unrepresentable_cell`] (which stays a pure predicate, so the
+/// unit tests below can ask it without writing to a log) and folds the
+/// reporting in, so the guard's observability policy has ONE definition
+/// rather than one per call site. The caller decides only what to DO about
+/// it: `diagnostics.rs`'s two entry points push
+/// [`SkippedEval::diagnostic`] and return their partial diagnostics,
+/// `AnalysisContext::from_parsed` returns an empty `CheckResult`.
+pub(crate) fn skip_reason(compiled: &reify_compiler::CompiledModule) -> Option<SkippedEval> {
+    let (cell_id, cell_type) = first_unrepresentable_cell(compiled)?;
+    let reason = SkippedEval { cell_id, cell_type };
+    reason.report_to_log(compiled.content_hash);
+    Some(reason)
+}
+
 /// Boolean face of [`first_unrepresentable_cell`] — see that function's doc
 /// for the mechanism, the cost model and the rejected alternatives.
 ///
@@ -261,7 +389,10 @@ mod tests {
 
     use crate::diagnostics::auto_type_param_fixtures::{
         AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, BT8_CONSTANT_CONSTRAINT_SRC,
-        GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC, assert_guarded_group_fixture_is_newly_reachable,
+        DECLARED_ONLY_GENERIC_TYPEPARAM_SRC, EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+        GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+        assert_compile_clean_typeparam_fixtures_carry_no_error,
+        assert_guarded_group_fixture_is_newly_reachable,
     };
 
     /// Unit-pin [`super::compiled_graph_has_unrepresentable_cell`] — the
@@ -382,6 +513,35 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
              one (task #6851). Stage 1 may only ever prove ABSENCE, so it has \
              to scan every collection `EvaluationGraph::from_templates` draws \
              cells from, not just `value_cells`"
+        );
+
+        // (6)-(7) POSITIVE, and COMPILE-CLEAN — the two shapes the
+        // "## Blast radius" section of the predicate's doc claims to contain
+        // without an `auto:` clause anywhere in sight. Every other firing case
+        // here also carries an `AutoTypeParamNoCandidate` error, so without
+        // these two the whole family would stay green under a future narrowing
+        // of the predicate back toward an `auto:`-specific test — and the
+        // "wider than `auto:`, deliberately" claim, which is the justification
+        // for scoping this to the graph in the first place, would be
+        // unmeasured. They are also the shapes on which the guard's report has
+        // no compile diagnostic to ride on: see
+        // `SkippedEval::diagnostic`.
+        assert_compile_clean_typeparam_fixtures_carry_no_error();
+        assert!(
+            fires(DECLARED_ONLY_GENERIC_TYPEPARAM_SRC),
+            "a generic structure that is merely DECLARED still contributes \
+             `Bearing.seal : TypeParam(\"T\")` to the graph, with no `auto:` \
+             clause and no compile diagnostic anywhere — the guard MUST fire, \
+             or `Engine::check` panics on a file the compiler accepted \
+             (task #6851)"
+        );
+        assert!(
+            fires(EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC),
+            "an EXPLICIT `Bearing<GasketSeal>()` instantiation leaves its \
+             TypeParam cells unsubstituted just as a failed `auto:` \
+             resolution does, and likewise compiles clean — the guard MUST \
+             fire. A predicate narrowed to `auto:` resolution specifically \
+             would miss this and crash the server (task #6851)"
         );
     }
 

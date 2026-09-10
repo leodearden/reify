@@ -131,10 +131,21 @@ impl AnalysisContext {
         // degradation — today's alternative is a debug-build crash of the whole
         // LSP process, and in release builds (where
         // `assert_value_cell_types_representable` is elided) a silently wrong
-        // `TypeKindMismatch`/`Undef`. The compile-stage
-        // `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error is still delivered, and it is
-        // the actionable signal; the `eprintln!` below names the offending cell
-        // in the server log so the degradation is diagnosable rather than mute.
+        // `TypeKindMismatch`/`Undef`.
+        //
+        // `skip_reason` names the offending cell in the server log (throttled
+        // — this constructor runs per hover / completion / goto-def / symbols
+        // request). The EDITOR-visible half of the report is not pushed here:
+        // this site owns no diagnostics list, and `check_result.diagnostics`
+        // must stay empty so
+        // `tests::auto_resolution_failure_does_not_panic_analysis_context` can
+        // still tell a SKIPPED eval pass from a run-and-recovered one. It is
+        // delivered instead by `compute_diagnostics_with_state`, which the
+        // server runs over the same document on open and on every change, so
+        // any file whose AnalysisContext degrades here also carries the
+        // file-level Warning from `SkippedEval::diagnostic`. Rendering the
+        // offender in the hover panel itself would mean editing `hover.rs`,
+        // outside this task's file scope.
         //
         // The five-field literal is spelled out rather than reaching for a
         // `Default` derive on `reify_eval::CheckResult` (which it does not
@@ -143,17 +154,7 @@ impl AnalysisContext {
         // explicit literal turns any future `CheckResult` field addition into a
         // loud compile error in exactly the place that must then decide what
         // the skipped-eval value should be.
-        if let Some((cell_id, cell_type)) =
-            crate::diagnostics::eval_guard::first_unrepresentable_cell(&compiled)
-        {
-            // Observability: this is the most consequential of the three guard
-            // sites — hover / completion lose every computed value here — so
-            // it must not degrade mutely. Same `eprintln!` idiom as
-            // `diagnostics.rs`'s two sites.
-            eprintln!(
-                "[reify-lsp] skipping eval/check: value cell `{cell_id}` has \
-                 unrepresentable cell_type {cell_type:?} (task #6851)"
-            );
+        if crate::diagnostics::eval_guard::skip_reason(&compiled).is_some() {
             return Self {
                 parsed,
                 compiled,
@@ -1093,6 +1094,77 @@ mod tests {
                  #6851). Got constraint_results: {:#?}, diagnostics: {:#?}",
                 ctx.check_result.constraint_results,
                 ctx.check_result.diagnostics
+            );
+        }
+    }
+
+    /// Containment at this entry point on the two COMPILE-CLEAN shapes, the
+    /// mirror of
+    /// `crate::diagnostics::tests::compile_clean_unrepresentable_graph_is_contained_and_reported`.
+    ///
+    /// `auto_resolution_failure_does_not_panic_analysis_context` above pins
+    /// containment on fixtures that also carry an `AutoTypeParamNoCandidate`
+    /// Error. These two carry no compile diagnostic at all — a generic
+    /// structure merely DECLARED, and an explicit `Bearing<GasketSeal>()`
+    /// instantiation — yet their graphs carry a `TypeParam` cell all the same,
+    /// so `engine.check` would panic here on valid `.ri` the compiler
+    /// accepted. Reaching the assertions AT ALL is that half of the contract.
+    ///
+    /// Also pins the eval pass as SKIPPED rather than run-and-recovered, for
+    /// the same reason the sibling test does: a future change making eval
+    /// tolerant of unrepresentable cells would otherwise satisfy "it did not
+    /// panic" while feeding the engine exactly the cell task #6851 is about.
+    #[test]
+    fn compile_clean_unrepresentable_graph_yields_empty_check_result() {
+        use crate::diagnostics::auto_type_param_fixtures as fixtures;
+
+        fixtures::assert_compile_clean_typeparam_fixtures_carry_no_error();
+
+        for (shape, src) in [
+            (
+                "declared-only generic",
+                fixtures::DECLARED_ONLY_GENERIC_TYPEPARAM_SRC,
+            ),
+            (
+                "explicit generic instantiation",
+                fixtures::EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+            ),
+        ] {
+            let ctx = AnalysisContext::new(src, &test_uri());
+
+            assert!(
+                ctx.check_result.constraint_results.is_empty()
+                    && ctx.check_result.diagnostics.is_empty()
+                    && ctx.check_result.values.is_empty(),
+                "containment (AnalysisContext::from_parsed, {shape}): the \
+                 eval/check pass must be SKIPPED on a graph carrying an \
+                 unrepresentable cell, even though this document compiles \
+                 CLEAN — a populated CheckResult means that graph reached the \
+                 engine after all, which panics in debug builds and yields a \
+                 wrong TypeKindMismatch/Undef in release (task #6851). Got \
+                 constraint_results: {:#?}, diagnostics: {:#?}",
+                ctx.check_result.constraint_results,
+                ctx.check_result.diagnostics
+            );
+
+            // The user-facing consequence is not silent: `compute_diagnostics`
+            // over the SAME document — which the server runs on open and on
+            // every change — carries the file-level Warning naming the
+            // offending cell. Asserted in full by the sibling test named
+            // above; probed here so the two halves of the degradation stay
+            // wired together at this entry point too.
+            assert!(
+                crate::diagnostics::compute_diagnostics(src, &test_uri())
+                    .iter()
+                    .any(|d| d.code
+                        == Some(tower_lsp::lsp_types::NumberOrString::String(
+                            "EvalSkippedUnrepresentableCell".to_string()
+                        ))),
+                "containment (AnalysisContext::from_parsed, {shape}): hover and \
+                 completion show no computed values for this document, so the \
+                 diagnostics path over the same document must tell the user \
+                 why. Without it this entry point degrades mutely on a file \
+                 that compiles clean."
             );
         }
     }

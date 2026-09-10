@@ -114,12 +114,13 @@ pub struct DiagnosticsResult {
 /// unsubstituted `Type::TypeParam` value cell in the graph, which panics eval
 /// in debug builds (root cause owned by task **#6851**; mechanism in
 /// [`eval_guard::first_unrepresentable_cell`]'s doc). All three
-/// LSP production entry points therefore ask
-/// [`eval_guard::first_unrepresentable_cell`] after collecting the
-/// compile-stage diagnostics, skip the eval/check pass when it answers `Some`,
-/// and log which cell forced the skip so the degradation is not mute. The user
-/// still gets the `E_AUTO_TYPE_PARAM_*` error this section is about, and the
-/// server stays alive. The guard tests the graph for an unrepresentable cell,
+/// LSP production entry points therefore ask [`eval_guard::skip_reason`]
+/// after collecting the compile-stage diagnostics, skip the eval/check pass
+/// when it answers `Some`, and report which cell forced the skip — to the
+/// server log at every site, and additionally as an editor-visible Warning at
+/// the two that own a diagnostics list. The user still gets the
+/// `E_AUTO_TYPE_PARAM_*` error this section is about where there is one, and
+/// the server stays alive. The guard tests the graph for an unrepresentable cell,
 /// NOT the diagnostics for an error: a compile error that leaves the graph
 /// representable does not suppress eval, because the LSP evaluates through
 /// non-fatal ones on purpose.
@@ -226,15 +227,14 @@ pub fn compute_diagnostics_with_state(
     // would create precisely the stale-cache bug the comment below warns about:
     // `eval_cached` returns empty diagnostics by construction, so a module that
     // was never evaluated would silently report none.
-    if let Some((cell_id, cell_type)) = eval_guard::first_unrepresentable_cell(&compiled) {
+    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
         // Observability: skipping eval silently costs the whole document its
-        // eval-time diagnostics and constraint results, so name the offender
-        // rather than degrading mutely. Same `eprintln!` idiom as the
-        // check_snapshot fallback below.
-        eprintln!(
-            "[reify-lsp] skipping eval/check: value cell `{cell_id}` has \
-             unrepresentable cell_type {cell_type:?} (task #6851)"
-        );
+        // eval-time diagnostics and constraint results, so say so in the
+        // editor as well as the server log. `skip_reason` has already written
+        // the log line (throttled); the Warning below is what a user sees on
+        // the shapes that carry NO compile diagnostic of their own — see
+        // `SkippedEval::diagnostic`.
+        diagnostics.push(skipped.diagnostic());
         return DiagnosticsResult {
             diagnostics,
             geometry_output: None,
@@ -851,11 +851,8 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     // `compute_diagnostics_with_state`'s equivalent guard for the full
     // rationale (task #6851). This stateless surface panics identically and is
     // guarded identically; it has no `EvalState` to leave untouched.
-    if let Some((cell_id, cell_type)) = eval_guard::first_unrepresentable_cell(&compiled) {
-        eprintln!(
-            "[reify-lsp] skipping eval/check: value cell `{cell_id}` has \
-             unrepresentable cell_type {cell_type:?} (task #6851)"
-        );
+    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
+        result.push(skipped.diagnostic());
         return result;
     }
 
@@ -887,9 +884,11 @@ mod tests {
     // drift apart.
     use super::auto_type_param_fixtures::{
         AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, BT8_CONSTANT_CONSTRAINT_SRC,
+        DECLARED_ONLY_GENERIC_TYPEPARAM_SRC, EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
         GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC, NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC,
         UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
         assert_auto_fail_fixture_is_newly_reachable, assert_bt8_fixture_still_diverges,
+        assert_compile_clean_typeparam_fixtures_carry_no_error,
         assert_guarded_group_fixture_is_newly_reachable,
     };
 
@@ -1389,6 +1388,100 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
                  the containment guard has regressed. got: {:#?}",
                 result.diagnostics
             );
+        }
+    }
+
+    /// Containment on the two COMPILE-CLEAN shapes — the ones on which the
+    /// guard has no compile diagnostic to ride on, and must therefore say
+    /// something in the editor itself.
+    ///
+    /// Every other containment test in this file drives a fixture that also
+    /// carries an `AutoTypeParamNoCandidate` Error, so each of their
+    /// assertions reads "the compile-stage error still surfaces". That leaves
+    /// the guard's own "## Blast radius" claim — that it contains two shapes
+    /// with NO compile diagnostic at all — asserted nowhere, and it is the
+    /// claim under which the guard is at its most consequential: on these
+    /// inputs the file is valid `.ri` that the compiler accepted, and the user
+    /// silently loses every eval-time diagnostic, every constraint result and
+    /// (via the same guard in `AnalysisContext::from_parsed`) every
+    /// hover/completion computed value for the whole document.
+    ///
+    /// So this test pins three things per entry point: no panic (reaching the
+    /// assertions IS that half of the contract — do not add `#[should_panic]`
+    /// or `catch_unwind`), no Error-severity diagnostic to explain the loss,
+    /// and consequently the file-level `EvalSkippedUnrepresentableCell`
+    /// Warning naming the offending cell. Drop the Warning and the third
+    /// assertion goes red.
+    #[test]
+    fn compile_clean_unrepresentable_graph_is_contained_and_reported() {
+        // Anti-vacuity: both fixtures must still compile CLEAN under both
+        // checkers, or "the editor is told nothing else" is not the situation
+        // under test.
+        assert_compile_clean_typeparam_fixtures_carry_no_error();
+
+        let skip_code = Some(lsp_types::NumberOrString::String(
+            "EvalSkippedUnrepresentableCell".to_string(),
+        ));
+
+        for (shape, src) in [
+            ("declared-only generic", DECLARED_ONLY_GENERIC_TYPEPARAM_SRC),
+            (
+                "explicit generic instantiation",
+                EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+            ),
+        ] {
+            for (entry_point, diags) in [
+                ("compute_diagnostics", compute_diagnostics(src, &test_uri())),
+                (
+                    "compute_diagnostics_with_state",
+                    compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri())
+                        .diagnostics,
+                ),
+            ] {
+                let errors: Vec<_> = diags
+                    .iter()
+                    .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                    .collect();
+                assert!(
+                    errors.is_empty(),
+                    "({entry_point}, {shape}): this fixture is valid `.ri` the \
+                     compiler accepts, which is the whole point — an Error here \
+                     means the fixture drifted and the report assertion below \
+                     could pass by riding on someone else's diagnostic. \
+                     errors: {errors:#?}"
+                );
+
+                let reported: Vec<_> = diags.iter().filter(|d| d.code == skip_code).collect();
+                assert_eq!(
+                    reported.len(),
+                    1,
+                    "({entry_point}, {shape}): a guard-suppressed compile-clean \
+                     document must carry exactly ONE editor-visible \
+                     EvalSkippedUnrepresentableCell Warning. Zero means the \
+                     document silently lost its whole eval pass — every \
+                     constraint result and every computed value — with nothing \
+                     but a line on the server's stderr to show for it. \
+                     Reaching this assertion at all also means the eval pass \
+                     was skipped rather than panicking on the unrepresentable \
+                     cell (task #6851). got: {diags:#?}"
+                );
+                let reported = reported[0];
+                assert_eq!(
+                    reported.severity,
+                    Some(DiagnosticSeverity::WARNING),
+                    "({entry_point}, {shape}): the skip report is the LSP \
+                     describing its own reduced service over a file the \
+                     compiler accepted, not a defect in that file — Warning, \
+                     not Error."
+                );
+                assert!(
+                    reported.message.contains("seal"),
+                    "({entry_point}, {shape}): the skip report must NAME the \
+                     offending cell, or it tells the user only that something \
+                     was lost. got: {}",
+                    reported.message
+                );
+            }
         }
     }
 
