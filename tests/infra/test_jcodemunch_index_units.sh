@@ -658,12 +658,21 @@ assert "E-CLI3: cli-invocation.md documents the E_JC_INDEX_* refusal codes" \
 #   PERMITTED scripts/with-jcodemunch-serve.sh              (preceded by `-`)
 #   PERMITTED …/jcodemunch-serve-activation.md              (followed by `-`)
 #
+# The left side is `(^|[^-])`, not a bare `[^-]`: `[^-]` REQUIRES some character
+# before the token, so an occurrence at the START of a line escaped the ban
+# entirely — including `jcodemunch-serve.service` itself, which the table above
+# calls BANNED. modes.md is markdown, where a fenced command line, an
+# indent-stripped continuation, or a reflowed sentence can each begin with the
+# token, so the line boundary is a real position here and not a theoretical one.
+#
 # Both permitted forms are load-bearing here: the correction retargets the
 # Activation bullet at the wrapper and keeps the activation doc as the identifier
 # record, so a truly bare-token ban would be unsatisfiable rather than strict.
+# The anchor does not endanger them — they are permitted by their surrounding
+# hyphens, which the pattern still excludes regardless of position.
 # Narrow this further or replace it if the shapes change — do not delete it.
 assert "E-MODES1: modes.md does not name the retired jcodemunch-serve unit" \
-    bash -c '! git -C "$1" grep -qE "[^-]jcodemunch-serve([^-]|$)" -- .claude/skills/audit/references/modes.md' _ "$REPO_ROOT"
+    bash -c '! git -C "$1" grep -qE "(^|[^-])jcodemunch-serve([^-]|$)" -- .claude/skills/audit/references/modes.md' _ "$REPO_ROOT"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
