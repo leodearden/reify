@@ -376,8 +376,14 @@ static bool shape_has_no_topology(const TopoDS_Shape& s) {
 /// name: `wrap_occt_call` already prefixes it, yielding "<op>: <message>".
 ///
 /// CALL SITES — the ops that MINT A BODY FROM A PROFILE and cannot mint one
-/// from nothing:
-///   `make_prism`, `make_prism_with_history`, `make_prism_infinite`.
+/// from nothing, nine in all:
+///   `make_prism`, `make_prism_with_history`, `make_prism_infinite`,
+///   `make_revolve`, `make_revolve_with_history`,
+///   `make_pipe`, `make_pipe_with_history`,
+///   `loft_profiles`, `make_loft_with_history`.
+/// At the two loft entry points the check runs PER PROFILE inside the existing
+/// loop, after the "requires at least 2 profiles" count check, so a caller who
+/// passed one profile still gets the diagnostic naming their actual mistake.
 ///
 /// DELIBERATELY NOT CALLED, each for a stated reason — this list is the
 /// boundary of the invariant, so a reader does not have to re-derive it:
@@ -393,7 +399,14 @@ static bool shape_has_no_topology(const TopoDS_Shape& s) {
 ///   * the transforms: empty in, empty out — the emptiness survives intact to
 ///     whichever real consumer comes next, which is where it is diagnosed;
 ///   * `fillet` / `chamfer`: already refused by the `BRepKind::Solid` gate task
-///     7054 added, since an empty result classifies as `Compound`.
+///     7054 added, since an empty result classifies as `Compound`;
+///   * `make_pipe_shell` and `loft_guided_profiles`: COVERED ELSEWHERE, not
+///     overlooked. Both route their profile through `section_profile_to_wire`
+///     above, whose default arm already rejects an empty compound as
+///     "unsupported profile shape type 'Compound'". A second guard there would
+///     duplicate the invariant; the two characterization pins in
+///     `harness_occt::empty_shape_consumer_guard_integration` are what protect
+///     that existing coverage.
 static void reject_empty_input_shape(const TopoDS_Shape& s, const char* role) {
     if (!shape_has_no_topology(s)) {
         return;
@@ -2006,6 +2019,7 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     double ax, double ay, double az,
     double angle_rad) {
     return wrap_occt_call("make_revolve_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: mirror make_revolve's input checks so callers
         // bypassing the Rust validation layer still get a clean error
         // (this is the same threshold pattern used by make_prism_with_history).
@@ -2139,6 +2153,7 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
 std::unique_ptr<SweepOpHistory> make_pipe_with_history(
     const OcctShape& profile, const OcctShape& spine) {
     return wrap_occt_call("make_pipe_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // BRepOffsetAPI_MakePipe inherits from BRepPrimAPI_MakeSweep (via
         // BRepOffsetAPI_BuildAddSurface), which inherits from
         // BRepBuilderAPI_MakeShape — so the Modified/IsDeleted/Generated/
@@ -2273,6 +2288,8 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         BRepOffsetAPI_ThruSections loft(
             is_solid ? Standard_True : Standard_False, Standard_False);
         for (const auto& shape : profiles.shapes) {
+            // Per profile, and AFTER the count check above (see `loft_profiles`).
+            reject_empty_input_shape(shape, "profile");
             loft.AddWire(TopoDS::Wire(shape));
         }
         loft.Build();
@@ -4106,6 +4123,9 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
         }
         BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
         for (const auto& shape : profiles.shapes) {
+            // Per profile, and AFTER the count check above, so a caller who
+            // passed only one still gets the diagnostic naming THAT mistake.
+            reject_empty_input_shape(shape, "profile");
             loft.AddWire(TopoDS::Wire(shape));
         }
         loft.Build();
@@ -4122,6 +4142,7 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
 
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine) {
     return wrap_occt_call("make_pipe", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
         // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
         // an explicit Build() here is redundant and was removed (task-383 S1).
@@ -4309,6 +4330,7 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ax, double ay, double az,
     double angle_rad) {
     return wrap_occt_call("make_revolve", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust validates first with stricter threshold (1e-12 for axis).
         // These C++ checks (1e-30) are a safety net for future code paths that may bypass
         // the Rust layer (e.g., direct FFI calls from tests or hot-path optimizations).
