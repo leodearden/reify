@@ -605,7 +605,7 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. This arm builds the SAME selector predicate as wait_for_selector and carries that tool's unscoped-wait trap — see its viewportId parameter. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -613,7 +613,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Omitting viewportId waits document-wide and is not proof about any one pane — see the viewportId parameter. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -623,7 +623,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated, so an unscoped wait is not proof about any one pane in either direction; scope the wait whenever the follow-up action is scoped. The three concrete ways it misleads are enumerated in docs/debug-mcp-recipe.md under the heading 'wait_for_selector: the unscoped-wait trap'. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -1088,21 +1088,25 @@ fn is_image_tool(name: &str) -> bool {
 /// Two properties are load-bearing and neither is arbitrary:
 ///
 /// 1. ORDER — the image block stays at `content[0]`, diagnostics are APPENDED.
-///    `parseRpcResponse` (gui/test/visual/rpc.ts, branch table :33) is POSITIONAL
-///    (`content[0].type === "image"`) and gui/test/visual/run.ts:202-211 feeds
-///    `value.data` straight into `Buffer.from(…, "base64")`, so a prepended text
-///    block would be decoded as PNG bytes and corrupt the visual-regression
-///    harness. `normalizeRpcEnvelope` (rpcEnvelope.mjs) instead SEARCHES for the
-///    text block, so appending is invisible to it.
+///    Branch 3 of `parseRpcResponse`'s branch table (gui/test/visual/rpc.ts) is
+///    POSITIONAL (`content[0].type === "image"`) and `run.ts`'s `screenshot`
+///    capture feeds `value.data` straight into its `Buffer.from(…, "base64")`
+///    decode, so a prepended text block would be decoded as PNG bytes and
+///    corrupt the visual-regression harness. The sibling decoder
+///    `normalizeRpcEnvelope` (rpcEnvelope.mjs) is unperturbed by the append for a
+///    reason of its own, deliberately NOT restated here:
+///    docs/debug-mcp-contract.md §2 "JS-side decoders" → "The §2d divergence —
+///    canonical statement" is that rationale's single home.
 ///
 /// 2. GATING — the diagnostics block is emitted only when the residual (every
 ///    top-level key except `data`) is a non-empty object with no top-level string
 ///    `error`. Non-empty keeps `screenshot`/`screenshot_window` — which return
-///    `{data}` and nothing else (bridge.ts:689,702) — and every scoped or
-///    single-match `element_screenshot` bit-for-bit unchanged, mirroring the
-///    bridge-side `paneDiagnostics` gate one layer down rather than inventing a
-///    second condition that can drift. The `error` exclusion upholds the
-///    CROSS-LANGUAGE INVARIANT documented at gui/test/visual/rpcEnvelope.mjs:54-58:
+///    `{data}` and nothing else (their handlers in bridge.ts's `buildHandlers`)
+///    — and every scoped or single-match `element_screenshot` bit-for-bit
+///    unchanged, mirroring the bridge-side `paneDiagnostics` gate one layer down
+///    rather than inventing a second condition that can drift. The `error`
+///    exclusion upholds the CROSS-LANGUAGE INVARIANT paragraph in
+///    `isInBandError`'s docblock (gui/test/visual/rpcEnvelope.mjs):
 ///    `isInBandError` reads any top-level string `error` as a tool FAILURE, so
 ///    emitting one beside a successful image would make every driver report a
 ///    working screenshot as broken.
@@ -2412,7 +2416,8 @@ mod tests {
     // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
     // must be registered in tool_defs() with correct schema shape.
     // Note: the ui_outline DOM-approximation / not-an-AX-tree label lives in the
-    // ToolDef source description (see debug_server.rs:402); it is not substring-pinned
+    // ToolDef source description (the `ui_outline` entry in `tool_defs()`); it is
+    // not substring-pinned
     // here to avoid brittle wording-pin failures on harmless rewording (step-9).
     #[test]
     fn tool_defs_registers_r2_inspection_tools() {
@@ -2835,7 +2840,8 @@ mod tests {
 
     // task-4299 step-1 RED → step-2 GREEN: five synthetic-interaction tools must be
     // registered in tool_defs() with the correct schema shapes.
-    // Schema-shape-only — NO description-prose pinning (convention at :1668-1670).
+    // Schema-shape-only — NO description-prose pinning (the step-9 convention
+    // stated on `tool_defs_registers_r2_inspection_tools` above).
     #[test]
     fn tool_defs_registers_synthetic_interaction_tools() {
         let defs = tool_defs();
@@ -3192,11 +3198,13 @@ mod tests {
     // `element_screenshot`'s pane-guess diagnostics (`viewportId`/`matchCount`) are
     // the entire point of #5891 for that tool, yet the image branch of `tools/call`
     // returned EARLY with a content array holding only the image block — so they were
-    // discarded at the transport boundary. The frontend test
-    // (debugFixtureInjection.test.ts:653-658) asserts at the BRIDGE level and stays
-    // green while end-to-end is broken, and `handle_mcp` takes `State(DebugServerState)`
-    // — an Arc-of-Mutex bundle impractical to build here — which is why the envelope
-    // had ZERO coverage. The pure Value→Value mapping is therefore extracted as
+    // discarded at the transport boundary. The frontend test — case `#5891 unscoped
+    // multi-match crops the first and reports the guessed pane`, in the
+    // `element_screenshot: bridge handler` block of debugFixtureInjection.test.ts —
+    // asserts at the BRIDGE level and stays green while end-to-end is broken, and
+    // `handle_mcp` takes `State(DebugServerState)` — an Arc-of-Mutex bundle
+    // impractical to build here — which is why the envelope had ZERO coverage. The
+    // pure Value→Value mapping is therefore extracted as
     // `mcp_content_blocks`, the same move step-14 made for
     // `canonical_wait_for_selector_params`.
 
@@ -3219,15 +3227,16 @@ mod tests {
             "an unscoped multi-match crop must yield the image block PLUS a diagnostics block; got {out}"
         );
 
-        // The image block stays at index 0. `gui/test/visual/rpc.ts:33` branch 3 is
-        // POSITIONAL — `content[0].type === "image"` — and `run.ts:202-211` feeds
-        // `value.data` straight into `Buffer.from(…, "base64")`, so prepending the
-        // text block would decode pretty-printed JSON as PNG bytes and corrupt the
+        // The image block stays at index 0. Branch 3 of `parseRpcResponse`'s branch
+        // table (`gui/test/visual/rpc.ts`) is POSITIONAL — `content[0].type ===
+        // "image"` — and `run.ts`'s `screenshot` capture feeds `value.data` straight
+        // into its `Buffer.from(…, "base64")` decode, so prepending the text block
+        // would decode pretty-printed JSON as PNG bytes and corrupt the
         // visual-regression harness.
         assert_eq!(
             content[0]["type"].as_str(),
             Some("image"),
-            "the image block must stay at content[0] (rpc.ts:33 branch 3 is positional); got {out}"
+            "the image block must stay at content[0] (rpc.ts branch 3 is positional); got {out}"
         );
         assert_eq!(
             content[0],
@@ -3260,8 +3269,13 @@ mod tests {
         // element_screenshot: every SCOPED or single-match call returns `{data}` and
         // nothing else, so its envelope must stay bit-for-bit today's single block.
         // screenshot/screenshot_window: neither ever carries a non-`data` success key
-        // (bridge.ts:689,702), so the new gate must never perturb them — that is what
-        // keeps gui/test/visual/rpcEnvelope.test.ts:320-326's image-only stub accurate.
+        // (their handlers in bridge.ts's `buildHandlers`), so the new gate must never
+        // perturb them — that is what keeps the image-only stubs in
+        // gui/test/visual/rpcEnvelope.test.ts accurate. Two cases stub one, with
+        // near-identical titles: `yields null when there is no text block to
+        // interpret` (the normalizeRpcEnvelope branch-3 case) and its transport
+        // sibling `resolves to null when there is no text block to interpret`
+        // (makeDebugRpc).
         for tool in ["element_screenshot", "screenshot", "screenshot_window"] {
             let out = mcp_content_blocks(tool, &json!({"data": "data:image/png;base64,BBB="}));
             let content = out["content"]
@@ -3331,9 +3345,10 @@ mod tests {
 
     #[test]
     fn mcp_content_blocks_suppresses_a_residual_carrying_an_in_band_error() {
-        // CROSS-LANGUAGE INVARIANT (gui/test/visual/rpcEnvelope.mjs:54-58): no success
-        // payload may carry a top-level string `error`, because `isInBandError` (:81-83)
-        // reads one as a tool FAILURE. Emitting such a residual beside a successful
+        // CROSS-LANGUAGE INVARIANT (the paragraph of that name in `isInBandError`'s
+        // docblock, gui/test/visual/rpcEnvelope.mjs): no success payload may carry a
+        // top-level string `error`, because `isInBandError` itself reads one as a
+        // tool FAILURE. Emitting such a residual beside a successful
         // image would make every driver report a working screenshot as broken —
         // strictly worse than omitting a key no handler produces today.
         let out = mcp_content_blocks(
@@ -4037,17 +4052,18 @@ mod tests {
         );
     }
 
-    /// T5 (rewrite-failure facet, #5193): `rewrite_files_to_abs`'s `Err` arm
-    /// (commands.rs:464-484) is graceful degradation, not a hard failure —
-    /// when a `files[]` entry can't be canonicalized (e.g. it was removed
-    /// from disk between the engine load and the abs-path rewrite), the
-    /// entry must be left as its stem-only module key rather than panicking,
-    /// erroring the whole open, or silently disappearing from `files[]`.
+    /// T5 (rewrite-failure facet, #5193): the `Err` arm of
+    /// `rewrite_files_to_abs` (in `commands.rs`) is graceful degradation, not
+    /// a hard failure — when a `files[]` entry can't be canonicalized (e.g. it
+    /// was removed from disk between the engine load and the abs-path
+    /// rewrite), the entry must be left as its stem-only module key rather
+    /// than panicking, erroring the whole open, or silently disappearing from
+    /// `files[]`.
     ///
     /// `source_map` (and so `GuiState::files`) always holds exactly one
-    /// entry: `commit_state` clears and re-inserts a single key per load
-    /// (engine.rs:282-283), and v1 does not add imported modules' content to
-    /// `source_map` either (engine.rs:879-884). So the only way to reach
+    /// entry: `commit_state` (in `engine.rs`) clears and re-inserts a single
+    /// key per load, and v1 does not add imported modules' content to
+    /// `source_map` either. So the only way to reach
     /// this branch is to delete the just-loaded file between
     /// `load_file_into_engine` (which reads it while it still exists) and
     /// `resolve` (whose canonicalize call then fails) — exactly what this

@@ -1482,62 +1482,87 @@ structure SphereCheck {
 
 /// Fine-precision variant: `#precision(0.3mm)` — sampled deviation 6.202e-4 m,
 /// below the `1mm` (1e-3 m) bound (1.61x inside) → used by BT7 to verify
-/// `Satisfied`.
+/// `Satisfied`. That value and its margin are OWNED by
+/// `crates/reify-cli/tests/fixtures/dfm_with_repr_within.ri`'s "#precision and
+/// the RepresentationWithin margin" header note (a separate fixture over the
+/// identical geometry) — retune there first, then mirror the result into this
+/// constant and BT7's ceiling assertion below.
 ///
-/// **Single source of truth for the 8-point measured table below and the
-/// wall-clock choice rationale.** The other sites that depend on the table —
-/// `crates/reify-cli/tests/fixtures/representation_within_satisfied.ri` and
-/// its gate `crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs` —
-/// point here rather than restating the digits, so retuning this constant
-/// cannot leave a stale copy behind. BT7's pre-condition below is the only
-/// machine-checked copy. This comment does not own the MECHANISM behind these
-/// numbers — the staircase model, the tread/tooth ratios, their periods, and
-/// the OCCT internal constants that produce them are owned by PRD
-/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 and are
-/// cited, not restated, below. Nor does it own the fixture-facing margin
-/// narrative for the 1.61x figure (the drift canary, the "adequate but not far
-/// below" caution) — that lives on the "#precision and the
-/// RepresentationWithin margin" note in
-/// `crates/reify-cli/tests/fixtures/dfm_with_repr_within.ri`; 1.61x appears
-/// below only because BT7's assertions consume it directly.
+/// **Single source of truth for the 8-point neighbourhood grid below.**
+/// `crates/reify-cli/tests/fixtures/representation_within_satisfied.ri` and its
+/// gate `crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs` depend on
+/// this constant's Satisfied verdict and point here rather than restating
+/// digits. BT7's pre-condition below is the only machine-checked copy of this
+/// constant's own reading.
 ///
 /// Measured achieved facet-chord deviation on the 1 m sphere, by requested
 /// deflection (each value reproduced on a second independent run):
 ///
 /// ```text
 ///   0.10mm → 2.078e-4    0.35mm → 7.271e-4    0.49mm → 1.013e-3  VIOLATES
-///   0.25mm → 5.198e-4    0.48mm → 9.988e-4    0.50mm → 3.807e-4  (tooth)
+///   0.25mm → 5.198e-4    0.48mm → 9.988e-4    0.50mm → 3.807e-4  (TOOTH, 0.76x)
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
-/// Per PRD §2's staircase model, seven of these eight points sit on the
-/// ~2.075x tread branch (measured 2.067x-2.081x the requested deflection);
-/// exactly one, 0.50mm → 3.807e-4, sits at 0.7614x, closely matching the
-/// PRD's ~0.758x tooth branch.  Tread/tooth alone accounts for all eight
-/// points measured here.  One open tension: 0.10mm (d/R = 1e-4 on this 1 m
-/// sphere) falls inside PRD §2's stated d/R < 2.5e-4 regime for its third,
-/// ~1.49x branch, yet measures 2.078x — squarely on the tread, not ~1.49x.
-/// That is a conflict between this table and the PRD's regime boundary, not a
-/// counterexample to tread/tooth. Amending PRD §2 is out of this file's
-/// scope; a follow-up to re-measure the boundary has been filed separately so
-/// the tension stays tracked rather than only noted here — do not rely on the
-/// d/R < 2.5e-4 boundary until it lands.
-/// The measurement and the OCCT internal-constant citations behind these
-/// branches live in PRD §2 and are not re-derived here.
+/// CAVEAT on the 0.10mm row: `d/R` there is 1e-4, below the ~2.5e-4 floor
+/// where a separate ~1.49x branch ALSO appears, per
+/// `precision-nominal-representation-guarantee.md` §2 — but this row's own
+/// 2.078x reading shows it sits on the envelope, not that branch, in this
+/// regime. Do not read it as extending the envelope/tooth characterization
+/// that low: a third branch is known to exist down there too; see
+/// `dfm_with_repr_within.ri`'s header note for that branch.
 ///
-/// 0.50mm is therefore not an isolated off-trend outlier but the PRD's
-/// documented, recurrent, periodic downward tooth. It is still rejected as a
-/// precision choice, but on the correct ground: a point on a tooth clears the
-/// bound only because of where the tooth happens to sit relative to it, so its
-/// pass is phase-dependent and not reproducible under drift, unlike a tread
-/// point's margin.
+/// CORRECTED 2026-08-10 (gate 6060/esc-6060-1, 388-point sweep —
+/// supersedes both an earlier "sawtooth" label and the "very close to LINEAR"
+/// label this comment used to carry). Seven of these eight points sit at
+/// 2.067x-2.081x the requested deflection, but that is a sample of the upper
+/// ENVELOPE only, not linearity: this 8-point grid is too coarse to resolve the
+/// periodic downward teeth (ratio in `dfm_with_repr_within.ri`'s header note)
+/// that punctuate that envelope, and
+/// the table this file's author was given had already dropped 0.44mm, 0.46mm,
+/// and 0.60mm — three off-trend rows that would have shown a tooth. Reading the
+/// near-uniform envelope ratio as "very close to LINEAR" and concluding adjacent
+/// values can't swing far apart is FALSE and unsafe — do not assume that:
+/// `dfm_with_repr_within.ri`'s header note (the single source of truth for
+/// the staircase and its mechanism) documents adjacent-neighbour swings far
+/// larger than anything in this 8-point table. 0.50mm's 0.76x reading in this
+/// table is one such tooth, not an isolated exception. The envelope trend
+/// still puts the 1e-3 m bound
+/// crossing at ~0.4815mm, explaining why 0.49mm and 0.51mm violate here — but a
+/// tooth elsewhere in the range can flip that reading, so re-measure the actual
+/// candidate rather than trusting the envelope. The mechanism (a sphere-face
+/// two-ladder phase collision, not per-edge integer quantization) is documented
+/// once, in `dfm_with_repr_within.ri`'s "#precision and the RepresentationWithin
+/// margin" header note — see there rather than here. BT7's pre-condition
+/// carries the recipe.
 ///
-/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper
-/// to tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves
-/// with machine load) and still passes, as do both its measured neighbours,
-/// 0.25mm and 0.35mm. The faster 0.48mm/0.50mm were rejected: 0.48mm clears
-/// the bound by only 0.12%, and 0.50mm passes only by sitting on a tooth, with
-/// tread-branch violations on both sides.
+/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper to
+/// tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves with
+/// machine load). Its safety margin does NOT rest on its measured neighbours —
+/// the tooth period near 0.30mm (see `dfm_with_repr_within.ri`'s header note
+/// / PRD §2 for the figure) puts 0.25mm/0.35mm roughly 8 periods away, which
+/// establishes nothing about this locality; that neighbour argument is
+/// exactly the extrapolation the paragraph above labels FALSE and unsafe.
+/// The real argument — teeth deviate DOWNWARD only, so the envelope
+/// (an OBSERVED SUPREMUM, not a proven bound — it has measured as high as
+/// 2.106x in a finer regime) is the branch to size against — is
+/// `dfm_with_repr_within.ri`'s header note; see there rather than restating
+/// the digits here. That envelope
+/// argument extends ±17% around 0.3mm: every point in that neighbourhood is
+/// likewise envelope-bounded below the bound. The faster 0.48mm/0.50mm were rejected:
+/// 0.48mm clears the bound by only 0.12%, and 0.50mm was rejected because it
+/// clears only by landing on a tooth, with envelope violations on both sides.
+///
+/// Nothing in this suite currently signals a tooth landing at 0.3mm — BT7
+/// asserts only the 8e-4 m ceiling, which a tooth reading (~2.3e-4 m;
+/// calibration note §1.2 measures 2.423e-4 at 0.318 mm) still
+/// clears, so the test stays green either way (see BT7's low-side comment
+/// below for why that gap is deliberate). When you next re-derive this sweep
+/// by hand (recipe: `dfm_with_repr_within.ri`'s header note) and `achieved`
+/// reads below 4e-4 m, that IS this same tooth-landing risk manifesting at
+/// 0.3mm: RETUNE #precision back onto the envelope rather than accept the
+/// reading in place — a value sitting on a tooth is one retune away from the
+/// envelope, which near the bound violates.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
@@ -1643,34 +1668,17 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // eroding the 1.61x margin fails here loudly — naming the measured value —
     // instead of silently flipping to a mysterious `Violated`.
     //
-    // The low side is a DIAGNOSTIC, not an assertion: a build that meshes FINER
-    // than when this was tuned still yields the correct verdict, so failing the
-    // gate on it would turn a fully-correct environment red for no contractual
-    // reason. (An earlier revision asserted a two-sided [4e-4, 8e-4] band and did
-    // exactly that.) The tooth-drift case named in the message below (0.3mm
-    // landing on the ~0.758x branch, ~2.27e-4 m) is a real, distinct failure
-    // mode, but a floor tight enough to gate on it risks the identical false
-    // positive, so this stays diagnostic-only rather than asserted — declined
-    // deliberately, not an oversight. That means it is visible only when run
-    // with `cargo test ... -- --nocapture`: libtest captures stderr for a
-    // passing test, so a plain `cargo test` run — and the repo's cargo
-    // output-condensation wrapper, which reports only PASS/FAIL counts — never
-    // surfaces this text, including the RETUNE instruction below.
-    if achieved < 4e-4 {
-        eprintln!(
-            "BT7 note: fine sphere deviation ({achieved:.3e} m) is well below the \
-             6.202e-4 m measured for #precision(0.3mm) on a 1 m sphere. NOT a failure \
-             — the verdict is still Satisfied — but under the staircase model (PRD \
-             docs/prds/v0_6/precision-nominal-representation-guarantee.md §2) a low \
-             reading has two possible causes: this OCCT build meshes finer than when \
-             the value was tuned, OR 0.3mm has drifted onto the ~0.758x tooth branch \
-             (about 2.27e-4 m, inside this range) while the mesh is unchanged — a case \
-             the .ri fixture's 0.7mm drift canary cannot catch, since it only watches \
-             upward drift. Re-measure OCCT_SOURCE_FINE's sweep before relying on its \
-             numbers; if the low reading is a tooth, RETUNE #precision back onto the \
-             tread branch rather than merely re-measuring."
-        );
-    }
+    // The low side is intentionally unguarded — no assertion, no diagnostic.
+    // A build that meshes FINER than when this was tuned still yields the
+    // correct verdict, so failing the gate on it would turn a fully-correct
+    // environment red for no contractual reason — a two-sided band would do
+    // exactly that. An `eprintln!` was considered instead of a hard assert,
+    // but it would fire inside a still-PASSING test: visible solely under
+    // `cargo test -- --nocapture`, which the repo's cargo output-condensation
+    // wrapper (CLAUDE.md) collapses away by default. A dead signal reads as
+    // coverage that isn't there, so none is kept here; the tooth-landing
+    // interpretation and manual re-derivation guidance live on
+    // `OCCT_SOURCE_FINE`'s doc comment above.
     assert!(
         achieved < 8e-4,
         "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must stay under \

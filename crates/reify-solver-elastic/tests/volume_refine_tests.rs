@@ -526,21 +526,35 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 ///
 /// `refine_with_size_field` needs *some* `VolumeMesh` to attach per-element
 /// hints to, and this one is written out by hand. The reason it was originally
-/// hand-built has since been closed at the consumer; the reasons it stays that
-/// way are independent of it.
+/// hand-built has since been closed at BOTH ends — consumer by #6211, producer
+/// by #6298 — but the reasons it stays that way never depended on either.
 ///
-/// **The original reason, closed by #6211.** `mesh_to_volume` sets the
-/// **global** gmsh options `Mesh.MeshSizeMin` and `Mesh.MeshSizeMax` to its
-/// resolved size (`kernel_real.rs:203-206`), and `ffi::clear()` clears
-/// *models*, not *options*. Before task #6211 `refine_volume_with_size_field`
-/// wrote neither option, so every later per-corner `SetSize` in the same
-/// process was squeezed into `[size, size]` and the size field silently became
-/// a no-op. That inbound squeeze can no longer happen: the function now writes
-/// the pair itself on entry — `MeshSizeMin` to gmsh's `0.0` default,
-/// `MeshSizeMax` to `max(vertex_sizes)`, at the "Mesh-size clamp: set
-/// explicitly, never inherited" block in `refine_volume.rs` — so its
-/// output is a function of its own arguments rather than of whatever a sibling
-/// entry point last left behind.
+/// **The original reason, closed by #6211 and #6298.** `mesh_to_volume` sets
+/// the **global** gmsh options `Mesh.MeshSizeMin` and `Mesh.MeshSizeMax` to its
+/// resolved size, and `ffi::clear()` clears *models*, not *options*. Before
+/// task #6211 `refine_volume_with_size_field` wrote neither option, so every
+/// later per-corner `SetSize` in the same process was squeezed into
+/// `[size, size]` and the size field silently became a no-op.
+///
+/// Both ends of that leak are now shut, and each has its own guard one crate
+/// over in `reify-kernel-gmsh`:
+///
+/// * *Consumer, #6211*: the refine writes the pair itself on entry —
+///   `MeshSizeMin` to gmsh's `0.0` default, `MeshSizeMax` to
+///   `max(vertex_sizes)`, at the "Mesh-size clamp: set explicitly, never
+///   inherited" block in `refine_volume.rs` — so its output is a function of
+///   its own arguments rather than of whatever a sibling last left behind.
+/// * *Producer, #6298*: `mesh_to_volume` no longer leaves that clamp behind at
+///   all. It arms `mesh_size_clamp::MeshSizeClampReset` on entry (in
+///   `kernel_real.rs`), which restores gmsh's defaults on every exit path,
+///   early `?` returns included. Pinned by
+///   `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`.
+///
+/// The end-to-end sequence this note is about — seed via `mesh_to_volume`,
+/// then refine with a size field — is itself pinned, in that same crate, by
+/// `tests/mesh_to_volume_clamp_hermeticity.rs::refine_after_mesh_to_volume_honours_its_own_size_field`,
+/// which measured that it takes the loss of BOTH halves to reproduce the
+/// original symptom.
 ///
 /// **Why it stays hand-built anyway.** (i) *Producer symmetry*: the section
 /// above re-based the baseline onto this same function precisely so both sides
@@ -548,12 +562,17 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 /// put a second producer's sizing semantics back on one side of it. (ii)
 /// *Determinism*: this 6-tet Kuhn partition is fixed in source, so the seed
 /// cannot drift under a gmsh version bump and needs no gmsh at all to build.
-/// (iii) *#6298 is still open*: #6211 defended this **consumer**, it did not fix
-/// the **producer**, so `mesh_to_volume` still leaves its clamp behind for any
-/// later caller that writes no clamp of its own.
 ///
-/// Measured **before #6211**, one process per reading (unit cube, P1) — the two
-/// `mesh_to_volume →` rows record the inbound leak as it behaved then:
+/// Both surviving reasons are independent of the clamp leak, so closing #6211
+/// and #6298 does not make the hand-built seed obsolete. Reverting it to a
+/// `mesh_to_volume` seed would re-introduce exactly the cross-producer confound
+/// the section above removed — measured then as baseline=99 vs refined=95,
+/// with the assertion inverted.
+///
+/// Measured **before #6211 and #6298**, one process per reading (unit cube,
+/// P1) — the two `mesh_to_volume →` rows record the inbound leak as it behaved
+/// then, when the producer still leaked its clamp and the consumer still
+/// inherited it. Historical evidence, NOT a description of today's behaviour:
 ///
 /// | call sequence                              | tets |
 /// |--------------------------------------------|------|
@@ -570,42 +589,16 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 /// refined call returned bit-identical meshes (181 vs 181, equal average edge
 /// length), so assertion (b) could not pass no matter how the field was built —
 /// which is why re-basing alone was not sufficient here. Kept as measured: it
-/// is the evidence for the defect #6211 fixed, not a description of today's
-/// behaviour.
+/// is the evidence for the defect #6211 and #6298 fixed between them.
 ///
-/// Filed as **task #6298** — a producer-side defect, out of #6200's scope
-/// (#6200 owns the `classify_surfaces` feature angle; the leak is a distinct
-/// bug in a different function). Tasks #6211, #6212 and #6262 cover adjacent
-/// facets of the same global-option leak.
-///
-/// # The constraint this test needs, until #6298 is fixed
-///
-/// **No test in this binary may call `GmshKernel::mesh_to_volume`.** Not "this
-/// one must be the only one", and not "no sibling may do so *before* it" —
-/// `cargo` runs a binary's tests in ONE process with no guaranteed order, so
-/// any sibling that meshes via `mesh_to_volume` could leak its clamp into this
-/// test whatever order they run in. As of this commit no test here calls it,
-/// which is why the constraint reads as a prohibition rather than a
-/// reservation. Since #6211 it is *also* enforced mechanically for the clamp
-/// pair: `refine_volume.rs` sets `Mesh.MeshSizeMin` / `MeshSizeMax` on entry
-/// and restores gmsh's defaults on every exit path — early `?` returns
-/// included — via its `MeshSizeClampReset` RAII guard, so a `[size, size]`
-/// leaked by a sibling `mesh_to_volume` can no longer reach this test's refine
-/// calls. (Both directions are pinned by fixtures in
-/// `reify-kernel-gmsh/tests/refine_volume_tests.rs`, not only by this note.)
-///
-/// What that does *not* cover is any global option `refine_volume.rs` does not
-/// itself write on entry. Today it writes `General.Terminal`,
-/// `General.NumThreads`, `Mesh.ElementOrder`, `Mesh.Algorithm3D`,
-/// `Mesh.MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary` and the
-/// clamp pair, which happens to be a superset of everything `mesh_to_volume`
-/// writes — but that is a coincidence of two option sets, not an invariant
-/// anything checks, and it says nothing about a *future* producer-side write.
-/// So the prohibition stays, alongside the self-diagnosing failure message on
-/// assertion (b) below, and both still-open directions keep their owners:
-/// **#6298** for the producer-side leak (`mesh_to_volume` leaving its clamp
-/// behind), **#6212** for this function's own outbound
-/// `MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary` leak.
+/// The producer-side half was filed as **task #6298** — out of #6200's scope
+/// (#6200 owns the `classify_surfaces` feature angle; the leak was a distinct
+/// bug in a different function) — and has since landed. What remains open is
+/// **#6212**: `refine_volume_with_size_field`'s own outbound
+/// `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+/// `MeshSizeExtendFromBoundary` leak, the same defect class in the same
+/// direction for a different option set, and the reason a future producer-side
+/// write could still reach this test.
 #[test]
 fn localized_size_reduction_refines_marked_region_only() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -630,9 +623,12 @@ fn localized_size_reduction_refines_marked_region_only() {
     // cross-producer confound — the baseline below is produced entirely by the
     // function under test.
     //
-    // The seed is hand-built rather than meshed by `mesh_to_volume`, which
-    // would silently disable the size field for the rest of the process — see
-    // "Why the seed is hand-built" in the doc comment above.
+    // The seed is hand-built rather than meshed by `mesh_to_volume` for
+    // producer symmetry and determinism — see "Why the seed is hand-built" in
+    // the doc comment above. It is NOT a clamp-leak workaround any more: since
+    // #6211 (consumer) and #6298 (producer) a `mesh_to_volume` seed can no
+    // longer disable the size field. Both surviving reasons are independent of
+    // that, so the fixture stays.
     let vm_seed = kuhn_6tet_unit_cube_vm();
     let n_seed_tets = vm_seed.tet_indices().expect("seed is tet-only").len() / 4;
     assert!(n_seed_tets > 0, "seed must have at least one tet");
@@ -671,11 +667,16 @@ fn localized_size_reduction_refines_marked_region_only() {
         "marked region must have more tets after refinement: \
          baseline={base_marked}, refined={refined_marked}.\n\
          If those two counts are EQUAL and the whole meshes are bit-identical, \
-         suspect the #6298 global-option leak before suspecting the size field: \
-         some test in this binary called `GmshKernel::mesh_to_volume`, which \
-         leaves `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pinned to its own resolved \
-         size process-wide (gmsh's option table survives `gmshClear`), squeezing \
-         every later per-corner `SetSize` into [size, size]. See the \
+         the size field did not reach gmsh at all — most likely one half of the \
+         Mesh.MeshSizeMin/Max clamp discipline has regressed, since it takes \
+         the loss of BOTH to reproduce this symptom. Check \
+         `refine_volume.rs`'s inbound writes at the 'Mesh-size clamp: set \
+         explicitly, never inherited' block (#6211) and \
+         `mesh_size_clamp::MeshSizeClampReset` armed in \
+         `kernel_real.rs::mesh_to_volume` (#6298). The guards in \
+         reify-kernel-gmsh's `tests/refine_volume_tests.rs` and \
+         `tests/mesh_to_volume_clamp_hermeticity.rs` would have gone red too; \
+         if they are green, suspect the size field after all. See the \
          'Why the seed is hand-built' note on this test."
     );
 

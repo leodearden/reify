@@ -10,7 +10,7 @@
 //!
 //! Pattern lifted from `standard_gravity_tests.rs`.
 
-mod common;
+use crate::common;
 
 use reify_compiler::stdlib_loader;
 use reify_core::{DimensionVector, Severity, Type};

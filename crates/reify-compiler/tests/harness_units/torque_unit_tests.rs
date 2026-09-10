@@ -118,7 +118,7 @@ fn nm_equals_n_times_m_per_rad_and_is_not_energy() {
 /// (`tests/prd-gate/fixtures/unit_nm_torque_immediate.ri`) and asserts it
 /// compiles clean — the end-to-end user-observable θ signal (PRD §12).
 /// Path resolution mirrors the idiom at
-/// `crates/reify-compiler/tests/buckling_stdlib_compile.rs`'s
+/// `crates/reify-compiler/tests/harness_mechanics/buckling_stdlib_compile.rs`'s
 /// `coexist_fixture_source` and
 /// `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`'s
 /// `corpus_files`: the committed fixture is the single source of truth,

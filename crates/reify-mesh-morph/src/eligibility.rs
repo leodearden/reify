@@ -95,7 +95,13 @@ pub enum Reason {
 ///
 /// 1. **Stage A** — inspects `old.graph` / `new.graph` and `old.values` /
 ///    `new.values` to decide whether the design-tree shape is unchanged and
-///    all differing parameters are dimensional. Cheap; no kernel calls.
+///    all differing LEAF parameters are dimensional. Cheap; no kernel calls.
+///
+///    `Type::Geometry` realization references are deliberately NOT treated as
+///    structural diffs (task 6635), so Stage A is strictly a leaf-parameter +
+///    graph-shape gate. Canonical rationale and the measured evidence live in
+///    ONE place — `reify_eval::classify_cell`'s "Type::Geometry and Rule 4"
+///    note; do not restate them here.
 ///
 /// 2. **Realization gate** — if Stage A passes, this function ASSUMES the
 ///    caller has already realized the new B-rep and populated
@@ -105,6 +111,18 @@ pub enum Reason {
 /// 3. **Stage B** — attempts to construct a 1-to-1 correspondence map
 ///    between old and new B-rep sub-shapes using the persistent-naming
 ///    attribute tables and handle slices.
+///
+///    Consequently Stage B is the ONLY gate for a dimensional tick that
+///    crosses a topology threshold — a fillet radius reaching 0, a blind hole
+///    becoming a through-hole, two faces merging. That split is the PRD's
+///    (`docs/prds/v0_3/mesh-morphing.md` lines 33-34).
+///
+///    The composed behaviour — Stage A ADMITS a tick whose `Type::Geometry`
+///    cell differs, Stage B is what rejects the topology change — is covered
+///    in-crate by
+///    `morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch`,
+///    so it holds in a stub-mode build too (the end-to-end `cut_z` demonstration
+///    in `reify-eval/tests/morph_arm_e2e.rs` is `#[cfg(has_gmsh)]`).
 ///
 /// ## Realization deferral
 ///
@@ -212,6 +230,64 @@ mod tests {
         }
     }
     // Note: TopologyAttributeTable uses .record(handle, attr) not .insert()
+
+    // ── Shared Stage-B count-mismatch fixture ─────────────────────────────
+    //
+    // Two tests drive Stage B to the SAME `BijectionFailure::CountMismatch`:
+    // `morph_eligible_stage_b_count_mismatch_returns_bijection_failure_reason`
+    // (Stage B in isolation) and
+    // `morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch`
+    // (task 6635's Stage-A-admits/Stage-B-rejects composition). Everything they
+    // share — attribute tables, face slices, expected reason — lives here, so
+    // each test body shows only what it varies and the two cannot silently
+    // diverge when the Stage-B fixture is next touched.
+
+    /// Old/new attribute tables for the count-mismatch fixture: the old B-rep
+    /// has ONE attributed face, the new one TWO.
+    fn count_mismatch_tables() -> (TopologyAttributeTable, TopologyAttributeTable) {
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(10),
+            },
+            attr(Role::Cap(CapKind::Top), 0),
+        );
+
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(20),
+            },
+            attr(Role::Cap(CapKind::Top), 0),
+        );
+        new_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(21),
+            },
+            attr(Role::Cap(CapKind::Bottom), 1),
+        );
+
+        (old_table, new_table)
+    }
+
+    /// The `(old, new)` face-handle slices that pair with
+    /// [`count_mismatch_tables`] — 1 face vs. 2, matching the tables above.
+    fn count_mismatch_faces() -> (Vec<GeometryHandleId>, Vec<GeometryHandleId>) {
+        (vec![h(10)], vec![h(20), h(21)])
+    }
+
+    /// The single expected outcome for the count-mismatch fixture: Stage B
+    /// rejecting with a face-count mismatch of 1 → 2.
+    fn count_mismatch_reason() -> Reason {
+        Reason::BijectionFailure(BijectionFailure::CountMismatch {
+            kind: SubShapeKind::Face,
+            old_count: 1,
+            new_count: 2,
+        })
+    }
 
     // ── Step-3: happy path ────────────────────────────────────────────────
 
@@ -369,18 +445,15 @@ mod tests {
         old_values.insert(id.clone(), Value::length(0.05));
         let new_values = old_values.clone();
 
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
+        // Stage-B fixture: 1 attributed face old, 2 new → face CountMismatch.
+        let (old_table, new_table) = count_mismatch_tables();
+        let (old_faces, new_faces) = count_mismatch_faces();
 
         let old_snap = MorphSnapshot {
             graph: &old_graph,
             values: &old_values,
             topology_attributes: &old_table,
-            faces: &[h(10)],
+            faces: &old_faces,
             edges: &[],
             vertices: &[],
         };
@@ -388,18 +461,95 @@ mod tests {
             graph: &new_graph,
             values: &new_values,
             topology_attributes: &new_table,
-            faces: &[h(20), h(21)],
+            faces: &new_faces,
             edges: &[],
             vertices: &[],
         };
 
         assert_eq!(
             morph_eligible(old_snap, new_snap),
-            Eligibility::Ineligible(Reason::BijectionFailure(BijectionFailure::CountMismatch {
-                kind: SubShapeKind::Face,
-                old_count: 1,
-                new_count: 2,
-            }))
+            Eligibility::Ineligible(count_mismatch_reason())
+        );
+    }
+
+    /// Task 6635 composition guard: Stage A ADMITS a tick whose `Type::Geometry`
+    /// cell differs, and STAGE B is what rejects the topology change.
+    ///
+    /// [`morph_eligible`]'s doc asserts "Stage B is the ONLY gate for a
+    /// dimensional tick that crosses a topology threshold". The end-to-end
+    /// demonstration of that composition (the `cut_z` through-hole fixture in
+    /// `reify-eval/tests/morph_arm_e2e.rs`) is `#[cfg(has_gmsh)]` and so vanishes
+    /// from a stub-mode build, and the sibling `morph_eligible_stage_b_*` unit
+    /// tests never put a Geometry-typed cell in the ValueMaps. This test is the
+    /// count-mismatch case above PLUS a differing derived Geometry cell: a Stage
+    /// A that regressed to vetoing Geometry diffs would short-circuit to
+    /// [`Reason::StructuralChange`] and fail here, never reaching Stage B.
+    #[test]
+    fn morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch() {
+        let width_id = ValueCellId::new("Part", "width");
+        let body_id = ValueCellId::new("Part", "body");
+
+        // The dimensional leaf plus the derived Geometry cell it feeds.
+        let mut old_graph = graph_with_cell(&width_id, Type::length());
+        old_graph.value_cells.insert(
+            body_id.clone(),
+            ValueCellNode {
+                id: body_id.clone(),
+                kind: ValueCellKind::Let,
+                cell_type: Type::Geometry,
+                default_expr: None,
+                content_hash: ContentHash::of_str(&format!("{body_id}")),
+            },
+        );
+        // Clone → identical shape hash, so Stage A's shape gate passes and the
+        // per-cell value walk is what decides.
+        let new_graph = old_graph.clone();
+
+        let geometry_handle = |upstream_values_hash: [u8; 32]| Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Part", 0),
+            upstream_values_hash,
+            kernel_handle: Some(h(1)),
+        };
+
+        let mut old_values = ValueMap::new();
+        old_values.insert(width_id.clone(), Value::length(0.05));
+        old_values.insert(body_id.clone(), geometry_handle([1u8; 32]));
+
+        let mut new_values = ValueMap::new();
+        // The dimensional tick, and the derived geometry cell recomputed by it.
+        new_values.insert(width_id.clone(), Value::length(0.055));
+        new_values.insert(body_id.clone(), geometry_handle([2u8; 32]));
+
+        // Stage B fixture — the SAME one the sibling Stage-B test uses (the new
+        // B-rep has one more face than the old, the topology change a real
+        // threshold-crossing tick would produce). Sharing it is what makes the
+        // ValueMaps above the only difference between the two tests.
+        let (old_table, new_table) = count_mismatch_tables();
+        let (old_faces, new_faces) = count_mismatch_faces();
+
+        let old_snap = MorphSnapshot {
+            graph: &old_graph,
+            values: &old_values,
+            topology_attributes: &old_table,
+            faces: &old_faces,
+            edges: &[],
+            vertices: &[],
+        };
+        let new_snap = MorphSnapshot {
+            graph: &new_graph,
+            values: &new_values,
+            topology_attributes: &new_table,
+            faces: &new_faces,
+            edges: &[],
+            vertices: &[],
+        };
+
+        assert_eq!(
+            morph_eligible(old_snap, new_snap),
+            Eligibility::Ineligible(count_mismatch_reason()),
+            "task 6635: a differing Type::Geometry cell must NOT make Stage A \
+             reject (that would give Reason::StructuralChange) — Stage B's \
+             bijection check is the gate that sees the topology change"
         );
     }
 
