@@ -20,6 +20,7 @@
 #   step-7  — the batched task-store read (enumeration, declarations, tag
 #             scoping, engine interchangeability, degraded-store fallback)
 #   step-9  — per-branch git measurement and --task single mode
+#   step-11 — the scope verdict and the declared-scope cross-check
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -488,5 +489,118 @@ assert "G4: git status --porcelain is byte-identical after the sweep" \
     bash -c '[ "$1" = "$2" ]' _ "$G4_STATUS_BEFORE" "$(_git status --porcelain --untracked-files=all)"
 assert "G4: HEAD is unmoved after the sweep" \
     bash -c '[ "$1" = "$2" ]' _ "$G4_HEAD_BEFORE" "$(_git rev-parse HEAD)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 4 (step-11) — the `scope` verdict and the declared-scope cross-check
+#
+# One fixture store and one fixture repo shared by the whole block: the
+# peer_owner map is GLOBAL over the store, so the peer-ownership cases only
+# mean anything when the other declarers coexist with the task under test.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 4: the scope verdict ---"
+
+_mk_tasks_db
+_mk_repo
+S_DB="$DB"
+S_MAIN="$(_git rev-parse main)"
+
+# _scope_case <id> <status> <metadata> <changed-path>...
+# Registers the task, cuts its branch at main and commits the changed paths.
+_scope_case() {
+    local id="$1" status="$2" metadata="$3"; shift 3
+    _add_task "$id" "$status" "$metadata"
+    _branch_at "task/$id" "$S_MAIN"
+    _commit_files "task/$id" "feat($id): touch files" "$@"
+}
+
+# (a) everything changed is declared
+_scope_case 9401 pending '{"files":["p.rs","q.rs"]}' p.rs q.rs
+
+# (b) two changed paths nobody declares
+_scope_case 9402 pending '{"files":["b-own.rs"]}' b-own.rs orphan1.rs orphan2.rs
+
+# (c) two foreign paths, each declared by a DIFFERENT non-terminal peer.
+#     The peers are registered without branches — declaring a file is what
+#     makes a task an owner, not having a branch.
+_add_task 9404 pending    '{"files":["s.rs"]}'
+_add_task 9405 blocked    '{"files":["t.rs"]}'
+_scope_case 9403 pending '{"files":["r.rs"]}' r.rs s.rs t.rs
+
+# (c') the only other declarer is TERMINAL, so this is plain OUT-OF-SCOPE
+_add_task 9407 done       '{"files":["v.rs"]}'
+_scope_case 9406 pending '{"files":["u.rs"]}' u.rs v.rs
+
+# (d) an empty declaration, with FIVE files changed
+_scope_case 9408 pending '{"files":[]}' e1.rs e2.rs e3.rs e4.rs e5.rs
+
+# (e) exact string equality, three shapes
+_scope_case 9410 pending '{"files":["x/a/b.rs"]}' a/b.rs
+_scope_case 9411 pending '{"files":["crates/foo"]}' crates/foo/src/lib.rs
+_scope_case 9412 pending '{"files":["long/prefix/name.rs"]}' long/prefix/name.rs.bak
+
+# (f) a path this task declares is never a peer file, even though a peer
+#     declares it too and it therefore sits in peer_owner
+_add_task 9414 pending    '{"files":["shared.rs"]}'
+_scope_case 9413 pending '{"files":["shared.rs"]}' shared.rs
+
+# ── (a) CLEAN ─────────────────────────────────────────────────────────────────
+run_helper --task 9401 --db "$S_DB" --repo "$REPO"
+_assert_field "S1: every changed path declared -> scope=CLEAN" 9401 scope CLEAN
+_assert_field "S1: ...foreign=0"                               9401 foreign 0
+_assert_field "S1: ...peer_files=0"                            9401 peer_files 0
+_assert_field "S1: ...peers='-'"                               9401 peers -
+_assert_field "S1: ...changed=2 (the measurement still ran)"   9401 changed 2
+
+# ── (b) OUT-OF-SCOPE ──────────────────────────────────────────────────────────
+run_helper --task 9402 --db "$S_DB" --repo "$REPO"
+_assert_field "S2: undeclared-by-anyone paths -> scope=OUT-OF-SCOPE" 9402 scope OUT-OF-SCOPE
+_assert_field "S2: ...foreign=2 (the exact count, not merely non-zero)" 9402 foreign 2
+_assert_field "S2: ...peer_files=0 (nobody else declares them)"      9402 peer_files 0
+_assert_field "S2: ...peers='-'"                                     9402 peers -
+
+# ── (c) PEER-FILES ────────────────────────────────────────────────────────────
+run_helper --task 9403 --db "$S_DB" --repo "$REPO"
+_assert_field "S3: peer-declared foreign paths -> scope=PEER-FILES" 9403 scope PEER-FILES
+_assert_field "S3: ...foreign=2"                                    9403 foreign 2
+_assert_field "S3: ...peer_files=2"                                 9403 peer_files 2
+_assert_field "S3: ...peers lists both owners, sorted-unique"       9403 peers 9404,9405
+
+# ── (c') a terminal declarer is not a peer ────────────────────────────────────
+run_helper --task 9406 --db "$S_DB" --repo "$REPO"
+_assert_field "S4: only a done/cancelled declarer -> OUT-OF-SCOPE, not PEER-FILES" \
+    9406 scope OUT-OF-SCOPE
+_assert_field "S4: ...foreign=1"    9406 foreign 1
+_assert_field "S4: ...peer_files=0" 9406 peer_files 0
+_assert_field "S4: ...peers='-'"    9406 peers -
+
+# ── (d) UNDECLARED wins over OUT-OF-SCOPE ─────────────────────────────────────
+run_helper --task 9408 --db "$S_DB" --repo "$REPO"
+_assert_field "S5: an empty declaration -> scope=UNDECLARED" 9408 scope UNDECLARED
+_assert_field "S5: ...even with five files changed"          9408 changed 5
+assert "S5: ...and NEVER reports OUT-OF-SCOPE" \
+    bash -c '! printf "%s\n" "$1" | grep -q "scope=OUT-OF-SCOPE"' _ "$(_row 9408)"
+
+# ── (e) exact repo-relative string equality ───────────────────────────────────
+run_helper --task 9410 --db "$S_DB" --repo "$REPO"
+_assert_field "S6: declared 'x/a/b.rs' does NOT cover changed 'a/b.rs'" \
+    9410 foreign 1
+_assert_field "S6: ...so the row is OUT-OF-SCOPE" 9410 scope OUT-OF-SCOPE
+
+run_helper --task 9411 --db "$S_DB" --repo "$REPO"
+_assert_field "S6: declared 'crates/foo' does NOT cover 'crates/foo/src/lib.rs'" \
+    9411 foreign 1
+
+run_helper --task 9412 --db "$S_DB" --repo "$REPO"
+_assert_field "S6: a changed path is foreign even when a declared path extends it" \
+    9412 foreign 1
+
+# ── (f) own declarations never count as peer files ────────────────────────────
+run_helper --task 9413 --db "$S_DB" --repo "$REPO"
+_assert_field "S7: a path this task declares is never foreign, even when a peer declares it too" \
+    9413 foreign 0
+_assert_field "S7: ...so peer_files=0" 9413 peer_files 0
+_assert_field "S7: ...and scope=CLEAN" 9413 scope CLEAN
+_assert_field "S7: ...and peers='-'"   9413 peers -
 
 test_summary
