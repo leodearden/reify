@@ -105,6 +105,7 @@ test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
 test_infra_git_env_isolation.sh intra-run-serial
 test_jcodemunch_index_reify.sh pool
+test_jcodemunch_index_units.sh pool
 test_jobserver_acceptance.sh pool
 test_jobserver_balancer.sh pool
 test_jobserver_canary.sh pool
