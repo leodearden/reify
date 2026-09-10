@@ -343,3 +343,97 @@ fn clamp(x : Real, lo : Real, hi : Real) -> Real { ... }
          to one sorted entry"
     );
 }
+
+// ── The live chunk ───────────────────────────────────────────────────────────
+
+/// The chunk under test. Read, never written. If it moves, this const must move
+/// with it — the failure mode is a loud panic on the read, never a silent skip.
+const CHUNK_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/chunks/functions.md"
+);
+
+/// Read [`CHUNK_PATH`], panicking loudly (never skipping) if it has moved.
+fn read_chunk() -> String {
+    std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
+        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
+    })
+}
+
+/// THE GATE. Every example signature the chunk declares, called BARE at the
+/// arity written, must draw no argument-count diagnostic.
+///
+/// This is the copy-the-call-form path: a reader who lifts a documented call out
+/// of an example without its declaration resolves the bare name against the
+/// builtins, and a documented arity a same-named builtin rejects makes the
+/// served documentation assert something the compiler refuses.
+///
+/// One compile covers the whole scanned set — `builtin_signatures.rs`'s
+/// `probe_lowering_accepted_arities` measured a 660-call probe producing 459
+/// arity diagnostics with no truncation and no diagnostic cap. Placeholder `1mm`
+/// arguments suffice because the arity dispatch is reached without argument
+/// resolution having to succeed.
+#[test]
+fn functions_chunk_example_signatures_are_never_rejected_on_arity_by_a_builtin() {
+    let signatures = declared_signatures(&read_chunk());
+    assert!(
+        !signatures.is_empty(),
+        "no `fn` declaration was scanned out of {CHUNK_PATH} — a restructured chunk must be RED \
+         here, not trivially green; fix `declared_signatures` to read the chunk's new shape"
+    );
+
+    let mut src = String::from("module functions_chunk_probe\n\nstructure def SignatureProbe {\n");
+    for (i, signature) in signatures.iter().enumerate() {
+        let args = vec!["1mm"; signature.arity].join(", ");
+        src.push_str(&format!("    let v{i} = {}({args})\n", signature.name));
+    }
+    src.push_str("}\n");
+    let compiled = compile_source_with_stdlib(&src);
+
+    let offenders: Vec<String> = signatures
+        .iter()
+        .flat_map(|signature| {
+            arg_count_rejections(&compiled, &signature.name, signature.arity)
+                .into_iter()
+                .map(move |d| {
+                    format!(
+                        "  {}/{} — {}",
+                        signature.name, signature.arity, d.message
+                    )
+                })
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "{CHUNK_PATH} documents (name, arity) form(s) that a real builtin of the same name \
+         REJECTS on arity:\n{}\n\nA reader who copies the CALL FORM out of the example without \
+         its declaration resolves that bare name to the builtin, so the chunk is asserting a \
+         call the compiler refuses. Remedy: rename the illustrative example to a name that does \
+         not collide with a builtin. Do NOT add a caveat telling the reader to notice the \
+         collision — noticing before copying is the exact failure mode.",
+        offenders.join("\n")
+    );
+}
+
+/// The structural companion to the gate above: the chunk must still show one
+/// name at two DISTINCT arities.
+///
+/// Without this, deleting the offending line would also turn the gate green
+/// while destroying the `## Overloading` section's whole illustration.
+#[test]
+fn functions_chunk_still_illustrates_overloading_by_arity() {
+    let signatures = declared_signatures(&read_chunk());
+
+    let overloaded: Vec<&str> = signatures
+        .windows(2)
+        .filter(|pair| pair[0].name == pair[1].name && pair[0].arity != pair[1].arity)
+        .map(|pair| pair[0].name.as_str())
+        .collect();
+
+    assert!(
+        !overloaded.is_empty(),
+        "{CHUNK_PATH} no longer declares any example name at two distinct arities, so it no \
+         longer illustrates overloading by arity. Scanned: {signatures:#?}"
+    );
+}
