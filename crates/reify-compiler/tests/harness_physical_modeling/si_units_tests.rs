@@ -1,8 +1,7 @@
 //! Tests for SI prefix and derived-unit stdlib expansion (task 334).
 
-mod common;
 
-use common::stdlib_param_si_value;
+use crate::common::stdlib_param_si_value;
 use reify_compiler::{CompiledUnit, compile, si_units};
 use reify_core::{DimensionVector, ModulePath};
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};

@@ -151,8 +151,13 @@ fn build_fea_violated_constraint_exits_nonzero() {
 /// the same fixture reports VIOLATED + exit 1.  Assertions unchanged.
 ///
 /// Note: stderr is NOT asserted clean here — check still surfaces the
-/// engine-owned Error-severity trampoline diagnostic by design (the severity
-/// downgrade is an engine-side concern out of this CLI task's scope).
+/// engine-owned trampoline diagnostic by design.  Its severity is no longer
+/// deferred: task 5311 landed the downgrade, so under `check` (whose compute
+/// registry is empty) the line is a `warning:`, while `reify eval` / `reify
+/// build` keep printing it as `error:`.  That contrast is pinned by
+/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
+/// in `cli_check.rs`.  This test's own assertions are severity-blind (they
+/// match message TEXT) and are unaffected.
 #[test]
 fn check_fea_violated_constraint_is_not_gated() {
     let path = common::fixture_path("fea_cantilever_violated.ri");

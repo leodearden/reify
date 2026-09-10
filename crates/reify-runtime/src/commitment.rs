@@ -61,7 +61,7 @@ pub enum NodeCommitmentOverride {
 
 /// Per-node commitment policy overrides, settable per instance and per type.
 ///
-/// Implements the precedence chain from architecture §7.3 (lines 751–767):
+/// Implements the precedence chain from architecture §7.3:
 ///   1. **Instance override** — highest priority; set via [`set_instance`](Self::set_instance)
 ///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
 ///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
@@ -97,6 +97,11 @@ impl NodePolicyOverrides {
     /// 1. Instance override (if set for this exact node)
     /// 2. Type override (if set for the node's [`NodeKind`])
     /// 3. [`NodeCommitmentOverride::default()`] (`CommitIfSlow`)
+    ///
+    /// Has no production consumer today: the concurrent scheduler was
+    /// deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065); every
+    /// remaining caller is a test.
+    // G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see doc above
     pub fn resolve(&self, node_id: &NodeId) -> NodeCommitmentOverride {
         if let Some(o) = self.instance_overrides.get(node_id) {
             return *o;
@@ -120,9 +125,9 @@ impl NodePolicyOverrides {
     /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
     ///
     /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
-    /// The existing single-arg [`resolve`](Self::resolve) (consumed by the scheduler at
-    /// `concurrent.rs:358`) is **left unchanged** — level-4 is NOT wired into the
-    /// scheduler until task η/3581 (B4) lands the IMMEDIATE→never-cancelled short-circuit.
+    /// Its only production consumer is `render_inspection` in the `reify` CLI
+    /// binary (the `reify dev inspect-node` subcommand, δ step); unit tests in
+    /// this module also exercise it directly.
     pub fn resolve_with_traits(
         &self,
         node_id: &NodeId,
@@ -261,9 +266,14 @@ fn kind_from_name(pat: &str) -> Option<NodeKind> {
 ///
 /// **Q-3 note (PRD §12):** `default_overrides(Value, IMMEDIATE)` returns
 /// `AlwaysCancelWhenStale` because `IMMEDIATE` does not include `COMMITTABLE`.
-/// This is intentional: task η/3581 (B4) will add an IMMEDIATE→never-cancelled
-/// short-circuit at the scheduler before `resolve_with_traits` is wired into
-/// scheduler dispatch, making the cosmetic mismatch moot.
+/// This is intentional, and the mismatch stays cosmetic: the
+/// IMMEDIATE→never-cancelled guard was task η (#3581, B4), and the scheduler
+/// that would have consumed it was deleted with `concurrent.rs` in c1b8dba3f7
+/// (task ο, #5065), so no *scheduler dispatch* path observes the mismatch
+/// today. The only live reader is `reify dev inspect-node` (via
+/// [`resolve_with_traits`](NodePolicyOverrides::resolve_with_traits)), which
+/// reports the derived policy verbatim — so the mismatch **is** observable
+/// there, just not in dispatch.
 // G-allow: same-file caller only; audit counts cross-file refs
 pub fn default_overrides(_kind: NodeKind, traits: NodeTraits) -> NodeCommitmentOverride {
     if !traits.contains(NodeTraits::COMMITTABLE) {

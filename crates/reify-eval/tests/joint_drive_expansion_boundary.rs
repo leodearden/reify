@@ -905,15 +905,6 @@ fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
     }
 }
 
-/// `Some(si)` iff `id` resolved to a `Scalar` — used to pick BT-5's cost cell
-/// without asserting on which one materialises.
-fn scalar_si_opt(result: &EvalResult, id: &ValueCellId) -> Option<f64> {
-    match result.values.get(id) {
-        Some(Value::Scalar { si_value, .. }) => Some(*si_value),
-        _ => None,
-    }
-}
-
 /// Derive the FROZEN-CASCADE variant from the shipped source by removing the
 /// parent's inlined `minimize` line.
 ///
@@ -946,6 +937,46 @@ fn strip_inlined_minimize(src: &str) -> String {
          the comparison is void",
     );
     kept.join("\n")
+}
+
+/// Read the `.ri` source at `path` from disk and eval BOTH the merged
+/// (inlined `minimize` present) and frozen-cascade (`minimize` stripped)
+/// halves through the real solver.
+///
+/// Shared by every merged/frozen fixture pair in this file —
+/// [`joint_drive_halves`] below and [`mwhole_halves`] further down both wrap
+/// this — so the read+strip+eval mechanics are a single source of truth
+/// instead of drifting apart across the two example fixtures.
+///
+/// Does NO caching itself: each wrapper memoizes its own pair, for the
+/// reasons documented once on [`joint_drive_halves`].
+fn halves(path: &str) -> (EvalResult, EvalResult) {
+    let merged_src =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"));
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    (merged, frozen)
+}
+
+/// The joint-drive example's merged/frozen-cascade pair — a thin wrapper over
+/// [`halves`] for [`JOINT_DRIVE_EXAMPLE_PATH`].
+///
+/// Shared by BT-5 and its companion known-limitation pin
+/// (`parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`)
+/// so the two provably evaluate the SAME two halves, rather than drifting
+/// apart — the hazard `strip_inlined_minimize`'s own doc comment describes
+/// for "derived, never transcribed" baselines.
+///
+/// Memoized: the fixture is read + stripped + solved ONCE per test binary
+/// instead of once per caller, and `OnceLock::get_or_init` de-duplicates
+/// correctly across libtest's concurrent threads. Both wrappers return
+/// `&'static` so the file has ONE call-site idiom; [`mwhole_halves`] is the
+/// other and follows this verbatim.
+fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
+    static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| halves(JOINT_DRIVE_EXAMPLE_PATH))
 }
 
 /// BT-5 — THE LEAF. The parent's cost objective reaches the CHILD's auto in one
@@ -1002,12 +1033,7 @@ fn strip_inlined_minimize(src: &str) -> String {
 /// `dependent_cells` → β folds them per trial → α writes them back.
 #[test]
 fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
-    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    let (merged, frozen) = joint_drive_halves();
 
     // ---- (i) the child auto resolves STRICTLY DIFFERENT from its freeze. ----
 
@@ -1018,8 +1044,8 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // solver-resolved auto in EITHER half (a separate, pre-existing
     // sub-elaboration gap — see the example header's "reading the result" note).
     let auto_id = ValueCellId::new("Rivet", "quantity_produced");
-    let merged_q = scalar_si(&merged, &auto_id, "merged");
-    let frozen_q = scalar_si(&frozen, &auto_id, "frozen-cascade");
+    let merged_q = scalar_si(merged, &auto_id, "merged");
+    let frozen_q = scalar_si(frozen, &auto_id, "frozen-cascade");
 
     // Asserted with a DIRECTION, which is strictly stronger than `!=` and still
     // purely comparative: cost-min drives the auto DOWN toward the box's lower
@@ -1036,33 +1062,48 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 
     // ---- (ii) merged whole-assembly cost STRICTLY LESS than the baseline. ----
 
-    // Prefer the parent's `let total_cost` aggregate; fall back to the child's
-    // derived `Costed.line_cost`. With ONE depth-1 Costed descendant the two are
-    // the same number (`cost(self.descendants)` == `[rivets.line_cost].sum`), so
-    // either is a faithful whole-assembly cost — but BOTH sides must be read
-    // from the SAME cell or the comparison is not apples-to-apples.
-    let total_cost = ValueCellId::new("RivetedPanel", "total_cost");
+    // Read the child's derived `Costed.line_cost`. With ONE depth-1 Costed
+    // descendant it IS the whole-assembly cost, exactly:
+    // `cost(self.descendants)` == `[rivets.line_cost].sum`. Both sides must be
+    // read from the SAME cell or the comparison is not apples-to-apples.
+    //
+    // The parent's own `let total_cost` is deliberately NOT a candidate here —
+    // see `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
+    // (immediately below) / #5835.
+    //
+    // NOT INDEPENDENT SIGNAL, and deliberately so: this is (i) restated at
+    // the Money layer. `line_cost` == `unit_cost * quantity_produced` with
+    // `unit_cost` a literal that is identical in both halves, so (i)'s
+    // `merged_q < frozen_q` entails the inequality asserted here — (ii)
+    // cannot fail while (i) passes.
+    //
+    // That entailment is CONDITIONAL, not free: it needs each half's
+    // `line_cost` to be freshly refolded against THAT half's own solved
+    // auto. A stale/unfolded FROZEN `line_cost` would RED here while (i)
+    // stayed green. (iii) below therefore pins the closed-form refold in
+    // BOTH halves, which is what discharges the premise and makes "cannot
+    // fail while (i) passes" true rather than assumed — weaken (iii)'s
+    // frozen arm and (ii) silently reacquires that signal.
+    //
+    // (ii) stays because the user-observable joint-drive claim is about
+    // MONEY and should be asserted in Money terms rather than left for a
+    // reader to re-derive, but it must not be mistaken for additional
+    // coverage on top of (i) + (iii). (Contrast
+    // `mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline`,
+    // whose SUM spans two children and is genuinely not implied by any
+    // single-child claim.) The instance-path alias — the read that WOULD be
+    // independent — is (iii)'s territory, documented there.
     let line_cost = ValueCellId::new("Rivet", "line_cost");
-    let (cost_id, which) = if scalar_si_opt(&merged, &total_cost).is_some()
-        && scalar_si_opt(&frozen, &total_cost).is_some()
-    {
-        (total_cost, "the parent's `let total_cost` aggregate")
-    } else {
-        (
-            line_cost,
-            "the child's derived `Costed.line_cost` (the parent aggregate did \
-             not materialise as a Scalar post-solve)",
-        )
-    };
 
-    let merged_cost = scalar_si(&merged, &cost_id, "merged");
-    let frozen_cost = scalar_si(&frozen, &cost_id, "frozen-cascade");
+    let merged_cost = scalar_si(merged, &line_cost, "merged");
+    let frozen_cost = scalar_si(frozen, &line_cost, "frozen-cascade");
     assert!(
         merged_cost < frozen_cost,
-        "BT-5(ii): the merged whole-assembly cost (read from {which}) must be \
-         STRICTLY LESS than the bottom-up frozen-cascade baseline — that gap IS \
-         the user-observable joint-drive signal. Got merged={merged_cost} vs \
-         frozen={frozen_cost} (saving {}).",
+        "BT-5(ii): the merged whole-assembly cost (read from the child's \
+         derived `Costed.line_cost`) must be STRICTLY LESS than the bottom-up \
+         frozen-cascade baseline — that gap IS the user-observable joint-drive \
+         signal. Got merged={merged_cost} vs frozen={frozen_cost} (saving \
+         {}).",
         frozen_cost - merged_cost,
     );
 
@@ -1080,12 +1121,20 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // source, and that both agree with `unit_cost * quantity_produced` read from
     // the same eval — the `Costed` closed form. A stale (unfolded) cell fails
     // this even when (i) and (ii) would pass.
+    //
+    // The ALIAS half is merged-only by construction: `build_dependent_cells`
+    // emits that entry for the cluster the inlined `minimize` forms, and the
+    // frozen-cascade half has no cluster and hence no instance-path spelling
+    // to check. The CLOSED-FORM half below is looped over BOTH halves — it is
+    // the premise (ii)'s entailment from (i) rests on (see (ii)'s note), and
+    // the frozen half is precisely where nothing else would catch a stale
+    // `line_cost`.
     let aliased_cost = scalar_si(
-        &merged,
+        merged,
         &ValueCellId::new("RivetedPanel.rivets", "line_cost"),
         "merged",
     );
-    let merged_line_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "line_cost"), "merged");
+    let merged_line_cost = scalar_si(merged, &ValueCellId::new("Rivet", "line_cost"), "merged");
     assert_eq!(
         aliased_cost, merged_line_cost,
         "BT-5(iii): the INSTANCE-PATH cost cell the expanded objective actually \
@@ -1093,14 +1142,113 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
          source — that alias entry is what makes the objective non-`Undef` \
          inside the merged solve",
     );
-    let merged_unit_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "unit_cost"), "merged");
-    assert_eq!(
-        merged_line_cost,
-        merged_unit_cost * merged_q,
-        "BT-5(iii): the derived `Costed.line_cost` must be REFOLDED against the \
-         solved auto (`unit_cost * quantity_produced` = {merged_unit_cost} * \
-         {merged_q}), not left at whatever it held before the solve",
-    );
+    for (what, result, solved_q) in [
+        ("merged", merged, merged_q),
+        ("frozen-cascade", frozen, frozen_q),
+    ] {
+        let half_line_cost = scalar_si(result, &line_cost, what);
+        let half_unit_cost = scalar_si(result, &ValueCellId::new("Rivet", "unit_cost"), what);
+        assert_eq!(
+            half_line_cost,
+            half_unit_cost * solved_q,
+            "BT-5(iii): the derived `Costed.line_cost` must be REFOLDED against \
+             the {what} half's OWN solved auto (`unit_cost * quantity_produced` \
+             = {half_unit_cost} * {solved_q}), not left at whatever it held \
+             before that half's solve",
+        );
+    }
+}
+
+/// KNOWN-LIMITATION PIN — the parent's `let total_cost : Money =
+/// cost(self.descendants)` in the shipped `examples/whole_model_joint_drive.ri`
+/// is declared but never resolves to a usable number, in EITHER the merged or
+/// the frozen-cascade half of BT-5's comparison.
+///
+/// EXPECTED, not a regression: see #5835 and the example header's "Reading
+/// the result" section. The assertions below carry the operator instructions
+/// for a RED.
+///
+/// Companion to `objective_must_inline_the_aggregate_to_couple`
+/// (crates/reify-eval/src/resolve_order.rs), which pins the REPLACEMENT case
+/// (a `let` INSTEAD of the inlined `minimize` forms NO cluster at all). This
+/// one pins the co-existing case the shipped example actually carries: the δ
+/// cluster DOES form here (BT-5 passes), yet this parent-level consumer `let`
+/// still never resolves post-solve.
+// TODO(#5835): delete this known-limitation pin and re-enable the parent
+// aggregate as BT-5(ii)'s cost cell when the engine gap closes.
+#[test]
+fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
+    let (merged, frozen) = joint_drive_halves();
+
+    let total_cost = ValueCellId::new("RivetedPanel", "total_cost");
+    let line_cost = ValueCellId::new("Rivet", "line_cost");
+
+    // Looped, not duplicated: the MERGED and FROZEN-CASCADE halves pin the
+    // identical claims, and a verbatim copy is exactly the shape that
+    // drifts — a future edit to one message or one `matches!` arm could
+    // silently not be applied to the other. Precedent:
+    // `mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value`
+    // below loops over its cases the same way.
+    for (what, result) in [("merged", merged), ("frozen-cascade", frozen)] {
+        // PRESENCE — the anti-vacuity guard. Subsumed by the `Some(..)` in
+        // the UNRESOLVED check below; it stays for its distinct message, so a
+        // MISSING entry never reads as the KNOWN-LIMITATION-REGRESSED case the
+        // UNRESOLVED message describes (`total_cost` now holding a usable
+        // number), which is the one diagnosis that would send an operator to
+        // re-open #5835.
+        //
+        // Its message names TWO causes, not one: `EvalResult::values` is a
+        // documented PARTIAL map, so an absent entry is not necessarily
+        // fixture drift — omitting an unresolved cell outright is a plausible
+        // engine RE-SPELLING of the very unresolved state this pin tracks.
+        // Either way this REDs (no false green), but a message that named
+        // only fixture drift would point the operator at the wrong subsystem.
+        let cell = result.values.get(&total_cost);
+        assert!(
+            cell.is_some(),
+            "`RivetedPanel.total_cost` must be PRESENT in the {what} eval's \
+             value map — got no entry. EITHER the shipped example's `let \
+             total_cost` binding, or this cell's id spelling, has changed \
+             (fixture drift); OR the engine now OMITS unresolved cells from \
+             the partial `values` map (see the PARTIAL-MAP INVARIANT on \
+             `EvalResult::values`), which is a re-spelling of the #5835 \
+             limitation and NOT a fixture defect. Inspect the shipped example \
+             before re-baselining.",
+        );
+        // UNRESOLVED — the actual claim. Exact shape, NOT a deny-list of the
+        // numeric variants a `Money` cell could resolve to: a deny-list can
+        // only ever name the variants that exist TODAY, so a `total_cost`
+        // resolving through some new carrier would sail silently through it
+        // — and staying GREEN while #5835 closes, leaving BT-5(ii) on the
+        // fallback cell forever, is the one failure a known-limitation pin
+        // must not have. The price is a false RED if the engine merely
+        // re-spells its unresolved state: one line to re-baseline, and LOUD.
+        assert!(
+            matches!(cell, Some(Value::Undef)),
+            "`RivetedPanel.total_cost` is not `Value::Undef` in the {what} \
+             eval — got {cell:?}. EITHER the engine merely re-spelled its \
+             unresolved state, in which case re-baseline this one `matches!` \
+             arm; OR this cell now resolves to a usable number, i.e. \
+             KNOWN-LIMITATION REGRESSED (#5835) — the engine gap #5835 tracks \
+             has closed, which needs a reviewed design change (re-enable the \
+             parent aggregate as BT-5(ii)'s preferred cost cell, update the \
+             example header's \"Reading the result\" section), NOT a silent \
+             edit to this assertion or to #5835's status. Inspect the value \
+             to decide which.",
+        );
+
+        // LIVENESS — the eval produced values at all, so PRESENCE/UNRESOLVED
+        // above are not silently reading a dead or empty map. Stands on its
+        // own anti-vacuity rationale, independent of BT-5: a test-filter run
+        // that isolates just this test must not silently pass against an
+        // empty `values` map.
+        assert!(
+            matches!(result.values.get(&line_cost), Some(Value::Scalar { .. })),
+            "fixture integrity: `Rivet.line_cost` must resolve in the {what} \
+             eval — if it does not, the eval produced no usable values at \
+             all and the PRESENCE/UNRESOLVED assertions above are vacuous",
+        );
+    }
 }
 
 /// BT-6(a) — an INTRA-TEMPLATE let cycle in a model that ALSO carries an auto
@@ -1475,26 +1623,12 @@ const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
     "/../../examples/whole_model_cost_min.ri"
 );
 
-/// Shared preamble for every `mwhole_*` test below: read the shipped M-WHOLE ε
-/// example from disk, derive its frozen-cascade counterpart via
-/// `strip_inlined_minimize`, and evaluate BOTH halves through the REAL
-/// `DimensionalSolver`. All three `mwhole_*` tests need exactly this pair, so
-/// centralising it keeps the read+strip+eval mechanics — and the "run the
-/// next impl step" panic message — a single source of truth instead of three
-/// literal copies.
-fn mwhole_halves() -> (EvalResult, EvalResult) {
-    let merged_src =
-        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
-            panic!(
-                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
-                 step to create the example file",
-            )
-        });
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
-    (merged, frozen)
+/// Shared preamble for the `mwhole_*` tests below: the M-WHOLE ε example's
+/// merged/frozen-cascade pair, via [`halves`]. Memoized behind a `OnceLock`
+/// exactly like [`joint_drive_halves`]; the rationale for both lives there.
+fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
+    static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| halves(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH))
 }
 
 /// BT4(i) — the joint-drive signal generalised to TWO coupled children under
@@ -1545,8 +1679,8 @@ fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_
     // single source of truth for both children.
     for structure in ["Plate", "Spacer"] {
         let auto_id = ValueCellId::new(structure, "quantity_produced");
-        let merged_q = scalar_si(&merged, &auto_id, "merged");
-        let frozen_q = scalar_si(&frozen, &auto_id, "frozen-cascade");
+        let merged_q = scalar_si(merged, &auto_id, "merged");
+        let frozen_q = scalar_si(frozen, &auto_id, "frozen-cascade");
 
         assert!(
             merged_q < frozen_q,
@@ -1618,8 +1752,8 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
         plate + spacer
     };
 
-    let merged_total = whole_assembly_cost(&merged, "merged");
-    let frozen_total = whole_assembly_cost(&frozen, "frozen-cascade");
+    let merged_total = whole_assembly_cost(merged, "merged");
+    let frozen_total = whole_assembly_cost(frozen, "frozen-cascade");
 
     assert!(
         merged_total < frozen_total,
@@ -1689,12 +1823,12 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         let alias_id = ValueCellId::new(instance_path, "line_cost");
 
         // (a) resolves to a Scalar in the merged eval -- not Undef.
-        let merged_aliased = scalar_si(&merged, &alias_id, "merged");
+        let merged_aliased = scalar_si(merged, &alias_id, "merged");
 
         // (b) equals its structure-keyed source in the SAME eval -- proving
         // the alias is freshly refolded, not stale.
         let merged_structure_keyed = scalar_si(
-            &merged,
+            merged,
             &ValueCellId::new(structure, "line_cost"),
             "merged",
         );
@@ -1714,12 +1848,12 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         // regression. (BT3(b) above, which compares two cells that must hold
         // the SAME folded value, is legitimately exact.)
         let merged_unit_cost = scalar_si(
-            &merged,
+            merged,
             &ValueCellId::new(structure, "unit_cost"),
             "merged",
         );
         let merged_q = scalar_si(
-            &merged,
+            merged,
             &ValueCellId::new(structure, "quantity_produced"),
             "merged",
         );
@@ -1768,7 +1902,7 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         // differed (e.g. drifted upward) would satisfy `!=` while contradicting
         // the whole point of the objective.
         let frozen_structure_keyed = scalar_si(
-            &frozen,
+            frozen,
             &ValueCellId::new(structure, "line_cost"),
             "frozen-cascade",
         );

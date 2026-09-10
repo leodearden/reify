@@ -10,6 +10,9 @@
 //!       Direction) emits `DatumProjectionUnavailable`;
 //!   (4) REGRESSION — the arity-2 `angle`/`distance` DERIVE forms still type as
 //!       `Scalar<Angle>` / `Scalar<Length>` (geometry-query path untouched).
+//!   (5) GRADUALISM — a `Scalar<Q>` metric/radius inside a dimension-kinded
+//!       generic fn (`fn f<Q: Dimension>(...)`) draws no `ArgTypeMismatch`
+//!       (PRD decision-6, `Type::ScalarParam`).
 //!
 //! Cases 1–3 are RED until step-8 wires the relation arm + `check_relation_arg_types`
 //! into `expr.rs`'s `NoUserFunctions` ladder; case 4 is a boundary guard that
@@ -173,4 +176,122 @@ fn two_arg_angle_distance_stay_geometry_queries() {
         "arity-2 angle/distance must draw no relation arg diagnostics, got: {:#?}",
         spurious
     );
+}
+
+// ── (5) GRADUALISM — Type::ScalarParam metric defers, never poisons ─────────
+
+/// A `Scalar<Q>` metric inside a dimension-kinded generic fn (`fn f<Q: Dimension>
+/// (..., theta: Scalar<Q>)`) must not draw a unit-layer `ArgTypeMismatch`: the
+/// metric's family (scalar) is known but its dimension is unresolved until
+/// instantiation, so the check must defer silently — mirroring the `TypeParam`
+/// gradualism the checker already grants.
+///
+/// Compiled as top-level fns (NOT wrapped in `structure S { … }` via
+/// `compile_structure`): a dimension-kinded generic fn is a top-level
+/// declaration and does not fit the structure-member wrapper.
+///
+/// VERIFIED RED against the base-commit binary: `target/debug/reify check` on
+/// these exact three fns emits `angle: metric argument expects Angle, got
+/// Scalar<Q>`, `distance: metric argument expects Length, got Scalar<Q>`,
+/// `offset: metric argument expects Length, got Scalar<Q>`.
+#[test]
+fn scalar_param_metric_in_generic_fn_emits_no_arg_type_mismatch() {
+    let source = r#"
+fn drive_angle<Q: Dimension>(a: Axis, b: Axis, theta: Scalar<Q>) -> Relation { angle(a, b, theta) }
+fn drive_distance<Q: Dimension>(p1: Point3<Length>, p2: Point3<Length>, d: Scalar<Q>) -> Relation { distance(p1, p2, d) }
+fn drive_offset<Q: Dimension>(pa: Plane, pb: Plane, d: Scalar<Q>) -> Relation { offset(pa, pb, d) }
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let mismatches: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
+        })
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "a Scalar<Q> metric in a dimension-kinded generic fn must NOT emit \
+         ArgTypeMismatch (gradualism skip on ScalarParam); got: {:#?}",
+        mismatches
+    );
+
+    // Half two of the contract: the checker is a pure diagnostic side-effect
+    // that never changes inference — each fn's body must still type as
+    // Type::Relation, not poison to Type::Error.
+    for fn_name in ["drive_angle", "drive_distance", "drive_offset"] {
+        let f = module
+            .functions
+            .iter()
+            .find(|f| f.name == fn_name)
+            .unwrap_or_else(|| panic!("{fn_name} function should be compiled"));
+        assert_eq!(
+            f.body.result_expr.result_type,
+            Type::Relation,
+            "{fn_name}'s body must type as Type::Relation, not poison; got: {:?}",
+            f.body.result_expr.result_type
+        );
+    }
+}
+
+/// A `Scalar<Q>` radius on `tangent` (cylinder/plane one-radius form and
+/// cylinder/cylinder two-radii form) must not draw a unit-layer
+/// `ArgTypeMismatch`, mirroring the metric-slot gradualism above —
+/// `check_tangent_operands` has its own separate radius-slot match, so this is
+/// a distinct code path from `scalar_param_metric_in_generic_fn_emits_no_arg_type_mismatch`.
+/// Also asserts zero `TangentOperandsUnsupported`, so the widened skip cannot
+/// be credited to an unrelated suppression.
+///
+/// Kept in this file rather than moved beside its sibling radius-slot tests in
+/// `tests/harness_relate/tangent_operand_check_tests.rs`
+/// (`radius_slot_with_the_wrong_dimension_is_a_unit_mismatch`,
+/// `second_radius_slot_dimension_is_policed_too`) — that file is outside this
+/// task's assigned scope. Cross-referenced here so the split reads as
+/// deliberate, not an oversight.
+///
+/// VERIFIED RED against the base-commit binary: `target/debug/reify check` on
+/// `fn drive_tangent<Q: Dimension>(a: Axis, p: Plane, r: Scalar<Q>) -> Relation
+/// { tangent(a, p, r) }` emits `tangent: metric argument expects Length, got
+/// Scalar<Q>`.
+#[test]
+fn scalar_param_tangent_radius_in_generic_fn_emits_no_arg_type_mismatch() {
+    let source = r#"
+fn drive_tangent_cyl_plane<Q: Dimension>(a: Axis, p: Plane, r: Scalar<Q>) -> Relation { tangent(a, p, r) }
+fn drive_tangent_cyl_cyl<Q: Dimension>(a: Axis, b: Axis, r1: Scalar<Q>, r2: Scalar<Q>) -> Relation { tangent(a, b, r1, r2) }
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let bad: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && matches!(
+                    d.code,
+                    Some(DiagnosticCode::ArgTypeMismatch)
+                        | Some(DiagnosticCode::TangentOperandsUnsupported)
+                )
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "a Scalar<Q> radius on tangent must NOT emit ArgTypeMismatch or \
+         TangentOperandsUnsupported (gradualism skip on ScalarParam); got: {:#?}",
+        bad
+    );
+
+    for fn_name in ["drive_tangent_cyl_plane", "drive_tangent_cyl_cyl"] {
+        let f = module
+            .functions
+            .iter()
+            .find(|f| f.name == fn_name)
+            .unwrap_or_else(|| panic!("{fn_name} function should be compiled"));
+        assert_eq!(
+            f.body.result_expr.result_type,
+            Type::Relation,
+            "{fn_name}'s body must type as Type::Relation, not poison; got: {:?}",
+            f.body.result_expr.result_type
+        );
+    }
 }

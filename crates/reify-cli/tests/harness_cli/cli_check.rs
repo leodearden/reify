@@ -666,12 +666,31 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
 ///     stdout: "  OK MirrorBareOrigin#constraint[0]" / "All constraints satisfied."
 ///     stderr: EMPTY
 ///     exit 0
-/// …while `reify eval` on the same file reports, on stderr:
-///     warning: mirror: ox argument expects Length, got Int; …   [TWICE]
-///     error: failed to compile geometry operation: missing or
+///
+/// WHY THE FIXTURE MOVED (task 5662).  It used to carry the 7-arg scalar form
+/// `mirror(arm, 0, 0, 0, 1, 0, 0)`, which now short-circuits `cmd_check` before
+/// `build()` and would have destroyed every assertion below, including the dedup
+/// pin this test exists for.  It moved to the decoded-value form
+/// `mirror(arm, plane_yz(0))` and is still deliberately BARE — only the route
+/// changed, not the mistake.  The argument for why that route is the durable one
+/// is stated once, on the `mirror` / `circular_pattern` arms of
+/// `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
+/// The exit-gate half is pinned by
+/// `check_rejects_bare_scalar_mirror_origin_before_reaching_build` below.
+///
+/// Baseline RE-MEASURED at task 5662 on the retargeted fixture.  `reify check`
+/// is unchanged in shape (exit 0, both stdout lines above).  `reify eval` on the
+/// same file reports, on stderr:
+///     error: mirror: ox argument expects Length, got Int; …     [TWICE]
+///     error: mirror: oy/oz argument expects Length, got Real; … [TWICE]
+///     error: failed to compile geometry operation: mirror: missing or
 ///            non-Length argument 'ox' for mirror                [TWICE]
 ///     error: failed to compile geometry operation: unresolvable GeomRef::Step(1) …
 ///     exit 1
+/// The internal duplication — the whole reason for the dedup pin — is unchanged
+/// by the retarget; only the message gained the `mirror: ` builtin prefix that
+/// the decoded-value route carries, and oy/oz read `Real` rather than `Int`
+/// because only the offset argument is the bare literal.
 ///
 /// The `matches(...).count() == 1` assertion is the load-bearing one: it pins
 /// D2's ACCUMULATING dedup. `build()` emits that error twice for a single call
@@ -709,7 +728,7 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
         return;
     }
 
-    let needle = "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror";
+    let needle = "failed to compile geometry operation: mirror: missing or non-Length argument 'ox' for mirror";
     assert!(
         stderr.contains(needle),
         "the geometry-compile error `build()` produces must reach `check`'s stderr \
@@ -727,6 +746,96 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
         stderr.contains("mirror: ox argument expects Length, got Int"),
         "the companion argument-type warning `build()` produces must reach `check`'s \
          stderr too.\nstderr: {stderr}"
+    );
+}
+
+/// Task 5662 — the CLI-seam LOCK on this task's headline user-visible change:
+/// `reify check` on a bare 7-arg scalar `mirror` origin now EXITS 1, where it
+/// exited 0 before.
+///
+/// This is emergent behaviour, owned by no single layer: task 5662 added the
+/// ox/oy/oz LENGTH slots in `crates/reify-compiler/src/builtin_signatures.rs`,
+/// and `cmd_check` turns any compile `Severity::Error` into `ExitCode::FAILURE`
+/// with a short-circuit BEFORE constraint checking and before `build()`.  The
+/// compiler-side tests pin the DIAGNOSTIC; nothing pinned the EXIT GATE, yet the
+/// short-circuit is precisely why the sibling test's fixture had to move to the
+/// decoded-value route (see the `mirror` arm of `builtin_signatures.rs`).  A
+/// regression in that short-circuit would silently invalidate that retarget
+/// while every compiler-side test stayed green — hence this test.
+///
+/// A temp module rather than a `tests/fixtures/` file on purpose: this source is
+/// deliberately UNCOMPILABLE, and every fixture in that directory is fair game
+/// for the corpus walkers under `crates/**/*.ri`.
+///
+/// Baseline MEASURED at task 5662 against a binary built from this branch, on
+/// the source below:
+///     stdout: EMPTY — no verdict line at all
+///     stderr: error: mirror: ox argument expects Length, got Int; pass a
+///                    dimensioned length such as `5mm`
+///             error: mirror: oy … (same)
+///             error: mirror: oz … (same)
+///     exit 1
+/// Note what is ABSENT: `failed to compile geometry operation: …`.  Compilation
+/// aborts on the slot errors, so realization is never reached on this route —
+/// that diagnostic survives only on the decoded-value route the sibling test
+/// above exercises.
+///
+/// NOT an exit-gate flip: this asserts FAILURE on a COMPILE `Severity::Error`,
+/// which `cmd_check` has always produced.  The two `status.success()` assertions
+/// above are about BUILD-only diagnostics and stay as they are until #5403 (leaf
+/// γ) lands the general Severity::Error gate.
+#[test]
+fn check_rejects_bare_scalar_mirror_origin_before_reaching_build() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("mirror_bare_scalar_origin.ri");
+    std::fs::write(
+        &path,
+        r#"module mirror_bare_scalar_origin
+
+structure def MirrorBareScalarOrigin {
+    param arm_len   : Length = 40mm
+    param arm_width : Length = 8mm
+
+    let arm = box(arm_len, arm_width, arm_width)
+
+    // WRONG on purpose — bare-Int origin triple (should be `0mm, 0mm, 0mm`).
+    // The normal `1, 0, 0` is correctly bare: it is a dimensionless direction.
+    let reflected = mirror(arm, 0, 0, 0, 1, 0, 0)
+
+    param geometry : Solid = union(arm, reflected)
+
+    constraint arm_len > arm_width
+}
+"#,
+    )
+    .expect("failed to write temp module");
+
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", path.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        !status.success(),
+        "a compile-layer ArgTypeMismatch must make `reify check` exit non-zero — \
+         this is the short-circuit that forced the decoded-value retarget of \
+         `mirror_bare_origin.ri`.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    for component in ["ox", "oy", "oz"] {
+        let needle = format!("mirror: {component} argument expects Length, got Int");
+        assert!(
+            stderr.contains(&needle),
+            "every component of the origin triple gets its own diagnostic; \
+             `{needle}` is missing.\nstderr: {stderr}"
+        );
+    }
+
+    assert!(
+        !stdout.contains("All constraints satisfied"),
+        "the short-circuit happens BEFORE constraint checking, so no verdict line \
+         may be printed — a green verdict beside these errors is the exact \
+         falsehood this gate closes.\nstdout: {stdout}"
     );
 }
 
@@ -853,6 +962,17 @@ fn check_constraint_results_come_from_authoritative_check_not_build() {
 ///     stderr: EMPTY
 ///     exit 0
 ///
+/// WHY THE FIXTURE MOVED (task 5662): identical to its non-purpose twin — see
+/// `check_surfaces_geometry_compile_error_from_discarded_build`, and through it
+/// the `mirror` arm of `builtin_arg_slots` in
+/// `crates/reify-compiler/src/builtin_signatures.rs`.
+///
+/// Baseline RE-MEASURED at task 5662 on the retargeted fixture, `reify check
+/// --purpose mfg_ready=MirrorBareOriginPurpose`: exit 0, both stdout lines
+/// above unchanged, and on stderr the ox/oy/oz argument-type triple twice plus
+/// `failed to compile geometry operation: mirror: missing or non-Length
+/// argument 'ox' for mirror` exactly ONCE — the dedup pin below is unaffected.
+///
 /// The stdout assertions are the load-bearing half of D1 item 2: they prove the
 /// purpose activation + `check_constraints_with_values` path is unaffected by
 /// swapping `EvalResult` for `BuildResult` as the `.values` source (PRD
@@ -896,7 +1016,7 @@ fn check_purpose_surfaces_geometry_compile_error() {
         return;
     }
 
-    let needle = "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror";
+    let needle = "failed to compile geometry operation: mirror: missing or non-Length argument 'ox' for mirror";
     assert!(
         stderr.contains(needle),
         "with geometry routing, the --purpose branch realizes geometry and must \
@@ -1154,5 +1274,132 @@ fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() 
         "stdout reports VIOLATED, so a surviving `… indeterminate` line for the \
          same constraint would be a self-contradiction \
          (`drop_falsified_indeterminate_diagnostics`).\nstderr: {stderr}"
+    );
+}
+
+/// Task 5311 / PRD `docs/prds/v0_6/check-diagnostic-truthfulness.md` leaf α —
+/// the CLI-seam LOCK on this task's headline user-visible change: `reify check`
+/// no longer prints an `error:`-prefixed line while exiting 0.
+///
+/// The engine emits the missing-trampoline fallback diagnostic at the two SOFT
+/// emission sites (`engine_eval.rs::evaluate_params_and_lets_unified` and
+/// `::evaluate_let_bindings`) with `Severity::Warning` when — and only when —
+/// the engine's compute registry is entirely EMPTY, and `Severity::Error`
+/// otherwise. `cmd_check` registers no compute trampolines at all, so its
+/// registry is empty and the diagnostic renders as `warning:`. `reify eval` and
+/// `reify build` both call `register_compute_trampolines`, whose production
+/// bundle registers 19 targets, so their registries are non-empty and the same
+/// diagnostic keeps rendering as `error:` — and keeps gating their exit codes.
+/// That contrast is the whole point of this test, so all three subcommands run
+/// against ONE byte-identical fixture.
+///
+/// The `@optimized` target is deliberately `test::never_registered_probe`: it is
+/// outside `register_production_compute_fns`'s 19-target bundle, and outside
+/// every `test::`-namespaced target registered anywhere else in the workspace,
+/// so `register_compute_fn`'s duplicate-target panic can never collide with it.
+/// An inline temp module rather than a tracked `.ri` fixture, for the same
+/// reason `check_rejects_bare_scalar_mirror_origin_before_reaching_build` above
+/// uses one: nothing else in the corpus needs this source.
+///
+/// CONTROL, measured at task 5311 against a binary built from this branch: the
+/// byte-identical fixture with the `@optimized` fn and its call removed
+/// (`let result = input`) exits 0 with EMPTY stderr on check, eval AND build.
+/// That is what makes the eval/build assertions below attributable to THIS
+/// diagnostic rather than to "the design produced no output files" — without
+/// the control, a non-zero exit here would prove nothing about severity.
+///
+/// FUTURE UPDATE — #6693 (`docs/prds/v0_6/solver-driver-parity.md` leaf δ) wires
+/// `SolverRegistry::production()` and the compute trampolines into `cmd_check`
+/// UNCONDITIONALLY. Post-#6693 `cmd_check`'s registry is non-empty, so the
+/// severity predicate correctly yields `error:` under `check` too and leg (a)
+/// below legitimately inverts. Whoever lands #6693 must update leg (a)
+/// deliberately — exactly as #6693 already plans to invert
+/// `check_fea_violated_constraint_is_not_gated` in `cli_build_fea.rs`.
+#[test]
+fn check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring()
+{
+    // Spelled ONCE and reused by every leg, so the test itself cannot drift the
+    // wording between the `check` leg and the `eval`/`build` legs. The engine
+    // single-sources the same stem via `engine_compute.rs`'s
+    // `NO_TRAMPOLINE_STEM`; changing this string means changing that one.
+    const DIAGNOSTIC_BODY: &str = "@optimized target \"test::never_registered_probe\": \
+                                   no registered compute trampoline \
+                                   (falling back to body-inlining)";
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("trampoline_severity_probe.ri");
+    std::fs::write(
+        &path,
+        r#"module trampoline_severity_probe
+
+@optimized("test::never_registered_probe")
+fn never_registered_probe(x: Int) -> Int { x }
+
+structure def TrampolineSeverityProbe {
+    param input: Int = 42
+    let result = never_registered_probe(input)
+    constraint result > 0
+}
+"#,
+    )
+    .expect("failed to write temp module");
+
+    let path_str = path.to_str().expect("temp path is UTF-8");
+    let warning_line = format!("warning: {DIAGNOSTIC_BODY}");
+    let error_line = format!("error: {DIAGNOSTIC_BODY}");
+
+    // ── (a) `check`: empty compute registry ⇒ Warning, and still exit 0. ──────
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", path_str]);
+    assert!(
+        status.success(),
+        "`reify check` must still exit 0 here — this task changes the SEVERITY \
+         of the fallback diagnostic, not the exit gate (#5403 / leaf γ owns \
+         that).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&warning_line),
+        "`cmd_check` registers no compute trampolines, so its registry is empty \
+         and the SOFT-site diagnostic must render as `{warning_line}`.\n\
+         stderr: {stderr}"
+    );
+    // Asserted explicitly, not merely implied by the `contains` above: a
+    // contains-only assertion would pass if BOTH the warning AND the old error
+    // line were printed, and the loud/silent mismatch this task closes (INV-4)
+    // is precisely the surviving `error:` line beside an exit code of 0.
+    assert!(
+        !stderr.contains("error: @optimized target \"test::never_registered_probe\""),
+        "no `error:`-prefixed form of this diagnostic may survive under \
+         `check` — an `error:` line printed alongside exit 0 is the exact \
+         falsehood this task closes.\nstderr: {stderr}"
+    );
+
+    // ── (b) `eval`: production bundle registered ⇒ Error, and it still gates. ─
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["eval", path_str]);
+    assert!(
+        !status.success(),
+        "`reify eval` registers the production compute bundle, so its registry \
+         is non-empty, the diagnostic stays `Severity::Error`, and it must keep \
+         gating the exit code.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&error_line),
+        "`reify eval` must keep printing `{error_line}` — the downgrade is \
+         conditioned on an EMPTY registry and must not leak into eval.\n\
+         stderr: {stderr}"
+    );
+
+    // ── (c) `build`: same, on the other gating subcommand. ───────────────────
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["build", path_str]);
+    assert!(
+        !status.success(),
+        "`reify build` registers the production compute bundle too, so the \
+         diagnostic stays `Severity::Error` and keeps gating.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&error_line),
+        "`reify build` must keep printing `{error_line}`.\nstderr: {stderr}"
     );
 }

@@ -87,10 +87,21 @@ pub struct DiagnosticsResult {
 /// task C2's hint diagnostic, no diagnostic at all, silently
 /// indistinguishable from "no constraint".
 ///
-/// **Known limitation:** the engine still surfaces its own
-/// `Severity::Error` "no registered compute trampoline (falling back to
-/// body-inlining)" diagnostic for `@optimized` FEA solves, by design — that
-/// severity is owned by the engine/eval layer, out of scope here.
+/// **Severity of the missing-trampoline diagnostic (task 5311):** the engine
+/// surfaces its own "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic for `@optimized` FEA solves at
+/// `Severity::Warning`, carrying
+/// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
+/// severity on its compute registry being entirely EMPTY, and the LSP builds
+/// `Engine::new(checker, None)` and never registers a trampoline, so it is
+/// always on the Warning arm.  (`reify eval` / `reify build` register the
+/// production bundle and so keep receiving `Severity::Error`.)
+///
+/// That is ONLY about this fallback diagnostic.  It leaves the LSP's SEPARATE
+/// `fea-not-evaluated` INFORMATION constraint hint (below) entirely untouched,
+/// and INV-FEA-1 ratified — the two must not be conflated: one reports that no
+/// trampoline was registered, the other that a constraint was consequently not
+/// evaluated.
 ///
 /// This trampoline-free posture is an executable contract locked by
 /// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`

@@ -574,6 +574,24 @@ else
     warn "no systemd --user bus — skipping build-accelerator service install"
 fi
 
+# ---------- jcodemunch index-warming units ----------
+#
+# A daily oneshot + timer that keeps the reify code index current with the
+# canonical checkout, so jcodemunch queries never answer from a stale tree.
+#
+# Deliberately OUTSIDE the REIFY_PROVISION_WARM_LANES block above, and installed
+# by its own script rather than by install-warm-lane-units.sh: index freshness is
+# wanted on every dev host, not only on hosts that provision warm lanes, and
+# gating it behind that flag would leave a developer who never sets it querying a
+# silently stale index.
+#
+# No bus guard needed here — the installer fail-opens on a bus-less host itself.
+if "$(dirname "${BASH_SOURCE[0]}")/install-jcodemunch-index-units.sh"; then
+    ok "jcodemunch index-warming units installed"
+else
+    warn "jcodemunch index-unit install failed (see above) — non-fatal, continuing setup"
+fi
+
 # ---------- cargo-nextest ----------
 #
 # scripts/verify.sh runs the non-OCCT workspace test tail through nextest (one

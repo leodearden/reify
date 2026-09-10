@@ -117,6 +117,27 @@
 #       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #7004).
 #       Pinned non-vacuously by Section 3c below.
 #
+#       APPROACHING THE CAP IS ITSELF A SIGNAL. A pure pass/fail cap only
+#       speaks on the commit that finally breaks it — by which point the
+#       author owes an unrelated split before their own change can land. So
+#       rule (a) also emits an ADVISORY `reason=approaching-cap` WARN once a
+#       unit passes WARN_PCT% of the cap (see WARN_PCT beside CAP_LINES),
+#       surfacing the squeeze in routine gate output while there is still
+#       headroom to act. Advisory means EXACTLY that: no exit-code change, no
+#       `violations=` increment. The gating half of the signal is the shrinking
+#       `_KLOC_WARN_KNOWN` subset ratchet — a unit may LEAVE the warn set
+#       freely, but a unit ARRIVING in it is red and must be acknowledged in
+#       the same diff. Free departure has a cost, though: the departed unit's
+#       row lingers as a permanently-permissive entry that would wave the unit
+#       back through if it ever grew over the line again. So the ratchet also
+#       emits a NON-GATING `PRUNE:` note for any known row that did not WARN
+#       this run, and DOES red on a row whose file no longer exists on disk at
+#       all — that one is dead by construction, not merely stale, and can only
+#       be produced by the very diff that moved the file. Implemented by
+#       `harness_warn_ratchet_violations`, pinned must-fire/must-not-fire
+#       against hermetic fixtures in Section 4c and driven over the real tree
+#       in Section 5d.
+#
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
 #       `tests/common/` helpers. rustc compiles a SEPARATE COPY of such a file
@@ -143,13 +164,21 @@
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n> root_lines=<n> module_lines=<n> module_files=<n> external_lines=<n> external_files=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=unsanctioned-standalone
 #           HARNESS_KLOC_CAP PASS crate=<c>
-#           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n>
+#           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n> warnings=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=undeclared-member member=<harness_sub/file.rs>
 #           HARNESS_KLOC_CAP PASS crate=<c> scan=undeclared-members roots=<n> members=<n>
-#       (the last two lines are rule (d)'s, APPENDED here rather than inserted
-#       among the four above, so existing unanchored consumers keep matching —
-#       the same append-don't-insert discipline this rule list already states
-#       for the external breakdown fields, below.)
+#           HARNESS_KLOC_CAP WARN crate=<c> file=<path> reason=approaching-cap lines=<n> cap=<n> warn_at=<n> pct=<n> root_lines=<n> module_lines=<n> module_files=<n> external_lines=<n> external_files=<n>
+#       (the undeclared-member pair is rule (d)'s and the WARN line is the
+#       advisory tier's; all three are APPENDED here rather than inserted among
+#       the first four, so existing unanchored consumers keep matching — the
+#       same append-don't-insert discipline this rule list already states for
+#       the external breakdown fields, below. `warnings=` is likewise APPENDED
+#       to SUMMARY after `violations=`, for the same reason.)
+#       A WARN is ADVISORY: it never changes the exit code and is never counted
+#       in `violations=`. It carries the SAME five breakdown fields, in the same
+#       order, as `reason=exceeds-cap`, so the three-remedy reading below
+#       applies to it identically — the point being to act on the split while
+#       there is still headroom, not after the gate is already red.
 #       On exceeds-cap, `lines=` is the WHOLE-UNIT total, and the four
 #       breakdown fields decompose it as
 #           lines = root_lines + module_lines + external_lines
@@ -218,7 +247,16 @@
 #       precondition was actually MEASURED, not assumed: on 4a9f2d6d4c the
 #       live tree held 31 harness roots and 585 module-dir member files
 #       across the 5 consolidatable crates, with 0 undeclared and every
-#       module dir flat (no nested subdirs). Should such drift ever land on
+#       module dir flat (no nested subdirs). Re-measured on task #6121: 32
+#       roots and 589 member files, still 0 undeclared and still flat. Both
+#       figures are historical anchors for the commit named beside them, not
+#       running totals — the roots figure grows as consolidation leaves land.
+#       Of that drift #6121 itself contributed exactly +1 root and +0 member
+#       files: splitting `stress_*` out of harness_fea_solver_e2e into
+#       harness_stress_scenarios MOVED seven files between two module dirs,
+#       adding and removing none, so the member count is invariant under a
+#       split. The +4 members came from other work landed since 4a9f2d6d4c.
+#       Should such drift ever land on
 #       main regardless, this whole-tree scan will re-fire on every
 #       innocent rebaser until it is fixed — the remedy there is to fix the
 #       drift, not to loosen this rule.
@@ -292,6 +330,53 @@ while IFS= read -r _ov; do OVERRIDE_BINARIES+=("$_ov"); done < <(harness_layout_
 # Raw-line-count cap per harness_<subsystem>.rs compile unit (PRD §11: raw
 # line count, simplest/conservative; ~20 kLOC = upper end of the §7 band).
 CAP_LINES=20000
+
+# The ADVISORY warn line, as a percentage of the cap. A harness unit above
+# WARN_PCT% of the cap but still under it emits a `reason=approaching-cap`
+# WARN, so the squeeze surfaces in ROUTINE gate output instead of only on the
+# commit that finally breaks the cap.
+#
+# The tier is ADVISORY BY DESIGN: it never changes the exit code and never
+# increments `violations=`. That is not timidity, it is the only shape that
+# could land. At introduction (task #6121) TWO live units were already above a
+# 90% line — harness_fea_solver_e2e at 19429 (97.1%, split by this same task)
+# and crates/reify-syntax/tests/harness_syntax.rs at 18957 (94.8%, outside this
+# task's scope — see _KLOC_WARN_KNOWN below). A GATING warn
+# would therefore have turned the merge gate RED on main the moment it landed,
+# and would have kept re-firing on every innocent downstream rebaser — exactly
+# the failure mode rule (d)'s LANDING PRECONDITION note above warns about.
+# WHICH units warn is instead ratcheted as a shrinking SUBSET (_KLOC_WARN_KNOWN
+# below), so an ARRIVING unit is red while a unit LEAVING the set is free.
+WARN_PCT=90
+
+# Units currently between the WARN line and the cap. A SHRINKING ratchet in
+# the same spirit as harness-layout-baseline.manifest: a unit may LEAVE this
+# list freely (that is progress and must never turn the gate red), but a unit
+# ARRIVING must be added deliberately in the same diff -- which is exactly the
+# "surface the squeeze before it breaks" signal task #6121 added the WARN tier
+# for. harness_syntax.rs measured 18957/20000 = 94.8% as of task #6121; it is
+# listed here because it is outside that task's scope, NOT because it is
+# acceptable — the remedy is still rule (a)'s split, and that split is #7040.
+#
+# THE CITE IS LOAD-BEARING, not decoration. Departure from the warn set is free
+# (a) and the stale-row PRUNE note is advisory (c), so nothing in this guard
+# will ever nag about a listed row again: absent a live pointer to the work it
+# defers, harness_syntax would sit just under the line until it broke the cap —
+# precisely the innocent-author ambush the WARN tier exists to prevent. So when
+# #7040 reaches a terminal state, this row must be re-justified or dropped, not
+# silently re-inherited. A bare `#NNNN` in prose is the repo's citation form and
+# does not itself create a PTODO marker; what the ratchet reds is an UNBACKED
+# tracked-elsewhere CLAIM, which is why an earlier draft of the WARN_PCT comment
+# above was rejected — a cite that resolves to a live task is the fix for that,
+# not an omission.
+#
+# Kept in-script rather than in a new manifest file because this guard already
+# carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
+# shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
+# needed. Enforced as a SUBSET in Section 5d, which also reports the prune
+# direction the subset check is blind to: an advisory `PRUNE:` note for a row
+# that stopped WARNing, and a RED for a row whose file is no longer on disk.
+_KLOC_WARN_KNOWN=( "crates/reify-syntax/tests/harness_syntax.rs" )
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
@@ -384,12 +469,28 @@ harness_layout_violations() {
             harness_*.rs)
                 IFS=' ' read -r lines root_lines module_lines module_files external_lines external_files \
                     <<<"$(harness_layout_unit_lines "$f")" || true
+                # The warn line is DERIVED from the cap passed in, never
+                # hardcoded, so the hermetic fixtures drive synthetic caps
+                # exactly as the live driver drives CAP_LINES — and a future
+                # CAP_LINES change cannot silently decouple the two.
+                local warn_lines=$(( cap_lines * WARN_PCT / 100 ))
                 if [ "$lines" -gt "$cap_lines" ]; then
                     _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
                         "lines=$lines" "cap=$cap_lines" \
                         "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files" \
                         "external_lines=$external_lines" "external_files=$external_files"
                     violations=$((violations + 1))
+                elif [ "$lines" -gt "$warn_lines" ]; then
+                    # elif, not a second if: FAIL wins outright, so an over-cap
+                    # unit is never double-reported as both. Carries the SAME
+                    # five breakdown fields in the SAME order as exceeds-cap,
+                    # so rule (c)'s three-remedy reading applies identically —
+                    # and deliberately does NOT touch `violations`.
+                    _emit WARN "crate=$crate" "file=$f" "reason=approaching-cap" \
+                        "lines=$lines" "cap=$cap_lines" "warn_at=$warn_lines" \
+                        "pct=$(( lines * 100 / cap_lines ))" \
+                        "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files" \
+                        "external_lines=$external_lines" "external_files=$external_files"
                 fi
                 continue
                 ;;
@@ -433,8 +534,8 @@ run_harness_layout_scan() {
     local cap="$2"
     shift 2
 
-    local crate_count=0 total_violations=0
-    local pair crate dir crate_out n
+    local crate_count=0 total_violations=0 total_warnings=0
+    local pair crate dir crate_out n w
 
     for pair in "$@"; do
         crate="${pair%%:*}"
@@ -446,10 +547,20 @@ run_harness_layout_scan() {
         crate_out="$(harness_layout_violations "$crate" "$dir" "$baseline" "$cap")" || true
         n="$(printf '%s\n' "$crate_out" | grep -cE '^HARNESS_KLOC_CAP FAIL ' || true)"
         total_violations=$((total_violations + n))
+        # Same idiom, WARN substituted: the warn count is derived from the
+        # detector's own structured output (the contract), exactly as the
+        # violation count is — not from a side channel that could drift.
+        w="$(printf '%s\n' "$crate_out" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
+        total_warnings=$((total_warnings + w))
         printf '%s\n' "$crate_out"
     done
 
-    _emit SUMMARY "crates=$crate_count" "violations=$total_violations"
+    # `warnings=` is APPENDED after `violations=`, never inserted before
+    # `lines=`/`violations=` — the append-don't-insert discipline rule (c)
+    # already states for the external breakdown fields, so existing unanchored
+    # consumers of this grammar keep matching.
+    _emit SUMMARY "crates=$crate_count" "violations=$total_violations" "warnings=$total_warnings"
+    # Return code stays keyed to violations ALONE: a WARN is advisory.
     [ "$total_violations" -eq 0 ]
 }
 
@@ -942,6 +1053,130 @@ harness_layout_malformed_rows() {
     local baseline_file="$1"
     _harness_layout_scan_baseline_rows "baseline-row-shape" "malformed-baseline-row" \
         "$baseline_file" _harness_layout_row_in_scope
+}
+
+# ---------------------------------------------------------------------------
+# harness_warn_ratchet_violations <scan_output> <root_dir> [known_row]...
+#
+# The CLASSIFIER behind the WARN-set shrinking ratchet: given one scan
+# transcript and the checked-in allow-list of units already known to WARN,
+# decide which rows are red, which are merely stale, and whether the WARN
+# extraction saw anything at all.
+#
+# EXTRACTED so hermetic fixtures can drive it (Section 4c) exactly as the live
+# tree drives it — the same parameterize-on-(dir, data) discipline every other
+# detector in this file already follows, and the reason Sections 1/1b/4/4b can
+# pin must-fire AND must-not-fire behaviour instead of only observing whatever
+# the real tree happens to contain today. That gap was not hypothetical: this
+# rule's gating branches are reachable ONLY when the live tree is already
+# broken, so before this extraction the only way to exercise them was to
+# hand-break a copy of the guard. The exposure grows in exactly the direction
+# the design intends — the moment _KLOC_WARN_KNOWN empties (the stated healthy
+# end state, since a unit may LEAVE the set freely), the subset check goes
+# vacuous and its own non-vacuity pair is satisfied by 0 == 0, so a later
+# regression in the file=/<root_dir> normalisation would leave an ARRIVING unit
+# silently unratcheted behind a green gate.
+#
+# <scan_output> is a run_harness_layout_scan / harness_layout_violations
+# transcript; its WARN lines carry ABSOLUTE file= paths, because the detector is
+# driven with absolute tests dirs. <root_dir> is the prefix stripped to recover
+# the repo-relative form the rows are checked in as, which is what keeps them
+# stable across worktrees. Each <known_row> is one such repo-relative path.
+#
+# Prints one classification line per finding, in this grammar:
+#
+#   UNKNOWN <path>   a unit WARNed and is NOT a known row           GATING
+#   DEAD    <path>   a known row's file is not on disk              GATING
+#   STALE   <path>   a known row is on disk but did not WARN        advisory
+#   PARSED  <n>      file= values recovered from the WARN lines     (non-vacuity)
+#   EMITTED <n>      WARN lines present in <scan_output>            (non-vacuity)
+#
+# Returns 1 if any UNKNOWN or DEAD was emitted (the two GATING classes), else 0.
+# A STALE row alone NEVER fails: gating it would land on whoever shrank a unit
+# rather than on whoever curates the list — the same punish-progress red an
+# equality pin on `warnings=<n>` was rejected for. Section 5d's banner carries
+# the full severity split and the reasoning behind it.
+#
+# DEAD BEATS STALE: a row whose file is missing cannot WARN, so reporting it as
+# merely "no longer warning" would understate it. Existence is checked first.
+#
+# PARSED/EMITTED are REPORTED, not compared here. They are the non-vacuity pair,
+# and they are deliberately derived by two independent passes over the same
+# input (the read loop vs. a fresh `grep -c`) so that a future regression which
+# breaks one and not the other shows up as a mismatch. Which of the two is
+# authoritative is the caller's assert to make, not the classifier's — this
+# function has no opinion about whether zero WARNs is healthy.
+#
+# NOTE the deliberate asymmetry in what touches the disk: the UNKNOWN class is
+# pure string work over <scan_output>, while DEAD/STALE stat <root_dir>/<row>.
+# That is why <root_dir> is a parameter and not $REPO_ROOT — a fixture points it
+# at a tmpdir and gets both halves hermetically.
+# ---------------------------------------------------------------------------
+harness_warn_ratchet_violations() {
+    local scan_output="$1"
+    local root_dir="$2"
+    shift 2
+    local known_rows=()
+    local _r
+    for _r in "$@"; do known_rows+=("$_r"); done
+
+    local warn_lines line f
+    warn_lines="$(printf '%s\n' "$scan_output" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+
+    local live_files=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        f="${line#* file=}"
+        f="${f%% *}"
+        live_files+=("${f#"$root_dir/"}")
+    done <<<"$warn_lines"
+
+    local known_set="" live_set=""
+    for _r in ${known_rows[@]+"${known_rows[@]}"}; do known_set="$known_set|$_r|"; done
+    for _r in ${live_files[@]+"${live_files[@]}"}; do live_set="$live_set|$_r|"; done
+
+    local rc=0
+
+    # (a) SUBSET: every live WARN file must be a known member.
+    for _r in ${live_files[@]+"${live_files[@]}"}; do
+        case "$known_set" in
+            *"|$_r|"*) ;;
+            *) printf 'UNKNOWN %s\n' "$_r"; rc=1 ;;
+        esac
+    done
+
+    # (c) PRUNE DIRECTION: dead rows are gating, stale rows are advisory.
+    for _r in ${known_rows[@]+"${known_rows[@]}"}; do
+        if [ ! -f "$root_dir/$_r" ]; then
+            printf 'DEAD %s\n' "$_r"
+            rc=1
+            continue
+        fi
+        case "$live_set" in
+            *"|$_r|"*) ;;
+            *) printf 'STALE %s\n' "$_r" ;;
+        esac
+    done
+
+    # (b) NON-VACUITY pair — see the header for why these are reported, not
+    # compared, and why the two counts are derived by independent passes.
+    printf 'PARSED %s\n' "${#live_files[@]}"
+    printf 'EMITTED %s\n' \
+        "$(printf '%s\n' "$scan_output" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
+
+    return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# _warn_ratchet_rows <classification_output> <CLASS>
+#
+# Print the <path> field of every `<CLASS> <path>` line of a
+# harness_warn_ratchet_violations transcript. One place that knows the
+# classification grammar's shape, shared by the hermetic Section 4c and the live
+# Section 5d so the two cannot drift into reading it differently.
+# ---------------------------------------------------------------------------
+_warn_ratchet_rows() {
+    printf '%s\n' "$1" | sed -n "s/^$2 //p"
 }
 
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
@@ -1543,17 +1778,282 @@ run_harness_layout_scan "$_s4_baseline" 20000 \
     "cleancrate:$_s4_clean_dir" "dirtycrate:$_s4_dirty_dir" \
     > "$_s4_out" 2>/dev/null || _s4_rc=$?
 
-_s4_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=2 violations=1$' "$_s4_out" || true)"
-assert "4: exactly one structured SUMMARY crates=2 violations=1 line" \
+_s4_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=2 violations=1 warnings=0$' "$_s4_out" || true)"
+assert "4: exactly one structured SUMMARY crates=2 violations=1 warnings=0 line" \
     test "$_s4_summary_count" -eq 1
 assert "4: aggregate scan returns non-zero when any crate has a violation (rc 1)" \
     test "$_s4_rc" -eq 1
 
 # Non-blank lines that do NOT match the canonical grammar (`|| true`: the
 # clean case is the grep-no-match exit 1).
-_s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (PASS|FAIL|SUMMARY) ' || true)"
+_s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (PASS|FAIL|WARN|SUMMARY) ' || true)"
 assert "4: every emitted non-empty line matches the canonical HARNESS_KLOC_CAP grammar" \
     test -z "$_s4_bad"
+
+# ===========================================================================
+# Section 4b: rules (a)+(c) — the ADVISORY WARN tier (approaching-cap).
+#
+# A harness unit that is over WARN_PCT% of the cap but still UNDER it emits a
+# `reason=approaching-cap` WARN line, so the squeeze surfaces in ROUTINE gate
+# output rather than only on the commit that finally breaks the cap. The tier
+# is deliberately ADVISORY: it never changes the exit code and never
+# increments `violations=` (a gating WARN would have turned the merge gate RED
+# on main for a unit no single task is scoped to fix — see the WARN_PCT
+# comment beside CAP_LINES).
+#
+# Hermetic mktemp -d fixtures in the Section 1/1b idiom, driven through the
+# aggregating driver so the SUMMARY field is exercised too.
+# ===========================================================================
+echo ""
+echo "--- Section 4b: advisory WARN tier (approaching-cap) ---"
+
+_s4b_baseline="$(mktemp)"; _TMPDIRS+=("$_s4b_baseline")
+: > "$_s4b_baseline"   # empty fixture baseline (rule (a) never consults it)
+
+# --- (a)+(f): a unit at 95% of the passed cap WARNs, and SUMMARY counts it ---
+_s4b_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_dir")
+awk 'BEGIN { for (i = 0; i < 19000; i++) print "// x" }' > "$_s4b_dir/harness_warn.rs"
+
+_s4b_out="$(mktemp)"; _TMPDIRS+=("$_s4b_out")
+_s4b_rc=0
+run_harness_layout_scan "$_s4b_baseline" 20000 "synthcrate:$_s4b_dir" \
+    > "$_s4b_out" 2>/dev/null || _s4b_rc=$?
+
+# Fully `^...$`-anchored: WARN must carry the SAME five breakdown fields, in the
+# same order, as `reason=exceeds-cap`, so rule (c)'s three-remedy reading
+# (module_lines dominates -> split; root_lines -> trim; external_lines ->
+# re-home the includer) applies to a WARN identically.
+_s4b_warn_count="$(grep -cE '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_warn\.rs reason=approaching-cap lines=19000 cap=20000 warn_at=18000 pct=95 root_lines=19000 module_lines=0 module_files=0 external_lines=0 external_files=0$' "$_s4b_out" || true)"
+assert "4b: exactly one fully-anchored WARN line with the same breakdown fields as exceeds-cap" \
+    test "$_s4b_warn_count" -eq 1
+
+# --- (b): a WARN is NOT a violation ---
+assert "4b: a WARNing scan still returns 0 (WARN is advisory, never gating)" \
+    test "$_s4b_rc" -eq 0
+assert "4b: the WARNing crate still emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate$' "$_s4b_out"
+assert "4b: a WARN emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s4b_out"
+
+# --- (f): SUMMARY gains an APPENDED warnings=<n> field ---
+_s4b_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=1 violations=0 warnings=1$' "$_s4b_out" || true)"
+assert "4b: SUMMARY appends warnings= after violations= (crates=1 violations=0 warnings=1)" \
+    test "$_s4b_summary_count" -eq 1
+
+# --- (c): the WARN boundary is STRICTLY GREATER, not >= ---
+_s4b_at_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_at_dir")
+awk 'BEGIN { for (i = 0; i < 18000; i++) print "// x" }' > "$_s4b_at_dir/harness_at.rs"
+_s4b_at_out="$(mktemp)"; _TMPDIRS+=("$_s4b_at_out")
+_s4b_at_rc=0
+harness_layout_violations synthcrate "$_s4b_at_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_at_out" 2>/dev/null || _s4b_at_rc=$?
+assert "4b: a unit EXACTLY at the warn line (18000 = 90% of 20000) emits no WARN (-gt, not -ge)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN" "$1"' _ "$_s4b_at_out"
+assert "4b: the at-boundary unit still passes cleanly (rc 0)" \
+    test "$_s4b_at_rc" -eq 0
+
+_s4b_over_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_over_dir")
+awk 'BEGIN { for (i = 0; i < 18001; i++) print "// x" }' > "$_s4b_over_dir/harness_over.rs"
+_s4b_over_out="$(mktemp)"; _TMPDIRS+=("$_s4b_over_out")
+harness_layout_violations synthcrate "$_s4b_over_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_over_out" 2>/dev/null || true
+assert "4b: one line ABOVE the warn line (18001) does WARN (the boundary is exercised from both sides)" \
+    grep -Eq '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_over\.rs reason=approaching-cap lines=18001 cap=20000 warn_at=18000 ' "$_s4b_over_out"
+
+# --- (d): FAIL takes precedence — no double-report for the same file ---
+_s4b_fail_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_fail_dir")
+awk 'BEGIN { for (i = 0; i < 20001; i++) print "// x" }' > "$_s4b_fail_dir/harness_overcap.rs"
+_s4b_fail_out="$(mktemp)"; _TMPDIRS+=("$_s4b_fail_out")
+_s4b_fail_rc=0
+harness_layout_violations synthcrate "$_s4b_fail_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_fail_out" 2>/dev/null || _s4b_fail_rc=$?
+assert "4b: an over-cap unit still FAILs with reason=exceeds-cap" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_overcap\.rs reason=exceeds-cap lines=20001 cap=20000' "$_s4b_fail_out"
+assert "4b: an over-cap unit emits NO WARN line (FAIL wins outright, no double-report)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN" "$1"' _ "$_s4b_fail_out"
+assert "4b: an over-cap unit still returns 1" \
+    test "$_s4b_fail_rc" -eq 1
+
+# --- (e): the warn line is DERIVED FROM THE CAP PASSED IN, not hardcoded ---
+# Re-drive the SAME 19000-line fixture at cap=10000: it must now FAIL (19000 >
+# 10000), while a 9500-line unit WARNs at warn_at=9000. A hardcoded 18000 would
+# leave the 9500-line unit silent and the WARN tier untestable at any other cap.
+_s4b_cap10_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_cap10_dir")
+cp "$_s4b_dir/harness_warn.rs" "$_s4b_cap10_dir/harness_warn.rs"
+awk 'BEGIN { for (i = 0; i < 9500; i++) print "// x" }' > "$_s4b_cap10_dir/harness_small.rs"
+_s4b_cap10_out="$(mktemp)"; _TMPDIRS+=("$_s4b_cap10_out")
+harness_layout_violations synthcrate "$_s4b_cap10_dir" "$_s4b_baseline" 10000 \
+    > "$_s4b_cap10_out" 2>/dev/null || true
+assert "4b: at cap=10000 the 19000-line unit FAILs (exceeds-cap), not WARNs" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_warn\.rs reason=exceeds-cap lines=19000 cap=10000' "$_s4b_cap10_out"
+assert "4b: at cap=10000 the 9500-line unit WARNs with warn_at=9000 (threshold derived from the PASSED cap)" \
+    grep -Eq '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_small\.rs reason=approaching-cap lines=9500 cap=10000 warn_at=9000 pct=95 ' "$_s4b_cap10_out"
+assert "4b: at cap=10000 the 19000-line unit emits no WARN line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN .*harness_warn\.rs" "$1"' _ "$_s4b_cap10_out"
+
+# ===========================================================================
+# Section 4c: the WARN-set shrinking RATCHET, hermetically.
+#
+# Section 4b pins the WARN LINE (when a unit warns). This section pins what is
+# DONE with those warns: harness_warn_ratchet_violations, the classifier behind
+# Section 5d — the GATING half of an otherwise advisory tier.
+#
+# WHY IT NEEDS ITS OWN FIXTURES rather than riding on Section 5d's live run:
+# 5d's two RED branches are reachable only when the real tree is already broken,
+# so on a healthy tree the live call exercises neither. Everything else in this
+# guard (Sections 1, 1b, 4, 4b, 10) carries must-fire fixtures for exactly that
+# reason, and the ratchet was the one rule that did not. Worse, the exposure
+# GROWS as the design succeeds: once _KLOC_WARN_KNOWN empties — the stated
+# healthy end state, since departure from the warn set is free — the subset
+# check is vacuous and its non-vacuity pair reads 0 == 0, so a regression in the
+# file=/<root_dir> normalisation would let an ARRIVING unit through unratcheted
+# behind a green gate. These fixtures are what keeps the rule pinned in that
+# end state.
+#
+# Fixtures are synthetic SCAN TRANSCRIPTS (not scans): the classifier's input is
+# text plus a root dir, so there is nothing to gain from generating 19000-line
+# files here — Section 4b already owns the line->WARN half of the contract, and
+# these cases are about what happens AFTER a WARN line exists.
+# ===========================================================================
+echo ""
+echo "--- Section 4c: WARN-set shrinking ratchet (hermetic) ---"
+
+# A synthetic repo root: two harness files that EXIST, and one path deliberately
+# never created (the DEAD case).
+_s4c_root="$(mktemp -d)"; _TMPDIRS+=("$_s4c_root")
+mkdir -p "$_s4c_root/crates/synthcrate/tests"
+: > "$_s4c_root/crates/synthcrate/tests/harness_a.rs"
+: > "$_s4c_root/crates/synthcrate/tests/harness_b.rs"
+_s4c_a="crates/synthcrate/tests/harness_a.rs"
+_s4c_b="crates/synthcrate/tests/harness_b.rs"
+_s4c_gone="crates/synthcrate/tests/harness_gone.rs"
+
+# One canonical WARN line for an ABSOLUTE path — the shape the detector really
+# emits (it is driven with absolute tests dirs), which is what makes the
+# <root_dir>-stripping half of the classifier load-bearing rather than cosmetic.
+_s4c_warn() {
+    printf 'HARNESS_KLOC_CAP WARN crate=synthcrate file=%s reason=approaching-cap lines=19000 cap=20000 warn_at=18000 pct=95 root_lines=19000 module_lines=0 module_files=0 external_lines=0 external_files=0\n' "$1"
+}
+
+# Drive the classifier over $_s4c_scan with the given known rows, capturing both
+# the classification transcript and the rc.
+_s4c_run() {
+    _s4c_rc=0
+    _s4c_out="$(harness_warn_ratchet_violations "$_s4c_scan" "$_s4c_root" "$@")" || _s4c_rc=$?
+}
+
+# Exact-set comparison for one classification class (empty string == no rows).
+_s4c_rows_are() {
+    test "$(_warn_ratchet_rows "$_s4c_out" "$1")" = "$2"
+}
+
+# --- (i) a live WARN absent from the known set is RED ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
+_s4c_run
+assert "4c: a WARNing unit that is not a known row is classified UNKNOWN (repo-relative)" \
+    _s4c_rows_are UNKNOWN "$_s4c_a"
+assert "4c: an UNKNOWN row makes the ratchet GATING (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- must-not-fire: the SAME warn, acknowledged in the known set, is green.
+# This is also the normalisation assert: the WARN line carries an ABSOLUTE path
+# and the known row is repo-relative, so it can only match if <root_dir> was
+# actually stripped. ---
+_s4c_run "$_s4c_a"
+assert "4c: the same WARN is silent once its repo-relative row is in the known set" \
+    _s4c_rows_are UNKNOWN ""
+assert "4c: an acknowledged WARN leaves the ratchet green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: an acknowledged, still-warning row is not reported STALE" \
+    _s4c_rows_are STALE ""
+
+# --- normalisation, the other direction: a WARN whose file= is NOT under
+# <root_dir> cannot be silently absorbed — it stays absolute and is still RED,
+# so a broken prefix strip surfaces as an unmatchable path rather than as a
+# vacuous pass. ---
+_s4c_scan="$(_s4c_warn "/elsewhere/$_s4c_a")"
+_s4c_run "$_s4c_a"
+assert "4c: a WARN file= outside <root_dir> keeps its absolute path and stays UNKNOWN" \
+    _s4c_rows_are UNKNOWN "/elsewhere/$_s4c_a"
+assert "4c: the out-of-root WARN is gating (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- (ii) a known row whose path does not exist is RED ---
+_s4c_scan=""
+_s4c_run "$_s4c_gone"
+assert "4c: a known row whose file is not on disk is classified DEAD" \
+    _s4c_rows_are DEAD "$_s4c_gone"
+assert "4c: a DEAD row makes the ratchet GATING (rc 1)" \
+    test "$_s4c_rc" -eq 1
+assert "4c: DEAD BEATS STALE — a missing row is not ALSO reported as merely stale" \
+    _s4c_rows_are STALE ""
+
+# --- (iii) a known row that exists but did not WARN is ADVISORY ---
+_s4c_scan=""
+_s4c_run "$_s4c_a"
+assert "4c: a known row that exists but emitted no WARN is classified STALE" \
+    _s4c_rows_are STALE "$_s4c_a"
+assert "4c: a STALE row alone NEVER gates (rc 0) — gating it would punish progress" \
+    test "$_s4c_rc" -eq 0
+assert "4c: a STALE row is not also reported DEAD" \
+    _s4c_rows_are DEAD ""
+
+# --- severity mixing: one gating class plus one advisory class in a single run.
+# The advisory row must still be REPORTED (it is the only prune signal there is)
+# while the rc is decided by the gating one alone. ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_b")"
+_s4c_run "$_s4c_a"
+assert "4c: a mixed run reports the arriving unit UNKNOWN" \
+    _s4c_rows_are UNKNOWN "$_s4c_b"
+assert "4c: a mixed run STILL reports the departed row STALE (advisory output is not suppressed by a red)" \
+    _s4c_rows_are STALE "$_s4c_a"
+assert "4c: a mixed run is gating on the UNKNOWN alone (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- (iv) the healthy END STATE: empty known set, zero WARNs. The subset check
+# is vacuous here BY FACT, and the non-vacuity pair must say so honestly (0 ==
+# 0) rather than by silence. ---
+_s4c_scan="$(printf 'HARNESS_KLOC_CAP PASS crate=synthcrate\nHARNESS_KLOC_CAP SUMMARY crates=1 violations=0 warnings=0\n')"
+_s4c_run
+assert "4c: an empty known set with zero WARNs is green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: the end state emits no classification rows at all" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "^(UNKNOWN|DEAD|STALE) "' _ "$_s4c_out"
+assert "4c: the end state reports PARSED 0" \
+    test "$(_warn_ratchet_rows "$_s4c_out" PARSED)" -eq 0
+assert "4c: the end state reports EMITTED 0" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)" -eq 0
+
+# --- NON-VACUITY PAIR: the two counts are derived by independent passes, so
+# pin them against a transcript where the WARN lines are OUTNUMBERED by
+# non-WARN noise. A grep that broadened to `^HARNESS_KLOC_CAP ` would read 5
+# here, and a read loop that dropped entries would read fewer than 2. ---
+# NOTE the explicit `\n` after EVERY field: `$(_s4c_warn …)` loses its trailing
+# newline to command substitution, so a `%s%s` here would splice two WARN lines
+# into one and make this fixture read 1 where it must read 2.
+_s4c_scan="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+    'HARNESS_KLOC_CAP PASS crate=synthcrate' \
+    'HARNESS_KLOC_CAP FAIL crate=synthcrate file=/x/harness_z.rs reason=exceeds-cap lines=20001 cap=20000' \
+    "$(_s4c_warn "$_s4c_root/$_s4c_a")" \
+    "$(_s4c_warn "$_s4c_root/$_s4c_b")" \
+    'HARNESS_KLOC_CAP SUMMARY crates=1 violations=1 warnings=2')"
+_s4c_run "$_s4c_a" "$_s4c_b"
+assert "4c: PARSED counts only WARN lines (2), not the PASS/FAIL/SUMMARY noise around them" \
+    test "$(_warn_ratchet_rows "$_s4c_out" PARSED)" -eq 2
+assert "4c: EMITTED agrees with PARSED on the same mixed transcript (non-vacuity pair)" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)" -eq 2
+assert "4c: both WARNing units are acknowledged, so the mixed transcript is green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+
+# --- SHRINKING, not equality: a known set LARGER than the live warn set is
+# green (that is the whole point of a subset ratchet), and the surplus row is
+# surfaced as STALE rather than swallowed. ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
+_s4c_run "$_s4c_a" "$_s4c_b"
+assert "4c: a known set larger than the live warn set is green (SUBSET, never equality)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: the surplus known row is surfaced as STALE, not silently tolerated" \
+    _s4c_rows_are STALE "$_s4c_b"
 
 # ===========================================================================
 # Section 5: LIVE scan — the guard is GREEN on the real pre-consolidation tree
@@ -1615,7 +2115,8 @@ _live_summary="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP SUMMARY
 # archived log (the 2026-07-20 incident: 4 live violations, zero offender
 # lines captured, four investigations blocked). Gated on failure so a clean
 # run's output is byte-for-byte unchanged.
-if [ "$_live_rc" -ne 0 ] || [ "$_live_summary" != "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0" ]; then
+if [ "$_live_rc" -ne 0 ] || ! printf '%s\n' "$_live_summary" \
+        | grep -qE '^HARNESS_KLOC_CAP SUMMARY crates=5 violations=0 warnings=[0-9]+$'; then
     echo "  ---- Section 5: live scan output (captured, printed on failure) ----"
     printf '%s\n' "$_live_out"
     echo "  ---- Section 5: end live scan output ----"
@@ -1623,8 +2124,14 @@ fi
 
 assert "5: live scan is green on the current tree (rc 0, zero violations)" \
     test "$_live_rc" -eq 0
-assert "5: live SUMMARY line reads exactly crates=5 violations=0" \
-    test "$_live_summary" = "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0"
+# The violations count is pinned to EXACTLY 0; the warnings count is
+# deliberately NOT pinned to a number here. WARN is advisory (it never changes
+# the exit code or `violations=`), and an equality on the count would turn this
+# gate RED the moment an unrelated live unit innocently SHRANK below the WARN
+# line — punishing progress. WHICH units warn is ratcheted as a shrinking
+# SUBSET in Section 5d, which is where an ARRIVING unit is caught.
+assert "5: live SUMMARY line reads crates=5 violations=0 (warn count advisory, ratcheted in 5d)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^HARNESS_KLOC_CAP SUMMARY crates=5 violations=0 warnings=[0-9]+$"' _ "$_live_summary"
 
 # ===========================================================================
 # Section 5b: live non-vacuity — the live measure actually reads module dirs,
@@ -1686,16 +2193,32 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # one cause. The non-vacuity check above is what this section actually
 # contributes.
 #
-# HEADROOM (measured, task #5620, 14 live harness units). Attributing the
-# escaping tests/common/ includes (Section 1e) put
-# harness_topology_selector at 21470 = 97 root + 19245 module + 2128 external
-# (`#[path = "common/differential.rs"]`), 7.4% OVER CAP_LINES=20000. Per rule
-# (a)'s own remedy that was resolved by SPLITTING `selective_demand` out into
-# harness_selective_demand — NOT by raising the cap, which would have
-# contradicted the ratified 10-20 kLOC band of PRD §3 W1/§7 and loosened the
-# C2 ratchet to fit its first offender. Post-split the measured max aggregate
-# is 19591 (harness_fea_solver_e2e: 106 root + 19103 module + 382 external),
-# so the tightest live unit now sits ~2% under the cap.
+# HEADROOM (measured, task #5620). Attributing the escaping tests/common/
+# includes (Section 1e) put harness_topology_selector at 21470 = 97 root +
+# 19245 module + 2128 external (`#[path = "common/differential.rs"]`), 7.4%
+# OVER CAP_LINES=20000. Per rule (a)'s own remedy that was resolved by
+# SPLITTING `selective_demand` out into harness_selective_demand — NOT by
+# raising the cap, which would have contradicted the ratified 10-20 kLOC band
+# of PRD §3 W1/§7 and loosened the C2 ratchet to fit its first offender.
+#
+# RE-MEASURED, task #6121 (32 live harness units across the 5 consolidatable
+# crates). harness_fea_solver_e2e had climbed back to 19429 = 107 root + 18931
+# module (43 files) + 391 external, 97.1% of the cap — under it, so the
+# pass/fail cap said nothing, which is precisely the blind spot the advisory
+# WARN tier now covers. Same remedy applied, again a split rather than a cap
+# raise: the `stress_*` group left for harness_stress_scenarios (task #6121),
+# leaving 16118 = 104 root + 15623 module (36 files) + 391 external (80.6%) and
+# a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%). The tightest
+# live unit is now crates/reify-syntax/tests/harness_syntax.rs at 18957 = 148
+# root + 18739 module + 70 external (94.8%) — the sole member of
+# _KLOC_WARN_KNOWN, ratcheted by Section 5d.
+#
+# Every figure in this paragraph is a LIVE `harness_layout_unit_lines` reading:
+# the pre-split one taken at this branch's base (bf5b91d9de), the rest at the
+# amendment commit. They run ~160 lines above the projections task #6121's plan
+# quoted (19265 / 15951) because that plan measured an earlier base and main
+# has since added a 43rd module file to the dir — the split's ~3.3 kLOC delta is
+# unaffected, only the absolute totals moved.
 
 # ===========================================================================
 # Section 5c: live non-vacuity of the EXTERNAL attribution — the out-of-module-
@@ -1718,6 +2241,135 @@ echo "--- Section 5c: live non-vacuity of the external attribution ---"
 
 assert "5c: at least one live harness attributes an out-of-module-dir include (external_files>0 — the walk is wired on the real tree)" \
     test "$_S5BC_EXTERNAL_WIRED" -eq 1
+
+# ===========================================================================
+# Section 5d: the LIVE WARN-set shrinking ratchet — every unit that currently
+# WARNs must be a member of the checked-in _KLOC_WARN_KNOWN set.
+#
+# This is the GATING half of the advisory WARN tier. The WARN line itself never
+# changes the exit code (see WARN_PCT), so on its own it would be pure log
+# noise that a hurried reader scrolls past. The ratchet is what makes it a
+# signal: SUBSET, not equality, so a unit may LEAVE the warn set freely (it
+# shrank — that is progress and must never turn the gate red) while a unit
+# ARRIVING is RED and must be acknowledged in the same diff that pushes it over
+# the line. Same shape as harness-layout-baseline.manifest's own ratchet, whose
+# semantics a reviewer already knows.
+#
+# An equality pin on `warnings=<n>` was deliberately NOT used: it would go red
+# the moment harness_syntax innocently dropped below 90%, punishing progress.
+# Section 5's live SUMMARY assert therefore tolerates any warn COUNT; WHICH
+# units warn is pinned here.
+#
+# SUBSET-ONLY CUTS BOTH WAYS, so (c) below closes the other direction. Because
+# departure is free and silent, a row whose unit dropped back under the line
+# lingers forever as a permanently-permissive entry — and if that unit later
+# grew back over 90%, (a) would wave it through and the "an ARRIVING unit must
+# be acknowledged" property would be lost for that path with nothing on screen
+# saying so. (a) cannot see it (it only inspects live WARNs) and (b) cannot
+# either (it only compares two counts). (c) makes the stale row VISIBLE without
+# making it FATAL, splitting the two failure modes by severity:
+#   - unit still on disk, no longer WARNs -> ADVISORY `PRUNE:` note. Gating
+#     this would re-introduce exactly the punish-progress red the equality pin
+#     was rejected for, and would land on whoever shrank the unit rather than
+#     on whoever curates this list.
+#   - path not on disk at all             -> GATING. Such a row can never WARN
+#     again, so it is dead rather than stale; and the only diff that can create
+#     one is the diff that renamed or deleted the harness, which is precisely
+#     where the row's removal belongs.
+#
+# All three rules above are implemented by harness_warn_ratchet_violations
+# (defined with the other detectors, pinned must-fire/must-not-fire against
+# hermetic fixtures in Section 4c). This section is the LIVE DRIVER only: it
+# supplies the real inputs and renders the operator-facing remedy prose an
+# ARCHIVED merge-verify log has to be readable from. Nothing that decides a
+# verdict lives below this banner.
+#
+# Reuses Section 5's ALREADY-CAPTURED $_live_out — no second live scan. Same
+# one-scan-feeds-two-sections discipline Sections 5b/5c use, and for the same
+# reason: this guard runs on the merge gate and each live unit measured costs
+# real wall clock in a PRD about cutting merge-gate CPU.
+# ===========================================================================
+echo ""
+echo "--- Section 5d: live WARN-set shrinking ratchet ---"
+
+_s5d_class_rc=0
+_s5d_class="$(harness_warn_ratchet_violations "$_live_out" "$REPO_ROOT" \
+    ${_KLOC_WARN_KNOWN[@]+"${_KLOC_WARN_KNOWN[@]}"})" || _s5d_class_rc=$?
+
+mapfile -t _s5d_unknown < <(_warn_ratchet_rows "$_s5d_class" UNKNOWN)
+mapfile -t _s5d_dead    < <(_warn_ratchet_rows "$_s5d_class" DEAD)
+mapfile -t _s5d_stale   < <(_warn_ratchet_rows "$_s5d_class" STALE)
+_s5d_parsed="$(_warn_ratchet_rows "$_s5d_class" PARSED)"
+_s5d_emitted="$(_warn_ratchet_rows "$_s5d_class" EMITTED)"
+
+# Kept for the verbatim dumps below: an operator needs the WHOLE offending WARN
+# line (lines=/pct=/the five breakdown fields), not just the path the classifier
+# returns.
+_s5d_live_warn_lines="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+
+# On failure, dump the offending WARN lines verbatim using the Section 5 idiom,
+# so an operator reading an ARCHIVED merge-verify log sees the exact unit and
+# its percentage without re-deriving anything by hand.
+if [ "${#_s5d_unknown[@]}" -ne 0 ]; then
+    echo "  ---- Section 5d: live WARN lines NOT in _KLOC_WARN_KNOWN ----"
+    for _s5d_f in "${_s5d_unknown[@]}"; do
+        printf '%s\n' "$_s5d_live_warn_lines" | grep -F -- "file=$REPO_ROOT/$_s5d_f " || true
+    done
+    echo "  REMEDY: split the unit (rule (a)'s prescribed remedy for a"
+    echo "  module_lines-dominated squeeze), or, if it is genuinely tolerated"
+    echo "  for now, add its repo-relative path to _KLOC_WARN_KNOWN IN THIS DIFF."
+    echo "  ---- Section 5d: end offending WARN lines ----"
+fi
+
+assert "5d: every live WARNing unit is a member of the checked-in _KLOC_WARN_KNOWN set (subset ratchet)" \
+    test "${#_s5d_unknown[@]}" -eq 0
+
+# (b) NON-VACUITY: a regression that made the file= extraction return the empty
+# set would silently turn (a) above into a no-op no matter how many units warn.
+# Pin that the parsed count matches the emitted WARN count — including the
+# healthy zero-warn end state, where both are 0 and (a) is vacuous BY FACT, not
+# by parser breakage.
+assert "5d: the WARN file= extraction parsed exactly as many entries as the live scan emitted (non-vacuity)" \
+    test "$_s5d_parsed" -eq "$_s5d_emitted"
+
+# (c) PRUNE DIRECTION: report known rows that did not WARN this run (advisory)
+# and fail on known rows whose file is gone (gating). See the banner above for
+# why the two are split by severity.
+for _s5d_k in ${_s5d_stale[@]+"${_s5d_stale[@]}"}; do
+    echo "  PRUNE: _KLOC_WARN_KNOWN row '$_s5d_k' emitted no WARN this run — it is"
+    echo "  back under ${WARN_PCT}% of CAP_LINES=${CAP_LINES}. ADVISORY, not a failure:"
+    echo "  drop the row next time this file is touched, so the row cannot silently"
+    echo "  re-admit the unit if it grows back over the line."
+done
+if [ "${#_s5d_stale[@]}" -eq 0 ] && [ "${#_s5d_dead[@]}" -eq 0 ]; then
+    echo "  (prune check: all ${#_KLOC_WARN_KNOWN[@]} _KLOC_WARN_KNOWN row(s) still live-WARN — nothing stale)"
+fi
+
+# Same verbatim-dump idiom as (a): an operator reading an ARCHIVED merge-verify
+# log gets the offending rows without re-deriving anything by hand.
+if [ "${#_s5d_dead[@]}" -ne 0 ]; then
+    echo "  ---- Section 5d: DEAD _KLOC_WARN_KNOWN rows (path not on disk) ----"
+    for _s5d_k in "${_s5d_dead[@]}"; do
+        echo "    $_s5d_k"
+    done
+    echo "  REMEDY: the harness was renamed, split or deleted, so this row can"
+    echo "  never fire again. Drop it — or repoint it at the new path if the unit"
+    echo "  merely moved and is still over the line — IN THE SAME DIFF."
+    echo "  ---- Section 5d: end DEAD rows ----"
+fi
+
+assert "5d: every _KLOC_WARN_KNOWN row names a file that still exists on disk (no dead allowlist rows)" \
+    test "${#_s5d_dead[@]}" -eq 0
+
+# WIRING: the classifier's return code must agree with the gating classes it
+# just emitted. The rc RULE is pinned hermetically in Section 4c; this is the
+# live half — it catches a mis-wired `|| _s5d_class_rc=$?` capture silently
+# swallowing a red, which no assert above would notice because they all read the
+# printed classes rather than the status.
+_s5d_expect_rc=0
+{ [ "${#_s5d_unknown[@]}" -eq 0 ] && [ "${#_s5d_dead[@]}" -eq 0 ]; } || _s5d_expect_rc=1
+assert "5d: the live ratchet's return code agrees with the gating classes it emitted" \
+    test "$_s5d_class_rc" -eq "$_s5d_expect_rc"
 
 # ===========================================================================
 # Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root

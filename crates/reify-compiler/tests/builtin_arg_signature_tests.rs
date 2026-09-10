@@ -1015,3 +1015,455 @@ fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
         compiled.diagnostics
     );
 }
+
+// ── Task 5662: mirror / circular_pattern ORIGIN triples, end to end ──────────
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md`, the pattern-origin row
+// task 5652 deferred and this task closes. Same straddle shape as the `revolve`
+// and `rotate_around` rows above: the origin is a point in space (gated), the
+// direction components beside it are dimensionless unit vectors (never gated).
+
+/// SIGNAL — a bare 7-arg `mirror` plane ORIGIN is rejected, naming `ox`/`oy`/`oz`.
+///
+/// Three errors, not six: the plane NORMAL `1, 0, 0` in this same call is a
+/// dimensionless unit vector and must stay silent.
+#[test]
+fn mirror_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "mirror: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "mirror: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "mirror: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the plane ORIGIN is gated — the plane normal must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare 9-arg `circular_pattern` axis ORIGIN is rejected, naming
+/// `ox`/`oy`/`oz`.
+///
+/// Three errors, not seven: the axis DIRECTION `0, 0, 1`, the Int `count` and
+/// the `60deg` angle in this same call must all stay silent. The angle belongs
+/// to `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
+/// decree, so its silence here is a scope boundary, not an oversight.
+#[test]
+fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled =
+        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "circular_pattern: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the axis ORIGIN is gated — the direction, the count and the angle \
+         must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — dimensioned scalar origins on both builtins produce NO
+/// `ArgTypeMismatch`.
+///
+/// A no-error guard that holds both BEFORE and after the slots land (this
+/// file's Case-2/4/5 convention): before, because there is no slot to fire;
+/// after, because the argument is correct. Its job is to prove the new arms
+/// reject the bare form specifically, not the shape of the call.
+#[test]
+fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let m = mirror(b, 0mm, 0mm, 0mm, 1, 0, 0)\n\
+         \x20   let p = circular_pattern(b, 12mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "dimensioned origin components must not trip any slot.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — the task-5745 decoded-VALUE forms produce NO
+/// `ArgTypeMismatch`, because their arities expose no slots at all.
+///
+/// Also a no-error guard holding both before and after — but the one that
+/// matters most, because index 1 EXISTS in both of these calls, holding a
+/// `Plane` / an `Axis`. It is the arity guard on each arm, not the
+/// `compiled_args.get(index)` bounds check, that keeps them quiet; an
+/// arity-agnostic `ox@1 LENGTH` slot would demand a Length of a Plane here, on
+/// correct code.
+#[test]
+fn pattern_value_forms_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let m = mirror(b, plane_xy(0mm))\n\
+         \x20   let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 60deg)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "the decoded-value forms expose no slots, so no ArgTypeMismatch may \
+         fire.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// MEASURED DIVERGENCE — `circular_pattern`'s compile slot names the SURFACE
+/// builtin, while the eval layer names the LOWERED KIND; `mirror` does not
+/// diverge at all.
+///
+/// The twin of `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind`,
+/// and the second instance of that class. `circular_pattern` lowers to
+/// `PatternKind::Circular`, whose `Display` — the eval layer's `kind_label` — is
+/// `"circular"` (`crates/reify-compiler/src/types.rs:1748`), so eval says
+/// `circular:` where this layer says `circular_pattern:`. `PatternKind::Mirror`
+/// displays as `"mirror"` (types.rs:1749), so for `mirror` the two layers agree
+/// byte-for-byte and decision D9's "byte-identical" wording holds unmodified.
+///
+/// Both halves are pinned — the divergence AND its absence — because a reader
+/// who saw only the divergence might "fix" it in the wrong direction, by
+/// teaching the compile layer to report the lowered kind for both.
+#[test]
+fn circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind() {
+    let compiled =
+        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for message in &messages {
+        assert!(
+            message.starts_with("circular_pattern: "),
+            "the compile slot must name the SURFACE call `circular_pattern`, not \
+             the lowered `circular` kind the eval layer reports; got {message:?}"
+        );
+    }
+    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
+
+    // The negative half: `mirror` is NOT an alias, so no prefix divergence.
+    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for message in &messages {
+        assert!(
+            message.starts_with("mirror: "),
+            "`PatternKind::Mirror` displays as \"mirror\", so the compile and eval \
+             layers must agree byte-for-byte here; got {message:?}"
+        );
+    }
+    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
+}
+
+// ── Task 6862: a dimension-kinded generic param at a LENGTH slot ─────────────
+
+/// The task-6862 regression fixture: `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid`
+/// whose body passes `l` straight into two LENGTH compile slots (`circle` arg0
+/// radius, `extrude` arg1 distance), instantiated at `beam(10mm)`.
+const DIM_KINDED_LENGTH_SLOT: &str = include_str!("fixtures/dim_kinded_length_slot.ri");
+
+/// SIGNAL — a dimension-kinded generic fn parameter used at a slotted LENGTH
+/// argument is CORRECT user code and must compile clean.
+///
+/// Both halves are load-bearing:
+///
+/// (i) zero `ArgTypeMismatch` diagnostics — the specific defect. MEASURED on the
+///     base before the fix: two of them, `circle: radius argument expects Length,
+///     got Scalar<Q>; …` and `extrude: distance argument expects Length, got
+///     Scalar<Q>; …`.
+///
+/// (ii) zero Error-severity diagnostics of ANY code — the compile-layer
+///      equivalent of the acceptance criterion's `reify check` exit 0, since that
+///      exit code is derived from Error-severity diagnostics. Without (ii) the
+///      test would pass on a fix that merely renamed the diagnostic code.
+#[test]
+fn dim_kinded_generic_param_at_length_slot_compiles_clean() {
+    let compiled = compile_source_with_stdlib(DIM_KINDED_LENGTH_SLOT);
+
+    let mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "a dimension-kinded generic param at a LENGTH slot is correct user code \
+         (Q binds to LENGTH at `beam(10mm)`) and must emit no ArgTypeMismatch.\n\
+         Got: {:#?}\nAll diagnostics: {:#?}",
+        mismatches,
+        compiled.diagnostics
+    );
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the fixture must compile with NO Error-severity diagnostic — the \
+         compile-layer equivalent of `reify check` exit 0.\nGot: {:#?}",
+        errors
+    );
+}
+
+/// NEGATIVE CONTROL (green before AND after task 6862) — bare `Int` operands at
+/// the very same two slots are still rejected end-to-end.
+///
+/// `extrude(circle(5), 12)` is the fixture's shape with the generic parameter
+/// replaced by bare integers, so it isolates exactly what the defer must NOT
+/// swallow.
+#[test]
+fn bare_int_at_generic_call_site_still_rejected() {
+    let compiled = compile_struct_body("    let s = extrude(circle(5), 12)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "bare Int operands at LENGTH slots must still be rejected.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("got Int")),
+        "at least one rejection must name the bare Int operand: {:#?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Task 6862 (reviewer amendment): where the WRONG dimension is actually caught
+
+/// The fixture with its instantiation swapped to a MASS — `beam(10kg)`, i.e.
+/// `Q = MASS` reaching two LENGTH slots. Derived from the fixture by
+/// substitution rather than copied, so the two cannot drift apart.
+fn dim_kinded_wrong_dimension_source() -> String {
+    let swapped = DIM_KINDED_LENGTH_SLOT.replace("10mm", "10kg");
+    assert_ne!(
+        swapped, DIM_KINDED_LENGTH_SLOT,
+        "the fixture no longer instantiates `beam` at `10mm`, so this control \
+         silently stopped swapping the dimension — re-derive it"
+    );
+    swapped
+}
+
+/// Build `compiled` against a mock kernel and return the build-layer
+/// diagnostics.
+///
+/// The eval-layer LENGTH gate (`geometry_ops::required_length_value`, task
+/// 5743) runs on BUILD, not on `Engine::eval` — `engine_eval` mints symbolic
+/// handles and never reaches the kernel — so `BuildResult.diagnostics` is the
+/// only place its `DimensionedArgRejected` is observable. Same reasoning, same
+/// shape, as `crates/reify-eval/tests/harness_geometry/
+/// primitive_profile_length_units_e2e.rs`'s `build_compiled`.
+fn build_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<reify_core::Diagnostic> {
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        Some(Box::new(
+            reify_test_support::mocks::MockGeometryKernel::new(),
+        )),
+    );
+    engine
+        .build(compiled, reify_ir::ExportFormat::Step)
+        .diagnostics
+}
+
+/// WHAT THE DEFER COSTS, pinned as a MEASUREMENT rather than left unstated.
+///
+/// The `ScalarParam` defer added by task 6862 is a gradualism trade, and this
+/// is the side of the trade that is easy to misread. A generic fn body is
+/// compiled ONCE, generically — which is exactly why the false positive the
+/// task fixed existed — and NOTHING re-checks that body per instantiation; the
+/// call-site unify arm accepts `ScalarParam(Q)` against any `Scalar { .. }`.
+/// So instantiating the fixture's `beam` at a MASS produces NO compile Error at
+/// all.
+///
+/// This test exists so that a future reader cannot widen the defer believing an
+/// instantiation-time recheck backstops it. It does not: this hole is the cost,
+/// and its sibling `wrong_dimension_written_inline_is_rejected_at_both_layers`
+/// records what the cost does NOT extend to.
+///
+/// NOR DOES THE EVAL LAYER BACKSTOP IT for this shape, and the reason is
+/// structural rather than a gap in that gate. `is_geometry_let`
+/// (`reify-compiler/src/geometry.rs`, the `FunctionCall` arm) requires
+/// `!functions.iter().any(|f| f.name == *name)` — a USER-DEFINED function name
+/// is excluded from geometry-let classification by construction. So
+/// `let s = beam(10mm)` lowers to NO `RealizationDecl` (MEASURED: zero
+/// realizations, against one holding two ops for the same body written inline),
+/// and `geometry_ops::required_length_value` never runs on it. Do not read this
+/// test as evidence that the eval-layer gate is broken; it is never reached.
+///
+/// If this test ever turns RED because a diagnostic APPEARED, that is good news
+/// — some later leaf started checking instantiations. Delete the test and say
+/// so; do not re-pin the silence.
+///
+/// # Scoped to the DIMENSION-rejection family, not to Error-severity at large
+///
+/// The filter names [`DiagnosticCode::ArgTypeMismatch`] and
+/// [`DiagnosticCode::DimensionedArgRejected`] — the two codes that carry a
+/// wrong-dimension rejection at the compile and eval layers respectively — and
+/// not "any Error". An unrelated future Error on this fixture (a new stdlib
+/// check, a name-resolution rule, a change to `Solid` return typing) would
+/// otherwise turn this RED under a message that asserts a specific wrong cause,
+/// sending the next reader to the `ScalarParam` arm for a defect that is not
+/// there. The sibling SIGNAL test
+/// [`dim_kinded_generic_param_at_length_slot_compiles_clean`] keeps the broad
+/// Error sweep, because there exit-0 equivalence IS the assertion.
+///
+/// The narrowing costs a vacuity risk — a fixture that stopped compiling at all
+/// would emit no dimension diagnostic either — so the shape under test is
+/// anchored first: `beam` must still be compiled with a dim-kinded
+/// (`Type::ScalarParam`) parameter, which is the only way its body can reach a
+/// LENGTH slot with the type this defer is about.
+#[test]
+fn wrong_dimension_through_a_dim_kinded_generic_is_undiagnosed_at_compile() {
+    let compiled = compile_source_with_stdlib(&dim_kinded_wrong_dimension_source());
+
+    let beam = compiled
+        .functions
+        .iter()
+        .find(|f| f.name == "beam")
+        .unwrap_or_else(|| {
+            panic!(
+                "the fixture's `beam` is not in the compiled module, so the silence \
+                 asserted below would be vacuous — it would hold of a module that \
+                 never compiled the generic body at all.\nAll diagnostics: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert!(
+        beam.params
+            .iter()
+            .any(|(_, ty)| matches!(ty, reify_core::Type::ScalarParam(_))),
+        "`beam` must still take a DIM-KINDED parameter (`Scalar<Q>` → \
+         `Type::ScalarParam`) — that type at a LENGTH slot is the whole subject \
+         of this pin. Got: {:?}",
+        beam.params
+    );
+
+    let dimension_rejections: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && matches!(
+                    d.code,
+                    Some(DiagnosticCode::ArgTypeMismatch)
+                        | Some(DiagnosticCode::DimensionedArgRejected)
+                )
+        })
+        .collect();
+    assert!(
+        dimension_rejections.is_empty(),
+        "MEASURED (task 6862 reviewer amendment): `beam(10kg)` through a \
+         dim-kinded generic emits no wrong-dimension Error — the deliberate cost \
+         of the ScalarParam defer. A rejection appearing here means instantiations \
+         are now checked; update the arm's comment in `builtin_signatures.rs` and \
+         this test together.\nGot: {dimension_rejections:#?}"
+    );
+}
+
+/// WHERE THE WRONG DIMENSION IS STILL CAUGHT, half 1 — written INLINE it is
+/// rejected at BOTH layers, so the defer is narrow rather than a blanket hole.
+///
+/// `extrude(circle(10kg), 10kg)` is the fixture's body with the generic
+/// parameter substituted away. Both halves are load-bearing and MEASURED:
+///
+/// (i)  compile layer — two `ArgTypeMismatch` Errors, `circle: radius …` and
+///      `extrude: distance …`, both naming `Scalar[kg]`. This is the same
+///      `Type::Scalar { dimension }` arm the unit test
+///      `wrong_dimension_scalar_at_length_slot_still_rejected` covers, seen
+///      end-to-end.
+///
+/// (ii) eval layer — a `DimensionedArgRejected` Error at BUILD, and the op is
+///      DROPPED. This is the "COMPLEMENTS, never replaces" relationship the
+///      module doc of `builtin_signatures.rs` describes, made observable.
+#[test]
+fn wrong_dimension_written_inline_is_rejected_at_both_layers() {
+    let compiled = compile_source_with_stdlib(
+        "module inline_wrong_dimension\n\
+         \n\
+         structure def InlineWrongDimension {\n\
+         \x20   let s = extrude(circle(10kg), 10kg)\n\
+         }\n",
+    );
+
+    let compile_errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        compile_errors.len(),
+        2,
+        "both LENGTH slots carry a CONCRETE wrong dimension, so both must be \
+         rejected at compile.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        compile_errors
+            .iter()
+            .all(|d| d.message.contains("Scalar[kg]")),
+        "each rejection must name the offending MASS scalar: {:#?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let build_errors = build_diagnostics(&compiled);
+    assert!(
+        build_errors.iter().any(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        }),
+        "the eval-layer LENGTH gate must reject it too, under its OWN code — \
+         that is what keeps the two layers independently observable (task \
+         5743 / 5750).\nBuild diagnostics: {build_errors:#?}"
+    );
+}
+
+/// WHERE THE WRONG DIMENSION IS STILL CAUGHT, half 2 — through a NON-generic
+/// fn, overload resolution rejects it at the call site.
+///
+/// This is what localises the hole pinned above: it is specific to a
+/// DIM-KINDED generic parameter, whose whole point is that its dimension is
+/// open. Give the same fn a concrete `Length` parameter and the call site is
+/// checked normally.
+#[test]
+fn wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site() {
+    let compiled = compile_source_with_stdlib(
+        "module non_generic_wrong_dimension\n\
+         \n\
+         fn beam(l: Length) -> Solid { extrude(circle(l), l) }\n\
+         \n\
+         structure def NonGenericWrongDimension {\n\
+         \x20   let s = beam(10kg)\n\
+         }\n",
+    );
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a MASS passed to a concrete `Length` parameter must still be rejected \
+         at the call site — the task-6862 defer is scoped to dim-kinded \
+         generics and must not have widened to concrete signatures.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("beam")),
+        "the rejection must name the call it rejected: {:#?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

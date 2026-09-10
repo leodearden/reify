@@ -12,7 +12,7 @@
 //! spelling against a rotational stiffness/damping declaration and require an
 //! Error, pinning that the two quantities occupy distinct DimensionVectors.
 
-mod common;
+use crate::common;
 
 use reify_core::{DimensionVector, Severity};
 

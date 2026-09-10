@@ -48,6 +48,8 @@ mod analytic_datum_tests;
 mod apply_transform_integration;
 #[path = "harness_occt/boolean_op_history_integration.rs"]
 mod boolean_op_history_integration;
+#[path = "harness_occt/boolean_result_normalization_integration.rs"]
+mod boolean_result_normalization_integration;
 #[path = "harness_occt/chamfer_with_history_integration.rs"]
 mod chamfer_with_history_integration;
 #[path = "harness_occt/closest_point_on_shape_integration.rs"]

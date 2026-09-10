@@ -34,22 +34,41 @@
 #
 # NOTE: The EMITTED GATE SCRIPTS are likewise NOT listed here (task 6320).
 # Any repo-relative *.sh path invoked by an add() / add_tool() plan line in
-# verify.sh — scripts/check-manifold-deps.sh,
-# scripts/check-infra-classification-manifest.sh,
-# scripts/check-harness-baseline-registration.sh,
-# scripts/tree-sitter-generate.sh, scripts/ensure-gui-sidecar-placeholder.sh,
-# scripts/check_event_inventory.sh, scripts/test_pm_standardization.sh,
-# tests/sync_comments_test.sh, and the two below — is auto-derived live by
-# scripts/verify-pipeline-guard.sh's emitted-gate clause, exactly as the
-# sourced libs are by its source-line clause. The clause is NOT scripts/-only:
-# it derives any directory-qualified *.sh, which is what covers
-# tests/sync_comments_test.sh (grep `sync_comments_test.sh` in
-# scripts/verify.sh). A NEW lint/gate script wired into the plan therefore
-# needs NO row here: do not add one. This is the self-healing property the
-# per-script alternative lacks — task 6243's hand-registration approach
-# covered 2 of the 10 emitted gates, its follow-up ticket named 6 more, and
-# two others (scripts/test_pm_standardization.sh, tests/sync_comments_test.sh)
-# were in neither list.
+# verify.sh is auto-derived live by scripts/verify-pipeline-guard.sh's
+# emitted-gate clause, exactly as the sourced libs are by its source-line
+# clause. The clause is NOT scripts/-only: it derives any directory-qualified
+# *.sh, which is what covers tests/sync_comments_test.sh (grep
+# `sync_comments_test.sh` in scripts/verify.sh). A NEW lint/gate script wired
+# into the plan therefore needs NO row here: do not add one. This is the
+# self-healing property the per-script alternative lacks — task 6243's
+# hand-registration approach covered 2 of the 10 gates emitted AT THAT TIME,
+# its follow-up ticket named 6 more, and two others
+# (scripts/test_pm_standardization.sh, tests/sync_comments_test.sh) were in
+# neither list.
+#
+#   FOR THE CURRENT SET, ASK THE ORACLE — do not read a list here:
+#
+#       bash scripts/verify-pipeline-guard.sh --list-plan-derived
+#
+#   This note used to enumerate the emitted gates by name, and that enumeration
+#   went stale exactly the way a hand-maintained list does: it never gained
+#   scripts/tree-sitter-freshness.sh, which became a plan leaf with task #5629.
+#   Naming them here bought nothing the oracle does not answer live, while
+#   quietly reintroducing the drift surface this whole clause exists to remove.
+#   Replaced with the query by task 6296; please do not re-expand it.
+#
+# TASK 6296 DISPOSITION — why scripts/tree-sitter-generate.sh and
+# scripts/tree-sitter-freshness.sh have NO rows, and must not be given any.
+# Both were reported (2026-08-17) as wrongly fast-path eligible, with the
+# suggested fix being manifest rows here. That report predates clauses 4a/4b:
+# re-measured at HEAD 709f753673, `requires-full-gate` returns EXIT 0 for BOTH,
+# auto-derived, with no row. Adding rows now would fight the design this
+# header's own "do not add one" sentence states. What keeps that honest is no
+# longer prose: the anti-drift COMPLETENESS SWEEP in
+# tests/infra/test_verify_pipeline_guard.sh Pair E (a-bis) asserts SET EQUALITY
+# between verify.sh's live plan leaves and a checked-in ground truth, so the
+# next leaf that lands without coverage reds by name instead of going unnoticed
+# for a release.
 #
 #   ONE QUALIFICATION on "do not add one" — MUCH NARROWER SINCE TASK 6426, so
 #   do not add a row on the strength of the old advice. Auto-derivation is now a
