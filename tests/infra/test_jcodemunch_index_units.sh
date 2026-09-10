@@ -577,14 +577,19 @@ assert "E-DOC4: activation doc names the forced lever JCODEMUNCH_GIT_ROOT_IDENTI
 # never updated and went on claiming exit 125 until μ (#6117) corrected it.
 #
 # Only the PRESENCE half is asserted here, deliberately. The absence half — that
-# the row no longer carries the superseded "degrades to exit 125 when serve is
-# down" claim — would be a grep over an ENGLISH SENTENCE, and any paraphrase of
-# the same false claim ("exits 125 when the serve is unreachable", or merely
-# adding an article) leaves such an assertion green while the defect it exists to
-# catch is fully present. It would buy coverage it cannot deliver, and a broader
-# prose regex is the same defect over more surface area, since the space of false
-# paraphrases is unbounded. The capability manifest separately RECORDS that
-# absence as `stale-degradation-contract-removed`
+# the row no longer carries its superseded claim, that the jcodemunch-backed
+# detectors hard-exit 125 whenever the serve is unreachable — would be a grep over
+# an ENGLISH SENTENCE, and any paraphrase of that same false claim leaves such an
+# assertion green while the defect it exists to catch is fully present. It would
+# buy coverage it cannot deliver, and a broader prose regex is the same defect
+# over more surface area, since the space of false paraphrases is unbounded. The
+# superseded sentence is DESCRIBED above and deliberately never spelled: a check's
+# own text is raw content like any other, so spelling a banned literal here would
+# make this file the occurrence that defeats a later broadened absence scan
+# (docs/legibility/confusion-codebook.yaml:13890).
+#
+# The capability manifest separately RECORDS that absence as
+# `stale-degradation-contract-removed`
 # (docs/prds/jcodemunch-substrate-restoration.capability-manifest.yaml). Do not
 # assume that record is what gates the tree: nothing IN THIS REPO executes
 # `delivered_check` entries — scripts/prd-capability-check.py consumes
