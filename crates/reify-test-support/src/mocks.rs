@@ -3872,35 +3872,41 @@ mod tests {
         // both directions go through `density_bits`, so ±0.0 share one key.
         let id = GeometryHandleId(1);
 
+        // The seeded payloads are matched exactly: a `query` that MISSES the
+        // seeded key still errors, via the generic fallback
+        // (`no mock result for ...`), so `.is_err()` alone would pass whether
+        // or not ±0.0 canonicalize to one key.
         let kernel = MockGeometryKernel::new().with_inertia_tensor_error(
             id,
             -0.0_f64,
             QueryError::QueryFailed("seeded at -0.0".to_string()),
         );
-        assert!(
-            kernel
-                .query(&GeometryQuery::InertiaTensor {
-                    handle: id,
-                    density: 0.0_f64,
-                })
-                .is_err(),
-            "insert -0.0 / query +0.0 should hit the same key"
-        );
+        let err = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 0.0_f64,
+            })
+            .expect_err("insert -0.0 / query +0.0 should hit the same key");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(msg, "seeded at -0.0"),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
 
         let kernel = MockGeometryKernel::new().with_inertia_tensor_error(
             id,
             0.0_f64,
             QueryError::QueryFailed("seeded at +0.0".to_string()),
         );
-        assert!(
-            kernel
-                .query(&GeometryQuery::InertiaTensor {
-                    handle: id,
-                    density: -0.0_f64,
-                })
-                .is_err(),
-            "insert +0.0 / query -0.0 should hit the same key"
-        );
+        let err = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: -0.0_f64,
+            })
+            .expect_err("insert +0.0 / query -0.0 should hit the same key");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(msg, "seeded at +0.0"),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
     }
 
     // step-15: integration test — multi-op workflow with queries + inspection
