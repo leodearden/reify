@@ -87,6 +87,77 @@ fn circle_profile(kernel: &mut OcctKernel, radius: f64) -> GeometryHandleId {
         .id
 }
 
+/// A closed circular WIRE (not a face) — what the loft entry points require,
+/// since both downcast every profile with `TopoDS::Wire`.
+fn circle_wire(kernel: &mut OcctKernel, radius: f64, z: f64) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::Arc {
+            center: [0.0, 0.0, z],
+            radius,
+            start_angle: 0.0,
+            end_angle: 2.0 * std::f64::consts::PI,
+            axis: [0.0, 0.0, 1.0],
+        })
+        .expect("Arc (full circle) creation should succeed")
+        .id
+}
+
+/// A rectangular face profile in the XY plane, translated `cy` along Y.
+///
+/// The companion revolve turns about the X AXIS, which LIES IN that plane, so
+/// the sweep encloses a real ring. Revolving the same profile about Z would be
+/// degenerate — the profile plane is perpendicular to Z, so the sweep never
+/// leaves it and encloses no volume (measured: 0.0).
+fn offset_rect_profile(kernel: &mut OcctKernel, cy: f64) -> GeometryHandleId {
+    let rect = kernel
+        .execute(&GeometryOp::RectangleProfile {
+            width: Value::Real(0.005),
+            height: Value::Real(0.010),
+        })
+        .expect("RectangleProfile creation should succeed")
+        .id;
+    kernel
+        .execute(&GeometryOp::Translate {
+            target: rect,
+            dx: 0.0,
+            dy: cy,
+            dz: 0.0,
+        })
+        .expect("translate should succeed")
+        .id
+}
+
+/// A straight line-segment path along +Z, the spine both sweep entry points
+/// downcast with `TopoDS::Wire`.
+fn straight_path(kernel: &mut OcctKernel, length: f64) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::LineSegment {
+            x1: 0.0,
+            y1: 0.0,
+            z1: 0.0,
+            x2: 0.0,
+            y2: 0.0,
+            z2: length,
+        })
+        .expect("LineSegment (path) creation should succeed")
+        .id
+}
+
+/// A guide wire offset from the spine, for the guided sweep/loft variants.
+fn offset_guide(kernel: &mut OcctKernel, dx: f64, length: f64) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::LineSegment {
+            x1: dx,
+            y1: 0.0,
+            z1: 0.0,
+            x2: dx,
+            y2: 0.0,
+            z2: length,
+        })
+        .expect("LineSegment (guide) creation should succeed")
+        .id
+}
+
 fn volume_of(kernel: &OcctKernel, id: GeometryHandleId) -> f64 {
     match kernel.query(&GeometryQuery::Volume(id)) {
         Ok(Value::Real(v)) => v,
@@ -133,6 +204,29 @@ fn assert_empty_input_rejected<T>(result: Result<T, GeometryError>, role_word: &
     }
 }
 
+/// Assert `result` is an `Err` whose message mentions at least one of `words`.
+///
+/// Used by the CHARACTERIZATION PINS below, which record behaviour that already
+/// exists rather than behaviour this task adds. Matching is deliberately weak:
+/// the point is that the op refuses an empty profile at all, not that it
+/// refuses it with any particular wording.
+fn assert_rejected_mentioning_any<T: std::fmt::Debug>(
+    result: Result<T, GeometryError>,
+    words: &[&str],
+    what: &str,
+) {
+    match result {
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                words.iter().any(|w| msg.contains(w)),
+                "{what}: expected a rejection mentioning one of {words:?}, got: {msg}"
+            );
+        }
+        Ok(handle) => panic!("{what}: expected a rejection, got Ok({handle:?})"),
+    }
+}
+
 // --- Extrude: an empty profile cannot be solidified ---
 
 /// The direct `OcctKernel::execute` path, which reaches `make_prism`
@@ -176,6 +270,125 @@ fn execute_extrude_infinite_of_an_empty_profile_is_rejected() {
         both: false,
     });
     assert_empty_input_rejected(result, "profile");
+}
+
+// --- Revolve / sweep / loft: the rest of the profile-solidifying family ---
+
+#[test]
+fn execute_revolve_of_an_empty_profile_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+
+    let result = kernel.execute(&GeometryOp::Revolve {
+        profile: empty,
+        axis_origin: [0.0, 0.0, 0.0],
+        axis_dir: [0.0, 0.0, 1.0],
+        angle_rad: std::f64::consts::PI,
+    });
+    assert_empty_input_rejected(result, "profile");
+}
+
+#[test]
+fn revolve_with_history_of_an_empty_profile_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+
+    let result = kernel.revolve_with_history(
+        empty,
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        std::f64::consts::PI,
+    );
+    assert_empty_input_rejected(result, "profile");
+}
+
+/// NOTE on what this does and does not cover: `make_pipe` downcasts its SPINE
+/// with a bare `TopoDS::Wire(spine.shape)`, so an empty SPINE already dies as an
+/// OCCT `Standard_TypeMismatch` with an unhelpful message. It is the empty
+/// PROFILE that is genuinely silent today, and that is what these two pin.
+#[test]
+fn execute_sweep_of_an_empty_profile_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+    let path = straight_path(&mut kernel, 0.100);
+
+    let result = kernel.execute(&GeometryOp::Sweep {
+        profile: empty,
+        path,
+    });
+    assert_empty_input_rejected(result, "profile");
+}
+
+#[test]
+fn sweep_with_history_of_an_empty_profile_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+    let path = straight_path(&mut kernel, 0.100);
+
+    let result = kernel.sweep_with_history(empty, path);
+    assert_empty_input_rejected(result, "profile");
+}
+
+/// The OTHER profile is deliberately non-empty so the pre-existing
+/// "requires at least 2 profiles" count check is not what fires.
+#[test]
+fn execute_loft_of_an_empty_profile_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+    let real = circle_wire(&mut kernel, 0.020, 0.050);
+
+    let result = kernel.execute(&GeometryOp::Loft {
+        profiles: vec![empty, real],
+    });
+    assert_empty_input_rejected(result, "profile");
+}
+
+#[test]
+fn loft_with_history_of_an_empty_profile_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+    let real = circle_wire(&mut kernel, 0.020, 0.050);
+
+    let result = kernel.loft_with_history(&[empty, real]);
+    assert_empty_input_rejected(result, "profile");
+}
+
+// --- CHARACTERIZATION PINS: two guided variants are ALREADY covered ---
+//
+// These record EXISTING behaviour, not behaviour this task adds. Both guided
+// entry points route their profile through `section_profile_to_wire`, whose
+// default arm rejects an empty compound as "unsupported profile shape type
+// 'Compound'". Step-6 deliberately adds NO guard at either site — a second
+// guard there would be a duplicated invariant — so these pins are what stop a
+// later refactor from dropping the coverage silently.
+
+#[test]
+fn sweep_guided_of_an_empty_profile_is_already_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+    let path = straight_path(&mut kernel, 0.100);
+    let guide = offset_guide(&mut kernel, 0.020, 0.100);
+
+    let result = kernel.execute(&GeometryOp::SweepGuided {
+        profile: empty,
+        path,
+        guide,
+    });
+    assert_rejected_mentioning_any(result, &["Compound", "profile"], "guided sweep");
+}
+
+#[test]
+fn loft_guided_of_an_empty_profile_is_already_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+    let real = circle_wire(&mut kernel, 0.020, 0.050);
+    let guide = straight_path(&mut kernel, 0.100);
+
+    let result = kernel.execute(&GeometryOp::LoftGuided {
+        profiles: vec![empty, real],
+        guides: vec![guide],
+    });
+    assert_rejected_mentioning_any(result, &["Compound", "profile"], "guided loft");
 }
 
 // --- OVER-FIRE CONTROLS ---
@@ -241,4 +454,59 @@ fn execute_union_of_disjoint_boxes_still_succeeds() {
         .execute(&GeometryOp::Union { left, right })
         .expect("union of disjoint solids must succeed");
     assert_volume_near(&kernel, handle.id, 2000.0, "union of disjoint solids");
+}
+
+/// A real rect profile offset from the axis revolves into a positive-volume
+/// ring. Fixture shape mirrors `harness_occt::revolve_with_history_integration`.
+#[test]
+fn execute_revolve_of_a_real_profile_still_succeeds() {
+    let mut kernel = OcctKernel::new();
+    let profile = offset_rect_profile(&mut kernel, 0.0175);
+
+    let handle = kernel
+        .execute(&GeometryOp::Revolve {
+            profile,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [1.0, 0.0, 0.0],
+            angle_rad: std::f64::consts::PI,
+        })
+        .expect("revolving a real profile must succeed");
+    assert!(
+        volume_of(&kernel, handle.id) > 0.0,
+        "a real 180-degree revolve must enclose positive volume"
+    );
+}
+
+/// A real disk face swept along a straight spine is a positive-volume cylinder.
+#[test]
+fn execute_sweep_of_a_real_profile_still_succeeds() {
+    let mut kernel = OcctKernel::new();
+    let profile = circle_profile(&mut kernel, 0.005);
+    let path = straight_path(&mut kernel, 0.100);
+
+    let handle = kernel
+        .execute(&GeometryOp::Sweep { profile, path })
+        .expect("sweeping a real face must succeed");
+    assert!(
+        volume_of(&kernel, handle.id) > 0.0,
+        "a real sweep must enclose positive volume"
+    );
+}
+
+/// Two real circular WIRES loft into a positive-volume solid.
+#[test]
+fn execute_loft_of_real_profiles_still_succeeds() {
+    let mut kernel = OcctKernel::new();
+    let bottom = circle_wire(&mut kernel, 0.020, 0.0);
+    let top = circle_wire(&mut kernel, 0.010, 0.050);
+
+    let handle = kernel
+        .execute(&GeometryOp::Loft {
+            profiles: vec![bottom, top],
+        })
+        .expect("lofting two real wires must succeed");
+    assert!(
+        volume_of(&kernel, handle.id) > 0.0,
+        "a real loft must enclose positive volume"
+    );
 }
