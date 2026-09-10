@@ -370,13 +370,25 @@ WARN_PCT=90
 # above was rejected — a cite that resolves to a live task is the fix for that,
 # not an omission.
 #
+# harness_cli.rs is the second arrival, added by task #6162 and cited to #7365
+# on the same terms. Its remedy is likewise rule (a)'s split, not a cap bump.
+# The arrival is NOT #6162's doing on its own: bare main measured 17908 for
+# this unit (root 188 + module 17399 across 82 files + external 321), only 92
+# lines under the 18000 warn line, so reify-cli crossed on the next
+# test-bearing commit whichever one it turned out to be. #6162 contributed 434
+# of those lines (harness_cli/cli_lsp_protocol.rs) and so is the diff that
+# acknowledges the row, per the ARRIVING rule above.
+#
 # Kept in-script rather than in a new manifest file because this guard already
 # carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
 # shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
 # needed. Enforced as a SUBSET in Section 5d, which also reports the prune
 # direction the subset check is blind to: an advisory `PRUNE:` note for a row
 # that stopped WARNing, and a RED for a row whose file is no longer on disk.
-_KLOC_WARN_KNOWN=( "crates/reify-syntax/tests/harness_syntax.rs" )
+_KLOC_WARN_KNOWN=(
+    "crates/reify-syntax/tests/harness_syntax.rs"
+    "crates/reify-cli/tests/harness_cli.rs"
+)
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
