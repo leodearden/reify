@@ -79,9 +79,11 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   eval/build entry files self-contained.
 - **Interference/clearance oracle exists — run it before shipping an assembly**:
   `intersects(a, b)`/`distance(a, b)` on let-bound geometry (low ceremony), or
-  `mechanism`/`snapshot`/`min_clearance` (assembly-grade). Eval/build only — `reify check`
-  reports these INDETERMINATE, which is expected. → `clearance_oracle.ri`; assembly-grade
-  worked example: `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
+  `mechanism`/`snapshot`/`min_clearance` (assembly-grade). `reify check` realizes geometry,
+  so it answers BOTH forms — gate clearance under it. Only a kernel-less surface (an
+  OCCT-less build, or an in-process `Engine::new(.., None)`) reports them INDETERMINATE.
+  → `clearance_oracle.ri`; assembly-grade worked example:
+  `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
 - **Discrete choices**: until CP-SAT is wired, `param s : Real = auto(free)` +
   `constraint s*s == 1` (s = ±1). Note `auto` is a binding *value* — `auto s : Real` is a
   parse error — and strict `auto` goes `undef` here because two roots defeat the uniqueness

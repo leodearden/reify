@@ -372,10 +372,17 @@ FORM A's posed and swept forms are pinned by
 Every one of these is a **silent wrong answer**, not an error — read them before writing a clearance
 gate.
 
-1. **Eval/build only.** `reify check` reports these constraints `INDETERMINATE` and still **exits
-   0** ("No constraints violated (1 indeterminate)"); only `--strict` flips that. A clearance gate
-   must run under `reify build` or `reify eval`. Never "fix" an indeterminate clearance constraint by
-   deleting it. Note the asymmetry: `intersects`/`distance` at least emit an explanatory
+1. **Needs a realized kernel — which `reify check` now attaches.** Since task 5748 (landed
+   2026-08-28) `cmd_check` realizes geometry for any module that carries some, so on an OCCT build
+   BOTH forms get a real verdict under `reify check`: `clearance_oracle.ri` reports `OK` for its
+   `intersects`/`distance` constraints, and `vc_bolt_pattern_clearance.ri` reports `OK` for its
+   `min_clearance` one (flip either to an impossible bound and check reports `VIOLATED`). Gate
+   clearance under `reify check`.
+   Where you still get `INDETERMINATE` — and it is a graceful degradation, never a false verdict:
+   a build without OCCT, and any kernel-less in-process engine (`Engine::new(.., None)`). Both still
+   **exit 0** ("No constraints violated (1 indeterminate)"); only `--strict` flips that, so never
+   gate on check's exit status alone. Never "fix" an indeterminate clearance constraint by deleting
+   it. Note the asymmetry when it does go indeterminate: `intersects`/`distance` emit an explanatory
    "geometry-consumer builtins require a realized geometry kernel" diagnostic, but the FORM A trio is
    not on that allow-list and goes Indeterminate with **no explanatory diagnostic at all**.
 2. **Let-bind twice.** Both the query CALL *and* its geometry/snapshot ARGUMENTS must be let-bound.
@@ -523,10 +530,12 @@ structure def MeasuredBracket {
 
 Every one of these fifteen names has live eval dispatch. There is **no** "compile-time typed but
 never evaluated" subset in this family. What there is, is a resolution *stage*: these are
-kernel-bearing consumers, resolved during `reify build` against a realized handle. Under
-kernel-less `reify eval` / `reify check` they stay `Value::Undef`, and a constraint over one reads
-`INDETERMINATE` while the process still exits 0 (`--strict` flips that). This is the same stage
-split the interference/clearance section documents at length.
+kernel-bearing consumers, resolved against a realized handle. `reify build`, `reify eval` and
+`reify check` all realize geometry for a module that carries some, so all three resolve them. On a
+**kernel-less** surface — a build without OCCT, or an in-process `Engine::new(.., None)` — they stay
+`Value::Undef` instead, and a constraint over one reads `INDETERMINATE` while the process still
+exits 0 (`--strict` flips that). This is the same stage split the interference/clearance section
+documents at length.
 
 Three things make a query silently `undef` even under `reify build`, and all three are worth knowing
 before you debug the number:

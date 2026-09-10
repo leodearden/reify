@@ -37,10 +37,12 @@ const CLEARANCE_ORACLE_PATH: &str = concat!(
 /// `audit_file` (iterating only over reported constraints) has no notion of.
 const EXPECTED_CONSTRAINT_COUNT: usize = 5;
 
-/// Compiles `clearance_oracle.ri` and runs the PURE check surface over it —
-/// kernel-less `Engine::check`, exactly what `reify check` runs, constructed
-/// via the shared `reify_test_support::make_simple_engine()` so this surface
-/// and the corpus gate's are the same engine by construction. Returns the
+/// Compiles `clearance_oracle.ri` and runs the KERNEL-LESS check surface over
+/// it — `Engine::check` with `kernel: None`, constructed via the shared
+/// `reify_test_support::make_simple_engine()` so this surface and the corpus
+/// gate's are the same engine by construction. NOT what the `reify check` CLI
+/// runs: since task 5748 (2026-08-28) `cmd_check` attaches a kernel for a
+/// geometry-bearing module and resolves these two constraints. Returns the
 /// whole `CheckResult` so a caller can read diagnostics and constraint results
 /// off ONE compile+check instead of re-deriving each separately.
 ///
@@ -121,8 +123,8 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
     // gap = 10mm) is enormous, so 1µm is ample without being version-fragile.
     assert_length_cell(&result, "ClearanceOracle", "gap", 0.01, 1e-6);
 
-    // Pin the fixture's own documented `reify check` behaviour (its
-    // "EVAL/BUILD ONLY" header section): `constraint not fouls` and
+    // Pin the fixture's own documented kernel-less behaviour (its "NEEDS A
+    // REALIZED KERNEL" header section): `constraint not fouls` and
     // `constraint gap > min_gap` are `Indeterminate` under `check()` alone
     // but must resolve on the build() surface once the geometry-consumer
     // builtins they depend on (`intersects`/`distance`) are realized (the
@@ -196,8 +198,8 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
 }
 
 /// Companion to `clearance_oracle_evals_expected_fouls_and_gap`: pins the
-/// OTHER half of the fixture header's "EVAL/BUILD ONLY" contract — the pure
-/// check/eval surface (kernel-less `Engine`), where `intersects`/`distance`
+/// OTHER half of the fixture header's "NEEDS A REALIZED KERNEL" contract — the
+/// kernel-less `Engine` surface, where `intersects`/`distance`
 /// are geometry-consumer builtins that CANNOT resolve. Runs unconditionally
 /// on every runner (no OCCT needed), so it also raises the value of the
 /// otherwise-unconditional half of the sibling test.
