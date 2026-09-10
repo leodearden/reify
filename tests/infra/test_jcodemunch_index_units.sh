@@ -470,14 +470,23 @@ assert "D6: missing source is reported even with no bus (pre-flight precedes fai
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block E — repo-side retirement invariants for the old serve unit (task η)
+# Block E — serve-unit retirement invariants (task η) AND the operator-doc
+#           record-correction invariants that followed it (task 6117, μ)
 #
-# SCOPE, deliberately narrow: deploy/ + scripts/ + .jcodemunch.jsonc, NOT
-# repo-wide. docs/architecture-audit/jcodemunch-serve-activation.md and
-# .claude/skills/audit/** still describe the serve unit as live; correcting that
-# runbook is task 6117 (μ)'s, per the capability manifest's
-# runbook-edit-belongs-to-μ resolution. A repo-wide assertion here would
-# false-RED this task on μ's still-pending edits.
+# SCOPE: two layers. The deploy/scripts layer (E1-E5b, η) and the operator-facing
+# doc layer (E-DOC*, E-SKILL*, E-CLI*, E-MODES*, μ). Every doc-layer assertion
+# names its file EXPLICITLY in the `git grep … -- <path>` pathspec; none of them
+# is repo-wide, and that is load-bearing for two independent reasons:
+#
+#   (a) scripts/smoke-jcodemunch-serve.sh and scripts/with-jcodemunch-serve.sh
+#       legitimately carry `jcodemunch-serve` in their own basenames and bodies,
+#       so a repo-wide absence grep for that token false-REDs a healthy tree.
+#       E3 already carves them out by name for exactly this reason.
+#   (b) docs/legibility/confusion-codebook.yaml:13890 — an absence-check test
+#       that itself carries the forbidden token becomes the only remaining source
+#       occurrence, and so self-defeats a manifest `expect: absent` grep the
+#       moment that grep is broadened. THIS FILE carries every token banned
+#       below, so it must never fall inside any absence assertion's path set.
 #
 # Assertions run over TRACKED files via `git grep`, so a stray build artifact or
 # an untracked scratch file can neither mask nor manufacture a violation.
@@ -529,6 +538,141 @@ assert "E5: smoke script still references jcodemunch-watcher.service (retirement
 
 assert "E5b: no tracked file under deploy/ references jcodemunch-watcher" \
     bash -c '! git -C "$1" grep -q "jcodemunch-watcher" -- deploy/' _ "$REPO_ROOT"
+
+
+echo ""
+echo "--- Block E (doc layer): operator-record truth invariants (μ) ---"
+
+# E-DOC1..E-DOC4 pin docs/architecture-audit/jcodemunch-serve-activation.md to the
+# substrate that actually landed. The pair is deliberately absence + PRESENCE:
+# an absence-only pair would go green if the whole section were simply deleted,
+# and μ's charter is to CORRECT the record, not to erase it.
+
+# E-DOC1: the runbook must not assert the retired persistent unit is live.
+assert "E-DOC1: activation doc does not name jcodemunch-serve.service" \
+    bash -c '! git -C "$1" grep -qE "jcodemunch-serve\.service" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
+
+# E-DOC2: pattern and path are byte-identical to the capability manifest's
+# `nonexistent-db-claim-removed` delivered_check, so the in-repo gate and the
+# PRD gate cannot drift apart. It bans the DB *filename* only — naming the
+# retired IDENTITY `leodearden/reify` in prose is what the 2026-08-17 premise
+# correction requires, so no assertion here forbids it.
+assert "E-DOC2: activation doc does not name the retired DB filename" \
+    bash -c '! git -C "$1" grep -q "leodearden-reify[.]db" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
+
+# E-DOC3: the replacement identity is stated positively.
+assert "E-DOC3: activation doc names the per-path identity reify actually uses (local/reify-)" \
+    bash -c 'git -C "$1" grep -q "local/reify-" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
+
+# E-DOC4: the load-bearing half of the 2026-08-17 premise correction — the doc
+# must justify the per-path identity by the FORCED LEVER (jcodemunch ships
+# git_root_identity: True by default; reify overrides it), never by a
+# "no such index exists" claim, which was false.
+assert "E-DOC4: activation doc names the forced lever JCODEMUNCH_GIT_ROOT_IDENTITY" \
+    bash -c 'git -C "$1" grep -q "JCODEMUNCH_GIT_ROOT_IDENTITY" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
+
+# E-DOC6 pins the prior PRD's comparison table at
+# docs/prds/reify-audit-p1-jcodemunch-substrate.md. Task 4109 landed the fail-soft
+# fall-back to NoopJCodemunchOps; the §10 table's jcodemunch-dependency row was
+# never updated and went on claiming exit 125 until μ (#6117) corrected it.
+#
+# Only the PRESENCE half is asserted here, deliberately. The absence half — that
+# the row no longer carries its superseded claim, that the jcodemunch-backed
+# detectors hard-exit 125 whenever the serve is unreachable — would be a grep over
+# an ENGLISH SENTENCE, and any paraphrase of that same false claim leaves such an
+# assertion green while the defect it exists to catch is fully present. It would
+# buy coverage it cannot deliver, and a broader prose regex is the same defect
+# over more surface area, since the space of false paraphrases is unbounded. The
+# superseded sentence is DESCRIBED above and deliberately never spelled: a check's
+# own text is raw content like any other, so spelling a banned literal here would
+# make this file the occurrence that defeats a later broadened absence scan
+# (docs/legibility/confusion-codebook.yaml:13890).
+#
+# The capability manifest separately RECORDS that absence as
+# `stale-degradation-contract-removed`
+# (docs/prds/jcodemunch-substrate-restoration.capability-manifest.yaml). Do not
+# assume that record is what gates the tree: nothing IN THIS REPO executes
+# `delivered_check` entries — scripts/prd-capability-check.py consumes
+# committed-probe-set JSON, a different mechanism, and never reads the key. What
+# a downstream consumer does with the sidecar was not measured here.
+#
+# E-DOC6 greps a Rust TYPE NAME instead, so it is referential integrity rather
+# than a wording pin: it survives any rewording of the row and reds only if the
+# row stops pointing at the landed fail-soft seam — blanking the row being the
+# cheap way to satisfy any absence check.
+assert "E-DOC6: prior PRD still names the landed fail-soft seam (NoopJCodemunchOps)" \
+    bash -c 'git -C "$1" grep -q "NoopJCodemunchOps" -- docs/prds/reify-audit-p1-jcodemunch-substrate.md' _ "$REPO_ROOT"
+
+# E-SKILL1..3 pin .claude/skills/audit/SKILL.md — the operator-facing entry point
+# for /audit. Asserted per FILE rather than over `.claude/skills`, so a regression
+# in either skill document names the file that regressed (E-CLI1..3 mirror these
+# one-for-one against references/cli-invocation.md).
+#
+# THERE IS DELIBERATELY NO expect-absent ASSERTION ON `leodearden/reify` ANYWHERE
+# UNDER .claude/skills, and a later hardening pass must not add one. μ is a
+# correct-the-record task: explaining why the retired git identity is NOT what
+# reify uses requires NAMING it, so an absence check there fights the very edit it
+# would be guarding. The retired DB FILENAME is banned instead (E-DOC2), which is
+# the claim that was actually false.
+#
+# E-SKILL1 bans the `.service` suffix, not the bare stem, for the same reason E3
+# does: `scripts/with-jcodemunch-serve.sh` is the replacement these documents must
+# be free to cite by name, and its basename contains the stem.
+
+assert "E-SKILL1: SKILL.md does not name the retired jcodemunch-serve.service unit" \
+    bash -c '! git -C "$1" grep -qE "jcodemunch-serve\.service" -- .claude/skills/audit/SKILL.md' _ "$REPO_ROOT"
+
+assert "E-SKILL2: SKILL.md documents --jcodemunch-index-dir" \
+    bash -c 'git -C "$1" grep -q -- "--jcodemunch-index-dir" .claude/skills/audit/SKILL.md' _ "$REPO_ROOT"
+
+# The PREFIX, not a single token: γ landed three codes (_STALE, _EMPTY,
+# _UNREADABLE) and the prefix keeps a fourth from silently escaping the gate.
+assert "E-SKILL3: SKILL.md documents the E_JC_INDEX_* refusal codes" \
+    bash -c 'git -C "$1" grep -q "E_JC_INDEX_" -- .claude/skills/audit/SKILL.md' _ "$REPO_ROOT"
+
+# E-CLI1..3 mirror E-SKILL1..3 one-for-one against the file SKILL.md sends the
+# reader to for "full flag documentation". Correcting only SKILL.md would leave
+# the authoritative flag reference still advertising the retired default and the
+# retired unit — a half-correction that reads as deliberate. Asserted separately
+# rather than by widening E-SKILL* to `-- .claude/skills`, so a regression names
+# the file that regressed.
+
+assert "E-CLI1: cli-invocation.md does not name the retired jcodemunch-serve.service unit" \
+    bash -c '! git -C "$1" grep -qE "jcodemunch-serve\.service" -- .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
+
+assert "E-CLI2: cli-invocation.md documents --jcodemunch-index-dir" \
+    bash -c 'git -C "$1" grep -q -- "--jcodemunch-index-dir" .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
+
+assert "E-CLI3: cli-invocation.md documents the E_JC_INDEX_* refusal codes" \
+    bash -c 'git -C "$1" grep -q "E_JC_INDEX_" -- .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
+
+# E-MODES1 bans the retired unit named AS A UNIT, not the `\.service` suffix —
+# modes.md:137 asserted it by bare name ("all require `jcodemunch-serve` to be
+# running"), which a suffixed pattern would sail straight past.
+#
+# The pattern is the bare token with a hyphen excluded on BOTH sides, which is
+# exactly the line between a unit name and a path containing one:
+#
+#   BANNED    `jcodemunch-serve`            the retired unit, named as a unit
+#   BANNED    jcodemunch-serve.service      the same, spelled with its suffix
+#   PERMITTED scripts/with-jcodemunch-serve.sh              (preceded by `-`)
+#   PERMITTED …/jcodemunch-serve-activation.md              (followed by `-`)
+#
+# The left side is `(^|[^-])`, not a bare `[^-]`: `[^-]` REQUIRES some character
+# before the token, so an occurrence at the START of a line escaped the ban
+# entirely — including `jcodemunch-serve.service` itself, which the table above
+# calls BANNED. modes.md is markdown, where a fenced command line, an
+# indent-stripped continuation, or a reflowed sentence can each begin with the
+# token, so the line boundary is a real position here and not a theoretical one.
+#
+# Both permitted forms are load-bearing here: the correction retargets the
+# Activation bullet at the wrapper and keeps the activation doc as the identifier
+# record, so a truly bare-token ban would be unsatisfiable rather than strict.
+# The anchor does not endanger them — they are permitted by their surrounding
+# hyphens, which the pattern still excludes regardless of position.
+# Narrow this further or replace it if the shapes change — do not delete it.
+assert "E-MODES1: modes.md does not name the retired jcodemunch-serve unit" \
+    bash -c '! git -C "$1" grep -qE "(^|[^-])jcodemunch-serve([^-]|$)" -- .claude/skills/audit/references/modes.md' _ "$REPO_ROOT"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
