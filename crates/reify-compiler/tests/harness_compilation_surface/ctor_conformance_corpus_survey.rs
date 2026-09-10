@@ -2583,6 +2583,86 @@ fn survey_corpus_orders_sites_deterministically() {
     );
 }
 
+// ─── γ (task #5305): the files γ migrated to ctor-conformance clean ──────────
+
+/// Repo-relative `.ri` files that task #5305 (γ) migrated to ctor-conformance
+/// clean, pinned so a regression is caught on the merge gate instead of only by
+/// the `#[ignore]`d corpus generator.
+///
+/// Deliberately a two-file pin rather than a corpus walk. The corpus-wide
+/// assertion lives in [`generate_ctor_conformance_corpus_survey`] and stays
+/// `#[ignore]`d because it compiles every tracked `.ri`, ~2.5× the `examples/`
+/// walk (`docs/prds/merge-gate-compile-cost.md`). This pin costs one stdlib
+/// prelude compile plus these files, so the sites γ actually changed become
+/// gate-resident without reversing that landed cost decision.
+///
+/// Matching is on `DiagnosticCode` IDENTITY via [`is_ctor_conformance_code`],
+/// never on message prose. The prose-keyed guard covering the same r3b fixture
+/// in `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs` is
+/// deliberately left alone — it is documented code-AGNOSTIC on purpose and keys
+/// on a different pair of params (`alpha` / `beta`).
+const CTOR_CONFORMANCE_PINNED_CLEAN: &[&str] =
+    &["tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri"];
+
+/// Every [`CTOR_CONFORMANCE_PINNED_CLEAN`] file compiles with ZERO
+/// ctor-conformance diagnostics.
+///
+/// Accumulates across files and panics once, so a run names every regressed site
+/// rather than stopping at the first — the corpus-wide-visibility principle the
+/// sibling gates in this binary already follow.
+///
+/// Coverage is asserted BEFORE the site count: a file that fails to read or
+/// parse contributes no sites, so without that check the pin would be satisfied
+/// by the file disappearing.
+#[test]
+fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
+    let corpus: Vec<String> = CTOR_CONFORMANCE_PINNED_CLEAN
+        .iter()
+        .map(|p| (*p).to_owned())
+        .collect();
+    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
+
+    assert!(
+        run.not_surveyed.is_empty(),
+        "every pinned file must reach the compile phase, else this pin passes \
+         vacuously; unreachable: {:?}",
+        run.not_surveyed,
+    );
+    assert_eq!(
+        run.surveyed,
+        corpus.len(),
+        "all {} pinned file(s) must be surveyed, only {} were",
+        corpus.len(),
+        run.surveyed,
+    );
+
+    let offenders: Vec<String> = run
+        .sites
+        .iter()
+        .map(|s| {
+            format!(
+                "  {}:{} :: param '{}'  [{} / {}]  {}",
+                s.file,
+                s.line,
+                s.field.as_deref().unwrap_or("—"),
+                s.code,
+                s.severity,
+                s.message,
+            )
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "{} ctor-conformance diagnostic(s) in file(s) task #5305 migrated to clean:\n{}\n\n\
+         A pinned file carries no waiver and no owner — that is the point of the pin. \
+         Either the migration was reverted, or a new un-migrated ctor call site was \
+         added; fix the call site.",
+        offenders.len(),
+        offenders.join("\n"),
+    );
+}
+
 // ─── step 11/12: markdown rendering ─────────────────────────────────────────
 
 /// The EXACT command that regenerates the artifact, committed inside it.
