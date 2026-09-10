@@ -1422,14 +1422,22 @@ fn instance_scope_optimized_unregistered_target_reuses_silently() {
          degraded and so nothing to warn about"
     );
 
-    // The point of the quadrant: ZERO decline warnings anywhere in this eval.
-    // There is no dispatch to fall back FROM, and template scope owns the
-    // unregistered-target report.
+    // The point of the quadrant: ZERO INSTANCE-SCOPE decline warnings anywhere
+    // in this eval. There is no dispatch to fall back FROM, and template scope
+    // owns the unregistered-target report — which on an empty registry is
+    // itself a `Severity::Warning` (the `reify check` posture ruled in
+    // check-diagnostic-truthfulness.md D4) opening with the same
+    // `@optimized target` stem, so severity + prose alone cannot tell the two
+    // apart. `DiagnosticCode` can: template scope's report is coded
+    // `NoRegisteredComputeTrampoline`, an instance-scope decline is a bare
+    // `Diagnostic::warning` and carries no code. Excluding the code keeps this
+    // assertion about instance-scope noise, which is what it is named for.
     let all_declines: Vec<_> = eval_result
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning)
         .filter(|d| d.message.contains("@optimized target"))
+        .filter(|d| d.code != Some(DiagnosticCode::NoRegisteredComputeTrampoline))
         .collect();
     assert!(
         all_declines.is_empty(),
