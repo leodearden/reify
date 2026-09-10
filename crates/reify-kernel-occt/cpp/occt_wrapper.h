@@ -192,6 +192,18 @@ rust::String shape_type_name(const OcctShape& shape);
 
 // --- Boolean operations ---
 
+/// Fuse / cut / intersect two shapes.
+///
+/// The stored result is NORMALIZED, not the raw `BRepAlgoAPI_*::Shape()`:
+/// BRepAlgoAPI always wraps its answer in a bare `TopoDS_COMPOUND`, which fails
+/// the SOLID|COMPSOLID|SHELL guard in `is_watertight`/`is_closed` and defeats
+/// `BRepExtrema_DistShapeShape`'s inner-solution test in
+/// `query_distance`/`min_clearance`. All three ops route through the shared
+/// `normalize_boolean_result` (occt_wrapper.cpp), which tightens the wrapper to
+/// the topology-preserving type the result actually is — one solid → bare
+/// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
+/// Callers must therefore classify the stored repr from the real shape (see
+/// `shape_type_name`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
