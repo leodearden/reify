@@ -386,6 +386,39 @@ async fn handle_reify_set_parameter(
 }
 "#;
 
+/// A handler that DOES route through a seam but then emits a second time on
+/// its own — the private emission path `debug_server.rs:1885` forbids in as
+/// many words: "Do NOT add a second emit path here or in any caller".
+const PRIVATE_EMIT_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_update_source" => handle_reify_update_source(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_update_source(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let source = reify_update_source_params(&params)?;
+    let gs = reify_update_source_on_engine_and_refresh_baseline(
+        &state.engine,
+        &state.last_state,
+        &source,
+    )
+    .await?;
+    let delta = crate::diff::compute_delta(&state.last_state, &gs);
+    emit_delta(&state.app, &delta);
+    state.app.emit("state-delta", &delta).ok();
+    Ok(reify_update_source_envelope(&gs))
+}
+"#;
+
 #[test]
 fn bypassing_fixture_is_flagged() {
     assert_eq!(
@@ -463,4 +496,26 @@ fn every_debug_write_tool_routes_through_the_delta_choke_point() {
          escape hatch)",
         bypasses.len()
     );
+}
+
+#[test]
+fn no_write_tool_handler_emits_privately() {
+    assert_eq!(
+        write_tool_bypasses(PRIVATE_EMIT_SOURCE),
+        vec![Bypass {
+            tool: "reify_update_source".to_string(),
+            handler: "handle_reify_update_source".to_string(),
+            kind: BypassKind::PrivateEmit,
+        }],
+    );
+
+    // The real file is clean, and is only clean because step-4 strips
+    // comments: its ONLY textual `emit_delta` occurrences are the doc
+    // comments at :1612 and :1885, so a checker reading raw text would
+    // false-positive right here.
+    let private_emits: Vec<Bypass> = write_tool_bypasses(&debug_server_source())
+        .into_iter()
+        .filter(|b| b.kind == BypassKind::PrivateEmit)
+        .collect();
+    assert_eq!(private_emits, vec![]);
 }
