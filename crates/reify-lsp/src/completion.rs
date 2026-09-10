@@ -1363,11 +1363,8 @@ mod tests {
     /// `length_gated_tables_stay_in_sync`, which also
     /// asserts the two tables name the same builtins and that every
     /// `LENGTH_GATED_EXAMPLES` row is a real `BUILTIN_FUNCTIONS` entry).
-    /// `half_space` deliberately leaves `nx`/`ny`/`nz` bare — only its
-    /// `px`/`py`/`pz` point is LENGTH-gated (the outward normal is a
-    /// dimensionless unit vector, not a residual — the same
-    /// ORIGIN-vs-DIRECTION split `arg_acceptance`'s module doc draws for the
-    /// same builtin).
+    /// `half_space` deliberately leaves `nx`/`ny`/`nz` bare — see
+    /// [`DIMENSIONLESS_NORMAL_NOTE`] for why.
     ///
     /// The three `BuildOnly` rows are exactly the three names this table
     /// shares with `LENGTH_GATED_EXAMPLES` that have NO arm in
@@ -1469,38 +1466,23 @@ mod tests {
     ///
     /// Assertion (c) reads the completion item's rendered `documentation`
     /// (via `compute_completions`), not the raw `BuiltinFunctionInfo.doc`
-    /// field directly: `concat!` cannot splice a named `const` (only string
-    /// literals — confirmed against `LENGTH_MIGRATION_HINT`), so `doc` stays
-    /// its short `&'static str` and `BUILTIN_FUNCTIONS` stays a plain const
-    /// slice; the units clause is composed from the shared const only when
-    /// `push_builtins` renders the final `CompletionItem`. This mirrors the
-    /// existing `polygon_completion_advertises_compiling_flat_form` and
+    /// field directly — see [`builtin_doc_with_length_gate_note`] for why
+    /// `doc` cannot carry this baked in. This mirrors the existing
+    /// `polygon_completion_advertises_compiling_flat_form` and
     /// `builtin_completions_have_documentation` precedent of asserting on
     /// served completion output rather than the source struct.
     ///
     /// Per row: (a) for `CompileCheck` rows, the BARE form is rejected with
     /// `LENGTH_MIGRATION_HINT` — matching the hint TEXT, not the builtin
     /// name, since a lowered alias diagnoses under its lowered
-    /// `box`/`cylinder` name; for `BuildOnly` rows, the bare form instead
-    /// must produce NO diagnostic containing the hint, which pins the
-    /// premise that justifies skipping the positive check (see `GateReach`)
-    /// instead of silently opting out. (b) the DIMENSIONED form evaluates
-    /// with NO diagnostics at all — not merely none containing the hint, so
-    /// a wrong-arity or misspelled example reds here instead of shipping
-    /// into the popup unnoticed. (c) the builtin's served `documentation`
-    /// contains both the hint and the dimensioned example; for `half_space`
-    /// specifically it must also carry the qualifier noting its outward
-    /// normal stays dimensionless, and no other row's documentation may
-    /// carry that qualifier.
-    ///
-    /// (a)'s positive form (bare rejected with the hint) applies only to
-    /// `CompileCheck` rows — the twelve whose gate `AnalysisContext::check()`
-    /// can actually observe; a `BuildOnly` row's bare form is never rejected
-    /// by this harness, so pinning the positive form there would pin a false
-    /// premise (see `GateReach` and esc-6450-2). (b) and (c) apply to all 15
-    /// rows: (b) needs no COMPILE-time gate to be observable — it only
-    /// requires that the advertised example evaluates clean — and (c) is
-    /// what `builtin_doc_with_length_gate_note` makes true for every row.
+    /// `box`/`cylinder` name; `BuildOnly` rows instead pin the premise that
+    /// justifies skipping this check (see [`GateReach::BuildOnly`]). (b) the
+    /// DIMENSIONED form evaluates with NO diagnostics at all, for all 15
+    /// rows — not merely none containing the hint, so a wrong-arity or
+    /// misspelled example reds here instead of shipping into the popup
+    /// unnoticed. (c) the served `documentation` contains both the hint and
+    /// the dimensioned example, for all 15 rows, plus [`qualifier_for`]'s
+    /// qualifier where the row has one.
     #[test]
     fn gated_length_builtins_advertise_their_dimension_requirement() {
         use reify_core::units::LENGTH_MIGRATION_HINT;
@@ -1533,10 +1515,6 @@ mod tests {
                 );
             }
 
-            // (b) needs no COMPILE-time gate to observe — only that the
-            // advertised example evaluates with NO diagnostics at all, so a
-            // wrong-arity or misspelled example reds here instead of
-            // shipping into the popup unnoticed.
             let dimensioned_diags = eval_expr_diagnostics(dimensioned);
             assert!(
                 dimensioned_diags.is_empty(),
@@ -1630,14 +1608,14 @@ mod tests {
     /// before its coordinates were retyped — so the positive check is what
     /// actually closes that gap, uniformly for every row.
     ///
-    /// `half_space` needs a different negative check: its signature
-    /// legitimately mixes the LENGTH-gated point `px`/`py`/`pz` with the
-    /// dimensionless outward normal `nx`/`ny`/`nz` (correctly typed `Real`),
-    /// which would trip a blanket `!detail.contains(": Real")` even though
-    /// nothing is wrong. So `half_space` checks its three gated slot names by
-    /// substring (`px: Length` etc.) instead of banning `Real` from the whole
-    /// signature; every other row here has no non-gated slot at all, so the
-    /// blanket check is exact for them.
+    /// `half_space` needs a different negative check: its signature mixes a
+    /// gated and a dimensionless slot group (the same split
+    /// [`DIMENSIONLESS_NORMAL_NOTE`] documents), which would trip a blanket
+    /// `!detail.contains(": Real")` even though nothing is wrong. So
+    /// `half_space` checks its three gated slot names by substring (`px:
+    /// Length` etc.) instead of banning `Real` from the whole signature;
+    /// every other row here has no non-gated slot at all, so the blanket
+    /// check is exact for them.
     #[test]
     fn geometry_completion_signatures_type_gated_slots_as_length() {
         let source = reify_test_support::bracket_source();
@@ -1647,9 +1625,7 @@ mod tests {
             let name = *name;
             let detail = served_signature(&items, name);
             if name == "half_space" {
-                // Gated slots only (px/py/pz) — nx/ny/nz is a legitimately
-                // dimensionless direction and correctly says `: Real`, so a
-                // blanket `!detail.contains(": Real")` would misfire here.
+                // Gated slots only — see the doc comment above.
                 for slot in ["px", "py", "pz"] {
                     assert!(
                         detail.contains(&format!("{slot}: Length")),
