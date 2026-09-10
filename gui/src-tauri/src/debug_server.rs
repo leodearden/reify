@@ -3031,12 +3031,11 @@ mod tests {
     // other when they touch process-global mesh-morph counters —
     // reify_mesh_morph::diagnostics (seven AtomicU64) and
     // reify_mesh_morph::stats (Mutex<StatsState>). Acquire this before
-    // reset_for_test() + handler call. Scope: private to `debug_server::tests`,
-    // so it does NOT serialize against OTHER tests in this binary (e.g.
-    // engine.rs tests) that build an Engine and evaluate a morphing design —
-    // those reach `reify_mesh_morph::compose_morph` directly via the producer
-    // `EngineSession::from_engine` registers, and can still perturb the
-    // diagnostics counters mid-assertion.
+    // reset_for_test() + handler call. Scope: private to `debug_server::tests`.
+    // Any test elsewhere in this binary that evaluates a morphing design
+    // would reach `reify_mesh_morph::compose_morph` via the producer
+    // `EngineSession::from_engine` registers and perturb these counters
+    // unserialized; none does today.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
@@ -3286,12 +3285,13 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_stateless_tool_handles_morph_stats_arm() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // Unique coverage: the exact "morph_stats" match-arm string in
         // dispatch_stateless_tool. A typo or deletion returns None, caught
         // by the unwrap. Shape assertions live in
         // handle_morph_stats_returns_morph_stats_shape; here we only verify
         // delegation fidelity.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reify_mesh_morph::stats::reset_for_test();
 
         let direct = super::handle_morph_stats(serde_json::json!({}))
@@ -3374,11 +3374,12 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_stateless_tool_handles_mesh_morph_stats_arm() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // Unique coverage: the exact "mesh_morph_stats" match-arm string in
         // dispatch_stateless_tool. A typo or deletion returns None, caught
         // by the unwrap. Shape assertions live in
         // handle_mesh_morph_stats_returns_counters_and_session_start.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reify_mesh_morph::diagnostics::reset_for_test();
 
         let direct = super::handle_mesh_morph_stats(serde_json::json!({}))
