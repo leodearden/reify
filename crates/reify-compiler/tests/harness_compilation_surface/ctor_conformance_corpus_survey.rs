@@ -3692,6 +3692,132 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
     }
 }
 
+/// The header label of the disposition column, and the one place the tests read
+/// it from — so a row's disposition is located BY COLUMN NAME rather than by a
+/// hard-coded index that silently shifts when a column is inserted.
+#[cfg(test)]
+const DISPOSITION_COLUMN: &str = "disposition (γ ruling)";
+
+/// The disposition cell of the site row anchored at `row_anchor`.
+#[cfg(test)]
+fn disposition_cell(md: &str, row_anchor: &str) -> String {
+    let header = md
+        .lines()
+        .find(|l| l.starts_with("| site |"))
+        .unwrap_or_else(|| panic!("the site table header must be rendered:\n{md}"));
+    let idx = header
+        .split('|')
+        .map(str::trim)
+        .position(|c| c == DISPOSITION_COLUMN)
+        .unwrap_or_else(|| {
+            panic!("the site table header must carry a `{DISPOSITION_COLUMN}` column:\n{header}")
+        });
+    let row = md
+        .lines()
+        .find(|l| l.starts_with(row_anchor))
+        .unwrap_or_else(|| panic!("no site row anchored at {row_anchor:?}:\n{md}"));
+    row.split('|')
+        .map(str::trim)
+        .nth(idx)
+        .unwrap_or_else(|| panic!("row {row:?} has no cell at the disposition index {idx}"))
+        .to_owned()
+}
+
+/// Every site row carries a disposition RESOLVED FROM THE TABLES.
+///
+/// PRD §4 D9 requires γ to record each of its choices in the survey artifact.
+/// Recording them as hand-written prose would rot the moment a table entry moves
+/// or an owning task lands, so the artifact projects the tables instead: the
+/// tables are the single source, and this column is a view of them.
+///
+/// Driven entirely by SYNTHETIC sites, like every other renderer test here — no
+/// corpus compile, and no assertion on the committed artifact's own text, which
+/// would be a documentation meta-test.
+#[test]
+fn render_survey_resolves_each_site_disposition_from_the_tables() {
+    let (residual_path, residual_param, residual_owner, residual_why) =
+        CTOR_CONFORMANCE_CORPUS_RESIDUAL
+            .first()
+            .expect("the residual table must not be empty");
+    let (debt_key, debt_param, debt_owner) = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+        .first()
+        .expect("the debt table must not be empty");
+    let debt_path = format!("{EXAMPLES_PREFIX}{debt_key}");
+
+    let mut unkeyable = synth_site("no_param.ri", 4, "Widget", "ignored", Owner::Unknown);
+    unkeyable.field = None;
+
+    let sites = vec![
+        synth_site(residual_path, 1, "Widget", residual_param, Owner::NonFea),
+        synth_site(&debt_path, 2, "TOTSShaper", debt_param, Owner::NonFea),
+        synth_site("not_in_any_table.ri", 3, "Widget", "label", Owner::NonFea),
+        unkeyable,
+    ];
+    let n = sites.len();
+    let md = render_survey(
+        &SurveyRun {
+            total: n,
+            surveyed: n,
+            not_surveyed: vec![],
+            partial: vec![],
+            sites,
+        },
+        "sha",
+    );
+
+    let residual_cell = disposition_cell(&md, &format!("| `{residual_path}:1`"));
+    assert!(
+        residual_cell.contains(residual_owner) && residual_cell.contains(&cell(residual_why)),
+        "a CTOR_CONFORMANCE_CORPUS_RESIDUAL site must render its owner AND its \
+         recorded reason, so a reader meets the deferral and its justification in \
+         the same cell; owner {residual_owner}, why {residual_why:?}, got \
+         {residual_cell:?}"
+    );
+
+    let debt_cell = disposition_cell(&md, &format!("| `{debt_path}:2`"));
+    assert!(
+        debt_cell.contains(debt_owner),
+        "a CTOR_CONFORMANCE_MIGRATION_DEBT site must render THAT table's owner. The \
+         debt list is keyed relative to `examples/` and this row is repo-relative, so \
+         a miss here means the two key forms stopped being bridged and every \
+         examples/ site silently reads as unattributed; owner {debt_owner}, got \
+         {debt_cell:?}"
+    );
+
+    for (anchor, what) in [
+        ("| `not_in_any_table.ri:3`", "a site named by neither table"),
+        (
+            "| `no_param.ri:4`",
+            "a site whose param could not be recovered, so no table can key it",
+        ),
+    ] {
+        let unattributed = disposition_cell(&md, anchor);
+        assert!(
+            unattributed.contains("unattributed"),
+            "{what} must render as unattributed — the conservative default. Reading \
+             as deferred would attribute an owner nobody assigned; got \
+             {unattributed:?}"
+        );
+        assert!(
+            !unattributed.contains('#'),
+            "{what} must name no owner at all; got {unattributed:?}"
+        );
+    }
+
+    // Both deferred cells must be visibly deferrals, not merely a bare cite.
+    for (anchor, owner) in [
+        (format!("| `{residual_path}:1`"), residual_owner),
+        (format!("| `{debt_path}:2`"), debt_owner),
+    ] {
+        let deferred = disposition_cell(&md, &anchor);
+        assert!(
+            deferred.contains("deferred") && deferred.contains(&format!("owned by {owner}")),
+            "a deferred site must SAY it is deferred and who owns it, so the cell \
+             reads on its own; got {deferred:?}"
+        );
+    }
+}
+
 // ─── step 13/14: output path + the generator entry point ─────────────────────
 
 /// Env var that redirects the generator's output to a scratch path.
