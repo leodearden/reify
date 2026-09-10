@@ -9,7 +9,9 @@
 
 use reify_core::Type;
 
-use crate::resolvers::{tensor_scalar_reduction, tensor_scalar_reduction_list};
+use crate::resolvers::{
+    dimensionless_ratio, tensor_scalar_reduction, tensor_scalar_reduction_list,
+};
 
 crate::macros::registry! {
     EvalBuiltin => EvalBuiltinId, as_eval_builtin {
@@ -121,16 +123,24 @@ crate::macros::registry! {
         },
 
         // safety_factor -> dimensionless, whatever the args.
-        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:82, whose
-        // own comment records the derivation at :80-81.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:82 (concrete
+        // form) and :125 (the Field form task #6577 added), whose own comment
+        // records the derivation at :80-81.
         // Like max_shear, NOT ruled by #2884 — the derivation is the basis.
+        //
+        // ArgAware, not Const, since #6577: the DIMENSION is arg-independent but
+        // the argument's SHAPE is not, because a Field argument must answer
+        // Field<D, Real> rather than Real. The basis string below is re-derived
+        // to justify both forms rather than silently widened — the pointwise
+        // claim is what makes the Field form follow from the same physics, and
+        // it is stated, not left implied.
         SafetyFactor {
             name: "safety_factor",
             family: Analysis,
             arity: Exact(2),
             arg_slots: [Any, Any],
-            result: Const(Type::dimensionless_scalar()),
-            basis: Physics("yield/von_mises — pressure cancels, so the ratio is dimensionless for any arg dimension")
+            result: ArgAware(dimensionless_ratio),
+            basis: Physics("yield/von_mises — pressure cancels, so the ratio is dimensionless for any arg dimension; over a field argument it cancels POINTWISE, which fixes the codomain dimensionless and leaves only eval's lazy Field wrapper to carry")
         },
 
         // stress_invariants -> StructureRef("StressInvariants"), the struct def

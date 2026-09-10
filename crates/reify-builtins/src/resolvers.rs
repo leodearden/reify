@@ -97,44 +97,69 @@ fn field_tensor_arg(args: &[Type], i: usize) -> Option<(&Type, DimensionVector)>
     Some((domain.as_ref(), dim))
 }
 
-/// `von_mises` / `max_shear`: scalar reduction carrying the tensor's quantity.
+/// Reduce arg0, lifting the answer over a `Type::Field` argument.
 ///
-/// A Pressure tensor → `Scalar<Pressure>`; a dimensionless tensor → `Real`.
-/// Mirrors `trace` / `magnitude` in `math_fn_result_type`.
+/// Every analysis reduction has the same two-form shape and differs only in how
+/// it turns arg0's element dimension into a result type, so the two forms live
+/// here ONCE and the per-row variation is the `codomain` argument:
 ///
-/// # Field arguments (task #6577)
+/// - arg0 is a `Field<D, Tensor<2,3,Q>>` → `Field<D, codomain(Q)>`;
+/// - anything else → `codomain(tensor_quantity(arg0))`, the pre-#6577 answer.
 ///
-/// A `Field<D, Tensor<2,3,Q>>` argument yields `Field<D, scalar_or_real(Q)>` —
-/// the SAME codomain the concrete path computes, wrapped over the argument's own
-/// domain. Eval does not reduce a field eagerly: it wraps it LAZILY and hands
-/// back a `Value::Field` (`compute_von_mises` / `compute_max_shear` →
-/// `wrap_tensor_field`, `crates/reify-expr/src/analysis.rs`), and
-/// `value_type_kind_matches` maps a `Value::Field` onto [`Type::Field`] alone.
-/// The consumer half needs no counterpart: `max` / `min` already reduce a
-/// `Type::Field` codomain via `reduce_field_codomain`, so
-/// `max(von_mises(stress))` is still `Scalar<Pressure>`.
+/// # Why the Field form is a `Field` and not a reduced scalar (task #6577)
+///
+/// Eval does not reduce a field eagerly — it wraps it LAZILY and hands back a
+/// `Value::Field` (`crates/reify-expr/src/analysis.rs`, `wrap_tensor_field`) —
+/// and `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) maps a
+/// `Value::Field` onto [`Type::Field`] alone. The consumer half needs no
+/// counterpart: `max` / `min` already reduce a `Type::Field` codomain via
+/// `reduce_field_codomain`, so `max(von_mises(stress))` is still
+/// `Scalar<Pressure>`.
 ///
 /// Returns `Some(..)` unconditionally: legacy behaviour never rejected an
 /// argument shape, and α preserves it exactly. Wiring the `None` ⇒
 /// `E_BuiltinArgShape` path is τ-numeric's work (PRD §3 decision 5).
-pub(crate) fn tensor_scalar_reduction(args: &[Type]) -> Option<Type> {
+fn reduce_tensor_arg(args: &[Type], codomain: fn(DimensionVector) -> Type) -> Option<Type> {
     if let Some((domain, dim)) = field_tensor_arg(args, 0) {
         return Some(Type::Field {
             domain: Box::new(domain.clone()),
-            codomain: Box::new(scalar_or_real(dim)),
+            codomain: Box::new(codomain(dim)),
         });
     }
-    Some(scalar_or_real(tensor_quantity(args, 0)))
+    Some(codomain(tensor_quantity(args, 0)))
+}
+
+/// `von_mises` / `max_shear`: scalar reduction carrying the tensor's quantity.
+///
+/// A Pressure tensor → `Scalar<Pressure>`; a dimensionless tensor → `Real`; a
+/// Pressure tensor FIELD → `Field<D, Scalar<Pressure>>`. Mirrors `trace` /
+/// `magnitude` in `math_fn_result_type`, and `wrap_tensor_field` for the Field
+/// form.
+pub(crate) fn tensor_scalar_reduction(args: &[Type]) -> Option<Type> {
+    reduce_tensor_arg(args, scalar_or_real)
 }
 
 /// `principal_stresses`: the same reduction, wrapped in a `List`.
 ///
 /// Mirrors the `eigenvalues` arm in `math_fn_result_type` (matrix → List of
-/// eigenvalues). Total for the same reason as [`tensor_scalar_reduction`].
+/// eigenvalues). Over a Field the `List` sits INSIDE the `Field` —
+/// `Field<D, List(Q)>`, not `List(Field<D, Q>)` — because eval samples the field
+/// and each sample is the three eigenvalues (`compute_principal_stresses`,
+/// `crates/reify-expr/src/analysis.rs:239-256`).
 pub(crate) fn tensor_scalar_reduction_list(args: &[Type]) -> Option<Type> {
-    Some(Type::List(Box::new(scalar_or_real(tensor_quantity(
-        args, 0,
-    )))))
+    reduce_tensor_arg(args, |dim| Type::List(Box::new(scalar_or_real(dim))))
+}
+
+/// `safety_factor`: dimensionless whatever the argument dimensions.
+///
+/// yield/von_mises cancels, so the codomain discards arg0's dimension entirely —
+/// but the row is [`ResultSpec::ArgAware`](crate::row::ResultSpec::ArgAware)
+/// rather than `Const` because the argument's SHAPE still reaches the answer: a
+/// `Field` argument yields `Field<D, Real>`, since `compute_safety_factor`
+/// (`crates/reify-expr/src/analysis.rs:273-302`) hands back a `Value::Field`
+/// just as the other reductions do.
+pub(crate) fn dimensionless_ratio(args: &[Type]) -> Option<Type> {
+    reduce_tensor_arg(args, |_| Type::dimensionless_scalar())
 }
 
 #[cfg(test)]
