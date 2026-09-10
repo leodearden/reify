@@ -2601,8 +2601,16 @@ fn survey_corpus_orders_sites_deterministically() {
 /// in `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs` is
 /// deliberately left alone — it is documented code-AGNOSTIC on purpose and keys
 /// on a different pair of params (`alpha` / `beta`).
-const CTOR_CONFORMANCE_PINNED_CLEAN: &[&str] =
-    &["tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri"];
+///
+/// Both entries reach the walker by DIFFERENT routes, which is why the pin is
+/// worth two files rather than one: the r3b site is a ctor ARG, the
+/// `mv-2-priv-param.ri` site is a D8 param DEFAULT
+/// (`check_param_default_conformance`). One shared assertion covers both because
+/// `survey_corpus` filters on the diagnostic CODE, not on the emitting path.
+const CTOR_CONFORMANCE_PINNED_CLEAN: &[&str] = &[
+    "tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri",
+    "tree-sitter-reify/test/fixtures/mv-2-priv-param.ri",
+];
 
 /// Every [`CTOR_CONFORMANCE_PINNED_CLEAN`] file compiles with ZERO
 /// ctor-conformance diagnostics.
@@ -2656,8 +2664,8 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
         offenders.is_empty(),
         "{} ctor-conformance diagnostic(s) in file(s) task #5305 migrated to clean:\n{}\n\n\
          A pinned file carries no waiver and no owner — that is the point of the pin. \
-         Either the migration was reverted, or a new un-migrated ctor call site was \
-         added; fix the call site.",
+         Either the migration was reverted, or a new un-migrated site was added; fix \
+         the site (a ctor argument, or a param default).",
         offenders.len(),
         offenders.join("\n"),
     );
