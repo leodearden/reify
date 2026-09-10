@@ -192,4 +192,91 @@ assert "D8: an id repeated in both forms appears exactly once" \
 
 Re-lands #5686." "$PFX"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block E (step-3) — SPOT-delegation guard
+#
+# The point of this library is that the grammar exists ONCE. That is a
+# property of the tree, not of the library, so it has to be asserted against
+# the consumers: each must SOURCE the lib, and none may carry its own copy of
+# either ERE. Asserted in both directions — the consumers must not contain the
+# fragments AND the lib must, so deleting the grammar outright cannot pass.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: SPOT-delegation guard ---"
+
+# The two ERE fragments the lib owns, as grep -F needles. Deliberately spelled
+# WITHOUT any variable name: an earlier draft used the lib's own `${prefix_re}`
+# and passed vacuously against a consumer that spelled the same variable
+# `${BRANCH_PREFIX_RE}`. These two are the invariant, name-independent core of
+# each ERE.
+E_MERGE_FRAGMENT='^Merge '
+E_HASH_FRAGMENT='(^|[^0-9])#'
+
+E_LIB_REL="scripts/lib_task_citation.sh"
+# Every consumer named in the lib header. A new consumer belongs on this list.
+E_CONSUMERS=(
+    "scripts/warm-lane-degenerate-ref-check.sh"
+    "scripts/task-branch-contamination-sweep.sh"
+)
+
+# _code_of <file> — <file> with whole-line comments removed.
+#
+# The needles above are matched against CODE only. Prose that describes the
+# grammar is not a second copy of it — every consumer's header should be free
+# to explain what "cites task N" means, and the lib header quotes both forms
+# itself. What must not reappear is an executable copy.
+_code_of() { grep -vE '^[[:space:]]*#' "$1"; }
+
+# _carries <file> <needle> — true iff <needle> appears in <file>'s CODE.
+_carries() { _code_of "$1" | grep -qF -- "$2"; }
+
+# _lacks <file> <needle> — the inverse, as its own function so `assert` reports
+# the intended direction rather than needing a `not` wrapper.
+_lacks() { ! _carries "$1" "$2"; }
+
+# _sources_lib <file> — true iff <file> has a `source`/`.` line naming the lib.
+_sources_lib() {
+    grep -qE '^[[:space:]]*(source|\.)[[:space:]]+.*lib_task_citation\.sh' "$1"
+}
+
+# (c) Non-vacuity FIRST: if the lib did not carry the grammar, every _lacks
+# assertion below would pass trivially on an empty tree.
+assert "E1: the lib's CODE carries the merge-subject ERE (guard is non-vacuous)" \
+    _carries "$REPO_ROOT/$E_LIB_REL" "$E_MERGE_FRAGMENT"
+assert "E2: the lib's CODE carries the '#<id>' boundary ERE (guard is non-vacuous)" \
+    _carries "$REPO_ROOT/$E_LIB_REL" "$E_HASH_FRAGMENT"
+
+for _c in "${E_CONSUMERS[@]}"; do
+    _abs="$REPO_ROOT/$_c"
+    # A consumer that does not exist yet (task 7244 builds the second one in a
+    # later step) is not a violation — but it must not be silently skipped
+    # either, or this guard would pass on a typo'd path. Assert existence for
+    # the ones the lib header names, and let the SUT-creation step turn the
+    # FAIL green.
+    assert "E3[$_c]: consumer exists" test -f "$_abs"
+    [ -f "$_abs" ] || continue
+    assert "E4[$_c]: sources $E_LIB_REL" _sources_lib "$_abs"
+    assert "E5[$_c]: carries NO second copy of the merge-subject ERE" \
+        _lacks "$_abs" "$E_MERGE_FRAGMENT"
+    assert "E6[$_c]: carries NO second copy of the '#<id>' boundary ERE" \
+        _lacks "$_abs" "$E_HASH_FRAGMENT"
+done
+
+# Tree-wide backstop: no OTHER tracked script may grow a copy either. Scoped to
+# scripts/ and hooks/ (where a consumer would plausibly live); the lib itself
+# is the only permitted carrier.
+_no_other_carriers() {
+    local f hits=""
+    while IFS= read -r f; do
+        case "$f" in */"$E_LIB_REL"|*/lib_task_citation.sh) continue ;; esac
+        if _carries "$f" "$E_MERGE_FRAGMENT" || _carries "$f" "$E_HASH_FRAGMENT"; then
+            hits="$hits$f"$'\n'
+        fi
+    done < <(find "$REPO_ROOT/scripts" "$REPO_ROOT/hooks" -type f 2>/dev/null | sort)
+    [ -z "$hits" ] || { printf 'unexpected carriers:\n%s' "$hits"; return 1; }
+}
+assert "E7: no other file under scripts/ or hooks/ carries the grammar in code" \
+    _no_other_carriers
+
+
 test_summary
