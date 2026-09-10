@@ -113,14 +113,15 @@ pub struct DiagnosticsResult {
 /// candidate feasibility at compile time is exactly what leaves an
 /// unsubstituted `Type::TypeParam` value cell in the graph, which panics eval
 /// in debug builds (root cause owned by task **#6851**; mechanism in
-/// [`eval_guard::first_unrepresentable_cell`]'s doc). All three
-/// LSP production entry points therefore ask [`eval_guard::skip_reason`]
-/// after collecting the compile-stage diagnostics, skip the eval/check pass
-/// when it answers `Some`, and report which cell forced the skip — to the
-/// server log at every site, and additionally as an editor-visible Warning at
-/// the two that own a diagnostics list. The user still gets the
-/// `E_AUTO_TYPE_PARAM_*` error this section is about where there is one, and
-/// the server stays alive. The guard tests the graph for an unrepresentable cell,
+/// `eval_guard::first_unrepresentable_cell`'s doc — private, so cited by name
+/// rather than as an intra-doc link from this public item). All three LSP
+/// production entry points therefore ask `eval_guard::skip_reason` after
+/// collecting the compile-stage diagnostics, skip the eval/check pass when it
+/// answers `Some`, and report which cell forced the skip — to the server log
+/// at every site, and additionally as an editor-visible Warning at the two
+/// that own a diagnostics list. The user still gets the `E_AUTO_TYPE_PARAM_*`
+/// error this section is about where there is one, and the server stays
+/// alive. The guard tests the graph for an unrepresentable cell,
 /// NOT the diagnostics for an error: a compile error that leaves the graph
 /// representable does not suppress eval, because the LSP evaluates through
 /// non-fatal ones on purpose.

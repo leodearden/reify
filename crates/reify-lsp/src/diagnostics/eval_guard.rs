@@ -50,14 +50,16 @@ fn stage_one_scanned_cells(
 /// `assert_value_cell_types_representable` panics on. `None` when the graph is
 /// safe to evaluate.
 ///
-/// This is THE containment predicate; [`compiled_graph_has_unrepresentable_cell`]
-/// is a test-only `bool` face over it. It returns the offender rather than a
-/// bare bit so the three guard sites can say WHICH cell suppressed their
-/// eval/check pass. Without that the degradation is silent: the document loses
-/// every eval-time diagnostic and every constraint result (and in
-/// `analysis.rs`, every hover/completion computed value) with nothing in the
-/// server log, making "my constraints stopped being checked" indistinguishable
-/// in the field from "the engine thinks they're satisfied".
+/// This is THE containment predicate; `compiled_graph_has_unrepresentable_cell`
+/// is a test-only `bool` face over it (cited by name, not linked — it does not
+/// exist in a non-test build), and [`skip_reason`] is the reporting
+/// form the entry points call. It returns the offender rather than a bare bit
+/// so the report can say WHICH cell suppressed the eval/check pass. Without
+/// that the degradation is silent: the document loses every eval-time
+/// diagnostic and every constraint result (and in `analysis.rs`, every
+/// hover/completion computed value), making "my constraints stopped being
+/// checked" indistinguishable in the field from "the engine thinks they're
+/// satisfied".
 ///
 /// "First" is first in `graph.value_cells`' iteration order — an `im::HashMap`,
 /// so hash order, NOT source order. A module with several unrepresentable
@@ -83,9 +85,11 @@ fn stage_one_scanned_cells(
 /// representable) is owned by **task #6851**, whose addendum independently
 /// designates a caller-side error gate as its "fix-site 2
 /// (defence-in-depth)". This predicate is that gate, scoped to `reify-lsp`
-/// only: the three LSP production entry points skip their eval/check pass
-/// when it returns `true`, so the user still gets the compile-stage
-/// diagnostics that explain what is wrong, and the server stays alive.
+/// only: the three LSP production entry points ask [`skip_reason`] and skip
+/// their eval/check pass when it answers `Some`, so the server stays alive
+/// and the user is told what happened — by the compile-stage diagnostics
+/// where the module has any, and by [`SkippedEval::diagnostic`] on the
+/// compile-clean shapes where it has none (see "## Blast radius" below).
 /// `crates/reify-cli/src/mcp_context.rs`'s ungated `engine.eval` sites
 /// remain #6851's to fix.
 ///
@@ -209,6 +213,18 @@ fn stage_one_scanned_cells(
 /// and never instantiated. Containing them is a strict improvement — the
 /// alternative on those inputs is a dead language server — but the root cause
 /// stays task #6851's.
+///
+/// Both compile CLEAN, which is what makes them the sharp end of this claim
+/// rather than a footnote to it: there is no compile diagnostic to explain
+/// the skipped eval pass, so [`SkippedEval::diagnostic`] has to. Pinned as
+/// cases (6)-(7) of
+/// `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`
+/// and, at the entry points, by
+/// `crate::diagnostics::tests::compile_clean_unrepresentable_graph_is_contained_and_reported`
+/// and
+/// `crate::analysis::tests::compile_clean_unrepresentable_graph_yields_empty_check_result`.
+/// Without those, a future narrowing of the predicate back toward an
+/// `auto:`-specific test would leave the whole family green.
 ///
 /// ## Why narrow rather than the CLI's blanket error gate
 ///
@@ -367,9 +383,9 @@ pub(crate) fn skip_reason(compiled: &reify_compiler::CompiledModule) -> Option<S
 /// Boolean face of [`first_unrepresentable_cell`] — see that function's doc
 /// for the mechanism, the cost model and the rejected alternatives.
 ///
-/// **Test-only.** All three production entry points need the OFFENDER, not
-/// just the bit, because they log which cell forced the skip — so nothing in
-/// the lib build calls this form. It is kept because the property the unit
+/// **Test-only.** All three production entry points go through
+/// [`skip_reason`], which needs the OFFENDER rather than the bit in order to
+/// name it — so nothing in the lib build calls this form. It is kept because the property the unit
 /// test below pins genuinely IS a boolean ("fires / does not fire", per
 /// compiled shape), and spelling `.is_some()` at each of those call sites
 /// would bury the predicate's contract in an accessor.
