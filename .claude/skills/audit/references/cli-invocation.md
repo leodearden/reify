@@ -118,9 +118,11 @@ only as an explicit override. A `<owner>/<project>` git identity names the
 identifier carrying different `git_root`s, and jcodemunch's `index_folder`
 collision guard hard-refuses on the mismatch. Per-path is also what makes the
 freshness comparison meaningful — one corpus per tree, so "built at a different
-commit" means something. Passing the retired `leodearden/reify` by hand on this
-host resolves to an empty husk and refuses `E_JC_INDEX_EMPTY` at exit 125 with no
-detector run.
+commit" means something. Passing the retired `leodearden/reify` by hand resolves
+to an empty husk; with a reachable serve the freshness gate then refuses
+`E_JC_INDEX_EMPTY` — exit 125 with no detector run on an all-jcodemunch
+`--pattern` set, and a zero-findings fail-soft breadcrumb on a mixed or
+pattern-less run (§4.1).
 
 The `CODE_INDEX_PATH` rung of `--jcodemunch-index-dir` is load-bearing rather than
 decorative: it is jcodemunch's own variable and the one
