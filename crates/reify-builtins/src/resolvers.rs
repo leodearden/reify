@@ -317,4 +317,45 @@ mod tests {
              concrete path computes, dimensionless case included"
         );
     }
+
+    /// `principal_stresses(Field<D, Tensor<2,3,Scalar<PRESSURE>>>)` →
+    /// `Field<D, List(Scalar<PRESSURE>)>`.
+    ///
+    /// A `List` codomain because sampling the field at a point yields three
+    /// eigenvalues. Mirrors `compute_principal_stresses`
+    /// (`crates/reify-expr/src/analysis.rs:239-256`).
+    #[test]
+    fn a_pressure_tensor_field_of_principal_stresses_is_a_field_of_lists() {
+        assert_eq!(
+            tensor_scalar_reduction_list(&[tensor_field(pressure())]),
+            Some(Type::Field {
+                domain: Box::new(field_domain()),
+                codomain: Box::new(Type::List(Box::new(pressure()))),
+            }),
+            "principal_stresses over a Field must yield Field<D, List(Q)> — the \
+             List sits INSIDE the Field, because eval samples the field and \
+             each sample is the three eigenvalues"
+        );
+    }
+
+    /// `safety_factor(Field<D, Tensor<2,3,Q>>, yield)` → `Field<D, Real>`.
+    ///
+    /// Dimensionless whatever the argument dimension — yield/von_mises cancels
+    /// pointwise over a field exactly as it does for a scalar — but a `Field`
+    /// nonetheless, because `compute_safety_factor`
+    /// (`crates/reify-expr/src/analysis.rs:273-302`) hands back a
+    /// `Value::Field`. That is why the row cannot stay `ResultSpec::Const`: the
+    /// result is no longer arg-INDEPENDENT once a Field argument is admitted.
+    #[test]
+    fn a_pressure_tensor_field_of_safety_factor_is_a_field_of_reals() {
+        assert_eq!(
+            dimensionless_ratio(&[tensor_field(pressure()), pressure()]),
+            Some(Type::Field {
+                domain: Box::new(field_domain()),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            }),
+            "safety_factor over a Field must yield Field<D, Real> — the ratio \
+             is dimensionless, but eval still wraps it as a Value::Field"
+        );
+    }
 }

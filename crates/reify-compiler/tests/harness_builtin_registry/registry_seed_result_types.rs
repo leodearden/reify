@@ -414,3 +414,50 @@ fn the_field_contract_leaves_the_concrete_tensor_path_untouched() {
         "max_shear over a CONCRETE Tensor must still reduce to Scalar<Pressure>"
     );
 }
+
+/// `principal_stresses` at argc 1 over a Field → `Field<D, List(Q)>`.
+///
+/// The `List` sits INSIDE the `Field`: eval samples the field, and each sample
+/// is the three eigenvalues. Mirrors `compute_principal_stresses`
+/// (`crates/reify-expr/src/analysis.rs:239-256`).
+#[test]
+fn registry_result_type_carries_the_field_contract_for_principal_stresses() {
+    assert_eq!(
+        registry_result_type("principal_stresses", &[pressure_tensor_field()]),
+        Some(field_of(Type::List(Box::new(scalar_pressure())))),
+        "principal_stresses(Field<D, Tensor<2,3,Pressure>>) must type as \
+         Field<D, List(Scalar<Pressure>)> — the List sits inside the Field"
+    );
+}
+
+/// `safety_factor` at argc 2 over a Field → `Field<D, Real>`.
+///
+/// Dimensionless in BOTH forms: yield/von_mises cancels pointwise over a field
+/// exactly as it does for a scalar. The result is nonetheless a `Field`, because
+/// eval still hands back a `Value::Field` — which is why the row cannot stay
+/// `ResultSpec::Const`.
+#[test]
+fn registry_result_type_carries_the_field_contract_for_safety_factor() {
+    assert_eq!(
+        registry_result_type(
+            "safety_factor",
+            &[pressure_tensor_field(), scalar_pressure()]
+        ),
+        Some(field_of(Type::dimensionless_scalar())),
+        "safety_factor(Field<D, Tensor<2,3,Pressure>>, Pressure) must type as \
+         Field<D, Real> — dimensionless codomain, but still a Field"
+    );
+}
+
+/// `stress_invariants` deliberately keeps its `StructureRef` under a Field
+/// argument: eval has NO Field arm for that name, so a Field-typed answer here
+/// would be a claim eval cannot honour.
+#[test]
+fn stress_invariants_is_still_a_structure_ref_under_a_field_argument() {
+    assert_eq!(
+        registry_result_type("stress_invariants", &[pressure_tensor_field()]),
+        Some(Type::StructureRef("StressInvariants".to_string())),
+        "stress_invariants has no Field arm in eval's dispatch ladder, so the \
+         registry must keep answering StructureRef"
+    );
+}
