@@ -132,6 +132,18 @@ echo "=== scripts/warm-lane-source-integrity.sh hermetic tests (task 7227) ==="
 # inherits the clean environment too.
 # shellcheck source=scripts/lib_git_env_scrub.sh
 source "$REPO_ROOT/scripts/lib_git_env_scrub.sh"
+
+# The lib's source guard is a plain shell variable, so an ancestor that ever
+# EXPORTS it makes the source above return before defining the list. Nothing in
+# the repo does today (checked), but the failure would be silent in the worst
+# direction -- the suite would run unscrubbed and every non-poisoned block would
+# pass vacuously -- so it is refused rather than defaulted.
+[ -n "${REIFY_GIT_ENV_SCRUB_VARS:-}" ] || {
+    echo "ERROR: REIFY_GIT_ENV_SCRUB_VARS is unset after sourcing scripts/lib_git_env_scrub.sh."
+    echo "       _REIFY_LIB_GIT_ENV_SCRUB_SH_SOURCED was already set in the environment, so"
+    echo "       the lib returned early. Refusing to run unscrubbed."
+    exit 1
+}
 # shellcheck disable=SC2086  # deliberate word split: the list is space-delimited
 unset $REIFY_GIT_ENV_SCRUB_VARS || true
 
