@@ -341,10 +341,20 @@ static TopoDS_Wire require_wire(const TopoDS_Shape& shape, const char* role) {
 /// True when `s` carries no topology at all: a null shape, or a compound with
 /// no children.
 ///
-/// EXACTNESS. Testing for zero `TopAbs_VERTEX` is a decision, not a heuristic:
-/// every non-degenerate shape — solid, shell, face, wire, edge, or a compound
-/// containing any of them — has at least one vertex, and only a genuinely
-/// empty one has none. No tolerance and no threshold are involved.
+/// EXACTNESS. A shape carries no topology exactly when it is null, or when it
+/// is a compound whose members are — recursively — all empty. Every other
+/// shape type (compsolid, solid, shell, face, wire, edge, vertex) IS a
+/// topological entity by construction, however degenerate its geometry. No
+/// tolerance and no threshold are involved.
+///
+/// DO NOT reduce this to "has no vertices". That test looks equivalent and is
+/// not: UNBOUNDED IS NOT EMPTY. `make_half_space` builds its solid from a bare
+/// `gp_Pln`, i.e. an unbounded face with zero wires (see the note on
+/// `section_profile_to_wire` above), so a bare `half_space(...)` is a solid
+/// with one face, no edges and NO VERTICES. A vertex test calls that empty and
+/// refuses to export it — measured 2026-09-10 as
+/// `reify-eval::half_space_e2e::bare_half_space_is_constructible` failing with
+/// "export error: ... shape to export is empty".
 ///
 /// WHY A DEDICATED PREDICATE. `BRepAlgoAPI_Common` on disjoint operands (and
 /// `BRepAlgoAPI_Cut` whose tool fully consumes its target) reports
@@ -364,8 +374,15 @@ static bool shape_has_no_topology(const TopoDS_Shape& s) {
     if (s.IsNull()) {
         return true;
     }
-    TopExp_Explorer exp(s, TopAbs_VERTEX);
-    return !exp.More();
+    if (s.ShapeType() != TopAbs_COMPOUND) {
+        return false;
+    }
+    for (TopoDS_Iterator it(s); it.More(); it.Next()) {
+        if (!shape_has_no_topology(it.Value())) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// PRECONDITION: reject an input shape that carries no topology, naming the
@@ -384,6 +401,18 @@ static bool shape_has_no_topology(const TopoDS_Shape& s) {
 /// At the two loft entry points the check runs PER PROFILE inside the existing
 /// loop, after the "requires at least 2 profiles" count check, so a caller who
 /// passed one profile still gets the diagnostic naming their actual mistake.
+///
+/// …plus a tenth site of a different kind: `export_step`, the LAST line of
+/// defence. A design whose whole product geometry collapsed reaches export
+/// even when no sweep was involved, and an empty STEP file is a phantom
+/// artifact — header-only bytes with a success exit. Its blast radius is
+/// bounded and measured: the build pipeline COMPOUNDS every product body
+/// before exporting (`engine_build.rs` Phase-B, :4996-5010), and a compound
+/// holding any real solid has topology, so this guard cannot fire on an empty
+/// body sitting alongside real ones. Only "the whole product collapsed"
+/// reaches it — pinned by
+/// `harness_occt::empty_shape_consumer_guard_integration::
+/// export_step_of_a_compound_holding_an_empty_member_still_succeeds`.
 ///
 /// DELIBERATELY NOT CALLED, each for a stated reason — this list is the
 /// boundary of the invariant, so a reader does not have to re-derive it:
@@ -413,7 +442,7 @@ static void reject_empty_input_shape(const TopoDS_Shape& s, const char* role) {
     }
     throw ContractViolation(
         std::string(role) +
-        " is empty: it carries no topology, so there is nothing to build a body from. "
+        " is empty: it carries no topology, so this operation has nothing to act on. "
         "This usually means a boolean collapsed — operands that do not overlap, or a "
         "tool that fully consumed its target. Check operand placement and units.");
 }
@@ -6788,8 +6817,20 @@ std::unique_ptr<OcctShapeVec> split_shape(
 static std::mutex g_step_export_mutex;
 
 ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
-    std::lock_guard<std::mutex> lock(g_step_export_mutex);
     return wrap_occt_call("export_step", [&]() {
+        // Refuse a shape with no topology FIRST — before the process-global
+        // export mutex is taken and before any controller/schema plumbing, so
+        // a doomed export costs nothing and never makes a real export queue
+        // behind it. Same stance as `serialize_brep` below, which refuses to
+        // hand back empty output: Reify does not emit a phantom artifact.
+        //
+        // Without this, `writer.Transfer`'s IFSelect_ReturnStatus is discarded
+        // (see below, unlike `writer.Write`), so an empty shape exports as
+        // header-only bytes with a success exit.
+        reject_empty_input_shape(shape.shape, "shape to export");
+
+        std::lock_guard<std::mutex> lock(g_step_export_mutex);
+
         // Register the STEP statics BEFORE setting them. STEPControl_Controller
         // ::Init() is the idempotent call that REGISTERS the
         // `write.step.schema` Interface_Static; calling SetCVal before any

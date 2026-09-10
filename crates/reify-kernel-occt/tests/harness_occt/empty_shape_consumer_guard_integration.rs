@@ -634,3 +634,39 @@ fn export_step_of_a_compound_holding_an_empty_member_still_succeeds() {
         "both real solids must survive the export; the empty member contributes none"
     );
 }
+
+/// UNBOUNDED IS NOT EMPTY — the control that bounds the predicate itself.
+///
+/// `make_half_space` builds its solid from a bare `gp_Pln`: an unbounded face
+/// with zero wires, hence no edges and NO VERTICES. A "has no vertices" test
+/// for emptiness therefore misclassifies a perfectly real half-space and
+/// refuses to export it — which is exactly what happened when this guard first
+/// landed (`reify-eval::half_space_e2e::bare_half_space_is_constructible`
+/// failed with "export error: ... shape to export is empty").
+///
+/// `shape_has_no_topology` asks the exact question instead — null, or a
+/// compound that recursively holds nothing — so this shape passes.
+#[test]
+fn export_step_of_an_unbounded_half_space_still_succeeds() {
+    let mut kernel = OcctKernel::new();
+    let hs = kernel
+        .execute(&GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Real(0.0),
+            nz: Value::Real(1.0),
+        })
+        .expect("a bare half_space must be constructible")
+        .id;
+
+    let mut buf = Vec::new();
+    kernel
+        .export(hs, ExportFormat::Step, &mut buf)
+        .expect("an unbounded half-space is a real shape and must still export");
+    assert!(
+        !buf.is_empty(),
+        "the export of a real, if unbounded, shape must write bytes"
+    );
+}
