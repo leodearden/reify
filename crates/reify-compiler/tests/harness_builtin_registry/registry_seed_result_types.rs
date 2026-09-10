@@ -461,3 +461,37 @@ fn stress_invariants_is_still_a_structure_ref_under_a_field_argument() {
          registry must keep answering StructureRef"
     );
 }
+
+/// The Field arm's arity gate, per NAME, through the registry path.
+///
+/// The compiler seam is deliberately arity-INSENSITIVE — `registry_result_type`
+/// resolves via `name_group`, not the argc-keyed `lookup`, because the legacy
+/// ladder arms gated on the name alone (see the module docs on
+/// `builtin_registry.rs`). So a mis-arity call DOES reach the resolver; it is
+/// the resolver's own gate, mirroring eval's dispatch condition, that makes it
+/// fall through to the concrete-tensor answer rather than claiming a `Field`
+/// eval would never produce.
+#[test]
+fn the_field_arm_is_gated_on_each_name_s_own_arity() {
+    let f = pressure_tensor_field();
+
+    for name in ["von_mises", "max_shear"] {
+        assert_eq!(
+            registry_result_type(name, &[f.clone(), scalar_pressure()]),
+            Some(Type::dimensionless_scalar()),
+            "{name} at argc 2 must fall through — eval's Field dispatch gate is \
+             evaluated_args.len() == 1"
+        );
+    }
+    assert_eq!(
+        registry_result_type("principal_stresses", &[f.clone(), scalar_pressure()]),
+        Some(Type::List(Box::new(Type::dimensionless_scalar()))),
+        "principal_stresses at argc 2 must fall through to the concrete List"
+    );
+    assert_eq!(
+        registry_result_type("safety_factor", std::slice::from_ref(&f)),
+        Some(Type::dimensionless_scalar()),
+        "safety_factor at argc 1 must fall through — its Field dispatch gate is \
+         evaluated_args.len() == 2"
+    );
+}

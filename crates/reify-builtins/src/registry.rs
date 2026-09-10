@@ -213,6 +213,15 @@ mod tests {
         }
     }
 
+    /// `Field<Point3<Length>, Tensor<2,3,Scalar<PRESSURE>>>` — the compile-time
+    /// type of `solve_elastic_static(..).stress`.
+    fn pressure_tensor_field() -> Type {
+        Type::Field {
+            domain: Box::new(Type::point3(scalar(DimensionVector::LENGTH))),
+            codomain: Box::new(pressure_tensor()),
+        }
+    }
+
     fn dimensionless_tensor() -> Type {
         Type::Tensor {
             rank: 2,
@@ -376,11 +385,28 @@ mod tests {
 
     /// `stress_invariants` returns the `StressInvariants` structure declared in
     /// `crates/reify-compiler/stdlib/fea.ri`.
+    ///
+    /// A **Field** argument changes nothing: `stress_invariants` is the one
+    /// analysis name with NO Field arm in eval's dispatch ladder (task #6577),
+    /// so its row stays `ResultSpec::Const` and a Field-typed answer here would
+    /// be a claim eval cannot honour. This is the boundary guard that keeps the
+    /// Field prelude from being "simplified" into covering the whole family.
+    ///
+    /// FALSIFIABILITY (measured): re-tagging the row
+    /// `result: ArgAware(tensor_scalar_reduction)` makes the Field case below
+    /// fail with `left: Some(Field { .. })` against
+    /// `right: Some(StructureRef("StressInvariants"))`. Reverted.
     #[test]
     fn stress_invariants_resolves_to_its_structure_ref() {
         assert_eq!(
             resolve("stress_invariants", &[pressure_tensor()]),
             Some(Type::StructureRef("StressInvariants".to_string()))
+        );
+        assert_eq!(
+            resolve("stress_invariants", &[pressure_tensor_field()]),
+            Some(Type::StructureRef("StressInvariants".to_string())),
+            "eval has no Field arm for stress_invariants, so the registry must \
+             keep answering StructureRef under a Field argument"
         );
     }
 

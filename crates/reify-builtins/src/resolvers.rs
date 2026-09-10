@@ -383,4 +383,150 @@ mod tests {
              is dimensionless, but eval still wraps it as a Value::Field"
         );
     }
+
+    // ── #6577's boundary guards ─────────────────────────────────────────────
+    //
+    // Ported from main's commit ce613ea07c. Each pins a fall-through the Field
+    // prelude must NOT capture, so the prelude cannot later be "simplified" into
+    // a claim eval cannot honour. Fall-through means the concrete-tensor ladder,
+    // where `tensor_quantity` reads a `Type::Field` as DIMENSIONLESS — safe,
+    // because eval answers those calls with `Value::Undef`, which
+    // `value_type_kind_matches` accepts for ANY type.
+    //
+    // Several pass on arrival. For those, the comment records a MEASURED
+    // falsifiability experiment (mutate the gate, observe the failure, revert)
+    // rather than asserting the guard's value is self-evident.
+
+    /// A `Field` whose codomain is not a 3x3 tensor/matrix falls through.
+    ///
+    /// Eval's `tensor_element_dimension` rejects the shape and returns
+    /// `Value::Undef`, so claiming a `Field` result here would be a claim eval
+    /// cannot honour.
+    ///
+    /// FALSIFIABILITY (measured): widening `field_tensor_arg`'s codomain match
+    /// to a catch-all `_ => DimensionVector::DIMENSIONLESS` makes this test fail
+    /// with `left: Some(Field { .. })`, `right: Some(Scalar{DIMENSIONLESS})`.
+    /// Reverted.
+    #[test]
+    fn a_field_whose_codomain_is_not_a_3x3_tensor_falls_through() {
+        let vec3_codomain = Type::Field {
+            domain: Box::new(field_domain()),
+            codomain: Box::new(Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        };
+        assert_eq!(
+            tensor_scalar_reduction(&[vec3_codomain]),
+            Some(Type::dimensionless_scalar()),
+            "a Vector3 codomain must NOT take the Field arm — eval's \
+             tensor_element_dimension rejects it and yields Value::Undef"
+        );
+
+        let wrong_rank = Type::Field {
+            domain: Box::new(field_domain()),
+            codomain: Box::new(Type::tensor(2, 2, pressure())),
+        };
+        assert_eq!(
+            tensor_scalar_reduction(&[wrong_rank]),
+            Some(Type::dimensionless_scalar()),
+            "a 2x2 tensor codomain must NOT take the Field arm — eval's gate \
+             requires n = 3"
+        );
+
+        let non_scalar_quantity = Type::Field {
+            domain: Box::new(field_domain()),
+            codomain: Box::new(Type::tensor(2, 3, Type::String)),
+        };
+        assert_eq!(
+            tensor_scalar_reduction(&[non_scalar_quantity]),
+            Some(Type::dimensionless_scalar()),
+            "a non-Scalar, non-Int codomain quantity must NOT take the Field arm"
+        );
+    }
+
+    /// A `Type::Int` codomain quantity DOES take the Field arm, mapping to
+    /// DIMENSIONLESS rather than declining.
+    ///
+    /// Carried over from eval for the same reason the rest of the gate is:
+    /// `tensor_element_dimension` maps `Int` to DIMENSIONLESS, so declining here
+    /// would under-claim a call eval really does answer with a `Value::Field`.
+    ///
+    /// FALSIFIABILITY (measured): deleting the `Type::Int => DIMENSIONLESS` arm
+    /// from `field_tensor_arg` makes this test fail with
+    /// `left: Some(Scalar{DIMENSIONLESS})`, `right: Some(Field { .. })`.
+    /// Reverted.
+    #[test]
+    fn an_int_codomain_quantity_maps_to_dimensionless_rather_than_declining() {
+        let int_quantity = Type::Field {
+            domain: Box::new(field_domain()),
+            codomain: Box::new(Type::tensor(2, 3, Type::Int)),
+        };
+        assert_eq!(
+            tensor_scalar_reduction(&[int_quantity]),
+            Some(Type::Field {
+                domain: Box::new(field_domain()),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            }),
+            "an Int codomain quantity must still take the Field arm — eval's \
+             tensor_element_dimension maps Int to DIMENSIONLESS"
+        );
+    }
+
+    /// Only arg **0** is read as the shape source.
+    ///
+    /// Measured at `safety_factor`'s arity so the arity gate cannot confound the
+    /// result: at argc 2 the Field arm IS admissible, and the answer is still
+    /// the concrete one because slot 0 holds a concrete tensor.
+    ///
+    /// FALSIFIABILITY (measured): changing `reduce_tensor_arg`'s prelude to scan
+    /// every slot (`(0..args.len()).find_map(|i| field_tensor_arg(args, i))`)
+    /// makes this test fail with `left: Some(Field { .. })`,
+    /// `right: Some(Scalar{DIMENSIONLESS})`. Reverted.
+    #[test]
+    fn a_field_at_a_non_zero_slot_is_not_read_as_the_shape_source() {
+        assert_eq!(
+            dimensionless_ratio(&[Type::tensor(2, 3, pressure()), tensor_field(pressure())]),
+            Some(Type::dimensionless_scalar()),
+            "a Field at slot 1 must not make the result a Field — eval reads the \
+             stress argument at slot 0"
+        );
+    }
+
+    /// The unary reductions admit the Field arm ONLY at argc 1.
+    ///
+    /// Eval's own dispatch condition is `evaluated_args.len() == 1`
+    /// (`crates/reify-expr/src/lib.rs` ladder), so a 2-arg call falls through to
+    /// the concrete ladder. Keeping the compiler's claim narrower-or-equal to
+    /// what eval can honour is the whole point of mirroring the gate.
+    #[test]
+    fn the_unary_reductions_admit_the_field_arm_only_at_argc_1() {
+        let extra = [tensor_field(pressure()), pressure()];
+
+        assert_eq!(
+            tensor_scalar_reduction(&extra),
+            Some(Type::dimensionless_scalar()),
+            "von_mises / max_shear at argc 2 must NOT take the Field arm — \
+             eval's dispatch gate is evaluated_args.len() == 1"
+        );
+        assert_eq!(
+            tensor_scalar_reduction_list(&extra),
+            Some(Type::List(Box::new(Type::dimensionless_scalar()))),
+            "principal_stresses at argc 2 must NOT take the Field arm, and must \
+             still answer with the concrete ladder's List"
+        );
+    }
+
+    /// Mirror image: `safety_factor` admits the Field arm ONLY at argc 2.
+    ///
+    /// Eval dispatches `compute_safety_factor` on a Field at
+    /// `evaluated_args.len() == 2`; a 1-arg call falls through.
+    #[test]
+    fn safety_factor_admits_the_field_arm_only_at_argc_2() {
+        assert_eq!(
+            dimensionless_ratio(&[tensor_field(pressure())]),
+            Some(Type::dimensionless_scalar()),
+            "safety_factor at argc 1 must NOT take the Field arm — eval's \
+             dispatch gate is evaluated_args.len() == 2"
+        );
+    }
 }
