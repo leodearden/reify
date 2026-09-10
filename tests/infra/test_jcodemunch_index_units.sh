@@ -585,10 +585,11 @@ assert "E-DOC4: activation doc names the forced lever JCODEMUNCH_GIT_ROOT_IDENTI
 # prose regex is the same defect over more surface area, since the space of false
 # paraphrases is unbounded. The capability manifest separately RECORDS that
 # absence as `stale-degradation-contract-removed`
-# (docs/prds/jcodemunch-substrate-restoration.capability-manifest.yaml) — a record
-# for a reader, not an executed check: nothing in this tree runs `delivered_check`
-# entries (scripts/prd-capability-check.py evaluates probe-set JSON, a different
-# mechanism).
+# (docs/prds/jcodemunch-substrate-restoration.capability-manifest.yaml). Do not
+# assume that record is what gates the tree: nothing IN THIS REPO executes
+# `delivered_check` entries — scripts/prd-capability-check.py consumes
+# committed-probe-set JSON, a different mechanism, and never reads the key. What
+# a downstream consumer does with the sidecar was not measured here.
 #
 # E-DOC6 greps a Rust TYPE NAME instead, so it is referential integrity rather
 # than a wording pin: it survives any rewording of the row and reds only if the
