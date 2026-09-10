@@ -11,6 +11,8 @@
 #   step-1 — the three functions' behaviour (escape, predicate, id harvest)
 #   step-3 — SPOT-delegation guard: the grammar lives in the lib and nowhere
 #            else, and its consumers source it rather than re-inlining it
+#   step-20 — digit-bearing branch prefixes (D9-D12), and Block F: the
+#            harvest/arbiter AGREEMENT invariant, asserted as set EQUALITY
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -192,6 +194,27 @@ assert "D8: an id repeated in both forms appears exactly once" \
 
 Re-lands #5686." "$PFX"
 
+# D9-D12 (step-20) — the branch prefix is CALLER-SUPPLIED and may itself carry
+# digits, so the id can never be re-derived from the matched text by a
+# character class: it is only ever what REMAINS once the matched sigil is
+# stripped. D11 is the discriminating case — a prefix whose digit is trailing
+# with no separator defeats a trailing-digit-run normalisation too, so this
+# assertion is what forbids that repair as well as the character-class one.
+D_T2SLASH_RE="$(task_citation_regex_escape 't2/')"
+assert "D9: a digit INSIDE the prefix does not fuse onto the id (t2/ + t2/200)" \
+    stdout_is '200' task_citation_peer_ids 'Merge t2/200 into main' "$D_T2SLASH_RE"
+
+D_ONESLASH_RE="$(task_citation_regex_escape '1/')"
+assert "D10: a digit LEADING the prefix does not fuse onto the id (1/ + 1/200)" \
+    stdout_is '200' task_citation_peer_ids 'Merge 1/200 into main' "$D_ONESLASH_RE"
+
+D_T2BARE_RE="$(task_citation_regex_escape 't2')"
+assert "D11: a digit TRAILING a separatorless prefix does not fuse (t2 + t2200)" \
+    stdout_is '200' task_citation_peer_ids 'Merge t2200 into main' "$D_T2BARE_RE"
+
+assert "D12: the '#' form is unaffected by a digit-bearing prefix" \
+    stdout_is '200' task_citation_peer_ids 'closes #200' "$D_T2SLASH_RE"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E (step-3) — SPOT-delegation guard
 #
@@ -277,6 +300,105 @@ _no_other_carriers() {
 }
 assert "E7: no other file under scripts/ or hooks/ carries the grammar in code" \
     _no_other_carriers
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block F (step-20) — harvest/arbiter AGREEMENT, as set EQUALITY
+#
+# Block D's header claims this invariant in prose ("an id the predicate rejects
+# must not appear, and every id it accepts must") while asserting only its
+# first half, which is how a silent FALSE NEGATIVE — a cited id the harvest
+# drops — reached review through a fully green suite. This block makes the
+# claim executable.
+#
+# EQUALITY, not containment, is the assertion: containment one way permits the
+# false negative, the other way permits a false positive, and only the
+# conjunction pins the arbiter as the sole authority on what "cites" means.
+#
+# The oracle is derived INDEPENDENTLY of the harvest: enumerate every id the
+# arbiter COULD accept and adjudicate each one through
+# task_citation_message_cites. That candidate set is every SUFFIX of every
+# maximal digit run in the message, which is provably complete: both citation
+# forms require a non-digit (' ' for the merge form, `[^0-9]|$` for the '#'
+# form) immediately after the id, so an accepted id always ends at a run
+# boundary. Nothing acceptable can escape it.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: harvest/arbiter agreement ---"
+
+# _candidate_ids <message> — every SUFFIX of every maximal digit run,
+# sorted-unique. Suffixes rather than whole runs, deliberately: with a
+# digit-bearing prefix the accepted id is a PROPER suffix of a longer run
+# (prefix `t2` over "Merge t2200 into main" accepts 200 out of the run 2200),
+# so a whole-run oracle would be blind to exactly the shape under test.
+_candidate_ids() {
+    local msg="$1" run i n
+    while IFS= read -r run; do
+        n=${#run}
+        for ((i = 0; i < n; i++)); do
+            printf '%s\n' "${run:i}"
+        done
+    done < <(printf '%s\n' "$msg" | grep -oE '[0-9]+' || true) | sort -u
+}
+
+# _arbiter_accepts <message> <escaped_prefix> — the ids the ARBITER accepts,
+# in the harvest's own ordering contract so the two are directly comparable.
+_arbiter_accepts() {
+    local msg="$1" prefix_re="$2" cand
+    while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        if task_citation_message_cites "$msg" "$cand" "$prefix_re"; then
+            printf '%s\n' "$cand"
+        fi
+    done < <(_candidate_ids "$msg") | sort -nu
+}
+
+# _harvest_agrees <message> <escaped_prefix> — the invariant. On failure it
+# prints both sets, which `assert` dumps, so a mismatch localises itself.
+_harvest_agrees() {
+    local msg="$1" prefix_re="$2" harvested accepted
+    harvested="$(task_citation_peer_ids "$msg" "$prefix_re")"
+    accepted="$(_arbiter_accepts "$msg" "$prefix_re")"
+    [ "$harvested" = "$accepted" ] && return 0
+    printf 'harvest=[%s] arbiter=[%s]\n' \
+        "${harvested//$'\n'/,}" "${accepted//$'\n'/,}"
+    return 1
+}
+
+# The prefix corpus spans every way a prefix can interact with the grammar:
+# the default, a digit INSIDE / LEADING / TRAILING the prefix, ERE
+# metacharacters, and the empty prefix (which makes the alternation match
+# everywhere and so strips nothing).
+F_PREFIXES=('task/' 't2/' '1/' 't2' 't.sk/' 'a+b/' '')
+
+# @PFX@ is substituted per prefix, so each row is the SAME message shape under
+# every prefix — the differential that makes a prefix-dependent verdict visible.
+F_TEMPLATES=(
+    'Merge @PFX@200 into main'
+    'Merge @PFX@200 into main
+
+Carries #4880 and #99, and #4880 again.'
+    'chore: tidy up the readme'
+    'follows up on #56861'
+    'rebased onto @PFX@5686 yesterday'
+    'fix(x): 4#5686 and see esc#5686'
+    'Merge @PFX@100 into main
+
+Re-lands #100.'
+    'Merge task/5686 into main'
+    'Merge @PFX@ into main'
+)
+
+for _pfx in "${F_PREFIXES[@]}"; do
+    _pfx_re="$(task_citation_regex_escape "$_pfx")"
+    _row=0
+    for _tpl in "${F_TEMPLATES[@]}"; do
+        _row=$((_row + 1))
+        _msg="${_tpl//@PFX@/$_pfx}"
+        assert "F[prefix='$_pfx' msg$_row]: harvest == arbiter accept set" \
+            _harvest_agrees "$_msg" "$_pfx_re"
+    done
+done
 
 
 test_summary
