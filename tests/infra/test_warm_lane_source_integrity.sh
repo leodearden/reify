@@ -54,6 +54,13 @@
 #   G — NON-MUTATION: the lane's source tree is byte-identical (paths, modes,
 #       mtimes, sizes, contents) and its porcelain status unchanged across a
 #       run that DID find a real deletion -- the run most tempting to "fix".
+#   H — WORKTREE-ROOT RELATIVITY: porcelain paths are worktree-root-relative
+#       even from a subdirectory, while --lane is taken literally, so a --lane
+#       naming a SUBDIRECTORY joins every path against the wrong root and
+#       flips the classifier both ways -- a real deletion into a phantom
+#       (false all-clear) and a phantom into a real deletion (false sentinel).
+#       Pinned as a visible exit-2 wiring error, with the true root and the
+#       no-argument-from-a-subdirectory form as controls.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; classified
 # `pool` in run-all-classification.manifest (hermetic: temp-dir git repos only,
@@ -471,5 +478,104 @@ assert "G1: the lane's source tree is byte-identical across the run" \
 assert "G2: the deleted file was NOT restored" test ! -e "$G_LANE/src/lib.rs"
 assert "G3: nothing was staged" \
     test -z "$(git -C "$G_LANE" diff --cached --name-only)"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — WORKTREE-ROOT RELATIVITY
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: worktree-root relativity ---"
+
+# `git status --porcelain` emits WORKTREE-ROOT-relative paths even when it is
+# invoked from a subdirectory -- measured on git 2.43.0: `git -C <root>/sub
+# status --porcelain` prints ` D sub/x.txt`, not ` D x.txt`. But `--lane` is
+# taken literally (deliberately -- see the script's header) and every candidate
+# is stat-ed as `$LANE/$_path`, so pointing `--lane` at a SUBDIRECTORY joins
+# every entry against the wrong root and flips the classifier in BOTH
+# directions. Both flips were reproduced against the pre-guard script:
+#
+#   FORWARD (false all-clear, the worse one) -- a tracked file that really is
+#     gone is re-stat-ed one level too deep, lands on a DIFFERENT real file
+#     with a colliding leaf name, and is reported `phantom=1` exit 0. The
+#     esc-7106-5 signature this whole script exists to catch, silently
+#     relabelled a view artifact and the sentinel suppressed.
+#   REVERSE (false sentinel) -- a genuine phantom whose root-relative path has
+#     no counterpart under the subdirectory is reported `deleted=1` exit 3.
+#
+# The trap is sharpened by an asymmetry this suite already pins: A7/A8 run the
+# NO-ARGUMENT form from `$A_LANE/nested/deep` and it is correct there, because
+# that path resolves through `git rev-parse --show-toplevel`. So an operator
+# who learns "run it from inside the lane" and then switches to `--lane .` from
+# that same subdirectory gets the opposite behaviour. The header's exit-2
+# contract already claims this class ("a mis-wired invocation is visible");
+# this block is what makes the claim true. Block F covers only a nonexistent
+# directory and a plain non-repo one.
+
+H_ROOT="$(_mktmpd H)"
+H_LANE="$H_ROOT/lane"
+H_POISON="$H_ROOT/poison"
+
+# The path set is the fixture's whole point: `sub/x.txt` and `sub/sub/x.txt`
+# share a leaf name one level apart, so the bad join lands on a REAL file
+# rather than merely missing. A fixture without that collision would produce
+# the right answer by accident and pin nothing.
+_mk_repo "$H_LANE"   a.txt sub/x.txt sub/sub/x.txt sub/y.txt
+_mk_repo "$H_POISON" a.txt sub/x.txt sub/sub/x.txt sub/y.txt
+rm "$H_LANE/sub/x.txt"     # the real deletion, at root-relative path sub/x.txt
+rm "$H_POISON/sub/y.txt"   # makes the poisoned view report sub/y.txt deleted
+
+# Assert the fixture's own premise before asserting on the detector (the
+# C0a-C0d convention), so neither flip can decay into a vacuous pass.
+H_STATUS="$(git -C "$H_LANE" status --porcelain)"
+assert "H0a: FIXTURE — the lane really reports a root-relative ' D sub/x.txt'" \
+    _has ' D sub/x.txt' "$H_STATUS"
+assert "H0b: FIXTURE — ...and that path really is absent on disk" \
+    test ! -e "$H_LANE/sub/x.txt"
+assert "H0c: FIXTURE — ...while the colliding leaf one level deeper IS present" \
+    test -f "$H_LANE/sub/sub/x.txt"
+
+H_POISONED_STATUS="$(GIT_DIR="$H_POISON/.git" GIT_WORK_TREE="$H_POISON" git -C "$H_LANE" status --porcelain)"
+assert "H0d: FIXTURE — the poisoned view reports ' D sub/y.txt'" \
+    _has ' D sub/y.txt' "$H_POISONED_STATUS"
+assert "H0e: FIXTURE — ...whose lane copy is present, so it is a genuine phantom" \
+    test -f "$H_LANE/sub/y.txt"
+assert "H0f: FIXTURE — ...and has no counterpart under the subdirectory" \
+    test ! -e "$H_LANE/sub/sub/y.txt"
+
+# H1-H5: the mis-wiring must be a visible exit-2 error, not either flip.
+run_detector --lane "$H_LANE/sub"
+assert "H1: a --lane pointing at a subdirectory is a wiring error (exit 2)" \
+    test "$RC" -eq 2
+assert "H2a: ...and names the lane-root requirement on stderr" \
+    _has 'root' "$ERR_OUT"
+assert "H2b: ...and names the rejected path, so the mis-wiring is fixable" \
+    _has "$H_LANE/sub" "$ERR_OUT"
+assert "H3: ...and emits no classification line at all (not a classified run)" \
+    _lacks 'deleted=' "$OUT"
+assert "H4: ...so the real deletion is NOT relabelled a phantom (false all-clear)" \
+    _lacks 'phantom=1' "$OUT"
+
+run_detector_poisoned "$H_POISON/.git" "$H_POISON" --lane "$H_LANE/sub"
+assert "H5a: the reverse flip is refused too (exit 2, not the exit-3 sentinel)" \
+    test "$RC" -eq 2
+assert "H5b: ...so a genuine phantom is never reported as a real deletion" \
+    _lacks 'deleted=1' "$OUT"
+
+# H6/H7: controls. Without them a guard that rejected EVERY lane would pass
+# H1-H5 trivially, and the intended division of labour -- `--lane` demands the
+# root, the default form derives it -- would go unstated.
+run_detector --lane "$H_LANE"
+assert "H6a: POSITIVE CONTROL — the true lane root still classifies (exit 3)" \
+    test "$RC" -eq 3
+assert "H6b: ...as a real deletion, on the very fixture the subdir form flipped" \
+    test "$OUT" = "$(_summary 1 0 "$H_LANE")"
+
+run_detector_in "$H_LANE/sub"
+assert "H7a: ASYMMETRY CONTROL — the no-argument form from that same subdirectory" \
+    test "$RC" -eq 3
+assert "H7b: ...still resolves the root through show-toplevel and is correct" \
+    test "$OUT" = "$(_summary 1 0 "$H_LANE")"
+
+assert "H8: the rejected subdirectory is untouched — nothing was created in it" \
+    test ! -e "$H_LANE/sub/.git"
 
 test_summary
