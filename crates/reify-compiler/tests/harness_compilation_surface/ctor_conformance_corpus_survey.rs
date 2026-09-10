@@ -2849,6 +2849,10 @@ const MIGRATION_DEBT_WHY: &str = "un-migrated examples/ call site that cannot be
      in isolation; waived per-site in CTOR_CONFORMANCE_MIGRATION_DEBT and retired by its \
      owning task's own diff";
 
+/// The `Debug` rendering of `reify_core::Severity::Warning`, which is how
+/// [`SurveySite::severity`] carries it.
+const WARNING_SEVERITY: &str = "Warning";
+
 /// γ's per-site ruling on a surveyed site, resolved from the waiver tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
@@ -2916,6 +2920,114 @@ fn disposition_of(site: &SurveySite) -> Disposition {
     }
 
     Disposition::Unattributed
+}
+
+/// Panic unless every WARNING-severity ctor-conformance site in `run` is
+/// accounted for by exactly one waiver-table entry, and every entry accounts for
+/// at least one site.
+///
+/// This is γ's actual signal — "zero UNWAIVED ctor-conformance warnings" — made
+/// repeatable instead of asserted once in a commit message.
+///
+/// Both directions are reported together, because they are DIFFERENT defects:
+///
+/// * a site named by NEITHER table is an UNEXPLAINED warning. Someone added an
+///   un-migrated call site, or reverted a migration; γ's invariant is broken.
+/// * an entry matching NO site is STALE. Its owning task landed and the entry
+///   must be deleted in that same diff — exactly the rot
+///   `ctor_conformance_migration_debt_entries_are_all_live` catches for the debt
+///   list, extended to the whole tracked corpus.
+///
+/// # Scoped to Warning severity, on purpose
+///
+/// The corpus also carries ERROR-severity ctor-conformance-CODED sites —
+/// `bt1_wrong_kind_union.ri`, `bt6_kind_typed_param.ri`,
+/// `raw_lambda_material_field_rejected.ri`. Those are deliberate REJECTION
+/// fixtures reached from non-ctor paths (selector composition, overload
+/// resolution, trait conformance): they are working exactly as intended, they
+/// are not ctor-conformance warnings, and enumerating them as residual would
+/// claim an owner for something nobody needs to retire.
+///
+/// Membership is decided by [`disposition_of`], not by a second copy of the
+/// table lookup, so the artifact's `disposition` column and this assertion can
+/// never disagree about whether a site is waived.
+fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
+    let warnings: Vec<&SurveySite> = run
+        .sites
+        .iter()
+        .filter(|s| s.severity == WARNING_SEVERITY)
+        .collect();
+
+    let unexplained: Vec<String> = warnings
+        .iter()
+        .filter(|s| disposition_of(s) == Disposition::Unattributed)
+        .map(|s| {
+            format!(
+                "  {}:{} :: param '{}'  {}",
+                s.file,
+                s.line,
+                s.field.as_deref().unwrap_or("—"),
+                s.message,
+            )
+        })
+        .collect();
+
+    let stale_residual = CTOR_CONFORMANCE_CORPUS_RESIDUAL.iter().filter_map(|entry| {
+        let matched = warnings
+            .iter()
+            .any(|s| s.file == entry.0 && s.field.as_deref() == Some(entry.1));
+        (!matched).then(|| {
+            format!(
+                "  {} :: param '{}'  (owner {}, CTOR_CONFORMANCE_CORPUS_RESIDUAL)",
+                entry.0, entry.1, entry.2,
+            )
+        })
+    });
+    let stale_debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .filter_map(|entry| {
+            let matched = warnings
+                .iter()
+                .any(|s| debt_entry_describes(entry, &s.file, s.field.as_deref()));
+            (!matched).then(|| {
+                format!(
+                    "  {}{} :: param '{}'  (owner {}, CTOR_CONFORMANCE_MIGRATION_DEBT)",
+                    EXAMPLES_PREFIX, entry.0, entry.1, entry.2,
+                )
+            })
+        });
+    let stale: Vec<String> = stale_residual.chain(stale_debt).collect();
+
+    assert!(
+        unexplained.is_empty() && stale.is_empty(),
+        "the tracked corpus and the waiver tables disagree: {} unexplained \
+         warning(s), {} stale entry/entries.\n\n\
+         UNEXPLAINED — a Warning-severity ctor-conformance site named by NEITHER \
+         CTOR_CONFORMANCE_CORPUS_RESIDUAL nor CTOR_CONFORMANCE_MIGRATION_DEBT:\n{}\n\n\
+         Fix the site. Add a waiver ONLY if a LIVE task genuinely owns retiring it, \
+         and then name that task and say what breaks if it is migrated here instead.\n\n\
+         STALE — a waiver entry matching no live site:\n{}\n\n\
+         The expected case is that the owning task landed: DELETE the entry, in the \
+         same diff that retired the site. The other case is that param extraction \
+         stopped matching the emitter's `argument '<name>'` wording, in which case \
+         EVERY entry goes stale at once — then fix the extraction, do not delete the \
+         entries.\n\n\
+         Scoped to Warning severity: the corpus's three Error-severity \
+         ctor-conformance-coded sites are deliberate rejection fixtures reached from \
+         non-ctor paths, so they are neither waived nor counted here.",
+        unexplained.len(),
+        stale.len(),
+        if unexplained.is_empty() {
+            "  (none)".to_owned()
+        } else {
+            unexplained.join("\n")
+        },
+        if stale.is_empty() {
+            "  (none)".to_owned()
+        } else {
+            stale.join("\n")
+        },
+    );
 }
 
 /// True when `cite` is the repo's canonical `#NNNN` task-cite form.
@@ -4040,6 +4152,11 @@ fn generate_ctor_conformance_corpus_survey() {
         run.partial.len(),
         out.display()
     );
+
+    // Asserted AFTER the write, deliberately: a failing run still leaves a
+    // regenerated artifact on disk, so the operator can read the disposition
+    // column to see which sites the panic is talking about.
+    assert_no_unwaived_ctor_conformance_warnings(&run);
 }
 
 #[test]
