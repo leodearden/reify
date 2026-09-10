@@ -14,6 +14,7 @@
 #   D — installer CLI guard, source pre-flight, and fail-open
 #   E — repo-side retirement invariants for the old serve unit (task η)
 #   F — smoke-script connection-failure hint contract
+#   G — setup-dev.sh wiring (structural grep, no execution)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -529,5 +530,51 @@ assert "F7: smoke script parses and --help exits 0" \
 # F8: watcher guardrail — the hint rewrite must not spill into assertion 3's site
 assert "F8: assertion-3 site still names jcodemunch-watcher.service" \
     bash -c 'grep -q "jcodemunch-watcher[.]service is not active" "$1"' _ "$SMOKE"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — setup-dev.sh wiring (structural grep, no execution)
+#
+# Asserted structurally rather than by running setup-dev.sh: that script installs
+# toolchains and mutates the host, so executing it from a test is not an option.
+# Same approach as test_warm_lane_boot_persistence.sh's Block E.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: setup-dev.sh wiring ---"
+
+# G1: setup-dev.sh invokes the installer at all
+assert "G1: setup-dev.sh invokes install-jcodemunch-index-units.sh" \
+    bash -c 'grep -q "install-jcodemunch-index-units.sh" "$1"' _ "$SETUP_DEV"
+
+# G2: the invocation is non-fatal — a failed unit install must never abort dev
+# setup, which is the whole point of the if/then-ok/else-warn shape used at
+# setup-dev.sh:283-287 for the warm-lane installer.
+assert "G2: the invocation is non-fatal (else + warn, and no exit in the failure branch)" \
+    bash -c '
+        block=$(grep -A8 "install-jcodemunch-index-units.sh" "$1")
+        echo "$block" | grep -q "else" || exit 1
+        echo "$block" | grep -q "warn" || exit 1
+        ! echo "$block" | grep -qE "^[[:space:]]*exit[[:space:]]+[0-9]+[[:space:]]*$"
+    ' _ "$SETUP_DEV"
+
+# G3: index freshness is UNCONDITIONAL — the call must NOT sit inside the
+# REIFY_PROVISION_WARM_LANES=1 block. Gating it behind the warm-lane flag would
+# mean a developer who never provisions warm lanes silently gets a stale index.
+# Asserted by line number: the call site must fall outside [gate, matching fi].
+assert "G3: the invocation is OUTSIDE the REIFY_PROVISION_WARM_LANES block (index freshness is unconditional)" \
+    bash -c '
+        gate_ln=$(grep -n "if \[ \"\${REIFY_PROVISION_WARM_LANES:-}\" = \"1\" \]" "$1" | head -1 | cut -d: -f1)
+        [ -n "$gate_ln" ] || exit 1
+        # Outer fi: the first unindented ^fi$ after the gate (inner fis are indented)
+        fi_ln=$(awk "NR > $gate_ln && /^fi\$/ { print NR; exit }" "$1")
+        [ -n "$fi_ln" ] || exit 1
+        install_ln=$(grep -n "install-jcodemunch-index-units.sh" "$1" | head -1 | cut -d: -f1)
+        [ -n "$install_ln" ] || exit 1
+        [ "$install_ln" -lt "$gate_ln" ] || [ "$install_ln" -gt "$fi_ln" ]
+    ' _ "$SETUP_DEV"
+
+# G4: the edit leaves setup-dev.sh parsing
+assert "G4: setup-dev.sh parses" \
+    bash -n "$SETUP_DEV"
 
 test_summary
