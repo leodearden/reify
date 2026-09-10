@@ -79,10 +79,10 @@ http_code=$(curl -s \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-jcodemunch","version":"0.1"}}}' \
     2>/dev/null) || {
     echo "FAIL [1]: curl to $SERVE_URL failed (connection refused or timeout)." >&2
-    echo "       Start the serve first:" >&2
-    echo "         uvx --python 3.12 --from 'jcodemunch-mcp @ git+https://github.com/jgravelle/jcodemunch-mcp.git@v1.108.27' jcodemunch-mcp serve --transport streamable-http --host 127.0.0.1 --port 8901 --watcher=false" >&2
-    echo "       Or enable the systemd unit:" >&2
-    echo "         systemctl --user enable --now jcodemunch-serve.service" >&2
+    echo "       There is no persistent serve unit any more.  The wrapper spawns" >&2
+    echo "       one for the duration of a command and tears it down on exit:" >&2
+    echo "         bash scripts/with-jcodemunch-serve.sh --port 8901 -- bash scripts/smoke-jcodemunch-serve.sh" >&2
+    echo "       The wrapper owns the pinned jcodemunch version — do not pin one here." >&2
     echo "       See: docs/architecture-audit/jcodemunch-serve-activation.md" >&2
     exit 1
 }
