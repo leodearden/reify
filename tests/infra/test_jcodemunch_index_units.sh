@@ -616,6 +616,22 @@ assert "E-SKILL2: SKILL.md documents --jcodemunch-index-dir" \
 assert "E-SKILL3: SKILL.md documents the E_JC_INDEX_* refusal codes" \
     bash -c 'git -C "$1" grep -q "E_JC_INDEX_" -- .claude/skills/audit/SKILL.md' _ "$REPO_ROOT"
 
+# E-CLI1..3 mirror E-SKILL1..3 one-for-one against the file SKILL.md sends the
+# reader to for "full flag documentation". Correcting only SKILL.md would leave
+# the authoritative flag reference still advertising the retired default and the
+# retired unit — a half-correction that reads as deliberate. Asserted separately
+# rather than by widening E-SKILL* to `-- .claude/skills`, so a regression names
+# the file that regressed.
+
+assert "E-CLI1: cli-invocation.md does not name the retired jcodemunch-serve.service unit" \
+    bash -c '! git -C "$1" grep -qE "jcodemunch-serve\.service" -- .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
+
+assert "E-CLI2: cli-invocation.md documents --jcodemunch-index-dir" \
+    bash -c 'git -C "$1" grep -q -- "--jcodemunch-index-dir" .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
+
+assert "E-CLI3: cli-invocation.md documents the E_JC_INDEX_* refusal codes" \
+    bash -c 'git -C "$1" grep -q "E_JC_INDEX_" -- .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block F — smoke-script connection-failure hint contract
