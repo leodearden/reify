@@ -116,15 +116,19 @@ impl AnalysisContext {
         engine.set_capture_undef_causes(true);
 
         // Containment (root cause owned by task **#6851**): a FAILED `auto:`
-        // type-parameter resolution leaves an unsubstituted `Type::TypeParam`
-        // value cell that panics `engine.check` in debug builds — see
-        // `crate::diagnostics::eval_guard::first_unrepresentable_cell`'s doc comment for
-        // the mechanism. Skip the eval/check pass and hand back an
-        // empty `CheckResult`; `compiled.diagnostics` already carries the
-        // user-visible `E_AUTO_TYPE_PARAM_*` error, so hover / completion /
-        // goto-def / symbols still surface the real problem. Path-qualified
-        // deliberately, so the cross-module borrow of the predicate is visible
-        // at the call site.
+        // type-parameter resolution — and, per that predicate's
+        // "## Blast radius", two shapes with no `auto:` clause at all — leave
+        // an unsubstituted `Type::TypeParam` value cell that panics
+        // `engine.check` in debug builds. See
+        // `crate::diagnostics::eval_guard::first_unrepresentable_cell`'s doc
+        // comment for the mechanism. Skip the eval/check pass and hand back an
+        // empty `CheckResult`. On the `auto:` shapes `compiled.diagnostics`
+        // already carries the user-visible `E_AUTO_TYPE_PARAM_*` error, so
+        // hover / completion / goto-def / symbols still surface the real
+        // problem; on the compile-clean ones it carries nothing, which is what
+        // the editor-visible report below is for. Path-qualified deliberately,
+        // so the cross-module borrow of the guard is visible at the call
+        // site.
         //
         // BEHAVIOUR: hover and completion over such a file show no computed
         // values, because `check_result.values` is empty. That is the correct
