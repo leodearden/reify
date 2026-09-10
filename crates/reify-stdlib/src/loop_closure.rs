@@ -54,7 +54,7 @@
 use reify_ir::Value;
 
 use crate::eval_builtin;
-use crate::loop_closure_value::JointValue;
+use crate::loop_closure_value::{JointKind, JointValue};
 
 /// Fold a chain of joint Maps into a single composed Transform.
 ///
@@ -614,19 +614,35 @@ pub fn extract_loop_closure_chains(
     Some((chain_a, vals_a, chain_b, vals_b_initial, free_b))
 }
 
-/// Returns `true` when `joint` is the 0-DOF `fixed` kind — a rigid link that
-/// contributes a transform to a chain but no free variable to the solver.
+/// Read a joint Map's declared `kind` as the typed [`JointKind`].
+///
+/// SPOT for every kind-string comparison in this module: `loop_closure_value`
+/// owns the seven canonical strings and their widths, so a rename or an added
+/// kind is found in one place rather than in scattered `== "fixed"` literals.
+///
+/// Returns `None` for a non-Map, a missing or non-String `kind` field, or a
+/// string [`JointKind::from_str`] does not recognise. All three collapse to the
+/// same "no typed kind" answer because every caller here handles an
+/// unrecognised joint exactly as it handles a recognised one it has no arm for.
+fn joint_kind(joint: &Value) -> Option<JointKind> {
+    match joint {
+        Value::Map(m) => match m.get(&Value::String("kind".to_string())) {
+            Some(Value::String(s)) => JointKind::from_str(s),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Returns `true` when `joint` is the 0-DOF [`JointKind::Fixed`] kind — a rigid
+/// link that contributes a transform to a chain but no free variable to the
+/// solver.
 ///
 /// Read from the joint Map's declared `kind` rather than inferred from a
 /// resolved `JointValue::Scalar(0.0)`: the fixed sentinel and a genuinely
 /// free prismatic seeded at a 0.0 midpoint are indistinguishable by value.
 fn is_zero_dof_joint(joint: &Value) -> bool {
-    match joint {
-        Value::Map(m) => {
-            m.get(&Value::String("kind".to_string())) == Some(&Value::String("fixed".to_string()))
-        }
-        _ => false,
-    }
+    matches!(joint_kind(joint), Some(JointKind::Fixed))
 }
 
 /// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
@@ -786,19 +802,16 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
     if let Some(v) = direct_binding_value(joint, bindings) {
         return Some(v);
     }
-    if let Value::Map(map) = joint {
-        let kind = match map.get(&Value::String("kind".to_string())) {
-            Some(Value::String(s)) => s.as_str(),
-            _ => return None,
-        };
-        if kind == "coupling"
-            && let Some(parent) = map.get(&Value::String("parent".to_string()))
-        {
-            return resolve_joint_value(parent, bindings);
+    match joint_kind(joint) {
+        Some(JointKind::Coupling) => {
+            if let Value::Map(map) = joint
+                && let Some(parent) = map.get(&Value::String("parent".to_string()))
+            {
+                return resolve_joint_value(parent, bindings);
+            }
         }
-        if kind == "fixed" {
-            return Some(JointValue::Scalar(0.0));
-        }
+        Some(JointKind::Fixed) => return Some(JointValue::Scalar(0.0)),
+        _ => {}
     }
     joint_range_midpoint(joint)
 }
@@ -2069,17 +2082,15 @@ mod tests {
         Value::Map(m)
     }
 
-    /// Build a synthetic 0-DOF rigid link: `{ kind: "fixed", origin: <pose> }`.
-    /// This is the shape `mechanism::append_body` appends to a closure path to
-    /// carry a body's `pose` into the residual (task 7186 defect B).
+    /// Build a synthetic 0-DOF rigid link — the shape
+    /// `mechanism::append_body` appends to a closure path to carry a body's
+    /// `pose` into the residual (task 7186 defect B).
+    ///
+    /// Delegates to the production constructor so these tests consume the
+    /// SAME shape the builder emits; the literal Map is pinned once, by
+    /// `mechanism::tests::pose_link_is_a_fixed_kind_map_carrying_the_pose_as_origin`.
     fn fixed_link(pose: Value) -> Value {
-        let mut m = std::collections::BTreeMap::new();
-        m.insert(
-            Value::String("kind".to_string()),
-            Value::String("fixed".to_string()),
-        );
-        m.insert(Value::String("origin".to_string()), pose);
-        Value::Map(m)
+        crate::mechanism::pose_link(&pose)
     }
 
     /// A pure-translation `Value::Transform` of `len_m` along +X.

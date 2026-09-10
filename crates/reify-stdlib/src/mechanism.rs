@@ -279,7 +279,7 @@ fn identity_transform() -> Value {
 /// signature change, and `extract_loop_closure_chains` resolves it to the
 /// 0-DOF sentinel without making it a solver free variable (task 7186
 /// step-4).
-fn pose_link(pose: &Value) -> Value {
+pub(crate) fn pose_link(pose: &Value) -> Value {
     let mut m = BTreeMap::new();
     m.insert(
         Value::String("kind".to_string()),
@@ -1379,17 +1379,30 @@ mod tests {
 
     // ── closing body pose enters the closure path (task 7186 defect B) ───
 
-    /// Build the synthetic 0-DOF rigid link `{ kind: "fixed", origin: pose }`
-    /// that a body's `pose` becomes when it decorates a closure path
-    /// terminal. Test-local mirror of `mechanism::pose_link`.
-    fn expected_pose_link(pose: &Value) -> Value {
-        let mut m = BTreeMap::new();
-        m.insert(
+    /// The synthetic 0-DOF rigid link's SHAPE contract, pinned literally in
+    /// exactly one place. Every other site — in this module and in
+    /// `loop_closure.rs`'s tests — calls `pose_link` itself, so a shape change
+    /// fails here (loudly, against the spelled-out Map) instead of silently
+    /// agreeing with itself everywhere.
+    ///
+    /// `kind = "fixed"` is what makes the link compose correctly and stay out
+    /// of `free_b`: `joints.rs::transform_at` applies `origin ∘ motion` outside
+    /// every per-kind arm and the fixed arm's motion is the identity, so the
+    /// link evaluates to exactly `origin`.
+    #[test]
+    fn pose_link_is_a_fixed_kind_map_carrying_the_pose_as_origin() {
+        let pose = pose_translate_1mm_x();
+        let mut expected = BTreeMap::new();
+        expected.insert(
             Value::String("kind".to_string()),
             Value::String("fixed".to_string()),
         );
-        m.insert(Value::String("origin".to_string()), pose.clone());
-        Value::Map(m)
+        expected.insert(Value::String("origin".to_string()), pose.clone());
+        assert_eq!(
+            super::pose_link(&pose),
+            Value::Map(expected),
+            "pose_link must emit exactly {{ kind: \"fixed\", origin: <pose> }}"
+        );
     }
 
     /// Pull the single loop-closure record's (path_a, path_b) out of a
@@ -1476,7 +1489,7 @@ mod tests {
         // `parent --pose--> at` that the residual now encodes.
         assert_eq!(
             path_b,
-            Value::List(vec![world.clone(), j_b.clone(), expected_pose_link(&pose)]),
+            Value::List(vec![world.clone(), j_b.clone(), super::pose_link(&pose)]),
             "path_b must carry the closing call's own pose as a trailing 0-DOF link"
         );
         assert_eq!(
