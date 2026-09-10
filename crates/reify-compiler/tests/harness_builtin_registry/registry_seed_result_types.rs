@@ -336,3 +336,81 @@ fn registry_owns_is_exactly_registry_result_type_s_precondition() {
         }
     }
 }
+
+// ── (c) #6577's Field-argument contract, through the registry path ───────────
+//
+// Carried onto the registry surface when α merged main forward and resolved
+// `analysis_signatures.rs` as DELETE: main had taught `analysis_fn_result_type`
+// a Field prelude (task #6577) inside the very file α deletes, so the registry
+// must reproduce it or the merge silently regresses that task. The end-to-end
+// witness is `harness_geometry_solver::solver_elastic_static_stdlib_compile`'s
+// `von_mises_over_solver_stress_field_types_as_pressure_field`; these pins fix
+// the same contract at the seam, where a failure names the resolver directly.
+
+/// The domain of `solve_elastic_static(..).stress` — preserved verbatim into
+/// every Field answer.
+fn field_domain() -> Type {
+    Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    })
+}
+
+/// `Field<Point3<Length>, Tensor<2,3,Scalar<PRESSURE>>>`.
+fn pressure_tensor_field() -> Type {
+    Type::Field {
+        domain: Box::new(field_domain()),
+        codomain: Box::new(pressure_tensor()),
+    }
+}
+
+/// `Field<Point3<Length>, codomain>`.
+fn field_of(codomain: Type) -> Type {
+    Type::Field {
+        domain: Box::new(field_domain()),
+        codomain: Box::new(codomain),
+    }
+}
+
+/// `von_mises` / `max_shear` over a Field argument answer with a **`Field`**,
+/// not a reduced scalar.
+///
+/// Eval wraps the field lazily and returns a `Value::Field`
+/// (`crates/reify-expr/src/analysis.rs`, `wrap_tensor_field`), and
+/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) maps a
+/// `Value::Field` onto `Type::Field` alone — so a `Scalar` here is a kind lie,
+/// not merely a dimension slip.
+#[test]
+fn registry_result_type_carries_the_field_contract_for_von_mises_and_max_shear() {
+    let f = pressure_tensor_field();
+
+    for name in ["von_mises", "max_shear"] {
+        assert_eq!(
+            registry_result_type(name, std::slice::from_ref(&f)),
+            Some(field_of(scalar_pressure())),
+            "{name}(Field<D, Tensor<2,3,Pressure>>) must type as \
+             Field<D, Scalar<Pressure>> — this is task #6577's contract, which \
+             lived in the file α deletes"
+        );
+    }
+}
+
+/// The concrete-Tensor path is provably unperturbed by the Field prelude.
+///
+/// Restated here at the registry seam as an explicit non-regression lock on the
+/// prelude's insertion point: the prelude fires for `Type::Field` arguments and
+/// for nothing else.
+#[test]
+fn the_field_contract_leaves_the_concrete_tensor_path_untouched() {
+    let t = pressure_tensor();
+
+    assert_eq!(
+        registry_result_type("von_mises", std::slice::from_ref(&t)),
+        Some(scalar_pressure()),
+        "von_mises over a CONCRETE Tensor must still reduce to Scalar<Pressure>"
+    );
+    assert_eq!(
+        registry_result_type("max_shear", std::slice::from_ref(&t)),
+        Some(scalar_pressure()),
+        "max_shear over a CONCRETE Tensor must still reduce to Scalar<Pressure>"
+    );
+}

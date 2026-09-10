@@ -144,4 +144,105 @@ mod tests {
             "a non-Scalar quantity defaults to DIMENSIONLESS"
         );
     }
+
+    // ── #6577's Field-argument contract ──────────────────────────────────────
+    //
+    // Ported from `crates/reify-compiler/src/analysis_signatures.rs`'s test
+    // module (main, blob 780f4cab83) when task #6001 α merged main forward and
+    // resolved that file as DELETE. Re-expressed over `&[Type]`, since
+    // reify-builtins cannot see `reify_ir::CompiledExpr`.
+    //
+    // Eval does NOT reduce a field eagerly — it wraps it LAZILY and hands back a
+    // `Value::Field` (`compute_von_mises` / `compute_max_shear` →
+    // `wrap_tensor_field`, crates/reify-expr/src/analysis.rs). Since
+    // `value_type_kind_matches` (crates/reify-eval/src/lib.rs:330) maps a
+    // `Value::Field` onto `Type::Field` and nothing else, answering with a
+    // reduced `Scalar` here would trade a dimension bug for a KIND LIE that
+    // `engine_admin.rs` surfaces as `EngineError::TypeKindMismatch`.
+
+    /// The domain both Field fixtures carry — and the one every Field answer
+    /// must hand back verbatim, never re-derived.
+    fn field_domain() -> Type {
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        })
+    }
+
+    /// `Field<Point3<Length>, Tensor<2,3,quantity>>` — the compile-time type of
+    /// `solve_elastic_static(..).stress`.
+    fn tensor_field(quantity: Type) -> Type {
+        Type::Field {
+            domain: Box::new(field_domain()),
+            codomain: Box::new(Type::tensor(2, 3, quantity)),
+        }
+    }
+
+    /// The same Field shape with a `Matrix{m:3,n:3}` codomain. Legacy matched
+    /// `Tensor{rank:2,n:3}` and `Matrix{m:3,n:3}` in ONE arm, so both must be
+    /// admitted identically.
+    fn matrix_field(quantity: Type) -> Type {
+        Type::Field {
+            domain: Box::new(field_domain()),
+            codomain: Box::new(Type::Matrix {
+                m: 3,
+                n: 3,
+                quantity: Box::new(quantity),
+            }),
+        }
+    }
+
+    fn pressure() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }
+    }
+
+    /// `Field<D, Tensor<2,3,Scalar<PRESSURE>>>` → `Field<D, Scalar<PRESSURE>>`.
+    ///
+    /// The resolver behind BOTH `von_mises` and `max_shear` (they share one
+    /// row-level `ArgAware` resolver, exactly as they shared one legacy ladder
+    /// arm). Mirrors `wrap_tensor_field` (analysis.rs:205-231, :263-265).
+    #[test]
+    fn a_pressure_tensor_field_reduces_to_a_pressure_field_not_a_scalar() {
+        assert_eq!(
+            tensor_scalar_reduction(&[tensor_field(pressure())]),
+            Some(Type::Field {
+                domain: Box::new(field_domain()),
+                codomain: Box::new(pressure()),
+            }),
+            "a Field argument must yield a Field result carrying the tensor's \
+             quantity — eval hands back a Value::Field, which \
+             value_type_kind_matches maps onto Type::Field and nothing else"
+        );
+    }
+
+    /// A `Matrix{m:3,n:3}` codomain is admitted exactly as the `Tensor` one is.
+    #[test]
+    fn a_matrix_codomain_field_is_admitted_exactly_as_a_tensor_codomain_is() {
+        assert_eq!(
+            tensor_scalar_reduction(&[matrix_field(pressure())]),
+            Some(Type::Field {
+                domain: Box::new(field_domain()),
+                codomain: Box::new(pressure()),
+            }),
+            "legacy matched Tensor{{rank:2,n:3}} and Matrix{{m:3,n:3}} in ONE \
+             arm — the Field prelude must not split them"
+        );
+    }
+
+    /// A dimensionless tensor codomain routes through `scalar_or_real`, so the
+    /// Field's codomain is `Type::dimensionless_scalar()` — NOT
+    /// `Scalar{DIMENSIONLESS}`, for the reason `scalar_or_real` documents.
+    #[test]
+    fn a_dimensionless_tensor_field_yields_a_real_codomain_field() {
+        assert_eq!(
+            tensor_scalar_reduction(&[tensor_field(Type::dimensionless_scalar())]),
+            Some(Type::Field {
+                domain: Box::new(field_domain()),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            }),
+            "the Field prelude must wrap the SAME scalar_or_real codomain the \
+             concrete path computes, dimensionless case included"
+        );
+    }
 }
