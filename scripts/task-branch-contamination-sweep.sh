@@ -54,7 +54,7 @@
 #   behind       commits on <main-ref> since merge_base — CONTEXT ONLY (R5)
 #   commits      commits in <main-ref>..<branch>
 #   peer_commits how many of those cite a non-terminal task that is NOT this one
-#   changed      files in `git diff --name-only <merge_base> <branch>`
+#   changed      files in `git diff -z --name-only <merge_base> <branch>`
 #   foreign      changed files absent from this task's metadata.files
 #   peer_files   foreign files declared by a non-terminal task that is NOT this one
 #   peers        the union of peer task ids implicated, sorted-unique, or "-"
@@ -368,24 +368,36 @@ _BRANCH_PREFIX_RE="$(task_citation_regex_escape "$BRANCH_PREFIX")"
 R_TASK=""; R_STATUS=""; R_MERGE_BASE=""; R_BEHIND=""; R_COMMITS=""
 R_PEER_COMMITS=""; R_CHANGED=""; R_FOREIGN=""; R_PEER_FILES=""; R_PEERS=""
 R_SCOPE=""; R_SIGNATURE=""
-# The changed-path list behind R_CHANGED. Not a report column (the report
+
+# The changed-path list behind R_CHANGED — not a report column (the report
 # carries counts), but the input the scope verdict consumes.
-_CHANGED_FILES=""
+#
+# It lives in a FILE, NUL-separated, rather than in a variable, because the
+# only faithful way to read paths out of git is `diff -z`: plain
+# `--name-only` C-QUOTES any path containing a double quote, a backslash, a
+# control character or a non-ASCII byte, wrapping it in quotes and escaping
+# the contents. The task store holds the RAW path, so a quoted path never
+# compares equal and every UTF-8 filename would be reported foreign. A bash
+# variable cannot hold the NUL bytes `-z` emits, hence the file.
+_CHANGED_FILE="$(mktemp "${TMPDIR:-/tmp}/task-branch-sweep-changed-XXXXXX")"
+_ROWS=""
+_cleanup() { rm -f "$_CHANGED_FILE" ${_ROWS:+"$_ROWS"}; }
+trap _cleanup EXIT
 
 # _row_unknown <id> — the degraded row. Every failure path funnels here, so
 # "we could not measure this branch" has exactly one shape (R4).
 #
 # _measure_branch calls this FIRST and only overwrites on success, which is
-# what makes every early return safe. That also makes resetting _CHANGED_FILES
-# here load-bearing in fleet mode: without it a degraded branch would inherit
-# the previous branch's changed set.
+# what makes every early return safe. That also makes truncating
+# _CHANGED_FILE here load-bearing in fleet mode: without it a degraded branch
+# would inherit the previous branch's changed set.
 _row_unknown() {
     R_TASK="$1"
     R_STATUS="${_STATUS["$1"]:-unknown}"
     R_MERGE_BASE="-"; R_BEHIND="-"; R_COMMITS="-"; R_PEER_COMMITS="-"
     R_CHANGED="-"; R_FOREIGN="-"; R_PEER_FILES="-"; R_PEERS="-"
     R_SCOPE="UNKNOWN"; R_SIGNATURE="-"
-    _CHANGED_FILES=""
+    : > "$_CHANGED_FILE"
 }
 
 # _measure_branch <id>
@@ -408,7 +420,7 @@ _measure_branch() {
         return 0
     fi
 
-    local mb behind commits changed
+    local mb behind commits
     mb="$(git -C "$REPO_DIR" merge-base "$tip" "$_MAIN_SHA" 2>/dev/null || true)"
     if [ -z "$mb" ]; then
         warn "No merge base between $ref and '$MAIN_REF' — reporting scope=UNKNOWN for task $id."
@@ -416,8 +428,11 @@ _measure_branch() {
     fi
     behind="$(git -C "$REPO_DIR" rev-list --count "${mb}..${_MAIN_SHA}" 2>/dev/null || true)"
     commits="$(git -C "$REPO_DIR" rev-list --count "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
-    if ! changed="$(git -C "$REPO_DIR" diff --name-only "$mb" "$tip" 2>/dev/null)"; then
+    # -z: NUL-separated and NEVER quoted, so a path compares byte-for-byte
+    # against the store's raw value. See _CHANGED_FILE's note.
+    if ! git -C "$REPO_DIR" diff -z --name-only "$mb" "$tip" > "$_CHANGED_FILE" 2>/dev/null; then
         warn "Cannot diff ${mb}..${tip} — reporting scope=UNKNOWN for task $id."
+        : > "$_CHANGED_FILE"
         return 0
     fi
     if [ -z "$behind" ] || [ -z "$commits" ]; then
@@ -428,8 +443,7 @@ _measure_branch() {
     R_MERGE_BASE="$(git -C "$REPO_DIR" rev-parse --short "$mb" 2>/dev/null || printf '%s' "$mb")"
     R_BEHIND="$behind"
     R_COMMITS="$commits"
-    R_CHANGED="$(printf '%s' "$changed" | grep -c . || true)"
-    _CHANGED_FILES="$changed"
+    R_CHANGED="$(tr -cd '\0' < "$_CHANGED_FILE" | wc -c | tr -d '[:space:]')"
     _classify_scope "$id"
     _census_commits "$id" "$tip"
     return 0
@@ -538,7 +552,7 @@ _classify_scope() {
         own["$path"]=1
     done <<< "${declared//$_LS/$'\n'}"
 
-    while IFS= read -r path; do
+    while IFS= read -r -d '' path; do
         [ -n "$path" ] || continue
         [ -z "${own["$path"]:-}" ] || continue
         R_FOREIGN=$((R_FOREIGN + 1))
@@ -552,7 +566,7 @@ _classify_scope() {
             peers_found="$peers_found$owner"$'\n'
         done
         [ "$claimed" -eq 0 ] || R_PEER_FILES=$((R_PEER_FILES + 1))
-    done <<< "$_CHANGED_FILES"
+    done < "$_CHANGED_FILE"
 
     if [ -n "$peers_found" ]; then
         R_PEERS="$(printf '%s' "$peers_found" | sort -nu | paste -sd, -)"
@@ -585,3 +599,113 @@ if [ "$TASK_MODE" -eq 1 ]; then
     _emit_row_table
     exit 0
 fi
+
+# ── fleet mode ────────────────────────────────────────────────────────────────
+# Candidates are the INTERSECTION of the non-terminal ids from the store read
+# and the refs that actually exist, so a terminal-backed branch costs no git
+# work at all beyond the one for-each-ref, and a task with no branch costs
+# none. Rows are emitted in ascending task id.
+N_BRANCHES=0; N_SUSPECT=0; N_PEER_FILES=0; N_OUT_OF_SCOPE=0
+N_UNDECLARED=0; N_CLEAN=0; N_UNKNOWN=0
+N_SKIPPED_TERMINAL=0; N_SKIPPED_NONNUMERIC=0
+
+# The US-separated row accumulator. It exists so the JSON emitter can be a
+# python3 pass that escapes values correctly rather than hand-rolling quoting,
+# and so BOTH formats render from the SAME rows.
+_ROWS="$(mktemp "${TMPDIR:-/tmp}/task-branch-sweep-rows-XXXXXX")"
+
+# _tally — classify the current row into exactly one counter.
+#
+# This is the ONE classify-and-tally site, and the order below is what makes
+# the counters a PARTITION: a SUSPECT row is counted under `suspect` and
+# nowhere else, so `branches` equals the six class counters summed. Both output
+# formats consume these accumulated values rather than recomputing them, so the
+# identity cannot hold in one format and not the other.
+_tally() {
+    N_BRANCHES=$((N_BRANCHES + 1))
+    if [ "$R_SIGNATURE" = "SUSPECT" ]; then
+        N_SUSPECT=$((N_SUSPECT + 1))
+        return 0
+    fi
+    case "$R_SCOPE" in
+        PEER-FILES)   N_PEER_FILES=$((N_PEER_FILES + 1)) ;;
+        OUT-OF-SCOPE) N_OUT_OF_SCOPE=$((N_OUT_OF_SCOPE + 1)) ;;
+        UNDECLARED)   N_UNDECLARED=$((N_UNDECLARED + 1)) ;;
+        CLEAN)        N_CLEAN=$((N_CLEAN + 1)) ;;
+        *)            N_UNKNOWN=$((N_UNKNOWN + 1)) ;;
+    esac
+}
+
+while IFS= read -r _ref; do
+    [ -n "$_ref" ] || continue
+    _id="${_ref#"${BRANCH_PREFIX}"}"
+    case "$_id" in
+        ''|*[!0-9]*)
+            # Never silently dropped and never an error: 48 of the live pool's
+            # 1095 task/* refs have non-numeric suffixes (task/1741-recovered,
+            # task/208-merge, task/2962-20260530T173412Z).
+            warn "Skipping non-numeric branch: $_ref"
+            N_SKIPPED_NONNUMERIC=$((N_SKIPPED_NONNUMERIC + 1))
+            continue ;;
+    esac
+    if [ -z "${_STATUS["$_id"]:-}" ]; then
+        N_SKIPPED_TERMINAL=$((N_SKIPPED_TERMINAL + 1))
+        continue
+    fi
+    _measure_branch "$_id"
+    _tally
+    printf '%s\n' "$R_TASK$_FS$R_STATUS$_FS$R_MERGE_BASE$_FS$R_BEHIND$_FS$R_COMMITS$_FS$R_PEER_COMMITS$_FS$R_CHANGED$_FS$R_FOREIGN$_FS$R_PEER_FILES$_FS$R_PEERS$_FS$R_SCOPE$_FS$R_SIGNATURE" >> "$_ROWS"
+done < <(git -C "$REPO_DIR" for-each-ref --format='%(refname:short)' \
+             "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null | sort -t/ -k2 -n)
+unset _ref _id
+
+_SUMMARY="branches=$N_BRANCHES suspect=$N_SUSPECT peer_files=$N_PEER_FILES out_of_scope=$N_OUT_OF_SCOPE undeclared=$N_UNDECLARED clean=$N_CLEAN unknown=$N_UNKNOWN skipped_terminal=$N_SKIPPED_TERMINAL skipped_nonnumeric=$N_SKIPPED_NONNUMERIC"
+
+if [ "$FORMAT" = "json" ]; then
+    if [ -z "$_PYTHON_BIN" ]; then
+        err "--format json needs python3, which is not on PATH."
+        exit 2
+    fi
+    _TB_ROWS="$_ROWS" _TB_SUMMARY="$_SUMMARY" python3 - <<'PY'
+import json, os, sys
+
+COLS = ("task", "status", "merge_base", "behind", "commits", "peer_commits",
+        "changed", "foreign", "peer_files", "peers", "scope", "signature")
+# The counted columns are emitted as JSON numbers when they hold a count, and
+# as the "-" placeholder string when the branch could not be measured. A
+# consumer therefore never has to parse "-" out of an integer field.
+NUMERIC = {"task", "behind", "commits", "peer_commits", "changed", "foreign",
+           "peer_files"}
+
+branches = []
+with open(os.environ["_TB_ROWS"]) as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split("\x1f")
+        row = dict(zip(COLS, parts))
+        for k in NUMERIC:
+            if row[k].isdigit():
+                row[k] = int(row[k])
+        branches.append(row)
+
+summary = {}
+for pair in os.environ["_TB_SUMMARY"].split():
+    k, _, v = pair.partition("=")
+    summary[k] = int(v)
+
+json.dump({"branches": branches, "summary": summary}, sys.stdout)
+sys.stdout.write("\n")
+PY
+else
+    while IFS="$_FS" read -r c_task c_status c_mb c_behind c_commits c_peer_commits \
+                             c_changed c_foreign c_peer_files c_peers c_scope c_signature; do
+        [ -n "${c_task:-}" ] || continue
+        printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
+            "$c_task" "$c_status" "$c_mb" "$c_behind" "$c_commits" "$c_peer_commits" \
+            "$c_changed" "$c_foreign" "$c_peer_files" "$c_peers" "$c_scope" "$c_signature"
+    done < "$_ROWS"
+    printf 'SWEEP: %s\n' "$_SUMMARY"
+fi
+exit 0

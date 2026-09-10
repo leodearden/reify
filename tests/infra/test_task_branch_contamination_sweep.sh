@@ -743,6 +743,11 @@ _assert_summary() {
 _mk_tasks_db
 _mk_repo
 F_DB="$DB"
+# _mk_repo / _mk_tasks_db set the shared REPO / DB globals, and the F5
+# empty-pool block below calls both again. Pin this fixture's paths now so the
+# later assertions cannot silently run against the empty fixture — which is
+# exactly what made F6 report zero branches and F7 compare two empty reports.
+F_REPO="$REPO"
 F_MAIN="$(_git rev-parse main)"
 
 # A path carrying both a double quote and a backslash — the two bytes a
@@ -828,7 +833,7 @@ for _k in branches suspect peer_files out_of_scope undeclared clean unknown \
 done
 
 # (e) --format json
-run_helper --audit --db "$F_DB" --repo "$REPO" --format json
+run_helper --audit --db "$F_DB" --repo "$F_REPO" --format json
 assert "F6: --format json exits 0" test "$RC" -eq 0
 assert "F6: --format json emits ONE parseable document" \
     bash -c 'printf "%s" "$1" | python3 -c "import json,sys; json.load(sys.stdin)"' _ "$OUT"
@@ -860,7 +865,7 @@ assert s[\"skipped_terminal\"]==1 and s[\"skipped_nonnumeric\"]==1, s
 
 # (f) the two formats agree
 F7_JSON="$OUT"
-run_helper --audit --db "$F_DB" --repo "$REPO"
+run_helper --audit --db "$F_DB" --repo "$F_REPO"
 F7_TABLE="$OUT"
 assert "F7: json and table report the SAME rows and counters" \
     bash -c 'rendered="$(printf "%s" "$1" | python3 -c "
