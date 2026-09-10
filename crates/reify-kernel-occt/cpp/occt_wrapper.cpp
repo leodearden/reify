@@ -338,6 +338,36 @@ static TopoDS_Wire require_wire(const TopoDS_Shape& shape, const char* role) {
     return TopoDS::Wire(shape);
 }
 
+/// True when `s` carries no topology at all: a null shape, or a compound with
+/// no children.
+///
+/// EXACTNESS. Testing for zero `TopAbs_VERTEX` is a decision, not a heuristic:
+/// every non-degenerate shape — solid, shell, face, wire, edge, or a compound
+/// containing any of them — has at least one vertex, and only a genuinely
+/// empty one has none. No tolerance and no threshold are involved.
+///
+/// WHY A DEDICATED PREDICATE. `BRepAlgoAPI_Common` on disjoint operands (and
+/// `BRepAlgoAPI_Cut` whose tool fully consumes its target) reports
+/// `IsDone() == true` and hands back an EMPTY `TopoDS_Compound`. Such a
+/// compound is NOT `IsNull()`, so `get_shape`'s null check
+/// (`reify-kernel-occt/src/lib.rs:854`, via the `shape_is_null` entry point
+/// defined in this file) is blind to it.
+///
+/// USED ONLY AS A CONSUMER PRECONDITION, NEVER AS A BOOLEAN POSTCONDITION.
+/// An empty boolean result is a LEGAL kernel value: `examples/tolerancing/
+/// gdt_oracle_inside.ri` designs on one (an empty cut IS the "inside" verdict,
+/// and `volume()` of it is 0.0), and
+/// `harness_occt::boolean_result_normalization_integration::
+/// empty_boolean_results_stay_untouched_compounds` gates exactly that. Only
+/// the consumers that cannot mint an artifact from nothing reject it.
+static bool shape_has_no_topology(const TopoDS_Shape& s) {
+    if (s.IsNull()) {
+        return true;
+    }
+    TopExp_Explorer exp(s, TopAbs_VERTEX);
+    return !exp.More();
+}
+
 } // anonymous namespace
 
 // --- Foundation constants ---
@@ -1093,61 +1123,6 @@ rust::String shape_type_name(const OcctShape& shape) {
     });
 }
 
-// --- Boolean-result emptiness guard (task 5318) ---
-
-namespace {
-
-/// True when `s` carries no topology at all: a null shape, or a compound with
-/// no children.
-///
-/// `BRepAlgoAPI_Common` on disjoint operands (and `BRepAlgoAPI_Cut` whose tool
-/// fully consumes its target) reports `IsDone() == true` and hands back an
-/// EMPTY `TopoDS_Compound`.  Such a compound is NOT `IsNull()`, which is why
-/// the null guard in `reify-kernel-occt/src/lib.rs` (`get_shape`, via
-/// `shape_is_null`) cannot see it — the empty result is then stamped
-/// `BRepKind::Solid` and flows silently into downstream ops such as
-/// `extrude()`, yielding a zero-volume solid and a header-only STEP file.
-///
-/// Testing for zero `TopAbs_VERTEX` is exact, not heuristic: every
-/// non-degenerate result (solid, shell, face, wire, edge, or a compound
-/// containing any of them) has at least one vertex, and only a genuinely
-/// empty result has none.  No tolerance and no threshold are involved.
-bool boolean_result_is_empty(const TopoDS_Shape& s) {
-    if (s.IsNull()) {
-        return true;
-    }
-    TopExp_Explorer exp(s, TopAbs_VERTEX);
-    return !exp.More();
-}
-
-/// Throw `ContractViolation` naming the user-level operation `op_display`
-/// ("union" / "difference" / "intersection") when `boolean_result_is_empty(s)`.
-///
-/// Per the `ContractViolation` contract above, the message must NOT repeat the
-/// internal op name — `wrap_occt_call` already prefixes it.
-///
-/// Six call sites, all in this file: the plain trio `boolean_fuse` /
-/// `boolean_cut` / `boolean_common` (reached by `OcctKernel::execute`) and the
-/// with-history trio `boolean_fuse_with_history` / `boolean_cut_with_history` /
-/// `boolean_common_with_history` (the production path — `handle.rs` routes
-/// `GeometryOp::Union` / `Difference` / `Intersection` there).
-///
-/// Deliberately NOT applied to `fuse_shape_list`: that is a pure union over an
-/// already-non-empty input list, so its result cannot be empty, and guarding it
-/// would only add a dead branch on the hot pattern-realizer path.
-void reject_empty_boolean_result(const TopoDS_Shape& s, const char* op_display) {
-    if (!boolean_result_is_empty(s)) {
-        return;
-    }
-    throw ContractViolation(
-        std::string(op_display) +
-        " produced an empty result: the operands do not overlap (or the tool fully consumed "
-        "the target). Check operand placement and units — an empty result would otherwise "
-        "flow silently into downstream ops such as extrude() and yield a zero-volume solid.");
-}
-
-} // anonymous namespace (boolean-result emptiness guard)
-
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
@@ -1157,8 +1132,6 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
-        // Reject before counting a completed boolean pass (task 5318).
-        reject_empty_boolean_result(fuse.Shape(), "union");
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(fuse.Shape(), operand_pair(left.shape, right.shape));
@@ -1173,8 +1146,6 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
-        // Reject before counting a completed boolean pass (task 5318).
-        reject_empty_boolean_result(cut.Shape(), "difference");
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(cut.Shape(), operand_pair(left.shape, right.shape));
@@ -1189,8 +1160,6 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
-        // Reject before counting a completed boolean pass (task 5318).
-        reject_empty_boolean_result(common.Shape(), "intersection");
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(common.Shape(), operand_pair(left.shape, right.shape));
@@ -1421,9 +1390,6 @@ std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& lef
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
-        // Reject before extract_boolean_history: no face/edge map work is
-        // worth doing on a result with no topology (task 5318).
-        reject_empty_boolean_result(fuse.Shape(), "union");
         return extract_boolean_history(fuse, left, right);
     });
 }
@@ -1435,7 +1401,6 @@ std::unique_ptr<BooleanOpHistory> boolean_cut_with_history(const OcctShape& left
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
-        reject_empty_boolean_result(cut.Shape(), "difference");
         return extract_boolean_history(cut, left, right);
     });
 }
@@ -1447,7 +1412,6 @@ std::unique_ptr<BooleanOpHistory> boolean_common_with_history(const OcctShape& l
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
-        reject_empty_boolean_result(common.Shape(), "intersection");
         return extract_boolean_history(common, left, right);
     });
 }
