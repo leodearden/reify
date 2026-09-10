@@ -62,6 +62,13 @@ const TARGET_TEST: &str = "reify_audit_pub_fns_are_g_allow_marked";
 
 #[test]
 fn reify_audit_pub_fns_are_g_allow_marked() {
+    // FIRST statement, above everything that can skip or panic, so the
+    // breadcrumb is out regardless of what this run then does. A no-op outside
+    // an envelope-marked replay child; inside one it is the half of the round
+    // trip that lets the spawning entry point observe which mark its own child
+    // actually carried. See `orphan_audit_survives_ambient_hook_git_env`.
+    common::git_env::announce_replay_mark();
+
     let audit = run_orphan_audit(SCOPE);
 
     // Defence-in-depth against `run_orphan_audit`'s public contract, which
@@ -117,6 +124,16 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// A sanitized spawn resolves the real root, gets a JSON envelope, and is
 /// green.
 ///
+/// That discrimination is armed by the envelope mark, so the spawn goes through
+/// the entry point whose whole identity IS that mark — this call site does not
+/// get to choose one. The entry point then OBSERVES the mark its own child
+/// carried, via the breadcrumb `reify_audit_pub_fns_are_g_allow_marked` emits
+/// as its first statement. Without that round trip the arming was disarmable in
+/// silence: measured at b92a231c55, stamping [`ReplayMark::Plain`] here instead
+/// left this binary at `6 passed; 0 failed`, byte-identical to the unmutated
+/// tree, because in a real replay child production sanitizes and so the
+/// mark-gated branch is never evaluated at all.
+///
 /// To check this has not gone vacuous: drop an `env_remove` from
 /// `reify_test_support`'s `sanitize()` and the child exits 101; restoring it
 /// restores GREEN. That is the only way to see it RED — 5605 landed those
@@ -150,11 +167,7 @@ fn orphan_audit_survives_ambient_hook_git_env() {
         return;
     }
 
-    common::git_env::replay_self_under_hook_git_env_with_mark(
-        &[TARGET_TEST],
-        1,
-        ReplayMark::Envelope,
-    );
+    common::git_env::replay_self_under_hook_git_env_expecting_envelope(&[TARGET_TEST], 1);
 }
 
 /// Spawn ONE replay child in an environment that genuinely CANNOT run the
