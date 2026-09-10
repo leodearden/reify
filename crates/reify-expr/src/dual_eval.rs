@@ -864,17 +864,6 @@ fn eval_dual_builtin(
         return DualValue::opaque(Value::Undef);
     }
 
-    // `eval_expr` lets a `Value::Field` cell named `__field__::<name>` shadow a
-    // builtin of the same name, applying its lambda to the single argument.
-    // That is the reachable scalar-in scalar-out lambda-application route in a
-    // residual, so it is differentiated rather than refused.
-    if args.len() == 1
-        && let Value::Field { lambda, .. } =
-            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
-    {
-        return eval_dual_lambda_apply(&lambda, &duals[0], ctx, seeds, record, path);
-    }
-
     // Field reductions are intercepted by `eval_expr` BEFORE `eval_builtin`,
     // at BOTH arities, so they must be intercepted here too or the primal
     // invariant breaks.  This sits ahead of the `is_kink_builtin` check below,
@@ -891,6 +880,36 @@ fn eval_dual_builtin(
             record,
             path,
         );
+    }
+
+    // `eval_expr` lets a `Value::Field` cell named `__field__::<name>` shadow a
+    // builtin of the same name, applying its lambda to the single argument.
+    // That is the reachable scalar-in scalar-out lambda-application route in a
+    // residual, so it is differentiated rather than refused.
+    //
+    // POSITION IS THE CONTRACT, and it is this one: AFTER the intercepts
+    // mirrored from `eval_expr`'s NAMED arms (the field reductions above),
+    // BEFORE the builtin tables below.  `eval_expr` runs this same lookup in
+    // its catch-all `_` arm, which sits after every named arm and wraps the
+    // `reify_stdlib::eval_builtin` call itself — so a newly mirrored intercept
+    // belongs ABOVE this block, and nothing belongs below it.  Both neighbours
+    // have a measured failure: too EARLY, and a shadowed whole-field reduction
+    // applies the lambda to a `Value::Field` and collapses to `Undef` while
+    // `eval_expr` reduces; too LATE, and `abs`/`sqrt` take the tables while
+    // `eval_expr` applies the lambda — its `_`-arm comment about builtins
+    // never being shadowed is about its own NAMED arms, not about stdlib
+    // builtins, which it resolves inside that arm.  The arity-1 guard cannot
+    // collide with the remaining mirrored intercepts: those are all arity 2.
+    //
+    // The cell probe is deliberately NOT short-circuited on `smooth`/`kinky`
+    // below: `eval_expr` pays it for every 1-arg call that is not one of its
+    // named intercepts, and any short-circuit would re-break the invariant for
+    // exactly the `abs`/`sqrt` shapes above.
+    if args.len() == 1
+        && let Value::Field { lambda, .. } =
+            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
+    {
+        return eval_dual_lambda_apply(&lambda, &duals[0], ctx, seeds, record, path);
     }
 
     let smooth = is_differentiable_builtin(name, args.len());
