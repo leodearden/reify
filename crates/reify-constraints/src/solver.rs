@@ -7078,6 +7078,128 @@ mod tests {
         );
     }
 
+    /// The COST-SURFACE half of task #6377's reclassification, which nothing
+    /// pinned before this amendment: `cost_function_penalizes_undef_objective`
+    /// above covers only the undefined-TERM cause and keeps passing with the
+    /// accumulator guard removed.
+    ///
+    /// Here the objective expression is a perfectly ordinary finite `x` and the
+    /// fold goes to `-inf` in the accumulator. That direction is the one worth
+    /// pinning: an unguarded `-inf` is the global MINIMUM of the surface, so
+    /// Nelder-Mead dives into an overflow artefact and returns it as the answer.
+    /// Abstaining flips that point from the most attractive available to the
+    /// most repellent (`UNDEF_OBJECTIVE_PENALTY`), which is the intended
+    /// direction, not a side effect.
+    ///
+    /// An infinite weight is the shortest route to a `-inf` fold; the
+    /// contract-honouring overflow shapes (finite, positive weights) reach the
+    /// same abstention — see `eval_objective_set_weight_times_value_overflow_returns_none`.
+    #[test]
+    fn cost_function_penalizes_a_non_finite_objective_fold() {
+        use super::{ConstraintCostFunction, UNDEF_OBJECTIVE_PENALTY};
+        use argmin::core::CostFunction;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+
+        let x_id = ValueCellId::new("Part", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let zero_scalar = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let constraint = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), zero_scalar, Type::Bool);
+
+        // minimize(x), then wreck the fold through the unvalidated public
+        // weight field — "> 0; default 1.0" is a doc comment enforced nowhere.
+        let mut objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
+        objective.terms[0].weight = f64::NEG_INFINITY;
+        let objective = Some(objective);
+
+        let auto_params = vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)),
+            free: false,
+        }];
+        let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
+        let base_values = ValueMap::new();
+
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base_values,
+            objective: objective.as_ref(),
+            functions: &[],
+            bounds: &[(0.0, 0.010)],
+            dependent_cells: &[],
+            dispatch: None,
+        };
+
+        let cost = cost_fn.cost(&vec![0.005]).unwrap();
+        assert!(
+            cost.is_finite() && cost >= UNDEF_OBJECTIVE_PENALTY,
+            "a `-inf` fold must be reported as the most repellent point on the \
+             surface, not the most attractive one. Got {cost:.3e}; `-inf` (or any \
+             value below the penalty) is the unguarded accumulator reaching the \
+             cost surface — the defect task #6377 closed"
+        );
+    }
+
+    /// The positive control for the guard at the cost-surface level: I1 / PRD
+    /// §6.2 I2 promise the finite path is BYTE-IDENTICAL, so this asserts exact
+    /// equality rather than a tolerance. With `x` in bounds and `x > 0`
+    /// satisfied, both penalty terms are exactly zero and the cost IS the
+    /// single-term fold `0.0 + 1.0·v == v`.
+    #[test]
+    fn cost_function_leaves_a_finite_objective_cost_byte_identical() {
+        use super::ConstraintCostFunction;
+        use argmin::core::CostFunction;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+
+        let x_id = ValueCellId::new("Part", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let zero_scalar = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let constraint = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), zero_scalar, Type::Bool);
+        let objective = Some(ObjectiveSet::single(ObjectiveSense::Minimize, x_ref));
+
+        let auto_params = vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)),
+            free: false,
+        }];
+        let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
+        let base_values = ValueMap::new();
+
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base_values,
+            objective: objective.as_ref(),
+            functions: &[],
+            bounds: &[(0.0, 0.010)],
+            dependent_cells: &[],
+            dispatch: None,
+        };
+
+        assert_eq!(
+            cost_fn.cost(&vec![0.005]).unwrap(),
+            0.005,
+            "the fail-closed guard rejects only non-finite folds; a well-formed \
+             objective's cost must be unchanged to the bit"
+        );
+    }
+
     /// Task η: centrality synthesis fires for an already-feasible scope with
     /// `objective: None` + a one-sided inequality constraint (x > 5 mm).
     /// Maximize(x − 5 mm) drives x toward the upper bound rather than preserving
