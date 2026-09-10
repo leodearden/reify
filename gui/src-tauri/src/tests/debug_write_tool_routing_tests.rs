@@ -40,6 +40,9 @@ enum BypassKind {
     /// The handler never reaches a `*_and_refresh_baseline` seam, so the
     /// delta baseline silently goes stale after its write.
     NoBaselineRefresh,
+    /// The handler emits state on its own, alongside the shared seam —
+    /// the second emission path `debug_server.rs:1885` forbids.
+    PrivateEmit,
 }
 
 /// A single INV-GUI-2 violation, reported structurally so callers assert on
@@ -158,6 +161,12 @@ fn reaches_a_seam(code: &str, name: &str) -> bool {
             .any(|callee| fn_body(code, callee).is_some_and(|hop| names_a_seam(hop, callee)))
 }
 
+/// True when `body` emits state on its own rather than leaving emission to
+/// the shared seam — an `emit_delta` identifier, or any `.emit(` call.
+fn emits_privately(body: &str) -> bool {
+    identifiers(body).any(|id| id == "emit_delta") || body.contains(".emit(")
+}
+
 /// Every maximal `[A-Za-z0-9_]+` run in `text`.
 fn identifiers(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
@@ -231,15 +240,27 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
     // Stripped ONCE here, at the single entry point, so every helper below
     // sees code-only text and none can independently forget to.
     let code = strip_comments(source);
-    dispatch_arms(&code)
+    let mut bypasses: Vec<Bypass> = dispatch_arms(&code)
         .into_iter()
-        .filter(|(_, handler)| !reaches_a_seam(&code, handler))
-        .map(|(tool, handler)| Bypass {
-            tool,
-            handler,
-            kind: BypassKind::NoBaselineRefresh,
+        .flat_map(|(tool, handler)| {
+            let body = fn_body(&code, &handler).unwrap_or("");
+            // The two defects are INDEPENDENT: a handler can route correctly
+            // and still emit privately, and collapsing them would hide one.
+            let kinds = [
+                (!reaches_a_seam(&code, &handler)).then_some(BypassKind::NoBaselineRefresh),
+                emits_privately(body).then_some(BypassKind::PrivateEmit),
+            ];
+            kinds.into_iter().flatten().map(move |kind| Bypass {
+                tool: tool.clone(),
+                handler: handler.clone(),
+                kind,
+            })
         })
-        .collect()
+        .collect();
+    // Sorted so failure output is stable across runs; `Bypass`'s derived Ord
+    // is (tool, handler, kind).
+    bypasses.sort();
+    bypasses
 }
 
 /// Reads the real `debug_server.rs` this gate is asserted against.
