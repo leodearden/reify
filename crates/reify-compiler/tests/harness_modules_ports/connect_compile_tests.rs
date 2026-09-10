@@ -237,10 +237,7 @@ structure def Asm {
 /// The direction verdict is baked into that constraint (connect.rs), and it is
 /// what `reify check` reports as satisfied/unsatisfied — so pinning the literal
 /// pins the user-visible verdict, not just the presence of a diagnostic.
-fn assert_compat_constraint_literal(
-    template: &reify_compiler::TopologyTemplate,
-    expected: bool,
-) {
+fn assert_compat_constraint_literal(template: &reify_compiler::TopologyTemplate, expected: bool) {
     let compat_id = &template.connections[0].compatibility_constraint;
     let compat = template
         .constraints
@@ -257,6 +254,140 @@ fn assert_compat_constraint_literal(
     );
 }
 
+/// Keyed sub endpoint: `vents["intake"].inlet`. The base segment carries the
+/// Debug-formatted key, but the Sub pre-pass records port directions under the
+/// bare SUB name — so the indexer suffix has to be stripped before the lookup.
+/// The direction itself comes from `Keyed<Vent>`'s ELEMENT structure.
+#[test]
+fn compile_connect_keyed_sub_dotted_direction_error() {
+    let source = r#"
+trait Flow {}
+structure def Vent {
+    param area : Length = 1mm
+    port inlet : in Flow {}
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    port src : in Flow {}
+    connect src -> vents["intake"].inlet
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
+}
+
+/// Positionally indexed collection-sub endpoint: `vents[0].inlet`. A `List<T>`
+/// sub carries the element structure directly, so stripping the `[0]` suffix is
+/// again all that stands between the endpoint and its declared direction.
+#[test]
+fn compile_connect_indexed_collection_sub_dotted_direction_error() {
+    let source = r#"
+trait Flow {}
+structure def Vent {
+    port inlet : in Flow {}
+}
+structure def Manifold {
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    port src : in Flow {}
+    connect src -> vents[0].inlet
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
+}
+
+/// `self.a` names an OWN port the long way round. Writing the dot must not buy
+/// an escape from the check that bare `a` gets — see the bare control
+/// `compile_connect_direction_error`, which this mirrors verbatim except for
+/// the `self.` prefixes.
+#[test]
+fn compile_connect_self_dotted_direction_error() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T { param d : Length = 1mm }
+    port b : in T { param d : Length = 2mm }
+    connect self.a -> self.b
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+    assert_has_diagnostic(
+        &diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
+    assert_eq!(template.connections.len(), 1);
+    assert_compat_constraint_literal(&template, false);
+}
+
+/// A `forall` body's connect endpoints are direction-checked after
+/// substitution: `v.inlet` becomes `vents[0].inlet`, which reaches
+/// `compile_connection` through the same entity scope. Deliberately mirrors the
+/// green fixture in `forall_statement_lower_tests.rs`, with `Vent.inlet` flipped
+/// from `out` to `in` so the elaborated connect is In -> In.
+#[test]
+fn compile_connect_forall_substituted_dotted_direction_error() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
+}
+
+/// The Bidirectional arm sees the resolved dotted direction too — not just
+/// Forward. `hub` is bidi, `Vent.inlet` is not, so `<->` must be refused.
+#[test]
+fn compile_connect_bidirectional_dotted_requires_both_bidi() {
+    let source = r#"
+trait Flow {}
+structure def Vent {
+    param area : Length = 1mm
+    port inlet : in Flow {}
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "k" => { area = 5mm }
+    }
+    port hub : bidi Flow {}
+    connect hub <-> vents["k"].inlet
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "bidirectional connect requires both ports to be bidi",
+    );
+}
 
 // ── Step 23: connector_sub_content_hash_includes_type_and_params ─────
 
