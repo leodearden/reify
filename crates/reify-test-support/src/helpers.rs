@@ -737,26 +737,15 @@ pub fn run_modify_pipeline(
 /// compiled default expression. Callers needing only the compiled default
 /// expression should prefer [`get_let_expr_in`], which delegates here.
 ///
-/// Resolution matches on `id.member` alone; `id.entity` is not considered.
-/// A template holding two value cells that share a member name under
-/// different entities cannot be resolved this way, and this function
-/// panics, naming the colliding entities (see # Panics). The realistic
-/// producer is a scoped sub/connect `Auto` cell (`id.entity =
-/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
-/// same-named cell — real `.ri` source produces this with zero diagnostics,
-/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
-/// If a specific entity's cell matters, disambiguate before calling, e.g.
-/// by searching `template.value_cells` directly for the desired
-/// `id.entity`. Shares its cell-resolution walk with
-/// [`get_let_expr_in_template`]; see that function's rustdoc for the full
-/// ambiguity contract.
+/// Resolves via [`lookup_value_cell`]; see that function's rustdoc for the
+/// full ambiguity contract.
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
 ///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
 /// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
-///   cell shares that member name (see [`get_let_expr_in_template`]'s rustdoc for the hazard).
+///   cell shares that member name (see [`lookup_value_cell`]'s rustdoc for the hazard).
 #[track_caller]
 pub fn get_value_cell_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -771,7 +760,18 @@ pub fn get_value_cell_in<'a>(
 
 /// THE single ambiguity-guarded cell walk, shared by [`get_value_cell_in`] and
 /// [`get_let_expr_in_template`]: resolves `cell_name` against
-/// `template.value_cells` by `id.member` alone.
+/// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
+///
+/// A template holding two value cells that share a member name under
+/// different entities cannot be resolved this way, and this function
+/// panics, naming the colliding entities (see # Panics). The realistic
+/// producer is a scoped sub/connect `Auto` cell (`id.entity =
+/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
+/// same-named cell — real `.ri` source produces this with zero diagnostics,
+/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
+/// If a specific entity's cell matters, disambiguate before calling, e.g.
+/// by searching `template.value_cells` directly for the desired
+/// `id.entity`.
 ///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
@@ -818,15 +818,15 @@ fn lookup_value_cell<'a>(
 /// [`get_let_expr_in_template`].
 ///
 /// # Panics
-/// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr`
-///   is `None`.
+/// - `"value cell '{cell.id.member}' in '{template_name}' has no default expr"` if
+///   `default_expr` is `None`.
 #[track_caller]
 fn require_default_expr<'a>(
     cell: &'a reify_compiler::ValueCellDecl,
-    cell_name: &str,
     template_name: &str,
 ) -> &'a CompiledExpr {
     cell.default_expr.as_ref().unwrap_or_else(|| {
+        let cell_name = &cell.id.member;
         panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
     })
 }
@@ -840,36 +840,22 @@ fn require_default_expr<'a>(
 /// Reach for this when you're already holding a `&TopologyTemplate` directly — e.g. from
 /// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
 /// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
-/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). This is the
-/// lowest-level helper in the family: [`get_let_expr_in`] resolves a named template from a
-/// module and then delegates to this function.
-///
-/// **Ambiguity:** matches on `id.member` alone; `id.entity` is not
-/// considered. A template holding two value cells that share a member name
-/// under different entities cannot be resolved this way, and this function
-/// panics, naming the colliding entities (see # Panics). The realistic
-/// producer is a scoped sub/connect `Auto` cell (`id.entity =
-/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
-/// same-named cell — real `.ri` source produces this with zero diagnostics,
-/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
-/// If a specific entity's cell matters, disambiguate before calling, e.g.
-/// by searching `template.value_cells` directly for the desired
-/// `id.entity`.
+/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). Composes
+/// [`lookup_value_cell`] with [`require_default_expr`]; see [`lookup_value_cell`]'s rustdoc
+/// for the full ambiguity contract.
 ///
 /// # Panics
-/// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
-/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value cell shares that member name (see Ambiguity above).
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value
+///   cell shares that member name (see [`lookup_value_cell`]'s rustdoc for the hazard).
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in_template<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    require_default_expr(
-        lookup_value_cell(template, cell_name),
-        cell_name,
-        &template.name,
-    )
+    require_default_expr(lookup_value_cell(template, cell_name), &template.name)
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from a named template.
@@ -895,7 +881,6 @@ pub fn get_let_expr_in<'a>(
 ) -> &'a CompiledExpr {
     require_default_expr(
         get_value_cell_in(module, template_name, cell_name),
-        cell_name,
         template_name,
     )
 }
