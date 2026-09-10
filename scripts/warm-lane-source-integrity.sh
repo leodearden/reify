@@ -60,9 +60,15 @@
 #   never re-resolved through git. That is load-bearing: under a poisoned view
 #   `git rev-parse --show-toplevel` names the FOREIGN worktree, and resolving
 #   through it would stat every path against that foreign tree and report the
-#   whole lane as deleted. With no --lane, the lane is the worktree root of the
-#   current directory (so an invocation from a subdirectory still classifies
-#   the repo-root-relative porcelain paths correctly).
+#   whole lane as deleted.
+#
+#   Because it is literal, the directory named must be the lane ROOT: porcelain
+#   paths are worktree-root-relative, so a SUBDIRECTORY would be joined against
+#   the wrong root and would misclassify in both directions (task 7227 measured
+#   both flips). A --lane that is not a worktree root is refused with exit 2.
+#   With no --lane, the lane is the worktree root of the current directory --
+#   derived, not assumed -- so an invocation from a subdirectory still
+#   classifies the repo-root-relative porcelain paths correctly.
 #
 # Output contract:
 #   stdout — EXACTLY one machine-readable line, always, on every classified
@@ -80,7 +86,8 @@
 #        detected" convention as scripts/warm-lane-disk-guard.sh --soft and
 #        scripts/fleet-load-detector.sh, so a consumer needs no new vocabulary.
 #   2  — Usage or wiring error: unknown flag, missing flag value, a --lane that
-#        does not exist or is not a directory, or a lane git cannot report on.
+#        does not exist, is not a directory, or is not a worktree ROOT, or a
+#        lane git cannot report on.
 #        Chosen over a false "all clear" so a mis-wired invocation is visible.
 #   1  — Runtime error (this script could not do its own work at all).
 #
@@ -116,9 +123,10 @@ Usage: $(basename "$0") [--lane DIR]
   the missing copy is the evidence a second sighting needs.
 
   Options:
-    --lane DIR   Lane directory to inspect, taken literally and never
-                 re-resolved through git (default: the worktree root of the
-                 current directory).
+    --lane DIR   Lane ROOT directory to inspect, taken literally and never
+                 re-resolved through git; a subdirectory is refused, since
+                 porcelain paths are worktree-root-relative (default: the
+                 worktree root of the current directory).
     -h, --help   Print this message and exit.
 
   Output:
@@ -167,6 +175,42 @@ else
         exit 2
     }
 fi
+
+# ── worktree-root guard ───────────────────────────────────────────────────────
+# --lane must name the lane ROOT. Porcelain paths are worktree-root-relative
+# even when git is invoked from a subdirectory (measured, git 2.43.0:
+# `git -C <root>/sub status --porcelain` prints ` D sub/x.txt`), while --lane is
+# taken literally above, so a subdirectory would be joined against the wrong
+# root and misclassify in BOTH directions -- a real deletion re-stat-ed one
+# level too deep can land on a colliding leaf name and be reported `phantom`
+# (a false all-clear, sentinel suppressed), and a genuine phantom with no
+# counterpart under the subdirectory be reported `deleted` (a false sentinel).
+# Task 7227 reproduced both; tests/infra/test_warm_lane_source_integrity.sh
+# Block H pins them.
+#
+# The predicate is PURE FILESYSTEM, and that is load-bearing. The obvious
+# alternative -- comparing $LANE against `git -C "$LANE" rev-parse
+# --show-toplevel` -- is wrong here: measured, under Block C's poisoned view
+# show-toplevel names the FOREIGN worktree, so a root-equality check would
+# reject that perfectly valid lane and collapse the phantom classification this
+# script exists for. It would also break the "taken LITERALLY ... never
+# re-resolved through git" property above, which exists for the same reason.
+#
+# -e covers both real lane shapes, verified on this host: a linked warm lane's
+# .git is a regular FILE (_lane-1, _lane-2, _merge-verify) and the main
+# checkout's is a DIRECTORY, so -d or -f alone would reject half the fleet.
+#
+# Both resolution branches are covered deliberately. show-toplevel returns a
+# genuine worktree root, which always carries a .git entry, so the default form
+# is unaffected (Block H7 pins that); the only way it can trip this guard is a
+# resolved toplevel with no .git entry, which is an inherited-GIT_WORK_TREE
+# wiring error and belongs in exit 2 by the contract above.
+[ -e "$LANE/.git" ] || {
+    err "--lane is not a worktree ROOT (no .git entry): $LANE"
+    hint "Pass the lane directory itself; porcelain paths are worktree-root-relative"
+    hint "       and would be stat-ed against the wrong root."
+    exit 2
+}
 
 # ── collect git's view ────────────────────────────────────────────────────────
 # The porcelain is read in -z form for two independent reasons, both of which a
