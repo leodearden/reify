@@ -430,9 +430,68 @@ _measure_branch() {
     R_COMMITS="$commits"
     R_CHANGED="$(printf '%s' "$changed" | grep -c . || true)"
     _CHANGED_FILES="$changed"
-    # Filled by the citation census (step-14).
-    R_PEER_COMMITS=0; R_SIGNATURE="-"
     _classify_scope "$id"
+    _census_commits "$id" "$tip"
+    return 0
+}
+
+# ── the commit-citation census ────────────────────────────────────────────────
+# The SHARP signal. The mechanism esc-6205-4 describes is foreign COMMITS on a
+# branch, so this measures commits directly rather than inferring them from
+# files — closer to the fault and far less noisy than the file cross-check.
+#
+# A commit counts as a peer commit iff its message cites at least one id that
+# is (a) non-terminal in the store, (b) not this task's own, and (c) the
+# message does not ALSO cite this task's own id. Condition (c) is checked
+# first and skips the whole commit: an amend that says "re-lands #N,
+# coordinated with #M" is this task's own work referencing a sibling, not
+# somebody else's commit riding along.
+#
+# ONE `git log` per branch, not one `git log -1` per commit: the pool has
+# branches with tens of commits and the sweep runs over hundreds of branches.
+# Messages are record-separated with US so a multi-line body cannot be read as
+# several commits.
+#
+# `behind` is deliberately absent from this function. It is CONTEXT ONLY and
+# never a trigger (R5): over the 351 live task branches the median is 2201
+# commits behind main (p25 878, p75 3781, p90 5324) and 345 of 351 are >= 50
+# behind, so any staleness threshold would fire on ~98% of the pool and
+# separate nothing.
+_census_commits() {
+    local id="$1" tip="$2" log msg peer_id
+    R_PEER_COMMITS=0
+
+    log="$(git -C "$REPO_DIR" log --format="%B%x1f" "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
+    [ -n "$log" ] || return 0
+
+    local commit_peers="" found
+    while IFS= read -r -d $'\x1f' msg; do
+        [ -n "${msg//[[:space:]]/}" ] || continue
+        # (c) its own id anywhere in the message exempts the whole commit.
+        if task_citation_message_cites "$msg" "$id" "$_BRANCH_PREFIX_RE"; then
+            continue
+        fi
+        found=0
+        while IFS= read -r peer_id; do
+            [ -n "$peer_id" ] || continue
+            [ "$peer_id" != "$id" ] || continue
+            # (a) only a task that is still non-terminal is a peer.
+            [ -n "${_STATUS["$peer_id"]:-}" ] || continue
+            found=1
+            commit_peers="$commit_peers$peer_id"$'\n'
+        done < <(task_citation_peer_ids "$msg" "$_BRANCH_PREFIX_RE")
+        [ "$found" -eq 0 ] || R_PEER_COMMITS=$((R_PEER_COMMITS + 1))
+    done <<< "$log"
+
+    [ "$R_PEER_COMMITS" -eq 0 ] || R_SIGNATURE="SUSPECT"
+
+    # Merge the commit-derived ids into `peers` alongside the file-derived
+    # ones, sorted-unique. Both halves feed ONE column because both answer the
+    # same question: which other tasks are implicated in this branch.
+    if [ -n "$commit_peers" ]; then
+        [ "$R_PEERS" = "-" ] || commit_peers="$commit_peers${R_PEERS//,/$'\n'}"$'\n'
+        R_PEERS="$(printf '%s' "$commit_peers" | sort -nu | paste -sd, -)"
+    fi
     return 0
 }
 
