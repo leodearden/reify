@@ -368,6 +368,43 @@ static bool shape_has_no_topology(const TopoDS_Shape& s) {
     return !exp.More();
 }
 
+/// PRECONDITION: reject an input shape that carries no topology, naming the
+/// argument `role` as the DSL author wrote it (e.g. "profile") — the same
+/// convention `require_wire` above uses.
+///
+/// Per the `ContractViolation` contract, the message must NOT repeat the op
+/// name: `wrap_occt_call` already prefixes it, yielding "<op>: <message>".
+///
+/// CALL SITES — the ops that MINT A BODY FROM A PROFILE and cannot mint one
+/// from nothing:
+///   `make_prism`, `make_prism_with_history`, `make_prism_infinite`.
+///
+/// DELIBERATELY NOT CALLED, each for a stated reason — this list is the
+/// boundary of the invariant, so a reader does not have to re-derive it:
+///   * the booleans (`boolean_fuse` / `_cut` / `_common` and their
+///     with-history siblings): an empty result is a LEGAL value per the
+///     2026-09-08 ruling, and `empty_boolean_results_stay_untouched_compounds`
+///     gates it;
+///   * `fuse_shape_list`: a pure union over an already-non-empty list, on the
+///     hot pattern-realizer path — the branch would be dead;
+///   * the mass-property queries (`volume`, `area`, centroid, inertia): an
+///     empty shape's 0.0 IS the answer the GD&T oracle reads;
+///   * tessellation: an empty mesh is an honest rendering of an empty shape;
+///   * the transforms: empty in, empty out — the emptiness survives intact to
+///     whichever real consumer comes next, which is where it is diagnosed;
+///   * `fillet` / `chamfer`: already refused by the `BRepKind::Solid` gate task
+///     7054 added, since an empty result classifies as `Compound`.
+static void reject_empty_input_shape(const TopoDS_Shape& s, const char* role) {
+    if (!shape_has_no_topology(s)) {
+        return;
+    }
+    throw ContractViolation(
+        std::string(role) +
+        " is empty: it carries no topology, so there is nothing to build a body from. "
+        "This usually means a boolean collapsed — operands that do not overlap, or a "
+        "tool that fully consumed its target. Check operand placement and units.");
+}
+
 } // anonymous namespace
 
 // --- Foundation constants ---
@@ -1890,6 +1927,7 @@ static void synthesize_full_revolution_radial_face_records(
 std::unique_ptr<SweepOpHistory> make_prism_with_history(
     const OcctShape& profile, double dx, double dy, double dz) {
     return wrap_occt_call("make_prism_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: mirror make_prism's input checks so callers
         // bypassing the Rust validation layer still get a clean error.
         double mag_sq = dx*dx + dy*dy + dz*dz;
@@ -4212,6 +4250,9 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
 
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
     return wrap_occt_call("make_prism", [&]() {
+        // Before the scalar checks: a designer whose profile collapsed must be
+        // told THAT, not sent down a direction-vector rabbit hole.
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust extrude validates distance; this catches direct FFI calls.
         double mag_sq = dx*dx + dy*dy + dz*dz;
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
@@ -4234,6 +4275,7 @@ std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, doubl
 std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
     double dx, double dy, double dz, bool both) {
     return wrap_occt_call("make_prism_infinite", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust producer validates first; this catches direct FFI calls.
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
             throw std::runtime_error(
