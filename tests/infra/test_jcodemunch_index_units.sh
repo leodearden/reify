@@ -10,6 +10,7 @@
 # Blocks:
 #   A — tracked service unit (deploy/systemd/reify-jcodemunch-index.service)
 #   B — tracked timer unit   (deploy/systemd/reify-jcodemunch-index.timer)
+#   C — installer happy path, idempotence, and the watcher guardrail
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -223,5 +224,71 @@ assert "B8: both unit basenames carry the reify- prefix (never shadow jcodemunch
         case "$(basename "$1")" in reify-*) ;; *) exit 1 ;; esac
         case "$(basename "$2")" in reify-*) ;; *) exit 1 ;; esac
     ' _ "$TIMER_SRC" "$SERVICE_SRC"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — installer happy path, idempotence, and the watcher guardrail
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: installer happy path ---"
+
+# C1: the installer exists and is executable
+assert "C1: scripts/install-jcodemunch-index-units.sh exists and is executable" \
+    test -x "$INSTALLER"
+
+C_XDG="$(mktemp -d /tmp/test-jc-index-units-c-xdg-XXXXXX)"
+_TMPDIRS+=("$C_XDG")
+
+reset_calls
+run_installer "$C_XDG"
+
+# C2: a clean run succeeds
+assert "C2: installer exits 0 on the happy path" \
+    test "$RC" = "0"
+
+# C3/C4: the INSTALLED copies are byte-identical to the tracked sources.
+# `cmp` rather than "file exists": this is the assertion that fails the moment
+# anyone reintroduces a sed ExecStart rewrite of the kind
+# install-warm-lane-units.sh performs. These units have no host-specific value
+# to pin, so a rewritten installed copy could only be drift.
+assert "C3: installed .service is byte-identical to the tracked source (no ExecStart rewrite)" \
+    cmp -s "$SERVICE_SRC" "$C_XDG/systemd/user/reify-jcodemunch-index.service"
+
+assert "C4: installed .timer is byte-identical to the tracked source (no rewrite)" \
+    cmp -s "$TIMER_SRC" "$C_XDG/systemd/user/reify-jcodemunch-index.timer"
+
+# C5: the manager is told to re-read the units it was just handed
+assert "C5: installer runs systemctl --user daemon-reload" \
+    bash -c 'grep -q "^systemctl --user daemon-reload" "$1"' _ "$CALLS_FILE"
+
+# C6: the TIMER is what gets enabled (--now accepted but not required) —
+# enabling the .service directly would give it an untimed activation path.
+assert "C6: installer enables reify-jcodemunch-index.timer" \
+    bash -c '
+        grep "^systemctl --user enable" "$1" | grep -q "reify-jcodemunch-index.timer"
+    ' _ "$CALLS_FILE"
+
+# C7: idempotence — a second run against the same XDG_CONFIG_HOME must succeed
+# and leave both installed copies still byte-identical to the tracked sources.
+reset_calls
+run_installer "$C_XDG"
+
+assert "C7: a second run exits 0 and leaves both installed copies byte-identical (idempotent)" \
+    bash -c '
+        [ "$1" = "0" ] || exit 1
+        cmp -s "$2" "$4/systemd/user/reify-jcodemunch-index.service" || exit 1
+        cmp -s "$3" "$4/systemd/user/reify-jcodemunch-index.timer"   || exit 1
+    ' _ "$RC" "$SERVICE_SRC" "$TIMER_SRC" "$C_XDG"
+
+# C8: watcher guardrail. jcodemunch-watcher.service is `enabled enabled` on this
+# host and serves five other repos. This install path must be incapable of
+# disabling, stopping or overwriting it — asserted both on what the run actually
+# did (no systemctl call names it) and on the installer's own source text (the
+# token does not appear at all, so no future branch can reach it either).
+assert "C8: no systemctl call from the installer names jcodemunch-watcher" \
+    bash -c '! grep -q "jcodemunch-watcher" "$1"' _ "$CALLS_FILE"
+
+assert "C8b: the installer source contains no jcodemunch-watcher token at all" \
+    bash -c '! grep -q "jcodemunch-watcher" "$1"' _ "$INSTALLER"
 
 test_summary
