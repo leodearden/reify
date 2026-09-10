@@ -106,6 +106,129 @@ fn arg_count_rejections<'a>(
         .collect()
 }
 
+/// One example signature declared in the chunk: a name and the number of
+/// parameters written for it. A `fn` declaration is never variadic, so a plain
+/// `usize` suffices where the sibling `stdlib_chunk_geometry_ops_smoke.rs`
+/// needs an `Arity` enum for its `…` table rows.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DocSignature {
+    name: String,
+    arity: usize,
+}
+
+/// Every `fn`-declaration signature written in `markdown`.
+///
+/// # Scan shape — deliberately narrow, so this can never drift into a wording pin
+///
+/// - only lines whose TRIMMED form starts with `"fn "` are considered, so a
+///   signature quoted inside prose contributes nothing and no heading, bullet or
+///   sentence is ever read;
+/// - the name is the run of `[A-Za-z0-9_]` immediately after `fn `;
+/// - an optional generic list on the NAME is skipped by walking a balanced
+///   `<…>` run from the end of the name;
+/// - the parameter list is the balanced `(…)` run that follows; its interior is
+///   split on DEPTH-0 commas only, tracking `<>`, `()` and `[]`, so
+///   `Tensor<2, 3, Pressure>` counts as ONE parameter;
+/// - an empty or whitespace-only interior is arity 0;
+/// - a line whose brackets do not balance contributes nothing rather than
+///   panicking.
+///
+/// # Why fence-agnostic and tag-agnostic
+///
+/// The obvious reuse would be `geometry_chunk_smoke::reify_tagged_fences`, which
+/// is already parameterised by info string. But it matches that string BYTE-
+/// EXACTLY, and task #5479 will retag this very fence `reify-schematic` (its
+/// `{ ... }` bodies are literal elisions that can never compile). A tag-keyed
+/// scrape would go silently vacuous the moment that lands — the worst possible
+/// failure for a guard whose whole job is to not pass trivially. A `fn `-prefix
+/// line scan survives any retagging, needs no fence state machine, and reads
+/// precisely the artefact the hazard is about: a declared example signature.
+/// It is also a different extraction from anything that module offers (it scans
+/// call sites and tagged fences, never declaration signatures), so this is not a
+/// duplicate scraper.
+///
+/// Deduped and sorted, so a caller's `assert_eq!` names the exact signature.
+/// Callers must anti-vacuity-check the result: a chunk restructured so its
+/// examples no longer start a line with `fn ` would otherwise silently empty the
+/// scan.
+fn declared_signatures(markdown: &str) -> Vec<DocSignature> {
+    let mut signatures: Vec<DocSignature> = markdown
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix("fn ")?;
+            let name_len = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            let (name, after_name) = rest.split_at(name_len);
+            if name.is_empty() {
+                return None;
+            }
+            let after_generics = skip_balanced(after_name, '<', '>')?;
+            let params = balanced_run(after_generics, '(', ')')?;
+            Some(DocSignature {
+                name: name.to_string(),
+                arity: count_parameters(params),
+            })
+        })
+        .collect();
+
+    signatures.sort();
+    signatures.dedup();
+    signatures
+}
+
+/// `s` with a leading balanced `open`…`close` run removed, or `s` unchanged when
+/// it does not start with `open`. `None` if such a run starts but never closes.
+fn skip_balanced(s: &str, open: char, close: char) -> Option<&str> {
+    if !s.starts_with(open) {
+        return Some(s);
+    }
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&s[i + c.len_utf8()..]);
+            }
+        }
+    }
+    None
+}
+
+/// The INTERIOR of the balanced `open`…`close` run that `s` starts with, or
+/// `None` when `s` does not start with `open` or the run never closes.
+fn balanced_run(s: &str, open: char, close: char) -> Option<&str> {
+    let rest = s.trim_start();
+    if !rest.starts_with(open) {
+        return None;
+    }
+    let after = skip_balanced(rest, open, close)?;
+    let end = rest.len() - after.len() - close.len_utf8();
+    Some(&rest[open.len_utf8()..end])
+}
+
+/// The number of DEPTH-0 comma-separated parameters in a parameter-list
+/// interior, tracking `<>`, `()` and `[]` so a nested argument list contributes
+/// no separators. A whitespace-only interior is 0 parameters.
+fn count_parameters(inner: &str) -> usize {
+    if inner.trim().is_empty() {
+        return 0;
+    }
+    let mut depth = 0usize;
+    let mut parameters = 1usize;
+    for c in inner.chars() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => parameters += 1,
+            _ => {}
+        }
+    }
+    parameters
+}
+
 /// Anti-vacuity control for every later assertion in this module: it pins that
 /// [`arg_count_rejections`] really does see a builtin's arity rejection, on a
 /// HARDCODED probe (never read from any chunk) whose rejected and accepted
