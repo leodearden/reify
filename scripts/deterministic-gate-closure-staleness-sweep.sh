@@ -66,10 +66,12 @@
 #                  blocked / in-progress rows match no class, so folding them
 #                  into `unknown` would swamp the one signal that counter
 #                  exists to carry.
-#   unknown      — a class matched but its ORACLE could not be read (an
-#                  unresolvable SHA, a --main-ref that does not resolve, a
-#                  dependency id that resolves to no row); never upgraded to
-#                  STALE.
+#   unknown      — an ORACLE could not be read, so the row could not be
+#                  adjudicated (a recorded main_sha that does not resolve in
+#                  --repo or is not an ancestor of --main-ref, a --main-ref
+#                  that does not resolve at all, a proposal recording no
+#                  files_referenced or no main_sha, or no python3 to run the
+#                  proposal parser at all); never upgraded to STALE.
 # A trailing SWEEP: line (table) / summary object (json) carries the counters
 # candidates, merge_verify_red, corrupt_hold, live_skipped, no_class, unknown.
 #
@@ -138,15 +140,19 @@
 #        the claimant rule to `in-progress` is what keeps a `blocked` row
 #        visible at all.
 #   L2 — an unreadable oracle — a recorded main_sha that does not resolve in
-#        --repo, a --main-ref that does not resolve at all, a dependency id
-#        that resolves to no row under this tag —
+#        --repo or is not an ancestor of --main-ref, a --main-ref that does
+#        not resolve at all, a proposal recording no files_referenced or no
+#        main_sha, or no python3 to run the proposal parser (which reads the
+#        class predicate ITSELF, so that one leaves even the class unknown) —
 #        degrades that row to `unknown`, never to `STALE`. A failed oracle
 #        lookup must never manufacture an actionable verdict — the same
 #        posture as warm-lane-audit.sh invariant A3. `unknown` means EXACTLY
-#        that — a matched class whose oracle failed. A row that simply matches
+#        that — an oracle this run could not read. A row that simply matches
 #        no class is NO-CLASS, a complete adjudication with a negative result;
 #        conflating the two would bury a handful of genuine oracle failures
-#        under the majority of the store, which matches no class at all.
+#        under the majority of the store, which matches no class at all — and
+#        would let a parser-less host report a clean, entirely negative
+#        sweep.
 #   L3 — every candidate contributes to AT MOST ONE class counter and appears
 #        exactly once in the report. With a single trigger class this is no
 #        longer a precedence rule (there is nothing to order, and no
@@ -428,7 +434,7 @@ if command -v python3 >/dev/null 2>&1; then _PYTHON_BIN="python3"; fi
 if [ -z "$_SQLITE_BIN" ] && [ -z "$_PYTHON_BIN" ]; then
     warn "Neither sqlite3 nor python3 is on PATH — the task DB cannot be read at all; reporting zero candidates."
 elif [ -z "$_PYTHON_BIN" ]; then
-    warn "python3 is not on PATH — the proposal parser (class B) and --format json cannot run; rows will degrade to unknown."
+    warn "python3 is not on PATH — the proposal parser, --format json and request rendering cannot run. Every row carrying a dry_run_proposals blob degrades to unknown (NOT no-class: the trigger class itself is unreadable), no request is emitted, and nothing is retracted."
 fi
 
 # ── the enumeration query ─────────────────────────────────────────────────────
@@ -548,11 +554,11 @@ _is_live() {
         #
         # The `in-progress` scoping is load-bearing, not incidental. `blocked`
         # rows legitimately carry no heartbeat while still holding a claimant
-        # (see the enumeration note above), and class C is
-        # `blocked`-ONLY per L4 — so extending this rule to `blocked` would
-        # blind the sweep to that class wholesale, which is exactly the
-        # failure the NULL-heartbeat rule was written to avoid in the first
-        # place.
+        # (see the enumeration note above), and merge_verify_red spans
+        # `blocked` per L4 — so extending this rule to `blocked` would blind
+        # the sweep to every stranded blocked row wholesale, which is exactly
+        # the failure the NULL-heartbeat rule was written to avoid in the
+        # first place.
         if [ "$status" = "in-progress" ] && [ -n "$claimant" ]; then
             _LIVE_BY="claimant"
             warn "Task $id: in-progress with claimant '$claimant' but no heartbeat_at — treating as LIVE (fail-safe: a claimed runner that has not yet written a heartbeat must never be re-dispatched)."
@@ -613,22 +619,39 @@ PY
 # row to `unknown` — the adjudication is scoped to --repo and nothing else.
 _MAIN_REF_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${MAIN_REF}^{commit}" 2>/dev/null || true)"
 
-# _classify_merge_verify_red <task_id> <dry_run_proposals> <adjudicate:0|1> —
-# sets _MVR_MATCHED plus, when matched and adjudicating, _MVR_VERDICT /
-# _MVR_ACTION / _MVR_EVIDENCE. Spans `blocked` AND `in-progress` (invariant
+# _classify_merge_verify_red <task_id> <dry_run_proposals> — sets
+# _MVR_MATCHED plus, when matched, _MVR_VERDICT / _MVR_ACTION / _MVR_EVIDENCE.
+# _MVR_UNREADABLE is the third outcome, distinct from both: the row carries a
+# proposals blob that could not be parsed at all, so whether the class matches
+# is unknown rather than answered. Spans `blocked` AND `in-progress` (invariant
 # L4). The proposals blob arrives from the enumeration row; this function opens
 # no DB handle of its own.
 _classify_merge_verify_red() {
-    local id="$1" raw="$2" adjudicate="$3" out b_reason b_class b_main_sha b_head_sha
+    local id="$1" raw="$2" out b_reason b_class b_main_sha b_head_sha
     local resolved touched first_path resolving
     local -a lines=()
     _MVR_MATCHED=0
+    _MVR_UNREADABLE=0
     _MVR_VERDICT="unknown"
     _MVR_ACTION="none"
     _MVR_EVIDENCE=""
     _MVR_FILES=()
 
     [ -n "$raw" ] || return 0
+    if [ -z "$_PYTHON_BIN" ]; then
+        # The parser is not a downstream detail of this class — it IS the
+        # oracle that reads the predicate, so with no python3 the class cannot
+        # be adjudicated at all. Returning `matched=0` here would report
+        # NO-CLASS, and NO-CLASS asserts a COMPLETE adjudication with a
+        # negative result — a claim this run has no basis for. L2's fail-safe
+        # direction covers an unreadable oracle whatever the reason: degrade to
+        # `unknown`, which emits nothing and keeps the row countable as "could
+        # not tell" instead of burying it in the majority that genuinely
+        # matches nothing.
+        _MVR_UNREADABLE=1
+        _MVR_EVIDENCE="python3 is not on PATH, so the dry_run_proposals parser could not run; the trigger class itself is unreadable"
+        return 0
+    fi
     out="$(printf '%s' "$raw" | python3 "$_NEWEST_PROPOSAL_PY" 2>/dev/null || true)"
     [ -n "$out" ] || return 0
 
@@ -648,10 +671,6 @@ _classify_merge_verify_red() {
         "Post-merge verification failed"*) _MVR_MATCHED=1 ;;
     esac
     [ "$_MVR_MATCHED" = 1 ] || return 0
-    # A non-primary class is disclosed but never adjudicated: skipping the git
-    # work here also keeps its warnings out of the report, which would
-    # otherwise be noise about a premise nobody is acting on.
-    [ "$adjudicate" = 1 ] || return 0
 
     if [ "${#_MVR_FILES[@]}" -eq 0 ]; then
         warn "Task $id: merge_verify_red proposal records no files_referenced — no diff surface to adjudicate; reporting unknown, not STALE."
@@ -816,10 +835,14 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
     # make, and no way for a row to reach two counters. What L3 still asserts
     # is the counting property — at most one class counter per candidate, and
     # exactly one row in the report.
-    _classify_merge_verify_red "$task_id" "$md_proposals" 1
+    _classify_merge_verify_red "$task_id" "$md_proposals"
     if [ "$_MVR_MATCHED" = 1 ]; then
         row_class="merge_verify_red"
         row_verdict="$_MVR_VERDICT"; row_action="$_MVR_ACTION"; row_evidence="$_MVR_EVIDENCE"
+    elif [ "$_MVR_UNREADABLE" = 1 ]; then
+        # No class is claimed — the point is precisely that none could be read
+        # — so row_class stays "-" while the VERDICT carries the uncertainty.
+        row_verdict="unknown"; row_evidence="$_MVR_EVIDENCE"
     fi
 
     # ── #5316 corruption suppression (invariant L5) ──────────────────────────
@@ -989,9 +1012,14 @@ if [ -n "$REQUESTS_DIR" ]; then
         #     only that class. Otherwise a restricted run would silently delete
         #     the requests of the previous full sweep.
         #   * a DEGRADED READ retracts nothing. Absence of a hit is evidence
-        #     only when the query actually ran; an unreadable DB reports zero
-        #     candidates too, and wiping the directory on that would be the
-        #     sweep destroying its own output on a transient fault.
+        #     only when the query actually ran AND its rows could be
+        #     adjudicated; an unreadable DB reports zero candidates, and a
+        #     host with no python3 enumerates rows it then cannot classify
+        #     (every one degrades to `unknown` above, and rendering a request
+        #     needs python3 too). Wiping the directory on either would be the
+        #     sweep destroying its own output on a transient fault — and with
+        #     no parser it could not re-emit a single one of the files it just
+        #     deleted.
         #
         # A RETIRED class needs no fourth rule and no extra branch: no row can
         # be classified into one, so its key can never enter _KEEP, so a
@@ -1009,7 +1037,7 @@ if [ -n "$REQUESTS_DIR" ]; then
         _RETIRED_CLASSES="gate_closure unmet_dependency"
         _is_in_set() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
 
-        if [ "$_DB_READABLE" = 1 ]; then
+        if [ "$_DB_READABLE" = 1 ] && [ -n "$_PYTHON_BIN" ]; then
             declare -A _KEEP=()
             while IFS="$_FS" read -r k_id k_status k_class k_verdict k_action k_evidence k_flags; do
                 [ "${k_verdict:-}" = "STALE" ] || continue

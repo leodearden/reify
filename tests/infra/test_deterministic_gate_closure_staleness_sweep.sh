@@ -1632,6 +1632,67 @@ assert "G10: ... with the trigger class still adjudicated, not collapsed to no_c
 assert "G10: ... and the corruption suppressor still firing on the python3 engine" \
     _json_is 's["corrupt_hold"] == 1 and t[9707]["flags"] == ["corrupt_autofile"]'
 
+# --- G11: with NO python3, "could not tell" — never a clean negative sweep ----
+#
+# G10's failure shape, one engine over. The proposal parser is not a downstream
+# detail of merge_verify_red — it IS the oracle that reads the class predicate,
+# so a host without python3 can adjudicate nothing at all. Every such row used
+# to fall through the parser's empty-output guard and be reported NO-CLASS,
+# which asserts a COMPLETE adjudication with a negative result: the run ended
+# with a clean, entirely negative report and no per-row signal, while the
+# startup warning claimed rows would "degrade to unknown". That is precisely
+# the conflation the no_class/unknown counter split exists to prevent.
+#
+# The retraction half is the destructive one. Retraction acts on the ABSENCE of
+# a hit, so a sweep that could classify nothing would delete every live request
+# in the directory — and with no python3 it cannot render a single one back.
+# Hence a parser-less run is a DEGRADED READ, on the same footing as an
+# unreadable DB.
+#
+# The seam is that _PYTHON_BIN is a bare `command -v python3`, so PATH reaches
+# it — unlike the sqlite3 probe, which is absolute and needs G10's env override.
+# The bin farm below carries everything the sweep shells out to EXCEPT python3
+# (`bash` included: the shebang is `/usr/bin/env bash`, so env resolves the
+# interpreter through the farm too). A missed entry cannot degrade quietly —
+# it fails G11a loudly.
+G_NOPY_BIN="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-nopy-XXXXXX")"
+_TMPDIRS+=("$G_NOPY_BIN")
+for _b in bash env dirname basename cat grep date git mktemp mv mkdir rm; do
+    ln -s "$(command -v "$_b")" "$G_NOPY_BIN/$_b"
+done
+assert "G11: the farm really has no python3 (else this block is vacuous)" \
+    _not test -e "$G_NOPY_BIN/python3"
+
+# A live request from an earlier, parser-equipped run. Nothing this run can
+# observe is evidence that it has been superseded.
+G_NOPY_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-nopyreq-XXXXXX")"
+_TMPDIRS+=("$G_NOPY_REQ")
+G_NOPY_KEEP="$G_NOPY_REQ/redispatch-9701-merge_verify_red.json"
+printf '%s\n' '{"schema_version":1,"task_id":9701,"class":"merge_verify_red","action":"reverify"}' \
+    > "$G_NOPY_KEEP"
+
+_SWEEP_ENV=(PATH="$G_NOPY_BIN" LD_LIBRARY_PATH= REIFY_GATE_STALENESS_SQLITE_BIN="$_G_CLI_BIN")
+run_sweep --db "$G_DB" --repo "$G_REPO" --emit-requests "$G_NOPY_REQ"
+_SWEEP_ENV=()
+assert "G11a: the sweep still exits 0 with no python3 on PATH" _rc_is 0
+assert "G11b: ... warning once, at startup, that the class itself is unreadable" \
+    _err_has 'python3 is not on PATH.*degrades to unknown'
+# 9704 is LIVE (heartbeat), and 9709 is the one row whose metadata carries no
+# dry_run_proposals blob at all — nothing to parse, so NO-CLASS remains a
+# complete answer for it. The other six all carry a blob the parser cannot
+# read. Before the fix this line read `no_class=7 unknown=0`.
+assert "G11c: ... every row with a proposals blob is unknown, not no_class" \
+    _sweep_line_is "SWEEP: candidates=8 merge_verify_red=0 corrupt_hold=0 live_skipped=1 no_class=1 unknown=6"
+# The class COLUMN, not the whole report: the trailing SWEEP: line always names
+# the merge_verify_red COUNTER, so a bare substring search here would be
+# satisfied by a summary that reads merge_verify_red=0.
+assert "G11d: ... and no row claims a class the run could not read" \
+    _not _out_has '^[0-9]+ +[a-z-]+ +merge_verify_red'
+assert "G11e: ... an unadjudicable run retracts nothing it could not re-emit" \
+    test -f "$G_NOPY_KEEP"
+assert "G11f: ... and emits nothing off a premise it never adjudicated" \
+    _request_count_is "$G_NOPY_REQ" 1
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block R — request retraction: the directory is a SNAPSHOT, not a log
 #
