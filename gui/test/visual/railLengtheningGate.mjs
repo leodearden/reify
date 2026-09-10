@@ -55,6 +55,9 @@ import { isInBandError } from "./rpcEnvelope.mjs";
  */
 export const SUBJECT_BASENAME = "printer.ri";
 
+/** Where the tracked original lives, relative to the repo root. */
+export const PRINTER_RELPATH = "prj/printer_v01/printer.ri";
+
 /** The cell edit 1 rewrites — a `param` of `CoreXY` with a default literal. */
 export const Y_RAIL_LEN_CELL = "CoreXY.y_rail_len";
 /** The cell edit 2 rewrites. */
@@ -65,6 +68,12 @@ export const TRAVEL_AVAIL_CELL = "AFrame.travel_avail";
 export const YH_MIN_TODAY_CELL = "ToolDock.yh_min_today";
 /** `AFrame.centre_y`, the other half of the ToolDock pin's right-hand side. */
 export const CENTRE_Y_CELL = "AFrame.centre_y";
+/**
+ * The B7 rejection subject: `x_rail_len = y_rail_offset * 2`, a derived `let`
+ * with no default literal of its own. A plausible-looking cell id that
+ * `reify_set_parameter` must refuse with a structured error, mutating nothing.
+ */
+export const X_RAIL_LEN_CELL = "CoreXY.x_rail_len";
 
 /** Stable NAME of the pin tying the A-frame's rail span to the motion rail length. */
 export const RAIL_SPAN_PIN = "rail-span-pin";
@@ -363,6 +372,118 @@ export function foldPinStatus(matched) {
   // A status outside the {Satisfied, Violated, Indeterminate} vocabulary
   // (engine.rs build_constraints) is not a pin reading at all.
   return PIN_ABSENT;
+}
+
+// ─── The write path's static precondition ────────────────────────────────────
+
+/**
+ * A `.ri` entity header — `pub structure Foo {`, or `structure def Foo : Bar {`.
+ * The `def` form is a definition-typed structure and still opens an entity body.
+ */
+const ENTITY_OPEN = /^\s*(?:pub\s+)?structure\s+(?:def\s+)?([A-Za-z_]\w*)\b/;
+
+/**
+ * A member declaration: the keyword, the name, an optional `: Type` annotation,
+ * and whether a default literal follows. `[^=]*` on the annotation is what keeps
+ * the `=` group meaning "there is a default", rather than matching an `=` buried
+ * inside the type.
+ */
+const MEMBER_DECL = /^\s*(param|let)\s+([A-Za-z_]\w*)\s*(?::[^=]*)?(=)?/;
+
+/**
+ * Index every top-level `param`/`let` in a `.ri` source, keyed `Entity.member`.
+ *
+ * A SCAN, NOT A PARSE — and the limits are the point rather than an oversight.
+ * Comments are blanked before brace counting (a `{` in prose would otherwise
+ * desynchronise the depth), but a brace inside a string literal is not seen; a
+ * `.ri` source carrying one would mis-scope the members after it. Only depth-1
+ * declarations count, so a `let` inside a `realize` block is not a member of the
+ * entity. The first declaration of a name wins.
+ *
+ * The failure mode is benign in both directions: a member the scan misses reads
+ * as `absent`, and a mis-scoped one reads under the wrong entity — either way
+ * the precondition check below FAILS rather than silently passing, which is the
+ * direction a gate must err in.
+ *
+ * @param {unknown} source
+ * @returns {Map<string, {declared: string, hasDefaultLiteral: boolean}>}
+ */
+function scanDeclarations(source) {
+  /** @type {Map<string, {declared: string, hasDefaultLiteral: boolean}>} */
+  const declarations = new Map();
+  if (typeof source !== "string") return declarations;
+
+  const lines = source
+    .replace(/\/\*[\s\S]*?\*\//g, (span) => span.replace(/[^\n]/g, " "))
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, ""));
+
+  let entity = null;
+  let depth = 0;
+  for (const line of lines) {
+    if (entity === null) {
+      const open = ENTITY_OPEN.exec(line);
+      if (open !== null) {
+        entity = open[1];
+        depth = 0;
+      }
+    } else if (depth === 1) {
+      const decl = MEMBER_DECL.exec(line);
+      if (decl !== null) {
+        const key = `${entity}.${decl[2]}`;
+        if (!declarations.has(key)) {
+          declarations.set(key, {
+            declared: /** @type {string} */ (decl[1]),
+            hasDefaultLiteral: decl[3] !== undefined,
+          });
+        }
+      }
+    }
+    // Brace accounting comes AFTER the reads above, so the entity's own opening
+    // `{` leaves the NEXT line — the first member — at depth 1.
+    for (const ch of line) {
+      if (ch === "{") depth += 1;
+      else if (ch === "}") depth -= 1;
+    }
+    if (entity !== null && depth <= 0) entity = null;
+  }
+  return declarations;
+}
+
+/**
+ * @typedef {object} EditableParamRecord
+ * @property {unknown} cell   The requested cell id, echoed verbatim.
+ * @property {'param'|'let'|'absent'} declared  How the source declares it.
+ * @property {boolean} hasDefaultLiteral  Whether the declaration carries an `=`.
+ */
+
+/**
+ * How `source` declares each requested cell — the precondition
+ * `reify_set_parameter` imposes, checked statically.
+ *
+ * That tool rewrites a parameter's DEFAULT LITERAL through alpha's
+ * `resolve_param_default_span`, which returns None for a cell that is not a
+ * `param` with a default, and the write is then refused. A cell is writable
+ * exactly when `declared === 'param' && hasDefaultLiteral`; every other
+ * combination names a different reason it is not, which is what makes this
+ * usable for BOTH halves of the gate — the two cells that must be editable, and
+ * the derived `let` that must stay a rejection subject.
+ *
+ * Returns one record per request, in the order asked, so a caller can zip the
+ * result against its own list. Never throws for any argument.
+ *
+ * @param {unknown} source
+ * @param {unknown} cellNames
+ * @returns {EditableParamRecord[]}
+ */
+export function findEditableParams(source, cellNames) {
+  if (!Array.isArray(cellNames)) return [];
+  const declarations = scanDeclarations(source);
+  return cellNames.map((cell) => {
+    const found = typeof cell === "string" ? declarations.get(cell) : undefined;
+    if (found === undefined) return { cell, declared: "absent", hasDefaultLiteral: false };
+    return { cell, declared: found.declared, hasDefaultLiteral: found.hasDefaultLiteral };
+  });
 }
 
 // ─── The verdict ─────────────────────────────────────────────────────────────
