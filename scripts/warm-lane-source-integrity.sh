@@ -23,7 +23,11 @@
 #   re-stat-ed under the lane and bucketed:
 #
 #     deleted — absent on disk. The vanished-file signature; raises the
-#               advisory exit-3 sentinel.
+#               advisory exit-3 sentinel, but ONLY when git answered about this
+#               lane's own repository and worktree (see `view=` below): a
+#               foreign index's paths are absent here for the mundane reason
+#               that this lane never tracked them, and the on-disk
+#               discriminator cannot tell that apart from a real vanish.
 #     phantom — present on disk. A view artifact, not a vanished file.
 #               Reported, but deliberately does NOT raise the sentinel: if it
 #               did, one poisoned environment would drown the signal this
@@ -76,25 +80,37 @@
 #   NEITHER form scrubs the git environment, and a caller that wants the LANE
 #   measured rather than its own view must do so itself (the session-start
 #   invocation is dark-factory's, per CLAUDE.md's cross-repo seam pattern).
-#   scripts/lib_git_env_scrub.sh is the scrubber. Unscrubbed, a foreign view
-#   that is itself CLEAN makes git report nothing at all, and the run is
-#   reported as what it is -- see the foreign-view notice below -- rather than
-#   as an all-clear for a lane it never measured.
+#   scripts/lib_git_env_scrub.sh is the scrubber. Unscrubbed, every run is
+#   reported as what it is -- `view=foreign`, sentinel withheld -- rather than
+#   as either an all-clear or a sighting for a lane it never measured.
 #
 # Output contract:
 #   stdout — EXACTLY one machine-readable line, always, on every classified
-#            run: `source-integrity: deleted=N phantom=M lane=<basename>`.
+#            run: `source-integrity: deleted=N phantom=M lane=<basename>
+#            view=<lane|foreign>`.
+#            `view` is the field a consumer must read alongside the exit code:
+#            `foreign` means git answered about another repository or worktree,
+#            so the counts describe THAT view's index re-stat-ed here and the
+#            lane itself was never measured. It is carried on stdout, not left
+#            to stderr prose, because suppressing the sentinel (below) without a
+#            machine-readable reason would trade a loud false alarm for a quiet
+#            one.
 #   stderr — every diagnostic, each offending path tagged with its class.
 #            Silent on a clean lane. Paths are printed VERBATIM, never in
 #            git's C-quoted porcelain rendering, so they can be pasted into a
 #            shell (this is why the porcelain is read in -z form).
 #
 # Exit codes:
-#   0  — No real deletion. Includes the phantom-only case: an index artifact
-#        is not the source-vanishing signature.
-#   3  — At least one tracked file is reported deleted AND is absent on disk.
-#        Advisory sentinel, never a requeue — the same exit-3 "condition
-#        detected" convention as scripts/warm-lane-disk-guard.sh --soft and
+#   0  — Nothing attributable to THIS lane. Three distinguishable cases, and
+#        `view=` separates them: a clean lane; the phantom-only case (an index
+#        artifact is not the source-vanishing signature); and any run under a
+#        foreign view, whose counts are not lane evidence at all. Exit 0 with
+#        `view=foreign` is NOT an all-clear — it means the lane was not
+#        measured.
+#   3  — At least one tracked file is reported deleted AND is absent on disk,
+#        measured through this lane's OWN repository and worktree. Advisory
+#        sentinel, never a requeue — the same exit-3 "condition detected"
+#        convention as scripts/warm-lane-disk-guard.sh --soft and
 #        scripts/fleet-load-detector.sh, so a consumer needs no new vocabulary.
 #   2  — Usage or wiring error: unknown flag, missing flag value, a --lane that
 #        does not exist, is not a directory, or is not a worktree ROOT, or a
@@ -108,6 +124,12 @@
 #        mktemp dir, removed on exit.
 #   A2 — the stdout line is emitted on every classified run, zeros included,
 #        so a consumer can distinguish "clean" from "did not run".
+#   A3 — the exit-3 sentinel is a claim about THIS lane, so it is raised only
+#        from entries measured through this lane's own repository AND worktree
+#        (`view=lane`). One rule, no per-shape exceptions: a foreign index's
+#        paths are absent here for the mundane reason that this lane never
+#        tracked them, and the on-disk re-stat -- the whole discriminator --
+#        cannot tell that apart from a real vanish.
 
 set -euo pipefail
 
@@ -272,25 +294,75 @@ if ! git -C "$LANE" status --porcelain -z > "$_STATUS_Z" 2> "$_GIT_ERR"; then
     exit 2
 fi
 
-# ── whose tree did git just answer about? ─────────────────────────────────────
-# An inherited view is CLASSIFIED, not scrubbed -- but it must never pass for
-# silence. When the foreign tree happens to be clean, git reports nothing at
-# all, both buckets below stay empty, and the summary line reads exactly like a
-# healthy lane while nothing about the lane was measured (task 7227 measured
-# precisely that: a lane whose `sub/a.txt` was really gone, reported as a zero
-# summary under a clean foreign view). Naming the tree git answered about is
-# what keeps those two apart.
+# ── is git answering about THIS lane's repository AND worktree? ───────────────
+# An inherited view is CLASSIFIED, not scrubbed -- but it must never be mistaken
+# for evidence ABOUT THIS LANE. Git resolves "which repository" and "which
+# worktree" from two independent variables, so a view can be foreign in either
+# axis alone. Measured on this host, git 2.43.0, `git -C <lane> rev-parse
+# --show-toplevel --absolute-git-dir` under each shape:
 #
-# This is the ONE place $LANE is compared against a git-resolved root, and it is
-# deliberately not a guard: resolution above stays literal, the exit code below
-# is untouched, and a foreign view stays a reported condition rather than a
-# rejected one -- rejecting it would collapse the phantom classification this
-# script exists for.
+#   GIT_DIR + GIT_WORK_TREE  toplevel=poison   gitdir=poison   (both differ)
+#   GIT_DIR only             toplevel=LANE     gitdir=poison   (gitdir only)
+#   GIT_WORK_TREE only       toplevel=poison   gitdir=LANE     (toplevel only)
+#
+# So NEITHER equality test subsumes the other and both arms are load-bearing:
+# checking only the toplevel misses the GIT_DIR-only shape (which is the one
+# git itself hands to a hook's descendants), and checking only the gitdir
+# misses the GIT_WORK_TREE-only shape. Block J pins each arm against the shape
+# the other one cannot see.
+#
+# The GIT_DIR-only shape is the dangerous one and is why the sentinel is
+# suppressed below rather than merely annotated: git compares a FOREIGN index
+# against the LANE's files, so every path the foreign repo tracks and this lane
+# does not is reported ` D` and then re-stats as genuinely absent here. The
+# on-disk discriminator cannot help -- those paths really are missing -- so the
+# run produced an exit-3 sentinel naming the lane, listing files that were
+# never the lane's, scaling with the foreign repo's tracked-file count. An
+# inherited GIT_DIR naming another lane of the SHARED .git store would render
+# that as a plausible-looking set of reify source paths.
+#
+# The lane's own gitdir is resolved PURELY FROM THE FILESYSTEM, for the reason
+# the resolution and root guard above are: asking git for it would ask the
+# poisoned view to describe itself. Both on-disk shapes are handled -- a
+# directory in the main checkout, a `gitdir: <path>` pointer file in a linked
+# warm lane (measured here: `/home/leo/src/reify/.git/worktrees/_lane-4`, which
+# --absolute-git-dir reports identically, so an unpoisoned lane compares equal).
 FOREIGN_VIEW=""
+
+_lane_gitdir=""
+if [ -d "$LANE/.git" ]; then
+    _lane_gitdir="$LANE/.git"
+elif [ -f "$LANE/.git" ]; then
+    # `gitdir: <path>`; git writes it absolute, but a relative pointer is legal
+    # and resolves against the worktree root.
+    _lane_gitdir="$(sed -n 's/^gitdir: *//p' "$LANE/.git" | head -n 1)"
+    case "$_lane_gitdir" in
+        ""|/*) ;;
+        *) _lane_gitdir="$LANE/$_lane_gitdir" ;;
+    esac
+fi
+if [ -n "$_lane_gitdir" ] && [ -d "$_lane_gitdir" ]; then
+    _lane_gitdir="$(cd "$_lane_gitdir" && pwd -P)"
+fi
+
+_view_gitdir="$(git -C "$LANE" rev-parse --absolute-git-dir 2>/dev/null || true)"
+if [ -n "$_view_gitdir" ] && [ -d "$_view_gitdir" ]; then
+    _view_gitdir="$(cd "$_view_gitdir" && pwd -P)"
+fi
+
 _view_top="$(git -C "$LANE" rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$_view_top" ] && [ -d "$_view_top" ]; then
     _view_top="$(cd "$_view_top" && pwd -P)"
-    [ "$_view_top" = "$LANE" ] || FOREIGN_VIEW="$_view_top"
+fi
+
+# Only a POSITIVE mismatch marks the view foreign. An unresolvable side is left
+# alone deliberately: `git status` already succeeded, so a blank here means
+# rev-parse could not name the thing, not that it named something else, and
+# inventing a mismatch from silence would fire this on every healthy lane.
+if [ -n "$_view_gitdir" ] && [ -n "$_lane_gitdir" ] && [ "$_view_gitdir" != "$_lane_gitdir" ]; then
+    FOREIGN_VIEW="repository $_view_gitdir"
+elif [ -n "$_view_top" ] && [ "$_view_top" != "$LANE" ]; then
+    FOREIGN_VIEW="worktree $_view_top"
 fi
 
 # ── classify ──────────────────────────────────────────────────────────────────
@@ -336,7 +408,21 @@ done < "$_STATUS_Z"
 _n_deleted=${#DELETED[@]}
 _n_phantom=${#PHANTOM[@]}
 
-if [ "$_n_deleted" -gt 0 ]; then
+# The foreign-view notice comes FIRST, because it changes what every count
+# below means. Stating it after the per-path listing would let an operator read
+# "deleted: crates/reify-kernel/src/lib.rs — do NOT restore, this is evidence"
+# about a file that was never this lane's.
+if [ -n "$FOREIGN_VIEW" ]; then
+    warn "git answered about a different $FOREIGN_VIEW — NOT this lane ($LANE)"
+    info "An inherited GIT_DIR/GIT_WORK_TREE is observed rather than scrubbed, because"
+    info "classifying the agent's own view is the point. But nothing below is evidence"
+    info "about this lane: the paths come from that view's index, re-stat-ed here, so a"
+    info "path 'missing' here may simply be one this lane never tracked. This is"
+    info "therefore NOT an all-clear either — the lane was never measured. Re-run with"
+    info "the git environment scrubbed (scripts/lib_git_env_scrub.sh) to measure it."
+fi
+
+if [ "$_n_deleted" -gt 0 ] && [ -z "$FOREIGN_VIEW" ]; then
     err "$_n_deleted tracked file(s) are reported deleted by git AND are absent on disk (lane: $LANE)"
     for _p in "${DELETED[@]+"${DELETED[@]}"}"; do
         err "  deleted: $_p"
@@ -344,6 +430,13 @@ if [ "$_n_deleted" -gt 0 ]; then
     hint "Report-only by design: do NOT restore these — the missing copy is the evidence"
     hint "       a second sighting needs to attribute the mechanism (task 7227, esc-7106-5)."
     hint "       Record the lane path, its branch, and this output before touching anything."
+elif [ "$_n_deleted" -gt 0 ]; then
+    warn "$_n_deleted path(s) from that view's index are absent under this lane:"
+    for _p in "${DELETED[@]+"${DELETED[@]}"}"; do
+        warn "  unattributable: $_p"
+    done
+    info "Counted, but they raise no sentinel: a foreign index's paths are not this"
+    info "lane's vanished files, and this run cannot tell the two apart."
 fi
 
 if [ "$_n_phantom" -gt 0 ]; then
@@ -356,18 +449,16 @@ if [ "$_n_phantom" -gt 0 ]; then
     info "inherited from the environment. It does not raise the exit-3 sentinel."
 fi
 
-if [ -n "$FOREIGN_VIEW" ]; then
-    warn "git answered about a DIFFERENT worktree than this lane (lane: $LANE)"
-    warn "  git's worktree root here is: $FOREIGN_VIEW"
-    info "An inherited GIT_DIR/GIT_WORK_TREE is observed rather than scrubbed, because"
-    info "classifying the agent's own view is the point. But the counts below describe"
-    info "THAT tree's answers, re-stat-ed here — they are not an all-clear for this lane,"
-    info "which git was never asked about. Re-run with the git environment scrubbed"
-    info "(scripts/lib_git_env_scrub.sh) to measure the lane itself."
-fi
+printf 'source-integrity: deleted=%d phantom=%d lane=%s view=%s\n' \
+    "$_n_deleted" "$_n_phantom" "$(basename "$LANE")" \
+    "$([ -n "$FOREIGN_VIEW" ] && printf foreign || printf lane)"
 
-printf 'source-integrity: deleted=%d phantom=%d lane=%s\n' \
-    "$_n_deleted" "$_n_phantom" "$(basename "$LANE")"
-
+# THE SENTINEL IS A CLAIM ABOUT THIS LANE, so it may only be raised from
+# evidence measured through this lane's own repository and worktree. One rule,
+# no per-shape exceptions -- the GIT_DIR-only false sentinel above and the
+# already-shipped mixed case (a foreign-index path absent here, counted
+# `deleted` and exited 3 while the lane itself was intact) are the same defect
+# and are closed by the same line.
+[ -z "$FOREIGN_VIEW" ] || exit 0
 [ "$_n_deleted" -eq 0 ] || exit 3
 exit 0

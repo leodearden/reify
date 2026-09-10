@@ -39,8 +39,11 @@
 #       point): git reports ` D` while the path is still on disk => deleted=0
 #       phantom=N and exit 0. The block asserts BOTH halves of its own fixture
 #       premise first so it cannot decay into a vacuous pass.
-#   D — MIXED: one of each in one tree; a real deletion anywhere dominates the
-#       exit code.
+#   D — MIXED: one of each in one tree, both measured under a foreign view --
+#       so both are reported and NEITHER raises the sentinel (see A3 in the
+#       script header). This block previously pinned exit 3 here, which was
+#       itself a false sentinel: the path it counted belongs to the poison
+#       repo's index, not the lane's.
 #   E — NOISE IS NOT COUNTED: untracked, modified-but-present, staged addition,
 #       staged deletion (index column, not worktree column) and unmerged
 #       conflict entries all leave deleted=0 phantom=0 exit 0.
@@ -71,6 +74,15 @@
 #       tree. Both measured flips are pinned, plus the clean-foreign case where
 #       git reports nothing at all and only the foreign-view notice separates
 #       "clean lane" from "lane never measured".
+#   J — EACH POISONING VARIABLE ALONE: every other block sets GIT_DIR and
+#       GIT_WORK_TREE together, which is the one shape both identity arms see,
+#       so the suite could not show either arm was load-bearing. GIT_DIR alone
+#       (git compares a FOREIGN index against the lane's files, so foreign-only
+#       paths re-stat as genuinely absent -- the loudest false sentinel, and it
+#       scales with the foreign repo's tracked-file count) and GIT_WORK_TREE
+#       alone (git's gitdir still equals the lane's, so only the toplevel arm
+#       sees it), each with a behavioural consequence, plus an unpoisoned
+#       control proving the real sentinel survives all of it.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; classified
 # `pool` in run-all-classification.manifest (hermetic: temp-dir git repos only,
@@ -177,14 +189,44 @@ run_detector_poisoned_in() {
     RC=$rc
 }
 
+# ── run_detector_gitdir_only / run_detector_worktree_only ─────────────────────
+# The two SINGLE-VARIABLE poisoning shapes. run_detector_poisoned sets GIT_DIR
+# and GIT_WORK_TREE together, which is only one of the three ways a view can be
+# foreign, and it is the one shape BOTH identity arms catch -- so a suite built
+# on it alone cannot tell whether either arm is actually load-bearing. Same
+# assignment placement, same reason, as run_detector_poisoned.
+run_detector_gitdir_only() {
+    local gitdir="$1"; shift
+    local rc=0
+    : > "$ERR_FILE"
+    OUT="$(GIT_DIR="$gitdir" bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+run_detector_worktree_only() {
+    local worktree="$1"; shift
+    local rc=0
+    : > "$ERR_FILE"
+    OUT="$(GIT_WORK_TREE="$worktree" bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
 # ── string predicates (fork-free; usable as assert checkers) ──────────────────
 _has()   { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 _lacks() { case "$2" in *"$1"*) return 1 ;; *) return 0 ;; esac; }
 _one_line() { test "$(printf '%s\n' "$1" | wc -l)" -eq 1; }
 _git_status_fails() { ! git -C "$1" status --porcelain >/dev/null 2>&1; }
 
-# Expected stdout summary for a lane dir.
-_summary() { printf 'source-integrity: deleted=%s phantom=%s lane=%s' "$1" "$2" "$(basename "$3")"; }
+# Expected stdout summary for a lane dir. $4 is the `view` field and defaults
+# to `lane`; every poisoned run must pass `foreign`, so a block that poisons the
+# environment and forgets to say so fails loudly rather than matching a
+# lane-view line.
+_summary() {
+    printf 'source-integrity: deleted=%s phantom=%s lane=%s view=%s' \
+        "$1" "$2" "$(basename "$3")" "${4:-lane}"
+}
 
 # ── fixture builders ──────────────────────────────────────────────────────────
 # A throwaway repo under /tmp: no global core.hooksPath is configured on this
@@ -335,7 +377,7 @@ assert "C0d: FIXTURE — ...and its lane copy is on disk too" \
 run_detector_poisoned "$C_POISON/.git" "$C_POISON" --lane "$C_LANE"
 assert "C1: an index artifact does NOT raise the sentinel (exit 0)" test "$RC" -eq 0
 assert "C2: both entries are bucketed phantom, none deleted" \
-    test "$OUT" = "$(_summary 0 2 "$C_LANE")"
+    test "$OUT" = "$(_summary 0 2 "$C_LANE" foreign)"
 assert "C3: stdout stays a single machine-readable line" _one_line "$OUT"
 assert "C4: the phantom paths are still reported on stderr" \
     _has 'src/lib.rs' "$ERR_OUT"
@@ -362,10 +404,21 @@ assert "D0: FIXTURE — here.txt is on disk in the lane" test -f "$D_LANE/here.t
 assert "D0: FIXTURE — gone.txt is not" test ! -e "$D_LANE/gone.txt"
 
 run_detector_poisoned "$D_POISON/.git" "$D_POISON" --lane "$D_LANE"
-assert "D1: one of each is reported" test "$OUT" = "$(_summary 1 1 "$D_LANE")"
-assert "D2: a real deletion anywhere dominates the exit code (exit 3)" test "$RC" -eq 3
-assert "D3: the real deletion is named on stderr" _has 'gone.txt' "$ERR_OUT"
+assert "D1: one of each is reported" test "$OUT" = "$(_summary 1 1 "$D_LANE" foreign)"
+# D2 CHANGED (task 7227, review round 2), and the change is the point of the
+# block now. This fixture never showed a lane defect: gone.txt is a path the
+# POISON repo tracks and the lane does not, so "absent under the lane" is its
+# mundane resting state, not a vanishing. The suite previously pinned exit 3
+# here -- the same false sentinel the GIT_DIR-only shape produces at scale in
+# Block J, arriving by a different variable. A sentinel is a claim about THIS
+# lane, so it may only be raised from evidence measured through this lane's own
+# repository and worktree; under a foreign view the count is still reported, and
+# `view=foreign` is what says so.
+assert "D2: a foreign view's deletion raises NO sentinel (exit 0, not 3)" test "$RC" -eq 0
+assert "D3: the unattributable path is still named on stderr" _has 'gone.txt' "$ERR_OUT"
 assert "D4: so is the phantom" _has 'here.txt' "$ERR_OUT"
+assert "D5: ...and it is not labelled as this lane's evidence" \
+    _lacks 'do NOT restore' "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block E — NOISE IS NOT COUNTED
@@ -652,10 +705,10 @@ assert "I0c: FIXTURE — the lane and the poison tree have distinct basenames" \
     test "$(basename "$I_LANE")" != "$(basename "$I_POISON")"
 
 run_detector_poisoned_in "$I_POISON/.git" "$I_POISON" "$I_LANE"
-assert "I1a: the no-argument form still raises the sentinel under a foreign view" \
-    test "$RC" -eq 3
-assert "I1b: ...and attributes the deletion to THE LANE, not the inherited tree" \
-    test "$OUT" = "$(_summary 1 0 "$I_LANE")"
+assert "I1a: the no-argument form raises no sentinel under a foreign view (exit 0)" \
+    test "$RC" -eq 0
+assert "I1b: ...and names THE LANE, not the inherited tree, marked view=foreign" \
+    test "$OUT" = "$(_summary 1 0 "$I_LANE" foreign)"
 assert "I1c: ...so the foreign tree is never named as the lane" \
     _lacks "lane=$(basename "$I_POISON")" "$OUT"
 
@@ -663,9 +716,9 @@ assert "I1c: ...so the foreign tree is never named as the lane" \
 # at the cwd, or every root-relative porcelain path is joined one level too
 # deep -- the Block H flip, arriving by the other branch.
 run_detector_poisoned_in "$I_POISON/.git" "$I_POISON" "$I_LANE/sub"
-assert "I2a: ...and from a subdirectory of the lane too (exit 3)" test "$RC" -eq 3
+assert "I2a: ...and from a subdirectory of the lane too (exit 0)" test "$RC" -eq 0
 assert "I2b: ...still naming the lane root, not the subdirectory or the view" \
-    test "$OUT" = "$(_summary 1 0 "$I_LANE")"
+    test "$OUT" = "$(_summary 1 0 "$I_LANE" foreign)"
 
 # REVERSE: a clean lane under a view that has a deletion. The deletion belongs
 # to the foreign tree, so the lane must come back with no sentinel -- and the
@@ -680,7 +733,7 @@ run_detector_poisoned_in "$I_POISON/.git" "$I_POISON" "$I_CLEANLANE"
 assert "I3b: a foreign tree's deletion never becomes the lane's sentinel (exit 0)" \
     test "$RC" -eq 0
 assert "I3c: ...it is classified phantom against the correctly-resolved lane" \
-    test "$OUT" = "$(_summary 0 1 "$I_CLEANLANE")"
+    test "$OUT" = "$(_summary 0 1 "$I_CLEANLANE" foreign)"
 assert "I3d: ...so the poisoned view is still OBSERVED, not scrubbed away" \
     _has 'phantom' "$ERR_OUT"
 
@@ -689,13 +742,13 @@ assert "I3d: ...so the poisoned view is still OBSERVED, not scrubbed away" \
 # start under a poisoned environment reads as a clean bill of health.
 run_detector_poisoned_in "$I_CLEAN/.git" "$I_CLEAN" "$I_LANE"
 assert "I4a: a clean foreign view yields a zero summary — against the LANE's name" \
-    test "$OUT" = "$(_summary 0 0 "$I_LANE")"
+    test "$OUT" = "$(_summary 0 0 "$I_LANE" foreign)"
 assert "I4b: ...and the run is not silent: the foreign tree is named on stderr" \
     _has "$I_CLEAN" "$ERR_OUT"
-assert "I4c: ...stated as a different worktree, so it is legible without re-deriving" \
-    _has 'DIFFERENT worktree' "$ERR_OUT"
+assert "I4c: ...stated as a different tree, so it is legible without re-deriving" \
+    _has 'NOT this lane' "$ERR_OUT"
 assert "I4d: ...and explicitly not an all-clear for this lane" \
-    _has 'not an all-clear' "$ERR_OUT"
+    _has 'NOT an all-clear' "$ERR_OUT"
 assert "I4e: stdout stays exactly one machine-readable line regardless" _one_line "$OUT"
 
 # CONTROL: without a foreign view there is no notice at all, or the notice
@@ -703,9 +756,127 @@ assert "I4e: stdout stays exactly one machine-readable line regardless" _one_lin
 run_detector_in "$I_CLEANLANE"
 assert "I5a: CONTROL — an unpoisoned run of the same form is clean (exit 0)" \
     test "$RC" -eq 0
-assert "I5b: ...and emits no foreign-view notice" _lacks 'DIFFERENT worktree' "$ERR_OUT"
+assert "I5b: ...and emits no foreign-view notice" _lacks 'NOT this lane' "$ERR_OUT"
 
 assert "I6: NON-MUTATION — the lane's absent file was not restored by any of it" \
     test ! -e "$I_LANE/sub/a.txt"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — EACH POISONING VARIABLE ALONE
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: GIT_DIR alone and GIT_WORK_TREE alone ---"
+
+# Every other block sets GIT_DIR and GIT_WORK_TREE TOGETHER. Measured on this
+# host, git 2.43.0, `git -C <lane> rev-parse --show-toplevel --absolute-git-dir`:
+#
+#   GIT_DIR + GIT_WORK_TREE  toplevel=poison   gitdir=poison
+#   GIT_DIR only             toplevel=LANE     gitdir=poison
+#   GIT_WORK_TREE only       toplevel=poison   gitdir=LANE
+#
+# So the paired shape is the only one BOTH identity arms see, and a suite built
+# on it cannot show either arm is load-bearing. J1 is the GIT_DIR-only shape --
+# invisible to a toplevel-equality check -- and J2 the GIT_WORK_TREE-only shape,
+# invisible to a gitdir-equality check. Deleting either arm turns exactly one of
+# them red.
+#
+# J1 is also the severe one, and the reason the sentinel is now withheld rather
+# than merely annotated. With GIT_DIR alone git compares a FOREIGN INDEX against
+# the LANE's files, so every path the foreign repo tracks and this lane does not
+# is reported ` D` and re-stats as genuinely absent here. The on-disk
+# discriminator -- the whole script -- cannot separate that from a real vanish,
+# because the paths really are missing. Pre-fix this printed `deleted=2 lane=lane`
+# and exited 3: an exit-3 sentinel naming the lane, listing files that were never
+# the lane's, scaling with the FOREIGN repo's tracked-file count. It is the
+# unattributable sighting this script exists to prevent, wearing the script's own
+# alarm. An inherited GIT_DIR naming another lane of the shared .git store would
+# have rendered it as a plausible set of reify source paths.
+J_ROOT="$(_mktmpd J)"
+J_LANE="$J_ROOT/lane"
+J_POISON="$J_ROOT/poison"
+_mk_repo "$J_LANE"   a.txt
+_mk_repo "$J_POISON" src/foreign1.rs src/foreign2.rs
+
+assert "J0a: FIXTURE — the lane's own file is present and it tracks nothing else" \
+    test -f "$J_LANE/a.txt"
+assert "J0b: FIXTURE — the foreign-only paths are absent under the lane, so the" \
+    test ! -e "$J_LANE/src/foreign1.rs"
+assert "J0c: FIXTURE — ...on-disk re-stat cannot tell them from a real vanish" \
+    test ! -e "$J_LANE/src/foreign2.rs"
+
+J_GITDIR_STATUS="$(GIT_DIR="$J_POISON/.git" git -C "$J_LANE" status --porcelain)"
+assert "J0d: FIXTURE — GIT_DIR alone really makes git report the foreign paths ' D'" \
+    _has ' D src/foreign1.rs' "$J_GITDIR_STATUS"
+
+run_detector_gitdir_only "$J_POISON/.git" --lane "$J_LANE"
+assert "J1a: GIT_DIR alone raises NO sentinel (exit 0) — the false alarm is gone" \
+    test "$RC" -eq 0
+assert "J1b: ...the run is marked view=foreign, so exit 0 is not read as all-clear" \
+    test "$OUT" = "$(_summary 2 0 "$J_LANE" foreign)"
+assert "J1c: ...git's toplevel equals the lane here, so only the GITDIR arm can see it" \
+    test "$(GIT_DIR="$J_POISON/.git" git -C "$J_LANE" rev-parse --show-toplevel)" = "$J_LANE"
+assert "J1d: ...and the foreign REPOSITORY is named, not merely a foreign tree" \
+    _has 'different repository' "$ERR_OUT"
+assert "J1e: ...the paths are tagged unattributable, not asserted as lane evidence" \
+    _has 'unattributable: src/foreign1.rs' "$ERR_OUT"
+assert "J1f: ...so the 'do NOT restore, this is evidence' hint is withheld" \
+    _lacks 'do NOT restore' "$ERR_OUT"
+
+run_detector_worktree_only "$J_POISON" --lane "$J_LANE"
+assert "J2a: GIT_WORK_TREE alone is caught too (exit 0, view=foreign)" \
+    test "$RC" -eq 0
+assert "J2b: ...as a foreign WORKTREE — the arm the gitdir check cannot see" \
+    _has 'different worktree' "$ERR_OUT"
+assert "J2c: ...git's gitdir equals the lane's own here, hence the second arm" \
+    test "$(GIT_WORK_TREE="$J_POISON" git -C "$J_LANE" rev-parse --absolute-git-dir)" = "$J_LANE/.git"
+assert "J2d: ...and the lane is still the one named" _has "lane=$(basename "$J_LANE")" "$OUT"
+
+# J2e/J2f give the worktree arm a BEHAVIOURAL consequence, not just a wording
+# one: J2a-J2d survive its removal except for the message text, so on their own
+# they would let the arm rot into a label. Here the lane has a real deletion,
+# and GIT_WORK_TREE alone makes git list every lane-tracked path missing from
+# the FOREIGN worktree; the re-stat then finds sub/b.txt genuinely absent.
+# Without the arm that is exit 3.
+#
+# Stated plainly because it is the one uncomfortable edge of the uniform rule:
+# in THIS shape the positive is actually sound -- the lane's own index tracks
+# sub/b.txt and it really is gone -- so withholding the sentinel withholds a
+# true one. It is withheld anyway, because the entry SET is dictated by the
+# foreign worktree's contents rather than the lane's: had the poison repo
+# happened to contain sub/b.txt, the vanished file would not have been listed
+# at all. A rule that raised the sentinel from a set chosen by an unrelated
+# repository would be unreliable in the miss direction while looking
+# authoritative, and carving out this one axis would trade one uniform
+# invariant for a per-variable exception. Nothing is lost permanently: the
+# paths are still listed, view=foreign says why, and the scrubbed re-run the
+# notice asks for produces the true sentinel.
+J_WT_LANE="$J_ROOT/wtlane"
+J_WT_POISON="$J_ROOT/wtpoison"
+_mk_repo "$J_WT_LANE"   a.txt sub/b.txt
+_mk_repo "$J_WT_POISON" other.txt
+rm "$J_WT_LANE/sub/b.txt"
+assert "J2e: FIXTURE — the lane's own tracked file really is gone" \
+    test ! -e "$J_WT_LANE/sub/b.txt"
+
+run_detector_worktree_only "$J_WT_POISON" --lane "$J_WT_LANE"
+assert "J2f: GIT_WORK_TREE alone withholds the sentinel behaviourally (exit 0, not 3)" \
+    test "$RC" -eq 0
+assert "J2g: ...the path is still listed and the view marked, so nothing is hidden" \
+    test "$OUT" = "$(_summary 1 1 "$J_WT_LANE" foreign)"
+assert "J2h: ...and a scrubbed re-run of the same lane DOES raise it (exit 3)" \
+    bash -c 'bash "$0" --lane "$1" >/dev/null 2>&1; test $? -eq 3' "$SCRIPT" "$J_WT_LANE"
+
+# CONTROL: the sentinel must survive everything above. A fix that suppressed it
+# broadly would pass every assertion in this block and destroy the script.
+J_REAL="$J_ROOT/reallane"
+_mk_repo "$J_REAL" a.txt sub/b.txt
+rm "$J_REAL/sub/b.txt"
+run_detector --lane "$J_REAL"
+assert "J3a: CONTROL — an unpoisoned real deletion still raises the sentinel (exit 3)" \
+    test "$RC" -eq 3
+assert "J3b: ...marked view=lane, the only view a sentinel may be raised from" \
+    test "$OUT" = "$(_summary 1 0 "$J_REAL" lane)"
+assert "J3c: ...and it still carries the evidence-preservation hint" \
+    _has 'do NOT restore' "$ERR_OUT"
 
 test_summary
