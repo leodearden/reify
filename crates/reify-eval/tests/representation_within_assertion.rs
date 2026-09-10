@@ -1676,9 +1676,11 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // but it would fire inside a still-PASSING test: visible solely under
     // `cargo test -- --nocapture`, which the repo's cargo output-condensation
     // wrapper (CLAUDE.md) collapses away by default. A dead signal reads as
-    // coverage that isn't there, so none is kept here; the tooth-landing
-    // interpretation and manual re-derivation guidance live on
-    // `OCCT_SOURCE_FINE`'s doc comment above.
+    // coverage that isn't there, so none is kept here; the low-side 4e-4 m
+    // threshold and the manual re-derivation guidance live on
+    // `OCCT_SOURCE_FINE`'s doc comment above, and the tooth-landing
+    // interpretation itself in
+    // `docs/notes/occt-precision-deviation-staircase.md`.
     assert!(
         achieved < 8e-4,
         "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must stay under \
