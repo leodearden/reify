@@ -59,8 +59,19 @@ pub enum BindingKind {
 /// This is the row's own declared shape. It is NOT, in α, a diagnostic gate:
 /// the compiler ladder is arity-insensitive today, and preserving that exactly
 /// is a hard constraint of the seed migration (see
-/// `reify-compiler`'s `builtin_registry::registry_result_type`). Real arity
-/// diagnostics arrive with the first genuine overload in τ-numeric.
+/// `reify-compiler`'s `builtin_registry::registry_result_type`, which resolves
+/// via `name_group` rather than the argc-keyed [`lookup`](crate::lookup) for
+/// precisely that reason). Real arity diagnostics arrive with the first genuine
+/// overload in τ-numeric.
+///
+/// **Not to be confused with a resolver's own argc test.** An
+/// [`ResultSpec::ArgAware`] resolver may consult `args.len()` to mirror the argc
+/// at which EVAL dispatches a name onto a particular argument shape — the
+/// analysis reductions do exactly that for their `Type::Field` arm (task #6577),
+/// so the compiler's claim stays narrower-or-equal to what eval can honour. That
+/// is a result-TYPE choice between two answers the row already gives, not a
+/// diagnostic, and it does not make a mis-arity call an error: such a call still
+/// reaches the resolver and still receives the family's concrete answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Arity {
     /// Exactly `n` arguments.

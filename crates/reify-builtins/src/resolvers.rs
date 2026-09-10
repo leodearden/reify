@@ -103,8 +103,24 @@ fn field_tensor_arg(args: &[Type], i: usize) -> Option<(&Type, DimensionVector)>
 /// it turns arg0's element dimension into a result type, so the two forms live
 /// here ONCE and the per-row variation is the `codomain` argument:
 ///
-/// - arg0 is a `Field<D, Tensor<2,3,Q>>` → `Field<D, codomain(Q)>`;
+/// - arg0 is a `Field<D, Tensor<2,3,Q>>`, at exactly `field_argc` arguments →
+///   `Field<D, codomain(Q)>`;
 /// - anything else → `codomain(tensor_quantity(arg0))`, the pre-#6577 answer.
+///
+/// # The `field_argc` gate
+///
+/// `field_argc` is the argument count at which EVAL dispatches this name onto a
+/// field (`crates/reify-expr/src/lib.rs`'s ladder). Mirroring it keeps the
+/// compiler's claim narrower-or-equal to what eval can honour: outside that
+/// argc, eval reaches `eval_builtin` and yields `Value::Undef`, which
+/// `value_type_kind_matches` accepts for ANY type — so the concrete fall-through
+/// is sound, whereas a `Type::Field` claim there would not be.
+///
+/// This gate is INTERNAL to the resolver and is not an arity diagnostic. The
+/// compiler seam stays arity-INSENSITIVE (`registry_result_type` resolves via
+/// `name_group`, not the argc-keyed `lookup`), so a mis-arity call still reaches
+/// this function and still receives the family's concrete answer — exactly what
+/// the legacy name-only ladder arms did.
 ///
 /// # Why the Field form is a `Field` and not a reduced scalar (task #6577)
 ///
@@ -119,8 +135,14 @@ fn field_tensor_arg(args: &[Type], i: usize) -> Option<(&Type, DimensionVector)>
 /// Returns `Some(..)` unconditionally: legacy behaviour never rejected an
 /// argument shape, and α preserves it exactly. Wiring the `None` ⇒
 /// `E_BuiltinArgShape` path is τ-numeric's work (PRD §3 decision 5).
-fn reduce_tensor_arg(args: &[Type], codomain: fn(DimensionVector) -> Type) -> Option<Type> {
-    if let Some((domain, dim)) = field_tensor_arg(args, 0) {
+fn reduce_tensor_arg(
+    args: &[Type],
+    field_argc: usize,
+    codomain: fn(DimensionVector) -> Type,
+) -> Option<Type> {
+    if args.len() == field_argc
+        && let Some((domain, dim)) = field_tensor_arg(args, 0)
+    {
         return Some(Type::Field {
             domain: Box::new(domain.clone()),
             codomain: Box::new(codomain(dim)),
@@ -136,7 +158,7 @@ fn reduce_tensor_arg(args: &[Type], codomain: fn(DimensionVector) -> Type) -> Op
 /// `magnitude` in `math_fn_result_type`, and `wrap_tensor_field` for the Field
 /// form.
 pub(crate) fn tensor_scalar_reduction(args: &[Type]) -> Option<Type> {
-    reduce_tensor_arg(args, scalar_or_real)
+    reduce_tensor_arg(args, 1, scalar_or_real)
 }
 
 /// `principal_stresses`: the same reduction, wrapped in a `List`.
@@ -147,7 +169,7 @@ pub(crate) fn tensor_scalar_reduction(args: &[Type]) -> Option<Type> {
 /// and each sample is the three eigenvalues (`compute_principal_stresses`,
 /// `crates/reify-expr/src/analysis.rs:239-256`).
 pub(crate) fn tensor_scalar_reduction_list(args: &[Type]) -> Option<Type> {
-    reduce_tensor_arg(args, |dim| Type::List(Box::new(scalar_or_real(dim))))
+    reduce_tensor_arg(args, 1, |dim| Type::List(Box::new(scalar_or_real(dim))))
 }
 
 /// `safety_factor`: dimensionless whatever the argument dimensions.
@@ -159,7 +181,7 @@ pub(crate) fn tensor_scalar_reduction_list(args: &[Type]) -> Option<Type> {
 /// (`crates/reify-expr/src/analysis.rs:273-302`) hands back a `Value::Field`
 /// just as the other reductions do.
 pub(crate) fn dimensionless_ratio(args: &[Type]) -> Option<Type> {
-    reduce_tensor_arg(args, |_| Type::dimensionless_scalar())
+    reduce_tensor_arg(args, 2, |_| Type::dimensionless_scalar())
 }
 
 #[cfg(test)]
