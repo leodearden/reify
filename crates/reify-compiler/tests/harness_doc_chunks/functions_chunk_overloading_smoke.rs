@@ -395,12 +395,7 @@ fn functions_chunk_example_signatures_are_never_rejected_on_arity_by_a_builtin()
         .flat_map(|signature| {
             arg_count_rejections(&compiled, &signature.name, signature.arity)
                 .into_iter()
-                .map(move |d| {
-                    format!(
-                        "  {}/{} — {}",
-                        signature.name, signature.arity, d.message
-                    )
-                })
+                .map(move |d| format!("  {}/{} — {}", signature.name, signature.arity, d.message))
         })
         .collect();
 

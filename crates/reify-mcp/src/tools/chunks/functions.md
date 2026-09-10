@@ -43,8 +43,8 @@ Function overloading by parameter types IS permitted:
 fn area(surface: Surface) -> Scalar<Area> { ... }
 fn area(solid: Solid) -> Scalar<Area> { ... }
 
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
-fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
+fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
+fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
 ```
 
 Exactly one candidate must match at each call site.
