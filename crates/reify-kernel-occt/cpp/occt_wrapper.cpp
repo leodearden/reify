@@ -747,26 +747,36 @@ TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
     return raw;
 }
 
-// True iff `shape`'s top-level solids are PAIRWISE bbox-disjoint — i.e. no two
-// of them can touch, so `ShapeUpgrade_UnifySameDomain` provably has nothing to
-// merge across them and can be skipped (see the call site for why that matters).
+// True iff no two solids anywhere in `operands` can touch — i.e. every pair of
+// their bounding boxes is disjoint, so the boolean about to be normalized
+// provably merged nothing and `ShapeUpgrade_UnifySameDomain` has nothing to do
+// (see the call site for why that matters, and for why the same test over the
+// RESULT would be unsound).
 //
-// Returns false for anything with fewer than two top-level solids: a single
-// solid is exactly the case unification exists for, and must never be skipped.
+// Returns false when the operands carry fewer than two solids in total: a
+// single solid is exactly the case unification exists for, and must never be
+// skipped.
 //
-// Boxes are enlarged by OCCT's own `Bnd_Box` gap only (`BRepBndLib::Add`
-// already inflates by the shape tolerance); `Bnd_Box::IsOut` is then the exact
-// separation test. Any doubt resolves to "not disjoint", which just means the
-// unification pass runs — i.e. the conservative direction.
-bool boolean_result_solids_are_pairwise_disjoint(const TopoDS_Shape& shape) {
+// Boxes come from the GEOMETRY, not the triangulation, and are enlarged by
+// OCCT's own `Bnd_Box` gap only (`BRepBndLib::Add` already inflates by the
+// shape tolerance); `Bnd_Box::IsOut` is then the exact separation test.
+// `useTriangulation` must stay explicitly false: it DEFAULTS to true
+// (BRepBndLib.hxx), and on a shape that already carries a triangulation the
+// chordal box can UNDERSTATE a curved solid's true extent — biasing the answer
+// toward "disjoint", which is the one direction this predicate may never err
+// in. Any doubt must resolve to "not disjoint", which merely runs the
+// unification pass.
+bool boolean_operand_solids_are_pairwise_disjoint(const TopTools_ListOfShape& operands) {
     std::vector<Bnd_Box> boxes;
-    for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
-        Bnd_Box box;
-        BRepBndLib::Add(ex.Current(), box);
-        if (box.IsVoid()) {
-            return false;
+    for (TopTools_ListIteratorOfListOfShape it(operands); it.More(); it.Next()) {
+        for (TopExp_Explorer ex(it.Value(), TopAbs_SOLID); ex.More(); ex.Next()) {
+            Bnd_Box box;
+            BRepBndLib::Add(ex.Current(), box, /*useTriangulation=*/Standard_False);
+            if (box.IsVoid()) {
+                return false;
+            }
+            boxes.push_back(box);
         }
-        boxes.push_back(box);
     }
     if (boxes.size() < 2) {
         return false;
@@ -840,21 +850,30 @@ bool unify_history_preserves_volume(const TopoDS_Shape& before, const TopoDS_Sha
 // Left as a NULL handle when no unification pass ran, which callers must treat
 // as "every child survived unchanged".
 TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
+                                      const TopTools_ListOfShape& operands,
                                       Handle(BRepTools_History)& out_unify_history) {
     TopoDS_Shape unwrapped = unwrap_boolean_compound(raw);
 
-    // PAIRWISE-DISJOINT SHORT-CIRCUIT (amendment, esc review #4).
+    // PAIRWISE-DISJOINT-OPERAND SHORT-CIRCUIT.
     //
     // Unification is a full topology rebuild whose cost scales with the FACE
     // COUNT of the whole shape, and `fuse_shape_list` is the shared tail of all
     // four pattern realizers — so a 1000-instance pattern would otherwise pay a
-    // rebuild over every face of every instance. When the unwrapped result's
-    // top-level solids are pairwise bbox-disjoint, no two of them share a single
-    // point, so no face of one can be same-domain-CONTIGUOUS with a face of
-    // another and there is provably nothing to merge ACROSS solids. (Faces
-    // internal to one solid are untouched by this short-circuit; every operand
-    // reaching a boolean is itself either a primitive or an already-normalized
-    // boolean result, so an un-merged internal seam cannot originate here.)
+    // rebuild over every face of every instance. When no two of the OPERANDS'
+    // solids can touch, nothing merged: this boolean is a re-wrap, the result's
+    // topology IS the operands' topology, and so this boolean introduced no
+    // seam for the pass to remove.
+    //
+    // THE SAME TEST OVER THE RESULT IS UNSOUND — do not reintroduce it. The
+    // seams unification exists to remove are created BY THE BOOLEAN BEING
+    // NORMALIZED, so a boolean that merges some operands into a cluster while
+    // other bodies stay far away hands back top-level solids that ARE pairwise
+    // disjoint and yet carry brand-new coplanar seams. Measured on the
+    // result-side form: `fuse_all([a, abutting, far])` kept 16 faces where the
+    // merged prism plus the far cube is 12.  A two-operand test cannot expose
+    // this, because with two operands "nothing could have merged" and "the
+    // result's solids are disjoint" coincide; the three-body guards named below
+    // are what pin it.
     //
     // Cost of the check is O(N²) cheap bbox overlap tests with an early exit on
     // the FIRST overlap, so the abutting case — where unification is the point —
@@ -876,11 +895,22 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
     // does not take this branch — shows no systematic difference. Face counts
     // were bit-identical across both arms (600 at N=100, 6000 at N=1000
     // disjoint; 6 abutting), which is the correctness-neutrality evidence:
-    // `disjoint_pattern_fuse_merges_nothing_and_abutting_one_does` in
+    // `disjoint_fuse_merges_nothing_and_the_abutting_control_still_merges` in
     // `boolean_result_normalization_integration.rs` pins it as a standing guard,
     // since the existing `boolean_pass_count()` perf guard counts BOP passes
-    // only and is structurally blind to this cost.
-    if (boolean_result_solids_are_pairwise_disjoint(unwrapped)) {
+    // only and is structurally blind to this cost. Its three-body siblings
+    // there (`n_ary_fuse_of_a_cluster_plus_a_far_body_unifies_the_cluster` and
+    // the nested-binary / grid-pattern cases) pin the other half: that the skip
+    // stays predicated on the operands.
+    //
+    // The measurements above were taken on disjoint OPERANDS, so they still
+    // describe the arm that fires: a pure-disjoint `fuse_all` has
+    // pairwise-disjoint operands, so re-predicating on the operands preserves
+    // the win by construction. Re-measured on a prototype of exactly this
+    // change (architect, release build, OCCT 7.8): disjoint `fuse_all` at
+    // N=200 costs 312 ms for 1200 faces, in line with the N=100 short-circuit
+    // numbers above.
+    if (boolean_operand_solids_are_pairwise_disjoint(operands)) {
         // NULL history — callers must read that as "every child survived
         // unchanged", which is exactly true when no unification pass ran.
         out_unify_history = Handle(BRepTools_History)();
@@ -963,9 +993,18 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
 
 // Convenience overload for the callers that do not track provenance
 // (`boolean_fuse` / `boolean_cut` / `boolean_common` / `fuse_shape_list`).
-TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
+                                      const TopTools_ListOfShape& operands) {
     Handle(BRepTools_History) unused;
-    return normalize_boolean_result(raw, unused);
+    return normalize_boolean_result(raw, operands, unused);
+}
+
+// The operand list for a binary boolean, in the order the op received them.
+TopTools_ListOfShape operand_pair(const TopoDS_Shape& left, const TopoDS_Shape& right) {
+    TopTools_ListOfShape operands;
+    operands.Append(left);
+    operands.Append(right);
+    return operands;
 }
 
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
@@ -986,9 +1025,10 @@ TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw) {
 // exactly as the three binary boolean ops are (task 7054): the COMPOUND the
 // general BOP path always wraps its output in is tightened to the tightest
 // topology-preserving type, and same-domain faces/edges are merged — the
-// latter skipped when the result's solids are pairwise bbox-disjoint and there
-// is provably nothing to merge, which is the common pattern-realization case
-// and where that skip recovers the whole cost of the pass.  See that helper for the full contract; the short version is that a
+// latter skipped when the OPERANDS' solids are pairwise bbox-disjoint, so
+// nothing could have merged and there is provably nothing to remove. That is
+// the common pattern-realization case, and where the skip recovers the whole
+// cost of the pass.  See that helper for the full contract; the short version is that a
 // bare COMPOUND is not watertight-queryable (`is_watertight` excludes it),
 // whereas the SOLID / COMPSOLID it unwraps to preserves total volume and
 // per-solid component count while passing the SOLID|COMPSOLID|SHELL guard.
@@ -1021,7 +1061,7 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     // Behaviour-identical to the inline block this replaced (task 5213): the
     // unwrap rule now lives once, in `normalize_boolean_result`, shared with the
     // three binary boolean ops (task 7054).
-    return normalize_boolean_result(fuse.Shape());
+    return normalize_boolean_result(fuse.Shape(), shapes);
 }
 
 std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
@@ -1064,7 +1104,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = normalize_boolean_result(fuse.Shape());
+        result->shape = normalize_boolean_result(fuse.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -1078,7 +1118,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = normalize_boolean_result(cut.Shape());
+        result->shape = normalize_boolean_result(cut.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -1092,7 +1132,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = normalize_boolean_result(common.Shape());
+        result->shape = normalize_boolean_result(common.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -1280,7 +1320,8 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
     // built would silently stale it — the maps would index the raw COMPOUND
     // while the stored shape is the unified SOLID.
     Handle(BRepTools_History) unify_history;
-    history->result->shape = normalize_boolean_result(op.Shape(), unify_history);
+    history->result->shape =
+        normalize_boolean_result(op.Shape(), operand_pair(left.shape, right.shape), unify_history);
 
     // Build the result face/edge maps once via the cached lazy
     // accessors so subsequent FindIndex calls are O(1).
