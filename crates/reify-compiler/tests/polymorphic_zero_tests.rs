@@ -509,6 +509,74 @@ structure S {
     );
 }
 
+/// `moi_principal[0] > 0` — SUBSCRIPT-IndexAccess operand, the shape backing
+/// `structural_physical.ri`'s `trait Rigid` / `constraint moi_principal[0] >
+/// 0.0 * 1kg * 1m * 1m`.
+///
+/// WHY THIS PIN EXISTS. `docs/notes/dimensioned-zero-coercion.md` once filed
+/// the subscript form under "where the rule does NOT reach" while filing the
+/// member-access form as covered. That split is not expressible in the
+/// compiler: `material.density` and `moi_principal[0]` lower to the SAME
+/// `CompiledExprKind::IndexAccess` (the member access destructures as
+/// `IndexAccess { object: ValueRef("material"), index: Literal(String("density")) }`
+/// — see `structural_physical_tests.rs`), and `coerce_zero_operand` gates only
+/// on the sibling's compiled `result_type`, never on its expression shape. The
+/// claim went wrong because nothing measured it; this pair measures it, so a
+/// "member access is covered but index access is not" split must not be
+/// re-asserted in prose. `structural_physical.ri` keeping the dimensioned RHS
+/// there is a CALL-SITE preference, not a compiler limit.
+///
+/// Written as a `structure`, not a bare `trait`: per
+/// `trait_body_without_conformer_is_not_dimension_checked` a conformer-less
+/// trait body is not dimension-checked at all, so both halves of this pair
+/// would pass vacuously.
+#[test]
+fn index_access_subscript_gt_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param moi : Tensor<2,3,MomentOfInertia>
+    let eig = eigenvalues(moi)
+    constraint eig[0] > 0
+}
+"#,
+    );
+    assert_no_error_diagnostics(
+        &compiled.diagnostics,
+        "subscript-IndexAccess LHS > 0 comparison",
+    );
+}
+
+/// NON-VACUITY GUARD for `index_access_subscript_gt_zero_no_error` above.
+///
+/// The identical subscript operand against a mismatched NON-ZERO literal must
+/// be rejected with `DiagnosticCode::DimensionMismatch` (`Scalar[m^2·kg]` vs
+/// `Scalar[m]`). That is what makes the positive a measurement rather than an
+/// assertion: it proves `eig[0]` really typed as a dimensioned Scalar, so the
+/// bare `0` in the sibling case must have been coerced — a dimensioned Scalar
+/// against a dimensionless Real is a hard error, already pinned by
+/// `nonzero_real_literal_rhs_emits_dimension_mismatch`.
+#[test]
+fn index_access_subscript_mismatched_non_zero_still_errors() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param moi : Tensor<2,3,MomentOfInertia>
+    let eig = eigenvalues(moi)
+    constraint eig[0] > 1m
+}
+"#,
+    );
+    let errors = collect_errors(&compiled.diagnostics);
+    assert_has_code(
+        &errors,
+        DiagnosticCode::DimensionMismatch,
+        "`eig[0] > 1m` (MomentOfInertia vs Length) — the subscript-IndexAccess \
+         dimension guard is not firing, which would make \
+         index_access_subscript_gt_zero_no_error vacuous",
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // TRAIT-BODY shapes (task 6038 amendment): the two swept stdlib sites whose
 // constraints live in a trait body rather than a structure body.
