@@ -97,9 +97,10 @@ module whole_model_joint_drive
 //
 // BT-5's two assertions on the figures above are COMPARATIVE (strict
 // inequality + strict difference), never an absolute converged value.
-// BT-5b adds an ORDER-OF-MAGNITUDE band on the merged figure and a
-// closed-form pin on the shifted bracket's `1.02`, both DERIVED from the
-// `REL_MARGIN` / `ABS_FLOOR_SI` rule above, not tuned to an observed output.
+// BT-5b pins BOTH figures against the closed form `bracket +
+// max(REL_MARGIN×|bracket|, ABS_FLOOR_SI)` evaluated at each bracket —
+// DERIVED from the `REL_MARGIN` / `ABS_FLOOR_SI` rule above, not tuned to an
+// observed output.
 //
 // # Reading the result
 //
