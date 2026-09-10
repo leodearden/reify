@@ -57,7 +57,10 @@ task_citation_regex_escape() {
 #
 # This function is the single ARBITER of the grammar: task_citation_peer_ids
 # below harvests candidates permissively and defers every verdict here, so the
-# two can never disagree about what "cites" means.
+# two can never disagree about what "cites" means. That claim holds only
+# because of the normalisation invariant documented on the harvest below;
+# Block F of tests/infra/test_lib_task_citation.sh enforces it as set
+# equality, in both directions, over a corpus of branch prefixes.
 task_citation_message_cites() {
     local msg="$1" id="$2" prefix_re="$3"
     if printf '%s\n' "$msg" | grep -qE "^Merge ${prefix_re}${id} into "; then
@@ -79,11 +82,30 @@ task_citation_message_cites() {
 # then task_citation_message_cites adjudicates each candidate. The scan is not
 # a second copy of the grammar — it decides nothing — which is why a candidate
 # like the '5686' in "4#5686" is collected and then correctly rejected.
+#
+# NORMALISATION INVARIANT — a candidate id is what REMAINS once the matched
+# sigil is stripped, never what a character class re-derives from the whole
+# match. The branch prefix is CALLER-SUPPLIED and may itself contain digits,
+# and neither obvious alternative survives that:
+#   * deleting every non-digit from the match fuses the prefix's digits onto
+#     the id — prefix `t2/` turns "Merge t2/200 into main" into 2200, which
+#     the arbiter then correctly rejects, so the real id 200 is never emitted
+#     and the caller sees a SILENT FALSE NEGATIVE on the very merge-subject
+#     form this grammar exists to recognise;
+#   * taking the trailing digit run fails the same way whenever the prefix's
+#     digit is trailing with no separator — prefix `t2` over
+#     "Merge t2200 into main" yields 2200 again.
+# Stripping the matched sigil yields 200 in both. The strip reuses the
+# escaping contract already in force: task_citation_regex_escape backslashes
+# every non-alphanumeric byte, so an escaped prefix interpolates into a
+# /-delimited `sed -E` as safely as into the `grep -E` above (a '/' arrives as
+# '\/', never as a bare delimiter). An empty prefix is unaffected — the
+# alternation matches empty and strips nothing.
 task_citation_peer_ids() {
     local msg="$1" prefix_re="$2" candidates id
     candidates="$(printf '%s\n' "$msg" \
         | grep -oE "(#|${prefix_re})[0-9]+" 2>/dev/null \
-        | tr -cd '0-9\n' \
+        | sed -E "s/^(#|${prefix_re})//" \
         | sort -u)" || candidates=""
     # Word-splitting is safe and intended here: every candidate is a digit run.
     for id in $candidates; do
