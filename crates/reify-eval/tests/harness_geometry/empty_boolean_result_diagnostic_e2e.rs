@@ -160,6 +160,13 @@ fn disjoint_intersection_alone_is_legal_and_silent() {
 ///
 /// Realizing that is legal and silent — it is the shape of the GD&T "inside"
 /// verdict, where an empty cut IS the answer.
+///
+/// PAIRED with `empty_boolean_as_the_only_body_fails_the_build_with_a_diagnostic`
+/// below: SAME `.ri`, opposite verdicts. `realize_for_check` (what `reify eval`
+/// / `reify check` do) must stay silent; `build` (what `reify build` does) must
+/// fail, because building means writing an artifact and there is no artifact to
+/// write. The two together ARE the ruling's boundary — change one and you must
+/// look at the other.
 #[test]
 fn difference_fully_consuming_target_alone_is_legal_and_silent() {
     let source = r#"structure P {
@@ -253,6 +260,36 @@ fn disjoint_intersection_then_extrude_emits_error_diagnostic() {
     assert!(
         result.geometry_output.is_none(),
         "a design whose only body failed to realize must emit no geometry, got {:?} bytes",
+        result.geometry_output.as_ref().map(|o| o.len())
+    );
+}
+
+/// The build-path counterpart of
+/// `difference_fully_consuming_target_alone_is_legal_and_silent` above: SAME
+/// `.ri`, opposite verdict. No extrude here, so the sweep guard is NOT what
+/// fires — the empty compound is the design's ONLY product body, and Phase-B's
+/// `product_bodies.len() == 1` arm (engine_build.rs:4945-4978) hands it
+/// straight to `export_with_options`. Exporting it writes a header-only STEP
+/// and exits 0, which is a phantom artifact.
+///
+/// This is the test that distinguishes the export guard from the sweep guards;
+/// without it the export half has no designer-facing evidence.
+#[test]
+fn empty_boolean_as_the_only_body_fails_the_build_with_a_diagnostic() {
+    let source = r#"structure P {
+    let empty = difference(box(5mm, 5mm, 5mm), box(50mm, 50mm, 50mm))
+}"#;
+    let Some(result) = build_with_occt(source) else {
+        return;
+    };
+    assert_error_diagnostic_mentions(
+        &result,
+        &["export error", "empty"],
+        "empty boolean as the only product body",
+    );
+    assert!(
+        result.geometry_output.is_none(),
+        "a failed export must yield no geometry, got {:?} bytes",
         result.geometry_output.as_ref().map(|o| o.len())
     );
 }

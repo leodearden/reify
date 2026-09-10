@@ -33,7 +33,10 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{
+    ExportError, ExportFormat, ExportOptions, GeometryError, GeometryHandleId, GeometryOp,
+    GeometryQuery, Value,
+};
 use reify_kernel_occt::OcctKernel;
 
 /// Build an axis-aligned cube of side `side`, centred on the origin
@@ -508,5 +511,126 @@ fn execute_loft_of_real_profiles_still_succeeds() {
     assert!(
         volume_of(&kernel, handle.id) > 0.0,
         "a real loft must enclose positive volume"
+    );
+}
+
+// --- STEP export: the LAST line of defence ---
+//
+// A design whose whole product geometry collapsed reaches export even when no
+// sweep was involved, and `export_step` today DISCARDS `writer.Transfer`'s
+// `IFSelect_ReturnStatus` (unlike `writer.Write`, which checks it) — so it
+// returns Ok with header-only bytes and the CLI exits 0 on a phantom artifact.
+//
+// The error TYPE differs from the sweep guards: this path returns
+// `ExportError::FormatError`, not `GeometryError::OperationFailed`
+// (src/lib.rs:4316 in `export`, :4366 in `export_with_options`), so
+// `assert_empty_input_rejected` does not apply and these get their own sibling
+// assertion rather than one helper straddling two error enums.
+
+/// Assert an export was refused as `ExportError::FormatError` naming the shape
+/// as empty. On `Ok`, the panic REPORTS the phantom artifact that was written
+/// instead — byte count and `ADVANCED_FACE` count — so the pre-guard behaviour
+/// is measured by the test rather than asserted from memory.
+fn assert_export_rejected_as_empty<T>(result: Result<T, ExportError>, buf: &[u8], what: &str) {
+    match result {
+        Err(ExportError::FormatError(msg)) => {
+            assert!(
+                msg.contains("empty"),
+                "{what}: expected a message naming the shape as empty, got: {msg}"
+            );
+        }
+        Ok(_) => panic!(
+            "{what}: expected ExportError::FormatError, got Ok — {} bytes written, \
+             {} ADVANCED_FACE",
+            buf.len(),
+            String::from_utf8_lossy(buf)
+                .matches("ADVANCED_FACE")
+                .count()
+        ),
+        Err(other) => panic!("{what}: expected FormatError, got {other:?}"),
+    }
+}
+
+#[test]
+fn export_step_of_an_empty_shape_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+
+    let mut buf = Vec::new();
+    let result = kernel.export(empty, ExportFormat::Step, &mut buf);
+    assert_export_rejected_as_empty(result, &buf, "export of an empty shape");
+}
+
+/// `export_with_options` is the entry point BOTH production export paths use
+/// (engine_build.rs:4963 single-body, :5010 compound, :5585 declarative), so a
+/// guard proven only on `export` would leave every real build unprotected.
+#[test]
+fn export_step_with_options_of_an_empty_shape_is_rejected() {
+    let mut kernel = OcctKernel::new();
+    let empty = empty_intersection(&mut kernel);
+
+    let mut buf = Vec::new();
+    let result = kernel.export_with_options(
+        empty,
+        ExportFormat::Step,
+        &ExportOptions::default(),
+        &mut buf,
+    );
+    assert_export_rejected_as_empty(result, &buf, "export_with_options of an empty shape");
+}
+
+// --- OVER-FIRE CONTROLS for the export guard ---
+
+/// The ordinary case: a plain box still writes a real STEP file.
+#[test]
+fn export_step_of_a_real_box_still_succeeds() {
+    let mut kernel = OcctKernel::new();
+    let solid = cube(&mut kernel, 0.020);
+
+    let mut buf = Vec::new();
+    kernel
+        .export(solid, ExportFormat::Step, &mut buf)
+        .expect("exporting a real solid must succeed");
+    let text = String::from_utf8_lossy(&buf);
+    assert!(
+        text.contains("ISO-10303-21"),
+        "a real STEP export must carry the ISO-10303-21 header"
+    );
+    assert!(
+        text.matches("ADVANCED_FACE").count() > 0,
+        "a real STEP export must carry faces"
+    );
+}
+
+/// LOAD-BEARING: a compound that CONTAINS an empty member alongside two real
+/// solids must still export, with both solids intact.
+///
+/// This is the common real-design case, and it is what bounds the export
+/// guard's blast radius: Phase-B compounds every product body BEFORE exporting
+/// (engine_build.rs:4996-5010), and a compound holding a real solid HAS
+/// topology, so the guard cannot fire on it. Only "the whole product
+/// collapsed" reaches the guard.
+#[test]
+fn export_step_of_a_compound_holding_an_empty_member_still_succeeds() {
+    let mut kernel = OcctKernel::new();
+    let a = cube(&mut kernel, 0.020);
+    let b_raw = cube(&mut kernel, 0.020);
+    let b = translated_x(&mut kernel, b_raw, 0.100);
+    let empty = empty_intersection(&mut kernel);
+
+    let compound = kernel
+        .make_compound(&[a, b, empty])
+        .expect("make_compound of two boxes plus an empty member must succeed");
+
+    let mut buf = Vec::new();
+    kernel
+        .export(compound.id, ExportFormat::Step, &mut buf)
+        .expect("exporting a compound that holds real solids must succeed");
+    assert_eq!(
+        String::from_utf8_lossy(&buf)
+            .matches("MANIFOLD_SOLID_BREP")
+            .count(),
+        2,
+        "both real solids must survive the export; the empty member contributes none"
     );
 }
