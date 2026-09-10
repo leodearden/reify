@@ -173,6 +173,29 @@ pub(crate) struct CompilationScope<'u> {
     /// `BTreeSet` (not `HashSet`) for deterministic iteration, mirroring the
     /// precedent of `sub_member_types`' inner `BTreeMap`.
     pub(crate) sub_realization_names: HashMap<String, BTreeSet<String>>,
+    /// Declared port directions per sub-component: sub_name → { port_name →
+    /// direction }.
+    ///
+    /// A fifth sibling of `sub_member_types` / `sub_realization_names`,
+    /// populated at the same Sub pre-pass site from the same resolved child
+    /// template, so it inherits that site's module-first/prelude-fallback
+    /// resolution and its `Keyed<T>` element unwrapping for free.
+    ///
+    /// Read by `connect.rs` so that a DOTTED connect endpoint (`e1.p`) can be
+    /// direction-checked against the child's declaration. Before this map
+    /// existed, `compile_connection` could only see the own entity's ports, so
+    /// every dotted endpoint was silently unchecked (task #7175).
+    ///
+    /// ABSENCE CONTRACT: a missing sub key, or a missing port key within a
+    /// present sub, means "this port's declaration is not resolvable at this
+    /// point in the compile" — the child structure is declared later in the
+    /// module, or the named member is not a port at all. It does NOT mean the
+    /// direction is `Bidi`. Consumers must treat the miss as "unknown" and
+    /// decline to check, never as a default direction.
+    ///
+    /// `BTreeMap` inner for deterministic iteration, matching the
+    /// `sub_member_types` precedent.
+    pub(crate) sub_port_directions: HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
@@ -257,6 +280,7 @@ impl<'u> CompilationScope<'u> {
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             sub_realization_names: HashMap::new(),
+            sub_port_directions: HashMap::new(),
             has_geometry: false,
             match_arm_groups: BTreeMap::new(),
             match_arm_group_arm_member_types: HashMap::new(),

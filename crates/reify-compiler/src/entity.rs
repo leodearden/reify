@@ -2360,6 +2360,15 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_member_types
                         .insert(sub.name.clone(), member_type_map_from_template(child_tmpl));
+                    // Populate sub_port_directions so a dotted connect endpoint
+                    // (`e1.p`) can be direction-checked against the child's own
+                    // declaration (task #7175). Keyed on the SUB name, like
+                    // sub_member_types — connect.rs resolves from the endpoint's
+                    // base segment, which is the sub name, not the structure name.
+                    scope.sub_port_directions.insert(
+                        sub.name.clone(),
+                        port_direction_map_from_template(child_tmpl),
+                    );
                     // Populate sub_realization_names for cross-sub geometry diagnostic.
                     scope.sub_realization_names.insert(
                         sub.name.clone(),
@@ -5012,6 +5021,26 @@ fn realization_name_set_from_template(tmpl: &TopologyTemplate) -> BTreeSet<Strin
     tmpl.realizations
         .iter()
         .filter_map(|r| r.name.clone())
+        .collect()
+}
+
+/// Build the `port_name → declared direction` map for a child `TopologyTemplate`.
+///
+/// Mirrors `member_type_map_from_template` / `realization_name_set_from_template`:
+/// a category-specific projection of the child template, copied into the parent's
+/// `CompilationScope` during the Sub pre-pass. This one exists so `connect.rs` can
+/// direction-check a DOTTED connect endpoint (`e1.p`), which is invisible to the
+/// own-entity port list it would otherwise consult (task #7175).
+///
+/// Only declared ports are projected. A sub member that is not a port is simply
+/// absent, which the map's absence contract reads as "not resolvable", not as a
+/// default direction — see `CompilationScope::sub_port_directions`.
+fn port_direction_map_from_template(
+    tmpl: &TopologyTemplate,
+) -> BTreeMap<String, reify_core::PortDirection> {
+    tmpl.ports
+        .iter()
+        .map(|p| (p.name.clone(), p.direction))
         .collect()
 }
 
