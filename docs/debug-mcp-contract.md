@@ -102,6 +102,16 @@ inside the lock cannot express. So the structural claim to anchor on is
 `*_and_refresh_baseline` seams", with `reify_open_file` the one name to
 enumerate — *not* "all five route through `write_on_engine_and_refresh_baseline`".
 
+That claim is enforced mechanically, not merely written down here:
+`gui/src-tauri/src/tests/debug_write_tool_routing_tests.rs` (task 5100 θ)
+parses the `reify_*` dispatch arms out of `debug_server.rs` — so a sixth write
+tool is picked up automatically and must route or go red — and checks each
+handler for a seam, following at most one delegation hop (which is what
+`reify_open_file` needs). It also asserts the converse, that every fn named
+`*_and_refresh_baseline` actually reaches `compute_delta`, so the check rests
+on behaviour rather than on a naming convention. The gate ASSERTS by default;
+`REIFY_INV_GUI_2_BYPASS=1` is the break-glass that downgrades it to a warning.
+
 Both seams refresh the delta baseline via `crate::diff::compute_delta` (§6.2
 invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
 `GuiState` reaches the frontend through the caller's synchronous

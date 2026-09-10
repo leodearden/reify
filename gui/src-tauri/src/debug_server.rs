@@ -1874,11 +1874,14 @@ pub async fn set_fea_case_on_engine(
 /// (a) **One seam, ONE stated exception.** Four of the five write tools reach
 /// the baseline refresh through here; `reify_open_file` reaches the SAME
 /// refresh through [`open_source_into_engine_and_refresh_baseline`] — see (d).
-/// So the structural claim θ (task 5100) anchors on is "every write tool
-/// refreshes the baseline through one of the two shared
-/// `*_and_refresh_baseline` seams", NOT "all five route through this
-/// function". A tool that refreshes the baseline its own way, outside both
-/// seams, is the defect that anchor exists to catch.
+/// So the structural claim is "every write tool refreshes the baseline
+/// through one of the two shared `*_and_refresh_baseline` seams", NOT "all
+/// five route through this function". A tool that refreshes the baseline its
+/// own way, outside both seams, is the defect that claim exists to catch, and
+/// `gui/src-tauri/src/tests/debug_write_tool_routing_tests.rs` now enforces
+/// it mechanically: it enumerates the `reify_*` dispatch arms rather than a
+/// fixed list, so a SIXTH write tool that skips both seams reds rather than
+/// losing telemetry silently.
 ///
 /// (b) **The `StateDelta` is deliberately DISCARDED.** `compute_delta` is
 /// called for its SIDE EFFECT — advancing `last_state` — only; the full

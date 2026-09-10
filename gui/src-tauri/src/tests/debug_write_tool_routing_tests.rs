@@ -4,7 +4,7 @@
 //! emit of its own.
 //!
 //! The claim this mechanizes is stated in prose in two places and is NOT
-//! restated here — see `gui/src-tauri/src/debug_server.rs:1867-1900`, point
+//! restated here — see `gui/src-tauri/src/debug_server.rs:1867-1908`, point
 //! (a) on `write_on_engine_and_refresh_baseline`, and the "Two seams, ONE
 //! stated exception" section of `docs/debug-mcp-contract.md`. Note the shape
 //! of the claim: "one of the two shared seams", NOT "all five route through
@@ -41,7 +41,7 @@ enum BypassKind {
     /// delta baseline silently goes stale after its write.
     NoBaselineRefresh,
     /// The handler emits state on its own, alongside the shared seam —
-    /// the second emission path `debug_server.rs:1885` forbids.
+    /// the second emission path `debug_server.rs:1888` forbids.
     PrivateEmit,
 }
 
@@ -446,7 +446,7 @@ async fn handle_reify_set_parameter(
 "#;
 
 /// A handler that DOES route through a seam but then emits a second time on
-/// its own — the private emission path `debug_server.rs:1885` forbids in as
+/// its own — the private emission path `debug_server.rs:1888` forbids in as
 /// many words: "Do NOT add a second emit path here or in any caller".
 const PRIVATE_EMIT_SOURCE: &str = r#"
 async fn dispatch_tool(
@@ -562,7 +562,8 @@ fn every_debug_write_tool_routes_through_the_delta_choke_point() {
     // NON-VACUITY FLOOR — checked before the real assertion so a moved file
     // or a parser that silently stopped matching reds instead of passing
     // vacuously (same shape as `every_test_module_file_is_declared`'s floor).
-    // It also fail-closes the split debug_server.rs weighed at :1984-2000: if
+    // It also fail-closes the split debug_server.rs weighed under "WHY THE
+    // CLUSTER LIVES IN THIS FILE" (:1987-2006): if
     // the write-tool cluster moves to its own module the arms vanish here,
     // this fires, and someone must re-point the checker.
     let arms = dispatch_arms(&strip_comments(&source));
@@ -617,7 +618,7 @@ fn no_write_tool_handler_emits_privately() {
 
     // The real file is clean, and is only clean because step-4 strips
     // comments: its ONLY textual `emit_delta` occurrences are the doc
-    // comments at :1612 and :1885, so a checker reading raw text would
+    // comments at :1612 and :1888, so a checker reading raw text would
     // false-positive right here.
     let private_emits: Vec<Bypass> = write_tool_bypasses(&debug_server_source())
         .into_iter()
