@@ -40,8 +40,13 @@
  * English sentence. The rendered wording is pinned once, in the formatFailures
  * block at the end.
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, it, expect } from "vitest";
 import {
+  PRINTER_RELPATH,
   RAIL_GATE_MIN_BODIES,
   RAIL_GATE_MIN_CONSTRAINTS,
   RAIL_GATE_MIN_DISPATCHES,
@@ -52,9 +57,11 @@ import {
   SUBJECT_BASENAME,
   TOOL_DOCK_PIN,
   TRAVEL_AVAIL_CELL,
+  X_RAIL_LEN_CELL,
   Y_RAIL_LEN_CELL,
   checkRailLengtheningGate,
   extractGateInputs,
+  findEditableParams,
   formatFailures,
 } from "./railLengtheningGate.mjs";
 
@@ -691,5 +698,129 @@ describe("formatFailures — the single site where a record becomes English", ()
 
   it("returns an empty list for a non-array argument", () => {
     expect(formatFailures(null as never)).toEqual([]);
+  });
+});
+
+// ─── findEditableParams ──────────────────────────────────────────────────────
+
+/**
+ * The STATIC PRECONDITION the AI write path needs at runtime.
+ *
+ * `reify_set_parameter` rewrites a parameter's DEFAULT LITERAL through alpha's
+ * `resolve_param_default_span`, which returns None — and the write is refused —
+ * for a cell that is not a `param` carrying a default. So the whole live
+ * scenario hinges on a fact about the SOURCE, not about the engine, and that
+ * fact is checkable in CI where the live run is not.
+ *
+ * Both directions matter. `CoreXY.y_rail_len` and `AFrame.rail_span_m` must be
+ * editable, or edits 1 and 2 are refused before anything is measured. And
+ * `CoreXY.x_rail_len` must stay a derived `let` — it is `y_rail_offset * 2`, the
+ * formula that keeps the gantry spanning between the Y rails, and it is the B7
+ * rejection subject: a plausible-looking cell id with no default literal, which
+ * must produce a structured error and mutate nothing.
+ */
+describe("findEditableParams — (i) the write path's static precondition", () => {
+  const SYNTHETIC = [
+    "module demo",
+    "",
+    "pub structure Widget {",
+    "    /// A doc comment must not confuse the scan.",
+    "    param width : Length = 120mm",
+    "    param depth : Length",
+    "    let height = width * 2",
+    "    realize solid {",
+    "        let height = 9mm",
+    "    }",
+    "}",
+    "",
+    "pub structure Gadget {",
+    "    let width = 4mm",
+    "}",
+  ].join("\n");
+
+  it("reports a param carrying a default literal as editable", () => {
+    expect(findEditableParams(SYNTHETIC, ["Widget.width"])).toEqual([
+      { cell: "Widget.width", declared: "param", hasDefaultLiteral: true },
+    ]);
+  });
+
+  it("reports a param with NO default as a param that cannot be written", () => {
+    // `resolve_param_default_span` has no span to rewrite here, so the write is
+    // refused even though the cell really is a parameter.
+    expect(findEditableParams(SYNTHETIC, ["Widget.depth"])).toEqual([
+      { cell: "Widget.depth", declared: "param", hasDefaultLiteral: false },
+    ]);
+  });
+
+  it("reports a derived cell as a `let`", () => {
+    expect(findEditableParams(SYNTHETIC, ["Widget.height"])).toEqual([
+      { cell: "Widget.height", declared: "let", hasDefaultLiteral: true },
+    ]);
+  });
+
+  it("reports an unknown member, and an unknown entity, as absent", () => {
+    expect(findEditableParams(SYNTHETIC, ["Widget.nosuch", "Nosuch.width"])).toEqual([
+      { cell: "Widget.nosuch", declared: "absent", hasDefaultLiteral: false },
+      { cell: "Nosuch.width", declared: "absent", hasDefaultLiteral: false },
+    ]);
+  });
+
+  it("scopes a member to its own entity — a same-named cell next door is not it", () => {
+    expect(findEditableParams(SYNTHETIC, ["Gadget.width"])).toEqual([
+      { cell: "Gadget.width", declared: "let", hasDefaultLiteral: true },
+    ]);
+  });
+
+  it("ignores a declaration nested inside a block rather than reading it as a member", () => {
+    // `Widget.height` is the top-level `let`, not the one inside `realize`.
+    expect(findEditableParams(SYNTHETIC, ["Widget.height"])[0]!.hasDefaultLiteral).toBe(true);
+    expect(findEditableParams(SYNTHETIC, ["Widget.solid"])).toEqual([
+      { cell: "Widget.solid", declared: "absent", hasDefaultLiteral: false },
+    ]);
+  });
+
+  it("returns one record per request, in the order asked", () => {
+    expect(
+      findEditableParams(SYNTHETIC, ["Widget.height", "Widget.width", "Widget.height"]).map(
+        (r) => r.cell,
+      ),
+    ).toEqual(["Widget.height", "Widget.width", "Widget.height"]);
+  });
+
+  it.each([
+    ["a null source", null, ["Widget.width"]],
+    ["a non-string source", 7, ["Widget.width"]],
+    ["a null cell list", SYNTHETIC, null],
+    ["a non-string cell name", SYNTHETIC, [7]],
+    ["a name with no dot", SYNTHETIC, ["width"]],
+  ])("never throws for %s", (_name, source, cells) => {
+    expect(() => findEditableParams(source as never, cells as never)).not.toThrow();
+  });
+});
+
+describe("findEditableParams — (j) against the real prj/printer_v01/printer.ri", () => {
+  const PRINTER_RI = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", PRINTER_RELPATH),
+    "utf8",
+  );
+
+  it("both edited cells are params carrying a default literal", () => {
+    // Without this the live scenario never starts: `reify_set_parameter` refuses
+    // a cell whose default literal has no span to rewrite, and the run would
+    // report a write failure rather than the value-flow behaviour under test.
+    expect(findEditableParams(PRINTER_RI, [Y_RAIL_LEN_CELL, RAIL_SPAN_CELL])).toEqual([
+      { cell: Y_RAIL_LEN_CELL, declared: "param", hasDefaultLiteral: true },
+      { cell: RAIL_SPAN_CELL, declared: "param", hasDefaultLiteral: true },
+    ]);
+  });
+
+  it("the B7 rejection subject stays a derived `let`", () => {
+    // `x_rail_len = y_rail_offset * 2` keeps the gantry spanning between the Y
+    // rails. If a later refactor promoted it to a param, the B7 half of the gate
+    // would silently start testing a WRITEABLE cell and stop testing rejection
+    // at all — the disarmed-assertion failure mode, caught here instead.
+    expect(findEditableParams(PRINTER_RI, [X_RAIL_LEN_CELL])).toEqual([
+      { cell: X_RAIL_LEN_CELL, declared: "let", hasDefaultLiteral: true },
+    ]);
   });
 });
