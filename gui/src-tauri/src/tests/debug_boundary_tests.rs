@@ -82,26 +82,37 @@ fn resolve_unknown_id_returns_err() {
 // task 5097 δ — the `apply_gui_state` push shape the reify-* write tools use
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build a real `GuiState` headlessly: a mock-kernel `EngineSession` loaded
-/// from `bracket_source()`, so the payload assertions below run against a
-/// state with genuinely populated `values`/`meshes` rather than a hand-rolled
+/// Build a real `GuiState` headlessly from arbitrary source: a mock-kernel
+/// `EngineSession`, so the payload assertions below run against a state with
+/// genuinely populated `values`/`meshes`/`constraints` rather than a hand-rolled
 /// struct literal (which could agree with a serializer that had drifted).
 ///
-/// `gui`-gated with its two consumers below: `debug_server` is itself behind
+/// The `source` parameter is what lets one test build TWO states that differ by
+/// a single parameter and compare them — the constraint-flip test at the end of
+/// this file — without a second construction site drifting from this one.
+///
+/// `gui`-gated with its consumers below: `debug_server` is itself behind
 /// `#[cfg(feature = "gui")]`, so these ride verify.sh's `--features gui`
 /// TEST-EXECUTION pass.
 #[cfg(feature = "gui")]
-fn boundary_gui_state() -> crate::types::GuiState {
+fn boundary_gui_state_from(source: &str) -> crate::types::GuiState {
     use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::{MockGeometryKernel, bracket_source};
+    use reify_test_support::MockGeometryKernel;
 
     let mut session = crate::engine::EngineSession::new(
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
     session
-        .load_from_source(bracket_source(), "bracket")
+        .load_from_source(source, "bracket")
         .expect("load_from_source should succeed")
+}
+
+/// The default fixture state — `bracket_source()` through
+/// [`boundary_gui_state_from`].
+#[cfg(feature = "gui")]
+fn boundary_gui_state() -> crate::types::GuiState {
+    boundary_gui_state_from(reify_test_support::bracket_source())
 }
 
 /// The δ write tools push their rebuilt `GuiState` — and, for
@@ -334,9 +345,7 @@ async fn write_tool_payload_carries_a_flipped_constraint_status() {
     // its `cell_id`, which is what lets a pin be named by the cells it is about
     // instead of by its positional `node_id`.
     assert!(
-        flipped
-            .parameter_ids
-            .contains(&"Bracket.width".to_string()),
+        flipped.parameter_ids.contains(&"Bracket.width".to_string()),
         "the flipped constraint must name the edited cell; parameter_ids: {:?}",
         flipped.parameter_ids
     );
@@ -393,11 +402,7 @@ async fn write_tool_payload_carries_a_flipped_constraint_status() {
             &delivered.status,
             &delivered.parameter_ids
         ),
-        (
-            &flipped.node_id,
-            &flipped.status,
-            &flipped.parameter_ids
-        ),
+        (&flipped.node_id, &flipped.status, &flipped.parameter_ids),
         "node_id / status / parameter_ids must survive the transport byte-identical"
     );
 }
