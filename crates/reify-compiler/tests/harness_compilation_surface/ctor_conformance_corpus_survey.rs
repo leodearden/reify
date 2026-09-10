@@ -2936,7 +2936,7 @@ impl Disposition {
 /// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] proves
 /// no site can be described by both.
 ///
-/// A site whose param could not be recovered is [`Disposition::Unattributed`].
+/// A WARNING whose param could not be recovered is [`Disposition::Unattributed`].
 /// Both tables key on `(file, param)`, so there is nothing to match on, and the
 /// conservative default is the one that does not invent an owner.
 ///
