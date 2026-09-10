@@ -1839,17 +1839,18 @@ mod tests {
         structure Beta  { let w = 2.7 }
     "#;
 
-    /// Asserts `expr` is `CompiledExprKind::Literal(Value::Real(expected))`, shared
-    /// by tests resolving `Beta.w` from the [`ALPHA_BETA_W`] fixture.
+    /// Asserts `expr` is `CompiledExprKind::Literal(Value::Real(expected))`.
+    /// Shared by every test that resolves a real-literal default expr and
+    /// checks its value — the module's single real-literal comparison policy
+    /// (exact equality: both sides come from the same literal parse, so no
+    /// epsilon is needed).
     fn assert_real_literal(expr: &reify_ir::CompiledExpr, expected: f64) {
         use reify_ir::{CompiledExprKind, Value};
 
         match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-                *v, expected,
-                "expected literal {expected} (Alpha's w is 1.5, Beta's is 2.7) — \
-                 a wrong-template resolution would return the other value"
-            ),
+            CompiledExprKind::Literal(Value::Real(v)) => {
+                assert_eq!(*v, expected, "expected literal {expected}, got {v}")
+            }
             other => {
                 panic!("expected CompiledExprKind::Literal(Value::Real({expected})), got {other:?}")
             }
@@ -1900,6 +1901,30 @@ mod tests {
         let source = r#"structure S { let x = 1.0 }"#;
         let module = super::compile_source(source);
         super::get_value_cell_in(&module, "S", "y");
+    }
+
+    /// Pins that the not-found panic's enrichment — the `; has: [...]` list
+    /// of every cell the template does carry, as `entity.member` — actually
+    /// appears, mirroring
+    /// `test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities`'s
+    /// pin on the sibling ambiguity branch. Without this, `available` could
+    /// silently regress to empty (e.g. a wrong `.filter` or an accidental
+    /// `Vec::new()`) and neither this test's sibling
+    /// `test_get_value_cell_in_panics_on_missing_cell` nor
+    /// `test_get_let_expr_in_panics_on_missing_cell` would notice, since both
+    /// assert only the `"no value cell named"` prefix. One pin suffices here
+    /// rather than one per entry point: `get_value_cell_in`,
+    /// `get_let_expr_in_template`, `get_let_expr_in`, and `get_let_expr` all
+    /// resolve through the shared `lookup_value_cell` walk.
+    #[test]
+    #[should_panic(expected = "[\"First.x\", \"Second.x\"]")]
+    fn test_get_value_cell_in_missing_cell_panic_lists_available_cells() {
+        use reify_core::ModulePath;
+
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(ambiguous_x_template())
+            .build();
+        super::get_value_cell_in(&module, "Bracket", "y");
     }
 
     /// Shared fixture: a module with template `S` and an `auto_param` cell `x`,
@@ -2011,10 +2036,11 @@ mod tests {
 
     /// The two panic branches of `get_let_expr_in_template` ("no value cell
     /// named" / "has no default expr") are intentionally NOT re-tested here.
-    /// `get_let_expr_in` delegates to `get_let_expr_in_template`, and
+    /// `get_let_expr_in_template` and `get_let_expr_in` both resolve through
+    /// the shared `lookup_value_cell` / `require_default_expr` primitives, and
     /// `test_get_let_expr_in_panics_on_missing_cell` /
     /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
-    /// exercise both branches through that delegation — duplicating them at
+    /// exercise both branches through those primitives — duplicating them at
     /// this layer would add coverage of the new entry point only, not of new
     /// behavior (task #5831 review).
     ///
@@ -2128,7 +2154,6 @@ mod tests {
     #[test]
     fn test_get_let_expr_in_resolves_defaulted_param_cell() {
         use reify_compiler::ValueCellKind;
-        use reify_ir::{CompiledExprKind, Value};
 
         let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
         let module = super::compile_source(source);
@@ -2154,19 +2179,7 @@ mod tests {
         );
 
         let expr = super::get_let_expr_in(&module, "S", "pi");
-        match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => {
-                assert!(
-                    (*v - 1.5_f64).abs() < 1e-15,
-                    "expected param default 1.5, got {}",
-                    v
-                );
-            }
-            other => panic!(
-                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
-                other
-            ),
-        }
+        assert_real_literal(expr, 1.5);
     }
 
     // ── get_let_expr ─────────────────────────────────────────────────────
@@ -2219,24 +2232,10 @@ mod tests {
     /// resolve identically.
     #[test]
     fn test_get_let_expr_resolves_defaulted_param_cell() {
-        use reify_ir::{CompiledExprKind, Value};
-
         let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
         let module = super::compile_source(source);
         let expr = super::get_let_expr(&module, "pi");
-        match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => {
-                assert!(
-                    (*v - 1.5_f64).abs() < 1e-15,
-                    "expected param default 1.5, got {}",
-                    v
-                );
-            }
-            other => panic!(
-                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
-                other
-            ),
-        }
+        assert_real_literal(expr, 1.5);
     }
 
     // ── assert_no_type_cascade ────────────────────────────────────────────
