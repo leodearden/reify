@@ -12,6 +12,7 @@
 #   B — tracked timer unit   (deploy/systemd/reify-jcodemunch-index.timer)
 #   C — installer happy path, idempotence, and the watcher guardrail
 #   D — installer CLI guard, source pre-flight, and fail-open
+#   E — repo-side retirement invariants for the old serve unit (task η)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -410,5 +411,67 @@ assert "D6: missing source is reported even with no bus (pre-flight precedes fai
         [ "$1" = "1" ] || exit 1
         printf "%s" "$2" | grep -q "ERROR.*reify-jcodemunch-index[.]service"
     ' _ "$RC" "$ERR_OUT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — repo-side retirement invariants for the old serve unit (task η)
+#
+# SCOPE, deliberately narrow: deploy/ + scripts/ + .jcodemunch.jsonc, NOT
+# repo-wide. docs/architecture-audit/jcodemunch-serve-activation.md and
+# .claude/skills/audit/** still describe the serve unit as live; correcting that
+# runbook is task 6117 (μ)'s, per the capability manifest's
+# runbook-edit-belongs-to-μ resolution. A repo-wide assertion here would
+# false-RED this task on μ's still-pending edits.
+#
+# Assertions run over TRACKED files via `git grep`, so a stray build artifact or
+# an untracked scratch file can neither mask nor manufacture a violation.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: serve-unit retirement invariants (η) ---"
+
+# E1: the unit is gone from the working tree AND from the index
+assert "E1: deploy/systemd/jcodemunch-serve.service is absent from the tree and untracked" \
+    bash -c '
+        [ ! -e "$1/deploy/systemd/jcodemunch-serve.service" ] || exit 1
+        ! git -C "$1" ls-files --error-unmatch deploy/systemd/jcodemunch-serve.service >/dev/null 2>&1
+    ' _ "$REPO_ROOT"
+
+# E2: nothing under deploy/ names the retired unit — catches the unit itself and
+# any stale cross-reference from a sibling unit (e.g. an After=/Wants= ordering
+# directive left pointing at a unit that no longer ships).
+assert "E2: no tracked file under deploy/ names jcodemunch-serve" \
+    bash -c '! git -C "$1" grep -q "jcodemunch-serve" -- deploy/' _ "$REPO_ROOT"
+
+# E3: nothing under scripts/ names the retired UNIT. The assertion targets the
+# ".service" suffix, not the bare stem, because scripts/smoke-jcodemunch-serve.sh
+# and scripts/with-jcodemunch-serve.sh legitimately keep their own basenames.
+#
+# with-jcodemunch-serve.sh is excluded by name: its header line 11 reads
+# "D5 retires the persistent `deploy/systemd/jcodemunch-serve.service` unit" —
+# prose ABOUT this retirement, which stays accurate once η lands rather than
+# becoming a dangling pointer, and which belongs to δ's design rationale rather
+# than to η. That file is also outside this task's assigned scope (esc-6920-6).
+assert "E3: no tracked file under scripts/ names jcodemunch-serve.service (except with-jcodemunch-serve.sh's own retirement note)" \
+    bash -c '
+        hits=$(git -C "$1" grep -l "jcodemunch-serve[.]service" -- scripts/ 2>/dev/null \
+                 | grep -v "^scripts/with-jcodemunch-serve[.]sh$" || true)
+        [ -z "$hits" ]
+    ' _ "$REPO_ROOT"
+
+# E4: the layer-rules file's schema-provenance comment no longer points at the
+# deleted unit as its deployed reference
+assert "E4: .jcodemunch.jsonc does not name deploy/systemd/jcodemunch-serve.service" \
+    bash -c '! grep -q "deploy/systemd/jcodemunch-serve[.]service" "$1/.jcodemunch.jsonc"' _ "$REPO_ROOT"
+
+# E5: watcher regression guard. jcodemunch-watcher.service is `enabled enabled`
+# on this host and serves five other repos, so the retirement must have swept the
+# serve unit and left the watcher untouched — asserted in both directions: the
+# smoke script's assertion-3 site still references it, and this diff gave no unit
+# under deploy/ a reference to it.
+assert "E5: smoke script still references jcodemunch-watcher.service (retirement did not spill into the watcher)" \
+    bash -c 'grep -q "jcodemunch-watcher" "$1"' _ "$SMOKE"
+
+assert "E5b: no tracked file under deploy/ references jcodemunch-watcher" \
+    bash -c '! git -C "$1" grep -q "jcodemunch-watcher" -- deploy/' _ "$REPO_ROOT"
 
 test_summary
