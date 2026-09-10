@@ -3203,6 +3203,13 @@ fn opt_cell(value: Option<&String>) -> String {
     }
 }
 
+/// The header key that introduces the drift disclosure.
+///
+/// One spelling, so the renderer and the tests asserting on its presence — and
+/// on its ABSENCE, which is the stronger claim — cannot disagree about what a
+/// disclosure looks like.
+const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
+
 /// Render the survey artifact.
 ///
 /// Follows the house convention for a generated markdown artifact set by
@@ -3216,7 +3223,11 @@ fn opt_cell(value: Option<&String>) -> String {
 /// freshness gate would go red on every γ commit and would be driven to an
 /// EMPTY artifact the moment γ reaches its stated signal, destroying the very
 /// census that sized it. So the base commit SHA is stamped instead.
-fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
+///
+/// That stamp is the merge base, never the branch tip ([`survey_stamp`]). When
+/// tracked `.ri` have drifted from it, they are NAMED in the header rather than
+/// refused, so the snapshot stays honest by disclosure ([`SurveyStamp`]).
+fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
     use std::fmt::Write as _;
 
     let mut md = String::new();
@@ -3224,7 +3235,7 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
 
     // ── header ──────────────────────────────────────────────────────────────
     md.push_str("# Struct-ctor field-type conformance — corpus survey\n\n");
-    let _ = writeln!(md, "**Base commit:** `{base_commit}`");
+    let _ = writeln!(md, "**Base commit:** `{}`", stamp.anchor);
     let _ = writeln!(
         md,
         "**Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`"
@@ -3239,6 +3250,27 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
         run.not_surveyed.len(),
         run.partial.len()
     );
+
+    // Rendered ONLY when something drifted: an undrifted run must carry no
+    // disclosure at all, so the artifact grows no permanent "0 files drifted"
+    // row and two undrifted runs stay byte-comparable.
+    if !stamp.drifted_ri.is_empty() {
+        let _ = write!(
+            md,
+            "\n\
+            {DRIFT_DISCLOSURE_KEY} {n} tracked `.ri` differ between the anchor and the\n\
+            commit surveyed, so for those files the anchor names OLDER bytes than the rows\n\
+            below describe. They are disclosed rather than refused because they are\n\
+            COMMITTED: each is reachable from the surveyed commit, so a reader can read back\n\
+            exactly what was swept. (Uncommitted bytes are reachable from no commit, which\n\
+            is why a dirty tree is refused outright instead — see `stamp_decision`.)\n\
+            \n",
+            n = stamp.drifted_ri.len(),
+        );
+        for path in &stamp.drifted_ri {
+            let _ = writeln!(md, "- `{}`", cell(path));
+        }
+    }
 
     md.push_str(
         "\n\
@@ -3291,8 +3323,10 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
         (1) *call-site bug* and class (2) *wrong declared field type* as \"per-case\n\
-        judgment … whichever is the actual bug\" and assigns it to **γ**; β does not\n\
-        pre-empt it. What β does decide mechanically is the `owner` grouping below.\n\
+        judgment … whichever is the actual bug\" and assigns it to **γ**. γ has now\n\
+        ruled, and the ruling is the `disposition` column beside the hint: where the two\n\
+        disagree, the disposition wins. What β decided mechanically is the `owner`\n\
+        grouping below.\n\
         \n\
         ## Format (PRD §10 Q6)\n\
         \n\
@@ -3328,9 +3362,10 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
             ),
             Owner::NonFea => md.push_str(
                 "The recovered name IS a `structure def` declared in the corpus or the stdlib,\n\
-                 and it is not FEA-owned. D9's per-case judgment applies: fix the call site or\n\
-                 the declared field type, whichever is the actual bug — γ's ruling, recorded in\n\
-                 γ's diff. **This is the group to size γ against.**\n\n\
+                 and it is not FEA-owned. D9's per-case judgment applied here, and **γ has\n\
+                 now ruled every Warning row in this group** — read the `disposition` column.\n\
+                 A site γ judged a call-site bug was fixed and is simply absent below; a site γ\n\
+                 deferred names the LIVE task that owns retiring it.\n\n\
                  That check is against ONE GLOBAL namespace — *some* corpus or stdlib file\n\
                  declares the name, not necessarily one this row's file can see. See named\n\
                  limitation 3 below before treating a row here as actionable.\n\n",
@@ -3523,7 +3558,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
             synth_site("b.ri", 7, "Widget", "label", Owner::NonFea),
         ],
     };
-    let md = render_survey(&run, "deadbeef");
+    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
 
     // The stated count is COMPUTED, never typed — that is the task's
     // "site count stated" signal, and it must equal the rows actually drawn.
@@ -3560,7 +3595,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
         partial: vec![],
         sites: every_class,
     };
-    let md = render_survey(&run, "deadbeef");
+    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
     assert_eq!(
         rendered_site_rows(&md),
         run.sites.len(),
@@ -3604,7 +3639,7 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
             unresolved,
         ],
     };
-    let md = render_survey(&run, "cafe1234");
+    let md = render_survey(&run, &SurveyStamp::at("cafe1234"));
 
     // Anchor every ordering probe on the rendered `### <title>` heading, never on
     // a bare substring: the artifact's own `## Format` prose mentions "FEA"
@@ -3690,8 +3725,8 @@ fn render_survey_orders_rows_deterministically_within_a_group() {
     sorted.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
     assert_eq!(
-        render_survey(&mk(shuffled), "sha"),
-        render_survey(&mk(sorted), "sha"),
+        render_survey(&mk(shuffled), &SurveyStamp::at("sha")),
+        render_survey(&mk(sorted), &SurveyStamp::at("sha")),
         "rows must render in (file, line, field) order regardless of input order"
     );
 }
@@ -3708,7 +3743,7 @@ fn render_survey_escapes_pipes_and_newlines_so_a_message_cannot_break_the_table(
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
 
     let row = md
         .lines()
@@ -3750,7 +3785,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
     let row = md
         .lines()
         .find(|l| l.starts_with("| `a.ri:1`"))
@@ -3794,7 +3829,7 @@ fn render_survey_renders_the_zero_site_case_explicitly() {
         partial: vec![],
         sites: vec![],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
     assert!(
         md.contains("**Sites:** 0"),
         "the count must still be stated"
@@ -3832,7 +3867,7 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
 
     assert!(
         md.contains(DefOrigin::SpanNotIdentifier.label()),
@@ -3852,11 +3887,103 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![synth_site("b.ri", 2, "Widget", "label", Owner::NonFea)],
     };
-    let md = render_survey(&recovered, "sha");
+    let md = render_survey(&recovered, &SurveyStamp::at("sha"));
     assert!(
         md.contains(DefOrigin::CallSiteAnchor.label()),
         "a recovered def must still say HOW it was recovered:\n{md}"
     );
+}
+
+#[test]
+fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
+    // The disclosure's whole job: a reader must be able to see WHICH files the
+    // anchor no longer describes, by name, without running git. Machine-derived
+    // from the same `git diff --name-only` read the header stamps — no path
+    // here is hand-typed, the same rule every other row in this artifact lives
+    // under.
+    let run = one_site_run();
+    let drifted = SurveyStamp {
+        anchor: "cafe1234".to_owned(),
+        drifted_ri: vec![
+            "tests/prd-gate/fixtures/one.ri".to_owned(),
+            "tree-sitter-reify/test/fixtures/two.ri".to_owned(),
+        ],
+    };
+    let md = render_survey(&run, &drifted);
+
+    assert!(
+        md.contains(DRIFT_DISCLOSURE_KEY),
+        "a drifted stamp must disclose; got:\n{md}"
+    );
+    for path in &drifted.drifted_ri {
+        assert!(
+            md.contains(path.as_str()),
+            "the disclosure must name {path} — a path it drops is a path no \
+             reader can know about; got:\n{md}"
+        );
+    }
+    assert!(
+        md.contains(&format!("{} tracked", drifted.drifted_ri.len())),
+        "the stated count must be COMPUTED from the disclosed list, never \
+         typed; got:\n{md}"
+    );
+    // Drift discloses; it never re-anchors. Read through the same parser the
+    // gate-resident ancestry guard uses, so this pins the line that guard reads.
+    assert_eq!(
+        parse_stamped_base_commit(&md),
+        Some("cafe1234"),
+        "the merge base stays THE stamped anchor — a rewritable branch tip must \
+         never be promoted into that line; got:\n{md}"
+    );
+}
+
+#[test]
+fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
+    // The undrifted run is the common one, and it must render EXACTLY what it
+    // rendered before the disclosure existed: no "0 files drifted" noise row,
+    // so two runs generated on `main` stay byte-comparable with each other.
+    let run = one_site_run();
+    let without = render_survey(&run, &SurveyStamp::at("cafe1234"));
+    assert!(
+        !without.contains(DRIFT_DISCLOSURE_KEY),
+        "an undrifted stamp must render no disclosure at all; got:\n{without}"
+    );
+
+    // …and the disclosure is purely ADDITIVE: it is inserted, and changes not
+    // one byte above or below itself. Asserted as prefix/suffix identity rather
+    // than by eyeballing the two renderings.
+    let with = render_survey(
+        &run,
+        &SurveyStamp {
+            anchor: "cafe1234".to_owned(),
+            drifted_ri: vec!["tests/prd-gate/fixtures/one.ri".to_owned()],
+        },
+    );
+    let at = with
+        .find(DRIFT_DISCLOSURE_KEY)
+        .expect("the drifted rendering must carry the disclosure key");
+    assert_eq!(
+        &with[..at],
+        &without[..at],
+        "everything ABOVE the disclosure must be byte-identical either way"
+    );
+    assert!(
+        with.ends_with(&without[at..]),
+        "everything BELOW the disclosure must be byte-identical either way"
+    );
+}
+
+/// A one-site run: the smallest thing that renders every section of the
+/// artifact, for tests whose subject is the header rather than the rows.
+#[cfg(test)]
+fn one_site_run() -> SurveyRun {
+    SurveyRun {
+        total: 1,
+        surveyed: 1,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![synth_site("a.ri", 3, "Widget", "label", Owner::NonFea)],
+    }
 }
 
 #[test]
@@ -3871,7 +3998,7 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
         partial: vec![("multi.ri".to_owned(), "compile-error".to_owned())],
         sites: vec![synth_site("a.ri", 1, "W", "f", Owner::NonFea)],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
 
     assert!(
         md.contains("## How to regenerate"),
@@ -3966,7 +4093,7 @@ fn render_survey_resolves_each_site_disposition_from_the_tables() {
             partial: vec![],
             sites,
         },
-        "sha",
+        &SurveyStamp::at("sha"),
     );
 
     let residual_cell = disposition_cell(&md, &format!("| `{residual_path}:1`"));
@@ -4079,8 +4206,9 @@ fn git_read(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-/// The commit stamped into the artifact header — `git merge-base main HEAD`,
-/// deliberately NOT `git rev-parse HEAD`.
+/// Read the git state the header will state: the commit stamped as the anchor
+/// — `git merge-base main HEAD`, deliberately NOT `git rev-parse HEAD` — plus
+/// any tracked `.ri` that has drifted from it.
 ///
 /// A task-branch tip is a commit the merge machinery can, and demonstrably did,
 /// rewrite. The first committed survey stamped `a0d0899874…`, the pre-rebase
@@ -4099,12 +4227,14 @@ fn git_read(args: &[&str]) -> String {
 ///
 /// Panics rather than stamping any state that would make that header dishonest;
 /// the decision itself is [`stamp_decision`], which is pure and gate-resident.
+/// Drifted `.ri` are the one git fact that does NOT panic — they are committed,
+/// so the header discloses them by name instead ([`SurveyStamp`]).
 ///
 /// For the reader: only THIS function — which runs solely inside the
 /// `#[ignore]`d generator — depends on a `main` ref existing. The gate-resident
 /// guard `committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`
 /// deliberately does not, so a checkout without `main` cannot red the gate.
-fn base_commit() -> String {
+fn survey_stamp() -> SurveyStamp {
     let anchor = git_read(&["merge-base", "main", "HEAD"]);
     // `--untracked-files=no` is deliberate: `git ls-files` never surfaces an
     // untracked file, so an untracked scratch file cannot change one row of the
@@ -4138,7 +4268,7 @@ fn base_commit() -> String {
 fn generate_ctor_conformance_corpus_survey() {
     let corpus = tracked_ri_corpus();
     let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), corpus);
-    let rendered = render_survey(&run, &base_commit());
+    let rendered = render_survey(&run, &survey_stamp());
     let out = survey_output_path();
     std::fs::write(&out, &rendered)
         .unwrap_or_else(|e| panic!("cannot write survey to {}: {e}", out.display()));
@@ -4219,20 +4349,65 @@ fn survey_output_path_honours_the_scratch_override() {
 /// exactly 40 lowercase hexadecimal characters.
 const FULL_SHA_LEN: usize = 40;
 
+/// What the artifact header states about the git state it was generated from.
+///
+/// Two kinds of fact, treated differently ON PURPOSE, and the discriminator is
+/// REACHABILITY rather than severity:
+///
+/// * uncommitted bytes are reachable from NO commit, so no wording in a header
+///   could let a reader reconstruct what was actually surveyed — a refusal is
+///   the only way the snapshot claim stays honest. [`stamp_decision`] refuses,
+///   and likewise refuses an anchor that is not a resolved object name, which
+///   names nothing at all;
+/// * drifted tracked `.ri` ARE committed and reachable from the surveyed
+///   commit, so NAMING them in full makes the header honest without refusing.
+///   They are disclosed here instead.
+///
+/// Refusing the drift case would also be unsatisfiable exactly where the
+/// artifact expects to be re-run: its own header names γ as the task that will
+/// legitimately invalidate it, and γ's diff IS `.ri` migrations — so the branch
+/// chartered to regenerate the survey could never regenerate it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurveyStamp {
+    /// The commit the header names — `git merge-base main HEAD`; see
+    /// [`survey_stamp`] for why never the branch tip.
+    anchor: String,
+    /// Tracked `.ri` differing between [`Self::anchor`] and the surveyed
+    /// commit, verbatim from `git diff --name-only <anchor> HEAD -- '*.ri'`.
+    ///
+    /// Empty is the ordinary case and renders NOTHING, so an undrifted artifact
+    /// carries no disclosure at all — no permanent "0 files drifted" row, and
+    /// runs generated on `main` stay byte-comparable with each other.
+    drifted_ri: Vec<String>,
+}
+
+impl SurveyStamp {
+    /// The undrifted shape: an anchor that describes the surveyed corpus exactly.
+    fn at(anchor: &str) -> Self {
+        Self {
+            anchor: anchor.to_owned(),
+            drifted_ri: Vec::new(),
+        }
+    }
+}
+
 /// Decide whether the git state just read may be stamped into the artifact
 /// header — or whether stamping it would make that header lie.
 ///
 /// Pure by construction, so the decision is gate-resident and unit-tested with
-/// no git state at all; the three reads that feed it live in [`base_commit`],
+/// no git state at all; the three reads that feed it live in [`survey_stamp`],
 /// behind the `#[ignore]`d generator. Same split this module uses throughout.
 ///
 /// * `anchor` — `git merge-base main HEAD`, the commit the header will name.
 /// * `dirty` — `git status --porcelain --untracked-files=no`.
 /// * `ri_drift` — `git diff --name-only <anchor> HEAD -- '*.ri'`.
 ///
+/// The first two can REFUSE; `ri_drift` never does — it is disclosed. See
+/// [`SurveyStamp`] for the reachability argument that splits them.
+///
 /// Whitespace-only input is an EMPTY read: git writes a trailing newline even
 /// when it has nothing to report.
-fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<String, String> {
+fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<SurveyStamp, String> {
     let anchor = anchor.trim();
     if anchor.len() != FULL_SHA_LEN || !anchor.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
         return Err(format!(
@@ -4252,16 +4427,15 @@ fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<String, S
         ));
     }
 
-    let ri_drift = ri_drift.trim();
-    if !ri_drift.is_empty() {
-        return Err(format!(
-            "refusing to stamp {anchor}: tracked .ri files differ between it and \
-             the commit being surveyed, so the anchor would not describe the \
-             corpus rendered below it. Drifted:\n{ri_drift}"
-        ));
-    }
-
-    Ok(anchor.to_owned())
+    Ok(SurveyStamp {
+        anchor: anchor.to_owned(),
+        drifted_ri: ri_drift
+            .lines()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    })
 }
 
 #[test]
@@ -4272,7 +4446,7 @@ fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
     assert_eq!(
         stamp_decision(anchor, "", ""),
-        Ok(anchor.to_owned()),
+        Ok(SurveyStamp::at(anchor)),
         "a resolved anchor over a clean, undrifted tree is exactly what the \
          header is allowed to claim"
     );
@@ -4280,7 +4454,7 @@ fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     // whitespace-only read is an EMPTY read — not a refusal.
     assert_eq!(
         stamp_decision(anchor, "\n", "  \n"),
-        Ok(anchor.to_owned()),
+        Ok(SurveyStamp::at(anchor)),
         "whitespace-only git output means clean; it must not be read as dirty"
     );
 }
@@ -4313,21 +4487,50 @@ fn stamp_decision_refuses_a_dirty_tree_and_names_what_is_dirty() {
 }
 
 #[test]
-fn stamp_decision_refuses_when_a_tracked_ri_drifted_from_the_anchor() {
-    // The anchor is an honest description of the surveyed corpus only while no
-    // tracked `.ri` differs between the anchor and the commit swept. If one
-    // does, the header would name a commit whose corpus is not the one in the
-    // table below it.
+fn stamp_decision_discloses_a_drifted_tracked_ri_rather_than_refusing() {
+    // A tracked `.ri` differing between the anchor and the commit swept makes
+    // the anchor an INCOMPLETE description of the surveyed corpus — not an
+    // unrecoverable one. The drifted bytes are COMMITTED and reachable from the
+    // surveyed commit, so naming every one of them makes the header fully
+    // honest; a refusal would additionally be unsatisfiable on the one branch
+    // this artifact names as its expected invalidator, whose whole diff is
+    // `.ri` migrations.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let err = stamp_decision(anchor, "", "examples/one.ri\nexamples/two.ri\n")
-        .expect_err("drifted tracked .ri must refuse to stamp");
-    for path in ["examples/one.ri", "examples/two.ri"] {
-        assert!(
-            err.contains(path),
-            "the refusal must name every drifted path — {path} is missing \
-             from: {err}"
-        );
-    }
+    let stamp = stamp_decision(anchor, "", "examples/one.ri\nexamples/two.ri\n")
+        .expect("a committed .ri drift is disclosed, never refused");
+    assert_eq!(
+        stamp.anchor, anchor,
+        "drift must not promote the surveyed tip: the merge base stays THE \
+         anchor, because a branch tip is rewritable and this one is not"
+    );
+    assert_eq!(
+        stamp.drifted_ri,
+        vec!["examples/one.ri".to_owned(), "examples/two.ri".to_owned()],
+        "every drifted path git reported must survive into the disclosure, in \
+         git's own order and spelling — the disclosure is machine-generated, so \
+         a path it drops is a path no reader can know about"
+    );
+}
+
+#[test]
+fn stamp_decision_still_refuses_an_unreachable_state_even_alongside_drift() {
+    // The discriminator between refusing and disclosing is REACHABILITY, never
+    // "how much changed" — so drift, which is disclosable, must not soften
+    // either refusal it travels with. Uncommitted bytes are reachable from no
+    // commit and an unresolved anchor names no commit at all; in both cases no
+    // wording in the header could let a reader reconstruct what was surveyed.
+    let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
+    let err = stamp_decision(anchor, " M docs/prds/x.md\n", "examples/one.ri\n")
+        .expect_err("a dirty tree refuses whether or not a tracked .ri drifted");
+    assert!(
+        err.contains("docs/prds/x.md"),
+        "the refusal must still name what is dirty; got: {err}"
+    );
+    assert!(
+        stamp_decision("HEAD", "", "examples/one.ri\n").is_err(),
+        "an anchor that is not a resolved object name refuses whether or not a \
+         tracked .ri drifted"
+    );
 }
 
 #[test]
@@ -4406,11 +4609,11 @@ fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
     // three git calls — so unlike the `#[ignore]`d generator this belongs here.
     //
     // ORDERING DEPENDENCY: this guard stays green across future rebases ONLY
-    // because `base_commit()` stamps `git merge-base main HEAD` rather than the
+    // because `survey_stamp()` stamps `git merge-base main HEAD` rather than the
     // branch tip. Adding it while the anchor was still a branch tip would
     // convert every rebase of this branch into a merge-blocking red.
     //
-    // Unlike `base_commit()`, nothing here needs a `main` ref to exist.
+    // Unlike `survey_stamp()`, nothing here needs a `main` ref to exist.
     //
     // SKIP, not fail, when git cannot be spawned: every assertion below is a
     // question put to git, and "there is no git" is not an answer about the
