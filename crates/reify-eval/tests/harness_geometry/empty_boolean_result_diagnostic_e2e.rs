@@ -105,6 +105,20 @@ fn assert_silent(result: &reify_eval::BuildResult, what: &str) {
     );
 }
 
+/// Assert at least one Error diagnostic contains every word in `words`.
+///
+/// Deliberately does NOT assert a diagnostic COUNT: a design that both feeds an
+/// empty shape to a consumer AND leaves no exportable product body legitimately
+/// reports both failures, and a count assertion would fail for the right
+/// behaviour.
+fn assert_error_diagnostic_mentions(result: &reify_eval::BuildResult, words: &[&str], what: &str) {
+    let errors = error_messages(result);
+    assert!(
+        errors.iter().any(|m| words.iter().all(|w| m.contains(w))),
+        "{what}: expected an Error diagnostic containing all of {words:?}; got: {errors:?}"
+    );
+}
+
 /// Assert the build produced no Error diagnostics and emitted real geometry.
 /// Used by the false-positive controls: these booleans are legitimate and the
 /// empty-result guard must not fire on them.
@@ -209,6 +223,38 @@ fn gdt_inside_oracle_pokeout_is_exactly_zero_and_silent() {
         }
         other => panic!("pokeout should be Value::Scalar<Volume>, got {other:?}"),
     }
+}
+
+// --- CONSUMER GUARD: a consumer that cannot accept an empty shape ---
+
+/// The 2026-08-20 repro. `intersection` of two disjoint coplanar circles is a
+/// legal empty result (see the legality pins above); feeding it to `extrude`
+/// is not, because `extrude` mints a body and there is nothing to mint one
+/// from. Today that reaches `BRepPrimAPI_MakePrism` unchallenged and the build
+/// writes a header-only STEP with zero diagnostics and exit 0.
+///
+/// Uses `build_with_occt`: this IS a build-path defect.
+#[test]
+fn disjoint_intersection_then_extrude_emits_error_diagnostic() {
+    let source = r#"structure P {
+    let a = circle(5mm)
+    let b = translate(circle(5mm), 100mm, 0mm, 0mm)
+    let empty = intersection(a, b)
+    let solid = extrude(empty, 10mm)
+}"#;
+    let Some(result) = build_with_occt(source) else {
+        return;
+    };
+    assert_error_diagnostic_mentions(
+        &result,
+        &["geometry error", "empty", "profile"],
+        "disjoint intersection then extrude",
+    );
+    assert!(
+        result.geometry_output.is_none(),
+        "a design whose only body failed to realize must emit no geometry, got {:?} bytes",
+        result.geometry_output.as_ref().map(|o| o.len())
+    );
 }
 
 // --- FALSE-POSITIVE CONTROLS: valid booleans must keep working ---
