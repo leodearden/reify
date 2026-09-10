@@ -26,6 +26,13 @@
 //!   census contract, and the `render_baseline` → `parse_baseline` round trip
 //!   over the REAL renderer the generator binary itself calls.
 //!
+//! (c) **binary tests** — the real `pdiag-baseline-gen` spawned over a staged
+//!   git fixture, covering the residue the seam cannot reach: argument
+//!   rejection, stdout purity, and the `swept == 0` refusal. That refusal is an
+//!   ORDERING property (it must precede the render, because the shell truncates
+//!   the redirect target before the process starts), and ordering is invisible
+//!   to every library-level test here.
+//!
 //! (A) **`baseline_exists_and_parses`** — always-on, hermetic. Resolves
 //!   `crates/reify-audit/pdiag-baseline.txt` via `CARGO_MANIFEST_DIR` (so it
 //!   works in any worktree), asserts the file EXISTS, and runs the real
@@ -92,6 +99,7 @@ use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps, Severity};
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// `crates/reify-audit/pdiag-baseline.txt`, resolved from the manifest dir so
 /// the test is worktree-independent.
@@ -114,6 +122,18 @@ fn repo_root() -> PathBuf {
 const REGEN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen -- \
                      --project-root . > crates/reify-audit/pdiag-baseline.txt";
 
+/// `git` on PATH. `false` means "skipped", with the reason already on stderr.
+///
+/// A bare `--version` probe opens no repository, so it is the one invocation
+/// `reify_audit::git_env`'s rule exempts from the `git -C <root>` constructor.
+fn git_available(check: &str) -> bool {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("pdiag_baseline: skipping {check} — git not available");
+        return false;
+    }
+    true
+}
+
 /// The graceful-skip preamble the two on-demand (B) checks share: `git` on
 /// PATH, and a resolved root that is actually a checkout. `None` means
 /// "skipped", with the reason already on stderr.
@@ -122,8 +142,7 @@ const REGEN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen -- \
 /// same conditions — a divergence would leave one of them silently running
 /// against a tree the other declined to look at.
 fn live_checkout(check: &str) -> Option<PathBuf> {
-    if std::process::Command::new("git").arg("--version").output().is_err() {
-        eprintln!("pdiag_baseline: skipping {check} — git not available");
+    if !git_available(check) {
         return None;
     }
     let root = repo_root();
@@ -404,6 +423,170 @@ fn render_baseline_emits_the_preamble_then_ascending_rows() {
     // And the round trip: whatever the renderer emits, the parser recovers —
     // preamble and all, since `parse_baseline` skips `#` lines.
     assert_eq!(parse_baseline(&rendered).expect("rendered manifest must parse"), census);
+}
+
+// -----------------------------------------------------------------------
+// (c) pdiag-baseline-gen — the BINARY's own contract
+// -----------------------------------------------------------------------
+//
+// (a)/(b) drive the library seam, which is deliberately everything the binary
+// does NOT own. What is left over is small and entirely the binary's: argument
+// parsing, stdout purity, and the `swept == 0` refusal. That refusal is a
+// pure ORDERING property — it has to run before anything reaches stdout,
+// because the documented recipe redirects stdout OVER the committed manifest
+// and the shell truncates that file before this process starts. Move the check
+// below the render, or downgrade its exit code, and every seam test above
+// stays green while the wipe re-opens.
+
+/// Run `git` in `root`, panicking on failure.
+///
+/// Built through `reify_audit::git_env` rather than a bare `Command::new`:
+/// an ambient `GIT_INDEX_FILE` — which `hooks/pre-commit` exports down through
+/// the whole test run — otherwise overrides `-C <tempdir>` and stages into the
+/// PARENT repository's index.
+fn git_in(root: &Path, args: &[&str]) {
+    let out = reify_audit::git_env::command(root)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A hermetic git repo at a fresh tempdir with `files` written and STAGED.
+///
+/// `RealGitOps::ls_files` — the enumeration the binary runs, unlike the
+/// `MockGitOps` the [`Fixture`] seam tests use — reads the INDEX, so staging is
+/// enough and no commit (and therefore no `user.name`/`user.email`) is needed.
+fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git_in(root, &["init", "-q"]);
+    for (rel, content) in files {
+        let full = root.join(rel);
+        std::fs::create_dir_all(full.parent().expect("fixture path has a parent"))
+            .expect("create_dir_all");
+        std::fs::write(&full, content).expect("write fixture file");
+    }
+    git_in(root, &["add", "-A"]);
+    dir
+}
+
+/// The real generator binary aimed at `root`, plus any `extra` arguments.
+///
+/// Sanitized DIRECTLY rather than through the `git -C <root>` constructor: the
+/// program here is a reify binary that runs git internally, not git itself,
+/// which is the other-shape case `git_env::sanitize` sanctions.
+fn run_generator(root: &Path, extra: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pdiag-baseline-gen"));
+    cmd.arg("--project-root").arg(root).args(extra);
+    reify_audit::git_env::sanitize(&mut cmd);
+    cmd.output().expect("pdiag-baseline-gen spawns")
+}
+
+/// A degenerate census exits 3 with NOTHING on stdout — the guard that stops
+/// the documented `… > pdiag-baseline.txt` recipe from truncating the ratchet's
+/// own manifest to its header.
+#[test]
+fn the_generator_refuses_a_degenerate_census() {
+    if !git_available("the_generator_refuses_a_degenerate_census") {
+        return;
+    }
+    // An initialised repo with an EMPTY index: `ls_files` succeeds and reports
+    // nothing, which is byte-for-byte what a git FAILURE degrades to
+    // (`RealGitOps::ls_files` swallows spawn errors, non-zero exits and
+    // non-UTF-8 output alike). The refusal cannot tell them apart and must not
+    // need to.
+    let dir = staged_fixture(&[]);
+
+    let out = run_generator(dir.path(), &[]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a census that reached zero swept files must exit 3, got {:?}; stderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "the refusal must emit NOTHING on stdout — the shell has already truncated the \
+         redirect target, so even a header-only render IS the wipe. Got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("crates/reify-audit/pdiag-baseline.txt"),
+        "the refusal must name the manifest it declined to overwrite, got:\n{stderr}"
+    );
+}
+
+/// A real census exits 0 and renders EXACTLY the manifest the library would —
+/// preamble included, parseable, one row per code-less swept file.
+#[test]
+fn the_generator_renders_the_census_it_scanned() {
+    if !git_available("the_generator_renders_the_census_it_scanned") {
+        return;
+    }
+    // Three staged files spanning all three outcomes: one swept file with
+    // code-less sites (a row), one swept file whose sites are all coded (no
+    // row — a clean file's ABSENCE is the only spelling of "clean"), and one
+    // out-of-scope path (invisible to the sweep entirely).
+    let dir = staged_fixture(&[
+        ("crates/reify-eval/src/geometry_ops.rs", codeless_src(2)),
+        ("crates/reify-eval/src/clean.rs", coded_src(3)),
+        ("crates/reify-eval/tests/harness.rs", codeless_src(9)),
+    ]);
+
+    let out = run_generator(dir.path(), &[]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a census that reached swept files must exit 0 regardless of how big the backlog \
+         is — judging the tree is `reify-audit --pattern PDIAG`'s job. stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("manifest is UTF-8");
+    assert_eq!(
+        stdout,
+        format!("{BASELINE_HEADER}crates/reify-eval/src/geometry_ops.rs 2\n"),
+        "stdout must be the library's render and nothing else — no diagnostics, no \
+         trailing chatter"
+    );
+    assert_eq!(
+        parse_baseline(&stdout).expect("a freshly generated manifest must parse"),
+        expect(&[("crates/reify-eval/src/geometry_ops.rs", 2)]),
+        "generation and enforcement read the same census, so the generator's own output \
+         is by construction a manifest the ratchet accepts"
+    );
+}
+
+/// An unknown flag exits 2 with nothing on stdout.
+#[test]
+fn the_generator_rejects_an_unknown_flag() {
+    if !git_available("the_generator_rejects_an_unknown_flag") {
+        return;
+    }
+    let dir = staged_fixture(&[("crates/reify-eval/src/geometry_ops.rs", codeless_src(1))]);
+
+    let out = run_generator(dir.path(), &["--rebless"]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unrecognised argument must exit 2, not silently fall back to a default \
+         census; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "a rejected invocation must write no manifest, got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 // -----------------------------------------------------------------------
