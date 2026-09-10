@@ -287,7 +287,13 @@ trap 'rm -rf "$_TMP"' EXIT
 
 _STATUS_Z="$_TMP/status.z"
 _GIT_ERR="$_TMP/git.err"
-if ! git -C "$LANE" status --porcelain -z > "$_STATUS_Z" 2> "$_GIT_ERR"; then
+# --no-optional-locks carries A1, so keep it: a bare `git status` rewrites
+# .git/index and takes .git/index.lock, which against the deployed target -- a
+# LIVE lane -- can fail that agent's own concurrent `git add`/`git commit`. It
+# suppresses the write and changes no reported entry. Pinned by G4-G6.
+# -uno stays off on purpose: it would make Block E's untracked fixture vacuous.
+if ! git --no-optional-locks -C "$LANE" status --porcelain -z \
+        > "$_STATUS_Z" 2> "$_GIT_ERR"; then
     err "git could not report on lane: $LANE"
     sed 's/^/  git: /' < "$_GIT_ERR" >&2 || true
     hint "Not a usable git worktree. Reporting a wiring error rather than a false all-clear."

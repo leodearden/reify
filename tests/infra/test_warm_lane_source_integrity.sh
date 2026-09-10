@@ -251,9 +251,12 @@ _mk_repo() {
 }
 
 # _snapshot_lane <dir> — deterministic text image of the lane's SOURCE tree
-# plus its porcelain status. .git/ is excluded on purpose: `git status`
-# legitimately refreshes the index's cached stat data, and the claim under test
-# is that the SOURCE tree is untouched, not that git never bookkeeps.
+# plus its porcelain status. .git/ is excluded because THIS HELPER's own
+# `git status` call below refreshes the index's cached stat data, so a .git/
+# image taken through it could never be stable -- the exclusion is about the
+# measuring instrument, NOT a concession that the detector may write there.
+# The detector's stronger claim (it touches nothing under .git/ either) needs a
+# helper that does not itself perturb the index, and is pinned by G4-G6.
 _snapshot_lane() {
     local lane="$1"
     (
@@ -556,6 +559,44 @@ assert "G1: the lane's source tree is byte-identical across the run" \
 assert "G2: the deleted file was NOT restored" test ! -e "$G_LANE/src/lib.rs"
 assert "G3: nothing was staged" \
     test -z "$(git -C "$G_LANE" diff --cached --name-only)"
+
+# G4-G6 pin A1 *inside* .git/, which G1 structurally cannot see: _snapshot_lane
+# prunes .git/ (it has to -- its own `git status` call refreshes the index), so
+# without these the "only filesystem writes are to a private mktemp dir" half of
+# A1 is asserted nowhere. It was measurably FALSE before the detector passed
+# --no-optional-locks: a plain `git status` rewrites .git/index and takes
+# .git/index.lock, which against the deployed target -- a LIVE lane, at agent
+# session start -- can collide with that agent's own `git add`/`git commit`.
+#
+# The fixture must be stat-dirty or the pin is vacuous: git rewrites the index
+# only when it has stale cached stat data to refresh, so a freshly-committed
+# lane would satisfy G6 for the wrong reason. G4 asserts that premise on a
+# CONTROL repo of the identical shape rather than assuming it, and would go red
+# if a future git stopped refreshing here.
+_index_fingerprint() {
+    stat -c '%Y:%s' "$1/.git/index"
+    sha256sum < "$1/.git/index" | cut -d' ' -f1
+}
+
+G_CTL_LANE="$(_mktmpd Gctl)/lane"
+_mk_repo "$G_CTL_LANE" a.txt src/lib.rs
+touch -d '2020-01-01T00:00:00' "$G_CTL_LANE/a.txt" "$G_CTL_LANE/src/lib.rs"
+G_CTL_BEFORE="$(_index_fingerprint "$G_CTL_LANE")"
+git -C "$G_CTL_LANE" status --porcelain > /dev/null
+G_CTL_AFTER="$(_index_fingerprint "$G_CTL_LANE")"
+assert "G4: FIXTURE — on this shape a plain \`git status\` DOES rewrite .git/index" \
+    test "$G_CTL_BEFORE" != "$G_CTL_AFTER"
+
+G_IDX_LANE="$(_mktmpd Gidx)/lane"
+_mk_repo "$G_IDX_LANE" a.txt src/lib.rs
+touch -d '2020-01-01T00:00:00' "$G_IDX_LANE/a.txt" "$G_IDX_LANE/src/lib.rs"
+G_IDX_BEFORE="$(_index_fingerprint "$G_IDX_LANE")"
+run_detector --lane "$G_IDX_LANE"
+G_IDX_AFTER="$(_index_fingerprint "$G_IDX_LANE")"
+
+assert "G5: FIXTURE — the run really did classify this lane (exit 0)" test "$RC" -eq 0
+assert "G6: the detector leaves .git/index untouched — A1 holds inside .git/ too" \
+    test "$G_IDX_BEFORE" = "$G_IDX_AFTER"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block H — WORKTREE-ROOT RELATIVITY
