@@ -32,6 +32,10 @@
 #   XDG_CONFIG_HOME   Override user config dir (default: $HOME/.config)
 #
 # Idempotent: cp overwrites, mkdir -p is safe, systemctl enable is idempotent.
+#
+# Exits 0 on success or when the --user bus is absent (fail-open).
+# Exits 1 if a tracked unit source is missing, or a copy/reload/enable fails.
+# Exits 2 on CLI misuse (matching install-warm-lane-units.sh).
 
 set -euo pipefail
 
@@ -39,6 +43,24 @@ set -euo pipefail
 _info()  { echo "[install-jcodemunch-index-units] INFO:  $*" >&2; }
 _ok()    { echo "[install-jcodemunch-index-units] OK:    $*" >&2; }
 _warn()  { echo "[install-jcodemunch-index-units] WARN:  $*" >&2; }
+
+# ── CLI guard ─────────────────────────────────────────────────────────────────
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    echo "Usage: $(basename "$0")" >&2
+    echo "" >&2
+    echo "  Install the reify jcodemunch index-warming systemd user units" >&2
+    echo "  (fail-open, idempotent).  Copies" >&2
+    echo "  deploy/systemd/reify-jcodemunch-index.{service,timer} into" >&2
+    echo "  \${XDG_CONFIG_HOME:-\$HOME/.config}/systemd/user/, then runs" >&2
+    echo "  systemctl --user daemon-reload and enable --now on the timer." >&2
+    exit 0
+fi
+
+if [ $# -gt 0 ]; then
+    echo "$(basename "$0"): unexpected argument: $1" >&2
+    echo "Usage: $(basename "$0")" >&2
+    exit 2
+fi
 
 # ── resolve paths ─────────────────────────────────────────────────────────────
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +73,27 @@ SERVICE_SRC="$REPO_ROOT/deploy/systemd/reify-jcodemunch-index.service"
 TIMER_SRC="$REPO_ROOT/deploy/systemd/reify-jcodemunch-index.timer"
 
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+
+# ── pre-flight: both tracked sources must exist ──────────────────────────────
+# Deliberately BEFORE the bus check below, so a broken checkout is reported even
+# on a host with no --user bus. The other order would let fail-open mask a
+# missing unit behind a cheerful exit 0.
+if [ ! -f "$SERVICE_SRC" ]; then
+    echo "ERROR: service unit source not found: $SERVICE_SRC" >&2
+    exit 1
+fi
+if [ ! -f "$TIMER_SRC" ]; then
+    echo "ERROR: timer unit source not found: $TIMER_SRC" >&2
+    exit 1
+fi
+
+# ── fail-open: no systemd --user bus → warn and skip ─────────────────────────
+# Placed before any mkdir/cp so the skip is total: a bus-less host (CI, a
+# container) gets no half-installed unit directory it would then never reload.
+if ! systemctl --user show-environment &>/dev/null; then
+    _warn "no systemd --user bus available — skipping index-unit install (fail-open)"
+    exit 0
+fi
 
 # ── install (plain cp — see departure 1 in the header) ───────────────────────
 mkdir -p "$UNIT_DIR"
