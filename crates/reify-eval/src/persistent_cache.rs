@@ -143,7 +143,7 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 /// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
 /// this constant in the same commit. Pinned by
 /// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal` and
-/// `entry_format_version_const_is_three`.
+/// `entry_format_version_const_matches_history`.
 ///
 /// Starting at 1 follows the Reify convention that 0 means "uninitialised /
 /// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
@@ -170,7 +170,13 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///   byte-identical to an empty v3 one, so without the stamp those entries
 ///   would be served by a reader whose element shape has changed. Pinned by
 ///   `v2_entry_reads_as_clean_miss`.
-pub const ENTRY_FORMAT_VERSION: u32 = 3;
+/// - **4** (task 7245 second review fix) — `labels` is REMOVED from
+///   [`PersistedDiagnostic`] again, this time for a correctness reason rather
+///   than the audit-of-producers premise that v3 rightly rejected: a label
+///   carries absolute byte offsets into a source text that this cache's key
+///   does not identify. See [`PersistedDiagnostic`]'s "Why labels are not
+///   carried". Same migration mechanism as the two bumps above.
+pub const ENTRY_FORMAT_VERSION: u32 = 4;
 
 /// Fixed byte length of a bincode-1.3 fixint-LE encoded [`CacheEntryHeader`].
 ///
@@ -755,11 +761,10 @@ impl PersistentlyCacheable for BucklingResultCache {
 /// `#[non_exhaustive]` and carries no serde impls, and this cache must own its
 /// wire format independently of that type's evolution.
 ///
-/// # Carried fields — all of them
+/// # Carried fields
 ///
-/// All five of `Diagnostic`'s fields are carried: `severity`, `message`,
-/// `code`, `labels` and `candidates`. A warm serve replays exactly the
-/// diagnostic a cold serve emitted, never a degraded one.
+/// Four of `Diagnostic`'s five fields are carried: `severity`, `message`,
+/// `code` and `candidates`. `labels` is deliberately NOT — see below.
 ///
 /// `code` is the field the sibling mirror `DiagnosticOnDisk` in
 /// `crates/reify-shell-extract/src/result.rs:407` deliberately drops, which is
@@ -767,22 +772,48 @@ impl PersistentlyCacheable for BucklingResultCache {
 /// output) and this cache's acceptance tests key off `DiagnosticCode`, not
 /// message substrings.
 ///
-/// `labels` and `candidates` are carried too. An earlier version of this mirror
-/// dropped them on the premise that solver-trampoline diagnostics build with
-/// `Diagnostic::warning(..).with_code(..)` and no span — which is false:
-/// `crates/reify-eval/src/compute_targets/elastic_static.rs:673-675` computes
-/// `first_instance_source_span(&value_inputs[5])` and pushes a span-carrying
-/// `FeaUnderConstrained` warning, which `fea_diagnostic_to_core`
-/// (`compute_targets/fea_diagnostics.rs:55-57`) decorates with a
-/// `DiagnosticLabel`. `candidates` has no producer on the persisted path today,
-/// and is carried anyway: leaving an audit-dependent premise in the wire format
-/// is the exact class of error that mistake was.
+/// `candidates` has no producer on the persisted path today, and is carried
+/// anyway: it is source-independent, so persisting it costs nothing and leaves
+/// no audit-dependent premise in the wire format.
 ///
-/// `Diagnostic` is `#[non_exhaustive]`, so "all of them" is a claim about
-/// today's five fields — a sixth added upstream would silently take its builder
-/// default here. This doc plus
-/// `with_diagnostics_round_trip_preserves_labels_and_candidates` are the
-/// tripwire.
+/// # Why `labels` are not carried
+///
+/// A `DiagnosticLabel` anchors a message to a [`reify_core::SourceSpan`] —
+/// absolute byte offsets into one specific source text. This cache's key does
+/// not identify that text. `Value::content_hash` excludes the `@@source_span`
+/// overlay by design (`crates/reify-ir/src/value.rs`'s
+/// `source_span_excluded_from_identity`: "source location must never perturb
+/// the persistent cache key"), and `compute_cache_key` composes only
+/// `ValueCellNode.content_hash` plus `options_hash` — `CompiledExpr` carries no
+/// span at all. So two evaluations with identical FEA inputs and DIFFERENT
+/// source layouts share one key.
+///
+/// Replaying a persisted span across that boundary is a silent wrong-data path:
+/// insert a comment line above a support declaration, or copy the design into a
+/// second `.ri` file with a different preamble, and the warm serve anchors the
+/// label at offsets belonging to the OLD text. `crates/reify-cli/src/mcp_context.rs`
+/// feeds `label.span` straight into `reify_core::byte_offset_to_line_col`, whose
+/// `debug_assert!(offset <= source.len())` panics the debug GUI/MCP binary when
+/// the new file is shorter, and silently highlights an unrelated region in
+/// release.
+///
+/// A warm serve therefore replays an UNANCHORED diagnostic: strictly less
+/// precise than the cold one, never mis-pointing. The label message is not lost
+/// information in practice — `fea_diagnostic_to_core`
+/// (`compute_targets/fea_diagnostics.rs`) builds the label with
+/// `failure.message()`, verbatim the same string as the diagnostic's own
+/// `message`, which IS carried. Downstream sees `labels.is_empty()`, the same
+/// "no user-file location" shape it already handles for uncoded diagnostics.
+///
+/// Re-anchoring instead of dropping would need the span re-derived from the
+/// live `value_inputs` at each dispatch site; that is per-emitter work and is
+/// not generically recoverable from the persisted label, so it is deliberately
+/// out of scope here. Pinned by
+/// `with_diagnostics_round_trip_drops_labels_and_keeps_candidates`.
+///
+/// `Diagnostic` is `#[non_exhaustive]`, so this is a claim about today's five
+/// fields — a sixth added upstream would silently take its builder default
+/// here. This doc plus that test are the tripwire.
 ///
 /// `severity` is an explicit `u8` discriminant (not `Severity`'s serde derive)
 /// so a corrupt byte is rejected loudly by [`severity_from_u8`] instead of
@@ -806,17 +837,6 @@ impl PersistentlyCacheable for BucklingResultCache {
 /// removal degrades to `None` rather than to a wrong variant. Pinned by
 /// `persisted_diagnostic_code_is_encoded_by_name_not_variant_index` and
 /// `unrecognised_code_name_decodes_to_none`.
-/// On-disk wire mirror of [`reify_core::DiagnosticLabel`].
-///
-/// Carries `SourceSpan` structurally (it is a plain `{ start: u32, end: u32 }`)
-/// so neither `DiagnosticLabel` nor `SourceSpan` needs a serde impl.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-struct PersistedLabel {
-    start: u32,
-    end: u32,
-    message: String,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct PersistedDiagnostic {
     /// 0 = `Severity::Info`, 1 = `Severity::Warning`, 2 = `Severity::Error`.
@@ -827,7 +847,9 @@ struct PersistedDiagnostic {
     /// index. `None` covers both "uncoded" and "a name this build no longer
     /// knows" — see the type docs.
     code: Option<String>,
-    labels: Vec<PersistedLabel>,
+    /// No `labels`: a label's `SourceSpan` is only meaningful against the
+    /// source text it was computed from, and this cache's key is
+    /// span-invariant. See the type docs.
     candidates: Vec<String>,
 }
 
@@ -896,15 +918,6 @@ fn diagnostic_to_persisted(d: &reify_core::Diagnostic) -> PersistedDiagnostic {
         severity: severity_to_u8(d.severity),
         message: d.message.clone(),
         code: d.code.and_then(code_to_wire_name),
-        labels: d
-            .labels
-            .iter()
-            .map(|l| PersistedLabel {
-                start: l.span.start,
-                end: l.span.end,
-                message: l.message.clone(),
-            })
-            .collect(),
         candidates: d.candidates.clone(),
     }
 }
@@ -922,12 +935,6 @@ fn diagnostic_from_persisted(p: &PersistedDiagnostic) -> io::Result<reify_core::
     };
     if let Some(code) = p.code.as_deref().and_then(code_from_wire_name) {
         out = out.with_code(code);
-    }
-    for l in &p.labels {
-        out = out.with_label(reify_core::DiagnosticLabel::new(
-            reify_core::SourceSpan::new(l.start, l.end),
-            l.message.clone(),
-        ));
     }
     if !p.candidates.is_empty() {
         out = out.with_candidates(p.candidates.clone());
@@ -3229,7 +3236,7 @@ version = "9.9.9"
     }
 
     #[test]
-    fn entry_format_version_const_is_three() {
+    fn entry_format_version_const_matches_history() {
         // An intentional on-disk-layout bump must touch this assertion — that
         // is the point: it forces a deliberate acknowledgement that cached bytes
         // from the previous version are now incompatible. Mirrors the
@@ -3246,7 +3253,14 @@ version = "9.9.9"
         // bincode's positional variant index, and `labels` / `candidates` are
         // now carried — so a v2-era entry in a developer or CI cache dir is no
         // longer decodable under this reader.
-        assert_eq!(ENTRY_FORMAT_VERSION, 3);
+        //
+        // v3 → v4 (task 7245 second review fix): `labels` came back OUT. A
+        // label's `SourceSpan` is absolute byte offsets into one source text,
+        // and this cache's key is span-invariant by design, so a replayed label
+        // can anchor into unrelated source — see `PersistedDiagnostic`'s "Why
+        // labels are not carried". A v3-era entry must therefore not be decoded
+        // by this reader either.
+        assert_eq!(ENTRY_FORMAT_VERSION, 4);
     }
 
     #[test]
@@ -5632,7 +5646,6 @@ version = "9.9.9"
             severity: 7,
             message: "corrupt".to_string(),
             code: None,
-            labels: Vec::new(),
             candidates: Vec::new(),
         };
         let err = diagnostic_from_persisted(&corrupt)
@@ -5694,7 +5707,6 @@ version = "9.9.9"
             severity: 1,
             message: "written by a newer engine".to_string(),
             code: Some("NoSuchCodeFromTheFuture".to_string()),
-            labels: Vec::new(),
             candidates: Vec::new(),
         };
         let restored = diagnostic_from_persisted(&from_the_future)
@@ -5921,16 +5933,21 @@ version = "9.9.9"
     }
 
     #[test]
-    fn with_diagnostics_round_trip_preserves_labels_and_candidates() {
-        // `PersistedDiagnostic` is a COMPLETE mirror: every field a live
-        // `Diagnostic` carries survives the on-disk round trip. This test
-        // replaces an earlier one that pinned labels/candidates as deliberately
-        // dropped, on the premise that solver-trampoline diagnostics never
-        // carry them — which is false. elastic_static.rs's
-        // present-but-unhonored-support arm computes a source span and pushes a
-        // span-carrying `FeaUnderConstrained` warning (see the sibling test in
-        // compute_persist.rs). A warm serve that silently un-decorated a
-        // diagnostic would replay a strictly worse one than the cold serve.
+    fn with_diagnostics_round_trip_drops_labels_and_keeps_candidates() {
+        // The two halves of the mirror's contract, pinned together because they
+        // are decided by the SAME question — is this field meaningful without
+        // the source text the cache key does not identify?
+        //
+        // `candidates` is: it is a list of symbol names, so it round-trips.
+        //
+        // `labels` is not: a label anchors a message to absolute byte offsets,
+        // and `compute_cache_key` is span-invariant by design (reify-ir's
+        // `source_span_excluded_from_identity`). Two source layouts with
+        // identical FEA inputs share one entry, so a replayed span can point at
+        // unrelated text — and `mcp_context` feeds it to
+        // `byte_offset_to_line_col`, whose `debug_assert` panics a debug
+        // GUI/MCP binary when the newer file is shorter. A warm serve replays
+        // an unanchored diagnostic instead: less precise, never wrong.
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "abcdef0123456789abcdef0123456789";
@@ -5962,10 +5979,12 @@ version = "9.9.9"
         let got = &read_back.diagnostics[0];
         assert_eq!(got.message, "decorated");
         assert_eq!(got.code, Some(reify_core::DiagnosticCode::ShellTooThick));
-        assert_eq!(got.labels.len(), 1, "the label must survive, got {got:?}");
-        assert_eq!(got.labels[0].span.start, 3, "label span start must survive");
-        assert_eq!(got.labels[0].span.end, 9, "label span end must survive");
-        assert_eq!(got.labels[0].message, "here", "label message must survive");
+        assert!(
+            got.labels.is_empty(),
+            "a warm serve must replay the diagnostic UNANCHORED — a persisted \
+             span is only meaningful against source this key does not identify, \
+             got {got:?}"
+        );
         assert_eq!(
             got.candidates,
             vec!["foo::Bar".to_string()],

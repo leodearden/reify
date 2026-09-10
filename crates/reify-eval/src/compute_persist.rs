@@ -1415,8 +1415,9 @@ mod tests {
     }
 
     #[test]
-    fn persistent_round_trip_preserves_fea_under_constrained_span() {
-        // The counter-example to "solver diagnostics never carry a span".
+    fn persistent_round_trip_replays_fea_under_constrained_unanchored() {
+        // The one live producer of a SPAN-CARRYING persisted diagnostic, and
+        // therefore the one that pins how a warm serve handles the span.
         // Built from the live call site rather than a synthetic diagnostic:
         // compute_targets/elastic_static.rs's present-but-unhonored-support arm
         // computes `first_instance_source_span(&value_inputs[5])` and pushes
@@ -1426,8 +1427,15 @@ mod tests {
         // Why this path is persisted at all: `UnderConstrained` is NOT an error
         // (`FeaFailure::is_error`, crates/reify-solver-elastic/src/diagnostics.rs
         // lists only SingularStiffness / LoadOnInterior / SelectorNoMatch), so
-        // the solve completes and the entry IS written. A warm serve that
-        // dropped the label would replay a diagnostic the editor cannot anchor.
+        // the solve completes and the entry IS written.
+        //
+        // The warm serve replays it WITHOUT the label: the persistent key is
+        // span-invariant by design, so the same entry serves two source layouts
+        // with identical FEA inputs, and a replayed span would anchor into
+        // unrelated text (see `persistent_cache::PersistedDiagnostic`'s "Why
+        // labels are not carried"). Nothing an author reads is lost — the label
+        // message here is `failure.message()`, verbatim the diagnostic's own
+        // `message`, which IS replayed.
         let diag = crate::compute_targets::fea_diagnostics::fea_diagnostic_to_core(
             &reify_solver_elastic::FeaFailure::UnderConstrained { support_count: 2 },
             Some(reify_core::SourceSpan::new(41, 57)),
@@ -1467,15 +1475,14 @@ mod tests {
         );
         assert_eq!(got.severity, reify_core::Severity::Warning);
         assert_eq!(
-            got.labels.len(),
-            1,
-            "the label must survive the warm serve, got {got:?}"
+            got.message, diag.message,
+            "the message — which is also the label's text — must survive"
         );
-        assert_eq!(got.labels[0].span.start, 41, "span start must survive");
-        assert_eq!(got.labels[0].span.end, 57, "span end must survive");
-        assert_eq!(
-            got.labels[0].message, diag.labels[0].message,
-            "label message must survive"
+        assert!(
+            got.labels.is_empty(),
+            "the warm serve must NOT replay a source-anchored label: the key \
+             that served this entry does not identify the source it was \
+             computed from, got {got:?}"
         );
     }
 }
