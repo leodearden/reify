@@ -5,10 +5,14 @@
 //! covered instead by the per-kind unit tests in `reify-ir/src/node_traits.rs`
 //! (T1's PRD-assigned crate); T3 was specified against a `concurrent_eval`-style
 //! fixture on the `reify_runtime::concurrent` scheduler stack deleted under
-//! #5065, so it is obsolete as written rather than merely pending. T5 landed
+//! #5065, so it is obsolete as written rather than merely deferred. T5 landed
 //! under task #3579 and was dropped under #5065 along with the `concurrent.rs`
 //! scheduler stack it pinned; the WARM_STARTABLE coextension invariant itself
 //! remains covered by `reify-runtime/src/warm_startable_assert.rs`.
+//!
+//! T3/T5 above narrate obsolete or landed work — re-wording either as an
+//! outstanding deferral needs the §6.8 inline escape (PTODO lane δ-B; §16
+//! Row 2, "narrated non-deferral").
 //!
 //! All tests use real `reify_eval::cache::NodeId` values so that the
 //! `impl HasNodeKind for NodeId` bridge in `reify-eval/src/cache.rs` is exercised

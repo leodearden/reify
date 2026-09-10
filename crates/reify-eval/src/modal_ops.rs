@@ -33,7 +33,7 @@ use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
-    modal_participation_mass, rayleigh_damping_ratio,
+    modal_participation_mass, rayleigh_damping_ratio, total_damping_ratio,
 };
 use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
 use reify_stdlib::modal::transient::{
@@ -969,6 +969,63 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
     }
 }
 
+/// The runtime type name of a material value, for a diagnostic's subject.
+///
+/// A non-`StructureInstance` value cannot carry one, so a stable placeholder
+/// stands in rather than the message silently losing its subject — a diagnostic
+/// that names nothing is barely better than no diagnostic at all.
+fn material_type_name(val: &Value) -> &str {
+    match val {
+        Value::StructureInstance(data) => data.type_name.as_str(),
+        _ => "<non-structure material value>",
+    }
+}
+
+/// Build the degenerate short-circuit outcome for a `MaterialDamping` solve over
+/// a material that does not conform to `trait Damped` (task #6878, PRD leaf β
+/// §C6): an `E_ModalDampingMaterialNotDamped` `Error` diagnostic plus an
+/// empty-modes `ModalResult`.
+///
+/// Fourth member of this file's eval-time-precondition-failure family, copying
+/// [`no_mass_matrix_outcome`]'s shape exactly (message-prefix code, degenerate
+/// result value, `new_warm_state: None`, `cost_per_byte: None`, empty
+/// `structured_detail`, short-circuit return placed before the expensive work).
+///
+/// THE EMPTY RESULT IS THE POINT, not a side effect. B8's normative wording is
+/// "eval error naming the material; NOT `damping_ratio = 0`". Returning valid
+/// frequencies alongside the Error would still put a literal `damping_ratio = 0`
+/// on the author's result surface — the exact artifact the signal forbids — and a
+/// downstream consumer reading `ModalResult` without inspecting the diagnostics
+/// channel would be right back in the silent-zero shape. The cost is losing the
+/// frequencies for a solve the author explicitly mis-configured; that is the
+/// intended pressure toward the one-line fix the message names.
+fn material_not_damped_outcome(material_type_name: &str) -> ComputeOutcome {
+    let diagnostic = Diagnostic::error(format!(
+        "E_ModalDampingMaterialNotDamped: the material `{material_type_name}` \
+         carries no usable hysteretic loss factor (`loss_factor` missing, \
+         non-numeric, negative or non-finite), but \
+         `ModalOptions.damping = MaterialDamping(...)` selects the \
+         modal-strain-energy value source ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e), \
+         which REQUIRES a per-material η. Fix it one of three ways: (1) conform \
+         the material to `DampedMaterial` — `structure def \
+         {material_type_name} : DampedMaterial + Visual {{ … param loss_factor \
+         : Real = <η> }}` in the style of \
+         crates/reify-compiler/stdlib/materials_fea.ri; (2) use one of the \
+         conforming stdlib presets, which already declare a `loss_factor`; or \
+         (3) switch the descriptor to `RayleighDamping(alpha, beta)` or \
+         `NoDamping()`, neither of which needs one. An EMPTY modal result is \
+         returned rather than modes carrying `damping_ratio = 0`, because a \
+         silent zero would be indistinguishable from a genuinely undamped model."
+    ));
+    ComputeOutcome::Completed {
+        result: degenerate_modal_result(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![diagnostic],
+        structured_detail: vec![],
+    }
+}
+
 /// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
 /// `type_name` is `"Part"`.  All four production echo sites emit this value
 /// for the `part` field until the Part registry is wired (task 4578).
@@ -1105,8 +1162,12 @@ pub(crate) struct ModalTrampolineRun {
 /// `Value::StructureInstance` (6 fields, α struct-def; `StructureTypeId(u32::MAX)`
 /// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Scalar<Frequency>(Hz),
 /// shape: List<Vector3<Dimensionless>>, participation_mass: Real, damping_ratio: Real }`,
-/// where `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0
-/// for `NoDamping`). `Mode.shape` is the mass-normalized eigenvector reshaped
+/// where `damping_ratio` is the COMPOSED ratio
+/// `ζ_i = ζ_material + (α + β·ω_i²)/(2·ω_i)` (task #6878) — summed, and floored
+/// near ω = 0, by `total_damping_ratio`, whose doc owns both semantics. It is 0
+/// for `NoDamping`, and reduces to the plain Rayleigh ratio for every pre-#6878
+/// descriptor (`ζ_material == 0`).
+/// `Mode.shape` is the mass-normalized eigenvector reshaped
 /// from `phi_full` (length `3·n_nodes`) into `n_nodes` per-node `Vector3`,
 /// `(0,0,0)` at every Dirichlet-constrained node.
 ///
@@ -1146,6 +1207,45 @@ pub(crate) fn run_modal_analysis(
         }
     };
 
+    // ── (1b) the damping plan, INCLUDING its conformance rejection ───────────
+    // Task #6878, PRD leaf β §C6. `modal_analysis(material : ElasticMaterial, …)`
+    // does NOT require `Damped`, so a material with no `loss_factor` reaches this
+    // trampoline and the compiler cannot catch it. Declaring `MaterialDamping`
+    // over such a material is an author error with no honest answer: the
+    // modal-strain-energy ratio it selects is undefined without η, and reporting
+    // ζ = 0 would be indistinguishable from a genuinely undamped model.
+    //
+    // SINGLE DECISION POINT. [`plan_modal_damping`] owns BOTH the plan and that
+    // rejection — its `Err` arm IS the missing-η case — so no second site can
+    // reconstruct ζ = 0 from an absent loss factor. An earlier shape split the
+    // two (a `classify_damping` + `extract_loss_factor` guard here, and an
+    // `unwrap_or(0.0)` floor inside the planner) and was only correct so long as
+    // the two stayed ordered; folding them removes that cross-site invariant
+    // along with a duplicate classification per solve.
+    //
+    // ORDERING. Placed AFTER the density guard (1) so a material missing BOTH a
+    // density and a loss factor still reports `E_ModalNoMassMatrix` first — that
+    // is the more fundamental failure (without M there is no eigenproblem at all,
+    // damped or not), matching how the transient path orders its guards by
+    // root-cause depth. Placed BEFORE the mesh build, the cache lookup and the
+    // assembly because the rejection is a genuine SHORT-CIRCUIT: no eigensolve is
+    // run for a solve whose declared damping intent cannot be honoured. Mirrors
+    // `no_mass_matrix_outcome`'s placement. The call is pure and O(1) — it reads
+    // only `value_inputs[0]` and `value_inputs[4]` — so it costs nothing here.
+    //
+    // Nothing downstream changes for a pre-#6878 descriptor: the eigensolve, the
+    // assembly cache key (which deliberately EXCLUDES damping) and the
+    // `ModalResult.damping` echo are all untouched.
+    let (plan, damping_diagnostics) = match plan_modal_damping(&value_inputs[4], &value_inputs[0]) {
+        Ok(planned) => planned,
+        Err(outcome) => {
+            return ModalTrampolineRun {
+                outcome,
+                reused_assembly: false,
+            };
+        }
+    };
+
     // ── (2) material elastic constants (E, ν) ────────────────────────────────
     let material = extract_isotropic_material(&value_inputs[0]);
 
@@ -1161,7 +1261,9 @@ pub(crate) fn run_modal_analysis(
     let options = &value_inputs[4];
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
     let reference_direction = extract_reference_direction(options);
-    let (alpha, beta) = extract_damping(options);
+    // Task #6878: `plan` / `damping_diagnostics` are already resolved at (1b)
+    // above — genuinely above the mesh build, not merely above the assembly —
+    // because the planner's rejection arm must short-circuit before any of it.
     let element_order = extract_element_order(options);
     // Map the order to the cache-key discriminant from the SAME source that picks
     // the ModalMesh below, so the key and the assembled (K, M) can never disagree
@@ -1255,7 +1357,25 @@ pub(crate) fn run_modal_analysis(
         .enumerate()
         .map(|(i, &f)| {
             let omega = 2.0 * PI * f;
-            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
+            // Task #6878: ADDITIVE composition, ζ_i = ζ_material + ζ_extra(ω_i).
+            // The sum and its near-zero-ω floor both belong to
+            // `total_damping_ratio`, whose doc argues them; the sum is NOT
+            // written out here precisely because that would put the material
+            // half outside the floor.
+            //
+            // B4 (no regression) holds BY CONSTRUCTION, not by inspection: for
+            // `Absent` / `NoDamping` / `Rayleigh` / `Unsupported`,
+            // `zeta_material` is exactly 0.0 and `(alpha, beta)` are bit-for-bit
+            // what the pre-#6878 Rayleigh-only read returned, and
+            // `total_damping_ratio(0.0, α, β, ω)` IS `rayleigh_damping_ratio(α,
+            // β, ω)` — the latter is defined as the former in
+            // `free_vibration.rs`. Those results are therefore byte-identical.
+            //
+            // Getting the floor wrong here would not be cosmetic:
+            // `run_transient_response` reads `Mode.damping_ratio` back into the
+            // modal integrator AND into its cache key.
+            let damping_ratio =
+                total_damping_ratio(plan.zeta_material, plan.alpha, plan.beta, omega);
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
             let fields: PersistentMap<String, Value> = [
                 // `Mode.frequency : Frequency` (modal_analysis.ri, task 4548) —
@@ -1343,10 +1463,16 @@ pub(crate) fn run_modal_analysis(
         None
     };
     let new_warm_state = Some(state);
-    // BC-realization notes FIRST, then the solve's own diagnostics: an author
-    // reading a `W_ModalRigidBodyMode` warning wants the realization that
-    // produced it above the warning, not below.
+    // BC-realization notes FIRST, then the damping plan's, then the solve's own:
+    // an author reading a `W_ModalRigidBodyMode` warning wants the realization
+    // that produced it above the warning, not below. The damping notes sit
+    // between them because they describe the same INPUT-interpretation stage as
+    // the BC realization (what the trampoline made of the options you wrote),
+    // whereas `core.diagnostics` reports what the SOLVE then found. Ordering is
+    // deterministic by construction — all three are plain appends, none depends
+    // on iteration order.
     let mut diagnostics = bc_diagnostics;
+    diagnostics.extend(damping_diagnostics);
     diagnostics.extend(core.diagnostics);
     let outcome = ComputeOutcome::Completed {
         result,
@@ -1634,8 +1760,11 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 ///
 /// **Per-mode damping (task #6875)**: each `Mode` carries the Rayleigh ratio
 /// ζ_i = (α + β·ω_i²)/(2·ω_i) computed from the `ModalOptions.damping`
-/// descriptor the caller supplied, via the same [`extract_damping`] →
-/// [`rayleigh_damping_ratio`] seam the FEA path ([`run_modal_analysis`]) uses.
+/// descriptor the caller supplied, via the same [`classify_damping`] seam the
+/// FEA path ([`run_modal_analysis`]) discriminates on. This path then applies
+/// [`rayleigh_damping_ratio`] directly rather than the composing
+/// `total_damping_ratio`: the modal-strain-energy term is undefined for a lumped
+/// model (see the `DampingKind::Material` arm below).
 /// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
 /// give ζ_i = 0.  `Mode.shape` stays an empty list and
 /// `Mode.participation_mass` stays 0: the lumped generalized-coordinate model
@@ -1841,9 +1970,10 @@ fn run_mechanism_modal(
     // `damping` descriptor per mode; step (5b) reuses the same binding for
     // `n_modes` and step (6) for the descriptor echo.
     //
-    // This path classifies rather than calling `extract_damping`: that helper
-    // flattens an unimplemented descriptor to (0, 0), which is indistinguishable
-    // from a genuinely undamped model.  Reporting the `Unsupported` arm is what
+    // This path CLASSIFIES rather than flattening the descriptor to an (α, β)
+    // pair: such a view maps an unimplemented descriptor to (0, 0), which is
+    // indistinguishable from a genuinely undamped model.  Reporting the
+    // `Unsupported` arm is what
     // keeps the ζ = 0 degrade honest (INV-SF-3, task #6875).  The match is
     // deliberately exhaustive with no `_` catch-all, so adding a fourth
     // `DampingKind` variant fails to compile HERE rather than defaulting to
@@ -1867,6 +1997,44 @@ fn run_mechanism_modal(
                  damping intent is NOT applied. Use `RayleighDamping`, or use the FEA \
                  `modal_analysis` path if it supports `{type_name}`.",
             )));
+            (0.0, 0.0)
+        }
+        // Task #6878, the arm this match's deliberate exhaustiveness demanded.
+        // `MaterialDamping` keeps the mechanism path's observable behaviour
+        // BYTE-IDENTICAL to before #6878: the same coded warning, and ζ = 0 for
+        // every mode.
+        //
+        // Not merely unimplemented here — UNDEFINED here. The lumped
+        // generalized-coordinate model has no finite elements, so there is no
+        // modal strain energy SE_e to weight η against; the MSE ratio the
+        // descriptor selects has no meaning on this path at all. The FEA
+        // `modal_analysis` path is where it does, so that is where the message
+        // sends the author.
+        //
+        // The `extra` half is deliberately NOT honored either, even though
+        // `rayleigh_damping_ratio` would happily evaluate it: reporting only
+        // part of a declared ADDITIVE total, while looking like a successful
+        // solve, is a strictly worse silent-failure shape than reporting 0 under
+        // a loud warning. Either the whole declared intent is applied or none of
+        // it is, and here it cannot be.
+        DampingKind::Material { .. } => {
+            diagnostics.push(Diagnostic::warning(
+                "W_MechanismModalUnsupportedDamping: ModalOptions.damping is a \
+                 `MaterialDamping` descriptor, which the lumped \
+                 generalized-coordinate mechanism-modal model does not implement. \
+                 Only `RayleighDamping` (ζ_i = (α + β·ω_i²)/(2·ω_i)) and \
+                 `NoDamping` are honored here; every Mode.damping_ratio is \
+                 reported as 0 for this solve. ModalResult.damping still echoes \
+                 the `MaterialDamping` descriptor you supplied — the declared \
+                 damping intent, INCLUDING its `extra` companion, is NOT applied. \
+                 `MaterialDamping` selects the modal-strain-energy value source \
+                 ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e): a lumped mechanism has no \
+                 finite elements and therefore no modal strain energy to weight, \
+                 so that ratio is undefined here rather than merely unimplemented. \
+                 Use the FEA `modal_analysis` path for material damping, or \
+                 `RayleighDamping` on this one."
+                    .to_string(),
+            ));
             (0.0, 0.0)
         }
         DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
@@ -2782,6 +2950,66 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
     }
 }
 
+/// Read the per-material hysteretic loss factor η off a material value.
+///
+/// `Some(η)` means "this material conforms to `trait Damped`
+/// (`param loss_factor : Real`, `crates/reify-compiler/stdlib/materials_fea.ri`,
+/// task #6877) and here is its loss factor". `None` means "this material does
+/// NOT carry a usable loss factor" — which is the trigger for the
+/// `E_ModalDampingMaterialNotDamped` rejection in [`run_modal_analysis`], not a
+/// value to substitute a default for.
+///
+/// NON-DEFENSIVE ON PURPOSE — note the asymmetry with the neighbouring
+/// [`extract_isotropic_material`], which reads a MISSING field as `0.0`. That
+/// choice is right there: the type-checker guarantees `youngs_modulus` /
+/// `poisson_ratio` on any real `ElasticMaterial`, so its floor is unreachable
+/// scaffolding. Here the opposite is true and measured:
+/// `modal_analysis(material : ElasticMaterial, …)` does NOT require `Damped`, so
+/// a `structure def PlainSteel : ElasticMaterial { … }` type-checks, evaluates
+/// clean, and reaches this fn with no `loss_factor` at all. The absence is a
+/// real, reachable, author-caused condition and IS the signal — folding it to
+/// `0.0` would reconstruct exactly the silent ζ = 0 that PRD §C6 forbids.
+///
+/// The `Option` also keeps a genuinely-undamped CONFORMER (`loss_factor = 0.0` →
+/// `Some(0.0)`, accepted) distinct from a NON-conformer (`None`, rejected) — a
+/// distinction a bare `f64` cannot carry.
+///
+/// The numeric read is gated on the value actually BEING one of the spellings a
+/// stdlib `Real` field takes, rather than delegating to [`read_scalar_si`]
+/// unconditionally: that helper's `_ => 0.0` floor is precisely the behaviour
+/// that must not fire here. `loss_factor : Real` is DIMENSIONLESS, so the
+/// `Value::Scalar` arm is gated on that dimension too — [`read_scalar_si`] is
+/// dimension-BLIND (it takes `si_value` off any `Scalar` whatsoever), so an
+/// ungated arm would read a `Scalar<Pressure>` — a hand-built or mis-typed
+/// `loss_factor` — straight through as a loss factor and turn it into ζ = η/2.
+/// That is the same silent-substitution shape the `Option` exists to prevent,
+/// one variant down; a dimensioned `loss_factor` is not a conformer, it is a
+/// malformed one, and `None` routes it to `E_ModalDampingMaterialNotDamped`
+/// rather than to a fabricated damping ratio. A negative or non-finite η is
+/// rejected for the same reason — `trait Damped`'s `constraint loss_factor >= 0`
+/// is the CHECK-time gate on the author surface, but a hand-built runtime value
+/// can carry a NaN past it, and a NaN ζ must not reach `Mode.damping_ratio`.
+fn extract_loss_factor(val: &Value) -> Option<f64> {
+    let Value::StructureInstance(data) = val else {
+        return None;
+    };
+    let raw = data.fields.get("loss_factor")?;
+    // Gate on the VARIANT (and, for `Scalar`, on the dimension), then convert.
+    // `read_scalar_si` is reused for the conversion so the tolerated spellings
+    // cannot drift apart from it, but its catch-all is deliberately unreachable
+    // from here and its dimension-blindness is deliberately fenced off.
+    let tolerated = match raw {
+        Value::Real(_) | Value::Int(_) => true,
+        Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
+        _ => false,
+    };
+    if !tolerated {
+        return None;
+    }
+    let eta = read_scalar_si(raw);
+    (eta.is_finite() && eta >= 0.0).then_some(eta)
+}
+
 /// Extract the eigensolver knobs `(n_modes, tol, max_iters, sigma)` from a
 /// `ModalOptions` StructureInstance, falling back to the PRD §4.3 defaults
 /// (`n_modes = 10`, `tol = 1e-9`, `max_iters = 200`, `sigma = 0`) when the value
@@ -2828,7 +3056,9 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
 /// Reads the `Value::Vector` field's three components (each via
 /// [`read_scalar_si`]) and normalizes to a unit vector — realizing the
 /// `reference_direction.norm() > 0` invariant deferred from the structure-def to
-/// this trampoline (modal_analysis.ri:382-389). A missing / degenerate
+/// this trampoline (the `reference_direction` field note on `structure def
+/// ModalOptions`, modal_analysis.ri — cited by name, not by line: that block has
+/// moved twice since the line range originally written here). A missing / degenerate
 /// (zero-norm) direction falls back to the slender bending default `[0, 0, 1]`.
 fn extract_reference_direction(val: &Value) -> [f64; 3] {
     let default_dir = [0.0, 0.0, 1.0];
@@ -2851,14 +3081,8 @@ fn extract_reference_direction(val: &Value) -> [f64; 3] {
     }
 }
 
-/// How the `damping` field of a `ModalOptions` value classifies against the
-/// `DampingDescriptor` refinements this trampoline implements.
-///
-/// This is the single extension point: a new descriptor (e.g. the
-/// damped-modal-bonded-heterogeneous PRD's `MaterialDamping`) adds ONE arm
-/// here and both the FEA ([`run_modal_analysis`]) and mechanism
-/// ([`run_mechanism_modal`]) producers inherit it — neither may re-implement
-/// the type-name match.
+/// How a `DampingDescriptor` value classifies against the refinements this
+/// trampoline implements.
 #[derive(Debug, Clone, PartialEq)]
 enum DampingKind {
     /// No `damping` field, or a non-`StructureInstance` options value.
@@ -2870,6 +3094,30 @@ enum DampingKind {
     NoDamping,
     /// `RayleighDamping { alpha, beta }` — ζ_i = (α + β·ω_i²)/(2·ω_i).
     Rayleigh { alpha: f64, beta: f64 },
+    /// `MaterialDamping { extra }` — selects the MODAL-STRAIN-ENERGY value
+    /// source for `Mode.damping_ratio` (task #6878). The closed form and its
+    /// derivation are owned by `structure def MaterialDamping`
+    /// (`crates/reify-compiler/stdlib/modal_analysis.ri`) and PRD §C5; the
+    /// near-zero-ω floor is owned by `total_damping_ratio`. This variant only
+    /// SELECTS the value source — it neither evaluates it nor floors it — so
+    /// neither is restated here.
+    ///
+    /// `extra` is the classified ADDITIVE companion descriptor, carried rather
+    /// than pre-flattened to an `(α, β)` pair: the stdlib types that slot as the
+    /// trait `DampingDescriptor`, so it accepts refinements this trampoline does
+    /// not implement, and flattening would lose the difference between "the
+    /// author declared no companion" and "the author declared one we dropped"
+    /// (INV-SF-3, the same lossy-view defect #6875 split this classifier out
+    /// of the old `(α, β)`-only read to fix).
+    ///
+    /// ζ_material is deliberately NOT carried here. This classifier only ever
+    /// sees a `ModalOptions` value, and the loss factor η lives on the
+    /// MATERIAL (`trait Damped { param loss_factor : Real }`,
+    /// `crates/reify-compiler/stdlib/materials_fea.ri`, task #6877) — it is read
+    /// separately by the producer via [`extract_loss_factor`]. Putting η in this
+    /// variant would require the classifier to take an input it has no business
+    /// knowing about.
+    Material { extra: Box<DampingKind> },
     /// A `DampingDescriptor` refinement this trampoline does not implement,
     /// carrying its runtime `type_name` so the producer can name it in a
     /// diagnostic instead of silently substituting zero (INV-SF-3).
@@ -2878,25 +3126,50 @@ enum DampingKind {
 
 /// Classify the `damping` field of a `ModalOptions` StructureInstance.
 ///
-/// The discriminator is the runtime `type_name`, matching the SIR-α nominal
-/// type-tag the structure-defs document. A missing `damping` field, a
-/// `Value::Undef` payload, a non-structure payload, and a non-structure `val`
-/// all classify as [`DampingKind::Absent`].
+/// A missing `damping` field, a `Value::Undef` payload, a non-structure payload,
+/// and a non-structure `val` all classify as [`DampingKind::Absent`]. This
+/// wrapper owns only that field lookup; the type-name discrimination itself is
+/// [`classify_descriptor`].
 fn classify_damping(val: &Value) -> DampingKind {
     let Value::StructureInstance(data) = val else {
         return DampingKind::Absent;
     };
-    let Some(Value::StructureInstance(damping)) = data.fields.get("damping") else {
+    let Some(damping) = data.fields.get("damping") else {
         return DampingKind::Absent;
     };
-    match damping.type_name.as_str() {
+    classify_descriptor(damping)
+}
+
+/// Classify a `DampingDescriptor` VALUE (not the options wrapping it).
+///
+/// The discriminator is the runtime `type_name`, matching the SIR-α nominal
+/// type-tag the structure-defs document. A non-`StructureInstance` value —
+/// including `Value::Undef` — classifies as [`DampingKind::Absent`], which is
+/// what makes a malformed or defaulted-away descriptor silent rather than an
+/// invented `NoDamping`.
+///
+/// This is the single extension point: a new descriptor adds ONE arm here and
+/// both the FEA ([`run_modal_analysis`]) and mechanism ([`run_mechanism_modal`])
+/// producers inherit it — neither may re-implement the type-name match. The
+/// damped-modal-bonded-heterogeneous PRD's `MaterialDamping` has LANDED as
+/// exactly that one arm (task #6878).
+///
+/// The fn is RECURSIVE by design: `MaterialDamping.extra` is itself a
+/// `DampingDescriptor`, so it is classified by this same code. That is what
+/// guarantees a descriptor added here is automatically understood in `extra`
+/// position too, rather than needing a second, drifting match.
+fn classify_descriptor(val: &Value) -> DampingKind {
+    let Value::StructureInstance(descriptor) = val else {
+        return DampingKind::Absent;
+    };
+    match descriptor.type_name.as_str() {
         "RayleighDamping" => {
-            let alpha = damping
+            let alpha = descriptor
                 .fields
                 .get("alpha")
                 .map(read_scalar_si)
                 .unwrap_or(0.0);
-            let beta = damping
+            let beta = descriptor
                 .fields
                 .get("beta")
                 .map(read_scalar_si)
@@ -2904,31 +3177,216 @@ fn classify_damping(val: &Value) -> DampingKind {
             DampingKind::Rayleigh { alpha, beta }
         }
         "NoDamping" => DampingKind::NoDamping,
+        // Task #6878. A missing / `Value::Undef` `extra` recurses to `Absent`
+        // through the guard above: the stdlib default
+        // (`param extra : DampingDescriptor = NoDamping()`) means a value that
+        // came through the author surface always supplies `NoDamping`, but the
+        // trampoline must not ASSUME a well-formed value and invent a default
+        // it never saw.
+        "MaterialDamping" => DampingKind::Material {
+            extra: Box::new(classify_descriptor(
+                descriptor.fields.get("extra").unwrap_or(&Value::Undef),
+            )),
+        },
         other => DampingKind::Unsupported(other.to_string()),
     }
 }
 
-/// Extract the Rayleigh damping coefficients `(α, β)` from a `ModalOptions`
-/// StructureInstance's `damping` field. A `RayleighDamping { alpha, beta }`
-/// StructureInstance yields its coefficients; `NoDamping` (or any other shape)
-/// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode).
+/// The per-solve damping contributions [`run_modal_analysis`] applies, resolved
+/// ONCE from the options and the material before any expensive work runs.
 ///
-/// [`classify_damping`] is the discriminating seam; this fn is the lossy
-/// convenience view over it. It deliberately flattens
-/// [`DampingKind::Unsupported`] to `(0, 0)`, which means a caller using it
-/// **cannot distinguish a genuinely undamped model from a descriptor this
-/// trampoline does not implement**. A caller that must not silently drop an
-/// unrecognised descriptor calls [`classify_damping`] directly and reports the
-/// `Unsupported` arm — see [`run_mechanism_modal`]'s
-/// `W_MechanismModalUnsupportedDamping` warning (task #6875).
-fn extract_damping(val: &Value) -> (f64, f64) {
-    match classify_damping(val) {
-        DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
-        // Deliberate catch-all, unlike `run_mechanism_modal`'s exhaustive match:
-        // a future descriptor SHOULD flatten to the undamped pair here without a
-        // compile error, because this fn's whole contract is the lossy view.
-        _ => (0.0, 0.0),
-    }
+/// Two INDEPENDENT contributions, summed per mode:
+///   `zeta_material` — the modal-strain-energy term, MODE-INDEPENDENT across the
+///                     FLEXIBLE band on this path (see [`plan_modal_damping`]
+///                     for why);
+///   `(alpha, beta)` — the Rayleigh coefficients, mode-dependent through ω.
+///
+/// The plan carries COEFFICIENTS ONLY; it does not own the near-zero-ω floor.
+/// `total_damping_ratio` does, and it floors BOTH contributions together — so
+/// `zeta_material` being mode-independent is a statement about the flexible
+/// band, NOT a licence to add it unguarded. Why the material half is floored
+/// too is argued once, on that function's doc.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ModalDampingPlan {
+    zeta_material: f64,
+    alpha: f64,
+    beta: f64,
+}
+
+/// Resolve the damping descriptor plus the material's loss factor into a
+/// [`ModalDampingPlan`] (task #6878, PRD leaf β).
+///
+/// ## The B4 argument, structurally
+///
+/// For every PRE-EXISTING descriptor this returns `zeta_material == 0.0` and an
+/// `(alpha, beta)` pair that is bit-for-bit what the pre-#6878 Rayleigh-only
+/// read returned. The per-mode expression therefore reduces to exactly the landed
+/// one, and `NoDamping` / `RayleighDamping` results are byte-identical. That is
+/// a property of this table, not of a test — but it is also pinned by
+/// `trampoline_composes_material_damping_additively_with_extra` and by the
+/// author-surface `material_damping_leaves_nodamping_and_rayleigh_byte_identical`.
+///
+/// ## Why ζ_material is MODE-INDEPENDENT here
+///
+/// [`run_modal_analysis`] reads exactly ONE material (`value_inputs[0]`), which
+/// is PRD §C5's degenerate case: the energy ratio collapses to 1 for any mode
+/// shape whatsoever, giving ζ = η/2 exactly. The derivation is written out once,
+/// author-facing, on `structure def MaterialDamping`
+/// (`crates/reify-compiler/stdlib/modal_analysis.ri`) — including the
+/// FLEXIBLE-band qualifier — and is not repeated here.
+///
+/// What IS owned here is the implementation choice: that identity is realized as
+/// an algebraic short-circuit rather than by summing per-element SE_e. The sum
+/// would add per-element work, re-derive element matrices outside
+/// `assemble_modal_km`, produce the same number to fp rounding, and introduce
+/// accumulation error into an assertion whose whole point is exactness. The
+/// heterogeneous case — where the ratio is genuinely ≠ 1 and ζ genuinely varies
+/// by mode — is a later leaf of the same PRD and is deliberately not implemented
+/// here.
+///
+/// ## Returns diagnostics alongside the plan
+///
+/// Both the `Material { extra }` arm and the `Unsupported` arm can discover a
+/// declared damping intent this trampoline cannot honour, and dropping either
+/// silently would reintroduce INV-SF-3 — one level down from where #6875 closed
+/// it, and one level up, respectively. Those warnings are returned here rather
+/// than pushed to a shared buffer so this fn stays a pure function of its two
+/// inputs — which is what lets it be hoisted above the mesh build and the cache
+/// lookup without ordering hazards. [`run_modal_analysis`] merges them at a
+/// single, deterministic point.
+///
+/// ## The conformance rejection lives HERE, not at the call site
+///
+/// `MaterialDamping` over a material carrying no usable η has no honest answer,
+/// so this fn returns `Err(material_not_damped_outcome(…))` and the producer
+/// short-circuits on it. Expressing the missing η AS the rejection is what makes
+/// the silent-ζ = 0 reconstruction unrepresentable: there is no `unwrap_or(0.0)`
+/// floor to fall through, and no second call site that has to replicate a guard
+/// to keep this one correct. A future producer that starts calling this fn
+/// inherits the rejection rather than having to remember it.
+///
+/// `clippy::result_large_err` is allowed for the same reason its sibling guard
+/// [`extract_density_or_degenerate`] allows it, and deliberately by the same
+/// mechanism so the two read alike: the `Err` carries a [`ComputeOutcome`] that
+/// [`run_modal_analysis`] returns BY VALUE and consumes immediately (the whole
+/// compute contract traffics in by-value `ComputeOutcome`), so boxing this
+/// transient rejection would add an allocation on a path that is about to return
+/// anyway, for no benefit — and would leave the file's two short-circuit guards
+/// gratuitously different in shape.
+#[allow(clippy::result_large_err)]
+fn plan_modal_damping(
+    options: &Value,
+    material: &Value,
+) -> Result<(ModalDampingPlan, Vec<Diagnostic>), ComputeOutcome> {
+    const UNDAMPED: ModalDampingPlan = ModalDampingPlan {
+        zeta_material: 0.0,
+        alpha: 0.0,
+        beta: 0.0,
+    };
+    let no_diagnostics = Vec::new();
+    Ok(match classify_damping(options) {
+        DampingKind::Absent | DampingKind::NoDamping => (UNDAMPED, no_diagnostics),
+        DampingKind::Rayleigh { alpha, beta } => (
+            ModalDampingPlan {
+                zeta_material: 0.0,
+                alpha,
+                beta,
+            },
+            no_diagnostics,
+        ),
+        // A TOP-LEVEL descriptor this trampoline does not implement. The plan is
+        // the undamped triple exactly as before #6878 — but no longer SILENTLY
+        // so. `run_mechanism_modal` has degraded loudly here since #6875
+        // (`W_MechanismModalUnsupportedDamping`), and once the `extra` slot below
+        // started warning for a nested unsupported descriptor, staying mute for
+        // the top-level one made the FEA path inconsistent with both its sibling
+        // producer and with itself. The numbers are unchanged; only the silence
+        // is (INV-SF-3).
+        //
+        // Distinct code from `W_ModalDampingUnsupportedExtra`, and deliberately
+        // NOT a prefix of it, so a `contains` assertion cannot conflate the two
+        // altitudes.
+        DampingKind::Unsupported(type_name) => (
+            UNDAMPED,
+            vec![Diagnostic::warning(format!(
+                "W_ModalDampingUnsupportedDescriptor: ModalOptions.damping is a \
+                 `{type_name}` descriptor, which the FEA `modal_analysis` \
+                 trampoline does not implement. Every Mode.damping_ratio is \
+                 reported as 0 for this solve and ModalResult.damping still echoes \
+                 the `{type_name}` descriptor you supplied — the declared damping \
+                 intent is NOT applied. Only `NoDamping()`, \
+                 `RayleighDamping(alpha, beta)` (ζ = (α + β·ω²)/(2·ω)) and \
+                 `MaterialDamping(extra)` (ζ = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + \
+                 ζ_extra) are honored on this path."
+            ))],
+        ),
+        DampingKind::Material { extra } => {
+            // THE conformance decision, made here and nowhere else: a material
+            // with no usable η cannot answer the modal-strain-energy question
+            // this descriptor asks, and `Err` is the only honest reply. Folding
+            // `None` to 0.0 here would be precisely the silent ζ = 0 PRD §C6
+            // forbids, reconstructed inside the fn built to prevent it.
+            let Some(eta) = extract_loss_factor(material) else {
+                return Err(material_not_damped_outcome(material_type_name(material)));
+            };
+            let mut diagnostics = Vec::new();
+            let (alpha, beta) = match *extra {
+                DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+                DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
+                // A descriptor we cannot honour in `extra` position. The MSE
+                // half IS applied — a PARTIAL degrade, not a failure — so this
+                // is a Warning rather than the Error
+                // `E_ModalDampingMaterialNotDamped` uses. Without it the
+                // trait-typed `extra` slot would silently drop a declared
+                // additive intent: the INV-SF-3 shape #6875 was filed to
+                // eliminate one level up, reintroduced one level down.
+                //
+                // A NESTED `MaterialDamping` warns identically rather than
+                // recursing into a second η/2 term: additive composition of a
+                // descriptor with itself is not a defined semantics (PRD §C5),
+                // and silently doubling ζ would be a worse answer than
+                // declining with a warning.
+                //
+                // Message shape deliberately follows
+                // `W_MechanismModalUnsupportedDamping` — same "the declared
+                // intent is NOT applied" honesty framing — so the two damping
+                // degrades read as one family.
+                ref unhonored => {
+                    let type_name = match unhonored {
+                        DampingKind::Unsupported(name) => name.clone(),
+                        DampingKind::Material { .. } => "MaterialDamping".to_string(),
+                        // Unreachable: the two arms above cover every other
+                        // variant. Named rather than `unreachable!()` so a future
+                        // variant degrades loudly instead of panicking a solve.
+                        other => format!("{other:?}"),
+                    };
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "W_ModalDampingUnsupportedExtra: MaterialDamping.extra is a \
+                         `{type_name}` descriptor, which this trampoline does not \
+                         implement as an additive companion. The modal-strain-energy \
+                         half IS applied (ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e), which \
+                         for this single-material model is η/2), but the `extra` half \
+                         contributes 0 — the declared additive total is NOT what you \
+                         get. Only `RayleighDamping(alpha, beta)` (ζ = (α + β·ω²)/(2·ω)) \
+                         and `NoDamping()` are honored in `extra` position; \
+                         `NoDamping()` is the default and means \"no additive \
+                         companion\". Note that nesting `MaterialDamping` inside \
+                         `extra` is not a defined composition — a descriptor cannot \
+                         compose additively with itself."
+                    )));
+                    (0.0, 0.0)
+                }
+            };
+            (
+                ModalDampingPlan {
+                    zeta_material: eta / 2.0,
+                    alpha,
+                    beta,
+                },
+                diagnostics,
+            )
+        }
+    })
 }
 
 /// Extract the requested finite-element order from a `ModalOptions`
@@ -2940,7 +3398,7 @@ fn extract_damping(val: &Value) -> (f64, f64) {
 /// value, or the explicit `ElementOrder.P1` — defaults to [`ElementOrder::P1`],
 /// keeping the constant-strain path and every existing P1 fixture/test bit-for-bit
 /// unchanged (matching `ModalOptions.element_order`'s declared `ElementOrder.P1`
-/// default). Mirrors [`extract_damping`]'s match-then-default defensive field read;
+/// default). Mirrors [`extract_eigen_knobs`]'s match-then-default field reads;
 /// the enum is discriminated solely by its `variant` tag, the runtime
 /// representation of an `ElementOrder` value (reify-ir `Value::Enum`).
 fn extract_element_order(val: &Value) -> ElementOrder {
@@ -3690,12 +4148,13 @@ mod tests {
 
     use super::{
         BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, ModalAnalysisCache, ModalAssembly,
-        ModalCoreResult, ModalMesh, ModalTrampolineRun, TransientCache, assemble_mechanism_km,
+        ModalCoreResult, ModalDampingPlan, ModalMesh, ModalTrampolineRun, TransientCache,
+        assemble_mechanism_km,
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
         degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
-        eigensolve_modal, extract_damping,
-        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, nearest_node, placeholder_part, read_real_list, read_scalar_si,
+        eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
+        extract_loss_factor, extract_reference_direction, mode_shape_value, nearest_node,
+        placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
         simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
@@ -5033,6 +5492,34 @@ mod tests {
         }))
     }
 
+    /// [`material_with_density`] plus a `loss_factor`, i.e. a material that
+    /// conforms to `trait Damped` (materials_fea.ri, task #6877) — the input
+    /// `MaterialDamping` requires. `Steel_AISI_1045`'s real η is 0.0006.
+    ///
+    /// Kept separate from [`material_with_density`] rather than adding an
+    /// `Option` param to it: every existing caller of that helper is asserting
+    /// behaviour for a material that does NOT conform to `Damped`, which is a
+    /// meaningful state (it is the B8 rejection case), so widening it would
+    /// blur exactly the distinction task #6878 turns on.
+    fn damped_material(eta: f64) -> Value {
+        let Value::StructureInstance(mut data) = material_with_density(Some(STEEL_DENSITY)) else {
+            unreachable!("material_with_density returns a StructureInstance")
+        };
+        data.type_name = "Steel_AISI_1045".to_string();
+        data.fields.insert("loss_factor".to_string(), Value::Real(eta));
+        Value::StructureInstance(data)
+    }
+
+    /// The plan every descriptor that contributes NO damping resolves to
+    /// (`Absent` / `NoDamping`, and the `Unsupported` degrade). Named once so
+    /// the B4 "pre-#6878 descriptors are byte-identical" assertions read as one
+    /// claim rather than three coincident struct literals.
+    const UNDAMPED_PLAN: ModalDampingPlan = ModalDampingPlan {
+        zeta_material: 0.0,
+        alpha: 0.0,
+        beta: 0.0,
+    };
+
     /// Assert the density-guard short-circuit: the returned outcome is a
     /// `Completed` carrying (a) an `Error` diagnostic whose message starts
     /// `"E_ModalNoMassMatrix"` and (b) a degenerate `ModalResult` whose `modes`
@@ -5155,7 +5642,7 @@ mod tests {
     }
 
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
-    /// `extract_damping` discriminates by `type_name`.
+    /// [`classify_damping`] discriminates by `type_name`.
     ///
     /// Fields are DIMENSIONED (`Frequency`, `Time`) to match both the stdlib
     /// declaration (task #6093) and what the migrated corpus evaluates to, so
@@ -5455,32 +5942,37 @@ mod tests {
         assert_eq!(extract_reference_direction(&Value::Undef), [0.0, 0.0, 1.0]);
     }
 
-    /// Amendment (suggestion 2): `extract_damping` returns the Rayleigh
-    /// coefficients only for a `RayleighDamping` instance; `NoDamping`, a missing
-    /// field, and a non-struct all read as the undamped `(0, 0)`.
+    /// `read_scalar_si`'s BARE-`Value::Real` tolerance on the Rayleigh
+    /// coefficients, asserted through the PRODUCTION seam (task #6093
+    /// amendment; re-targeted onto `classify_damping` by the #6878 amendment
+    /// pass, which deleted the test-only `extract_damping` view this used to be
+    /// written against — a witness that pins a `#[cfg(test)]` helper cannot
+    /// detect a shipped-behaviour regression).
     ///
-    /// The final arm pins `read_scalar_si`'s BARE-`Value::Real` tolerance
-    /// (task #6093 amendment). Once the `rayleigh_damping` builder above
-    /// migrated to dimensioned fields — correctly, since real input no longer
-    /// produces the bare shape — nothing else in this crate exercised that arm,
-    /// so an edit making `extract_damping` reject a bare `Real` would have
-    /// passed the whole in-crate suite while the builder's docstring still
-    /// claimed the tolerance was deliberate and preserved. Tightening it is a
-    /// decision owned by `docs/prds/v0_6/dimension-checked-readers.md`; until
-    /// that lands deliberately, this is the witness.
+    /// Once the `rayleigh_damping` builder above migrated to dimensioned fields
+    /// — correctly, since real input no longer produces the bare shape —
+    /// nothing else in this crate exercised that arm, so an edit making the
+    /// reader reject a bare `Real` would have passed the whole in-crate suite
+    /// while the builder's docstring still claimed the tolerance was deliberate
+    /// and preserved. Tightening it is a decision owned by
+    /// `docs/prds/v0_6/dimension-checked-readers.md`; until that lands
+    /// deliberately, this is the witness.
+    ///
+    /// Scoped to exactly that: the classifier's discrimination between
+    /// `Rayleigh` / `NoDamping` / `Absent` is pinned once, by
+    /// `mechanism_modal_warns_on_unsupported_damping_descriptor`'s Case C, and
+    /// is deliberately not restated here.
     #[test]
-    fn extract_damping_discriminates_rayleigh_from_none() {
-        let damped = modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
-        assert_eq!(extract_damping(&damped), (0.5, 1e-6));
-
-        let nodamp = modal_options(vec![(
-            "damping".to_string(),
-            struct_instance("NoDamping", vec![]),
-        )]);
-        assert_eq!(extract_damping(&nodamp), (0.0, 0.0));
-
-        assert_eq!(extract_damping(&modal_options(vec![])), (0.0, 0.0));
-        assert_eq!(extract_damping(&Value::Undef), (0.0, 0.0));
+    fn classify_damping_tolerates_bare_real_rayleigh_coefficients() {
+        let dimensioned =
+            modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
+        assert_eq!(
+            classify_damping(&dimensioned),
+            DampingKind::Rayleigh {
+                alpha: 0.5,
+                beta: 1e-6
+            }
+        );
 
         // Legacy bare-`Real` damping fields still read identically to the
         // dimensioned shape — the reader is dimension-blind by construction.
@@ -5495,14 +5987,300 @@ mod tests {
             ),
         )]);
         assert_eq!(
-            extract_damping(&bare),
-            extract_damping(&damped),
-            "extract_damping must fold bare Value::Real fields to the same \
+            classify_damping(&bare),
+            classify_damping(&dimensioned),
+            "classify_damping must fold bare Value::Real fields to the same \
              (alpha, beta) as the dimensioned Value::Scalar fields — \
              read_scalar_si's tolerance is deliberate and is not this task's \
              to tighten (docs/prds/v0_6/dimension-checked-readers.md)"
         );
     }
+
+    /// Task #6878 (PRD leaf β) step-5: `extract_loss_factor` reads the
+    /// per-material hysteretic loss factor η off a material value.
+    ///
+    /// ## Why this helper is deliberately NON-defensive
+    ///
+    /// Its neighbour [`extract_isotropic_material`] reads a MISSING field as
+    /// `0.0`, and that is correct there: the type-checker guarantees
+    /// `youngs_modulus` / `poisson_ratio` are present on any real
+    /// `ElasticMaterial`, so the floor is unreachable defensive scaffolding.
+    ///
+    /// Here the opposite is true and it is MEASURED, not assumed.
+    /// `modal_analysis(material : ElasticMaterial, …)`
+    /// (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`) does NOT require
+    /// `Damped`, so a material with no `loss_factor` reaches the solver and the
+    /// compiler cannot catch it — a probe `structure def PlainSteel :
+    /// ElasticMaterial { … }` type-checks and evaluates clean today. The absence
+    /// of the field is therefore a real, reachable, AUTHOR-CAUSED condition, and
+    /// it IS the signal: it means "this material does not conform to `Damped`".
+    /// Folding it to `0.0` would reconstruct precisely the silent ζ = 0 that PRD
+    /// §C6 forbids, and would do it in the one place designed to prevent it.
+    ///
+    /// Hence `Option<f64>`, and hence the η = 0 case below: an explicitly
+    /// undamped CONFORMER (`loss_factor = 0.0` → `Some(0.0)`) must stay
+    /// distinguishable from a NON-conformer (`None`). A bare `f64` cannot carry
+    /// that distinction, and collapsing them is the single most likely way to
+    /// get this wrong.
+    ///
+    /// The numeric-spelling arms mirror [`read_scalar_si`]'s tolerated shapes:
+    /// `loss_factor : Real` is dimensionless, but a `Value::Scalar` spelling
+    /// must not be mis-read as absent. The rejection arms are what
+    /// `read_scalar_si` alone cannot give — its `_ => 0.0` floor is exactly the
+    /// behaviour that must NOT fire here, and its DIMENSION-BLINDNESS is the
+    /// second thing it cannot give: it takes `si_value` off any `Scalar`
+    /// whatsoever, so both sides of the dimension gate are asserted below
+    /// (DIMENSIONLESS accepted, PRESSURE rejected). Without the rejection arm a
+    /// dimensioned `loss_factor` would silently become ζ = η/2.
+    ///
+    /// RED before step-6: `extract_loss_factor` does not exist.
+    #[test]
+    fn extract_loss_factor_reads_conformers_and_rejects_non_conformers() {
+        /// A material-shaped instance carrying exactly the given `loss_factor`
+        /// value. `Steel_AISI_1045`'s real η is 0.0006 (materials_fea.ri).
+        fn material_with(loss_factor: Value) -> Value {
+            struct_instance(
+                "Steel_AISI_1045",
+                vec![("loss_factor".to_string(), loss_factor)],
+            )
+        }
+
+        // ── ACCEPTED: the numeric spellings a stdlib `Real` field can take ──
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Real(0.0006))),
+            Some(0.0006),
+            "a `Real` loss_factor — the shape Steel_AISI_1045 actually \
+             evaluates to — must read back exactly"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Int(0))),
+            Some(0.0),
+            "an `Int` loss_factor must read as a conforming material, not as \
+             absent"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Scalar {
+                si_value: 0.02,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })),
+            Some(0.02),
+            "a dimensionless `Scalar` spelling must read as a conforming \
+             material — `loss_factor : Real` is dimensionless, but a Scalar \
+             spelling must not be mistaken for absence (mirrors \
+             read_scalar_si's tolerated shapes)"
+        );
+
+        // η = 0 IS A CONFORMER. This is the boundary most likely to be wrongly
+        // folded into the rejection: an explicitly undamped `Damped` material is
+        // a completely different author intent from a material that never
+        // declared a loss factor at all, even though both give ζ_material = 0.
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Real(0.0))),
+            Some(0.0),
+            "η = 0.0 is an explicitly UNDAMPED CONFORMER and must NOT collapse \
+             to None — a `Damped` material that declares zero loss is valid \
+             input, not a rejection"
+        );
+
+        // ── REJECTED: every shape that is not a usable loss factor ──────────
+        assert_eq!(
+            extract_loss_factor(&struct_instance(
+                "PlainSteel",
+                vec![
+                    ("youngs_modulus".to_string(), Value::Real(2.05e11)),
+                    ("poisson_ratio".to_string(), Value::Real(0.29)),
+                ],
+            )),
+            None,
+            "a StructureInstance with NO loss_factor field is the B8 case: an \
+             ElasticMaterial that does not conform to `Damped`. This is THE \
+             signal — it must be None, never Some(0.0)"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::String("0.02".to_string()))),
+            None,
+            "a present but non-numeric loss_factor must be None — \
+             read_scalar_si's `_ => 0.0` floor is precisely what must not fire \
+             here"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Scalar {
+                si_value: 0.02,
+                dimension: DimensionVector::PRESSURE,
+            })),
+            None,
+            "a DIMENSIONED loss_factor must be None — `loss_factor : Real` is \
+             dimensionless, and read_scalar_si is dimension-blind, so an \
+             ungated Scalar arm would read 0.02 Pa straight through as η and \
+             fabricate ζ = 0.01 for it. The dimension gate is the fence"
+        );
+        assert_eq!(
+            extract_loss_factor(&Value::Undef),
+            None,
+            "a non-StructureInstance material value must be None"
+        );
+
+        // A hand-built value can carry a negative or non-finite η past the
+        // `constraint loss_factor >= 0` on `trait Damped` (that constraint is a
+        // CHECK-time gate on the author surface, not a runtime one). The
+        // trampoline must not propagate such a value into ζ = η/2, so it is
+        // rejected here rather than producing a negative or NaN damping ratio.
+        for bad in [-1e-6, -0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                extract_loss_factor(&material_with(Value::Real(bad))),
+                None,
+                "a negative or non-finite η ({bad}) must be rejected — \
+                 `trait Damped`'s `constraint loss_factor >= 0` is the \
+                 check-time gate, but the trampoline must not propagate a \
+                 negative or NaN ζ if a hand-built value slips past it"
+            );
+        }
+    }
+
+    /// Task #6878 (PRD leaf β) step-3: `classify_damping` gains its
+    /// `MaterialDamping` arm, and the arm carries the RECURSIVELY-classified
+    /// `extra` companion rather than a pre-flattened `(α, β)` pair.
+    ///
+    /// `MaterialDamping` selects the modal-strain-energy value source for
+    /// `Mode.damping_ratio`; its `extra : DampingDescriptor` slot is the
+    /// ADDITIVE companion (ζ = ζ_MSE + ζ_extra). Because that slot is
+    /// TRAIT-typed it accepts any refinement — including one this trampoline
+    /// does not implement, and including a nested `MaterialDamping`. Flattening
+    /// it at classification time would reproduce exactly the lossy-view defect
+    /// #6875 split this classifier out to fix: the producer could no longer tell
+    /// "the author declared no extra damping" from "the author declared an extra
+    /// descriptor we silently dropped". So the nested
+    /// descriptor is CARRIED, and every sub-case below asserts the carried
+    /// classification, never just the outer variant.
+    ///
+    /// The final arm asserts where the composition ACTUALLY happens: the
+    /// classifier carries the descriptor, and `plan_modal_damping` — the seam
+    /// `run_modal_analysis` consumes — is what turns it into the
+    /// (ζ_material, α, β) triple. Pinning that separates "the classifier
+    /// carries, it does not evaluate" from "the new variant accidentally leaked
+    /// its MSE term into the Rayleigh coefficients". (It was originally written
+    /// against the lossy `extract_damping` view; the #6878 amendment pass
+    /// deleted that `#[cfg(test)]` helper and re-targeted the claim here, since
+    /// a helper compiled out of the shipped build cannot witness a
+    /// shipped-behaviour regression.)
+    ///
+    /// RED before step-4: `DampingKind::Material` does not exist, so this does
+    /// not compile.
+    #[test]
+    fn classify_damping_material_arm_carries_recursive_extra() {
+        /// `MaterialDamping { … }` options value, from the `extra` field list.
+        fn material_options(extra: Vec<(String, Value)>) -> Value {
+            modal_options(vec![(
+                "damping".to_string(),
+                struct_instance("MaterialDamping", extra),
+            )])
+        }
+
+        // (i) `extra` ABSENT. The stdlib declares
+        // `param extra : DampingDescriptor = NoDamping()`, so a value that came
+        // through the author surface ALWAYS carries a `NoDamping`. This arm is
+        // therefore about a hand-built / malformed value, and the chosen mapping
+        // is asserted explicitly rather than left to inference: a missing field
+        // classifies as `Absent`, exactly as the outer wrapper maps a missing
+        // `damping` field. `Absent` and `NoDamping` are both silent and both
+        // contribute ζ_extra = 0, so nothing observable rides on which one this
+        // is — but the trampoline must not ASSUME a well-formed value, and an
+        // arm that silently invented `NoDamping` here would be claiming to have
+        // seen a default that was never written.
+        match classify_damping(&material_options(vec![])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Absent,
+                "a MaterialDamping with NO `extra` field must classify its \
+                 companion as Absent — the trampoline must not assume the \
+                 stdlib default was materialized"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (ii) `extra: NoDamping()` — the stdlib default, i.e. what every real
+        // author-surface `MaterialDamping()` actually carries.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            struct_instance("NoDamping", vec![]),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::NoDamping,
+                "the stdlib `NoDamping()` default must classify as NoDamping \
+                 inside the Material arm"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (iii) `extra: RayleighDamping(α, β)` — the composition case B7 pins
+        // at the author surface. The coefficients must survive classification
+        // intact, because the producer calls `rayleigh_damping_ratio` on them
+        // verbatim.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            rayleigh_damping(0.5, 1e-6),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Rayleigh {
+                    alpha: 0.5,
+                    beta: 1e-6
+                },
+                "a RayleighDamping in `extra` position must classify through \
+                 the SAME discriminator as one in top-level position, carrying \
+                 its (α, β) — the recursion is what guarantees that"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (iv) `extra: <a refinement this trampoline does not implement>`. The
+        // nested descriptor is carried, never flattened away: its runtime
+        // type_name is what step-12's `W_ModalDampingUnsupportedExtra` names.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            struct_instance("HystereticDamping", vec![]),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Unsupported("HystereticDamping".to_string()),
+                "an unimplemented descriptor in `extra` position must be \
+                 CARRIED as Unsupported(type_name), not flattened to \
+                 NoDamping — otherwise the producer cannot tell a declared-and- \
+                 dropped companion from an absent one (INV-SF-3)"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // The classifier CARRIES; `plan_modal_damping` COMPOSES. The MSE term
+        // reaches `Mode.damping_ratio` as the plan's `zeta_material` — a
+        // separate channel from (α, β), which carry the `extra` companion's
+        // coefficients verbatim. The two must not be conflated: an edit that
+        // folded η/2 into `alpha` would still give the right ζ at one ω and the
+        // wrong ζ at every other, since only the Rayleigh half scales with ω.
+        let (plan, diagnostics) = plan_modal_damping(
+            &material_options(vec![("extra".to_string(), rayleigh_damping(0.5, 1e-6))]),
+            &damped_material(0.0006),
+        )
+        .expect("a MaterialDamping over a conforming Damped material must plan");
+        assert_eq!(
+            plan,
+            ModalDampingPlan {
+                zeta_material: 0.0003,
+                alpha: 0.5,
+                beta: 1e-6,
+            },
+            "MaterialDamping must compose as η/2 in `zeta_material` PLUS the \
+             `extra` companion's (α, β) — carried on separate channels, never \
+             flattened into one pair"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a Rayleigh `extra` is fully honoured, so the plan must be silent; \
+             got {diagnostics:?}"
+        );
+    }
+
 
     /// Task 6663: `build_dirichlet_bcs` realizes each named face independently
     /// and KIND-AWARELY. Four cases over `build_beam_mesh` node coordinates:
@@ -6180,6 +6958,1010 @@ mod tests {
             "true finite nearest node must win over both +infinity and \
              -infinity node coordinates"
         );
+    }
+
+    /// Task #6878 (PRD leaf β) step-11: close the INV-SF-3 hole the recursive
+    /// `extra` slot opens.
+    ///
+    /// `param extra : DampingDescriptor` is TRAIT-typed, so it accepts any
+    /// refinement — including one the trampoline does not implement, and
+    /// including a nested `MaterialDamping`. `plan_modal_damping` maps both to
+    /// `(alpha, beta) = (0, 0)`, which without a diagnostic would silently drop a
+    /// DECLARED additive intent: exactly the shape #6875 was filed to eliminate
+    /// one level up, reintroduced one level down.
+    ///
+    /// A WARNING and not an Error, deliberately. The MSE half IS honoured
+    /// (ζ = η/2 is applied and the solve completes), so this is a PARTIAL
+    /// degrade, not a failure — the same family as
+    /// `W_MechanismModalUnsupportedDamping`, which also reports "your declared
+    /// intent is not applied" over a solve that otherwise succeeded. Contrast
+    /// `E_ModalDampingMaterialNotDamped`, an Error precisely because there the
+    /// declared intent cannot be honoured AT ALL.
+    ///
+    /// The nested-`MaterialDamping` case warns IDENTICALLY rather than recursing
+    /// into a second η/2 term: additive composition of a descriptor with itself is
+    /// not a defined semantics in PRD §C5, and silently doubling ζ would be a
+    /// worse answer than declining with a warning.
+    ///
+    /// The SILENCE half is what makes the warning a signal rather than noise:
+    /// `extra: NoDamping()` (the stdlib default, i.e. what every real
+    /// author-surface `MaterialDamping()` carries) and `extra: RayleighDamping`
+    /// must be completely silent, and the code must not fire at all for
+    /// `NoDamping` / `RayleighDamping` / absent TOP-level descriptors.
+    ///
+    /// RED before step-12: the code does not exist, and step-8 drops the nested
+    /// descriptor silently.
+    #[test]
+    fn trampoline_warns_when_material_dampings_extra_is_unsupported() {
+        const CODE: &str = "W_ModalDampingUnsupportedExtra";
+
+        /// Solve the shared damped fixture under `damping`, returning the modes
+        /// and diagnostics.
+        fn solve(damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                damped_material(0.0006),
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        /// `MaterialDamping { extra }`.
+        fn material_with_extra(extra: Value) -> Value {
+            struct_instance("MaterialDamping", vec![("extra".to_string(), extra)])
+        }
+
+        // ── THE WARNING. Two nested descriptors that cannot be honoured. ─────
+        for (label, extra, expected_name) in [
+            (
+                "an unimplemented refinement",
+                struct_instance("HystereticDamping", vec![]),
+                "HystereticDamping",
+            ),
+            (
+                "a nested MaterialDamping",
+                struct_instance("MaterialDamping", vec![]),
+                "MaterialDamping",
+            ),
+        ] {
+            let (modes, diagnostics) = solve(Some(material_with_extra(extra)));
+
+            // (i) The MSE half IS honoured — a partial degrade, not a failure.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "{label}: an unsupported `extra` must NOT abort the solve — the \
+                 MSE half is applied and only the companion is dropped; got \
+                 {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+            let expected_zeta = 0.0006 / 2.0;
+            for (i, mode) in modes.iter().enumerate() {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("{label}: mode {i} must be a Mode StructureInstance")
+                };
+                let Some(Value::Real(zeta)) = m.fields.get("damping_ratio") else {
+                    panic!("{label}: mode {i} damping_ratio must be a Real")
+                };
+                assert!(
+                    (zeta - expected_zeta).abs() / expected_zeta < 1e-9,
+                    "{label}: mode {i} ζ must be the MSE half alone, η/2 = \
+                     {expected_zeta} (the `extra` companion contributes 0); got \
+                     {zeta}"
+                );
+            }
+
+            // (ii) EXACTLY ONE coded Warning, NAMING the nested descriptor.
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "{label}: expected exactly one {CODE} Warning — zero means the \
+                 declared additive intent was dropped SILENTLY, which is the \
+                 INV-SF-3 shape this task exists to close; got {diagnostics:?}"
+            );
+            assert!(
+                coded[0].message.contains(expected_name),
+                "{label}: the warning must NAME the nested descriptor's runtime \
+                 type so the author can locate the dropped companion; got: {}",
+                coded[0].message
+            );
+        }
+
+        // ── THE SILENCE HALF. ───────────────────────────────────────────────
+        for (label, damping) in [
+            (
+                "extra: NoDamping (the stdlib default)",
+                Some(material_with_extra(struct_instance("NoDamping", vec![]))),
+            ),
+            (
+                "extra: RayleighDamping",
+                Some(material_with_extra(rayleigh_damping(0.0, 1e-4))),
+            ),
+            (
+                "bare MaterialDamping (no extra field)",
+                Some(struct_instance("MaterialDamping", vec![])),
+            ),
+            (
+                "top-level NoDamping",
+                Some(struct_instance("NoDamping", vec![])),
+            ),
+            ("top-level RayleighDamping", Some(rayleigh_damping(0.0, 1e-4))),
+            ("absent damping field", None),
+        ] {
+            let (modes, diagnostics) = solve(damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: must emit NO {CODE} diagnostic — the warning is a \
+                 signal only if the honourable cases are silent; got \
+                 {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
+    /// Amendment (reviewer suggestion 3): the FEA path must degrade LOUDLY for a
+    /// TOP-LEVEL descriptor it does not implement, not only for a nested one.
+    ///
+    /// `run_mechanism_modal` has warned here since #6875
+    /// (`W_MechanismModalUnsupportedDamping`), and step-12 above made the FEA
+    /// path warn for an unhonourable `MaterialDamping.extra`. That left the FEA
+    /// path mute for the TOP-level case alone — warning one level down while
+    /// staying silent one level up, which is both the INV-SF-3 shape and an
+    /// inconsistency with its own sibling producer. The numbers are unchanged
+    /// (ζ = 0, full modes list, no Error); only the silence is.
+    ///
+    /// A WARNING, not an Error, because the solve genuinely succeeds — the
+    /// frequencies are correct and only the damping intent is dropped. Same
+    /// family as `W_ModalDampingUnsupportedExtra` and
+    /// `W_MechanismModalUnsupportedDamping`; contrast
+    /// `E_ModalDampingMaterialNotDamped`, an Error because there the declared
+    /// intent cannot be honoured at all.
+    ///
+    /// The code is deliberately NOT a prefix of `W_ModalDampingUnsupportedExtra`
+    /// (and vice versa), so the `contains`-based assertions this file uses cannot
+    /// conflate the two altitudes; the silence half below asserts exactly that
+    /// separation in both directions.
+    #[test]
+    fn trampoline_warns_when_the_top_level_damping_descriptor_is_unsupported() {
+        const CODE: &str = "W_ModalDampingUnsupportedDescriptor";
+        const EXTRA_CODE: &str = "W_ModalDampingUnsupportedExtra";
+
+        /// Solve the shared damped fixture under `damping`, returning the modes
+        /// and diagnostics. `None` omits the field entirely (the `Absent` case).
+        fn solve(damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                damped_material(0.0006),
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        // ── THE WARNING. ────────────────────────────────────────────────────
+        let unsupported = struct_instance(
+            "HystereticDamping",
+            vec![("loss_factor".to_string(), Value::Real(0.02))],
+        );
+        let (modes, diagnostics) = solve(Some(unsupported));
+
+        // (i) The solve still SUCCEEDS — this is a degrade, not a failure.
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an unimplemented top-level descriptor must NOT abort the solve — \
+             the frequencies are correct and only the damping is dropped; got \
+             {diagnostics:?}"
+        );
+        assert!(!modes.is_empty(), "must still return a full modes list");
+
+        // (ii) EXACTLY ONE coded Warning, NAMING the offending descriptor.
+        let coded: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+            .collect();
+        assert_eq!(
+            coded.len(),
+            1,
+            "expected exactly one {CODE} Warning — zero means the FEA path \
+             dropped a declared damping descriptor SILENTLY (INV-SF-3), which \
+             is what its mechanism sibling has reported since #6875; got \
+             {diagnostics:?}"
+        );
+        assert!(
+            coded[0].message.contains("HystereticDamping"),
+            "the warning must NAME the offending descriptor's runtime type so \
+             the author can locate the dropped intent; got: {}",
+            coded[0].message
+        );
+
+        // (iii) The degrade is HONEST downstream: ζ really is 0 for every mode.
+        // Without this the warning could coexist with a partially-applied
+        // descriptor, which is a worse shape than either alone.
+        for (i, mode) in modes.iter().enumerate() {
+            let Value::StructureInstance(m) = mode else {
+                panic!("mode {i} must be a Mode StructureInstance")
+            };
+            assert_eq!(
+                m.fields.get("damping_ratio"),
+                Some(&Value::Real(0.0)),
+                "mode {i}: an unimplemented descriptor must report ζ = 0 \
+                 exactly — the warning is what makes that honest"
+            );
+        }
+
+        // (iv) The two altitudes must not be conflated: a TOP-level unsupported
+        // descriptor is not an `extra` one.
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains(EXTRA_CODE)),
+            "a top-level unsupported descriptor must NOT also emit \
+             {EXTRA_CODE}; got {diagnostics:?}"
+        );
+
+        // ── THE SILENCE HALF. ───────────────────────────────────────────────
+        // Without it the warning is noise. Note the `MaterialDamping { extra }`
+        // arm: it emits the EXTRA code and must not additionally emit this one,
+        // which is the other direction of the (iv) separation above.
+        for (label, damping) in [
+            (
+                "top-level NoDamping",
+                Some(struct_instance("NoDamping", vec![])),
+            ),
+            (
+                "top-level RayleighDamping",
+                Some(rayleigh_damping(0.0, 1e-4)),
+            ),
+            (
+                "top-level MaterialDamping",
+                Some(struct_instance("MaterialDamping", vec![])),
+            ),
+            (
+                "MaterialDamping with an unsupported extra",
+                Some(struct_instance(
+                    "MaterialDamping",
+                    vec![(
+                        "extra".to_string(),
+                        struct_instance("HystereticDamping", vec![]),
+                    )],
+                )),
+            ),
+            ("absent damping field", None),
+        ] {
+            let (modes, diagnostics) = solve(damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: must emit NO {CODE} diagnostic — the warning is a \
+                 signal only if the honourable and the one-level-down cases are \
+                 silent; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
+    /// Task #6878 (PRD leaf β) step-9(c): the in-crate twin of B8's loud coded
+    /// rejection, plus the boundary the author-surface e2e cannot reach.
+    ///
+    /// A `MaterialDamping` solve over a material that does not conform to
+    /// `trait Damped` must be a LOUD eval-time Error naming the material and the
+    /// fix — never modes carrying a silent `damping_ratio = 0` (PRD §C6,
+    /// INV-SF-2/SF-6).
+    ///
+    /// ## The boundary only this altitude can pin
+    ///
+    /// A material carrying `loss_factor = 0.0` is a CONFORMING, explicitly
+    /// UNDAMPED material and must be ACCEPTED (ζ = 0 + ζ_extra, no Error). That
+    /// is the case most likely to be wrongly folded into the rejection, since it
+    /// produces the same ζ as the rejected case; only [`extract_loss_factor`]'s
+    /// `Option` keeps them apart. The author-surface e2e cannot reach it without
+    /// a second `structure def`, so it is pinned here where the material value is
+    /// built by hand.
+    ///
+    /// ## INV-SF-2
+    ///
+    /// The clause asserting `Severity::Error` IS the nonzero-exit assertion:
+    /// `cmd_eval`'s severity gate turns any Error-severity diagnostic into a
+    /// process exit code of 1 — verified independently on this branch by
+    /// observing `reify eval` return 1 on an `E_ModalNoModesComputed` Error.
+    ///
+    /// RED before step-10: measured on this branch, this exact shape yields a
+    /// full modes list with ζ = 0 and zero diagnostics.
+    #[test]
+    fn trampoline_rejects_material_damping_over_a_non_damped_material() {
+        const CODE: &str = "E_ModalDampingMaterialNotDamped";
+
+        /// Solve with an arbitrary material value and damping descriptor.
+        /// `damping: None` omits the field entirely — the `Absent` case, which
+        /// is a distinct classification from an explicit `NoDamping()`.
+        fn solve(material: Value, damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                material,
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        // ── THE REJECTION. A material with a density (so the more fundamental
+        // E_ModalNoMassMatrix guard passes) but NO loss_factor. ──────────────
+        {
+            let (modes, diagnostics) = solve(
+                material_with_density(Some(STEEL_DENSITY)),
+                Some(struct_instance("MaterialDamping", vec![])),
+            );
+
+            let errors: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert_eq!(
+                errors.len(),
+                1,
+                "expected EXACTLY ONE Error-severity diagnostic — zero means the \
+                 silent ζ = 0 defect is live, more than one means the guard did \
+                 not short-circuit; got {diagnostics:?}"
+            );
+            let message = &errors[0].message;
+            assert!(
+                message.starts_with(CODE),
+                "the diagnostic must start with the message-prefix code `{CODE}`; \
+                 got: {message}"
+            );
+            // NAMES THE MATERIAL. `material_with_density`'s type_name is
+            // `ElasticMaterial`, which is what an author would see.
+            assert!(
+                message.contains("ElasticMaterial"),
+                "the diagnostic must name the offending material's runtime type \
+                 so the author can locate it; got: {message}"
+            );
+            // NAMES THE FIX.
+            for needle in ["DampedMaterial", "loss_factor"] {
+                assert!(
+                    message.contains(needle),
+                    "the diagnostic must name the fix — it must mention \
+                     `{needle}`; got: {message}"
+                );
+            }
+            // DEGENERATE RESULT, not modes carrying ζ = 0. B8's normative
+            // wording is "eval error naming the material; NOT damping_ratio = 0".
+            assert!(
+                modes.is_empty(),
+                "the rejection must return the DEGENERATE empty-modes result — a \
+                 consumer reading ModalResult without inspecting diagnostics \
+                 would otherwise be back in the silent-zero shape (PRD §C6); got \
+                 {} modes",
+                modes.len()
+            );
+        }
+
+        // ── THE BOUNDARY: η = 0.0 is a CONFORMER and must be ACCEPTED. ───────
+        {
+            let (modes, diagnostics) = solve(
+                damped_material(0.0),
+                Some(struct_instance(
+                    "MaterialDamping",
+                    vec![("extra".to_string(), rayleigh_damping(0.0, 1e-4))],
+                )),
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "a material declaring `loss_factor = 0.0` CONFORMS to `Damped` — \
+                 it is explicitly undamped, not non-conforming — and must NOT be \
+                 rejected; got {diagnostics:?}"
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "an explicitly-undamped conforming material is a VALID solve and \
+                 must produce no Error at all; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "an explicitly-undamped conforming material must still return a \
+                 full modes list — a guard that degenerates a valid solve is \
+                 worse than no guard"
+            );
+            // ζ = η/2 + ζ_extra = 0 + β·ω/2, i.e. the extra companion alone.
+            let Value::StructureInstance(m) = &modes[0] else {
+                panic!("mode 0 must be a Mode StructureInstance")
+            };
+            let Some(Value::Scalar { si_value: f, .. }) = m.fields.get("frequency") else {
+                panic!("mode 0 frequency must be a Scalar")
+            };
+            let expected = rayleigh_damping_ratio(0.0, 1e-4, 2.0 * std::f64::consts::PI * f);
+            assert!(expected > 0.0, "the fixture β must give a nonzero ζ_extra");
+            let Some(Value::Real(zeta)) = m.fields.get("damping_ratio") else {
+                panic!("mode 0 damping_ratio must be a Real")
+            };
+            assert!(
+                (zeta - expected).abs() / expected < 1e-9,
+                "with η = 0 the MSE half contributes exactly 0, so ζ must be the \
+                 `extra` companion alone: expected {expected}, got {zeta}"
+            );
+        }
+
+        // ── THE SILENCE HALF: the same non-conforming material is perfectly
+        // usable under every descriptor that does not need a loss factor. ────
+        for (label, damping) in [
+            ("NoDamping", Some(struct_instance("NoDamping", vec![]))),
+            ("RayleighDamping", Some(rayleigh_damping(0.0, 1e-4))),
+            ("absent", None),
+        ] {
+            let (modes, diagnostics) = solve(material_with_density(Some(STEEL_DENSITY)), damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: a material with no loss_factor is perfectly valid under \
+                 a descriptor that does not need one — the rejection must key on \
+                 the DESCRIPTOR as well as on conformance; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
+    /// Solve the shared #6878 CANTILEVER fixture (20 x 50 x 100 mm steel beam,
+    /// `FixedSupport(target: "x_min")`, `n_modes = 3`) built from a `Damped`
+    /// material of loss factor `eta`, under `damping`, returning `(f, ζ)` per mode.
+    ///
+    /// Shared by the step-7 additive-composition twin and the step-15 near-zero-band
+    /// pin's part (d), so the "the floor swallowed no flexible mode" check runs
+    /// against literally the same fixture the B5/B7 identities are asserted on
+    /// rather than a copy that could drift away from it.
+    ///
+    /// The `f > 1.0 Hz` physical-band guard is part of the fixture's contract: this
+    /// beam is fully constrained at x_min, so a 0 Hz mode here would mean the BCs
+    /// silently stopped being realized and would make every ζ identity vacuously
+    /// satisfiable at ζ = 0. The near-zero band is covered by the separate
+    /// UNCONSTRAINED fixture in
+    /// [`trampoline_floors_material_damping_for_rigid_body_modes`], which is a
+    /// different model, not a relaxation of this one.
+    fn solve_damped_cantilever(eta: f64, damping: Value) -> Vec<(f64, f64)> {
+        let value_inputs = vec![
+            damped_material(eta),
+            length_scalar(0.02),
+            length_scalar(0.05),
+            length_scalar(0.1),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                ("damping".to_string(), damping),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected a Completed outcome");
+        };
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "a well-formed damped solve must produce no Error diagnostics; \
+             got {diagnostics:?}",
+        );
+        let Value::StructureInstance(data) = &result else {
+            panic!("expected a ModalResult StructureInstance, got {result:?}")
+        };
+        let Some(Value::List(modes)) = data.fields.get("modes") else {
+            panic!("ModalResult.modes must be a List")
+        };
+        assert!(!modes.is_empty(), "a happy-path solve must return ≥ 1 mode");
+        modes
+            .iter()
+            .enumerate()
+            .map(|(i, mode)| {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("mode {i} must be a Mode StructureInstance")
+                };
+                let f = match m.fields.get("frequency") {
+                    Some(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                    other => {
+                        panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}")
+                    }
+                };
+                let zeta = match m.fields.get("damping_ratio") {
+                    Some(Value::Real(z)) => *z,
+                    other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+                };
+                // Physical-band guard: a 0 Hz rigid mode would make every ζ
+                // identity below vacuously satisfiable at ζ = 0.
+                assert!(
+                    f.is_finite() && f > 1.0,
+                    "mode {i} frequency {f} Hz must be finite and > 1 Hz"
+                );
+                (f, zeta)
+            })
+            .collect()
+    }
+
+    /// Task #6878 (PRD leaf β) step-7: the in-crate twin of the three author-
+    /// surface arms in
+    /// `crates/reify-eval/tests/harness_modal/modal_material_damping_e2e.rs`,
+    /// driving [`run_modal_analysis`] directly on hand-built `Value` inputs.
+    ///
+    /// Pinning the seam at BOTH altitudes is what makes a failure localise: if
+    /// this passes and the e2e fails, the defect is in the author surface
+    /// (stdlib declaration, ctor lowering, cell wiring); if both fail, it is in
+    /// the producer. The e2e cannot be replaced by this test — it is the only
+    /// thing that proves an author writing `damping: MaterialDamping()` reaches
+    /// this code at all — and this test cannot be replaced by the e2e, because
+    /// it runs in a fraction of the e2e's wall clock and so is the fast signal.
+    ///
+    /// The four arms share ONE geometry and ONE material, so the only thing that
+    /// varies between them is the descriptor:
+    ///   - `NoDamping`       → ζ == 0.0 exactly            (B4 regression)
+    ///   - `RayleighDamping` → ζ == β·ω/2                  (B4 regression)
+    ///   - `MaterialDamping` → ζ == η/2, mode-independent  (B5, RED before step-8)
+    ///   - `MaterialDamping{extra: Rayleigh}`
+    ///     → ζ == η/2 + β·ω/2                              (B7, RED before step-8)
+    ///
+    /// η comes from the fixture constant the material is BUILT from rather than
+    /// a transcribed literal, and ω is recomputed from the SAME f64 the producer
+    /// wrote into `Mode.frequency`, so 1e-9 relative is an fp-associativity
+    /// guard rather than a fitted tolerance — same discipline as the e2e.
+    ///
+    /// RED before step-8: measured on this branch, both MaterialDamping arms
+    /// yield ζ = 0 for every mode with zero diagnostics.
+    #[test]
+    fn trampoline_composes_material_damping_additively_with_extra() {
+        const ETA: f64 = 0.0006;
+        const BETA: f64 = 1e-4;
+
+        // The fixture solve is a module-level helper so step-15's part (d)
+        // runs against THIS fixture rather than a copy of it.
+        let solve = |damping: Value| solve_damped_cantilever(ETA, damping);
+
+        let rayleigh = || rayleigh_damping(0.0, BETA);
+        let none = solve(struct_instance("NoDamping", vec![]));
+        let rayl = solve(rayleigh());
+        let mat = solve(struct_instance("MaterialDamping", vec![]));
+        let both = solve(struct_instance(
+            "MaterialDamping",
+            vec![("extra".to_string(), rayleigh())],
+        ));
+
+        assert_eq!(
+            none.len(),
+            mat.len(),
+            "every arm must return the same mode count — they differ only in \
+             the damping descriptor, which is applied after the eigensolve"
+        );
+
+        let zeta_material = ETA / 2.0;
+        for (i, (&(f_none, z_none), &(f_mat, z_mat))) in none.iter().zip(mat.iter()).enumerate() {
+            let (f_rayl, z_rayl) = rayl[i];
+            let (f_both, z_both) = both[i];
+
+            // ── B4 (regression, green from the start) ───────────────────────
+            assert_eq!(
+                z_none, 0.0,
+                "mode {i}: NoDamping must give ζ exactly 0.0, got {z_none}"
+            );
+            let omega = 2.0 * std::f64::consts::PI * f_rayl;
+            let zeta_extra = rayleigh_damping_ratio(0.0, BETA, omega);
+            assert!(
+                zeta_extra > 0.0,
+                "mode {i}: the fixture β must give a nonzero Rayleigh ζ"
+            );
+            assert!(
+                (z_rayl - zeta_extra).abs() / zeta_extra < 1e-9,
+                "mode {i}: RayleighDamping ζ {z_rayl} must equal the closed form \
+                 {zeta_extra} — #6878 must not perturb the pre-existing path"
+            );
+            // Damping is applied after the eigensolve, so it must not move a
+            // single frequency bit on ANY arm.
+            for (label, f) in [("rayl", f_rayl), ("mat", f_mat), ("both", f_both)] {
+                assert_eq!(
+                    f, f_none,
+                    "mode {i}: the `{label}` arm's frequency must be BIT-FOR-BIT \
+                     equal to the undamped one — damping never touches the \
+                     eigensolve, and the assembly cache key deliberately \
+                     excludes it"
+                );
+            }
+
+            // ── B5: ζ = η/2 exactly, and mode-INDEPENDENT ───────────────────
+            assert!(
+                z_mat > 0.0,
+                "mode {i}: MaterialDamping must give a POSITIVE ζ (expected \
+                 η/2 = {zeta_material}), got {z_mat}. Exactly 0 means the \
+                 producer silently dropped the descriptor (INV-SF-3)"
+            );
+            assert!(
+                (z_mat - zeta_material).abs() / zeta_material < 1e-9,
+                "mode {i}: MaterialDamping ζ {z_mat} must equal η/2 = \
+                 {zeta_material}. With ONE material the modal-strain-energy \
+                 ratio is ≡ 1 for any mode shape (PRD §C5), so this is an \
+                 algebraic identity, not a converged value"
+            );
+            assert_eq!(
+                z_mat, mat[0].1,
+                "mode {i}: ζ_material must be MODE-INDEPENDENT — the degenerate \
+                 energy ratio is 1 for every φ, so all modes must agree \
+                 bit-for-bit"
+            );
+
+            // ── B7: additive composition, two independent statements ────────
+            let expected = zeta_material + zeta_extra;
+            assert!(
+                (z_both - expected).abs() / expected < 1e-9,
+                "mode {i}: MaterialDamping(extra: Rayleigh) ζ {z_both} must \
+                 equal η/2 + ζ_extra = {zeta_material} + {zeta_extra} = \
+                 {expected}"
+            );
+            let delta = z_both - z_mat;
+            assert!(
+                (delta - z_rayl).abs() / z_rayl < 1e-9,
+                "mode {i}: composition must be ADDITIVE — ζ_both − ζ_mat = \
+                 {delta} must equal the standalone ζ_rayl = {z_rayl}. This claim \
+                 is independent of either closed form"
+            );
+        }
+    }
+
+    /// Task #6878 (PRD leaf β) step-15: producer-altitude coverage for the
+    /// NEAR-ZERO-ω band under `MaterialDamping` — the arm every other fixture in
+    /// this suite structurally excludes, because both the in-crate step-7 twin
+    /// and its e2e counterpart assert `f > 1.0 Hz` in a physical-band guard.
+    ///
+    /// MEASURED on this machine (42 modes requested and emitted, bare
+    /// `MaterialDamping()` over a `Damped` steel with η = 0.0006 ⇒ η/2 = 3e-4):
+    ///
+    /// ```text
+    ///   modes 0–3   f == 0.0 EXACTLY (the λ ≤ 0 clamp)   → ζ = 0
+    ///   mode  4     f = 9.500896147742872e-4 Hz          → ζ = 3e-4
+    ///   mode  5     f = 1.4744505133453335e-3 Hz         → ζ = 3e-4
+    ///   modes 6–41  f = 1.676e4 … 1.222e5 Hz (flexible)  → ζ = 3e-4
+    ///   6 × W_ModalRigidBodyMode (modes 0–5), no Error
+    /// ```
+    ///
+    /// FOUR modes land at exactly `f == 0.0`, so the reviewer's case is pinned
+    /// here end-to-end and not only at helper altitude — assertion (c) below
+    /// asserts ζ == 0.0 on each of them by index. Their COUNT is deliberately
+    /// not asserted: the sign of a rigid-body eigenvalue is numerical noise and
+    /// not architecture-stable, so only their EXISTENCE and their ζ are pinned.
+    ///
+    /// Modes 4 and 5 are the reason the two near-zero thresholds must not be
+    /// conflated: `is_rigid_body_mode(ω, 1.0)` flags them (ω ≈ 6e-3 / 9e-3 rad/s,
+    /// hence six warnings), but both sit far ABOVE `MIN_OMEGA_FOR_DAMPING = 1e-9`,
+    /// so they correctly receive the full η/2. The floor is a singularity guard,
+    /// not the rigid-body *diagnostic* tolerance.
+    ///
+    /// The expectation is written OUT LONGHAND rather than by calling
+    /// `total_damping_ratio`: routing the assertion through the same helper the
+    /// producer calls would make it a tautology that a producer re-inlining
+    /// `zeta_material + rayleigh_damping_ratio(..)` — the step-8 defect — would
+    /// still pass.
+    ///
+    /// Discrimination CHECKED, not assumed: reverting [`run_modal_analysis`]'s
+    /// per-mode `total_damping_ratio(..)` call to the step-8
+    /// `plan.zeta_material + rayleigh_damping_ratio(..)` form makes this test
+    /// RED at mode 0, so it genuinely pins the floor rather than passing on both
+    /// sides of the fix. (The revert was local and is not committed.)
+    #[test]
+    fn trampoline_floors_material_damping_for_rigid_body_modes() {
+        const ETA: f64 = 0.0006;
+
+        // UNCONSTRAINED (empty BCs) — a free 3-D body admits six rigid-body
+        // modes (ω ≈ 0). Recipe lifted from
+        // `solve_modal_core_flags_rigid_body_modes_when_unconstrained`, which
+        // measures that it exposes them: n_modes ≥ n_free/2 forces the dense
+        // generalized regime, which handles the singular `K_free` without the
+        // shift-invert Cholesky panic.
+        let (length, width, height) = (0.02_f64, 0.05_f64, 0.1_f64);
+        let n_free = 3 * build_beam_mesh(length, width, height).nodes.len();
+
+        let value_inputs = vec![
+            damped_material(ETA),
+            length_scalar(length),
+            length_scalar(width),
+            length_scalar(height),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int((n_free / 2) as i64)),
+                // Empty — the whole point of the fixture.
+                ("boundary_conditions".to_string(), Value::List(vec![])),
+                (
+                    "damping".to_string(),
+                    struct_instance("MaterialDamping", vec![]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected a Completed outcome");
+        };
+
+        // Extend the step-9 silence arm onto this fixture: the material CONFORMS
+        // to `Damped` and the `extra` is the `NoDamping()` default, so the new
+        // floor path must not smuggle in either coded diagnostic. Only
+        // `W_ModalRigidBodyMode` is expected here.
+        for code in [
+            "E_ModalDampingMaterialNotDamped",
+            "W_ModalDampingUnsupportedExtra",
+        ] {
+            assert!(
+                !diagnostics.iter().any(|d| d.message.starts_with(code)),
+                "unconstrained MaterialDamping solve over a conforming material \
+                 must not emit {code}; got {diagnostics:?}"
+            );
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an unconstrained solve is a WARNING condition, not an Error; \
+             got {diagnostics:?}"
+        );
+
+        let Value::StructureInstance(data) = &result else {
+            panic!("expected a ModalResult StructureInstance, got {result:?}")
+        };
+        let Some(Value::List(modes)) = data.fields.get("modes") else {
+            panic!("ModalResult.modes must be a List")
+        };
+        assert!(!modes.is_empty(), "the solve must return ≥ 1 mode");
+
+        let per_mode: Vec<(f64, f64)> = modes
+            .iter()
+            .enumerate()
+            .map(|(i, mode)| {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("mode {i} must be a Mode StructureInstance")
+                };
+                let f = match m.fields.get("frequency") {
+                    Some(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                    other => panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}"),
+                };
+                let zeta = match m.fields.get("damping_ratio") {
+                    Some(Value::Real(z)) => *z,
+                    other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+                };
+                (f, zeta)
+            })
+            .collect();
+
+        // (a) THE INVARIANT, over EVERY emitted mode. Longhand on purpose.
+        let omega_of = |f: f64| 2.0 * std::f64::consts::PI * f;
+        for (i, &(f, zeta)) in per_mode.iter().enumerate() {
+            let omega = omega_of(f);
+            // Bare `MaterialDamping()` ⇒ (α, β) = (0, 0), so the Rayleigh half is
+            // written out with its own zero coefficients rather than dropped —
+            // the shape of the composed formula is part of what is being pinned.
+            let expected = if omega.abs() <= 1e-9 {
+                0.0
+            } else {
+                ETA / 2.0 + (0.0 + 0.0 * omega * omega) / (2.0 * omega)
+            };
+            if expected == 0.0 {
+                assert_eq!(
+                    zeta, 0.0,
+                    "mode {i} (f = {f} Hz, ω = {omega}) is under the ω-floor: it \
+                     stores no strain energy, so the modal-strain-energy ratio is \
+                     0/0 — UNDEFINED, not 1 — and ζ must be exactly 0, not η/2"
+                );
+            } else {
+                assert!(
+                    (zeta - expected).abs() / expected < 1e-9,
+                    "mode {i} (f = {f} Hz) is above the ω-floor: ζ {zeta} must \
+                     equal η/2 = {expected}"
+                );
+            }
+        }
+
+        // (b) NON-VACUITY of the near-zero regime. Without this a future change
+        // that quietly stops returning rigid modes would leave (a) silently
+        // passing over a purely flexible spectrum. 1.0 rad/s is the sibling
+        // test's measured tolerance, sitting in the gap between the rigid modes
+        // and the first flexible one.
+        let rigid_count = per_mode
+            .iter()
+            .filter(|&&(f, _)| is_rigid_body_mode(omega_of(f), 1.0))
+            .count();
+        assert!(
+            rigid_count >= 1,
+            "fixture must expose ≥1 near-zero mode or (a) is vacuous; got {rigid_count}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalRigidBodyMode")),
+            "the fixture must be the under-constrained one it claims to be; \
+             got {diagnostics:?}"
+        );
+
+        // (c) The reviewer's EXACT case, observed at producer altitude: a mode
+        // whose frequency is exactly 0.0 (the `eigenvalue_to_frequency_hz`
+        // λ ≤ 0 clamp) reports ζ = 0, not η/2. Measured: four such modes here.
+        // Their COUNT is numerical noise (the sign of a rigid-body eigenvalue is
+        // not architecture-stable), so only their EXISTENCE and their ζ are
+        // asserted — never how many there are.
+        let exact_zero: Vec<usize> = per_mode
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(f, _))| f == 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !exact_zero.is_empty(),
+            "expected ≥1 mode at exactly f == 0.0 on this fixture (measured: 4); \
+             got {per_mode:?}"
+        );
+        for &i in &exact_zero {
+            assert_eq!(
+                per_mode[i].1,
+                0.0,
+                "mode {i} has f == 0.0 exactly — ζ must be exactly 0.0"
+            );
+        }
+
+        // (d) The PHYSICAL BAND is UNAFFECTED — the floor swallowed no flexible
+        // mode. Same helper, so this runs against literally the step-7 fixture.
+        let cantilever = solve_damped_cantilever(ETA, struct_instance("MaterialDamping", vec![]));
+        assert!(!cantilever.is_empty(), "the cantilever fixture must return modes");
+        for (i, &(f, zeta)) in cantilever.iter().enumerate() {
+            assert!(
+                (zeta - ETA / 2.0).abs() / (ETA / 2.0) < 1e-9,
+                "constrained mode {i} (f = {f} Hz) must still get exactly η/2 = \
+                 {}; got {zeta}",
+                ETA / 2.0
+            );
+        }
     }
 
     /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
@@ -8726,19 +10508,38 @@ mod tests {
     /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised
     /// `DampingDescriptor` refinement must be reported, never silently zeroed.
     ///
-    /// `extract_damping` discriminates on the runtime `type_name` and returns
-    /// `(0.0, 0.0)` for *anything* that is not `RayleighDamping` — correct for
-    /// `NoDamping` (genuinely undamped) but silently wrong for a descriptor the
-    /// trampoline simply does not implement. The damped-modal-bonded-
-    /// heterogeneous capability manifest (`docs/prds/v0_6/`, §β) names the next
-    /// one: `MaterialDamping`. Routing the mechanism path through
-    /// `extract_damping` alone would reproduce the INV-SF-3 silent-failure
-    /// shape one descriptor later, so the seam is split: `classify_damping`
-    /// carries an explicit `Unsupported(type_name)` classification that the
-    /// producer turns into a coded warning.
+    /// The original `(α, β)`-only read discriminated on the runtime `type_name`
+    /// and returned `(0.0, 0.0)` for *anything* that is not `RayleighDamping` —
+    /// correct for `NoDamping` (genuinely undamped) but silently wrong for a
+    /// descriptor the trampoline simply does not implement. Routing the
+    /// mechanism path through that lossy view alone would reproduce the
+    /// INV-SF-3 silent-failure shape one descriptor later, so the seam was
+    /// split: `classify_damping` carries an explicit `Unsupported(type_name)`
+    /// classification that the producer turns into a coded warning. (The lossy
+    /// view itself, `extract_damping`, was deleted by the #6878 amendment pass
+    /// once no production caller remained.)
     ///
     /// Case B is what makes the warning a signal rather than noise: the
-    /// supported descriptors must stay completely silent.
+    /// supported descriptors must stay completely silent. Case D covers the
+    /// `DampingKind::Material` arm, which is UNDEFINED rather than merely
+    /// unimplemented on this path and must not partially apply its `extra`
+    /// companion.
+    ///
+    /// FIXTURE RETARGETED, task #6878. This test originally used the literal
+    /// `"MaterialDamping"` as its stand-in for an unimplemented descriptor,
+    /// because the damped-modal-bonded-heterogeneous capability manifest
+    /// (`docs/prds/v0_6/`, §β) named it as the next one to land. #6878 LANDED
+    /// it: `classify_damping` now has a `MaterialDamping` arm, so that literal
+    /// would classify as `Material` and this test would go red on Case A and
+    /// Case C — not because the fallthrough broke, but because the fixture
+    /// stopped being a fallthrough. The type_name is therefore now
+    /// `"HystereticDamping"`, which stays genuinely unimplemented. Every
+    /// assertion and the test's purpose are unchanged: it pins the
+    /// `Unsupported` fallthrough and the `W_MechanismModalUnsupportedDamping`
+    /// warning, and both survive #6878 intact (the mechanism path's
+    /// `Material` arm deliberately keeps emitting that same warning — see
+    /// [`run_mechanism_modal`]). A future task that implements
+    /// `HystereticDamping` must retarget this fixture again, not delete it.
     #[test]
     fn mechanism_modal_warns_on_unsupported_damping_descriptor() {
         /// Drive the trampoline, asserting a Completed outcome, and return the
@@ -8771,7 +10572,7 @@ mod tests {
         // ── Case A: a descriptor this trampoline does not implement ──────────
         {
             let unsupported = struct_instance(
-                "MaterialDamping",
+                "HystereticDamping",
                 vec![("loss_factor".to_string(), Value::Real(0.02))],
             );
             let options = modal_options(vec![("damping".to_string(), unsupported.clone())]);
@@ -8800,7 +10601,7 @@ mod tests {
             // offending descriptor's runtime type name appears in the message
             // (mirroring the body-index naming in W_MechanismModalRotationalDOF).
             assert!(
-                coded[0].message.contains("MaterialDamping"),
+                coded[0].message.contains("HystereticDamping"),
                 "Case A: the warning must name the offending descriptor type so \
                  the author can locate the dropped intent; got: {}",
                 coded[0].message,
@@ -8905,12 +10706,12 @@ mod tests {
             match classify_damping(&modal_options(vec![(
                 "damping".to_string(),
                 struct_instance(
-                    "MaterialDamping",
+                    "HystereticDamping",
                     vec![("loss_factor".to_string(), Value::Real(0.02))],
                 ),
             )])) {
                 DampingKind::Unsupported(type_name) => assert_eq!(
-                    type_name, "MaterialDamping",
+                    type_name, "HystereticDamping",
                     "Case C: Unsupported must carry the offending runtime \
                      type_name so the producer can name it in a diagnostic"
                 ),
@@ -8920,35 +10721,152 @@ mod tests {
                 ),
             }
 
-            // The FEA seam must be bit-for-bit unchanged: `extract_damping` is
-            // re-expressed on the classifier, so re-assert exactly the inputs
-            // the landed `extract_damping_discriminates_rayleigh_from_none`
-            // covers (that test is not modified).
+            // The FEA seam must be bit-for-bit unchanged — asserted at the
+            // PRODUCTION altitude. This block previously pinned the test-only
+            // `extract_damping` view; the #6878 amendment pass deleted that
+            // helper (a `#[cfg(test)]` fn is compiled out of the shipped build,
+            // so a "seam unchanged" claim written against it is a claim about
+            // test-only code). `plan_modal_damping` is what `run_modal_analysis`
+            // actually consumes, so the same four inputs are re-asserted there:
+            // every pre-#6878 descriptor must plan to ζ_material = 0 with
+            // exactly the (α, β) the classifier carried, and silently.
+            //
+            // The material argument is passed as `Value::Undef` on purpose: none
+            // of these four descriptors reads it, so this also pins that a
+            // non-`MaterialDamping` solve never rejects on the material.
+            let plan_of = |options: Value| match plan_modal_damping(&options, &Value::Undef) {
+                Ok((plan, diagnostics)) => {
+                    assert!(
+                        diagnostics.is_empty(),
+                        "Case C: a pre-#6878 descriptor must plan silently; \
+                         got {diagnostics:?}"
+                    );
+                    plan
+                }
+                Err(_) => panic!(
+                    "Case C: a pre-#6878 descriptor must never be rejected, \
+                     whatever the material"
+                ),
+            };
             assert_eq!(
-                extract_damping(&modal_options(vec![(
+                plan_of(modal_options(vec![(
                     "damping".to_string(),
                     rayleigh_damping(0.5, 1e-6),
                 )])),
-                (0.5, 1e-6),
-                "Case C: extract_damping must still return the Rayleigh pair"
+                ModalDampingPlan {
+                    zeta_material: 0.0,
+                    alpha: 0.5,
+                    beta: 1e-6,
+                },
+                "Case C: RayleighDamping must still plan to its (α, β) with no \
+                 material term"
             );
             assert_eq!(
-                extract_damping(&modal_options(vec![(
+                plan_of(modal_options(vec![(
                     "damping".to_string(),
                     struct_instance("NoDamping", vec![]),
                 )])),
-                (0.0, 0.0),
-                "Case C: extract_damping must still flatten NoDamping to (0, 0)"
+                UNDAMPED_PLAN,
+                "Case C: NoDamping must still plan to the undamped triple"
             );
             assert_eq!(
-                extract_damping(&modal_options(vec![])),
-                (0.0, 0.0),
-                "Case C: extract_damping must still flatten an absent field to (0, 0)"
+                plan_of(modal_options(vec![])),
+                UNDAMPED_PLAN,
+                "Case C: an absent damping field must still plan to the \
+                 undamped triple"
             );
             assert_eq!(
-                extract_damping(&Value::Undef),
-                (0.0, 0.0),
-                "Case C: extract_damping must still flatten a non-struct to (0, 0)"
+                plan_of(Value::Undef),
+                UNDAMPED_PLAN,
+                "Case C: a non-struct options value must still plan to the \
+                 undamped triple"
+            );
+        }
+
+        // ── Case D: `MaterialDamping` on the mechanism path ──────────────────
+        // Added in the #6878 amendment pass. Case A's fixture was retargeted
+        // off the literal "MaterialDamping" (see the doc comment above), which
+        // removed the only value in the repo that reached
+        // `run_mechanism_modal`'s `DampingKind::Material` arm — leaving that
+        // arm's warning body and its `(0.0, 0.0)` return untested, on the very
+        // producer whose loud-degrade contract this test exists to pin.
+        //
+        // The declared `extra` companion is a RayleighDamping the mechanism path
+        // could evaluate perfectly well. Not applying it is the arm's stated
+        // contract: reporting PART of a declared additive total while looking
+        // like a successful solve is a strictly worse silent-failure shape than
+        // reporting 0 under a loud warning. Clause (iii) is what pins that
+        // choice — it would fail if a future edit "helpfully" honoured `extra`.
+        {
+            let material_damping = struct_instance(
+                "MaterialDamping",
+                vec![("extra".to_string(), rayleigh_damping(0.0, 1e-4))],
+            );
+            let options = modal_options(vec![("damping".to_string(), material_damping.clone())]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let (data, diagnostics) = run(mech, options);
+
+            // (i) A descriptor that is UNDEFINED here — a lumped model has no
+            // elements and so no modal strain energy to weight — still must not
+            // abort the solve. The frequencies are unaffected by damping.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "Case D: MaterialDamping must degrade with a Warning, not an \
+                 Error — the eigensolve itself is unaffected; got {diagnostics:?}",
+            );
+
+            // (ii) EXACTLY ONE coded Warning, naming the descriptor. Same code
+            // as Case A: from the author's seat both are "this path does not
+            // implement your descriptor", so they are deliberately one family
+            // rather than two codes to learn.
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "Case D: expected exactly one {CODE} Warning; got {diagnostics:?}",
+            );
+            assert!(
+                coded[0].message.contains("MaterialDamping"),
+                "Case D: the warning must name the offending descriptor type; \
+                 got: {}",
+                coded[0].message,
+            );
+
+            // (iii) THE CONTRACT: the declared `extra` companion is deliberately
+            // NOT partially applied. Every ζ is exactly 0, not the β·ω/2 the
+            // companion alone would give.
+            let modes = match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("Case D: modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "Case D: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let m = match mode {
+                    Value::StructureInstance(d) => d,
+                    other => panic!("Case D: modes[{i}] must be a Mode; got {other:?}"),
+                };
+                assert_eq!(
+                    m.fields.get("damping_ratio"),
+                    Some(&Value::Real(0.0)),
+                    "Case D: mode {i} must report ζ = 0 EXACTLY. The declared \
+                     `extra: RayleighDamping(β = 1e-4)` is honourable on this \
+                     path in isolation, so a nonzero ζ here means the arm \
+                     partially applied a declared additive total — reporting \
+                     half an intent under the guise of a successful solve.",
+                );
+            }
+
+            // (iv) The descriptor is echoed back verbatim, never swallowed —
+            // the warning tells the author it was dropped, and the echo lets
+            // them confirm what the solver actually saw.
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&material_damping),
+                "Case D: ModalResult.damping must echo the MaterialDamping \
+                 descriptor verbatim, including its `extra` companion"
             );
         }
     }

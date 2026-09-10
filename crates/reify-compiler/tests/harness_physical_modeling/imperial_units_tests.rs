@@ -4,9 +4,8 @@
 //! plus regression guards for the four pre-existing imperial units
 //! (ft, thou, lb, oz) and a cross-unit arithmetic check (lbf * mm → Energy).
 
-mod common;
 
-use common::{
+use crate::common::{
     assert_eq_rel, assert_simple_unit, compile_with_stdlib_helper, stdlib_param_si_value,
     units_module,
 };

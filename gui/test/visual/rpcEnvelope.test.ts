@@ -219,6 +219,35 @@ describe("normalizeRpcEnvelope — the two failure dialects folded into one shap
     expect(normalizeRpcEnvelope({})).toEqual({ payload: null });
   });
 
+  it("falls THROUGH branch 3 when a §2d image envelope carries trailing diagnostics", () => {
+    // The one #5891 image shape that is NOT null, and the counterpart of the
+    // image-only case above: an `element_screenshot` that matched more than one
+    // element appends a pane-diagnostics text block AFTER the image, with no
+    // `isError` flag (docs/debug-mcp-contract.md §2d). Branch 3 SEARCHES for a
+    // text block rather than indexing content[0], so the image cannot shadow it
+    // and the envelope falls through to branch 4 — a driver gets the diagnostics
+    // instead of "nothing to interpret". That is what makes the trailing block
+    // free on this side: no branch changed for #5891.
+    //
+    // The sibling decoder disagrees ON PURPOSE. The rationale is NOT restated
+    // here — docs/debug-mcp-contract.md §2 "JS-side decoders" → "The §2d
+    // divergence — canonical statement" is its single home. Both verdicts are
+    // pinned side by side in ./rpc.test.ts case 4b; do not reconcile them.
+    const { transportError, payload } = normalizeRpcEnvelope({
+      result: {
+        content: [
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { type: "text", text: '{"viewportId":"design-main","matchCount":2}' },
+        ],
+      },
+    });
+    expect(transportError).toBeUndefined();
+    expect(payload).toEqual({ viewportId: "design-main", matchCount: 2 });
+    // And it is an ANSWER, not an outage: §2d's trailing block never carries a
+    // top-level string `error`, so a driver's isInBandError gate lets it through.
+    expect(isInBandError(payload)).toBe(false);
+  });
+
   // ─── Branches 4 & 5: the text payload ─────────────────────────────────────
   it("leaves a frontend in-band error untouched for isInBandError to catch", () => {
     // viewport_state (via query_frontend) already speaks this dialect natively;

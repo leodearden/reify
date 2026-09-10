@@ -23,9 +23,9 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-const COUPLING_MOTIONVALUE_OK: &str = include_str!("fixtures/coupling_motionvalue_ok.ri");
+const COUPLING_MOTIONVALUE_OK: &str = include_str!("../fixtures/coupling_motionvalue_ok.ri");
 const COUPLING_MOTIONVALUE_MISMATCH: &str =
-    include_str!("fixtures/coupling_motionvalue_mismatch.ri");
+    include_str!("../fixtures/coupling_motionvalue_mismatch.ri");
 
 // ── PRODUCER: Coupling<P>::MotionValue reduces to concrete types ────────────
 

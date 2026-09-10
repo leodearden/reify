@@ -8,7 +8,7 @@
 //! These are RED tests for step-1. They fail until step-2 adds the declaration.
 
 use reify_compiler::*;
-use reify_core::{DiagnosticCode, Severity, Type};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -509,5 +509,100 @@ structure FEABodyCantilever {
         "expected zero Error diagnostics for the body-arg solve_elastic_static call \
          (must resolve to the arity-5 `body : Solid` overload); got {:?}",
         errors
+    );
+}
+
+/// End-to-end acceptance for task #6577: `von_mises(result.stress)` — the
+/// explicit spelling of the FEA peak-stress predicate — must type as a
+/// `Field<Point3<Length>, Scalar<Pressure>>`, so `max(...)` reduces it to
+/// `Scalar<Pressure>` and comparing it against a `Pressure` param no longer
+/// emits `DiagnosticCode::DimensionMismatch`.
+///
+/// RED before the `Type::Field` arm in `analysis_signatures::analysis_fn_result_type`:
+/// `tensor_quantity` matches only `Type::Tensor`/`Type::Matrix`, so a `Type::Field`
+/// arg falls to its `_` arm → `DIMENSIONLESS`, `von_mises(r.stress)` types as
+/// `Real`, and the constraint reports
+/// `dimension mismatch in comparison: Real vs Scalar[kg·m^-1·s^-2]`.
+///
+/// The `vm` / `peak` type assertions are what make this test resistant to being
+/// "fixed" by the WRONG implementation: recursing `tensor_quantity` into the
+/// Field codomain would also silence the DimensionMismatch, but would type
+/// `vm` as a bare `Scalar<Pressure>` while eval hands back a `Value::Field`
+/// (`crates/reify-expr/src/analysis.rs:132-157`) — a kind lie that
+/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) rejects.
+#[test]
+fn von_mises_over_solver_stress_field_types_as_pressure_field() {
+    let src = r#"
+structure StressPredicateProbe {
+    param yield_limit : Pressure = 250MPa
+    let r = solve_elastic_static(
+        Steel_AISI_1045(), 1000mm, 100mm, 100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+    let vm = von_mises(r.stress)
+    let peak = max(von_mises(r.stress))
+    constraint max(von_mises(r.stress)) < yield_limit
+}
+"#;
+    let module = reify_test_support::compile_source_with_stdlib(src);
+
+    // (a) No DimensionMismatch Error — the ticket's reported symptom.
+    let dim_mismatches: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionMismatch)
+        })
+        .collect();
+    assert!(
+        dim_mismatches.is_empty(),
+        "von_mises(result.stress) compared against a Pressure param must not emit \
+         DimensionMismatch; got {:?}",
+        dim_mismatches
+    );
+
+    // (b) Zero Error diagnostics overall.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for the explicit von_mises(.stress) predicate, \
+         got {:?}",
+        errors
+    );
+
+    // (c) The producer half: `von_mises` over the solver's stress field keeps the
+    // Field kind (mirroring eval's `Value::Field`) with a Pressure codomain.
+    let vm = reify_test_support::get_let_expr(&module, "vm");
+    assert_eq!(
+        vm.result_type,
+        Type::Field {
+            domain: Box::new(Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+            codomain: Box::new(Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            }),
+        },
+        "von_mises(r.stress) must type as Field<Point3<Length>, Scalar<Pressure>> \
+         (NOT a bare Scalar — eval returns a lazy Value::Field), got {:?}",
+        vm.result_type
+    );
+
+    // (d) The consumer half (pre-existing W1 `max` Field-reduce arm, unchanged):
+    // `max` over that field collapses to a Pressure scalar.
+    let peak = reify_test_support::get_let_expr(&module, "peak");
+    assert_eq!(
+        peak.result_type,
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(von_mises(r.stress)) must reduce the field codomain to Scalar<Pressure>, got {:?}",
+        peak.result_type
     );
 }

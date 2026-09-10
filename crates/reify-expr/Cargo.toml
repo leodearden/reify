@@ -20,6 +20,10 @@ reify-fdm.workspace = true
 reify-ast.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
-reify-test-support.workspace = true
+# `containment-doubles` (not `eval-helpers`) — the fine-grained feature that
+# supplies `MockContainmentQuery` without pulling reify-eval (which
+# normal-deps reify-expr) into reify-expr's own test graph. Task #6322,
+# follow-up to #6216.
+reify-test-support = { workspace = true, features = ["containment-doubles"] }
 reify-syntax.workspace = true
 reify-compiler.workspace = true

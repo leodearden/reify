@@ -53,10 +53,11 @@ enum OrphanAudit {
     EnvUnavailable(&'static str),
 }
 
-/// Crate names excluded from the orphan-producer audit — a Rust copy of
-/// `scripts/audit-orphan-producers.sh:92`'s `EXCLUDE_CRATES = {...}` set
-/// literal (the source of truth; this copy exists because the script cannot
-/// be consulted at Rust compile/run time without a python round-trip).
+/// Crate names excluded from the orphan-producer audit — a Rust copy of the
+/// `EXCLUDE_CRATES = {...}` set literal declared in
+/// `scripts/audit-orphan-producers.sh` (the source of truth; this copy exists
+/// because the script cannot be consulted at Rust compile/run time without a
+/// python round-trip).
 ///
 /// Pinned against the script by
 /// `exclude_crates_const_matches_audit_script_declaration`: a divergence
@@ -772,7 +773,8 @@ mod tests {
     /// Pins ONLY the set's *contents* — NOT [`scope_is_excluded_crate`]'s
     /// matching *rule*. The script's own `discover_sources` excludes a
     /// matched directory or file when ANY of its path segments is a member
-    /// of `EXCLUDE_CRATES` (`audit-orphan-producers.sh:126,132`);
+    /// of `EXCLUDE_CRATES` (two membership tests: one over the matched
+    /// directory's `parts`, one over each `.rs` file's `rs_parts`);
     /// `scope_is_excluded_crate` only inspects the single segment
     /// immediately after `crates`. The two sides can therefore disagree for
     /// a scope shaped differently from every one of this workspace's 9

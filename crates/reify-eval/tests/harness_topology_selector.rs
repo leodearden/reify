@@ -15,6 +15,8 @@
 //! charged to every unit that compiles a copy of it, which had put this harness at 21470
 //! lines, over CAP_LINES = 20000; rule (a)'s remedy is a split, not a cap bump. This unit is
 //! now 16786 lines with no out-of-module-dir include at all.
+#[path = "harness_topology_selector/rounded_box_curated_fillet_e2e.rs"]
+mod rounded_box_curated_fillet_e2e;
 #[path = "harness_topology_selector/selector_boundary_gate.rs"]
 mod selector_boundary_gate;
 #[path = "harness_topology_selector/selector_coercion_golden.rs"]

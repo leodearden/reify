@@ -12,6 +12,8 @@
 //! `binary(…)`/`test(=…)` selector naming a former id must be updated; verify.sh's failed-only
 //! retry is unaffected — it derives `test(=…)` at run time from its own attempt-0 and refuses
 //! on tree drift (see `scripts/verify.sh` retry_failed_only).
+#[path = "harness_geometry/dimensionless_sub_pose_diagnostic_e2e.rs"]
+mod dimensionless_sub_pose_diagnostic_e2e;
 #[path = "harness_geometry/geometry_conditional_e2e.rs"]
 mod geometry_conditional_e2e;
 #[path = "harness_geometry/geometry_dispatch_registry_guard.rs"]
