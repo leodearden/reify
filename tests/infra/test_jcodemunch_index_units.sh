@@ -9,6 +9,7 @@
 #
 # Blocks:
 #   A — tracked service unit (deploy/systemd/reify-jcodemunch-index.service)
+#   B — tracked timer unit   (deploy/systemd/reify-jcodemunch-index.timer)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -156,5 +157,71 @@ assert "A8: ExecStart target exists and is executable (resolved against this rep
         [ "$rel" != "$abs" ] || exit 1
         test -x "$2/$rel"
     ' _ "$SERVICE_SRC" "$REPO_ROOT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — tracked timer unit
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: tracked timer unit ---"
+
+# B1: the timer file exists
+assert "B1: deploy/systemd/reify-jcodemunch-index.timer exists" \
+    test -f "$TIMER_SRC"
+
+# B2: [Unit] + [Timer] + [Install] sections
+assert "B2: timer has [Unit], [Timer] and [Install] sections" \
+    bash -c '
+        grep -q "^\[Unit\]$"    "$1" || exit 1
+        grep -q "^\[Timer\]$"   "$1" || exit 1
+        grep -q "^\[Install\]$" "$1" || exit 1
+    ' _ "$TIMER_SRC"
+
+# B3: an OnCalendar= schedule. The `daily` VALUE is an operational tunable —
+# same stance as reify-warm-lane-gc.timer's "tests assert only the directive
+# presence" comment — but the directive's PRESENCE is the contract, because
+# B4 below depends on the schedule being calendar-based rather than monotonic.
+assert "B3: timer carries an OnCalendar= directive (value 'daily' is a tunable, presence is the contract)" \
+    bash -c 'grep -q "^OnCalendar=daily$" "$1"' _ "$TIMER_SRC"
+
+# B4: Persistent=true AND a calendar schedule, asserted as a PAIR.
+# systemd.timer(5): "Persistent= only has an effect on timers configured with
+# OnCalendar=" — so Persistent=true on a monotonic schedule is inert, and
+# either half alone would pass while the catch-up behaviour silently did not
+# exist. Catch-up is the point: a missed tick after host downtime is exactly
+# the stale index this timer is here to prevent.
+assert "B4: Persistent=true is paired with an OnCalendar= schedule (Persistent= is inert on a monotonic one)" \
+    bash -c '
+        grep -q "^Persistent=true$" "$1" || exit 1
+        grep -q "^OnCalendar="      "$1" || exit 1
+    ' _ "$TIMER_SRC"
+
+# B5: the timer drives the service unit this diff also ships
+assert "B5: timer sets Unit=reify-jcodemunch-index.service" \
+    bash -c 'grep -q "^Unit=reify-jcodemunch-index.service$" "$1"' _ "$TIMER_SRC"
+
+# B6: that Unit= target exists as a tracked file — no dangling reference.
+# A timer pointing at a unit nobody ships is precisely the defect task η is
+# retiring elsewhere in this same diff; this keeps the new pair from repeating it.
+assert "B6: the Unit= target exists as a tracked file under deploy/systemd/" \
+    bash -c '
+        line=$(grep "^Unit=" "$1")
+        target=${line#Unit=}
+        test -f "$2/deploy/systemd/$target"
+    ' _ "$TIMER_SRC" "$REPO_ROOT"
+
+# B7: [Install] wires the timer into timers.target so `enable` has an effect
+assert "B7: [Install] declares WantedBy=timers.target" \
+    bash -c 'grep -q "^WantedBy=timers.target$" "$1"' _ "$TIMER_SRC"
+
+# B8: both unit basenames carry the reify- prefix, so neither can ever be
+# confused with — or shadow — the host's jcodemunch-OWNED units
+# (jcodemunch-index-gc.timer, jcodemunch-watcher.service), which serve other
+# repos and must never be touched by anything in this repo.
+assert "B8: both unit basenames carry the reify- prefix (never shadow jcodemunch's own units)" \
+    bash -c '
+        case "$(basename "$1")" in reify-*) ;; *) exit 1 ;; esac
+        case "$(basename "$2")" in reify-*) ;; *) exit 1 ;; esac
+    ' _ "$TIMER_SRC" "$SERVICE_SRC"
 
 test_summary
