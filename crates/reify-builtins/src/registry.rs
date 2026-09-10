@@ -6,6 +6,21 @@
 //! where its type came from, with a `file.rs:LINE` anchor and the originating
 //! task, in the multi-row ledger dialect of
 //! `crates/reify-eval/src/registry_drift_tests.rs:239-274`.
+//!
+//! **Reading the `Legacy:` anchors.** Both legacy files were DELETED by this
+//! task, so their paths resolve against history, not the worktree. Every
+//! anchor below is stated against **`b42c7dd207`** — main's tip at the merge,
+//! and the last commit in which either file existed:
+//!
+//! ```text
+//! git show b42c7dd207:crates/reify-compiler/src/analysis_signatures.rs
+//! ```
+//!
+//! The commit is named ONCE, here, rather than repeated per row: a
+//! commit-qualified line number is stable forever, but only if the reader can
+//! tell WHICH commit it counts against. The anchors were re-derived against
+//! that commit at step-31 — they had been written against the pre-merge base,
+//! where the same numbers land on unrelated lines of main's post-#6577 file.
 
 use reify_core::Type;
 
@@ -58,7 +73,7 @@ crate::macros::registry! {
         // `helpers::binary` (crates/reify-stdlib/src/analysis.rs).
 
         // von_mises -> scalar_or_real(tensor_quantity(arg0)).
-        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:73.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:145.
         //
         // ARTIFACT (ratified 2026-08-17, Leo, unblock of #6001). #2884 rules
         // BOTH halves of this signature: `von_mises(stress: Tensor<2,3,Pressure>)
@@ -85,7 +100,7 @@ crate::macros::registry! {
         },
 
         // max_shear -> the same reduction as von_mises.
-        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:73 (shared arm).
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:145 (shared arm).
         //
         // ARTIFACT (ratified 2026-08-17, Leo, unblock of #6001). NOT ruled by
         // #2884 — that task's text names von_mises, principal_stresses and
@@ -107,7 +122,7 @@ crate::macros::registry! {
         },
 
         // principal_stresses -> List(scalar_or_real(tensor_quantity(arg0))).
-        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:78.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:150.
         //
         // ARTIFACT (ratified 2026-08-17, Leo, unblock of #6001). #2884 rules
         // `principal_stresses(stress: Tensor<2,3,Pressure>) -> List<Pressure>`;
@@ -123,9 +138,9 @@ crate::macros::registry! {
         },
 
         // safety_factor -> dimensionless, whatever the args.
-        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:82 (concrete
-        // form) and :125 (the Field form task #6577 added), whose own comment
-        // records the derivation at :80-81.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:154 (concrete
+        // form) and :125 (the Field form task #6577 added), whose own
+        // Field-forms table records the derivation at :88.
         // Like max_shear, NOT ruled by #2884 — the derivation is the basis.
         //
         // ArgAware, not Const, since #6577: the DIMENSION is arg-independent but
@@ -145,7 +160,7 @@ crate::macros::registry! {
 
         // stress_invariants -> StructureRef("StressInvariants"), the struct def
         // in crates/reify-compiler/stdlib/fea.ri.
-        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:87.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:159.
         // #2884 rules the `{I1,I2,I3}` result; mirrors is_dynamics_query ->
         // StructureRef("MassProperties").
         StressInvariants {

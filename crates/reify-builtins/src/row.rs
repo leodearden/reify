@@ -98,6 +98,14 @@ impl Arity {
 /// α needs only [`ArgSlot::Any`]: the seed families' arg checking is unchanged
 /// from today, and today there is none at the slot level.
 ///
+/// Note what this column does NOT cover. A [`ResultSpec::ArgAware`] resolver
+/// may read an argument's shape to decide the RESULT type — the analysis
+/// reductions read arg0 for a `Type::Field` codomain (task #6577) — but reading
+/// a shape to pick an answer is not constraining a slot: no argument is
+/// rejected, so the accepted set is still "anything". The two stay separate
+/// columns precisely so that τ-numeric can constrain slots without disturbing
+/// any result rule.
+///
 /// The real vocabulary — the existing `check_builtin_arg_types` per-slot
 /// dimension checks, plus the ratified `SameDimensionAs(slot)` constraint that
 /// `floor`@2 / `atan2` / `remap` need to say "both args share a free dimension
@@ -120,6 +128,14 @@ pub enum ResultSpec {
     /// happens (the seed resolvers are total, reproducing legacy behaviour that
     /// never rejected); wiring `None` to an `E_BuiltinArgShape` diagnostic
     /// instead of a silent first-arg guess is τ-numeric's work.
+    ///
+    /// Totality survives the `Type::Field` arms added for task #6577, which is
+    /// easy to misread: those arms DO test `args.len()` and DO inspect arg0's
+    /// shape, but every path still returns `Some`. The tests select which of
+    /// two answers the row gives — the lifted `Field<D, …>` or the concrete
+    /// reduction — and a call that matches neither shape falls through to the
+    /// concrete one rather than declining. See [`Arity`] for why that is a
+    /// result-type choice and not a diagnostic.
     ArgAware(fn(&[Type]) -> Option<Type>),
 }
 

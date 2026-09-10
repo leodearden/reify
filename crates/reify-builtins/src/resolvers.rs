@@ -2,6 +2,22 @@
 //!
 //! Pure `reify_core::Type` algebra. These are compile-time type computation,
 //! never eval — the crate holds no `Value` (PRD decision 3).
+//!
+//! **Reading the `Ported from` anchors.** The legacy files these helpers came
+//! from were DELETED by this task, so their paths resolve against history, not
+//! the worktree. Every anchor below is stated against **`b42c7dd207`** — main's
+//! tip at the merge, and the last commit in which they existed:
+//!
+//! ```text
+//! git show b42c7dd207:crates/reify-compiler/src/analysis_signatures.rs
+//! ```
+//!
+//! That commit is not merely the newest one available: its
+//! `analysis_signatures.rs` is byte-identical to the copy the #6577 port was
+//! actually read from (verified at step-31), so the anchors name the source
+//! that was ported, not a near approximation of it. The commit is named ONCE,
+//! here — a commit-qualified line number is stable forever, but only if the
+//! reader can tell WHICH commit it counts against.
 
 use reify_core::{DimensionVector, Type};
 
@@ -12,7 +28,7 @@ use reify_core::{DimensionVector, Type};
 /// Scalar{DIMENSIONLESS})` is `false` — so a dimensionless arm MUST return
 /// `Type::dimensionless_scalar()` to keep the compile-type and eval-value in agreement.
 ///
-/// Moved verbatim from `crates/reify-compiler/src/signatures_common.rs:27`
+/// Moved verbatim from `crates/reify-compiler/src/signatures_common.rs:26`
 /// (task #6001 α), whose last user disappeared when the analysis family moved
 /// to the registry. `math_signatures.rs` keeps its own bit-identical private
 /// copy; deduping that is τ-numeric's, not α's.
@@ -27,7 +43,7 @@ pub fn scalar_or_real(dim: DimensionVector) -> Type {
 /// The quantity dimension carried by a `Tensor` / `Matrix` arg at position
 /// `i`, defaulting to `DIMENSIONLESS` when the arg is absent or not a tensor.
 ///
-/// Ported from `crates/reify-compiler/src/analysis_signatures.rs:96` and
+/// Ported from `crates/reify-compiler/src/analysis_signatures.rs:168` and
 /// re-signatured from `&[CompiledExpr]` to `&[Type]` — reify-builtins cannot
 /// see reify-ir. Same `Tensor|Matrix ⇒ Scalar{dimension}` match, same
 /// DIMENSIONLESS default.
