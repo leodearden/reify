@@ -72,12 +72,21 @@
 # ── Invariants ───────────────────────────────────────────────────────────────
 #   R1  Read-only on the task store. Opened strictly -readonly / mode=ro, and
 #       never created — pointing --db at a nonexistent path leaves it absent.
-#   R2  Read-only on the repo. No ref, worktree, index or config write.
-#   R3  Non-gating. Exit 0 on EVERY valid invocation in BOTH modes; 2 only for
-#       a usage error. This is a deliberate divergence from
-#       warm-lane-degenerate-ref-check.sh, which uses exit codes as a
-#       classification channel: a non-zero exit is exactly what a merge worker
-#       would gate on, and v1 is report-only. Stdout is the only result channel.
+#   R2  Read-only on the repo. Every git call goes through ONE wrapper that
+#       sets GIT_OPTIONAL_LOCKS=0, so no read can take a lock or refresh the
+#       index as a side effect: no ref, worktree, index or config write, and no
+#       file created anywhere beneath it. The only files written at all are two
+#       mktemp temporaries under $TMPDIR, removed by the EXIT trap.
+#   R3  Non-gating. Exit 0 on EVERY valid invocation in BOTH modes, whatever it
+#       finds — no classification ever reaches the exit status. The only
+#       non-zero exit is 2: a usage error, or `--format json` on a host with no
+#       python3, which is refused UP FRONT (before the store read and before
+#       any measurement) so a caller never receives a partial report. This is a
+#       deliberate divergence from warm-lane-degenerate-ref-check.sh, which
+#       uses exit codes as a classification channel: a non-zero exit is exactly
+#       what a merge worker would gate on, and v1 is report-only. Stdout is the
+#       only result channel, and --format is binding in BOTH modes — a --task
+#       consult that asks for json gets json, never a table row.
 #   R4  Fail-safe degradation. An unreadable store, an unresolvable ref, a
 #       failed diff or a failed SQL engine degrades the affected row (or the
 #       whole report) to UNKNOWN with a stderr warning — never an abort, never
@@ -211,6 +220,14 @@ esac
 
 [ -n "$REPO_DIR" ] || REPO_DIR="."
 
+# ── the git read wrapper (R2) ─────────────────────────────────────────────────
+# EVERY git invocation in this script goes through here, which is what makes R2
+# structural rather than incidental. GIT_OPTIONAL_LOCKS=0 forbids git from
+# taking a lock or refreshing the index as a side effect of a read, so no call
+# can write .git/index even if a future one is added that otherwise would, and
+# a concurrent agent in the same worktree is never blocked by this audit.
+_git() { GIT_OPTIONAL_LOCKS=0 git -C "$REPO_DIR" "$@"; }
+
 # ── field separators ──────────────────────────────────────────────────────────
 # ASCII US (0x1f) between columns, deliberately NOT a tab: `read` treats runs of
 # IFS *whitespace* as ONE delimiter and strips leading/trailing ones, so with a
@@ -246,6 +263,18 @@ if command -v python3 >/dev/null 2>&1; then _PYTHON_BIN="python3"; fi
 
 if [ -z "$_SQLITE_BIN" ] && [ -z "$_PYTHON_BIN" ]; then
     warn "Neither sqlite3 nor python3 is on PATH — the task store cannot be read at all; reporting zero branches."
+fi
+
+# A json report is rendered by a python3 pass rather than a hand-rolled
+# escaper, so on a host without python3 that request cannot be honoured at all.
+# Refused HERE — before the store read and before any measurement — so a caller
+# never receives a partial report, and never a silently-downgraded table one
+# under a flag that asked for json. This and a usage error are the ONLY
+# non-zero exits the script can produce (R3); no classification ever reaches
+# the exit status.
+if [ "$FORMAT" = "json" ] && [ -z "$_PYTHON_BIN" ]; then
+    err "--format json needs python3, which is not on PATH."
+    exit 2
 fi
 
 # ── the enumeration query ─────────────────────────────────────────────────────
@@ -299,7 +328,7 @@ else
     if [ "$_DB_READABLE" = 0 ] && [ -n "$_PYTHON_BIN" ]; then
         # The SAME SQL string, verbatim, through the other engine — that is what
         # makes the two interchangeable rather than one a stub.
-        if _TASK_ROWS="$(_TB_DB="$DB" _TB_SQL="$_ENUM_SQL" python3 - <<'PY' 2>/dev/null
+        if _TASK_ROWS="$(_TB_DB="$DB" _TB_SQL="$_ENUM_SQL" "$_PYTHON_BIN" - <<'PY' 2>/dev/null
 import os, sqlite3, sys
 try:
     con = sqlite3.connect(f"file:{os.environ['_TB_DB']}?mode=ro", uri=True, timeout=5.0)
@@ -352,10 +381,10 @@ unset _id _st _files _path
 # branch degrades to UNKNOWN and the report is still produced. Resolved once
 # here rather than per branch.
 _MAIN_SHA=""
-if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+if ! _git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     warn "Not inside a git work tree: $REPO_DIR — every branch will report scope=UNKNOWN."
 else
-    _MAIN_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$MAIN_REF" 2>/dev/null || true)"
+    _MAIN_SHA="$(_git rev-parse --verify "$MAIN_REF" 2>/dev/null || true)"
     [ -n "$_MAIN_SHA" ] || \
         warn "Cannot resolve --main-ref '$MAIN_REF' in $REPO_DIR — every branch will report scope=UNKNOWN."
 fi
@@ -414,23 +443,23 @@ _measure_branch() {
     [ -n "$_MAIN_SHA" ] || return 0
 
     ref="refs/heads/${BRANCH_PREFIX}${id}"
-    tip="$(git -C "$REPO_DIR" rev-parse --verify "$ref" 2>/dev/null || true)"
+    tip="$(_git rev-parse --verify "$ref" 2>/dev/null || true)"
     if [ -z "$tip" ]; then
         warn "No such branch: $ref — reporting scope=UNKNOWN for task $id."
         return 0
     fi
 
     local mb behind commits
-    mb="$(git -C "$REPO_DIR" merge-base "$tip" "$_MAIN_SHA" 2>/dev/null || true)"
+    mb="$(_git merge-base "$tip" "$_MAIN_SHA" 2>/dev/null || true)"
     if [ -z "$mb" ]; then
         warn "No merge base between $ref and '$MAIN_REF' — reporting scope=UNKNOWN for task $id."
         return 0
     fi
-    behind="$(git -C "$REPO_DIR" rev-list --count "${mb}..${_MAIN_SHA}" 2>/dev/null || true)"
-    commits="$(git -C "$REPO_DIR" rev-list --count "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
+    behind="$(_git rev-list --count "${mb}..${_MAIN_SHA}" 2>/dev/null || true)"
+    commits="$(_git rev-list --count "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
     # -z: NUL-separated and NEVER quoted, so a path compares byte-for-byte
     # against the store's raw value. See _CHANGED_FILE's note.
-    if ! git -C "$REPO_DIR" diff -z --name-only "$mb" "$tip" > "$_CHANGED_FILE" 2>/dev/null; then
+    if ! _git diff -z --name-only "$mb" "$tip" > "$_CHANGED_FILE" 2>/dev/null; then
         warn "Cannot diff ${mb}..${tip} — reporting scope=UNKNOWN for task $id."
         : > "$_CHANGED_FILE"
         return 0
@@ -440,7 +469,7 @@ _measure_branch() {
         return 0
     fi
 
-    R_MERGE_BASE="$(git -C "$REPO_DIR" rev-parse --short "$mb" 2>/dev/null || printf '%s' "$mb")"
+    R_MERGE_BASE="$(_git rev-parse --short "$mb" 2>/dev/null || printf '%s' "$mb")"
     R_BEHIND="$behind"
     R_COMMITS="$commits"
     R_CHANGED="$(tr -cd '\0' < "$_CHANGED_FILE" | wc -c | tr -d '[:space:]')"
@@ -475,7 +504,7 @@ _census_commits() {
     local id="$1" tip="$2" log msg peer_id
     R_PEER_COMMITS=0
 
-    log="$(git -C "$REPO_DIR" log --format="%B%x1f" "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
+    log="$(_git log --format="%B%x1f" "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
     [ -n "$log" ] || return 0
 
     local commit_peers="" found
@@ -580,13 +609,78 @@ _classify_scope() {
 }
 
 # ── emit ──────────────────────────────────────────────────────────────────────
-# ONE definition of the row's field order, shared by both output formats, so
-# the two cannot drift apart.
-_emit_row_table() {
-    printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
-        "$R_TASK" "$R_STATUS" "$R_MERGE_BASE" "$R_BEHIND" "$R_COMMITS" \
-        "$R_PEER_COMMITS" "$R_CHANGED" "$R_FOREIGN" "$R_PEER_FILES" \
-        "$R_PEERS" "$R_SCOPE" "$R_SIGNATURE"
+# BOTH modes render through ONE path: measurement appends rows to $_ROWS, and
+# the report is rendered once at the end in the requested format. That is what
+# makes --format binding in BOTH modes — the per-merge advisory consult asks for
+# json too, and answering it with a table row under `--format json` would make
+# the flag a lie — and it keeps each format's field order defined exactly once
+# rather than once per mode.
+#
+# The accumulator is a FILE of US-separated records so the JSON emitter can be a
+# python3 pass that escapes values correctly (a path may carry a quote or a
+# backslash) rather than a hand-rolled escaper, and so both formats render from
+# the SAME rows rather than from two traversals that could disagree.
+_ROWS="$(mktemp "${TMPDIR:-/tmp}/task-branch-sweep-rows-XXXXXX")"
+
+# _append_row — the ONE definition of the row's field order on the wire.
+_append_row() {
+    printf '%s\n' "$R_TASK$_FS$R_STATUS$_FS$R_MERGE_BASE$_FS$R_BEHIND$_FS$R_COMMITS$_FS$R_PEER_COMMITS$_FS$R_CHANGED$_FS$R_FOREIGN$_FS$R_PEER_FILES$_FS$R_PEERS$_FS$R_SCOPE$_FS$R_SIGNATURE" >> "$_ROWS"
+}
+
+# _render_report [summary]
+# Renders every accumulated row in $FORMAT, then the summary if there is one.
+# <summary> is the SWEEP counter string, and it is EMPTY in single-branch mode:
+# one branch the caller named by id is not a fleet and has no partition to
+# summarise, so neither format invents one there.
+_render_report() {
+    local summary="${1:-}"
+    if [ "$FORMAT" = "json" ]; then
+        _TB_ROWS="$_ROWS" _TB_SUMMARY="$summary" "$_PYTHON_BIN" - <<'PY'
+import json, os, sys
+
+COLS = ("task", "status", "merge_base", "behind", "commits", "peer_commits",
+        "changed", "foreign", "peer_files", "peers", "scope", "signature")
+# The counted columns are emitted as JSON numbers when they hold a count, and
+# as the "-" placeholder string when the branch could not be measured. A
+# consumer therefore never has to parse "-" out of an integer field.
+NUMERIC = {"task", "behind", "commits", "peer_commits", "changed", "foreign",
+           "peer_files"}
+
+branches = []
+with open(os.environ["_TB_ROWS"]) as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split("\x1f")
+        row = dict(zip(COLS, parts))
+        for k in NUMERIC:
+            if row[k].isdigit():
+                row[k] = int(row[k])
+        branches.append(row)
+
+doc = {"branches": branches}
+# An empty _TB_SUMMARY means single-branch mode: omit the key entirely rather
+# than emitting a zeroed object, which would read as a measured fleet of none.
+summary = os.environ.get("_TB_SUMMARY", "")
+if summary:
+    doc["summary"] = {k: int(v) for k, _, v in
+                      (pair.partition("=") for pair in summary.split())}
+
+json.dump(doc, sys.stdout)
+sys.stdout.write("\n")
+PY
+        return 0
+    fi
+    while IFS="$_FS" read -r c_task c_status c_mb c_behind c_commits c_peer_commits \
+                             c_changed c_foreign c_peer_files c_peers c_scope c_signature; do
+        [ -n "${c_task:-}" ] || continue
+        printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
+            "$c_task" "$c_status" "$c_mb" "$c_behind" "$c_commits" "$c_peer_commits" \
+            "$c_changed" "$c_foreign" "$c_peer_files" "$c_peers" "$c_scope" "$c_signature"
+    done < "$_ROWS"
+    [ -z "$summary" ] || printf 'SWEEP: %s\n' "$summary"
+    return 0
 }
 
 # ── single-branch mode ────────────────────────────────────────────────────────
@@ -596,7 +690,8 @@ _emit_row_table() {
 # is owed an answer.
 if [ "$TASK_MODE" -eq 1 ]; then
     _measure_branch "$TASK_ID"
-    _emit_row_table
+    _append_row
+    _render_report
     exit 0
 fi
 
@@ -608,11 +703,6 @@ fi
 N_BRANCHES=0; N_SUSPECT=0; N_PEER_FILES=0; N_OUT_OF_SCOPE=0
 N_UNDECLARED=0; N_CLEAN=0; N_UNKNOWN=0
 N_SKIPPED_TERMINAL=0; N_SKIPPED_NONNUMERIC=0
-
-# The US-separated row accumulator. It exists so the JSON emitter can be a
-# python3 pass that escapes values correctly rather than hand-rolling quoting,
-# and so BOTH formats render from the SAME rows.
-_ROWS="$(mktemp "${TMPDIR:-/tmp}/task-branch-sweep-rows-XXXXXX")"
 
 # _tally — classify the current row into exactly one counter.
 #
@@ -654,58 +744,10 @@ while IFS= read -r _ref; do
     fi
     _measure_branch "$_id"
     _tally
-    printf '%s\n' "$R_TASK$_FS$R_STATUS$_FS$R_MERGE_BASE$_FS$R_BEHIND$_FS$R_COMMITS$_FS$R_PEER_COMMITS$_FS$R_CHANGED$_FS$R_FOREIGN$_FS$R_PEER_FILES$_FS$R_PEERS$_FS$R_SCOPE$_FS$R_SIGNATURE" >> "$_ROWS"
-done < <(git -C "$REPO_DIR" for-each-ref --format='%(refname:short)' \
+    _append_row
+done < <(_git for-each-ref --format='%(refname:short)' \
              "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null | sort -t/ -k2 -n)
 unset _ref _id
 
-_SUMMARY="branches=$N_BRANCHES suspect=$N_SUSPECT peer_files=$N_PEER_FILES out_of_scope=$N_OUT_OF_SCOPE undeclared=$N_UNDECLARED clean=$N_CLEAN unknown=$N_UNKNOWN skipped_terminal=$N_SKIPPED_TERMINAL skipped_nonnumeric=$N_SKIPPED_NONNUMERIC"
-
-if [ "$FORMAT" = "json" ]; then
-    if [ -z "$_PYTHON_BIN" ]; then
-        err "--format json needs python3, which is not on PATH."
-        exit 2
-    fi
-    _TB_ROWS="$_ROWS" _TB_SUMMARY="$_SUMMARY" python3 - <<'PY'
-import json, os, sys
-
-COLS = ("task", "status", "merge_base", "behind", "commits", "peer_commits",
-        "changed", "foreign", "peer_files", "peers", "scope", "signature")
-# The counted columns are emitted as JSON numbers when they hold a count, and
-# as the "-" placeholder string when the branch could not be measured. A
-# consumer therefore never has to parse "-" out of an integer field.
-NUMERIC = {"task", "behind", "commits", "peer_commits", "changed", "foreign",
-           "peer_files"}
-
-branches = []
-with open(os.environ["_TB_ROWS"]) as fh:
-    for line in fh:
-        line = line.rstrip("\n")
-        if not line:
-            continue
-        parts = line.split("\x1f")
-        row = dict(zip(COLS, parts))
-        for k in NUMERIC:
-            if row[k].isdigit():
-                row[k] = int(row[k])
-        branches.append(row)
-
-summary = {}
-for pair in os.environ["_TB_SUMMARY"].split():
-    k, _, v = pair.partition("=")
-    summary[k] = int(v)
-
-json.dump({"branches": branches, "summary": summary}, sys.stdout)
-sys.stdout.write("\n")
-PY
-else
-    while IFS="$_FS" read -r c_task c_status c_mb c_behind c_commits c_peer_commits \
-                             c_changed c_foreign c_peer_files c_peers c_scope c_signature; do
-        [ -n "${c_task:-}" ] || continue
-        printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
-            "$c_task" "$c_status" "$c_mb" "$c_behind" "$c_commits" "$c_peer_commits" \
-            "$c_changed" "$c_foreign" "$c_peer_files" "$c_peers" "$c_scope" "$c_signature"
-    done < "$_ROWS"
-    printf 'SWEEP: %s\n' "$_SUMMARY"
-fi
+_render_report "branches=$N_BRANCHES suspect=$N_SUSPECT peer_files=$N_PEER_FILES out_of_scope=$N_OUT_OF_SCOPE undeclared=$N_UNDECLARED clean=$N_CLEAN unknown=$N_UNKNOWN skipped_terminal=$N_SKIPPED_TERMINAL skipped_nonnumeric=$N_SKIPPED_NONNUMERIC"
 exit 0
