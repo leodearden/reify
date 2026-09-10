@@ -429,10 +429,80 @@ _measure_branch() {
     R_BEHIND="$behind"
     R_COMMITS="$commits"
     R_CHANGED="$(printf '%s' "$changed" | grep -c . || true)"
-    # Filled by the scope verdict (step-12) and the citation census (step-14).
-    R_PEER_COMMITS=0; R_FOREIGN=0; R_PEER_FILES=0; R_PEERS="-"; R_SCOPE="CLEAN"
-    R_SIGNATURE="-"
     _CHANGED_FILES="$changed"
+    # Filled by the citation census (step-14).
+    R_PEER_COMMITS=0; R_SIGNATURE="-"
+    _classify_scope "$id"
+    return 0
+}
+
+# ── the scope verdict ─────────────────────────────────────────────────────────
+# Resolution order IS the invariant, and it is total — every branch lands in
+# exactly one bucket:
+#
+#   1. UNKNOWN       the git measurement failed. Decided in _measure_branch,
+#                    which returns before ever reaching here.
+#   2. UNDECLARED    this task declares no files. NEVER downgraded to
+#                    OUT-OF-SCOPE: 186 of the store's 1344 non-terminal tasks
+#                    declare none (the documented defer-to-architect value), so
+#                    treating "declares nothing" as "everything is foreign"
+#                    would manufacture false positives at that scale.
+#   3. PEER-FILES    some foreign path is declared by a NON-TERMINAL task that
+#                    is not this one.
+#   4. OUT-OF-SCOPE  the foreign set is non-empty but nobody non-terminal owns
+#                    any of it.
+#   5. CLEAN         the foreign set is empty.
+#
+# "Foreign" is the changed set minus the declared set under EXACT
+# repo-relative string equality — no prefix or glob matching. That is a
+# measurement, not a simplification: across all 1344 non-terminal tasks exactly
+# one declared path is not a file-with-extension (`hooks/reference-transaction`,
+# an extensionless FILE in lock-charter-guard's allowlist), so directory
+# declarations do not exist to be handled and prefix machinery would be an
+# unused dimension of variability.
+_classify_scope() {
+    local id="$1" declared path owner peers_found=""
+    R_FOREIGN=0; R_PEER_FILES=0; R_PEERS="-"
+
+    declared="${_DECLARED["$id"]:-}"
+    if [ -z "$declared" ]; then
+        R_SCOPE="UNDECLARED"
+        return 0
+    fi
+
+    # An associative array keyed by the declared path gives exact-equality
+    # membership directly; a substring or prefix test is what would wrongly
+    # let a declared `x/a/b.rs` cover a changed `a/b.rs`.
+    local -A own=()
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        own["$path"]=1
+    done <<< "${declared//$_LS/$'\n'}"
+
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        [ -z "${own["$path"]:-}" ] || continue
+        R_FOREIGN=$((R_FOREIGN + 1))
+        # A path this task declares never reaches here, so its own id can
+        # never enter peers — but a peer list still has to exclude it
+        # defensively, because _PEER_OWNER holds every declarer.
+        local claimed=0
+        for owner in ${_PEER_OWNER["$path"]:-}; do
+            [ "$owner" != "$id" ] || continue
+            claimed=1
+            peers_found="$peers_found$owner"$'\n'
+        done
+        [ "$claimed" -eq 0 ] || R_PEER_FILES=$((R_PEER_FILES + 1))
+    done <<< "$_CHANGED_FILES"
+
+    if [ -n "$peers_found" ]; then
+        R_PEERS="$(printf '%s' "$peers_found" | sort -nu | paste -sd, -)"
+        R_SCOPE="PEER-FILES"
+    elif [ "$R_FOREIGN" -gt 0 ]; then
+        R_SCOPE="OUT-OF-SCOPE"
+    else
+        R_SCOPE="CLEAN"
+    fi
     return 0
 }
 
