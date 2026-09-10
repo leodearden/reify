@@ -113,16 +113,15 @@ rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"
 **Do not "restore" a `--jcodemunch-repo` default.** There is deliberately none.
 `reify-audit` derives the per-path identity from `--project-root` — for
 `/home/leo/src/reify` that is `local/reify-4ae45bbd` — and the flag is retained
-only as an explicit override. A `<owner>/<project>` git identity names the
-**project**, not the **checkout**: reify's ~239 worktrees would all resolve to one
-identifier carrying different `git_root`s, and jcodemunch's `index_folder`
-collision guard hard-refuses on the mismatch. Per-path is also what makes the
-freshness comparison meaningful — one corpus per tree, so "built at a different
-commit" means something. Passing the retired `leodearden/reify` by hand resolves
-to an empty husk; with a reachable serve the freshness gate then refuses
-`E_JC_INDEX_EMPTY` — exit 125 with no detector run on an all-jcodemunch
-`--pattern` set, and a zero-findings fail-soft breadcrumb on a mixed or
-pattern-less run (§4.1).
+only as an explicit override. Reify **forces** that per-path identity at every
+invocation site for a reason this file deliberately does not restate:
+`docs/architecture-audit/jcodemunch-serve-activation.md` §"Why the identity is
+forced" owns it. Per-path is also what makes the freshness comparison
+meaningful — one corpus per tree, so "built at a different commit" means
+something. Passing the retired `leodearden/reify` by hand resolves to an empty
+husk; with a reachable serve the freshness gate then refuses `E_JC_INDEX_EMPTY`
+— exit 125 with no detector run on an all-jcodemunch `--pattern` set, and a
+zero-findings fail-soft breadcrumb on a mixed or pattern-less run (§4.1).
 
 The `CODE_INDEX_PATH` rung of `--jcodemunch-index-dir` is load-bearing rather than
 decorative: it is jcodemunch's own variable and the one
@@ -176,6 +175,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Unreadable runs.db | `error opening runs-db 'data/orchestrator/runs.db': …` | DB may not exist yet; confirm orchestrator has run at least once |
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
+| Unusable jcodemunch index (**conditional**) | `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE`, or a token-less `cannot verify jcodemunch index freshness for …` | Only refuses on an all-jcodemunch `--pattern` set; a mixed or pattern-less run fail-softs instead. Codes, remedies and the two-arm rule: §4.1 |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
@@ -198,12 +198,21 @@ When the jcodemunch MCP server is unreachable (the common case — jcodemunch is
 
 After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs. The outcome splits on what `--pattern` selected:
 
-- An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with a refusal token on stderr. Nothing in the run set could have survived a refusal, so nothing is salvaged.
-- A **mixed or pattern-less** run fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed detectors degrade to zero findings, P2/P5/PTODO still run, and the findings array is still emitted. The breadcrumb carries the same marker token, so the condition stays machine-detectable rather than silent.
+- An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr (carrying a marker token in three of the four cases tabulated below). Nothing in the run set could have survived a refusal, so nothing is salvaged.
+- A **mixed or pattern-less** run fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed detectors degrade to zero findings, P2/P5/PTODO still run, and the findings array is still emitted. The breadcrumb repeats the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
 
 The refusal returns **before any findings array is serialized**, so it emits no parseable JSON. That is precisely what lets the existing §3.1 disambiguator classify it correctly: the tempfile does not parse as a JSON array, so it is routed as an infra error rather than as 125 High findings. §3.1 needs no change for this — do not edit it.
 
-Codes and remedies: the `E_JC_INDEX_*` rows of the refusal-code table under §5's `--pre-done` landing gate. They live beside the `E_AUDIT_BIN_*` rows only because those share rc 125; unlike them, these fire on **any** run, not just a predone flip.
+**Codes and remedies.** These are emitted by `reify-audit` itself and fire on **any** run, not only a `--pre-done` flip:
+
+| stderr carries | rc | meaning | remedy |
+|---|---|---|---|
+| `E_JC_INDEX_STALE` | 125 | the index was built at a different commit than the working tree | re-index this checkout: `scripts/jcodemunch-index-reify.sh` (it forces `JCODEMUNCH_GIT_ROOT_IDENTITY=0`), or pass `--no-jcodemunch` |
+| `E_JC_INDEX_EMPTY` | 125 | the index carries no symbols, or does not exist at all | same as above |
+| `E_JC_INDEX_UNREADABLE` | 125 | the index file **exists** but could not be read — corrupt, permissions, WAL, or a jcodemunch schema change | repair or remove the file, *then* re-index. Deliberately a separate remedy: sending an operator to rebuild an intact corpus stuck behind a permissions fault costs a full re-index to learn nothing |
+| **no token** — the message reads `cannot verify jcodemunch index freshness for <repo-id> — …` | 125 | HEAD could not be read, so freshness could not be established either way. **Nothing has been learned about the index** | fix the **git** invocation, not the index: confirm `--project-root` is a readable checkout where `git rev-parse HEAD` succeeds. Re-indexing is wasted work here — the corpus was never implicated |
+
+**The marker token is not exhaustive, and that is deliberate.** The fourth row is token-less by design: `enforce_index_freshness` (`crates/reify-audit/src/bin/reify-audit.rs`) writes that message to be *distinct* from every marker token precisely because neither staleness nor emptiness nor unreadability of the index has been established, and mislabelling it as one of them would send an operator to re-index over what is actually a git fault. So the token, **when present**, is the discriminator — but a 125 whose message names freshness and carries no token is this case, not an undocumented fourth code.
 
 **Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. Useful for P2/P5-only sweeps where P1 and the advisory P-* patterns are intentionally skipped.
 
@@ -335,20 +344,13 @@ their token — check these before reading anything into `metadata.files` or
 | `E_AUDIT_BIN_STALE` | 125 | the installed `reify-audit` predates `crates/reify-audit` AND an operator armed `REIFY_AUDIT_FRESHNESS_STRICT=1`, so the guard refuses instead of falling open. Unset it, or reinstall. |
 | `E_AUDIT_BIN_MISSING` | 125 | there is no runnable `reify-audit` at `$REIFY_AUDIT_BIN` at all — nothing to fall open onto. Reinstall. |
 
-**A different family that collides on the same exit code.** The three codes below
-gate the **jcodemunch index**, not the predone wrapper's binary freshness. They
-are emitted by `reify-audit` itself, on any run — not only a predone flip — and
-they share rc 125 with the rows above by collision, not by kinship. Nothing in
-the `E_AUDIT_BIN_*` / `E_AUDIT_GUARD_BAD_MODE` story above applies to them.
-
-| stderr carries | rc | meaning | remedy |
-|---|---|---|---|
-| `E_JC_INDEX_STALE` | 125 | the index was built at a different commit than the working tree | re-index this checkout: `scripts/jcodemunch-index-reify.sh` (it forces `JCODEMUNCH_GIT_ROOT_IDENTITY=0`), or pass `--no-jcodemunch` |
-| `E_JC_INDEX_EMPTY` | 125 | the index carries no symbols, or does not exist at all | same as above |
-| `E_JC_INDEX_UNREADABLE` | 125 | the index file **exists** but could not be read — corrupt, permissions, WAL, or a jcodemunch schema change | repair or remove the file, *then* re-index. Deliberately a separate remedy: sending an operator to rebuild an intact corpus stuck behind a permissions fault costs a full re-index to learn nothing |
-
-These fire only on an **all-jcodemunch** `--pattern` set; a mixed or pattern-less
-run carries the same token in a breadcrumb and keeps going (§4.1).
+**Not every rc 125 here is a binary-freshness refusal.** `reify-audit`'s own
+`E_JC_INDEX_*` index refusals share rc 125 with the rows above by collision, not
+by kinship: they gate the **jcodemunch index**, not the predone wrapper's binary
+freshness, and they fire on **any** run rather than only a predone flip. They are
+tabulated with their remedies in §4.1, beside the fail-soft arm they contrast
+with. Nothing in the `E_AUDIT_BIN_*` / `E_AUDIT_GUARD_BAD_MODE` story above
+applies to them.
 
 **The stale-but-runnable case does not block, and you will not see it on
 stderr.** A stale binary the wrapper can still execute produces an

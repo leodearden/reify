@@ -31,18 +31,12 @@ Pick from the user's invocation and context:
 
 *Serve reachable but the index is not usable.* After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs, and here the outcome splits on what `--pattern` selected:
 
-- An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with a refusal token on stderr and emits **no JSON array**. Nothing in the run set could have survived, so nothing is salvaged.
+- An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr and emits **no JSON array**. Nothing in the run set could have survived, so nothing is salvaged.
 - A **mixed or pattern-less** run keeps fail-softing: the jcodemunch-backed detectors degrade to zero findings, P2/P5/PTODO still run, and the findings array is still emitted.
 
-The three refusal codes and their remedies:
+The refusal names its cause with an `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE` marker token — plus one deliberately token-less case, where HEAD itself could not be read and so nothing was learned about the index at all. The per-code remedies differ, and re-indexing is the wrong first move for two of the four; `references/cli-invocation.md` §4.1 holds the single normative table.
 
-| Code | Meaning | Remedy |
-|---|---|---|
-| `E_JC_INDEX_STALE` | the index was built at a different commit than the working tree | re-index this checkout: `scripts/jcodemunch-index-reify.sh` (it forces `JCODEMUNCH_GIT_ROOT_IDENTITY=0`), or pass `--no-jcodemunch` |
-| `E_JC_INDEX_EMPTY` | the index carries no symbols, or does not exist at all | same as above |
-| `E_JC_INDEX_UNREADABLE` | the index file **exists** but could not be read — corrupt, permissions, WAL, or a jcodemunch schema change | repair or remove the file, *then* re-index. Deliberately a separate remedy: sending an operator to rebuild an intact corpus behind a permissions fault costs a full re-index to learn nothing |
-
-**Exit 125 is now overloaded.** It already meant infra/setup error and it already covered a serve that could not be reached; it now also covers a stale/empty/unreadable index. The marker token in stderr is the only discriminator — a reader who knows only the older meaning will misdiagnose an index refusal as a dead serve and go restart a serve that is fine.
+**Exit 125 is now overloaded.** It already meant infra/setup error and it already covered a serve that could not be reached; it now also covers an unusable index. The marker token in stderr is the discriminator **when there is one** — a 125 whose message names freshness but carries no token is the unreadable-HEAD case above, not a dead serve. Either way, a reader who knows only the older meaning will misdiagnose an index refusal as a dead serve and go restart a serve that is fine.
 
 **PTODO is unaffected by jcodemunch outages** — it is deterministic (grep + read-only sqlite) and never contacts jcodemunch, so it is absent from the freshness gate's run set as well; only its liveness lane degrades when `tasks.db` is absent (stderr breadcrumb, structural lane still runs). Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
 
@@ -63,8 +57,8 @@ Three opt-in detectors backed by jcodemunch — invoked only when named explicit
 **Key flags:**
 
 - `--jcodemunch-url <url>` — default `$JCODEMUNCH_URL`, else `http://127.0.0.1:8901/mcp`.
-- `--jcodemunch-repo <id>` — **no default.** `reify-audit` DERIVES the per-path identity `local/<basename>-<sha1(abs project_root)[..8]>` from `--project-root`; for `/home/leo/src/reify` that is `local/reify-4ae45bbd`. The flag is retained purely as an explicit override. A `<owner>/<project>` git identity would name the **project**, not the **checkout**: reify's ~239 worktrees would all resolve to one `leodearden/reify` carrying different `git_root`s, and jcodemunch's `index_folder` collision guard hard-refuses on that mismatch. Per-path is also what makes the freshness comparison meaningful at all — one corpus per tree, so "built at a different commit" means something.
-- `--jcodemunch-index-dir <path>` — the directory the freshness gate probes. Resolution order: the flag, else `$JCODEMUNCH_INDEX_DIR`, else `$CODE_INDEX_PATH`, else `$HOME/.code-index`. The `CODE_INDEX_PATH` rung is load-bearing, not decorative: it is jcodemunch's own variable and the one `scripts/jcodemunch-index-reify.sh` resolves the DB under, so dropping it would let the gate probe a different directory than the indexer writes — reopening on the DIRECTORY axis exactly the mismatch the derived identity forbids on the IDENTITY axis.
+- `--jcodemunch-repo <id>` — **no default.** `reify-audit` DERIVES the per-path identity `local/<basename>-<sha1(abs project_root)[..8]>` from `--project-root`; for `/home/leo/src/reify` that is `local/reify-4ae45bbd`. The flag is retained purely as an explicit override. Why the identity is forced per-path instead of taken from git — and what collides if it is not — is owned by `docs/architecture-audit/jcodemunch-serve-activation.md` §"Why the identity is forced".
+- `--jcodemunch-index-dir <path>` — the directory the freshness gate probes. Resolution order: the flag, else `$JCODEMUNCH_INDEX_DIR`, else `$CODE_INDEX_PATH`, else `$HOME/.code-index`. The `CODE_INDEX_PATH` rung is load-bearing rather than decorative; `references/cli-invocation.md` §2 says why, and is the copy to correct if that ever changes.
 - `--no-jcodemunch` — force the inert stub (offline/test).
 
 See `references/cli-invocation.md` §2 and §4.1 for full flag documentation and the trailing-slash gotcha.
