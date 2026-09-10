@@ -1388,6 +1388,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Autonomous watcher executed 5 identical retries of watcher-rearm.sh --timeout 3600, all hitting exit 124 (ceiling), with no parameter or strategy variation
+  - date: '2026-09-09'
+    project: reify
+    session: e5d77893-c1bb-47ab-aa2b-44a33ffb3b11
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh invoked 6 times with exit 124 (CEILING); only timeout parameter varies between invocations (3600s → 2756s); matches pattern of repeated retries with only cosmetic parameter changes
+  - date: '2026-09-09'
+    project: reify
+    session: e3762fcc-b0e7-4e5c-92c1-a394e8666bbf
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Similar pattern of repeated retry without addressing root cause. Agent retries identical add_design_decision(rationale) call 4 times after guard rejection without fixing the leaked markup in the parameter content.
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -1494,6 +1506,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: After watcher-rearm CEILING exit=124, session continues with mcp__escalation__get_pending_escalations x4 polling rather than respecting the ceiling and rotating out
+  - date: '2026-09-09'
+    project: reify
+    session: e5d77893-c1bb-47ab-aa2b-44a33ffb3b11
+    origin_phase: ops
+    manifested_phase: ops
+    note: After each CEILING exit 124, watcher rechecks remaining time and continues polling loop; ceiling outcome does not terminate escalation wait or trigger escalation, forcing redundant time-calculation cycles
 - id: entry-cand-20260730-5
   title: Cross-repo escalation adjudicated together but attribution diverged, needing later correction
   severity: medium
@@ -3528,6 +3546,12 @@ entries:
     origin_phase: merge
     manifested_phase: merge
     note: Path ambiguity between sibling vs nested-under-worktrees layout; 6 not_found signals suggest agent tried multiple path candidates without success
+  - date: '2026-09-09'
+    project: reify
+    session: 16a2415a-ed52-4de2-af3b-3946216ed805
+    origin_phase: architect
+    manifested_phase: verify
+    note: Agent attempts Read on .task/metadata.json nested under warm-lanes worktree (_lane-44), file not found (2 instances); path resolution for task metadata ambiguous or incorrect
 - id: entry-cand-20260714-3
   title: Watcher rearm invoked without DARK_FACTORY_ROOT despite explicit project-root injection
   severity: medium
@@ -4555,6 +4579,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Orchestrated task in warm-lanes worktree encountered 2 ''not found'' errors, consistent with agent probing missing .task-meta/<lane>/iterations.jsonl path. Related: entry-cand-20260725-6 (iterations.jsonl missing at expected path).'
+  - date: '2026-09-09'
+    project: reify
+    session: 6a650916-5dea-4acd-822c-ec4f2ac13bcf
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Five 'does not exist' signals + 'command not found' errors suggest probing undocumented paths in warm-lanes worktree; .task-meta/<lane>/iterations.jsonl pattern fits the 'not_found' signal cluster
+  - date: '2026-09-09'
+    project: reify
+    session: 8aff1067-bb80-49c2-b9e7-68ee6d4772a1
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Two 'not found' signals in warm-lanes worktree orchestrated-task context suggest agent probing .task-meta/<lane>/iterations.jsonl or similar path and receiving exit code 2
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -4967,6 +5003,12 @@ entries:
     origin_phase: architect
     manifested_phase: verify
     note: 'Turn 24: .task/iterations.jsonl missing at expected path, confirmed by failed tail command'
+  - date: '2026-09-09'
+    project: reify
+    session: 6a650916-5dea-4acd-822c-ec4f2ac13bcf
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Missing iterations.jsonl at expected .task-meta path; warm-lanes context + 5 not_found signals consistent with per-lane task-meta absence
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -16918,3 +16960,159 @@ candidates:
     origin_phase: review
     manifested_phase: review
     evidence_quote: Classify 'settled' ONLY when you are confident the concern was actually resolved earlier, never merely because it resembles something raised before... Some were acted on, but others were merely DEFERRED (routed to a follow-up task) and are still OPEN and unaddressed. A current suggestion that matches only a DEFERRED, still-open prior concern has NOT been settled and must still be emitted.
+- id: cand-20260909-1
+  title: MCP envelope closing tag leaks into multi-line text field during serialization
+  cause: When tool call payload contains multi-line text field with complex content (file:line citations, code analysis, multi-paragraph narrative), XML/JSON envelope serialization fails to properly escape or bound the field, causing the literal </invoke> closing tag from the tool envelope to embed in the field value
+  area: MCP tool serialization / envelope handling
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: a2810a07-2d57-4f55-bd74-a73fc5f5386a
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: '(Turns 267, 272, 277, 284, 289, 294, 299) mcp__plan-tools__add_design_decision repeated with ''rationale'' field: error_type mcp_markup_detected (turns 267,272,277,284,289,299) and mcp_markup_unrepairable (turn 294); matched_pattern ''</invoke>'', misclose ''</rationale>''. Agent rewords/shortens rationale on each retry but identical error persists—indicating serialization defect in envelope boundary handling, not content issue.'
+- id: cand-20260909-2
+  title: escalate_info timeout during concurrent load measurement in warm-lanes
+  cause: MCP escalation tool timeout while concurrent background sweep/load measurement (6247-sweep) runs; resource saturation or MCP server blocking under warm-lanes conditions
+  area: escalation/warm-lanes
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 6a650916-5dea-4acd-822c-ec4f2ac13bcf
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: (turn 560) mcp__escalation__escalate_info operation timed out; concurrent pkill -f 6247-sweep with exit 144
+- id: cand-20260909-3
+  title: Agent ignores MCP tool repair hints and retries with manual text fixes instead
+  cause: 'When `add_design_decision` rejects a call due to MCP envelope markup leakage in the ''rationale'' field, the error provides both a `repaired_call` (ready to resubmit verbatim) and a metadata override flag `allow_mcp_markup: True`. Agent does not recognize either recovery path and instead attempts cosmetic text modifications to the rationale, triggering the same error repeatedly until the envelope becomes unrepairable.'
+  area: MCP tool error recovery, tool-call envelope construction
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 19c28266-703c-4ecb-afd3-283b8571b230
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'Turns 197, 203, 208, 215, 220, 225: Six `mcp_markup_detected` rejections with `repaired_call` + hint provided each time; agent modifies rationale text cosmetically instead of resubmitting `repaired_call` verbatim or using override. Turn 233: Final call marked `mcp_markup_unrepairable` — ''boundary cannot be determined, so no repair was attempted'''
+- id: cand-20260909-4
+  title: Warm-lane agent assumes standard project paths exist relative to worktree cwd
+  cause: Agent running in worktrees/<id> context attempts to resolve project files (scripts/, docs/, etc.) as relative paths from its cwd, but the directory structure or layout differs in the warm-lanes worktree environment
+  area: warm-lanes path resolution
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 19c28266-703c-4ecb-afd3-283b8571b230
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: sed -n '1,60p' scripts/README.md (cwd=/home/leo/src/warm-lanes/worktrees/_lane-9) -> exit 1, No such file or directory; 3 not_found signals across turns 34, 37, 53 suggest repeated retry of same relative-path strategy
+- id: cand-20260909-5
+  title: Warm-lane task-meta path probing across multiple turns with repeated failures
+  cause: Agent assumes task-meta state (likely iterations.jsonl or plan.json) exists at expected warm-lane path but repeated probes across 5 turns fail; possible symlink or bootstrap incompleteness
+  area: warm-lanes, task-meta, path-resolution
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: a7620675-8d9a-4c37-9059-8c4d45a2d1ab
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 5 'not found'/'does not exist' signals across turns 49, 68, 106, 138, 213 in `/home/leo/src/warm-lanes/worktrees/_lane-49`; session 564 bytes, 0 user turns (fully automated), no tool_error recorded
+- id: cand-20260909-6
+  title: Agent retries identical malformed MCP tool call without sanitizing after markup guard rejection
+  cause: Agent doesn't parse the guard rejection error message to identify markup as the problem; lacks markup-sanitization logic in the retry path; or retry loop has no instrumentation to detect futility of retrying with identical input.
+  area: MCP tool error handling; agent retry loop design; content sanitization
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: e3762fcc-b0e7-4e5c-92c1-a394e8666bbf
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: stuck retrying without correcting the leaked envelope markup in its rationale text...ALL 4 rejections in the burst window...are the SAME caller—subject_task_id=7349...tool=add_design_decision, param=rationale, misclose pattern=&lt;/rationale&gt; every time...retrying the identical malformed add_design_decision call 4 times in ~23s and getting rejected identically each time
+- id: cand-20260909-7
+  title: Vitest async infrastructure timeout in cross-project warm-lanes worktree
+  cause: Vitest worker timing out on async operations (fetch, onQueued) during npm test in post-merge verify; likely environment misconfiguration, missing dependencies, or network isolation specific to warm-lanes cross-project setup
+  area: test-infrastructure
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 16a2415a-ed52-4de2-af3b-3946216ed805
+    origin_phase: implement
+    manifested_phase: verify
+    evidence_quote: 'Error: [vitest-worker]: Timeout calling "fetch" ... Error: [vitest-worker]: Timeout calling "onQueued" ... Unhandled Rejection (5 unhandled errors during test run)'
+- id: cand-20260909-8
+  title: Task metadata fixture missing or unseeded in warm-lanes worktree bootstrap
+  cause: Worktree bootstrap for warm-lanes task 6478 did not create or install .task/metadata.json that agent runtime expects; cross-project metadata seeding gap or fixture path mismatch
+  area: warm-lanes-integration
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 16a2415a-ed52-4de2-af3b-3946216ed805
+    origin_phase: architect
+    manifested_phase: verify
+    evidence_quote: 'Read(file_path: /home/leo/src/warm-lanes/worktrees/_lane-44/.task/metadata.json) -> File does not exist'
+- id: cand-20260909-9
+  title: MCP tool-call envelope markup leaks into complex parameter field during construction
+  cause: Agent constructs a multi-line parameter for add_design_decision (rationale field), and the invocation XML tags (<invoke>, </invoke>) from the surrounding tool call are inadvertently serialized into the parameter value itself, triggering MCP envelope-markup validation rejection.
+  area: plan-tools / MCP tool parameter serialization / design decisions
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 775c8397-1386-4a8a-8566-6b1f05874911
+    origin_phase: architect
+    manifested_phase: review
+    evidence_quote: 'Tool call rejected: it carries raw MCP envelope markup in ''rationale'', which means the caller serialized part of its own tool-call envelope into the payload. matched_pattern: ''</invoke>'', misclose: ''</rationale>''. Error repeated identically on two consecutive invocation attempts (turn 151, turn 156).'
+- id: cand-20260909-10
+  title: Bash heredoc with compound command syntax corrupted when executed via eval
+  cause: Quoting, escaping, or variable expansion issues in complex bash heredocs with braces and output redirection when passed through eval
+  area: bash-heredoc-eval-execution
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 5bb743c3-b1a7-407f-bb37-5fc223e6072d
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'Exit code 2: `/bin/bash: eval: line 1: syntax error near unexpected token ''}''` with corrupted command showing `skim test cargo` instead of expected `cargo test`'
+- id: cand-20260909-11
+  title: 'Amendment-round concern distinction: resolved vs deferred classification'
+  cause: Agent re-flags a review concern from a prior amendment round without properly distinguishing whether it was actually resolved (fixed or deliberately rejected) or merely deferred to a follow-up task that remains open and unaddressed.
+  area: Review and amendment workflows
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: db3a7c66-ae9c-4c56-b816-7d731287b65e
+    origin_phase: review
+    manifested_phase: review
+    evidence_quote: Classify "settled" ONLY when you are confident the concern was actually resolved earlier, never merely because it resembles something raised before... Some were acted on, but others were merely DEFERRED (routed to a follow-up task) and are still OPEN and unaddressed.
+- id: cand-20260909-12
+  title: Serde attribute scope misdirection masks bincode wire-format instability
+  cause: Developer relied on `#[serde(rename_all = "PascalCase")]` attribute to ensure wire-format stability, but this attribute affects only serde JSON codecs, not bincode's positional enum encoder. When enum variants are inserted mid-definition (not appended), existing persisted entries decode to the wrong variant silently without error or cache invalidation.
+  area: cross-crate wire-format contracts / enum versioning
+  first_seen: '2026-09-09'
+  disposition: pending
+  sightings:
+  - date: '2026-09-09'
+    project: reify
+    session: 76ec332d-771f-430d-9df9-25878ce65633
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: 'nothing invalidates existing entries when that happens: ENTRY_FORMAT_VERSION stays 2... Concrete failure: a cache entry written today with code = Some(ShellTooThick) (index N); a later commit inserts a new variant before ShellTooThick; every warm serve of that still-valid entry now decodes index N as the neighbouring code and replays a Warning with the WRONG DiagnosticCode into LSP ranges, --json output and the GUI — silently wrong user-facing data, with no error and no miss.'
