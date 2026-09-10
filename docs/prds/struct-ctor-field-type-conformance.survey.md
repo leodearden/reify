@@ -1,6 +1,6 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `c4491cf82ce4d5fbe1c53ecb11eca71a4718f01a`
+**Base commit:** `b42c7dd2074099b67a52a8e4d297e82c726aab3f`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
 **Sites:** 16
@@ -53,14 +53,24 @@ the machine-derived reason recovery failed for that specific row (span starts at
 a non-identifier, identifier not followed by `(`, span out of range, …), so no
 prose here has to guess a cause on a reader's behalf.
 
-The **`disposition` column is γ's RULING**, projected from the two per-site
-waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL` in the generator,
-`CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling `examples_smoke.rs`) rather
-than typed here. A `deferred` row names the LIVE task that owns retiring the
-site and the reason migrating it here would destroy something — most of these
-are committed RED before-images whose violation IS the fixture's content. An
-`unattributed` row is claimed by nobody: that is the actionable state, and
-after γ the corpus holds none at Warning severity.
+The **`disposition` column is γ's RULING**, projected from the site's measured
+severity and the two per-site waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`
+in the generator, `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling
+`examples_smoke.rs`) rather than typed here. It has three states, and they call
+for three DIFFERENT actions:
+
+- **`deferred`** names the LIVE task that owns retiring the site, and the reason
+migrating it here would destroy something — most of these are committed RED
+before-images whose violation IS the fixture's content. Leave them alone.
+- **`n/a`** carries a ctor-conformance CODE but at **Error** severity, which is
+outside the zero-ctor-conformance-warnings signal entirely. Every such row today
+is a deliberate REJECTION fixture reached from a NON-ctor path (selector
+composition, overload resolution, trait conformance): the rejection IS the
+behaviour under test. **Not actionable, and not residual either** — it carries no
+owner because it needs none, and reading it as unclaimed work would send you to
+delete another PRD’s signal.
+- **`unattributed`** is a warning claimed by nobody: that is the actionable
+state, and after γ the corpus holds none.
 
 The **`hint` column is ADVISORY**, derived purely from the (expected, found)
 type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class
@@ -130,8 +140,8 @@ sized into it. **Triage manually before touching.**
 
 | site | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `crates/reify-eval/tests/fixtures/selectors/bt1_wrong_kind_union.ri:15` | union | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | unattributed — actionable | selector composition kind mismatch: cannot compose FaceSelector and EdgeSelector |
-| `crates/reify-eval/tests/fixtures/selectors/bt6_kind_typed_param.ri:24` | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | unattributed — actionable | no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector) -> Int |
+| `crates/reify-eval/tests/fixtures/selectors/bt1_wrong_kind_union.ri:15` | union | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | n/a — Error severity, outside the ctor-conformance warning signal: nothing to retire | selector composition kind mismatch: cannot compose FaceSelector and EdgeSelector |
+| `crates/reify-eval/tests/fixtures/selectors/bt6_kind_typed_param.ri:24` | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | n/a — Error severity, outside the ctor-conformance warning signal: nothing to retire | no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector) -> Int |
 
 ### unattributed def — needs manual triage — 2 site(s)
 
@@ -146,7 +156,7 @@ with a real cost. **Triage manually before touching.**
 | site | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `tests/prd-gate/fixtures/curvature_rad_literal.ri:12` | — | unrecovered: identifier not followed by `(` | kc | Scalar[m^-1] | Scalar[rad·m^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | deferred — owned by #6179: angle-completion leaf α, boundary row B1: CURVATURE is m^-1 pre-α, so the rad·m^-1 initializer mismatches; the fixture's own header calls that check-time flip α's signal | argument 'kc' has type 'Scalar[rad·m^-1]' but param 'kc' requires type 'Scalar[m^-1]'; pass a dimensioned AbsorptionCoeff literal |
-| `tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri:21` | — | unrecovered: identifier not followed by `(` | material | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | unattributed — actionable | type 'Field<<error>, AnisotropicMaterial>' does not conform to trait 'ConstitutiveLaw' required by param 'material' |
+| `tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri:21` | — | unrecovered: identifier not followed by `(` | material | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | n/a — Error severity, outside the ctor-conformance warning signal: nothing to retire | type 'Field<<error>, AnisotropicMaterial>' does not conform to trait 'ConstitutiveLaw' required by param 'material' |
 
 ## Coverage and limitations
 
