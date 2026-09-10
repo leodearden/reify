@@ -165,6 +165,40 @@ async fn handle_reify_set_parameter(
 }
 "#;
 
+/// A fixture whose `handle_reify_export` NAMES both seams in prose — a doc
+/// comment and a line comment — while its body bypasses them entirely.
+///
+/// Not hypothetical: the real `handle_reify_set_parameter`'s doc comment
+/// literally contains "1. `reify_set_parameter_on_engine_and_refresh_baseline`
+/// — splices the …". A checker that greps raw text greens any handler that
+/// merely mentions a seam while bypassing it in code.
+const COMMENT_ONLY_MENTION_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_export" => handle_reify_export(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+/// Export the current model.
+///
+/// Flow:
+///  1. `reify_export_on_engine_and_refresh_baseline` — writes the file and
+///     refreshes the delta baseline.
+///  2. push the rebuilt `GuiState` to the frontend.
+async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let (format, output_path) = reify_export_params(&params)?;
+    // routes through write_on_engine_and_refresh_baseline
+    let gs = run_on_engine(&state.engine, move |s| s.export(&format, &output_path)).await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_export_envelope(&output_path))
+}
+"#;
+
 #[test]
 fn bypassing_fixture_is_flagged() {
     assert_eq!(
@@ -172,6 +206,18 @@ fn bypassing_fixture_is_flagged() {
         vec![Bypass {
             tool: "reify_set_parameter".to_string(),
             handler: "handle_reify_set_parameter".to_string(),
+            kind: BypassKind::NoBaselineRefresh,
+        }],
+    );
+}
+
+#[test]
+fn seam_named_only_in_a_comment_does_not_count() {
+    assert_eq!(
+        write_tool_bypasses(COMMENT_ONLY_MENTION_SOURCE),
+        vec![Bypass {
+            tool: "reify_export".to_string(),
+            handler: "handle_reify_export".to_string(),
             kind: BypassKind::NoBaselineRefresh,
         }],
     );
