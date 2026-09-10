@@ -448,11 +448,15 @@ describe("the conventions the live drivers are held to, across the whole corpus"
     ).toEqual([]);
   });
 
-  it("names the six known drivers — an empty table is not a pass", () => {
+  it("names the known drivers — an empty table is not a pass", () => {
     // Without this, an edit that empties the table turns the `it.each` above
     // into zero registered tests: a vacuously green suite with the convention
     // silently gone, the same inert-by-default failure the negative controls
     // guard against on the regex side.
+    //
+    // `arrayContaining`, not an exact list: a new driver is expected to arrive
+    // without churning this pin, and the directory cross-check below is what
+    // keeps the table complete.
     expect(SMOKE_DRIVERS).toEqual(
       expect.arrayContaining([
         "smoke_appearance_e2e.mjs",
@@ -460,6 +464,7 @@ describe("the conventions the live drivers are held to, across the whole corpus"
         "smoke_find_uses.mjs",
         "smoke_mesh_count_parity_e2e.mjs",
         "smoke_multi_pane_e2e.mjs",
+        "smoke_rail_lengthening_e2e.mjs",
         "smoke_surface_finish_viewport_e2e.mjs",
       ]),
     );
