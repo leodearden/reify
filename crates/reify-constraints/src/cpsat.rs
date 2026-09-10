@@ -1025,7 +1025,7 @@ impl CpSatSolver {
                 // on any fold it cannot order. So every score reaching the heap
                 // is a finite, well-ordered, minimisation-sense f64 (F-result
                 // I2).
-                let Some(score) =
+                let Ok(score) =
                     crate::solver::eval_objective_set(objective, &full, &problem.functions, None)
                 else {
                     // A model that did not score is DROPPED from the ranking,

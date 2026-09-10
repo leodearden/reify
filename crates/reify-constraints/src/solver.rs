@@ -1880,21 +1880,50 @@ struct ConstraintCostFunction<'a> {
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
 }
 
+/// Why [`eval_objective_set`] could not produce an orderable score.
+///
+/// Structured rather than a disjunctive free-text sentence, because the two
+/// causes send a user somewhere different: `Undefined` is an authoring error in
+/// the objective expression, `NonFinite` is a magnitude (or weight) problem in
+/// an expression that evaluates perfectly well. `solve_core` renders each into
+/// its own `NoProgress` reason, so a reader — and a test — can tell which fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectiveAbstention {
+    /// A term's expression did not evaluate to a number here (e.g. `x / 0`).
+    Undefined,
+    /// Every term evaluated to a number, but a term value or the weighted
+    /// accumulator was infinite or NaN (task #6377).
+    NonFinite,
+}
+
+impl ObjectiveAbstention {
+    /// The cause half of a user-facing `NoProgress` reason; the caller appends
+    /// where it was measured ("at solution point" / "at fallback point").
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Undefined => "objective expression evaluated to undefined",
+            Self::NonFinite => "objective's weighted fold was non-finite",
+        }
+    }
+}
+
 /// Evaluate an `ObjectiveSet` as a single f64 cost using the I2-preserving
 /// additive fold (PRD §6.2 I3):
 ///
 ///   acc = 0.0
 ///   for each term t:
-///     v = eval(t.expr)           — returns None if Undef or non-finite
+///     v = eval(t.expr)           — abstains if Undef or non-finite
 ///     Minimize → acc += t.weight * v
 ///     Maximize → acc -= t.weight * v
 ///
-/// Returns `None` if ANY term evaluates to a non-numeric / non-finite value,
-/// preserving the single-term None → UNDEF_OBJECTIVE_PENALTY / NoProgress paths.
-/// Returns `None` ALSO when the ACCUMULATED fold is itself non-finite, even
-/// though every term value was finite (task #6377). The guard at the end of the
-/// body states which paths reach that and what abstaining costs each caller;
-/// this header does not restate it.
+/// Abstains — [`ObjectiveAbstention::Undefined`] — if ANY term evaluates to a
+/// non-numeric value, preserving the single-term
+/// UNDEF_OBJECTIVE_PENALTY / NoProgress paths. Abstains as
+/// [`ObjectiveAbstention::NonFinite`] for a non-finite term value, and ALSO
+/// when the ACCUMULATED fold is itself non-finite though every term value was
+/// finite (task #6377). The guard at the end of the body states which paths
+/// reach that and what abstaining costs each caller; this header does not
+/// restate it.
 ///
 /// I2 numerical equivalence: for a single term with weight 1.0,
 ///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
@@ -1910,7 +1939,7 @@ struct ConstraintCostFunction<'a> {
 /// override scores its enumerated models through THIS function. Both the
 /// discrete and the continuous path therefore fold an objective the same way —
 /// same weight application, same `Maximize` → negation normalisation to
-/// "lower is better" (F-result I2), same non-finite → `None` rejection. A
+/// "lower is better" (F-result I2), same non-finite → abstention. A
 /// second, cpsat-local fold would be free to disagree with this one about any
 /// of those, and nothing would catch it (PRD2 §3.9, G7).
 pub(crate) fn eval_objective_set(
@@ -1918,7 +1947,7 @@ pub(crate) fn eval_objective_set(
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> Option<f64> {
+) -> Result<f64, ObjectiveAbstention> {
     // Guard: only WeightedSum is implemented here.  A Lexicographic set must
     // not be silently mis-solved as a weighted sum.  Assert in debug builds;
     // task ε will implement the full ε-band staged solve.
@@ -1945,7 +1974,10 @@ pub(crate) fn eval_objective_set(
     for term in &objective.terms {
         let v = reify_expr::eval_expr(&term.expr, &ctx_with(values, functions, dispatch))
             .as_f64()
-            .filter(|v| v.is_finite())?;
+            .ok_or(ObjectiveAbstention::Undefined)?;
+        if !v.is_finite() {
+            return Err(ObjectiveAbstention::NonFinite);
+        }
         match term.sense {
             ObjectiveSense::Minimize => acc += term.weight * v,
             ObjectiveSense::Maximize => acc -= term.weight * v,
@@ -2008,9 +2040,9 @@ pub(crate) fn eval_objective_set(
             "objective fold produced a non-finite accumulator; abstaining \
              (no orderable score) rather than returning a NaN/Inf cost"
         );
-        return None;
+        return Err(ObjectiveAbstention::NonFinite);
     }
-    Some(acc)
+    Ok(acc)
 }
 
 impl CostFunction for ConstraintCostFunction<'_> {
@@ -2508,20 +2540,18 @@ fn solve_core_with_sd_tolerance(
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
             //
-            // `is_none()` covers TWO causes since task #6377, which is why the
-            // reason no longer says only "undefined": an undefined TERM, and a
-            // non-finite weighted FOLD of well-defined terms. The second is a
-            // deliberate reclassification — see `eval_objective_set`'s guard
-            // for what it replaced (measured, and NOT a uniform prior `Solved`)
-            // and why abstaining is the fail-closed answer.
+            // Two causes since task #6377 — an undefined TERM, and a
+            // non-finite weighted FOLD of well-defined terms — reported apart
+            // rather than as one disjunctive sentence, because they send a user
+            // to different fixes. The second is a deliberate reclassification;
+            // see `eval_objective_set`'s guard for what it replaced.
             if let Some(obj) = effective_objective
-                && eval_objective_set(obj, &trial_values, &problem.functions, dispatch).is_none()
+                && let Err(cause) =
+                    eval_objective_set(obj, &trial_values, &problem.functions, dispatch)
             {
                 return (
                     SolveResult::NoProgress {
-                        reason: "objective expression evaluated to undefined at \
-                                 fallback point (or its weighted fold was non-finite)"
-                            .to_string(),
+                        reason: format!("{} at fallback point", cause.reason()),
                     },
                     meta,
                 );
@@ -2635,18 +2665,16 @@ fn solve_core_with_sd_tolerance(
         );
     }
 
-    // Post-solve objective validation: if the objective is still non-numeric
-    // at the solution point, report NoProgress rather than Solved. Same two
-    // causes, and the same #6377 reclassification, as the fallback-point site
-    // above; pinned by `non_finite_objective_fold_at_feasible_initial_returns_no_progress`.
+    // Post-solve objective validation: if the objective is still unscorable at
+    // the solution point, report NoProgress rather than Solved. Same two causes,
+    // and the same #6377 reclassification, as the fallback-point site above;
+    // pinned by `non_finite_objective_fold_at_feasible_initial_returns_no_progress`.
     if let Some(obj) = effective_objective
-        && eval_objective_set(obj, &final_values, &problem.functions, dispatch).is_none()
+        && let Err(cause) = eval_objective_set(obj, &final_values, &problem.functions, dispatch)
     {
         return (
             SolveResult::NoProgress {
-                reason: "objective expression evaluated to undefined at solution \
-                         point (or its weighted fold was non-finite)"
-                    .to_string(),
+                reason: format!("{} at solution point", cause.reason()),
             },
             meta,
         );
@@ -3251,8 +3279,8 @@ fn build_perturbation_anchors(
 /// feasibility-only solve must report `FeasibilityOnly` + `None` even when
 /// the solver internally optimised a synthetic centrality objective for
 /// exploration. Returns `None` when there is no explicit objective, or when
-/// [`eval_objective_set`] cannot produce a comparable score at `values`
-/// (a non-numeric or non-finite result).
+/// [`eval_objective_set`] abstains at `values` (a non-numeric or non-finite
+/// result).
 ///
 /// Shared by [`rank_single`], the multistart scoring loop in
 /// [`ConstraintSolver::solve_ranked`], and `verify_uniqueness`'s
@@ -3273,7 +3301,7 @@ fn score_solution(
         &problem.functions,
         dispatch,
     );
-    eval_objective_set(obj, &full, &problem.functions, dispatch)
+    eval_objective_set(obj, &full, &problem.functions, dispatch).ok()
 }
 
 /// Verify solution uniqueness by re-solving from a perturbed starting point.
@@ -3761,7 +3789,7 @@ fn rank_single(
             let objective_score = score_solution(problem, &values, dispatch);
             // Key optimality off objective_score (not problem.objective.is_some())
             // to preserve I4: BestFound is only emitted when the score is present.
-            // In the edge case where eval_objective_set returns None despite
+            // In the edge case where eval_objective_set abstains despite
             // problem.objective.is_some() (e.g. objective expression non-numeric
             // at the solved map), fall back to FeasibilityOnly so that
             // objective_score: None is never paired with BestFound.
@@ -6246,9 +6274,9 @@ mod tests {
         use reify_ir::ObjectiveSense;
         let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::NAN, 2.0)]);
         assert!(
-            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_err(),
             "a NaN term weight folds to a NaN accumulator; eval_objective_set must \
-             fail closed with None rather than return Some(NaN) — a NaN score is not \
+             fail closed rather than return a NaN score — a NaN score is not \
              orderable, and both ranking sites (solver.rs solve_ranked_impl, \
              cpsat.rs `impl Ord for ScoredModel`) assume it can never occur"
         );
@@ -6263,9 +6291,9 @@ mod tests {
         use reify_ir::ObjectiveSense;
         let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::INFINITY, 2.0)]);
         assert!(
-            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_err(),
             "an infinite term weight folds to an infinite accumulator; \
-             eval_objective_set must fail closed with None. Note this case is NOT \
+             eval_objective_set must fail closed. Note this case is NOT \
              caught by a `!is_nan()` check — the guard has to be `is_finite()`"
         );
     }
@@ -6279,7 +6307,7 @@ mod tests {
         use reify_ir::ObjectiveSense;
         let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::MAX, 1e10)]);
         assert!(
-            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_err(),
             "f64::MAX * 1e10 overflows to +inf even though BOTH factors are finite \
              and the weight is positive; eval_objective_set must fail closed. This is \
              the case that makes upstream weight validation insufficient on its own"
@@ -6300,7 +6328,7 @@ mod tests {
             (ObjectiveSense::Maximize, f64::MAX, 1e10),
         ]);
         assert!(
-            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_err(),
             "a +inf Minimize term and a -inf Maximize term fold to NaN (inf - inf) \
              with every weight finite and positive; eval_objective_set must fail \
              closed. No construction-site weight validation can close this path — \
@@ -6322,7 +6350,7 @@ mod tests {
         };
         assert_eq!(
             super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
-            Some(3.0),
+            Ok(3.0),
             "a finite fold must be returned unchanged: the fail-closed accumulator \
              guard rejects only non-finite scores, and I2 (0.0 + 1.0·v == v for finite \
              v) keeps the cost surface byte-identical for every well-formed objective"
@@ -7676,6 +7704,13 @@ mod tests {
                     "expected post-solve path ('solution point'), got: {}",
                     reason
                 );
+                assert!(
+                    reason.contains("evaluated to undefined"),
+                    "the cause here is an undefined TERM (x/0), which must be \
+                     reported as such and not as the sibling non-finite-fold \
+                     cause; got: {}",
+                    reason
+                );
             }
             other => panic!(
                 "feasible initial + undefined objective should return NoProgress, got {:?}",
@@ -7780,10 +7815,12 @@ mod tests {
                     "expected the post-solve validation site, got: {reason}"
                 );
                 assert!(
-                    reason.contains("non-finite"),
-                    "the reason must not tell a user their objective was \
-                     `undefined` when what actually happened is a non-finite \
-                     weighted fold of well-defined terms; got: {reason}"
+                    reason.contains("weighted fold was non-finite"),
+                    "the reason must name the fold, not tell a user their \
+                     objective was `undefined` — every term here is well \
+                     defined. This discriminates: the sibling undefined-TERM \
+                     fixture reports `evaluated to undefined` at the same site, \
+                     so a cause mix-up fails here. Got: {reason}"
                 );
             }
             other => panic!(
