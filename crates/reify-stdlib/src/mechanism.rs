@@ -425,6 +425,14 @@ fn make_duplicate_solid_error(mech_map: &BTreeMap<Value, Value>, message: String
 /// The sole caller is the world-parent guard in `append_body`'s
 /// parent-conflict branch (task 7186 review fix 1); the WHY lives at that
 /// call site.
+///
+/// **The analogy stops short of the diagnostic seam (#7354).**
+/// `reify_eval::engine_eval::detect_mechanism_errors` hardcodes the
+/// `duplicate_solid` discriminator, so this error has no typed
+/// `DiagnosticCode`: a design that trips the guard gets the `error` key and an
+/// `undef` snapshot with nothing naming the cause. Wiring that is out of this
+/// crate's reach; `docs/reify-stdlib-reference.md` §13.2 states the gap for
+/// users.
 fn make_world_parented_closure_error(mech_map: &BTreeMap<Value, Value>, message: String) -> Value {
     let mut new_map = mech_map.clone();
     new_map.insert(
