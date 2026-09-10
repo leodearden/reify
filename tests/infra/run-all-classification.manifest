@@ -127,6 +127,7 @@ test_mesh_count_parity_smoke_runner.sh pool
 test_nan_safe_ordering_guard_wired.sh pool
 test_nextest_absent_lib.sh pool
 test_nextest_slow_priority.sh pool
+test_no_bare_holder_sleep_grace.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
 test_no_new_wallclock_rust_deadlines.sh pool
 test_no_new_wallclock_upper_bounds.sh pool
@@ -186,6 +187,7 @@ test_setup_dev_no_ldconfig.sh pool
 test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
 test_slot_event_log.sh pool
+test_slot_holder_handshake_lib.sh pool
 test_slot_timeout_marker.sh pool
 test_smoke_predone_hook.sh pool
 test_sn_gate.sh pool

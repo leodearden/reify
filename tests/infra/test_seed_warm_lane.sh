@@ -2720,6 +2720,7 @@ _BGPIDS+=("$Q_SEED8_PID")
 # call; this is NOT a wall-clock upper-bound assertion -- the "not done yet"
 # check below can only be a false failure (never a false pass), since the
 # holder genuinely holds the lock until killed below.
+# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
 sleep 0.3
 assert "H5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE8"
@@ -2975,6 +2976,7 @@ _BGPIDS+=("$Q_SEED11_PID")
 # Brief settle so the backgrounded job has reached the flock call. NOT a
 # wall-clock upper bound -- the "not done yet" check can only false-fail, never
 # false-pass, since the holder genuinely holds the lock until killed below.
+# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
 sleep 0.3
 assert "H9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE11"
