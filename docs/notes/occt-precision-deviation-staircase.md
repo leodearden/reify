@@ -48,7 +48,8 @@ adjudication where the point of this note is to leave one.
 
 `#precision` is threaded bit-exact into OCCT's `BRepMesh_IncrementalMesh`
 linear-deflection argument. The achieved sampled facet-chord deviation is a
-**staircase** in that request — measured, over a 388-point sweep (PRD §2):
+**staircase** in that request — measured over the 388-point gate 6060/esc-6060-1
+sweep, whose established facts are PRD §2:
 
 - **Treads** follow an upper envelope near **~2.075×** the requested deflection.
 - The treads are punctuated by narrow **periodic downward teeth** near **~0.758×**.
@@ -67,7 +68,7 @@ do not interpolate.
 
 All of the above is for the **sphere** class. Other classes have their own ratios
 (PRD §2's per-class spot values) and the cylinder in particular behaves quite
-differently — see §2.
+differently — see §2 below.
 
 ---
 
@@ -77,7 +78,7 @@ differently — see §2.
 
 The obvious explanation for a staircase is integer quantisation of segment counts
 along an edge. That explanation is **falsified**, and this falsification is
-load-bearing for everything in §2.2:
+load-bearing for everything in §2.2 below:
 
 A same-sweep control on `cylinder(1000mm, 2000mm)` — whose curved face **is**
 edge-segment-quantised — measures ratio **0.489** (measured; PRD §2's cylinder spot
