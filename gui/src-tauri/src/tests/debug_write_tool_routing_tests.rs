@@ -113,6 +113,25 @@ fn names_a_seam(body: &str, own_name: &str) -> bool {
     identifiers(body).any(|id| id.ends_with("_and_refresh_baseline") && id != own_name)
 }
 
+/// True when the top-level fn `name` reaches a `*_and_refresh_baseline` seam
+/// either directly or through exactly ONE delegation hop.
+///
+/// The depth cap is deliberate, not a shortcut: one hop is exactly what
+/// `reify_open_file` needs (`handle_reify_open_file` → `open_path_into_engine`
+/// → `open_source_into_engine_and_refresh_baseline`), and an uncapped walk
+/// would be a call-graph analyzer — far more machinery than the claim
+/// warrants. The cap's failure direction is the safe one: a chain deeper than
+/// one hop false-POSITIVES, so a human looks, and it can never false-GREEN.
+fn reaches_a_seam(code: &str, name: &str) -> bool {
+    let Some(body) = fn_body(code, name) else {
+        return false;
+    };
+    names_a_seam(body, name)
+        || identifiers(body)
+            .filter(|callee| *callee != name)
+            .any(|callee| fn_body(code, callee).is_some_and(|hop| names_a_seam(hop, callee)))
+}
+
 /// Every maximal `[A-Za-z0-9_]+` run in `text`.
 fn identifiers(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
@@ -188,9 +207,7 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
     let code = strip_comments(source);
     dispatch_arms(&code)
         .into_iter()
-        .filter(|(_, handler)| {
-            !fn_body(&code, handler).is_some_and(|body| names_a_seam(body, handler))
-        })
+        .filter(|(_, handler)| !reaches_a_seam(&code, handler))
         .map(|(tool, handler)| Bypass {
             tool,
             handler,
