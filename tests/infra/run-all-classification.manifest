@@ -234,4 +234,5 @@ test_warm_lane_pool_config.sh pool
 test_warm_lane_preflight.sh pool
 test_warm_lane_ref_visibility.sh pool
 test_warm_lane_sizing_lifecycle.sh pool
+test_warm_lane_source_integrity.sh pool
 test_with_jcodemunch_serve.sh pool

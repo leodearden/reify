@@ -5783,4 +5783,138 @@ assert "W10: seed still exits 0 on the guard-success branch" \
 assert "W10: ...and STDOUT is still exactly <lane_dir>/target on that branch" \
     bash -c '[ "$1" = "$2" ]' _ "$W10_OUT" "$W_LANE6/target"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block X — --fresh-checkout is source-tree CONTENT-INERT and DELETION-INERT
+#           (task 7227)
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS BLOCK EXISTS. warm-lane-gc.sh's Pass-1 reset delegates to this seed
+# and its header claims the reset never harms the lane's source tree. Nothing
+# pinned that claim, and esc-7106-5 — one tracked source file gone from a lane,
+# unattributed — stood as a live counter-hypothesis to it for exactly that
+# reason. The claim is TRUE (task 7227 re-measured the seed: no git
+# clean/checkout/reset/restore/rm/stash is executed anywhere, and every rm/mv
+# is scoped to $LANE_TARGET or the pool-level trash sibling), so this block is
+# a CHARACTERIZATION PIN and is expected green on its first run. It is not
+# hunting a bug; it is closing the hole that let the hypothesis survive.
+#
+# WHY IT LIVES HERE AND NOT IN tests/infra/test_warm_lane_gc.sh, where the
+# reset under investigation actually is: that suite drives every Pass-1 reset
+# through _seed_stub_body, a stub whose whole behaviour is removing a
+# target/DIVERGENT_MARKER. A source-survival assertion there would characterize
+# the stub and stay green no matter what the real primitive did. The pin has to
+# sit where the REAL seed runs against a real lane.
+#
+# The lane is a real git repo (Block M's recipe) so X5/X6 can pin the ref too.
+# No --base-commit is passed, so the seed makes zero git calls and the stub git
+# is never invoked. The pre-existing non-empty target/ forces the most
+# destructive path available — rename-to-trash, reflink-clone, rm trash.
+echo ""
+echo "--- Block X: fresh-checkout leaves the source tree intact (task 7227) ---"
+
+# ── block-local snapshot helpers ──────────────────────────────────────────────
+# Both prune target/ (legitimately replaced) and .git/ (git's own bookkeeping,
+# and pruned by the seed's own bulk stamp). What is left is exactly the lane's
+# source tree — the thing the gc header promises is never touched.
+_x_paths() {
+    ( cd "$1" && find . -mindepth 1 \( -path ./target -o -path ./.git \) -prune -o -print ) |
+        LC_ALL=C sort
+}
+_x_hashes() {
+    local lane="$1" p
+    ( cd "$lane" && find . -mindepth 1 \( -path ./target -o -path ./.git \) -prune -o -type f -print ) |
+        LC_ALL=C sort |
+        while IFS= read -r p; do
+            printf '%s  %s\n' "$(sha256sum < "$lane/$p" | cut -d' ' -f1)" "$p"
+        done
+}
+
+X_LANE="$(make_isolated_lane X-inert)"
+
+git -C "$X_LANE" init -q
+git -C "$X_LANE" config user.email "test@reify.test"
+git -C "$X_LANE" config user.name "Test"
+
+# Path set spans the walk's edges: a nested subdirectory, a name containing a
+# space, and a dotfile. A find/touch walk that mishandles any of those would
+# show up here as a vanished or altered path rather than as a silent survivor.
+mkdir -p "$X_LANE/src" "$X_LANE/nested/deep"
+printf 'target\n'          > "$X_LANE/.gitignore"
+printf 'fn main() {}\n'    > "$X_LANE/src/main.rs"
+printf 'pub fn lib() {}\n' > "$X_LANE/src/lib.rs"
+printf 'pub fn deep() {}\n' > "$X_LANE/nested/deep/buried.rs"
+printf 'spaced content\n'  > "$X_LANE/with space.txt"
+printf 'dotfile content\n' > "$X_LANE/.hidden-config"
+git -C "$X_LANE" add -A
+git -C "$X_LANE" commit -q -m "init"
+
+# Base: real artifact + sidecar so the cp stub has something to clone.
+X_BASE_PARENT="$(mktemp -d /tmp/test-seed-X-base-XXXXXX)"
+X_BASE="$X_BASE_PARENT/target"
+_TMPDIRS+=("$X_BASE_PARENT")
+mkdir -p "$X_BASE/debug"
+echo "base artifact" > "$X_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$X_BASE_PARENT/.warm-base-meta"
+
+# Non-empty pre-existing target/ → the replace path, not the create path.
+mkdir -p "$X_LANE/target/debug"
+echo "stale artifact" > "$X_LANE/target/debug/stale.a"
+
+X_PATHS_BEFORE="$(_x_paths "$X_LANE")"
+X_HASHES_BEFORE="$(_x_hashes "$X_LANE")"
+X_HEAD_BEFORE="$(git -C "$X_LANE" rev-parse HEAD)"
+X_REF_BEFORE="$(git -C "$X_LANE" symbolic-ref HEAD)"
+
+# X4's positive control is only meaningful if the sources do NOT already carry
+# the 2020 stamp. They were written moments ago, but assert it rather than
+# assume it: a fixture that started at the epoch would make X4 vacuous.
+X_MTIME_BEFORE="$(stat -c '%Y' "$X_LANE/src/main.rs")"
+assert "X0: FIXTURE — sources start ABOVE the 2020 epoch (else X4 is vacuous)" \
+    test "$X_MTIME_BEFORE" -gt "$EPOCH_2020"
+assert "X0: FIXTURE — the lane really is a git repo with a resolvable HEAD" \
+    test -n "$X_HEAD_BEFORE"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$X_BASE" "$X_LANE" --fresh-checkout
+
+assert "X1: the seed run succeeded (exit 0)" test "$RC" -eq 0
+
+# X2 — DELETION-INERT. The assertion whose absence let "the reset may delete a
+# source file" stand unfalsified: the path SET is identical, so nothing
+# vanished and nothing appeared.
+assert "X2: the source-tree path set is IDENTICAL across --fresh-checkout" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_PATHS_BEFORE" "$(_x_paths "$X_LANE")"
+
+# X3 — CONTENT-INERT. Set identity alone would still permit a rewrite in place.
+assert "X3: every source file is byte-identical across --fresh-checkout" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_HASHES_BEFORE" "$(_x_hashes "$X_LANE")"
+
+# X4 — POSITIVE CONTROL. Without it, a fixture where the seed never ran at all
+# would satisfy X2/X3 trivially. The 2020 stamp proves the seed's
+# `find "$LANE_DIR" ... -exec touch` walk really did traverse the very files
+# X3 just proved unchanged — which is also the precise, and only, effect the
+# reset has on a lane's source tree.
+assert "X4: src/main.rs was stamped to the 2020 epoch (the walk really ran)" \
+    test "$(stat -c '%Y' "$X_LANE/src/main.rs")" -eq "$EPOCH_2020"
+assert "X4: ...so was the nested file" \
+    test "$(stat -c '%Y' "$X_LANE/nested/deep/buried.rs")" -eq "$EPOCH_2020"
+assert "X4: ...so was the spaced filename" \
+    test "$(stat -c '%Y' "$X_LANE/with space.txt")" -eq "$EPOCH_2020"
+assert "X4: ...and so was the dotfile" \
+    test "$(stat -c '%Y' "$X_LANE/.hidden-config")" -eq "$EPOCH_2020"
+
+# X5/X6 — the branch half of the same header claim: committed work lives on the
+# lane's ref and the reset never moves it.
+assert "X5: HEAD still points at the same commit" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_HEAD_BEFORE" "$(git -C "$X_LANE" rev-parse HEAD)"
+assert "X6: the lane is still on the same branch" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_REF_BEFORE" "$(git -C "$X_LANE" symbolic-ref HEAD)"
+
+# X7 — git's own view agrees: no tracked file is modified or deleted. This is
+# the same question scripts/warm-lane-source-integrity.sh asks a live lane, so
+# a regression here would surface there as a `deleted=` sentinel.
+assert "X7: git reports no tracked source change after the reset" \
+    bash -c '[ -z "$(git -C "$1" status --porcelain)" ]' _ "$X_LANE"
+
+
 test_summary
