@@ -30,16 +30,21 @@
 //
 // ── #precision and the RepresentationWithin margin ───────────────────────────
 // Owns THIS FIXTURE's measured value (6.202e-4 m @ #precision(0.3mm)), its
-// margin, the drift canary, the retune recipe, and the mechanism derivation
-// below — the Sphere docstring further down, and
+// margin, the drift canary, and the one-point re-derivation recipe — the
+// Sphere docstring further down, and
 // `representation_within_assertion.rs`'s `OCCT_SOURCE_FINE` doc, point here
 // for those, so a retune has exactly one place to edit them. Of
 // `tests/harness_cli/`'s consumers, `cli_determinacy_gate.rs` points at
 // `OCCT_SOURCE_FINE`; `cli_dfm_overhang.rs` and
-// `cli_reset_per_build_interleaving.rs` point HERE. Exact periods, duty
-// cycle, and the full regime walk are owned solely by
+// `cli_reset_per_build_interleaving.rs` point HERE.
+//
+// Owned ELSEWHERE, and deliberately not restated here: the staircase model,
+// its mechanism and the branch ratios live in
+// `docs/notes/occt-precision-deviation-staircase.md`; the exact periods, duty
+// cycle and full regime walk in
 // `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 (the
-// adjudication of record for gate 6060/esc-6060-1) — not restated here.
+// adjudication of record for gate 6060/esc-6060-1); the 8-point
+// neighbourhood grid around 0.3mm in `OCCT_SOURCE_FINE`.
 //
 // Measured under OCCT at #precision(0.3mm): the sampled facet-chord deviation on
 // the 1m-radius sphere is 6.202e-4 m against the 1mm (1.000e-3 m) assertion bound
@@ -60,98 +65,26 @@
 // re-measure, then retune #precision (below) or move the canary deliberately.
 //
 // RETUNING #precision — MEASURE, DO NOT INTERPOLATE.  #precision is threaded
-// bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and
-// the achieved deviation is a STAIRCASE in #precision — not a sawtooth, not
-// linear (388-point sweep, gate 6060/esc-6060-1): treads follow an upper
-// envelope near ~2.075x the requested deflection, interrupted by periodic
-// downward teeth near ~0.758x — real and recurring, not isolated. A third
-// branch near ~1.49x appears below d/R < 2.5e-4 (below ~0.25mm on this
-// 1m-radius sphere) — OUTSIDE the envelope/tooth characterization above, so
-// do not extrapolate it that low.
-//
-// Mechanism: NOT per-edge integer segment counts. A same-sweep control on
-// `cylinder(1000mm, 2000mm)`, whose curved face IS edge-segment-quantised,
-// measures ratio 0.489 (`precision-nominal-representation-guarantee.md` §2's
-// cylinder spot value) — neither the sphere's ~2.075x envelope nor its
-// ~0.758x tooth, which is the LOAD-BEARING falsification here.
-//
-// The mechanism for WHICH BRANCH (tread vs. tooth) a candidate lands on is a
-// two-ladder phase collision on the SPHERE FACE. Per
-// `precision-nominal-representation-guarantee.md` §4.1 (adjudication of
-// record, rejected alternative C), this model is EXACT for spheres — it
-// correctly predicts the branch at all 388/388 measured points — and is
-// rejected for production use only because it depends on non-API OCCT
-// internal constants an upgrade could silently move, not because it is
-// unverified. What it is NOT YET shown to predict is the measured PERIODS
-// between teeth (PRD §2 above has the digits) — that half remains a
-// hypothesis to re-verify, not a checked fact. Consistent with the
-// cylinder control above.
-//
-// Measured against OCCT 7.8 — the system OCCT reify's kernel links directly
-// (CLAUDE.md native-deps note). OCCT is unpinned and unvendored in-tree, and
-// this host carries headers only (no .cxx sources to check line numbers
-// against), so the constants below are cited by name, not file:line (PRD
-// §4.1 has both: `BRepMesh_SphereRangeSplitter.cxx:25-27` for the 0.7
-// factor, `BRepMesh_CurveTessellator.cxx:74` for the 0.5 factor): interior
-// surface nodes are truncation-quantised at the literal constant
-// 0.7*ArcAngularStep (BRepMesh_SphereRangeSplitter's angular-step factor)
-// while the seam meridian edge is tessellated at HALF the deflection, i.e.
-// the literal constant 0.5 (BRepMesh_CurveTessellator's seam-edge handling).
-// Since chord deflection scales as theta^2 (deflection ~ r*theta^2/8),
-// halving the deflection yields an effective angular step of
-// sqrt(0.5)=0.70711*ArcAngularStep, not 0.5x — the resulting 1%
-// 0.70000-vs-0.70711 gap between the splitter's literal factor and the
-// tessellator's derived effective factor is the phase-collision explanation
-// for the branch prediction validated above; it has not been shown to
-// predict the periods themselves: treat that part as a hypothesis, not a
-// settled derivation.
-//
-// NEAR THE BOUND this dominates: PRD §2 records the sweep's finest-spaced
-// adjacent pair — 0.5955mm vs. 0.5960mm, a mere 0.08% request change —
-// swinging 2.69x in the achieved deviation: 0.5955mm → 1.223e-3 m
-// (ENVELOPE, VIOLATES a 1mm bound) vs. 0.5960mm → 4.541e-4 m (TOOTH,
-// clears). So a value that clears the bound only because it landed on a
-// tooth is one retune away from the envelope, which near the bound
-// violates. Never tune onto a tooth: pick a candidate whose ENVELOPE value
-// (~2.075x the request) clears the bound.
-// FARTHER BELOW THE BOUND the ~2.08x envelope ratio is an observation of the
-// upper envelope, not a guarantee — the teeth recur across the whole range,
-// and extrapolating the envelope is exactly what makes a tooth look like a
-// one-off. This fixture's own value (6.202e-4 m against the 1mm bound,
-// stated above) is authoritative here; the 8-point neighbourhood grid
-// around it lives in
-// `representation_within_assertion.rs`'s `OCCT_SOURCE_FINE` doc comment —
-// see there rather than restating the grid here. 0.3mm's safety margin
-// rests on the envelope, not the grid: teeth deviate DOWNWARD only
-// (~0.758x), so the envelope — not a tooth — is the branch to size against.
-// That envelope ratio is an OBSERVED SUPREMUM over the regime walked
-// (d/R ≳ 2.5e-4), NOT a proven bound — and two independent sweeps disagree on
-// it even within that regime: precision-refine-envelope-calibration.md
-// §1.2's dense ladder-bracketing sweep found 2.079x at d/R = 3.12e-4, while
-// the wider sweep behind `precision-nominal-representation-guarantee.md`
-// §4.1 (rejected alternative A) found 2.0835x over d/R ∈ [4e-4, 4e-3] —
-// higher, despite less density around any one point. Separately, at
-// d = 0.048mm (d/R = 4.8e-5, BELOW that floor) the ratio reaches 2.106x;
-// §4.1 cites that value cross-regime, not as a tread-branch reading, to show
-// sup(achieved/requested) is regime-dependent and not pinned. Sizing 0.3mm
-// against that cross-regime supremum (2.106x) as a conservative anchor still
-// gives 6.318e-4 m, ~1.6x inside the 1e-3 m bound — consistent with this
-// fixture's own 6.202e-4 m / 1.61x reading, stated above.
+// bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument,
+// and the achieved deviation is a STAIRCASE in it: which BRANCH a candidate
+// lands on — not the local slope, and not a neighbour's reading — decides
+// pass/fail, so never tune onto a tooth. Size the candidate against the
+// envelope. The mechanism, the branch ratios and the near-the-bound evidence
+// are in `docs/notes/occt-precision-deviation-staircase.md`; read it before
+// picking a candidate.
 //
 // To re-derive any ONE candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
 // deviation (e.g. 0.01mm) to force a violation, and read the achieved value off
 // the resulting `sampled facet deviation <X> m` message. That recipe
 // reproduces a single point only — it does NOT re-establish the envelope,
-// period, duty-cycle or downward-only property above; those rest on the
-// 388-point sweep (d/R ≈ 3e-4 to at least 5.96e-4, roughly 0.3mm to 0.596mm
-// on this 1m-radius sphere, plus the cylinder control above) recorded in
+// period, duty-cycle or downward-only property, nor the separate branch that
+// appears at fine d/R; those rest on the 388-point sweep recorded in
 // `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 — the
-// adjudication of record for gate 6060/esc-6060-1. Consult that sweep rather
+// adjudication of record for gate 6060/esc-6060-1 — and are characterized in
+// `docs/notes/occt-precision-deviation-staircase.md`. Consult those rather
 // than re-deriving the envelope/period claims from scratch or re-opening the
-// adjudication. That characterization covers d/R ≳ 2.5e-4 (≳0.25mm here)
-// only — the separate ~1.49x branch below that is untouched by this recipe
-// too.
+// adjudication.
 
 import std.process
 
