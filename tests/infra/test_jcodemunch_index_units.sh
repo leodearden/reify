@@ -571,21 +571,29 @@ assert "E-DOC3: activation doc names the per-path identity reify actually uses (
 assert "E-DOC4: activation doc names the forced lever JCODEMUNCH_GIT_ROOT_IDENTITY" \
     bash -c 'git -C "$1" grep -q "JCODEMUNCH_GIT_ROOT_IDENTITY" -- docs/architecture-audit/jcodemunch-serve-activation.md' _ "$REPO_ROOT"
 
-# E-DOC5/E-DOC6 pin the prior PRD's comparison table at
+# E-DOC6 pins the prior PRD's comparison table at
 # docs/prds/reify-audit-p1-jcodemunch-substrate.md. Task 4109 landed the fail-soft
 # fall-back to NoopJCodemunchOps; the §10 table's jcodemunch-dependency row was
-# never updated and has claimed exit 125 ever since.
-
-# E-DOC5: pattern and path are byte-identical to the manifest's
-# `stale-degradation-contract-removed` delivered_check, so the in-repo gate and
-# the PRD gate cannot drift apart.
-assert "E-DOC5: prior PRD does not claim the detectors degrade to exit 125 when serve is down" \
-    bash -c '! git -C "$1" grep -q "degrades to exit 125 when serve is down" -- docs/prds/reify-audit-p1-jcodemunch-substrate.md' _ "$REPO_ROOT"
-
-# E-DOC6: regression guard on E-DOC5's fix, not an independent RED. The file
-# already names the fail-soft seam at :147; this pins that the corrected row keeps
-# pointing at the landed mechanism instead of being blanked, which is the cheap
-# way to satisfy an absence check.
+# never updated and went on claiming exit 125 until μ (#6117) corrected it.
+#
+# Only the PRESENCE half is asserted here, deliberately. The absence half — that
+# the row no longer carries the superseded "degrades to exit 125 when serve is
+# down" claim — would be a grep over an ENGLISH SENTENCE, and any paraphrase of
+# the same false claim ("exits 125 when the serve is unreachable", or merely
+# adding an article) leaves such an assertion green while the defect it exists to
+# catch is fully present. It would buy coverage it cannot deliver, and a broader
+# prose regex is the same defect over more surface area, since the space of false
+# paraphrases is unbounded. The capability manifest separately RECORDS that
+# absence as `stale-degradation-contract-removed`
+# (docs/prds/jcodemunch-substrate-restoration.capability-manifest.yaml) — a record
+# for a reader, not an executed check: nothing in this tree runs `delivered_check`
+# entries (scripts/prd-capability-check.py evaluates probe-set JSON, a different
+# mechanism).
+#
+# E-DOC6 greps a Rust TYPE NAME instead, so it is referential integrity rather
+# than a wording pin: it survives any rewording of the row and reds only if the
+# row stops pointing at the landed fail-soft seam — blanking the row being the
+# cheap way to satisfy any absence check.
 assert "E-DOC6: prior PRD still names the landed fail-soft seam (NoopJCodemunchOps)" \
     bash -c 'git -C "$1" grep -q "NoopJCodemunchOps" -- docs/prds/reify-audit-p1-jcodemunch-substrate.md' _ "$REPO_ROOT"
 
