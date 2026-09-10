@@ -632,18 +632,24 @@ assert "E-CLI2: cli-invocation.md documents --jcodemunch-index-dir" \
 assert "E-CLI3: cli-invocation.md documents the E_JC_INDEX_* refusal codes" \
     bash -c 'git -C "$1" grep -q "E_JC_INDEX_" -- .claude/skills/audit/references/cli-invocation.md' _ "$REPO_ROOT"
 
-# E-MODES1 bans the BARE token, not `jcodemunch-serve\.service` — modes.md:137
-# asserted the retired persistent unit by bare name ("all require
-# `jcodemunch-serve` to be running"), which the .service suffix would miss.
+# E-MODES1 bans the retired unit named AS A UNIT, not the `\.service` suffix —
+# modes.md:137 asserted it by bare name ("all require `jcodemunch-serve` to be
+# running"), which a suffixed pattern would sail straight past.
 #
-# The bare token is safe HERE, and only here, because modes.md has no legitimate
-# reason to name scripts/with-jcodemunch-serve.sh: its job is per-pattern dispatch
-# semantics, and the wrapper belongs to cli-invocation.md §4.1, which modes.md
-# already delegates to. IF a future edit genuinely needs to cite the wrapper from
-# modes.md, NARROW this assertion (e.g. to `[^-]jcodemunch-serve`) or replace it —
-# do not delete it.
+# The pattern is the bare token with a hyphen excluded on BOTH sides, which is
+# exactly the line between a unit name and a path containing one:
+#
+#   BANNED    `jcodemunch-serve`            the retired unit, named as a unit
+#   BANNED    jcodemunch-serve.service      the same, spelled with its suffix
+#   PERMITTED scripts/with-jcodemunch-serve.sh              (preceded by `-`)
+#   PERMITTED …/jcodemunch-serve-activation.md              (followed by `-`)
+#
+# Both permitted forms are load-bearing here: the correction retargets the
+# Activation bullet at the wrapper and keeps the activation doc as the identifier
+# record, so a truly bare-token ban would be unsatisfiable rather than strict.
+# Narrow this further or replace it if the shapes change — do not delete it.
 assert "E-MODES1: modes.md does not name the retired jcodemunch-serve unit" \
-    bash -c '! git -C "$1" grep -q "jcodemunch-serve" -- .claude/skills/audit/references/modes.md' _ "$REPO_ROOT"
+    bash -c '! git -C "$1" grep -qE "[^-]jcodemunch-serve([^-]|$)" -- .claude/skills/audit/references/modes.md' _ "$REPO_ROOT"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
