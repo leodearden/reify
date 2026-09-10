@@ -108,9 +108,20 @@ assert "B2: it does NOT cite 568 (message id is longer)" \
     not task_citation_message_cites "$B_SUBJ" 568 "$PFX"
 assert "B3: it does NOT cite 56860 (queried id is longer)" \
     not task_citation_message_cites "$B_SUBJ" 56860 "$PFX"
-assert "B4: the subject form is anchored — a body line does not count" \
-    not task_citation_message_cites "chore: cleanup
+# B4/B4b pin what `^` actually anchors to, because it is the one place a
+# future reader is likely to "fix" the grammar and thereby break parity.
+# `^` is grep's per-LINE anchor, NOT a message-start anchor. Reify inherits
+# that verbatim, and it is if anything STRICTER than dark-factory's own
+# find_merge_marker, which matches _merge_subject() with `git log
+# --grep --fixed-strings` — i.e. anywhere in the message, unanchored. So a
+# merge subject on a later line DOES count; what does not count is a line
+# where `Merge` is not the first byte.
+assert "B4: '^' is a LINE anchor — a merge subject on a later line counts" \
+    task_citation_message_cites "chore: cleanup
 Merge task/5686 into main" 5686 "$PFX"
+assert "B4b: a subject not at line start does NOT count" \
+    not task_citation_message_cites "Re-Merge task/5686 into main
+  Merge task/5686 into main" 5686 "$PFX"
 assert "B5: the trailing ' into ' is required" \
     not task_citation_message_cites 'Merge task/5686 into' 5686 "$PFX"
 assert "B6: a multi-line message still matches on its subject line" \
