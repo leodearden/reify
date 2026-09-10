@@ -263,8 +263,9 @@ fn unrefreshing_seams(source: &str) -> Vec<String> {
         .filter(|name| {
             !refreshes(name)
                 && !fn_body(&code, name).is_some_and(|body| {
-                    identifiers(body)
-                        .any(|id| id != *name && id.ends_with("_and_refresh_baseline") && refreshes(id))
+                    identifiers(body).any(|id| {
+                        id != *name && id.ends_with("_and_refresh_baseline") && refreshes(id)
+                    })
                 })
         })
         .map(str::to_string)
@@ -309,8 +310,12 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
 /// worktree (esc-4906-57).
 fn debug_server_source() -> String {
     let path = std::path::Path::new(&super::gui_crate_manifest_dir()).join("src/debug_server.rs");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {} for the INV-GUI-2 gate: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read {} for the INV-GUI-2 gate: {e}",
+            path.display()
+        )
+    })
 }
 
 /// Break-glass: `REIFY_INV_GUI_2_BYPASS=1` downgrades the corpus assertion to
