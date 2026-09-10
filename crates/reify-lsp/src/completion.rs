@@ -1434,11 +1434,23 @@ mod tests {
         }
         // Converse: a builtin whose signature already types a slot `Length`
         // but has no LENGTH_GATED_EXAMPLES row would silently serve a popup
-        // with no units clause. Verified: today exactly the 15 rows above
-        // have a `: Length` signature, so this is green on landing and reds
-        // the moment a 16th one appears unpaired.
-        for info in BUILTIN_FUNCTIONS.iter() {
-            if info.signature.contains(": Length") {
+        // with no units clause. Scoped to the `01-geometry` sort group — the
+        // documented boundary of this sweep (see LENGTH_GATED_EXAMPLES's doc
+        // comment) — so this cannot fire on an unrelated Length-typed
+        // neighbour like `09-bbox`'s `bbox(min: Point3<Length>, ...)`, whose
+        // STATIC signature narrowing (task 6081) is not a Contract C argument
+        // gate. Matches "Length" anywhere in the signature rather than the
+        // exact "`: Length`" spelling every row happens to use today, so a
+        // future `01-geometry` row typed `Point3<Length>`/`Vector3<Length>`
+        // (rather than flat scalar slots) cannot escape this check the way an
+        // exact-substring match would let it. Verified: today exactly the 15
+        // rows above have a Length-typed slot, so this is green on landing
+        // and reds the moment a 16th one appears unpaired.
+        for info in BUILTIN_FUNCTIONS
+            .iter()
+            .filter(|info| info.sort_group == "01-geometry")
+        {
+            if info.signature.contains("Length") {
                 assert!(
                     example_names.contains(info.name),
                     "{}: BUILTIN_FUNCTIONS signature types a slot as Length \
