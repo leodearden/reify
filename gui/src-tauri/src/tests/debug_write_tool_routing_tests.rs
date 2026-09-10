@@ -4,9 +4,35 @@
 //! emit of its own.
 //!
 //! The claim this mechanizes is stated in prose in two places and is NOT
-//! restated here — see `gui/src-tauri/src/debug_server.rs` point (a) on
-//! `write_on_engine_and_refresh_baseline`, and the "Two seams, ONE stated
-//! exception" section of `docs/debug-mcp-contract.md`.
+//! restated here — see `gui/src-tauri/src/debug_server.rs:1867-1900`, point
+//! (a) on `write_on_engine_and_refresh_baseline`, and the "Two seams, ONE
+//! stated exception" section of `docs/debug-mcp-contract.md`. Note the shape
+//! of the claim: "one of the two shared seams", NOT "all five route through
+//! `write_on_engine_and_refresh_baseline`" — `reify_open_file` reaches the
+//! same refresh through `open_source_into_engine_and_refresh_baseline`, for
+//! the #5193 lock-ordering reason point (d) gives.
+//!
+//! This reads `debug_server.rs` as TEXT and links nothing, so unlike
+//! `debug_boundary_tests` — which builds a real `EngineSession` — it carries
+//! NO `#[cfg(feature = "gui")]` gate. That is deliberate: it runs in the
+//! DEFAULT test pass rather than only in `verify.sh`'s conditionally-emitted
+//! `--features gui` arm, so the architecture gate cannot be silently skipped
+//! on a run that does not touch the GUI crate — exactly the run during which
+//! someone might add a bypassing tool elsewhere.
+//!
+//! POSTURE: ships default-ASSERT. The task called for contract → warn-mode
+//! corpus sweep → enforce; the sweep was performed at plan time (5/5 routed,
+//! clean) and is re-performed mechanically by
+//! `every_debug_write_tool_routes_through_the_delta_choke_point` on every
+//! run, so a warn-only default would emit no signal on a green tree and defer
+//! the leaf indefinitely. `REIFY_INV_GUI_2_BYPASS=1` is the break-glass
+//! escape hatch, mirroring `REIFY_MAIN_GATE_BYPASS` (CLAUDE.md), and it is
+//! genuinely live: it lets someone mid-refactor land a legitimate third seam
+//! by setting a knob instead of deleting the guard. A
+//! `REIFY_INV_GUI_2_ENFORCE` alias is deliberately NOT provided — against a
+//! default-assert shipped state it would be a no-op, and an unreachable knob
+//! is worse than an absent one. Same posture convention as
+//! `crates/reify-eval/tests/harness_cache/snapshot_cache_divergence_gate.rs`.
 
 /// One way a `reify_*` write tool can break INV-GUI-2.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -214,6 +240,25 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
             kind: BypassKind::NoBaselineRefresh,
         })
         .collect()
+}
+
+/// Reads the real `debug_server.rs` this gate is asserted against.
+///
+/// Located via [`super::gui_crate_manifest_dir`], which prefers the RUNTIME
+/// `CARGO_MANIFEST_DIR` over the compile-time `env!()` bake — the bake goes
+/// stale when a seeded warm-lane `target/` is reused from a since-deleted
+/// worktree (esc-4906-57).
+fn debug_server_source() -> String {
+    let path = std::path::Path::new(&super::gui_crate_manifest_dir()).join("src/debug_server.rs");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {} for the INV-GUI-2 gate: {e}", path.display()))
+}
+
+/// Break-glass: `REIFY_INV_GUI_2_BYPASS=1` downgrades the corpus assertion to
+/// a warn (prints offenders, does not fail), mirroring `REIFY_MAIN_GATE_BYPASS`.
+/// See the file header for the ENFORCE/BYPASS symmetry rationale.
+fn routing_check_bypassed() -> bool {
+    std::env::var("REIFY_INV_GUI_2_BYPASS").is_ok_and(|v| v == "1")
 }
 
 /// A synthetic `debug_server.rs` excerpt whose `reify_set_parameter` handler
