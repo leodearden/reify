@@ -1006,22 +1006,17 @@ fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
 /// # What this test does NOT claim — the eval-layer convergence boundary
 ///
 /// It does NOT assert the merged auto lands ON the cost argmin. With a Money
-/// objective and a live inequality, the solver synthesises a robustness-floor
-/// margin before it ever solves (`synthesise_floor_constraints` /
-/// `robustness_margin_for`, solver.rs), so the argmin this half actually
-/// reaches sits exactly on that FLOORED boundary, not the raw `>= 0.0`
-/// bracket. The penalty method's stationary point is offset INSIDE that
-/// floor by `objective_gradient / (2 * PENALTY_WEIGHT)` ≈ 2.5e-7 — vastly
-/// larger than `FEASIBILITY_THRESHOLD` (1e-12) — so the converged point reads
-/// as infeasible; the `effective_constraints` clamp (`derive_param_intervals`
-/// / `resolve_bounds` with `include_strict = false`, solver.rs) is what snaps
-/// it back onto the floored bound. That clamp — not a seed fallback — is what
-/// produces the published figure: `solve_core` is NOT returning its
-/// `initially_feasible` seed here (that early-return is gated on
-/// `initially_feasible && effective_objective.is_none()`, which cannot fire
-/// once a user `minimize` is present, and today's seed for this model is the
-/// constraint-derived midpoint `50.0`, task #5618's arm — nowhere near the
-/// observed `1e-9`).
+/// objective and a live inequality, the converged point reads as infeasible
+/// against the raw `>= 0.0` bracket, and it is the `effective_constraints`
+/// clamp — not a seed fallback — that snaps the published figure onto the
+/// robustness-floored bound instead: `solve_core`'s `initially_feasible`
+/// early-return is gated on `effective_objective.is_none()`, which cannot
+/// fire once a user `minimize` is present, and today's seed for this model is
+/// the constraint-derived midpoint `50.0`, task #5618's arm — nowhere near
+/// the observed `1e-9`. Mechanism and constants: the robustness-floor block
+/// (`synthesise_floor_constraints` / `robustness_margin_for`) and the
+/// `effective_constraints` clamp (`derive_param_intervals` / `resolve_bounds`)
+/// in `crates/reify-constraints/src/solver.rs`.
 ///
 /// A genuine seed-return convergence gap IS documented elsewhere:
 /// `examples/continuous_cost_min.ri`'s header records `solve_core` actually
@@ -1336,58 +1331,33 @@ fn floored_lo(bracket: f64) -> f64 {
 ///
 /// # The rule, not a magic number
 ///
-/// With a Money objective and at least one live inequality, the solver
-/// synthesises a per-constraint margin floor — see the "Robustness floor
-/// (task #4789 α)" comment block and the `synthesise_floor_constraints` /
-/// `robustness_margin_for` functions in
-/// `crates/reify-constraints/src/solver.rs`:
-///
-///     m_i        = max(REL_MARGIN × |bound_i|, ABS_FLOOR_SI)
-///     REL_MARGIN   = 0.02   (`const REL_MARGIN`, solver.rs)
-///     ABS_FLOOR_SI = 1e-9   (`const ABS_FLOOR_SI`, solver.rs)
-///
-/// solver.rs itself states the floor in SLACK form, not per-side bound
-/// form — the comment block above reads `slack_i(x) >= m_i`, and
-/// `synthesise_floor_constraints` appends exactly that, as
-/// `Ge(slack_i, m_i)`. `collect_floor_terms` is what fixes what `slack_i`
-/// IS per direction: for a `q >= bracket` constraint, slack = `q - bracket`,
-/// so the floor `q - bracket >= m` rearranges to `q >= bracket + m`; for a
-/// `q <= bracket` constraint, slack = `bracket - q`, so `bracket - q >= m`
-/// rearranges the OTHER way, to `q <= bracket - m`. The per-side bounds
-/// below are this DERIVED consequence — not a further quotation from
-/// solver.rs:
-///
-///     floored_lo = bracket + m_i   (from a `>= bracket` slack)
-///     floored_hi = bracket - m_i   (from a `<= bracket` slack)
-///
-/// That sign flip is also the missing justification for a figure the
-/// header already publishes: the upper bracket `q <= 100.0` has
-/// `m = max(0.02×100.0, 1e-9) = 2.0`, and the `<=`-slack derivation floors
-/// it DOWNWARD to `100.0 - 2.0 = 98.0`, not upward to `102.0`. Cross-checked
-/// against solver.rs's own unit test `derive_intervals_floor_slack_shapes`,
-/// which asserts both `(lo.0 - 1.02).abs() < 1e-12` and
-/// `(hi.0 - 98.0).abs() < 1e-12` for this exact bracket pair.
+/// Rule and constants: the "Robustness floor (task #4789 α)" block
+/// (`synthesise_floor_constraints` / `robustness_margin_for`, `REL_MARGIN`,
+/// `ABS_FLOOR_SI`) in `crates/reify-constraints/src/solver.rs`; the per-side
+/// regime split (absolute floor vs. relative margin) is derived in this
+/// file's [`floored_lo`], whose doc comment carries the closed form. This
+/// docstring states the claim, not a second derivation — see the `.ri`
+/// header's "Why the merged figure is the ROBUSTNESS FLOOR, not zero"
+/// section for the full worked arithmetic, including the upper-bracket
+/// `98.0` figure this test does not exercise.
 ///
 /// `line_cost = 0.50USD × quantity_produced` is strictly increasing, so the
 /// argmin sits exactly on the floored LOWER bound in both regimes below —
 /// this test pins that RELATIONSHIP across two brackets rather than a single
 /// converged value, which is what makes it durable and is the executable
-/// counterpart of the revised header prose:
+/// counterpart of the header prose:
 ///
-/// (a) Shipped model (bracket `0.0`) — ABSOLUTE-floor regime. The bound
-///     magnitude is 0, so `m = max(0.02×0, 1e-9)` degenerates to the absolute
-///     floor `1e-9`, and the floored lower bound is `floored_lo(0.0) = 1e-9`.
+/// (a) Shipped model (bracket `0.0`) — ABSOLUTE-floor regime,
+///     [`floored_lo`]`(0.0)`.
 /// (b) Bracket-shifted variant (bracket `1.0`, derived by
-///     [`shift_lower_bracket`]) — RELATIVE-margin regime. `m = max(0.02×1.0,
-///     1e-9) = 0.02`, so the floored lower bound is `floored_lo(1.0) = 1.02`.
-///     This matches the solver's own worked example ("`x > 1mm` → m = 20µm →
-///     floor: x ≥ 1.02mm", the doc comment on `const REL_MARGIN`) and its
-///     unit test `(lo.0 - 1.02).abs() < 1e-12`, named
-///     `derive_intervals_floor_slack_shapes`. It is also the direct
-///     executable REFUTATION of the header's former (falsified) claim that
-///     this bracket makes the solve report `RobustnessFloorInfeasible` —
-///     [`eval_ri_with_real_solver`] already asserts zero `Severity::Error`,
-///     so that regression would fail here automatically.
+///     [`shift_lower_bracket`]) — RELATIVE-margin regime, [`floored_lo`]`(1.0)`.
+///     Also the direct executable REFUTATION of the header's former
+///     (falsified) claim that this bracket makes the solve report
+///     `RobustnessFloorInfeasible` — [`eval_ri_with_real_solver`] already
+///     asserts zero `Severity::Error`, so that regression would fail here
+///     automatically. Cross-checked against solver.rs's own unit test
+///     `derive_intervals_floor_slack_shapes`, which covers this exact
+///     bracket pair.
 ///
 /// Both arms assert their OBSERVED value against [`floored_lo`] evaluated at
 /// their OWN bracket, rather than each typing in its own expected constant —
@@ -1400,19 +1370,21 @@ fn floored_lo(bracket: f64) -> f64 {
 /// or a TUNED tolerance at the `.ri` layer (those belong at the
 /// `reify-constraints` layer with explicitly bounded autos). These assertions
 /// are different in kind: both are closed-form-margin tolerances, derived
-/// from the two named solver constants above via the shared [`floored_lo`]
-/// helper and only THEN confirmed against observation — never tuned to match
-/// an unknown output. BT-5's own comparative assertions above are left
+/// from `REL_MARGIN` / `ABS_FLOOR_SI` via the shared [`floored_lo`] helper
+/// and only THEN confirmed against observation — never tuned to match an
+/// unknown output. BT-5's own comparative assertions above are left
 /// untouched.
 #[test]
 fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
     // ---- (a) shipped model — ABSOLUTE-floor regime (bracket 0.0). ----
 
-    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (shipped, bracket 0.0)");
+    // Reuses `joint_drive_halves`'s memoized solve of the shipped merged
+    // model instead of compiling and solving it a second time — its
+    // `OnceLock` guarantees this is the SAME `EvalResult` BT-5 asserts
+    // against, not a second one that could in principle diverge from it.
+    let merged = &joint_drive_halves().0;
     let merged_q = scalar_si(
-        &merged,
+        merged,
         &ValueCellId::new("Rivet", "quantity_produced"),
         "merged (shipped, bracket 0.0)",
     );
@@ -1440,11 +1412,15 @@ fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
 
     // ---- (b) bracket-shifted variant — RELATIVE-margin regime (bracket 1.0). ----
 
-    // Derived from the SAME shipped source `merged_src` was just read from
-    // (see [`shift_lower_bracket`]), not a standalone transcription.
+    // Only the shipped SOURCE is read here, to feed `shift_lower_bracket`'s
+    // substitution — arm (a) above already got its `EvalResult` from
+    // `joint_drive_halves`'s memoized solve, so this is a read, not a second
+    // compile+solve of the same model.
     //
     // `eval_ri_with_real_solver` already asserts zero `Severity::Error`, so a
     // `RobustnessFloorInfeasible` regression on this bracket fails right here.
+    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
     let shifted_src = shift_lower_bracket(&merged_src);
     let shifted =
         eval_ri_with_real_solver(&shifted_src, "bracket-shifted (`quantity_produced >= 1.0`)");
