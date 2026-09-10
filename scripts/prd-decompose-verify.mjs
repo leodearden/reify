@@ -218,6 +218,38 @@ function normalizeLeaves(rawArgs, warn) {
 }
 
 // ---------------------------------------------------------------------------
+// leafLabelFor — a leaf's display label (task #7369)
+//
+// SPOT: the single definition of "what a leaf is called for display purposes".
+// Both the per-leaf pipeline (Stage 1, which has a live leaf) and the
+// dropped-leaf labelling below (which has no live leafLabel — the leaf was
+// dropped before Stage 1 could compute one, but the ORIGINAL leaf object is
+// still available by index) derive it the same way.
+// ---------------------------------------------------------------------------
+
+function leafLabelFor(leaf, idx) {
+    return typeof leaf === "string" ? leaf
+        : (leaf.signal || leaf.text || `leaf-${idx}`);
+}
+
+// ---------------------------------------------------------------------------
+// droppedLeafLabels — name the leaves the pipeline could not adjudicate
+// (task #7369)
+//
+// A leaf whose Enumerate/Prove/Adversary/Synthesize stage raised is dropped to
+// null by the pipeline AT ITS ORIGINAL INDEX — leaf_verdicts stays the same
+// length as leaves, with a hole at every dropped position. The label for each
+// hole is therefore just that position's own index; no index arithmetic or
+// tail-position guessing is needed (or correct) to recover it.
+// ---------------------------------------------------------------------------
+
+function droppedLeafLabels(leaves, leaf_verdicts) {
+    return leaf_verdicts
+        .map((v, j) => (v ? null : `<dropped-leaf:${leafLabelFor(leaves[j], j)}>`))
+        .filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
 // Main workflow body
 //
 // The Workflow harness wraps this script body in an async function and takes
@@ -261,8 +293,7 @@ const _wfResult = await (async function runWorkflow() {
 
         // Stage 1: Enumerator — extract premises from leaf signal
         async (leaf, originalLeaf, idx) => {
-            const leafLabel = typeof leaf === "string" ? leaf
-                : (leaf.signal || leaf.text || `leaf-${idx}`);
+            const leafLabel = leafLabelFor(leaf, idx);
 
             const enumerated = await agent( // eslint-disable-line no-undef
                 `You are the Enumerator for γ decompose-phase verification (PRD §11 γ).
@@ -494,10 +525,7 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
     // filtered out above.  Treating 'could not evaluate' as PASS is a false
     // negative for a verification gate — block instead.
     const dropped = leaves.length - filtered.length;
-    const droppedBlocking = Array.from({ length: dropped }, (_, i) => {
-        const originalIdx = leaf_verdicts.findIndex((v, j) => !v && j >= (leaves.length - dropped - i));
-        return `<dropped-leaf:${originalIdx >= 0 ? originalIdx : "?"}>`;
-    });
+    const droppedBlocking = droppedLeafLabels(leaves, leaf_verdicts);
 
     const anyBlocks = dropped > 0 || filtered.some(v => v.blocks);
     const allBlocking = [

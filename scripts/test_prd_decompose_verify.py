@@ -1677,6 +1677,129 @@ console.log(MARK + JSON.stringify(cases));
 
 
 # ---------------------------------------------------------------------------
+# task #7369 (RED before the fix): droppedLeafLabels() names the actual null
+# positions, not an arithmetic guess at where they are
+# ---------------------------------------------------------------------------
+
+class TestMjsDroppedLeafLabels(unittest.TestCase):
+    """Pure-unit tests for the droppedLeafLabels(leaves, leaf_verdicts) helper,
+    source-sliced directly out of prd-decompose-verify.mjs (everything BEFORE
+    the `const _wfResult = await` IIFE anchor) and evaluated via `new Function`
+    — same technique as TestMjsNormalizeLeaves above.
+
+    Guards the defect described in task #7369: the pre-fix expression derived
+    each dropped leaf's label from `j >= (leaves.length - dropped - i)`, an
+    arithmetic guess at a TAIL position that bears no relation to where the
+    nulls actually are. Measured on this branch before the fix (node
+    simulation of the exact pre-fix expression):
+        5 leaves, dropped at indices 0 and 4 -> ["<dropped-leaf:4>","<dropped-leaf:4>"]
+            (index 0 never named; index 4 named twice)
+        5 leaves, single drop at index 1     -> ["<dropped-leaf:?>"]
+            (index is knowable; reported unknown)
+    The fix derives each label directly from the null's own position in
+    leaf_verdicts, so it is correct regardless of contiguity — the tail-only
+    case (single drop at the last index) passed even before the fix and would
+    not have caught this, hence the non-contiguous cases below.
+    """
+
+    _MARK = "DROPPED_LEAF_LABELS_RESULT:"
+
+    def _harness_source(self) -> str:
+        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        return f"""\
+import {{ readFileSync }} from "node:fs";
+
+const MARK = "{self._MARK}";
+const MJS_PATH = "{mjs_abs}";
+
+let src = readFileSync(MJS_PATH, "utf8");
+const ANCHOR = "const _wfResult = await";
+const anchorIdx = src.indexOf(ANCHOR);
+if (anchorIdx === -1) {{
+    console.error("ANCHOR_NOT_FOUND: " + ANCHOR);
+    process.exit(1);
+}}
+let head = src.slice(0, anchorIdx);
+head = head.replace("export const meta", "const meta");
+
+let droppedLeafLabels;
+try {{
+    droppedLeafLabels = new Function(head + "\\nreturn droppedLeafLabels;")();
+}} catch (e) {{
+    console.error("HELPER_EXTRACT_FAILED: " + e.message);
+    process.exit(1);
+}}
+if (typeof droppedLeafLabels !== "function") {{
+    console.error("HELPER_NOT_A_FUNCTION: " + typeof droppedLeafLabels);
+    process.exit(1);
+}}
+
+const LEAVES = ["leaf0", "leaf1", "leaf2", "leaf3", "leaf4"];
+
+const cases = {{
+    // non-contiguous: dropped at 0 and 4 (the case the pre-fix arithmetic got wrong twice over)
+    non_contiguous_head_and_tail: droppedLeafLabels(
+        LEAVES, [null, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}, null]),
+    // knowable single mid-array drop (pre-fix reported "?" here)
+    single_drop_mid_array: droppedLeafLabels(
+        LEAVES, [{{blocks: false}}, null, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}]),
+    // tail-contiguous single drop — passed even before the fix; regression guard
+    single_drop_tail: droppedLeafLabels(
+        LEAVES, [{{blocks: false}}, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}, null]),
+    // no drops at all
+    no_drops: droppedLeafLabels(
+        LEAVES, [{{blocks: false}}, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}]),
+}};
+
+console.log(MARK + JSON.stringify(cases));
+"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
+    def test_dropped_leaf_labels_pure_helper_contract(self):
+        harness_src = self._harness_source()
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            input=harness_src,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
+        )
+        marker_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._MARK)]
+        self.assertTrue(
+            marker_lines,
+            f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
+        )
+        cases = json.loads(marker_lines[-1][len(self._MARK):])
+
+        # The defect: index 0 never named, index 4 named twice.
+        self.assertEqual(
+            cases["non_contiguous_head_and_tail"], ["<dropped-leaf:leaf0>", "<dropped-leaf:leaf4>"],
+            "each dropped index must be named exactly once, at its own position",
+        )
+
+        # The defect: a knowable mid-array index was reported as "?".
+        self.assertEqual(
+            cases["single_drop_mid_array"], ["<dropped-leaf:leaf1>"],
+            "a knowable dropped index must never fall back to '?'",
+        )
+
+        # Regression guard: the one case the pre-fix arithmetic got right by luck.
+        self.assertEqual(cases["single_drop_tail"], ["<dropped-leaf:leaf4>"])
+
+        # No drops -> no labels, and the count always matches the null count.
+        self.assertEqual(cases["no_drops"], [])
+        # Emitted label count must equal the number of nulls in each fixture.
+        self.assertEqual(len(cases["non_contiguous_head_and_tail"]), 2)
+        self.assertEqual(len(cases["single_drop_mid_array"]), 1)
+        self.assertEqual(len(cases["single_drop_tail"]), 1)
+        self.assertEqual(len(cases["no_drops"]), 0)
+
+
+# ---------------------------------------------------------------------------
 # task #7257 step-01 (RED): command normalization (ARM 1, item 3)
 # ---------------------------------------------------------------------------
 
