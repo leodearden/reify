@@ -9,10 +9,16 @@
 //!
 //! # Negative-test proof recipe (PRD §8 boundary #6)
 //!
-//! Verified by temporary MUTATION-THEN-REVERT (task #6001 α, step-16); no
-//! mutating test is committed — the point of this recipe is precisely that the
-//! property needs no test, because a violation is UNREPRESENTABLE and fails
-//! the BUILD. The error text below was observed, not guessed.
+//! Verified by temporary MUTATION-THEN-REVERT (task #6001 α, step-16), and
+//! RE-verified the same way at step-30 after main merged in. The cited line
+//! numbers are the fragile part — they move whenever anything above the
+//! `match` shifts, INCLUDING this comment — so the recipe is re-run and the
+//! numbers re-read off rustc, never hand-adjusted. The merge itself moved
+//! neither cite; re-writing this paragraph moved the first one, which is
+//! exactly the drift that makes re-running the rule. No mutating test is
+//! committed: the point of this recipe is precisely that the property needs
+//! no test, because a violation is UNREPRESENTABLE and fails the BUILD. The
+//! error text below was observed, not guessed.
 //!
 //! **The property.** A registry row whose `BindingKind` is `EvalBuiltin` but
 //! which has no arm in [`dispatch`] cannot exist in a compiling tree.
@@ -33,13 +39,14 @@
 //!
 //! 2. **Command.** `cargo check -p reify-stdlib`
 //!
-//! 3. **Expected failure.** The build FAILS — verbatim:
+//! 3. **Expected failure.** The build FAILS. The head of the error, verbatim
+//!    (rustc also prints the macro-invocation and `help:` frames, elided here):
 //!
 //!    ```text
 //!    error[E0004]: non-exhaustive patterns: `EvalBuiltinId::ProbeEighthRow` not covered
-//!      --> crates/reify-stdlib/src/registry_dispatch.rs:80:11
+//!      --> crates/reify-stdlib/src/registry_dispatch.rs:87:11
 //!       |
-//!    80 |     match id {
+//!    87 |     match id {
 //!       |           ^^ pattern `EvalBuiltinId::ProbeEighthRow` not covered
 //!       |
 //!    note: `EvalBuiltinId` defined here
