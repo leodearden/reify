@@ -1,0 +1,692 @@
+/**
+ * The decision function behind the printer_v01 Y-rail lengthening integration
+ * gate (task 5098; PRD docs/prds/v0_6/ai-native-editing.md §7 leaf ζ).
+ *
+ * THE SCENARIO. An AI agent lengthens a printer's Y rails through
+ * `reify_set_parameter`, in two edits, and the GUI must keep up:
+ *
+ *   1. `CoreXY.y_rail_len`   800mm -> 1100mm — the rails now overrun the frame,
+ *      so the rail-span pin that ties the A-frame to the motion system flips
+ *      VIOLATED.
+ *   2. `AFrame.rail_span_m`  800mm -> 1100mm — the frame catches up, the pin
+ *      returns to SATISFIED, and `AFrame.travel_avail` moves 510mm -> 810mm.
+ *
+ * WHAT "THE PINS GO GREEN AGAIN" ACTUALLY MEANS — the measured correction this
+ * module exists to encode. It is true of the pin PAIR under test and false
+ * globally: edit 2's travel_avail move drags the ToolDock's pinned literal
+ * `yh_min_today` (145mm) off its `centre_y - travel_avail/2` target, so a
+ * SECOND pin legitimately goes red at the last phase. A "zero constraints
+ * violated" assertion would therefore red on correct behaviour. This gate names
+ * the two pins it is about and demands each one's own status, which turns that
+ * cascade into a second, free constraint-status-sync signal.
+ *
+ * WHY A PIN IS NEVER SELECTED BY `node_id`. `Printer#constraint[45]` is a
+ * POSITIONAL key: inserting a constraint anywhere above it in printer.ri
+ * silently retargets an index-keyed assertion at a different predicate.
+ * `ConstraintData.parameter_ids` is `collect_value_refs(expr)` (engine.rs), so a
+ * superset match over the cells a pin is ABOUT names it by meaning instead. Both
+ * halves of a `x < y + slack` / `x > y - slack` pair carry the same refs, so the
+ * selector matches the pair and {@link foldPinStatus} reduces it — a two-sided
+ * pin is green only when both halves hold.
+ *
+ * FAILURES ARE DATA, not sentences: every gate emits a {@link RailGateFailure}
+ * record ({gate, tool, field, observed, expected}) and {@link formatFailures} is
+ * the single place one becomes English. That split lets the live driver branch
+ * on `gate` — `outage` and `shape` mean the invariant was never TESTED, while
+ * `value` and `constraint` mean it was tested and violated — and keeps this
+ * module's suite asserting on observations rather than prose.
+ *
+ * PLAIN ESM, free of builtin-module imports, deliberately: both the vitest suite
+ * (`./railLengtheningGate.test.ts`, the CI signal) and the live driver
+ * (`./smoke_rail_lengthening_e2e.mjs`, run with bare `node`) must load it. The
+ * transport seam — the `tools/call` request shape, the §2a in-band-error
+ * discriminator, the §2b `isError` fold — stays in `./rpcEnvelope.mjs`.
+ */
+
+import { isInBandError } from "./rpcEnvelope.mjs";
+
+// ─── The subject, its cells, and its pins ────────────────────────────────────
+
+/**
+ * The design file under test. Only the BASENAME is stable: the live driver
+ * drives a `mkdtemp` copy so the tracked design file is never mutated, and
+ * `open_path_into_engine` canonicalizes the path (resolving /tmp's symlink), so
+ * the directory that comes back is not the one that went in.
+ */
+export const SUBJECT_BASENAME = "printer.ri";
+
+/** The cell edit 1 rewrites — a `param` of `CoreXY` with a default literal. */
+export const Y_RAIL_LEN_CELL = "CoreXY.y_rail_len";
+/** The cell edit 2 rewrites. */
+export const RAIL_SPAN_CELL = "AFrame.rail_span_m";
+/** The DERIVED cell that proves edit 2 propagated: rail_span - brg_len - 2*sock_len. */
+export const TRAVEL_AVAIL_CELL = "AFrame.travel_avail";
+/** The ToolDock literal that edit 2 knocks out of range — the expected cascade. */
+export const YH_MIN_TODAY_CELL = "ToolDock.yh_min_today";
+/** `AFrame.centre_y`, the other half of the ToolDock pin's right-hand side. */
+export const CENTRE_Y_CELL = "AFrame.centre_y";
+
+/** Stable NAME of the pin tying the A-frame's rail span to the motion rail length. */
+export const RAIL_SPAN_PIN = "rail-span-pin";
+/** Stable NAME of the pin tying the ToolDock's Y reach to the A-frame's travel. */
+export const TOOL_DOCK_PIN = "tool-dock-pin";
+
+/**
+ * How each pin is FOUND: the cells its expression must reference. A constraint
+ * matches when its `parameter_ids` is a superset of the listed cells, so an
+ * expression that also names `Printer.o1_pin_slack` still matches while an
+ * unrelated constraint mentioning only one of them does not.
+ */
+const PIN_SELECTORS = Object.freeze({
+  [RAIL_SPAN_PIN]: Object.freeze([RAIL_SPAN_CELL, Y_RAIL_LEN_CELL]),
+  [TOOL_DOCK_PIN]: Object.freeze([YH_MIN_TODAY_CELL, TRAVEL_AVAIL_CELL]),
+});
+
+// ─── Non-vacuity floors ──────────────────────────────────────────────────────
+
+/**
+ * Minimum realized bodies. A MEASURED lower bound, not a target: one `reify
+ * check` of printer.ri named 21 distinct `Entity#realization[i]` in its
+ * topology-correspondence log alone, so a scene below that did not finish
+ * realizing. Without a floor, a model that failed to load passes every
+ * comparison trivially and the gate reports green on nothing at all.
+ */
+export const RAIL_GATE_MIN_BODIES = 21;
+
+/**
+ * Minimum value cells — the three this gate reads. Deliberately a weak floor:
+ * the real work is done by the per-cell gates below, which demand each named
+ * cell individually. This one only rejects a `values` list that cannot possibly
+ * carry them.
+ */
+export const RAIL_GATE_MIN_VALUES = 3;
+
+/**
+ * Minimum constraints — the two PAIRS this gate reads. Same reasoning as
+ * {@link RAIL_GATE_MIN_VALUES}: the constraint gates name their pins.
+ */
+export const RAIL_GATE_MIN_CONSTRAINTS = 4;
+
+/**
+ * Minimum entries in `demand_dispatch.dispatch_by_realization`. Orthogonal to
+ * the mesh floor on purpose: `engine_state` reports a full-scene snapshot, so a
+ * mesh count says a snapshot was BUILT, while this says the demand path
+ * actually DISPATCHED.
+ */
+export const RAIL_GATE_MIN_DISPATCHES = 1;
+
+/**
+ * Millimetre tolerance on a value comparison. `si_value` crosses the wire in
+ * metres and is scaled by 1000 here, so an exact `===` would red on float noise
+ * in a correct run. Far tighter than any real drift: the smallest move this
+ * gate asserts is 300mm.
+ */
+export const RAIL_GATE_LENGTH_TOLERANCE_MM = 1e-6;
+
+// ─── The measured truth table ────────────────────────────────────────────────
+
+/**
+ * @typedef {object} RailGatePhase
+ * @property {Record<string, number>} cells  Expected millimetre reading per cell.
+ * @property {string} railSpanPinStatus      Expected folded status of {@link RAIL_SPAN_PIN}.
+ * @property {string} toolDockPinStatus      Expected folded status of {@link TOOL_DOCK_PIN}.
+ */
+
+/**
+ * The three states the scenario passes through, as MEASURED on printer.ri.
+ *
+ * `travel_avail = rail_span_m - brg_len_m - 2*sock_len` with brg_len_m 150mm and
+ * sock_len 70mm, so 800 - 150 - 140 = 510 and 1100 - 150 - 140 = 810. The second
+ * number is what makes the scenario worth gating: the envelope's build_y is
+ * 800mm, so 810 is the first travel that covers it.
+ *
+ * The ToolDock column is the correction described in this module's header — a
+ * SECOND pin goes red at the last phase, and that is required, not tolerated.
+ *
+ * @type {Readonly<Record<string, RailGatePhase>>}
+ */
+export const RAIL_GATE_PHASES = Object.freeze({
+  baseline: Object.freeze({
+    cells: Object.freeze({
+      [Y_RAIL_LEN_CELL]: 800,
+      [RAIL_SPAN_CELL]: 800,
+      [TRAVEL_AVAIL_CELL]: 510,
+    }),
+    railSpanPinStatus: "Satisfied",
+    toolDockPinStatus: "Satisfied",
+  }),
+  "after-y-rail": Object.freeze({
+    cells: Object.freeze({
+      [Y_RAIL_LEN_CELL]: 1100,
+      [RAIL_SPAN_CELL]: 800,
+      [TRAVEL_AVAIL_CELL]: 510,
+    }),
+    railSpanPinStatus: "Violated",
+    toolDockPinStatus: "Satisfied",
+  }),
+  "after-rail-span": Object.freeze({
+    cells: Object.freeze({
+      [Y_RAIL_LEN_CELL]: 1100,
+      [RAIL_SPAN_CELL]: 1100,
+      [TRAVEL_AVAIL_CELL]: 810,
+    }),
+    railSpanPinStatus: "Satisfied",
+    toolDockPinStatus: "Violated",
+  }),
+});
+
+/** The cells every phase carries a reading for, in the order failures report them. */
+const TRACKED_CELLS = Object.freeze([Y_RAIL_LEN_CELL, RAIL_SPAN_CELL, TRAVEL_AVAIL_CELL]);
+
+/**
+ * The freshness tag a live reading must carry. Anything else means the cell was
+ * demand-pruned or failed, and its number is the LAST GOOD value rather than the
+ * one this edit produced — which the value gate would happily pass.
+ */
+const LIVE_FRESHNESS = "final";
+
+/** The status a pin selector reports when nothing matched it. */
+export const PIN_ABSENT = "absent";
+
+// ─── Failure records ─────────────────────────────────────────────────────────
+
+/**
+ * @typedef {'outage'|'shape'|'vacuity'|'subject'|'stale'|'value'|'constraint'} RailGateFailureGate
+ *   Which gate rejected the run. Load-bearing beyond labelling: `outage`,
+ *   `shape` and `vacuity` mean the invariant was never TESTED, while `value` and
+ *   `constraint` mean it was tested and violated. A caller that cannot tell those
+ *   apart reports a debug-tool outage as an AI-write-path regression.
+ *
+ * @typedef {object} RailGateFailure
+ * @property {RailGateFailureGate} gate
+ * @property {string} tool       Debug-MCP tool that produced the offending reading.
+ * @property {string} [field]    Field path within that payload; absent when the
+ *                               whole payload is the problem.
+ * @property {unknown} observed  What was actually read.
+ * @property {unknown} [expected] Gate-specific; absent for `outage`, where the
+ *                               tool failed and nothing was expected of its value.
+ */
+
+/** Shape-expectation tokens — see {@link SHAPE_PROSE}. */
+const ARRAY = "array";
+const OBJECT = "object";
+const NUMBER = "finite-number";
+const NON_EMPTY_STRING = "non-empty-string";
+const KNOWN_PHASE = "one-of-RAIL_GATE_PHASES";
+
+/** Token → prose, used only when rendering. */
+const SHAPE_PROSE = Object.freeze({
+  [ARRAY]: "an array",
+  [OBJECT]: "an object",
+  [NUMBER]: "a finite number",
+  [NON_EMPTY_STRING]: "a non-empty string",
+  [KNOWN_PHASE]: `one of ${Object.keys(RAIL_GATE_PHASES).join(", ")}`,
+});
+
+/**
+ * Render a rejected value for a failure message without ever throwing.
+ *
+ * @param {unknown} v
+ * @returns {string}
+ */
+function describeValue(v) {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "number") return String(v);
+  if (v === null) return "null";
+  if (v === undefined) return "undefined";
+  if (Array.isArray(v)) return `array(length ${v.length})`;
+  return `${typeof v}`;
+}
+
+/**
+ * @param {string} tool
+ * @param {string | undefined} field
+ * @param {unknown} observed
+ * @param {string} expected  One of the shape-expectation tokens above.
+ * @returns {RailGateFailure}
+ */
+function shapeFailure(tool, field, observed, expected) {
+  return { gate: "shape", tool, ...(field === undefined ? {} : { field }), observed, expected };
+}
+
+/** `tool` or `tool.field`, whichever the record identifies. */
+function failurePath(f) {
+  return f.field === undefined ? String(f.tool) : `${f.tool}.${f.field}`;
+}
+
+/**
+ * Render failure RECORDS as the human-readable lines a live run prints.
+ *
+ * The records carry no prose — deliberately. One renderer means the wording can
+ * be improved without touching either producer, and it keeps the suite asserting
+ * on observations rather than on English. Never throws: a malformed record
+ * degrades to a dump rather than taking down the diagnostic that was about to
+ * explain a failing run.
+ *
+ * @param {RailGateFailure[]} failures
+ * @returns {string[]} One line per failure, in the order given.
+ */
+export function formatFailures(failures) {
+  if (!Array.isArray(failures)) return [];
+  return failures.map((f) => {
+    if (f === null || typeof f !== "object") return `malformed failure record: ${describeValue(f)}`;
+    switch (f.gate) {
+      case "outage":
+        return (
+          `${failurePath(f)} returned an in-band error: ${describeValue(f.observed)} ` +
+          `(docs/debug-mcp-contract.md §2a — the tool FAILED, so this run never TESTED the ` +
+          `invariant; it is not evidence either way)`
+        );
+      case "shape": {
+        const want = SHAPE_PROSE[/** @type {string} */ (f.expected)] ?? describeValue(f.expected);
+        const verb = f.observed === undefined ? "is missing or not" : "is not";
+        return `${failurePath(f)} ${verb} ${want}: ${describeValue(f.observed)}`;
+      }
+      case "vacuity":
+        return (
+          `${failurePath(f)} is ${describeValue(f.observed)}, below the non-vacuity floor of ` +
+          `${describeValue(f.expected)} — printer.ri did not finish realizing, and every ` +
+          `comparison below it would pass trivially on an empty scene`
+        );
+      case "subject":
+        return (
+          `${failurePath(f)} is ${describeValue(f.observed)}, which does not end in ` +
+          `${describeValue(f.expected)} — this run graded some other file`
+        );
+      case "stale":
+        return (
+          `${failurePath(f)} is ${describeValue(f.observed)}, expected ` +
+          `${describeValue(f.expected)} — the cell was demand-pruned or failed, so its number is ` +
+          `the LAST GOOD value rather than the one this edit produced, and the value gate would ` +
+          `pass on it`
+        );
+      case "value":
+        return (
+          `${failurePath(f)} reads ${describeValue(f.observed)}mm, expected ` +
+          `${describeValue(f.expected)}mm — the AI edit did not reach this cell`
+        );
+      case "constraint":
+        return (
+          `${failurePath(f)} is ${describeValue(f.observed)}, expected ` +
+          `${describeValue(f.expected)} — the constraint-status sync did not carry this pin's ` +
+          `flip across the write-tool payload (INV-GUI-2)`
+        );
+      default:
+        return `${failurePath(f)}: unrecognised gate ${describeValue(f.gate)} (observed ${describeValue(f.observed)})`;
+    }
+  });
+}
+
+// ─── Pin selection ───────────────────────────────────────────────────────────
+
+/**
+ * Every constraint whose `parameter_ids` is a superset of `cells`.
+ *
+ * Returns a LIST because a `±slack` pin is written as two constraints sharing
+ * the same refs; see {@link foldPinStatus}. Never throws — a malformed
+ * `constraints` list or entry yields no matches rather than an exception.
+ *
+ * @param {unknown} constraints  `engine_state.constraints`.
+ * @param {readonly string[]} cells  The cells the pin must reference.
+ * @returns {any[]}
+ */
+export function selectPinConstraints(constraints, cells) {
+  if (!Array.isArray(constraints) || !Array.isArray(cells)) return [];
+  return constraints.filter((c) => {
+    if (c === null || typeof c !== "object") return false;
+    const ids = /** @type {any} */ (c).parameter_ids;
+    if (!Array.isArray(ids)) return false;
+    return cells.every((cell) => ids.includes(cell));
+  });
+}
+
+/**
+ * Reduce the halves of one pin to a single status.
+ *
+ * A two-sided pin holds only when BOTH halves hold, so any `Violated` half makes
+ * the pin violated; failing that, any `Indeterminate` half makes it
+ * indeterminate. No match at all is {@link PIN_ABSENT} rather than a silent
+ * pass — a pin that vanished from printer.ri must fail the gate loudly, which is
+ * exactly what an index-keyed selector would have hidden.
+ *
+ * @param {any[]} matched  Output of {@link selectPinConstraints}.
+ * @returns {string}
+ */
+export function foldPinStatus(matched) {
+  if (!Array.isArray(matched) || matched.length === 0) return PIN_ABSENT;
+  const statuses = matched.map((c) =>
+    c !== null && typeof c === "object" ? /** @type {any} */ (c).status : undefined,
+  );
+  if (statuses.some((s) => s === "Violated")) return "Violated";
+  if (statuses.some((s) => s === "Indeterminate")) return "Indeterminate";
+  if (statuses.every((s) => s === "Satisfied")) return "Satisfied";
+  // A status outside the {Satisfied, Violated, Indeterminate} vocabulary
+  // (engine.rs build_constraints) is not a pin reading at all.
+  return PIN_ABSENT;
+}
+
+// ─── The verdict ─────────────────────────────────────────────────────────────
+
+/**
+ * @typedef {object} RailGateCellReading
+ * @property {unknown} mm         Millimetre value, scaled from `si_value`.
+ * @property {unknown} freshness  `ValueData.freshness`.
+ *
+ * @typedef {object} RailGateInputs
+ * @property {unknown} phase             A key of {@link RAIL_GATE_PHASES}.
+ * @property {unknown} meshCount         `engine_state.meshes.length`.
+ * @property {unknown} valueCount        `engine_state.values.length`.
+ * @property {unknown} constraintCount   `engine_state.constraints.length`.
+ * @property {unknown} dispatchCount     `demand_dispatch.dispatch_by_realization` entry count.
+ * @property {unknown} activeFile        `store_state.editor.activeFile`.
+ * @property {unknown} source            `reify_open_file.source`.
+ * @property {unknown} cells             Cell id → {@link RailGateCellReading}.
+ * @property {unknown} railSpanPinStatus Folded status of {@link RAIL_SPAN_PIN}.
+ * @property {unknown} toolDockPinStatus Folded status of {@link TOOL_DOCK_PIN}.
+ *
+ * @typedef {object} RailGateResult
+ * @property {boolean} ok                 True only when every gate passed.
+ * @property {RailGateFailure[]} failures Every violation observed, in gate order.
+ */
+
+/** Objects only — an array is not a payload, and neither is `null`. */
+function asObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? /** @type {any} */ (v) : null;
+}
+
+function isCount(v) {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0;
+}
+
+function isFiniteNumber(v) {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/**
+ * Evaluate every gate against one observed state.
+ *
+ * ALL gates are evaluated and every violation accumulated — this never
+ * early-returns — so one failing live run reports the complete picture instead
+ * of forcing a re-run per problem. An unknown `phase` suppresses only the
+ * phase-DEPENDENT gates (value, constraint), because there is no expectation to
+ * compare against; the rest still report.
+ *
+ * Never throws, for ANY argument: `null` is exactly what a caller holds after a
+ * failed read, and a `= {}` parameter default fires only on `undefined`.
+ *
+ * @param {RailGateInputs} inputs
+ * @returns {RailGateResult}
+ */
+export function checkRailLengtheningGate(inputs) {
+  const src = asObject(inputs) ?? {};
+
+  /** @type {RailGateFailure[]} */
+  const failures = [];
+
+  // ── Gate 1: the phase itself ────────────────────────────────────────────
+  const phase = Object.prototype.hasOwnProperty.call(RAIL_GATE_PHASES, src.phase)
+    ? RAIL_GATE_PHASES[/** @type {string} */ (src.phase)]
+    : undefined;
+  if (phase === undefined) {
+    failures.push(shapeFailure("railLengtheningGate", "phase", src.phase, KNOWN_PHASE));
+  }
+
+  // ── Gate 2: vacuity ─────────────────────────────────────────────────────
+  // Checked whatever the phase: an empty scene proves nothing at any of them.
+  for (const [tool, field, observed, floor] of /** @type {const} */ ([
+    ["engine_state", "meshes.length", src.meshCount, RAIL_GATE_MIN_BODIES],
+    ["engine_state", "values.length", src.valueCount, RAIL_GATE_MIN_VALUES],
+    ["engine_state", "constraints.length", src.constraintCount, RAIL_GATE_MIN_CONSTRAINTS],
+    ["demand_dispatch", "dispatch_by_realization", src.dispatchCount, RAIL_GATE_MIN_DISPATCHES],
+  ])) {
+    if (!isCount(observed) || observed < floor) {
+      failures.push({ gate: "vacuity", tool, field, observed, expected: floor });
+    }
+  }
+
+  // ── Gate 3: subject ─────────────────────────────────────────────────────
+  // Only the basename is stable; see SUBJECT_BASENAME.
+  const activeFile = src.activeFile;
+  const onSubject =
+    typeof activeFile === "string" &&
+    (activeFile === SUBJECT_BASENAME || activeFile.endsWith(`/${SUBJECT_BASENAME}`));
+  if (!onSubject) {
+    failures.push({
+      gate: "subject",
+      tool: "store_state",
+      field: "editor.activeFile",
+      observed: activeFile,
+      expected: SUBJECT_BASENAME,
+    });
+  }
+
+  // ── Gate 4: the source the engine handed back ───────────────────────────
+  if (typeof src.source !== "string" || src.source.length === 0) {
+    failures.push(shapeFailure("reify_open_file", "source", src.source, NON_EMPTY_STRING));
+  }
+
+  // ── Gates 5-7: the three tracked cells ──────────────────────────────────
+  const cells = asObject(src.cells) ?? {};
+  for (const cell of TRACKED_CELLS) {
+    const reading = asObject(cells[cell]);
+    if (reading === null) {
+      // An absent cell is ONE problem, reported once. Reading it as zero, or
+      // additionally faulting its missing freshness, would bury the cause.
+      failures.push(shapeFailure("engine_state", `values[${cell}].mm`, cells[cell], NUMBER));
+      continue;
+    }
+    if (!isFiniteNumber(reading.mm)) {
+      failures.push(shapeFailure("engine_state", `values[${cell}].mm`, reading.mm, NUMBER));
+    }
+    if (reading.freshness !== LIVE_FRESHNESS) {
+      failures.push({
+        gate: "stale",
+        tool: "engine_state",
+        field: `values[${cell}].freshness`,
+        observed: reading.freshness,
+        expected: LIVE_FRESHNESS,
+      });
+    }
+    if (phase !== undefined && isFiniteNumber(reading.mm)) {
+      const want = phase.cells[cell];
+      if (Math.abs(/** @type {number} */ (reading.mm) - want) > RAIL_GATE_LENGTH_TOLERANCE_MM) {
+        failures.push({
+          gate: "value",
+          tool: "engine_state",
+          field: `values[${cell}].mm`,
+          observed: reading.mm,
+          expected: want,
+        });
+      }
+    }
+  }
+
+  // ── Gate 8: the two named pins ──────────────────────────────────────────
+  // NEVER a global "no constraints violated": printer.ri carries eleven
+  // indeterminate constraints at baseline, and the last phase legitimately
+  // leaves the ToolDock pin red. Both would red a global assertion on correct
+  // behaviour; see this module's header.
+  if (phase !== undefined) {
+    for (const [pin, observed, want] of /** @type {const} */ ([
+      [RAIL_SPAN_PIN, src.railSpanPinStatus, phase.railSpanPinStatus],
+      [TOOL_DOCK_PIN, src.toolDockPinStatus, phase.toolDockPinStatus],
+    ])) {
+      if (observed !== want) {
+        failures.push({
+          gate: "constraint",
+          tool: "engine_state",
+          field: `constraints[${pin}].status`,
+          observed,
+          expected: want,
+        });
+      }
+    }
+  }
+
+  return { ok: failures.length === 0, failures };
+}
+
+// ─── Payload extraction ──────────────────────────────────────────────────────
+
+/**
+ * Validate one tool payload down to a usable object, appending a named failure
+ * on any problem.
+ *
+ * @param {unknown} payload
+ * @param {string} toolName  Debug-MCP tool name, used verbatim in failures.
+ * @param {RailGateFailure[]} failures  Accumulator, mutated in place.
+ * @returns {Record<string, unknown> | null} The payload, or null if unusable.
+ */
+function usablePayload(payload, toolName, failures) {
+  if (isInBandError(payload)) {
+    // `outage`, NOT `shape`: the tool FAILED. A caller must be able to tell that
+    // apart from a wrong-shaped answer, because it means the invariant was never
+    // tested at all.
+    failures.push({ gate: "outage", tool: toolName, observed: /** @type {any} */ (payload).error });
+    return null;
+  }
+  const obj = asObject(payload);
+  if (obj === null) {
+    failures.push(shapeFailure(toolName, undefined, payload, OBJECT));
+    return null;
+  }
+  return obj;
+}
+
+/**
+ * Read one array field off a payload, faulting it by name when it is not one.
+ *
+ * @returns {any[] | undefined}
+ */
+function arrayField(payload, toolName, field, failures) {
+  if (payload === null) return undefined;
+  const v = payload[field];
+  if (!Array.isArray(v)) {
+    failures.push(shapeFailure(toolName, field, v, ARRAY));
+    return undefined;
+  }
+  return v;
+}
+
+/**
+ * Millimetre reading for one cell, from the `engine_state` `values` list.
+ *
+ * `si_value` (canonical SI, metres) is the number read — NOT the formatted
+ * `value`/`unit` pair, which would need a parser and would silently change
+ * meaning when the unit picker changes. A cell that is missing, or that carries
+ * no usable `si_value`, yields `undefined`, which
+ * {@link checkRailLengtheningGate} reports as a named shape failure — this
+ * function faults nothing itself, so extraction reports payload problems and the
+ * check reports cell problems, each in one place.
+ *
+ * @param {any[] | undefined} values
+ * @param {string} cell
+ * @returns {{mm: number|undefined, freshness: unknown} | undefined}
+ */
+function cellReading(values, cell) {
+  if (!Array.isArray(values)) return undefined;
+  const entry = values.find(
+    (v) => v !== null && typeof v === "object" && /** @type {any} */ (v).cell_id === cell,
+  );
+  if (entry === undefined) return undefined;
+  const si = /** @type {any} */ (entry).si_value;
+  return {
+    mm: isFiniteNumber(si) ? /** @type {number} */ (si) * 1000 : undefined,
+    freshness: /** @type {any} */ (entry).freshness,
+  };
+}
+
+/**
+ * @typedef {object} RailGateExtraction
+ * @property {RailGateInputs} inputs   Flat shape accepted by {@link checkRailLengtheningGate};
+ *                                     a field is `undefined` exactly when its extraction failed.
+ * @property {RailGateFailure[]} failures Per-tool extraction problems — `outage` when the tool
+ *                                     itself failed, `shape` when it answered unreadably.
+ */
+
+/**
+ * Flatten the four live debug-MCP payloads into the checker's input shape.
+ *
+ * Shapes read (note the casing seam — the frontend speaks camelCase, Rust speaks
+ * snake_case):
+ *   `engine_state`    → `{meshes: [...], values: [{cell_id, si_value, freshness, …}],
+ *                         constraints: [{node_id, status, parameter_ids, …}], …}`
+ *   `store_state`     → `{editor: {activeFile, dirtyFiles, openFiles}, …}`
+ *   `reify_open_file` → `{success, source}`  (debug_server.rs reify_open_file_envelope)
+ *   `demand_dispatch` → `{dispatch_by_realization, eval_set, full_scope}`
+ *
+ * An extraction failure means the invariant was NEVER TESTED — an outage, not a
+ * pass. The undefined inputs it leaves behind are what make the verdict fail
+ * too, so a caller cannot accidentally read silence as success.
+ *
+ * Never throws, for ANY argument, including `null`.
+ *
+ * @param {{phase?: unknown, engineState?: unknown, storeState?: unknown,
+ *          openFile?: unknown, demandDispatch?: unknown}} payloads
+ * @returns {RailGateExtraction}
+ */
+export function extractGateInputs(payloads) {
+  const src = asObject(payloads) ?? {};
+
+  /** @type {RailGateFailure[]} */
+  const failures = [];
+
+  const engine = usablePayload(src.engineState, "engine_state", failures);
+  const meshes = arrayField(engine, "engine_state", "meshes", failures);
+  const values = arrayField(engine, "engine_state", "values", failures);
+  const constraints = arrayField(engine, "engine_state", "constraints", failures);
+
+  const store = usablePayload(src.storeState, "store_state", failures);
+  const editor = store === null ? null : asObject(store["editor"]);
+
+  const opened = usablePayload(src.openFile, "reify_open_file", failures);
+  let source;
+  if (opened !== null) {
+    const raw = opened["source"];
+    if (typeof raw !== "string" || raw.length === 0) {
+      failures.push(shapeFailure("reify_open_file", "source", raw, NON_EMPTY_STRING));
+    } else {
+      source = raw;
+    }
+  }
+
+  const dispatch = usablePayload(src.demandDispatch, "demand_dispatch", failures);
+  let dispatchCount;
+  if (dispatch !== null) {
+    const byRealization = asObject(dispatch["dispatch_by_realization"]);
+    if (byRealization === null) {
+      failures.push(
+        shapeFailure("demand_dispatch", "dispatch_by_realization", dispatch["dispatch_by_realization"], OBJECT),
+      );
+    } else {
+      dispatchCount = Object.keys(byRealization).length;
+    }
+  }
+
+  /** @type {Record<string, unknown>} */
+  const cells = {};
+  for (const cell of TRACKED_CELLS) {
+    const reading = cellReading(values, cell);
+    if (reading !== undefined) cells[cell] = reading;
+  }
+
+  return {
+    inputs: {
+      phase: src.phase,
+      meshCount: meshes === undefined ? undefined : meshes.length,
+      valueCount: values === undefined ? undefined : values.length,
+      constraintCount: constraints === undefined ? undefined : constraints.length,
+      dispatchCount,
+      activeFile: editor === null ? undefined : editor["activeFile"],
+      source,
+      cells,
+      railSpanPinStatus: foldPinStatus(
+        selectPinConstraints(constraints, PIN_SELECTORS[RAIL_SPAN_PIN]),
+      ),
+      toolDockPinStatus: foldPinStatus(
+        selectPinConstraints(constraints, PIN_SELECTORS[TOOL_DOCK_PIN]),
+      ),
+    },
+    failures,
+  };
+}
