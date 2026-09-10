@@ -545,7 +545,7 @@ _census_commits() {
 #   1. UNKNOWN       the git measurement failed. Decided in _measure_branch,
 #                    which returns before ever reaching here.
 #   2. UNDECLARED    this task declares no files. NEVER downgraded to
-#                    OUT-OF-SCOPE: 186 of the store's 1344 non-terminal tasks
+#                    OUT-OF-SCOPE: 186 of the store's 1345 non-terminal tasks
 #                    declare none (the documented defer-to-architect value), so
 #                    treating "declares nothing" as "everything is foreign"
 #                    would manufacture false positives at that scale.
@@ -557,7 +557,7 @@ _census_commits() {
 #
 # "Foreign" is the changed set minus the declared set under EXACT
 # repo-relative string equality — no prefix or glob matching. That is a
-# measurement, not a simplification: across all 1344 non-terminal tasks exactly
+# measurement, not a simplification: across all 1345 non-terminal tasks exactly
 # one declared path is not a file-with-extension (`hooks/reference-transaction`,
 # an extensionless FILE in lock-charter-guard's allowlist), so directory
 # declarations do not exist to be handled and prefix machinery would be an
