@@ -77,9 +77,15 @@ Three properties of that query are load-bearing:
 
 The sqlite3 CLI and the python3 stdlib engine run that **identical SQL string**, so they are
 genuinely interchangeable rather than one being a stub that enumerates rows nothing can then
-adjudicate. If neither is present — or if python3 alone is missing, which disables the proposal
-parser and `--format json` — the sweep says so once, at startup, instead of silently reporting a
-whole run as `unknown`.
+adjudicate. If neither is present, the sweep says so once, at startup.
+
+**With python3 alone missing the sweep can adjudicate nothing**, and says that too. The proposal
+parser is not a downstream detail of `merge_verify_red` — it *is* the oracle that reads the class
+predicate — so every row carrying a `dry_run_proposals` blob degrades to `unknown` and claims no
+class. It is deliberately **not** `NO-CLASS`, which would assert a complete adjudication with a
+negative result and let a parser-less host report a clean, entirely negative sweep. Such a run is
+also treated as a **degraded read**, so it retracts nothing: retraction acts on the absence of a
+hit, and request rendering needs python3 too, so it could not re-emit what it deleted.
 
 ## Trigger classes
 
@@ -116,13 +122,14 @@ Notes that are easy to get wrong:
 | `LIVE` | the liveness guard fired; no class predicate ran at all | no |
 | `CORRUPT-HOLD` | an otherwise-confirmed hit carrying a #5316 corruption flag | no — `action=human_gate` |
 | `NO-CLASS` | no trigger class matched the row at all | no |
-| `unknown` | a class matched but its **oracle** could not be read; never upgraded to `STALE` | no |
+| `unknown` | an **oracle** could not be read, so the row could not be adjudicated; never upgraded to `STALE` | no |
 
 `NO-CLASS` and `unknown` are **different answers and are counted separately.** `NO-CLASS` is a
 *complete* adjudication with a negative result — nothing failed, the row simply matches no trigger
-class. `unknown` means a class **matched** and its oracle then could not be read (a recorded
-`main_sha` that does not resolve in `--repo` or is not an ancestor of `--main-ref`, a `--main-ref`
-that does not resolve at all, a proposal recording no `files_referenced` or no `main_sha`). On the
+class. `unknown` means an oracle could not be read (a recorded `main_sha` that does not resolve in
+`--repo` or is not an ancestor of `--main-ref`, a `--main-ref` that does not resolve at all, a
+proposal recording no `files_referenced` or no `main_sha`, or no python3 to run the proposal parser
+— that last one leaves even the class unreadable). On the
 live store the great majority of `blocked` / `in-progress` rows match no class at all, so folding
 them into `unknown` would swamp precisely the signal that counter exists to carry.
 
@@ -174,7 +181,8 @@ Keyed to the script's header `# Invariants:` block, which is authoritative:
   is fail-safe hardening against a shape the sweep must survive, not a change to observed
   behaviour.
 - **L2** — an unreadable oracle degrades to `unknown`, never to `STALE`; a row that simply matches
-  no class is `NO-CLASS`, which is a different thing and a different counter.
+  no class is `NO-CLASS`, which is a different thing and a different counter. A missing python3
+  makes the class predicate itself unreadable, so those rows are `unknown` too.
 - **L3** — every candidate contributes to **at most one** class counter and appears exactly once.
   With a single class this is a counting property, not a precedence rule.
 - **L4** — `merge_verify_red` spans `blocked` **and** `in-progress`, which is why the enumeration's
@@ -208,18 +216,21 @@ One file per confirmed hit, `redispatch-<task_id>-<class>.json`, holding `schema
     the same directory is left alone;
   - a `--class`-restricted run retracts **only that class** — it never deletes the requests of a
     class it did not adjudicate;
-  - a run whose **DB read failed retracts nothing**. An unreadable DB reports zero candidates too,
-    and absence of a hit is evidence only when the query actually ran; wiping on that would be the
-    sweep destroying its own output on a transient fault.
+  - a **degraded read retracts nothing**. Absence of a hit is evidence only when the query
+    actually ran *and* its rows could be adjudicated — an unreadable DB reports zero candidates,
+    and a host with no python3 enumerates rows it then cannot classify. Wiping on either would be
+    the sweep destroying its own output on a transient fault, and with no parser it could not
+    re-emit a single file it had just deleted.
 - **Retired-class DRAIN** — `gate_closure` and `unmet_dependency` are names a consumer may still
   **see** in the directory but will never see **emitted** again. Both stay recognised by the
   retraction loop purely so a leftover from a pre-#7349 run is removed rather than orphaned: the
-  consumer is request-**driven**, so an orphaned `redispatch-<id>-gate_closure.json` would keep
-  producing `set_task_status('cancelled')` on every pass and the loop would outlive the fix. A
-  retired class can never enter the keep-set (no row classifies into one), so a `--class all` run
-  always drains it, inheriting the three scoping rules above unchanged. Each drain gets its own
-  `[info]` line naming #7349, worded differently from an ordinary supersession, so an operator
-  reading the nightly journal can tell the two apart.
+  consumer is request-**driven**, so an orphaned `redispatch-<id>-gate_closure.json` is still a
+  live instruction to `set_task_status('cancelled')`. **The exposure is exactly one cancel, not a
+  loop** — see "Why the drain exists" below for the bound and how to re-check it. A retired class
+  can never enter the keep-set (no row classifies into one), so a `--class all` run always drains
+  it, inheriting the three scoping rules above unchanged. Each drain gets its own `[info]` line
+  naming #7349, worded differently from an ordinary supersession, so an operator reading the
+  nightly journal can tell the two apart.
 - **Never gating** — an uncreatable or unwritable directory warns on stderr; the report on stdout
   is still complete and the exit code is still 0. The directory is created on demand only when its
   parent already exists, so a typo'd `--emit-requests` surfaces as a warning rather than silently
@@ -251,19 +262,31 @@ A follow-up is filed for it; until it lands, the sweep is a manual/ad-hoc run.
 ## Retired classes (#7349, 2026-09-09)
 
 Two of the three original trigger classes were retired **at the source**, rather than defused in
-the consumer. Both had already fired on live tasks, and every firing in the retained journal was
-collateral.
+the consumer. Both had already fired on live tasks.
 
-### `gate_closure` — nine collateral firings, zero correct ones
+### `gate_closure` — it cancelled seven real tasks on an unsound premise
 
 Predicate: a `blocked` task with `metadata.task_kind = deterministic` and
 `metadata.always_escalates` truthy, whose live escalation dir held no `status=pending`
 `esc-<id>-*.json`. Action `close`, which the consumer turned into
 `set_task_status('cancelled')` — the single most destructive thing this family can do.
 
-The retained journal holds **nine firings across six tasks, all collateral**. The absence of a
-live pending escalation is simply not evidence that a deterministic gate task is finished: an
+The premise is unsound, which is the whole of the case for retiring it: the absence of a live
+pending escalation is simply not evidence that a deterministic gate task is finished — an
 escalation gets resolved routinely while the work it was filed against is still open.
+
+**The damage, in a form a reader can re-derive with `ls`.**
+`data/redispatch-requests/consumed/` holds **seven** archived `gate_closure` requests, across
+seven distinct tasks: 6331, 6476, 6574, 6632, 6633, 7178, 7305. An archived request is one that
+was **applied** — `archive_request` is called only on a successful apply, and a skipped or failed
+one is left in place — so each of those seven is a task this class actually drove to `cancelled`.
+Five of them (6331, 6476, 6574, 6632, 6633) are `cancelled` today; 7178 and 7305 have since been
+moved to `done`.
+
+The archive is a per-task snapshot, not a firing log — the filename is
+`redispatch-<id>-<class>.json`, so a re-emission overwrites — so it bounds the number of tasks
+affected, not the number of times the consumer ran. Do not read a firing count out of it; count
+tasks.
 
 Retiring it removed the sweep's **only** read of the escalation store, and with it the
 `--escalations` flag, `REIFY_GATE_STALENESS_ESCALATIONS_DIR`, the `<repo>/data/escalations`
@@ -311,11 +334,28 @@ dispatcher, since one class cannot have a precedence order or an `also:<class>` 
 
 Retiring a class in the classifier alone would **not** have stopped it. The consumer is
 request-**driven**: a `redispatch-<id>-gate_closure.json` left in the `--emit-requests` directory
-by a pre-#7349 run keeps routing through `CLASS_ACTION` → `_apply_close` →
-`set_task_status('cancelled')` on every consumer pass, forever. Both retired names therefore stay
-**recognised** by the retraction loop, as an explicit drain set — see the `--emit-requests`
-consumer contract above. An operator who finds a stale retired-class request file should expect the
-next `--class all` sweep to remove it and to say so in the journal.
+by a pre-#7349 run is still a live instruction, routing through `CLASS_ACTION` → `_apply_close` →
+`set_task_status('cancelled')` the next time its row is eligible.
+
+**The exposure is bounded at ONE spurious cancel per leftover file.** Two consumer mechanisms cap
+it, and both are worth re-checking rather than taking on trust:
+
+- `archive_request` (`consume_redispatch_requests.py`) `os.replace`s an APPLIED request into the
+  `consumed/` subdirectory, and it is called **only** on a successful apply. So a file that fires
+  removes itself from the top level; it cannot fire twice.
+- `guard_row` skips any row whose status is outside `LEGAL_STATUSES[cls]` (`gate_closure` is
+  `frozenset({'blocked'})`) or already at the action's target status. A file that does *not* fire
+  is left in place deliberately — so it lingers, but it stays inert unless its row returns to
+  `blocked`.
+
+One spurious cancel is still one too many, and the drain costs only a widened name set — hence the
+drain. But size the risk correctly: this is not an unbounded loop. Empirically the live
+`data/redispatch-requests/` is empty at the top level with everything under `consumed/`, so the
+drain is defence in depth today.
+
+Both retired names therefore stay **recognised** by the retraction loop, as an explicit drain set —
+see the `--emit-requests` consumer contract above. An operator who finds a stale retired-class
+request file should expect the next `--class all` sweep to remove it and to say so in the journal.
 
 ### A counter-example to the usual seam
 

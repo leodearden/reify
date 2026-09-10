@@ -682,9 +682,13 @@ assert "B7: an unparseable heartbeat warns on stderr" \
 # `gate_closure` was the sweep's class A: a `blocked` task carrying
 # task_kind=deterministic and always_escalates, with no live pending
 # escalation, reported STALE with action=close — which the dark-factory
-# consumer turned into set_task_status('cancelled'). All nine firings in the
-# retained journal were collateral, so the class is retired at the SOURCE
-# rather than defused downstream in the consumer.
+# consumer turned into set_task_status('cancelled'). Its premise was unsound
+# (an escalation is resolved routinely while the work it was filed against is
+# still open) and it drove seven real tasks to `cancelled` before it was
+# retired — the seven archived requests under data/redispatch-requests/
+# consumed/, enumerated in the runbook's "Retired classes" section. So the
+# class is retired at the SOURCE rather than defused downstream in the
+# consumer.
 #
 # What this block pins is the absence, in BOTH directions: the canonical
 # class-A shape is now adjudicated NO-CLASS whether or not a live escalation
@@ -703,7 +707,7 @@ _mk_repo
 C_REPO="$REPO_DIR"
 
 # The class-A metadata predicate as recorded on the live blocked gate tasks —
-# the exact shape that produced all nine collateral firings.
+# the exact shape that cancelled those seven tasks.
 C_GATE_META='{"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"}'
 
 _add_task 9201 blocked "$C_GATE_META"   # no escalation file at all
@@ -1702,9 +1706,9 @@ assert "G11f: ... and emits nothing off a premise it never adjudicated" \
 #       its request file survives forever — so a consumer following the
 #       documented "diff the directory" contract keeps seeing an actionable
 #       request for an already-closed task;
-#   (b) a stale request left behind by an EARLIER version of the sweep keeps
-#       instructing the consumer forever. Task 7349's retired classes are the
-#       live instance of this, and R8 (added with the drain) pins it.
+#   (b) a stale request left behind by an EARLIER version of the sweep is
+#       still a live instruction to the consumer. Task 7349's retired classes
+#       are the live instance of this, and R8 (added with the drain) pins it.
 #
 # Each run therefore retracts what is no longer a hit before it emits. This is
 # the one block whose fixture DB is MUTATED between runs — that is the point:
@@ -1811,8 +1815,12 @@ assert "R7: and the live hit is still emitted alongside them" \
 # --- R8: the retired-class DRAIN (task 7349) ---------------------------------
 # The retirement does not take effect at RUNTIME unless the leftovers are
 # removed. The consumer is request-driven, so a redispatch-<id>-gate_closure
-# .json left in the directory by a pre-retirement sweep keeps instructing it to
-# set_task_status('cancelled') forever — the cancel loop would outlive the fix.
+# .json left in the directory by a pre-retirement sweep still instructs it to
+# set_task_status('cancelled') the next time that row is eligible. The exposure
+# is ONE cancel per leftover file, not a loop — the consumer archives an
+# APPLIED request out of the top level — but one spurious cancel is one too
+# many, and draining costs only a widened name set. See the runbook's "Why the
+# drain exists" for the bound and the two consumer mechanisms that cap it.
 #
 # A retired class can never appear in _KEEP, because no row can be classified
 # into one, so on a --class all run it is ALWAYS retracted with no extra
@@ -2005,8 +2013,7 @@ assert "T9: an explicit --tag overrides REIFY_LANE_TASK_TAG" \
 # integration assert so a future partial regression in any one of the three
 # cannot hide behind the per-class blocks.
 #
-# Row 1 is the shape behind all nine collateral gate_closure firings across six
-# tasks. Row 2 is the shape that fired on task 5318 (its one dependency 5214
+# Row 1 is the shape that cancelled all seven of the gate_closure tasks. Row 2 is the shape that fired on task 5318 (its one dependency 5214
 # `done`) while esc-5318-7 was still pending — ~9h before the human ruled. Row 3
 # is a genuine merge_verify_red candidate, which must still be reported AND
 # emitted: this task retires two classes, it does not disable the sweep.

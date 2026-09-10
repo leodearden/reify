@@ -25,10 +25,16 @@
 #   gate_closure       — a `blocked` deterministic always-escalates gate task
 #                        with no live pending escalation, reported STALE with
 #                        action=close, which the consumer turned into
-#                        set_task_status('cancelled'). All nine firings in the
-#                        retained journal were collateral. Retiring it removed
-#                        the sweep's only read of the escalation store, and
-#                        with it `--escalations` and the GATED verdict.
+#                        set_task_status('cancelled'). Its premise was
+#                        unsound — an escalation is resolved routinely while
+#                        the work it was filed against is still open — and it
+#                        drove seven real tasks to `cancelled` before it was
+#                        retired (the seven archived requests under
+#                        data/redispatch-requests/consumed/; the runbook's
+#                        "Retired classes" section names them and shows how to
+#                        re-derive the list). Retiring it removed the sweep's
+#                        only read of the escalation store, and with it
+#                        `--escalations` and the GATED verdict.
 #   unmet_dependency   — a `blocked` task whose every dependency had reached a
 #                        terminal status, reported STALE with
 #                        action=redispatch. Retired for OWNERSHIP, not
@@ -213,13 +219,18 @@
 #   RETIRED CLASSES A CONSUMER MAY STILL SEE, AND WILL NEVER SEE EMITTED
 #   AGAIN: `gate_closure` and `unmet_dependency`. Task 7349 retired both, and
 #   because this directory is a snapshot rather than a log, retiring a class
-#   in the classifier alone would leave its last files sitting here
-#   instructing the consumer forever — the consumer is request-driven, so a
-#   stale redispatch-<id>-gate_closure.json keeps producing
-#   set_task_status('cancelled') on every pass. Both names therefore stay
-#   RECOGNISED here purely so they can be DRAINED, and each drain is announced
-#   with its own [info] line naming task 7349, distinct from the ordinary
-#   supersession wording.
+#   in the classifier alone would leave its last files sitting here as live
+#   instructions — the consumer is request-driven, so a stale
+#   redispatch-<id>-gate_closure.json still routes to
+#   set_task_status('cancelled') the next time its row is eligible. The
+#   exposure is ONE spurious cancel per leftover file, not a loop: the
+#   consumer archives an APPLIED request into consumed/, so a file that fires
+#   removes itself. One is one too many and the drain costs only a widened
+#   name set — see the runbook's "Why the drain exists" for the bound and the
+#   two consumer mechanisms that cap it. Both names therefore stay RECOGNISED
+#   here purely so they can be DRAINED, and each drain is announced with its
+#   own [info] line naming task 7349, distinct from the ordinary supersession
+#   wording.
 
 set -euo pipefail
 
@@ -996,9 +1007,11 @@ if [ -n "$REQUESTS_DIR" ]; then
         # request for an already-closed task. And a class this sweep no longer
         # emits — a RETIRED one — leaves its last files behind permanently;
         # the consumer is request-DRIVEN, so a stale
-        # redispatch-<id>-gate_closure.json keeps yielding
-        # set_task_status('cancelled') on every pass, and retiring the class
-        # in the classifier alone would leave that loop running. Retracting
+        # redispatch-<id>-gate_closure.json still yields one
+        # set_task_status('cancelled') the next time its row is eligible (one,
+        # not a loop — the consumer archives an applied request out of the top
+        # level), and retiring the class in the classifier alone would leave
+        # that last cancel armed. Retracting
         # first makes the directory the CURRENT hit set, which is what the
         # documented "diff the directory" contract needs, and closes both
         # defects with one mechanism.
