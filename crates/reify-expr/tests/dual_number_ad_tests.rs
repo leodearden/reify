@@ -2217,3 +2217,151 @@ fn every_other_all_constant_kink_already_yields_a_full_row() {
         assert_eq!(row, vec![1.0], "{label} + w: ∂/∂w = 1");
     }
 }
+
+// ===========================================================================
+// The `__field__::<name>` shadow lookup must sit where `eval_expr` puts it
+// (task #6672, steps 31-32)
+// ===========================================================================
+//
+// `eval_expr` resolves a `__field__::<name>` field cell in its catch-all `_`
+// arm (lib.rs:612) — i.e. AFTER every named intercept (the whole-field and
+// bounded reductions, `flat_map`, `worst_case`, `generate`) and BEFORE
+// `reify_stdlib::eval_builtin`.  The dual path must resolve it at the SAME
+// position, or the two paths disagree about which of the two meanings a
+// 1-argument call has.
+//
+// Both directions are pinned here, because the ordering has a wrong answer on
+// each side:
+//
+//   (a) too EARLY — a whole-field reduction name with a shadow cell in scope
+//       takes the lambda on the dual path while `eval_expr` takes the
+//       reduction.  That is the live defect: the lambda is applied to a
+//       `Value::Field`, which is `Undef`, so the node silently collapses.
+//   (b) too LATE — pushing the lookup past the smooth/kinky builtin tables
+//       would send `abs`/`sqrt` to those tables while `eval_expr` applies the
+//       lambda, trading one divergence for three.  Block (b) holds the fix to
+//       exactly the width of the bug.
+
+/// A `Value::Field` whose lambda is `p ↦ p + 1000`, registered at
+/// `__field__::<name>` so that `<name>(x)` resolves to it.
+///
+/// The `+1000` offset is a fingerprint: any primal ≥ 1000 below was produced
+/// by the shadow lambda, and any primal under it came from the builtin or the
+/// reduction.  `cube_field_cell` cannot serve here — it deliberately uses the
+/// non-builtin name `cube`, so it resolves identically under both orderings
+/// and is blind to exactly the distinction these tests draw.
+fn shadow_cell(name: &str) -> (ValueCellId, Value) {
+    let p = VCell::new("$lambda_shadow", "p");
+    let body =
+        binop(BinOp::Add, CompiledExpr::value_ref(p.clone(), dl()), literal(Value::Real(1000.0)));
+    let lambda = Value::Lambda {
+        params: vec![("p".to_string(), p)],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+    let field = Value::Field {
+        domain_type: dl(),
+        codomain_type: dl(),
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda),
+    };
+    (ValueCellId::new(reify_core::FIELD_ENTITY_PREFIX, name), field)
+}
+
+/// The four names `eval_expr` intercepts at arity 1 for a `Value::Field`
+/// argument — the whole-field reductions, i.e. exactly the names for which a
+/// shadow cell and a named intercept compete.
+const SHADOWED_REDUCTIONS: [&str; 4] = ["max", "min", "argmax", "argmin"];
+
+// ---------------------------------------------------------------------------
+// (a) THE DIVERGENCE — a shadow cell must not outrank a whole-field reduction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_shadow_cell_does_not_outrank_a_whole_field_reduction_on_the_dual_path() {
+    for name in SHADOWED_REDUCTIONS {
+        let (mut values, seed_cells) = probe(&[("x", 2.0)]);
+        let (cell_id, field) = shadow_cell(name);
+        values.insert(cell_id, field);
+
+        let expr = call1(name, literal(bounded_probe_field()));
+        let (dual_v, _, plain) = dual_and_plain(&expr, &values, &seed_cells);
+
+        // The invariant itself: `eval_expr` takes the named reduction arm, so
+        // the dual path must take it too rather than applying the lambda.
+        assert_eq!(
+            dual_v, plain,
+            "{name}(field) with `__field__::{name}` in scope: eval_dual must resolve the \
+             shadow at the same position eval_expr does"
+        );
+        // ...with teeth: `Undef == Undef` would satisfy the line above while
+        // BOTH paths were broken.  The reference must be a real answer, and
+        // it must not carry the shadow lambda's +1000 fingerprint.
+        assert_ne!(
+            plain,
+            Value::Undef,
+            "{name}(field): eval_expr must produce the whole-field reduction, not Undef"
+        );
+        let got = plain
+            .as_f64()
+            .unwrap_or_else(|| panic!("{name}(field): expected a scalar, got {plain:?}"));
+        assert!(
+            got < 1000.0,
+            "{name}(field): the reduction must win over the shadow lambda, but the primal \
+             {got} carries the lambda's +1000 fingerprint"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (b) THE OVER-CORRECTION GUARD — three shapes that agree TODAY
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_shadow_cell_still_outranks_the_builtin_tables_on_both_paths() {
+    // `eval_expr`'s `_`-arm comment ("Builtins are matched in earlier arms, so
+    // they are never shadowed") is about its own NAMED match arms, not about
+    // stdlib builtins at large: `abs` and `sqrt` are resolved by
+    // `reify_stdlib::eval_builtin` INSIDE the `_` arm, i.e. *after* the shadow
+    // lookup.  So a field cell really does shadow them, and the dual path must
+    // keep agreeing.  Each expected value is the shadow lambda's answer
+    // (`arg + 1000`), never the builtin's.
+    let cases: [(&str, f64, f64); 3] = [
+        // A KINKY 1-arg builtin: abs(-2) would be 2 if the kink table won.
+        ("abs", -2.0, 998.0),
+        // A SMOOTH 1-arg builtin: sqrt(4) would be 2 if the smooth table won.
+        ("sqrt", 4.0, 1004.0),
+        // A reduction NAME at arity 1 over a NON-Field argument:
+        // `field_reduction_kind` returns `None` and `eval_expr`'s named arms
+        // require a `Value::Field`, so both paths fall through to the shadow.
+        ("max", 3.0, 1003.0),
+    ];
+
+    for (name, x, expected) in cases {
+        let (mut values, seed_cells) = probe(&[("x", x)]);
+        let (cell_id, field) = shadow_cell(name);
+        values.insert(cell_id, field);
+
+        let expr = call1(name, pref("x"));
+        let (dual_v, tangent, plain) = dual_and_plain(&expr, &values, &seed_cells);
+
+        assert_eq!(
+            plain,
+            Value::Real(expected),
+            "{name}({x}): eval_expr applies the shadow lambda, so the reference is {expected}"
+        );
+        assert_eq!(
+            dual_v, plain,
+            "{name}({x}) with `__field__::{name}` in scope: the dual path must keep letting \
+             the shadow cell outrank the builtin tables"
+        );
+        // The lambda is `p ↦ p + 1000`, so the tangent is the argument's,
+        // unchanged — pinning that the shadow is DIFFERENTIATED and not merely
+        // primal-matched by an opaque fallthrough.
+        assert_eq!(
+            tangent.materialize(1).unwrap_or_else(|| panic!("{name}({x}): expected a tangent")),
+            vec![1.0],
+            "{name}({x}): d(x + 1000)/dx = 1 through the applied lambda"
+        );
+    }
+}
