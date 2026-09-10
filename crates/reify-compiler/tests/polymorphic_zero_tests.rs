@@ -455,10 +455,14 @@ structure S {
 /// The coercion reaches a member access: its gate keys on the sibling's
 /// COMPILED TYPE being `Type::Scalar{D}` with non-dimensionless D — it is
 /// syntax-agnostic about the sibling's expression shape — and
-/// `material.density` compiles to `Scalar[kg·m^-3]`. This is a different
-/// operand shape from the `IndexAccess` case that `structural_physical.ri`
-/// deliberately carves out, so it is asserted rather than inferred from the
-/// plain-identifier cases above.
+/// `material.density` compiles to `Scalar[kg·m^-3]`. It is asserted rather
+/// than inferred from the plain-identifier cases above because the COMPILED
+/// shape differs from theirs: a member access lowers to `IndexAccess`, not
+/// `ValueRef`. That is the same node the subscript form lowers to, so
+/// `index_access_subscript_gt_zero_no_error` below extends this pin rather
+/// than contrasting with it — `structural_physical.ri`'s dimensioned
+/// `moi_principal[0]` RHS is a call-site choice, not a shape the coercion
+/// misses.
 ///
 /// Written as a `structure`; the `trait Physical` shape it mirrors is pinned
 /// separately by `trait_body_with_conformer_member_access_gt_zero_no_error`

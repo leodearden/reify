@@ -37,9 +37,10 @@
 //     Real to Density; `0kg/m^3` is retained by convention, not required — a
 //     bare `0` compiles too, MEMBER-ACCESS operand included.
 //     DIMENSIONED-ZERO CONVENTION — see
-//     docs/notes/dimensioned-zero-coercion.md. The `moi_principal[0]`
-//     IndexAccess note below is not in tension with this: it records a
-//     deliberate choice not to lean on the coercion for a different
+//     docs/notes/dimensioned-zero-coercion.md. The `moi_principal[0]` note
+//     below is not in tension with this: a member access and a subscript
+//     lower to the SAME IndexAccess node, so the coercion reaches both.
+//     What differs is the choice — Rigid declines to lean on it — not the
 //     operand shape.
 //
 // Historical note: prior to task 1876 this refined a trait named `Material`,

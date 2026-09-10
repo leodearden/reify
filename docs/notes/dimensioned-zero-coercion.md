@@ -29,7 +29,7 @@ It covers:
 | Dimension family | every family — base, compound-product, compound-quotient | the gate is dimension-agnostic; it copies `D` off the sibling |
 | Operator | `Lt Le Gt Ge Eq Ne Add Sub` | the `matches!` gate in `compile_binop`; the call runs BEFORE `infer_binop_type` |
 | Operand order | both | two symmetric arms in `coerce_zero_operand` |
-| Sibling shape | any expression whose COMPILED TYPE is a non-dimensionless `Scalar` — a member access such as `material.density` included | the rewrite keys on that type, not on the sibling's expression shape |
+| Sibling shape | any expression whose COMPILED TYPE is a non-dimensionless `Scalar`, `CompiledExprKind::IndexAccess` included — and BOTH the member-access form (`material.density`) and the subscript form (`moi_principal[0]`) lower to that one node kind, as `assert_density_positive_constraint_present` in `crates/reify-compiler/tests/structural_physical_tests.rs` shows by destructuring `material.density` as `IndexAccess { object: ValueRef("material"), index: Literal(String("density")) }` | the rewrite keys on that type, not on the sibling's expression shape |
 
 **Consequence.** A dimensioned RHS literal is never *required* in this position. `magnitude > 0N`
 and `magnitude > 0` compile to the same thing, and the compiled RHS is dimensioned by the time
@@ -39,6 +39,10 @@ requirement.
 
 ## Where the rule does NOT reach
 
+The discriminator for this section: a true non-reach is a property of the **compiler** — the
+rewrite *cannot* fire. A site that merely declines to depend on the rewrite is a property of one
+**call site**, and belongs in the next section.
+
 - **Non-zero literals are never coerced.** `resistivity < 0.0001` really is a compile error
   (`Scalar[m^3·kg·s^-3·A^-2]` vs `Real`), so `materials_electrical.ri`'s `trait Conductive` bound
   genuinely needs its `ohm*m`. This is the load-bearing distinction the sweep preserves.
@@ -47,8 +51,23 @@ requirement.
   early-`return`s to SUPPRESS `ParamDefaultTypeMismatch`; it performs no rewrite. So
   `param phase : Angle = 0` stores a DIMENSIONLESS default while `= 0deg` stores `Scalar[rad]` —
   see the `HarmonicForce.phase : Angle = 0deg` note in `modal_analysis.ri`.
-- **Index access.** `structural_physical.ri` deliberately does not lean on the coercion for the
-  `moi_principal[0]` `IndexAccess` shape; that is a recorded choice, not a gap in the rule.
+
+## Sites that deliberately do not rely on it
+
+- **`structural_physical.ri`'s `trait Rigid` PD constraint.** The coercion DOES reach an
+  `IndexAccess` operand. Measured: with `param moi : Tensor<2,3,MomentOfInertia>` and
+  `let eig = eigenvalues(moi)`, `constraint eig[0] > 0` compiles with ZERO error diagnostics, while
+  `constraint eig[0] > 1m` errors `dimension mismatch in comparison: Scalar[m^2·kg] vs Scalar[m]`
+  (the mismatch arm is what makes the clean compile a measurement: it proves the operand really
+  typed as a dimensioned `Scalar`). So `moi_principal[0] > 0.0 * 1kg * 1m * 1m` keeps its
+  dimensioned RHS by **choice**, exactly as the `0N` / `0kg` sites above do.
+
+  No shape-based carve-out is expressible in the first place: `coerce_zero_operand`
+  (`crates/reify-compiler/src/expr.rs:319-368`) gates ONLY on the sibling's compiled `result_type`
+  being a non-dimensionless `Type::Scalar` — it never inspects the sibling's expression shape.
+  Stating this once is the point: the earlier version of this note filed the subscript form as a
+  place the rule "does NOT reach" while the table above filed the member-access form as covered,
+  and the two are the same node kind.
 
 ## Why a clean compile is a real signal (and when it is not)
 
@@ -74,7 +93,7 @@ that way.
 
 | Level | File | What it pins |
 |---|---|---|
-| Compile | `crates/reify-compiler/tests/polymorphic_zero_tests.rs` | operand/operator/dimension/shape breadth, including trait-body-with-conformer, plus the non-vacuity guards |
+| Compile | `crates/reify-compiler/tests/polymorphic_zero_tests.rs` | operand/operator/dimension/shape breadth, including trait-body-with-conformer and both `IndexAccess` forms — `member_access_lhs_gt_zero_no_error` and `index_access_subscript_gt_zero_no_error` — each with its `*_mismatched_non_zero_still_errors` non-vacuity guard |
 | Compile (negatives) | `crates/reify-compiler/tests/comparison_operand_guard_tests.rs` | the guards that make a clean compile meaningful |
 | Eval | `crates/reify-eval/tests/polymorphic_zero_eval.rs` | `Satisfaction::Satisfied` at runtime, incl. compound dimensions |
 | Eval (trait bodies) | `crates/reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs` | the runtime satisfaction signal for the two trait-body stdlib sites — `Satisfied` vs `Violated`, which no compile pin can express |
