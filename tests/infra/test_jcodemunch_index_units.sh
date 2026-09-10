@@ -589,6 +589,33 @@ assert "E-DOC5: prior PRD does not claim the detectors degrade to exit 125 when 
 assert "E-DOC6: prior PRD still names the landed fail-soft seam (NoopJCodemunchOps)" \
     bash -c 'git -C "$1" grep -q "NoopJCodemunchOps" -- docs/prds/reify-audit-p1-jcodemunch-substrate.md' _ "$REPO_ROOT"
 
+# E-SKILL1..3 pin .claude/skills/audit/SKILL.md — the operator-facing entry point
+# for /audit. Asserted per FILE rather than over `.claude/skills`, so a regression
+# in either skill document names the file that regressed (E-CLI1..3 mirror these
+# one-for-one against references/cli-invocation.md).
+#
+# THERE IS DELIBERATELY NO expect-absent ASSERTION ON `leodearden/reify` ANYWHERE
+# UNDER .claude/skills, and a later hardening pass must not add one. μ is a
+# correct-the-record task: explaining why the retired git identity is NOT what
+# reify uses requires NAMING it, so an absence check there fights the very edit it
+# would be guarding. The retired DB FILENAME is banned instead (E-DOC2), which is
+# the claim that was actually false.
+#
+# E-SKILL1 bans the `.service` suffix, not the bare stem, for the same reason E3
+# does: `scripts/with-jcodemunch-serve.sh` is the replacement these documents must
+# be free to cite by name, and its basename contains the stem.
+
+assert "E-SKILL1: SKILL.md does not name the retired jcodemunch-serve.service unit" \
+    bash -c '! git -C "$1" grep -qE "jcodemunch-serve\.service" -- .claude/skills/audit/SKILL.md' _ "$REPO_ROOT"
+
+assert "E-SKILL2: SKILL.md documents --jcodemunch-index-dir" \
+    bash -c 'git -C "$1" grep -q -- "--jcodemunch-index-dir" .claude/skills/audit/SKILL.md' _ "$REPO_ROOT"
+
+# The PREFIX, not a single token: γ landed three codes (_STALE, _EMPTY,
+# _UNREADABLE) and the prefix keeps a fourth from silently escaping the gate.
+assert "E-SKILL3: SKILL.md documents the E_JC_INDEX_* refusal codes" \
+    bash -c 'git -C "$1" grep -q "E_JC_INDEX_" -- .claude/skills/audit/SKILL.md' _ "$REPO_ROOT"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block F — smoke-script connection-failure hint contract
