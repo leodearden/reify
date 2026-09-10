@@ -800,7 +800,7 @@ fn lookup_value_cell<'a>(
                 template.name
             )
         }
-        [only] => *only,
+        [only] => only,
         many => {
             let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
             panic!(
