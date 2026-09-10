@@ -210,3 +210,139 @@ case "$FORMAT" in
 esac
 
 [ -n "$REPO_DIR" ] || REPO_DIR="."
+
+# ── field separators ──────────────────────────────────────────────────────────
+# ASCII US (0x1f) between columns, deliberately NOT a tab: `read` treats runs of
+# IFS *whitespace* as ONE delimiter and strips leading/trailing ones, so with a
+# tab an EMPTY column silently collapses and every later column shifts left. A
+# task with no declared files is exactly that empty column, and it is the
+# common case (186 of 1345 non-terminal tasks), so this is not hypothetical.
+# TAB separates the declared paths within their one column — a repo-relative
+# path cannot contain a tab, but it CAN contain a space or a '#'.
+_FS=$'\x1f'
+_LS=$'\t'
+
+# ── SQL engine resolution ─────────────────────────────────────────────────────
+# Dual-engine, both strictly read-only, mirroring scripts/lane-task-status.sh
+# and scripts/deterministic-gate-closure-staleness-sweep.sh: the sqlite3 CLI at
+# an absolute path (so this never depends on which sqlite3 is first on PATH)
+# with a PATH fallback, then python3's stdlib with a `file:...?mode=ro` URI.
+#
+# REIFY_TASK_BRANCH_SWEEP_SQLITE_BIN overrides the probe entirely. Because the
+# probe uses an ABSOLUTE path, stripping PATH cannot reach it, so this is the
+# only way to exercise (or break-glass onto) the python3 engine. An explicitly
+# EMPTY value is meaningful — it forces python3 — so "set" is distinguished
+# from "non-empty".
+if [ -n "${REIFY_TASK_BRANCH_SWEEP_SQLITE_BIN+set}" ]; then
+    _SQLITE_BIN="$REIFY_TASK_BRANCH_SWEEP_SQLITE_BIN"
+else
+    _SQLITE_BIN=""
+    for _c in /usr/bin/sqlite3 sqlite3; do
+        if command -v "$_c" >/dev/null 2>&1; then _SQLITE_BIN="$_c"; break; fi
+    done
+fi
+_PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then _PYTHON_BIN="python3"; fi
+
+if [ -z "$_SQLITE_BIN" ] && [ -z "$_PYTHON_BIN" ]; then
+    warn "Neither sqlite3 nor python3 is on PATH — the task store cannot be read at all; reporting zero branches."
+fi
+
+# ── the enumeration query ─────────────────────────────────────────────────────
+# ONE tag-scoped query per INVOCATION, not one per branch. Measured on the live
+# store: 1345 rows in 0.38s, versus 1m43s for the per-task-oracle shape over
+# 1095 refs. Every branch therefore costs zero further store opens.
+#
+# Three things the query must not do:
+#   * `json_each` RAISES on malformed JSON, and a raise in a whole-table query
+#     kills EVERY row, not one. metadata is read through a `json_valid` guard
+#     that substitutes '{}', so a corrupt blob yields an empty declaration and
+#     the rest of the sweep still reports.
+#   * a declared path is free-form text and could in principle carry a newline
+#     or one of the separators. Every such value is flattened, so no stored
+#     value can forge a field or a row boundary in the stream below.
+#   * every clause is tag-scoped: `tasks` is PRIMARY KEY (tag, id), so an
+#     unqualified lookup silently conflates tags the moment a second exists.
+#
+# Terminal statuses are excluded HERE rather than filtered later, because
+# "non-terminal" is exactly what both derived maps mean: a peer that has
+# already landed or been cancelled does not own a file or a commit any more.
+_TAG_SQL="${TAG//\'/\'\'}"
+_MD_SQL="CASE WHEN json_valid(t.metadata) THEN t.metadata ELSE '{}' END"
+_ENUM_SQL="SELECT
+    t.id,
+    coalesce(t.status,''),
+    coalesce((SELECT group_concat(
+                replace(replace(replace(value,char(10),' '),char(31),' '),char(9),' '),
+                char(9))
+                FROM json_each($_MD_SQL,'\$.files')),'')
+  FROM tasks t
+ WHERE t.tag='$_TAG_SQL' AND t.status NOT IN ('done','cancelled')
+ ORDER BY t.id;"
+
+# _DB_READABLE distinguishes "the query ran and returned nothing" from "the
+# query never ran". Both produce the same report — zero branches — but only the
+# former is a statement about the pool. The engines' EXIT STATUS is the oracle,
+# so this costs no extra process.
+_TASK_ROWS=""
+_DB_READABLE=0
+if [ ! -s "$DB" ]; then
+    warn "Task store is missing or empty: $DB — reporting zero branches."
+else
+    if [ -n "$_SQLITE_BIN" ]; then
+        if _TASK_ROWS="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" "$_ENUM_SQL" 2>/dev/null)"; then
+            _DB_READABLE=1
+        else
+            _TASK_ROWS=""
+        fi
+    fi
+    if [ "$_DB_READABLE" = 0 ] && [ -n "$_PYTHON_BIN" ]; then
+        # The SAME SQL string, verbatim, through the other engine — that is what
+        # makes the two interchangeable rather than one a stub.
+        if _TASK_ROWS="$(_TB_DB="$DB" _TB_SQL="$_ENUM_SQL" python3 - <<'PY' 2>/dev/null
+import os, sqlite3, sys
+try:
+    con = sqlite3.connect(f"file:{os.environ['_TB_DB']}?mode=ro", uri=True, timeout=5.0)
+    rows = con.execute(os.environ["_TB_SQL"]).fetchall()
+    con.close()
+    for r in rows:
+        sys.stdout.write("\x1f".join("" if c is None else str(c) for c in r) + "\n")
+except Exception:
+    # Exit non-zero rather than swallowing: the caller must be able to tell a
+    # FAILED read from an empty one.
+    sys.exit(1)
+PY
+)"; then
+            _DB_READABLE=1
+        else
+            _TASK_ROWS=""
+        fi
+    fi
+    if [ "$_DB_READABLE" = 0 ]; then
+        warn "Task store could not be read: $DB — reporting zero branches."
+    fi
+fi
+
+# ── the two derived maps ──────────────────────────────────────────────────────
+# Bash associative arrays, both keyed by a value that cannot collide:
+#   _STATUS[id]        -> the task's non-terminal status
+#   _DECLARED[id]      -> its declared paths, TAB-separated (empty = undeclared)
+#   _PEER_OWNER[path]  -> space-separated non-terminal ids declaring <path>
+# _PEER_OWNER is derived from non-terminal rows ONLY, because "owned by a task
+# whose status is still non-terminal" is precisely what the peer_files flag
+# means — a done/cancelled declarer is not a peer.
+declare -A _STATUS=()
+declare -A _DECLARED=()
+declare -A _PEER_OWNER=()
+
+while IFS="$_FS" read -r _id _st _files; do
+    [ -n "${_id:-}" ] || continue
+    _STATUS["$_id"]="$_st"
+    _DECLARED["$_id"]="${_files:-}"
+    [ -n "${_files:-}" ] || continue
+    while IFS= read -r _path; do
+        [ -n "$_path" ] || continue
+        _PEER_OWNER["$_path"]="${_PEER_OWNER["$_path"]:+${_PEER_OWNER["$_path"]} }$_id"
+    done <<< "${_files//$_LS/$'\n'}"
+done <<< "$_TASK_ROWS"
+unset _id _st _files _path
