@@ -1916,14 +1916,14 @@ impl ObjectiveAbstention {
 ///     Minimize → acc += t.weight * v
 ///     Maximize → acc -= t.weight * v
 ///
-/// Abstains — [`ObjectiveAbstention::Undefined`] — if ANY term evaluates to a
-/// non-numeric value, preserving the single-term
-/// UNDEF_OBJECTIVE_PENALTY / NoProgress paths. Abstains as
-/// [`ObjectiveAbstention::NonFinite`] for a non-finite term value, and ALSO
-/// when the ACCUMULATED fold is itself non-finite though every term value was
-/// finite (task #6377). The guard at the end of the body states which paths
-/// reach that and what abstaining costs each caller; this header does not
-/// restate it.
+/// Abstains instead of returning a score in two cases:
+/// [`ObjectiveAbstention::Undefined`] when a term does not evaluate to a
+/// number, and [`ObjectiveAbstention::NonFinite`] when a term value — or the
+/// ACCUMULATED fold, though every term value was finite (task #6377) — is
+/// Inf/NaN. Both preserve the single-term
+/// UNDEF_OBJECTIVE_PENALTY / NoProgress paths. The guard at the end of the body
+/// states which paths reach the accumulator case and what abstaining costs each
+/// caller; this header does not restate it.
 ///
 /// I2 numerical equivalence: for a single term with weight 1.0,
 ///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
@@ -1984,55 +1984,35 @@ pub(crate) fn eval_objective_set(
         }
     }
     // Fail-closed (task #6377; PRD docs/prds/compute-fea-hardening.md decision 4
-    // taxonomy). The per-term `.filter(|v| v.is_finite())?` above guards each
-    // `v` — it does NOT guard `acc`. Two unguarded paths reach a non-finite fold
-    // even so: `term.weight` is an unvalidated `pub f64`
-    // (reify-ir/src/constraint.rs, where "> 0; default 1.0" is a doc comment
-    // only, checked at no construction site), and even with finite POSITIVE
-    // weights `term.weight * v` can overflow to ±Inf, with a +Inf and a -Inf
-    // term folding to NaN. A non-finite score is not orderable, so abstain
-    // rather than emit one: every caller already handles `None` (drop the
-    // candidate / FeasibilityOnly / UNDEF_OBJECTIVE_PENALTY). This is what makes
-    // the "never actually exercised" claims at the two
-    // `unwrap_or(Ordering::Equal)` ranking sites (`solve_ranked_impl` below,
-    // and `impl Ord for ScoredModel` in cpsat.rs) true.
+    // taxonomy). The per-term check above guards each `v` — it does NOT guard
+    // `acc`. Two paths reach a non-finite fold even so: `term.weight` is an
+    // unvalidated `pub f64` (reify-ir/src/constraint.rs, where "> 0; default
+    // 1.0" is a doc comment checked at no construction site), and even with
+    // finite POSITIVE weights `term.weight * v` can overflow to ±Inf, with a
+    // +Inf and a -Inf term folding to NaN. An unorderable score has no correct
+    // consumer, so abstain rather than emit one — which is what makes the
+    // "never actually exercised" claims at the two `unwrap_or(Ordering::Equal)`
+    // ranking sites (`solve_ranked_impl` below, `impl Ord for ScoredModel` in
+    // cpsat.rs) true.
     //
-    // WHAT ABSTAINING COSTS DOWNSTREAM — recorded here, canonically, because
-    // "no caller signature changes" is not the same as "no caller BEHAVIOUR
-    // changes". Three outcomes are deliberately reclassified:
+    // Abstaining changes BEHAVIOUR at three callers, deliberately, and each has
+    // its own pin: `solve_core` reports `NoProgress`
+    // (`non_finite_objective_fold_at_feasible_initial_returns_no_progress`);
+    // cpsat drops the model rather than heaping a NaN
+    // (`a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`);
+    // `ConstraintCostFunction::cost` folds to `UNDEF_OBJECTIVE_PENALTY`
+    // (`cost_function_penalizes_a_non_finite_objective_fold`). Only the last is
+    // non-obvious: for a `-Inf` fold it INVERTS the surface at that point, from
+    // a global attractor Nelder-Mead would dive into to the most repellent
+    // point available — intended, since a `-Inf` optimum is an overflow
+    // artefact. What the pre-guard code returned in their place was MEASURED,
+    // and that record lives in the PRD under decision 4, not here.
     //
-    //   1. `solve_core`'s fallback-point and post-solve checks (both
-    //      `eval_objective_set(..).is_none()`) now report `NoProgress` naming
-    //      the objective. MEASURED on the pre-guard code, using the fixture in
-    //      `non_finite_objective_fold_at_feasible_initial_returns_no_progress`
-    //      with the guard disabled: what they replaced is not one verdict but
-    //      whichever garbage the poisoned cost surface produced — a NaN weight
-    //      gave `NoProgress` carrying argmin's INTERNAL "Potential bug:
-    //      `NelderMead`: Reached unreachable point" text, and a `+Inf` weight
-    //      gave `Infeasible { ConstraintNonUnique }`, telling a user to go edit
-    //      constraints that were never the problem. Their `reason` also names
-    //      the non-finite fold explicitly, so a user is not told their
-    //      objective was "undefined" when every term was well defined.
-    //   2. `ConstraintCostFunction::cost` below folds `None` to
-    //      `UNDEF_OBJECTIVE_PENALTY` (`f64::MAX / 2`). For a `+Inf` fold that is
-    //      a mild softening; for a `-Inf` fold it INVERTS the cost surface at
-    //      that point, from a global attractor Nelder-Mead would dive into to
-    //      the most repellent point available. That is the intended direction:
-    //      a `-Inf` attractor is an artefact of overflow, never a real optimum,
-    //      and chasing it silently returns a garbage design as the answer.
-    //   3. cpsat's ranked path drops the model instead of pushing a NaN into
-    //      `BinaryHeap<ScoredModel>`; see that file for the three ways a NaN
-    //      score breaks it. Pinned by
-    //      `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`.
-    //
-    // All three are fail-closed by choice: an unorderable score has no correct
-    // consumer, so the only honest options are "abstain" and "lie".
-    //
-    // `debug!`, not `warn!`: this function runs once per Nelder-Mead trial point
-    // via `ConstraintCostFunction::cost`, so a warn would emit thousands of
-    // lines per solve for one pathological objective. The call sits INSIDE the
-    // branch so the finite-fold path does no added work (F-result I1 / PRD §6.2
-    // I2 byte-identical cost-surface invariants).
+    // `debug!`, not `warn!`: this runs once per Nelder-Mead trial point via
+    // `ConstraintCostFunction::cost`. The call sits INSIDE the branch so the
+    // finite path does no added work (F-result I1 / PRD §6.2 I2 byte-identical
+    // cost surface, pinned at the cost site by
+    // `cost_function_leaves_a_finite_objective_cost_byte_identical`).
     if !acc.is_finite() {
         tracing::debug!(
             acc,
@@ -7854,18 +7834,11 @@ mod tests {
     /// unvalidated (`reify-ir/src/constraint.rs` — "> 0; default 1.0" is a doc
     /// comment checked at no construction site).
     ///
-    /// WHAT THE GUARD REPLACED, measured by disabling it and re-running this
-    /// fixture rather than argued: not one prior verdict, but whichever garbage
-    /// the poisoned cost surface happened to produce. With `weight = NaN` the
-    /// solve returned a `NoProgress` carrying argmin's own internal text
-    /// (`Potential bug: "NelderMead: Reached unreachable point."`) — a
-    /// library-internals leak, not a diagnosis. With `weight = +Inf` (a flat
-    /// `+Inf` surface) it returned `Infeasible { ConstraintNonUnique }`, which
-    /// sends a user off to edit constraints that were never the problem. So the
-    /// reclassification pinned here is "incoherent verdict → honest objective
-    /// diagnosis"; note in particular that the `"solution point"` reason
-    /// asserted below is NOT what the unguarded code produced, so this really
-    /// does pin the guard and not the surrounding plumbing.
+    /// The unguarded code did not return a milder version of this verdict; it
+    /// returned whichever garbage the poisoned cost surface produced, measured
+    /// with this same fixture and recorded in the PRD under decision 4. Neither
+    /// measured verdict carries the `"solution point"` reason asserted below,
+    /// so this pins the guard and not the surrounding plumbing.
     ///
     /// The *fallback-point* site (`"fallback point"`, on the
     /// optimizer-drifted-infeasible path) reclassifies for the identical reason
@@ -7949,9 +7922,7 @@ mod tests {
                 "a NaN-weighted (hence non-finite) objective fold must fail \
                  closed as a NoProgress that names the objective. Anything else \
                  is the pre-#6377 behaviour: the NaN reaches the cost surface \
-                 and the verdict becomes whatever Nelder-Mead does with it \
-                 (measured: an argmin-internals NoProgress for a NaN weight, \
-                 `Infeasible {{ ConstraintNonUnique }}` for a +Inf one); \
+                 and the verdict becomes whatever Nelder-Mead does with it; \
                  got {other:?}"
             ),
         }

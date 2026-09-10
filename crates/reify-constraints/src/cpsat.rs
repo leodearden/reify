@@ -1041,18 +1041,15 @@ impl CpSatSolver {
                 };
 
                 // Exact `==` on f64 is deliberate: the question is whether two
-                // models attained the SAME score. A non-finite score can no
-                // longer reach this tally — `eval_objective_set`'s fail-closed
-                // accumulator guard (task #6377) drops it upstream — so
-                // equality here is the total, reflexive kind.
-                //
-                // That is load-bearing for the match below, not decoration: a
-                // NaN compares false BOTH ways, so one NaN score would send
-                // every subsequent model to the `_` arm and silently degrade
-                // `best` from "the minimum seen" to "the last score seen",
-                // which then trips the `debug_assert_eq!` at the end of this
-                // function (`Some(NaN) == Some(NaN)` is false). Pinned end-to-end
-                // by `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`.
+                // models attained the SAME score, and a non-finite one can no
+                // longer reach this tally (`eval_objective_set`'s fail-closed
+                // accumulator guard, task #6377), so equality here is the
+                // total, reflexive kind. Load-bearing, not decoration: a NaN
+                // compares false BOTH ways, so one would send every later model
+                // to the `_` arm and degrade `best` from "the minimum seen" to
+                // "the last score seen". The full list of what a NaN breaks
+                // here, and the pin, live in
+                // `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`.
                 best = Some(match best {
                     Some((seen, ties)) if score == seen => (seen, ties + 1),
                     Some((seen, ties)) if seen < score => (seen, ties),
@@ -3895,21 +3892,17 @@ mod solve_ranked_override_tests {
     ///
     /// The direct pin on the cpsat half of task #6377, added by amendment
     /// after review observed that the five `eval_objective_set` unit cases
-    /// reached this site only by transitive argument. `ScoredModel.score` is a
-    /// choke point today *only* because `solve_ranked_with_budget` is its sole
-    /// construction site; a future path that scores a model anywhere else would
-    /// re-open every failure below with nothing here to catch it.
+    /// reached this site only by transitive argument.
     ///
     /// Unlike (g), where the objective is `Undef` and the *per-term* filter
-    /// rejects it, every term here evaluates to a perfectly finite `Int`. The
-    /// non-finiteness is manufactured in the ACCUMULATOR by an unvalidated
-    /// `ObjectiveTerm::weight` (`reify-ir/src/constraint.rs` — "> 0; default
-    /// 1.0" is a doc comment checked at no construction site), which is exactly
-    /// the path the per-term filter never guarded.
+    /// rejects it, every term here evaluates to a perfectly finite `Int` and
+    /// the non-finiteness is manufactured in the ACCUMULATOR by an unvalidated
+    /// `ObjectiveTerm::weight` — the path that filter never guarded (mechanism
+    /// at the guard itself; not restated here).
     ///
-    /// Without `eval_objective_set`'s fail-closed accumulator guard, a `NaN`
-    /// score reaches this function and breaks it three ways — the reason the
-    /// census miss mattered (PRD decision 9, class A, the `cpsat.rs` bullet):
+    /// What this test owns is the damage. Without the guard a `NaN` score
+    /// reaches this function and breaks it three ways — the reason the census
+    /// miss mattered (PRD decision 9, class A, the `cpsat.rs` bullet):
     ///
     ///   1. `impl Ord for ScoredModel` stops being an order at all, so the
     ///      `BinaryHeap` evicts a candidate other than the worst;
