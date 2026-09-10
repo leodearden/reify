@@ -23,6 +23,8 @@
 #   step-11 — the scope verdict and the declared-scope cross-check
 #   step-13 — the commit-citation census and the signature column
 #   step-15 — --audit fleet mode, the SWEEP: summary, and --format json
+#   step-17 — the read-only and non-gating invariants (R1-R4), each with a
+#             mutation-injection check proving the assertion can fail
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -880,5 +882,138 @@ print(\"SWEEP: \" + \" \".join(f\"{k}={s[k]}\" for k in
       [\"branches\",\"suspect\",\"peer_files\",\"out_of_scope\",\"undeclared\",
        \"clean\",\"unknown\",\"skipped_terminal\",\"skipped_nonnumeric\"]))
 ")"; [ "$rendered" = "$2" ]' _ "$F7_JSON" "$F7_TABLE"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 7 (step-17) — the read-only and non-gating invariants
+#
+# An invariant test that has never been seen to FAIL is worth very little, so
+# every fingerprint helper below is paired with a mutation-injection check
+# (P-prefixed) that mutates a COPY and asserts the same helper reports a
+# difference. That keeps the proof of sensitivity in the suite permanently
+# rather than in a one-off manual check.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 7: read-only and non-gating invariants ---"
+
+# _db_fingerprint <db> — size, mtime, content hash, and the sibling files
+# sqlite would create if it opened the store for writing (-wal / -shm /
+# -journal). Any of the four changing means the store was not read-only.
+_db_fingerprint() {
+    local db="$1"
+    stat -c '%s %Y' "$db" 2>/dev/null || echo "ABSENT"
+    sha256sum "$db" 2>/dev/null | cut -d' ' -f1 || echo "NOHASH"
+    ls -1 "$db"-wal "$db"-shm "$db"-journal 2>/dev/null || true
+}
+
+# _repo_fingerprint <repo> — refs, per-branch reflogs, porcelain status, the
+# worktree file list, and the .git file-NAME list. Names (not contents) under
+# .git, because a new object or ref shows up as a new NAME while git's own
+# index refresh only rewrites an existing one.
+_repo_fingerprint() {
+    local repo="$1" b
+    git -C "$repo" for-each-ref --format='%(objectname) %(refname)' 2>/dev/null
+    while IFS= read -r b; do
+        printf 'reflog %s: %s\n' "$b" \
+            "$(git -C "$repo" reflog show "$b" 2>/dev/null | tr '\n' '|')"
+    done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)
+    git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null
+    find "$repo" -path "$repo/.git" -prune -o -print 2>/dev/null | sort
+    find "$repo/.git" -type f 2>/dev/null | sort
+}
+
+# A fixture in which EVERY branch is SUSPECT — the state a gating caller would
+# most want to react to, and therefore the one where a non-zero exit would be
+# most tempting.
+_mk_tasks_db
+_mk_repo
+I_DB="$DB"
+I_REPO="$REPO"
+I_MAIN="$(_git rev-parse main)"
+
+_add_task 9701 pending '{"files":["i1.rs"]}'
+_add_task 9702 pending '{"files":["i2.rs"]}'
+_add_task 9703 pending '{"files":["i3.rs"]}'
+for _spec in "9701 i1.rs 9702" "9702 i2.rs 9703" "9703 i3.rs 9701"; do
+    set -- $_spec
+    _branch_at "task/$1" "$I_MAIN"
+    _commit_files "task/$1" "feat($1): own" "$2"
+    _commit_msg   "task/$1" "chore: carries work for #$3"
+done
+
+run_helper --audit --db "$I_DB" --repo "$I_REPO"
+assert "I0: the fixture really is all-SUSPECT (guard is non-vacuous)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep "^SWEEP:" | tr " " "\n" | sed -n "s/^suspect=//p")" = 3 ]' \
+    _ "$OUT"
+
+# ── (a) R3: exit 0 on every valid invocation, in both modes and both formats ──
+I_DB_BEFORE="$(_db_fingerprint "$I_DB")"
+I_REPO_BEFORE="$(_repo_fingerprint "$I_REPO")"
+
+run_helper --audit --db "$I_DB" --repo "$I_REPO"
+assert "I1[--audit table]: exits 0 even when every branch is SUSPECT" test "$RC" -eq 0
+run_helper --audit --db "$I_DB" --repo "$I_REPO" --format json
+assert "I1[--audit json]: exits 0 even when every branch is SUSPECT"  test "$RC" -eq 0
+run_helper --task 9701 --db "$I_DB" --repo "$I_REPO"
+assert "I1[--task table]: exits 0 on a SUSPECT branch"                test "$RC" -eq 0
+run_helper --task 9701 --db "$I_DB" --repo "$I_REPO" --format json
+assert "I1[--task json]: exits 0 on a SUSPECT branch"                 test "$RC" -eq 0
+
+# --format is a global flag: it is accepted and validated in BOTH modes, so it
+# must be HONOURED in both. Silently emitting table output from `--task
+# --format json` would hand the per-merge advisory consult — the whole reason
+# --task exists — an unparseable answer under a flag it asked for.
+assert "I1[--task json]: actually emits JSON, not a table row" \
+    bash -c 'printf "%s" "$1" | python3 -c "import json,sys; json.load(sys.stdin)"' _ "$OUT"
+assert "I1[--task json]: the document carries exactly the one requested branch" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert [b[\"task\"] for b in d[\"branches\"]]==[9701], d
+"' _ "$OUT"
+assert "I1[--task json]: single-branch mode carries no summary (that is fleet mode'\''s)" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+assert \"summary\" not in json.load(sys.stdin)
+"' _ "$OUT"
+
+# ── (b) R1: the task store is untouched ───────────────────────────────────────
+assert "I2: the task store's size, mtime and sha256 are unchanged" \
+    bash -c '[ "$1" = "$2" ]' _ "$I_DB_BEFORE" "$(_db_fingerprint "$I_DB")"
+assert "I2: no -wal / -shm / -journal sibling was created next to the store" \
+    bash -c '! ls "$1"-wal "$1"-shm "$1"-journal >/dev/null 2>&1' _ "$I_DB"
+
+# ── (c) R2: the git fixture is untouched ──────────────────────────────────────
+assert "I3: refs, reflogs, porcelain status and the file lists are unchanged" \
+    bash -c '[ "$1" = "$2" ]' _ "$I_REPO_BEFORE" "$(_repo_fingerprint "$I_REPO")"
+
+# ── (d) R1: nothing is created at a --db path that does not exist ─────────────
+I_NODB="$(mktemp -d "${TMPDIR:-/tmp}/task-branch-sweep-nocreate-XXXXXX")"
+_TMPDIRS+=("$I_NODB")
+run_helper --audit --db "$I_NODB/never-created.db" --repo "$I_REPO"
+assert "I4: a nonexistent --db path exits 0"                 test "$RC" -eq 0
+assert "I4: ...and is STILL absent afterwards"               test ! -e "$I_NODB/never-created.db"
+assert "I4: ...and no sibling was created either"            bash -c '[ -z "$(ls -A "$1")" ]' _ "$I_NODB"
+
+# ── mutation injection: prove each fingerprint can actually report a change ───
+# Without these, I2 and I3 would pass just as happily against a helper that
+# returns a constant.
+I_DB_COPY="$I_NODB/copy.db"
+cp "$I_DB" "$I_DB_COPY"
+I_DBCOPY_BEFORE="$(_db_fingerprint "$I_DB_COPY")"
+_sq "$I_DB_COPY" "UPDATE tasks SET status='blocked' WHERE id=9701;"
+assert "P1: _db_fingerprint DETECTS a write to the store (I2 can fail)" \
+    bash -c '[ "$1" != "$2" ]' _ "$I_DBCOPY_BEFORE" "$(_db_fingerprint "$I_DB_COPY")"
+
+I_REPO_COPY="$I_NODB/repo-copy"
+cp -r "$I_REPO" "$I_REPO_COPY"
+I_REPOCOPY_BEFORE="$(_repo_fingerprint "$I_REPO_COPY")"
+git -C "$I_REPO_COPY" branch -q task/9799 main
+assert "P2: _repo_fingerprint DETECTS a new ref (I3 can fail)" \
+    bash -c '[ "$1" != "$2" ]' _ "$I_REPOCOPY_BEFORE" "$(_repo_fingerprint "$I_REPO_COPY")"
+
+I_REPOCOPY_BEFORE="$(_repo_fingerprint "$I_REPO_COPY")"
+printf 'stray\n' > "$I_REPO_COPY/stray-file.txt"
+assert "P3: _repo_fingerprint DETECTS a new worktree file (I3 can fail)" \
+    bash -c '[ "$1" != "$2" ]' _ "$I_REPOCOPY_BEFORE" "$(_repo_fingerprint "$I_REPO_COPY")"
 
 test_summary
