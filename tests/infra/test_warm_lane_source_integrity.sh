@@ -213,6 +213,18 @@ run_detector_worktree_only() {
     RC=$rc
 }
 
+# ── run_detector_index_only ───────────────────────────────────────────────────
+# The THIRD single-variable shape. GIT_INDEX_FILE redirects neither the gitdir
+# nor the worktree, so it is invisible to both of the other identity arms.
+run_detector_index_only() {
+    local index="$1"; shift
+    local rc=0
+    : > "$ERR_FILE"
+    OUT="$(GIT_INDEX_FILE="$index" bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
 # ── string predicates (fork-free; usable as assert checkers) ──────────────────
 _has()   { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 _lacks() { case "$2" in *"$1"*) return 1 ;; *) return 0 ;; esac; }
@@ -501,6 +513,31 @@ assert "F9: ...and names the offending flag on stderr" _has 'no-such-flag' "$ERR
 
 run_detector --lane
 assert "F10: --lane with no value is a usage error (exit 2)" test "$RC" -eq 2
+
+# F11-F14: `--lane ""`. This is NOT a restatement of F10: an explicitly-passed
+# EMPTY value is what an unset or empty shell variable expands to at the
+# deployed call site (dark-factory's session-start invocation passing a lane
+# path), and it used to fall through to the walk-up branch instead of being
+# refused -- classifying whatever repository the CALLER's cwd sat in and
+# stamping it `view=lane`, which positively asserts that lane was measured.
+# Measured pre-fix from a repo with a deleted tracked file: `deleted=1 ...
+# lane=other view=lane` exit 3, under the "do NOT restore" hint, naming a
+# directory nobody asked about. The cwd here is deliberately a DIFFERENT repo
+# that would classify, so the assertion cannot pass merely because the walk-up
+# found nothing.
+F_ELSEWHERE="$(_mktmpd Felse)/repo"
+_mk_repo "$F_ELSEWHERE" t.txt
+rm "$F_ELSEWHERE/t.txt"
+assert "F11: FIXTURE — the cwd repo really would classify as a deletion" \
+    test ! -e "$F_ELSEWHERE/t.txt"
+
+run_detector_in "$F_ELSEWHERE" --lane ""
+assert "F12: an explicitly EMPTY --lane is a usage error, not a cwd fallback (exit 2)" \
+    test "$RC" -eq 2
+assert "F13: ...so no classification line is emitted for a lane nobody named" \
+    _lacks 'deleted=' "$OUT"
+assert "F14: ...and the refusal says the value must be non-empty" \
+    _has 'non-empty' "$ERR_OUT"
 assert "F11: ...and is actionable on stderr" test -n "$ERR_OUT"
 
 run_detector --help
@@ -789,7 +826,7 @@ assert "I4b: ...and the run is not silent: the foreign tree is named on stderr" 
 assert "I4c: ...stated as a different tree, so it is legible without re-deriving" \
     _has 'NOT this lane' "$ERR_OUT"
 assert "I4d: ...and explicitly not an all-clear for this lane" \
-    _has 'NOT an all-clear' "$ERR_OUT"
+    _has 'not an all-clear' "$ERR_OUT"
 assert "I4e: stdout stays exactly one machine-readable line regardless" _one_line "$OUT"
 
 # CONTROL: without a foreign view there is no notice at all, or the notice
@@ -919,5 +956,91 @@ assert "J3b: ...marked view=lane, the only view a sentinel may be raised from" \
     test "$OUT" = "$(_summary 1 0 "$J_REAL" lane)"
 assert "J3c: ...and it still carries the evidence-preservation hint" \
     _has 'do NOT restore' "$ERR_OUT"
+
+# ── J4: GIT_INDEX_FILE alone, across a SHARED OBJECT STORE ────────────────────
+# The third variable, and the one this script got wrong for two review rounds.
+# GIT_INDEX_FILE redirects neither the gitdir nor the worktree, so both of the
+# other arms report a match and the run was stamped `view=lane` -- positively
+# asserting the lane was measured -- while `git status` compared a SIBLING's
+# index against this lane's files.
+#
+# THE FIXTURE MUST SHARE ONE OBJECT STORE, and that is the whole subtlety.
+# Measured on this host, git 2.43.0: with two INDEPENDENT repos, `git status`
+# runs rename detection over the staged diff, tries to read a blob the lane's
+# store does not have, and dies ("unable to read <oid>") -> the script exits 2
+# via its own git-failure branch and the false sentinel never appears. A
+# fixture built that way passes while pinning nothing. Across two linked
+# worktrees of ONE store -- reify's actual arrangement, ~253 lanes over
+# /home/leo/src/reify/.git, which is exactly why this shape matters here --
+# every OID resolves, nothing is fatal, and the sibling's paths reach the
+# classifier as ordinary worktree deletions. J4a asserts the fatal-vs-classify
+# premise directly so a later "simplification" back to two plain repos turns
+# this block red instead of silently hollowing it out.
+J_SHARED="$(_mktmpd Jshared)"
+_git_q -C "$J_SHARED" init -q -b main "$J_SHARED/host"
+printf 'a\n' > "$J_SHARED/host/a.txt"
+mkdir -p "$J_SHARED/host/src"
+printf 'k\n' > "$J_SHARED/host/src/kernel.rs"
+_git_q -C "$J_SHARED/host" add -A
+_git_q -C "$J_SHARED/host" commit -q -m init
+_git_q -C "$J_SHARED/host" branch -q lane-a
+_git_q -C "$J_SHARED/host" branch -q lane-b
+_git_q -C "$J_SHARED/host" worktree add -q "$J_SHARED/laneA" lane-a
+_git_q -C "$J_SHARED/host" worktree add -q "$J_SHARED/laneB" lane-b
+printf 's\n' > "$J_SHARED/laneB/src/only-sibling.rs"
+printf 't\n' > "$J_SHARED/laneB/src/second.rs"
+_git_q -C "$J_SHARED/laneB" add -A
+_git_q -C "$J_SHARED/laneB" commit -q -m sibling
+J_SIB_INDEX="$J_SHARED/host/.git/worktrees/laneB/index"
+
+assert "J4a: FIXTURE — the two lanes really share one object store" \
+    test -d "$J_SHARED/host/.git/worktrees/laneA"
+assert "J4b: FIXTURE — the sibling's index exists to be inherited" test -f "$J_SIB_INDEX"
+assert "J4c: FIXTURE — the sibling's paths are absent under laneA..." \
+    test ! -e "$J_SHARED/laneA/src/only-sibling.rs"
+# The XY here is `AD`, not ` D`, and the difference is worth stating: laneA's
+# HEAD does not carry the sibling's paths, so the index-vs-HEAD column reads
+# them as ADDED while the worktree column reads them as deleted. The classifier
+# keys on the WORKTREE column alone, which is why it still counts them -- and
+# why an assertion written for ` D` would have failed for the wrong reason.
+J4_STATUS="$(GIT_INDEX_FILE="$J_SIB_INDEX" git -C "$J_SHARED/laneA" status --porcelain 2>&1)"
+assert "J4d: FIXTURE — ...and git CLASSIFIES rather than dying, because the store is" \
+    _has 'AD src/only-sibling.rs' "$J4_STATUS"
+assert "J4e: FIXTURE — ...shared: no 'unable to read <oid>' fatal to hide the bug" \
+    _lacks 'unable to read' "$J4_STATUS"
+
+run_detector_index_only "$J_SIB_INDEX" --lane "$J_SHARED/laneA"
+assert "J4f: GIT_INDEX_FILE alone raises NO sentinel (exit 0, was a false exit 3)" \
+    test "$RC" -eq 0
+assert "J4g: ...marked view=foreign, so exit 0 is not read as an all-clear" \
+    test "$OUT" = "$(_summary 2 0 "$J_SHARED/laneA" foreign)"
+assert "J4h: ...the foreign INDEX is named — the axis the other two arms cannot see" \
+    _has 'different index' "$ERR_OUT"
+assert "J4i: ...and a sibling lane's paths are never called this lane's evidence" \
+    _lacks 'do NOT restore' "$ERR_OUT"
+
+# The other two arms must both report a MATCH here, or J4 would be passing on
+# the strength of an arm that is not the one under test.
+assert "J4j: ...git's gitdir still equals laneA's own, so the gitdir arm is blind" \
+    test "$(GIT_INDEX_FILE="$J_SIB_INDEX" git -C "$J_SHARED/laneA" rev-parse --absolute-git-dir)" \
+       = "$J_SHARED/host/.git/worktrees/laneA"
+assert "J4k: ...and git's toplevel still equals laneA, so the worktree arm is too" \
+    test "$(GIT_INDEX_FILE="$J_SIB_INDEX" git -C "$J_SHARED/laneA" rev-parse --show-toplevel)" \
+       = "$J_SHARED/laneA"
+
+# CONTROL: a linked worktree's own index must compare EQUAL, or the index arm
+# would stamp view=foreign on every real warm lane and disable the detector
+# fleet-wide -- the failure mode with the widest blast radius in this change.
+run_detector --lane "$J_SHARED/laneA"
+assert "J4l: CONTROL — an unpoisoned LINKED WORKTREE is view=lane, not foreign" \
+    test "$OUT" = "$(_summary 0 0 "$J_SHARED/laneA" lane)"
+assert "J4m: ...and exits 0 clean" test "$RC" -eq 0
+
+rm "$J_SHARED/laneA/src/kernel.rs"
+run_detector --lane "$J_SHARED/laneA"
+assert "J4n: CONTROL — a real deletion in a linked worktree still raises the sentinel" \
+    test "$RC" -eq 3
+assert "J4o: ...as view=lane evidence" \
+    test "$OUT" = "$(_summary 1 0 "$J_SHARED/laneA" lane)"
 
 test_summary

@@ -43,12 +43,18 @@
 #   letting an infra-test fixture overwrite the real index) is documented in
 #   scripts/lib_git_env_scrub.sh, which is also where the scrubbing fix
 #   correctly lives; do not re-derive it here. Measured on git 2.43.0, it
-#   reaches this script two ways and the handling is right on both: an index
-#   carrying a FOREIGN repo's entries makes `git status` itself fatal
-#   ("unable to read <oid>") -> exit 2 with git's own error surfaced, never a
-#   false all-clear; and an index merely MISSING entries yields X-column
-#   (`D `) staged deletions, which the worktree-column rule below excludes as
-#   the intentional removals they are.
+#   reaches this script THREE ways -- an earlier revision of this comment
+#   claimed two, and the third was a live false sentinel for two review rounds:
+#   an index carrying a foreign repo's entries whose OBJECTS the lane's store
+#   lacks makes `git status` itself fatal ("unable to read <oid>") -> exit 2
+#   with git's own error surfaced, never a false all-clear; an index merely
+#   MISSING entries yields X-column (`D `) staged deletions, which the
+#   worktree-column rule below excludes as the intentional removals they are;
+#   and an index from a SIBLING LANE OF THE SAME SHARED STORE resolves every
+#   OID, so nothing is fatal and its paths reach the classifier as ordinary
+#   worktree deletions. Only the third is a false-sentinel risk, and it is the
+#   index arm of the identity check below -- not this bucketing -- that closes
+#   it.
 #
 # WHY IT NEVER RESTORES.
 #   The missing copy IS the evidence. Attribution needs a second natural
@@ -80,7 +86,9 @@
 #   NEITHER form scrubs the git environment, and a caller that wants the LANE
 #   measured rather than its own view must do so itself (the session-start
 #   invocation is dark-factory's, per CLAUDE.md's cross-repo seam pattern).
-#   scripts/lib_git_env_scrub.sh is the scrubber. Unscrubbed, every run is
+#   scripts/lib_git_env_scrub.sh is the scrubber (and its variable list is the
+#   authority on which variables can redirect a view; the identity check below
+#   covers the three that change git's ANSWER about this lane). Unscrubbed, every run is
 #   reported as what it is -- `view=foreign`, sentinel withheld -- rather than
 #   as either an all-clear or a sighting for a lane it never measured.
 #
@@ -160,19 +168,26 @@ Usage: $(basename "$0") [--lane DIR]
                  re-resolved through git; a subdirectory is refused, since
                  porcelain paths are worktree-root-relative (default: the
                  nearest ancestor of the current directory carrying a .git
-                 entry, found by a pure-filesystem walk-up).
+                 entry, found by a pure-filesystem walk-up). An empty value is
+                 refused rather than falling back to that default.
     -h, --help   Print this message and exit.
 
   Output:
     stdout       Exactly one line:
-                 source-integrity: deleted=N phantom=M lane=<basename>
+                 source-integrity: deleted=N phantom=M lane=<basename> view=V
+                 view=foreign means git answered about another repository,
+                 worktree or index, so the lane itself was NOT measured and the
+                 counts are not evidence about it.
     stderr       Diagnostics, one tagged line per offending path.
 
   Exit codes:
-    0   — No real deletion (including the phantom-only case).
-    3   — At least one tracked file is deleted and absent on disk (advisory
+    0   — Nothing attributable to this lane: a clean lane, the phantom-only
+          case, or any view=foreign run (which is NOT an all-clear).
+    3   — At least one tracked file is deleted and absent on disk, measured
+          through this lane's OWN repository, worktree and index (advisory
           sentinel; same convention as warm-lane-disk-guard.sh --soft).
-    2   — Usage or wiring error (bad flag, missing/!dir --lane, non-worktree).
+    2   — Usage or wiring error (bad flag, missing/empty/!dir --lane,
+          non-worktree).
     1   — Runtime error.
 EOF
 }
@@ -182,7 +197,20 @@ LANE_ARG=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --lane)
-            [ $# -ge 2 ] || { err "--lane requires a directory argument."; _usage; exit 2; }
+            # The EMPTINESS check is not cosmetic. `--lane ""` is what an unset
+            # or empty variable expands to at the deployed call site (a
+            # dark-factory session-start invocation passing a lane path), and
+            # without it the value falls through to the walk-up branch below --
+            # silently classifying whatever repository the CALLER's cwd happens
+            # to sit in, and stamping it `view=lane`, which positively asserts
+            # that lane WAS measured. Task 7227 measured exactly that: exit 3
+            # naming a directory nobody asked about. Refusing it here is what
+            # keeps the documented exit-2 contract and invariant A3 true.
+            [ $# -ge 2 ] && [ -n "$2" ] || {
+                err "--lane requires a non-empty directory argument."
+                _usage
+                exit 2
+            }
             LANE_ARG="$2"; shift 2 ;;
         -h|--help)
             _usage; exit 0 ;;
@@ -302,20 +330,36 @@ fi
 
 # ── is git answering about THIS lane's repository AND worktree? ───────────────
 # An inherited view is CLASSIFIED, not scrubbed -- but it must never be mistaken
-# for evidence ABOUT THIS LANE. Git resolves "which repository" and "which
-# worktree" from two independent variables, so a view can be foreign in either
-# axis alone. Measured on this host, git 2.43.0, `git -C <lane> rev-parse
-# --show-toplevel --absolute-git-dir` under each shape:
+# for evidence ABOUT THIS LANE. Git resolves "which repository", "which
+# worktree" and "which index" from THREE independent variables, so a view can
+# be foreign in any one axis alone. Measured on this host, git 2.43.0, with
+# `git -C <lane> rev-parse --absolute-git-dir --show-toplevel
+# --path-format=absolute --git-path index` under each shape:
 #
-#   GIT_DIR + GIT_WORK_TREE  toplevel=poison   gitdir=poison   (both differ)
-#   GIT_DIR only             toplevel=LANE     gitdir=poison   (gitdir only)
-#   GIT_WORK_TREE only       toplevel=poison   gitdir=LANE     (toplevel only)
+#   GIT_DIR + GIT_WORK_TREE  gitdir=poison  toplevel=poison  index=poison
+#   GIT_DIR only             gitdir=poison  toplevel=LANE    index=poison
+#   GIT_WORK_TREE only       gitdir=LANE    toplevel=poison  index=LANE
+#   GIT_INDEX_FILE only      gitdir=LANE    toplevel=LANE    index=poison
 #
-# So NEITHER equality test subsumes the other and both arms are load-bearing:
-# checking only the toplevel misses the GIT_DIR-only shape (which is the one
-# git itself hands to a hook's descendants), and checking only the gitdir
-# misses the GIT_WORK_TREE-only shape. Block J pins each arm against the shape
-# the other one cannot see.
+# So NO equality test subsumes another and all three arms are load-bearing:
+# the toplevel arm alone misses the GIT_DIR-only shape (the one git itself
+# hands to a hook's descendants), the gitdir arm alone misses the
+# GIT_WORK_TREE-only shape, and NEITHER sees GIT_INDEX_FILE. Block J pins each
+# arm against a shape the others cannot see.
+#
+# GIT_INDEX_FILE is the highest-consequence axis in reify's topology, and the
+# one this script got wrong for two rounds. `git status` compares the EFFECTIVE
+# INDEX against the lane's files, so a sibling lane's index reports every path
+# that lane tracks and this one does not as ` D`, which then re-stats as
+# genuinely absent here. Whether that reaches the classifier at all depends on
+# the OBJECT STORE, which is why the obvious two-independent-repos fixture is
+# misleading: there, `git status`'s rename detection reads a blob the lane's
+# store does not have and dies ("unable to read <oid>") -> exit 2, and the bug
+# hides. Across two lanes of ONE SHARED store -- reify's actual arrangement,
+# ~253 linked worktrees over /home/leo/src/reify/.git -- every OID resolves,
+# nothing is fatal, and the run produced `deleted=2 ... view=lane` exit 3 under
+# the "do NOT restore" hint, naming plausible reify source paths. Block J4
+# builds the shared-store shape deliberately for that reason.
 #
 # The GIT_DIR-only shape is the dangerous one and is why the sentinel is
 # suppressed below rather than merely annotated: git compares a FOREIGN index
@@ -361,6 +405,15 @@ if [ -n "$_view_top" ] && [ -d "$_view_top" ]; then
     _view_top="$(cd "$_view_top" && pwd -P)"
 fi
 
+# --path-format=absolute is required: under `-C`, the bare `--git-path index`
+# form returns a path relative to the -C directory, which would compare unequal
+# on every healthy lane. The index is a FILE and may not exist yet, so it is
+# normalised via its PARENT rather than by cd-ing to it.
+_view_index="$(git -C "$LANE" rev-parse --path-format=absolute --git-path index 2>/dev/null || true)"
+if [ -n "$_view_index" ] && [ -d "$(dirname "$_view_index")" ]; then
+    _view_index="$(cd "$(dirname "$_view_index")" && pwd -P)/$(basename "$_view_index")"
+fi
+
 # Only a POSITIVE mismatch marks the view foreign. An unresolvable side is left
 # alone deliberately: `git status` already succeeded, so a blank here means
 # rev-parse could not name the thing, not that it named something else, and
@@ -369,6 +422,8 @@ if [ -n "$_view_gitdir" ] && [ -n "$_lane_gitdir" ] && [ "$_view_gitdir" != "$_l
     FOREIGN_VIEW="repository $_view_gitdir"
 elif [ -n "$_view_top" ] && [ "$_view_top" != "$LANE" ]; then
     FOREIGN_VIEW="worktree $_view_top"
+elif [ -n "$_view_index" ] && [ -n "$_lane_gitdir" ] && [ "$_view_index" != "$_lane_gitdir/index" ]; then
+    FOREIGN_VIEW="index $_view_index"
 fi
 
 # ── classify ──────────────────────────────────────────────────────────────────
@@ -420,12 +475,12 @@ _n_phantom=${#PHANTOM[@]}
 # about a file that was never this lane's.
 if [ -n "$FOREIGN_VIEW" ]; then
     warn "git answered about a different $FOREIGN_VIEW — NOT this lane ($LANE)"
-    info "An inherited GIT_DIR/GIT_WORK_TREE is observed rather than scrubbed, because"
-    info "classifying the agent's own view is the point. But nothing below is evidence"
-    info "about this lane: the paths come from that view's index, re-stat-ed here, so a"
-    info "path 'missing' here may simply be one this lane never tracked. This is"
-    info "therefore NOT an all-clear either — the lane was never measured. Re-run with"
-    info "the git environment scrubbed (scripts/lib_git_env_scrub.sh) to measure it."
+    info "An inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE is observed rather than"
+    info "scrubbed, because classifying the agent's own view is the point. But nothing"
+    info "below is evidence about this lane: the paths come from that view, re-stat-ed"
+    info "here, so a path 'missing' here may simply be one this lane never tracked."
+    info "This is not an all-clear either — the lane itself was never measured. Re-run"
+    info "with the git environment scrubbed (scripts/lib_git_env_scrub.sh) to measure it."
 fi
 
 if [ "$_n_deleted" -gt 0 ] && [ -z "$FOREIGN_VIEW" ]; then
