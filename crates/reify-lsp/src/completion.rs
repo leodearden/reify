@@ -218,21 +218,37 @@ fn push_builtins(items: &mut Vec<CompletionItem>) {
     }
 }
 
-/// Per-builtin dimensioned example for entries whose LENGTH-semantic
-/// arguments Contract C gates (task 6450). Keyed by name rather than a new
-/// `BuiltinFunctionInfo` field so the other ~80 non-geometry entries need no
-/// touch. This is NOT a restatement of the authoritative position table —
-/// that table is `pub(crate)` to reify-compiler/reify-eval and unreachable
-/// from here (see `arg_acceptance`'s module doc,
-/// crates/reify-eval/src/arg_acceptance.rs) — it is pinned BEHAVIOURALLY by
+/// The qualifier [`LENGTH_GATED_EXAMPLES`] attaches to `half_space`'s row —
+/// the one builtin here whose signature mixes a LENGTH-gated slot group
+/// (`px`/`py`/`pz`) with a legitimately dimensionless one (`nx`/`ny`/`nz`,
+/// the outward normal) — the same ORIGIN-vs-DIRECTION split
+/// `arg_acceptance`'s module doc draws for the same builtin
+/// (crates/reify-eval/src/arg_acceptance.rs) — so the general units clause
+/// would otherwise read as covering the normal too. This is the SPOT for the
+/// qualifier's wording and for why it exists: both the renderer
+/// ([`builtin_doc_with_length_gate_note`]) and
+/// `tests::gated_length_builtins_advertise_their_dimension_requirement` read
+/// this const by symbol, so a reword can never silently leave the test's
+/// negative arm (every row without this qualifier must NOT carry it) passing
+/// vacuously.
+const DIMENSIONLESS_NORMAL_NOTE: &str =
+    " Its outward normal (`nx`/`ny`/`nz`) is a dimensionless direction and stays bare.";
+
+/// Per-builtin dimensioned example, plus an optional extra doc qualifier,
+/// for entries whose LENGTH-semantic arguments Contract C gates (task 6450).
+/// Keyed by name rather than new `BuiltinFunctionInfo` fields so the other
+/// ~80 non-geometry entries need no touch. This is NOT a restatement of the
+/// authoritative position table — that table is `pub(crate)` to
+/// reify-compiler/reify-eval and unreachable from here (see `arg_acceptance`'s
+/// module doc, crates/reify-eval/src/arg_acceptance.rs) — it is pinned
+/// BEHAVIOURALLY by
 /// `completion::tests::gated_length_builtins_advertise_their_dimension_requirement`,
-/// which asserts the bare form of every row here is actually rejected and
-/// the dimensioned form actually evaluates clean.
+/// which asserts the bare form of every row here is actually rejected, the
+/// dimensioned form actually evaluates clean, and the qualifier (if any) is
+/// attached to exactly the right row.
 ///
-/// `half_space`'s example deliberately leaves `nx`/`ny`/`nz` bare — only its
-/// `px`/`py`/`pz` point is LENGTH-gated (the outward normal is a
-/// dimensionless unit vector, not a residual — the same ORIGIN-vs-DIRECTION
-/// split `arg_acceptance`'s module doc draws for the same builtin).
+/// Only `half_space` carries a qualifier today — see
+/// [`DIMENSIONLESS_NORMAL_NOTE`] for its wording and the reason it exists.
 ///
 /// Positions elsewhere in `BUILTIN_FUNCTIONS` deliberately left
 /// dimensionless, scoped to what actually appears in this table (the wider
@@ -243,75 +259,60 @@ fn push_builtins(items: &mut Vec<CompletionItem>) {
 /// gated" enumeration lives in `arg_acceptance`'s module doc — cited, not
 /// restated here (G7).
 ///
-/// RESIDUAL: this table is a snapshot of the families gated as of task
-/// 5745, taken before the units-length-gate-completion PRD's closure guard
-/// (task ι) has landed to close the gated set by construction. TODO(#5752):
-/// once ι lands, re-check this table against its allowlist — the gated set
-/// can still grow via ι's downstream siblings.
-const LENGTH_GATED_EXAMPLES: &[(&str, &str)] = &[
-    ("box", "box(20mm, 10mm, 30mm)"),
-    ("cylinder", "cylinder(5mm, 20mm)"),
-    ("sphere", "sphere(10mm)"),
-    ("box_centered", "box_centered(20mm, 10mm, 30mm)"),
-    ("cylinder_centered", "cylinder_centered(5mm, 20mm)"),
-    ("cone", "cone(10mm, 5mm, 20mm)"),
-    ("rounded_box", "rounded_box(20mm, 20mm, 10mm, 2mm)"),
-    ("torus", "torus(20mm, 5mm)"),
-    ("half_space", "half_space(0mm, 0mm, 0mm, 0, 0, 1)"),
-    ("wedge", "wedge(20mm, 20mm, 10mm, 5mm)"),
-    ("rectangle", "rectangle(20mm, 10mm)"),
-    ("circle", "circle(10mm)"),
-    ("rounded_rect", "rounded_rect(20mm, 20mm, 2mm)"),
-    ("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)"),
-    ("ellipse", "ellipse(10mm, 5mm)"),
+/// RESIDUAL: this table is a snapshot of the families gated as of task 5750
+/// (leaf η — see `builtin_signatures.rs`'s module doc, which attributes the
+/// PRIMITIVE/PROFILE compile-layer slots this table mirrors to that task),
+/// taken before the units-length-gate-completion PRD's closure guard (task
+/// ι) has landed to close the gated set by construction. TODO(#5752): once ι
+/// lands, re-check this table against its allowlist — the gated set can
+/// still grow via ι's downstream siblings.
+const LENGTH_GATED_EXAMPLES: &[(&str, &str, Option<&'static str>)] = &[
+    ("box", "box(20mm, 10mm, 30mm)", None),
+    ("cylinder", "cylinder(5mm, 20mm)", None),
+    ("sphere", "sphere(10mm)", None),
+    ("box_centered", "box_centered(20mm, 10mm, 30mm)", None),
+    ("cylinder_centered", "cylinder_centered(5mm, 20mm)", None),
+    ("cone", "cone(10mm, 5mm, 20mm)", None),
+    ("rounded_box", "rounded_box(20mm, 20mm, 10mm, 2mm)", None),
+    ("torus", "torus(20mm, 5mm)", None),
+    (
+        "half_space",
+        "half_space(0mm, 0mm, 0mm, 0, 0, 1)",
+        Some(DIMENSIONLESS_NORMAL_NOTE),
+    ),
+    ("wedge", "wedge(20mm, 20mm, 10mm, 5mm)", None),
+    ("rectangle", "rectangle(20mm, 10mm)", None),
+    ("circle", "circle(10mm)", None),
+    ("rounded_rect", "rounded_rect(20mm, 20mm, 2mm)", None),
+    ("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)", None),
+    ("ellipse", "ellipse(10mm, 5mm)", None),
 ];
 
-/// The qualifier `builtin_doc_with_length_gate_note` appends to
-/// `half_space`'s served documentation — the one row in
-/// [`LENGTH_GATED_EXAMPLES`] whose signature mixes a LENGTH-gated slot group
-/// with a legitimately dimensionless one, so the general units clause would
-/// otherwise read as covering its outward-normal args too. This is the SPOT
-/// for the qualifier's wording: both the renderer and
-/// `tests::gated_length_builtins_advertise_their_dimension_requirement` read
-/// this const, so a reword can never silently leave the test's negative arm
-/// (every non-`half_space` row must NOT carry this qualifier) passing
-/// vacuously.
-const DIMENSIONLESS_NORMAL_NOTE: &str =
-    " Its outward normal (`nx`/`ny`/`nz`) is a dimensionless direction and stays bare.";
-
 /// Render a builtin's popup documentation, appending a units clause built
-/// from the shared [`LENGTH_MIGRATION_HINT`] const for entries in
-/// [`LENGTH_GATED_EXAMPLES`]. `doc` cannot carry this baked in as a
-/// `&'static str` literal: `concat!` only accepts literal tokens, not a
-/// named `const` (confirmed — `concat!("...", LENGTH_MIGRATION_HINT, "...")`
-/// fails to compile with "expected a literal"), so composing here at
-/// completion-render time is how the popup imports the one shared wording
-/// instead of hand-copying it (G7).
+/// from the shared [`LENGTH_MIGRATION_HINT`] const plus that row's optional
+/// qualifier, for entries in [`LENGTH_GATED_EXAMPLES`]. `doc` cannot carry
+/// the units clause baked in as a `&'static str` literal: `concat!` only
+/// accepts literal tokens, not a named `const` (confirmed —
+/// `concat!("...", LENGTH_MIGRATION_HINT, "...")` fails to compile with
+/// "expected a literal"), so composing here at completion-render time is how
+/// the popup imports the one shared wording instead of hand-copying it (G7).
 ///
 /// The clause reads "a bare number would mean SI metres and is rejected",
 /// not "is read as ... and rejected": under the gate a bare number is never
 /// actually read as metres, it is rejected outright — the 1000×-metres
 /// misreading is the historical hazard Contract C closes, so asserting both
-/// in one breath would be self-contradictory. `half_space` gets
-/// [`DIMENSIONLESS_NORMAL_NOTE`] appended because it is the one row in
-/// [`LENGTH_GATED_EXAMPLES`] whose signature mixes a LENGTH-gated slot group
-/// with a legitimately dimensionless one, so the general clause would
-/// otherwise read as covering its outward-normal args too.
+/// in one breath would be self-contradictory.
 fn builtin_doc_with_length_gate_note(info: &BuiltinFunctionInfo) -> String {
     match LENGTH_GATED_EXAMPLES
         .iter()
-        .find(|(name, _)| *name == info.name)
+        .find(|(name, _, _)| *name == info.name)
     {
-        Some((_, example)) => {
-            let qualifier = if info.name == "half_space" {
-                DIMENSIONLESS_NORMAL_NOTE
-            } else {
-                ""
-            };
+        Some((_, example, qualifier)) => {
             format!(
                 "{} Length arguments must be dimensioned — a bare number would mean SI metres \
-                 and is rejected; {LENGTH_MIGRATION_HINT}, e.g. `{example}`.{qualifier}",
-                info.doc
+                 and is rejected; {LENGTH_MIGRATION_HINT}, e.g. `{example}`.{}",
+                info.doc,
+                qualifier.unwrap_or("")
             )
         }
         None => info.doc.to_string(),
@@ -1324,9 +1325,22 @@ mod tests {
     fn dimensioned_example(name: &str) -> &'static str {
         LENGTH_GATED_EXAMPLES
             .iter()
-            .find(|(n, _)| *n == name)
+            .find(|(n, _, _)| *n == name)
             .unwrap_or_else(|| panic!("{name}: no LENGTH_GATED_EXAMPLES entry"))
             .1
+    }
+
+    /// The same row's optional doc qualifier (see [`DIMENSIONLESS_NORMAL_NOTE`]),
+    /// looked up the same way as [`dimensioned_example`] so
+    /// `gated_length_builtins_advertise_their_dimension_requirement`'s
+    /// positive/negative qualifier assertions are a data lookup rather than a
+    /// name-keyed branch mirroring the renderer's.
+    fn qualifier_for(name: &str) -> Option<&'static str> {
+        LENGTH_GATED_EXAMPLES
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name}: no LENGTH_GATED_EXAMPLES entry"))
+            .2
     }
 
     /// One row per empirically-gated `01-geometry` builtin (task 6450):
@@ -1388,7 +1402,7 @@ mod tests {
     fn length_gated_tables_stay_in_sync() {
         let example_names: HashSet<&str> = LENGTH_GATED_EXAMPLES
             .iter()
-            .map(|(name, _)| *name)
+            .map(|(name, _, _)| *name)
             .collect();
         let row_names: HashSet<&str> = GATED_LENGTH_BUILTIN_ROWS
             .iter()
@@ -1520,24 +1534,21 @@ mod tests {
                 "{name}: served documentation should show the dimensioned example `{dimensioned}`, got: {doc_text}"
             );
 
-            // half_space is the one row whose signature mixes a LENGTH-gated
-            // slot group with a legitimately dimensionless one, so
-            // `builtin_doc_with_length_gate_note` attaches it an extra
-            // qualifier that no other row's documentation should carry.
-            // Pinning both directions means deleting the qualifier branch,
-            // or mis-attaching it to the wrong builtin, reds here.
-            if name == "half_space" {
-                assert!(
-                    doc_text.contains(DIMENSIONLESS_NORMAL_NOTE),
-                    "{name}: served documentation should contain \
-                     DIMENSIONLESS_NORMAL_NOTE, got: {doc_text}"
-                );
-            } else {
-                assert!(
+            // Pinning both directions (a row's own qualifier present; every
+            // other row's absent) means deleting a qualifier, or
+            // mis-attaching it to the wrong builtin, reds here — see
+            // DIMENSIONLESS_NORMAL_NOTE for why half_space is the only row
+            // with one today.
+            match qualifier_for(name) {
+                Some(qualifier) => assert!(
+                    doc_text.contains(qualifier),
+                    "{name}: served documentation should contain its qualifier, got: {doc_text}"
+                ),
+                None => assert!(
                     !doc_text.contains(DIMENSIONLESS_NORMAL_NOTE),
                     "{name}: served documentation should not carry \
                      half_space's DIMENSIONLESS_NORMAL_NOTE qualifier, got: {doc_text}"
-                );
+                ),
             }
         }
     }
