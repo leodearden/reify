@@ -556,11 +556,7 @@ structure def S {
 "#;
 
     let (_template, diagnostics) = compile_first_template(source);
-    assert_has_diagnostic(
-        &diagnostics,
-        Severity::Error,
-        "undefined port 'self.typo'",
-    );
+    assert_has_diagnostic(&diagnostics, Severity::Error, "undefined port 'self.typo'");
 }
 
 // ── Step 23: connector_sub_content_hash_includes_type_and_params ─────
