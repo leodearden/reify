@@ -1,0 +1,29 @@
+[Unit]
+Description=Reify code-index warming pass: refresh the jcodemunch index for the canonical checkout
+Documentation=file:///home/leo/src/reify/docs/prds/jcodemunch-substrate-restoration.md
+# Oneshot warming pass driven by reify-jcodemunch-index.timer.
+
+[Service]
+Type=oneshot
+# ExecStart uses the stable main-checkout absolute path — host convention
+# matching reify-warm-lane.service and reify-jcodemunch-index.timer's Unit=.
+#
+# It MUST stay the bare script, with no flags and no Environment= lines. The
+# script is the single place that carries the canonical DEFAULT_PROJECT_ROOT
+# and the load-bearing JCODEMUNCH_GIT_ROOT_IDENTITY=0 lever; re-deriving its
+# command line here would index repo identity leodearden/reify instead of
+# local/reify-4ae45bbd, and the resulting index would look healthy while
+# answering for the wrong repo. Deliberately unlike reify-warm-lane.service
+# and reify-warm-lane-gc.service, whose installer pins host-specific flags
+# onto the installed copy: there is no host-specific value to pin here, so a
+# pin could only ever be a second, drifting copy of what the script owns.
+#
+# No Environment=PATH= either: the systemd --user manager's PATH already
+# carries /home/leo/.local/bin, so the script resolves its tooling unaided,
+# and hardcoding a PATH here would copy live host state into a tracked file.
+ExecStart=/home/leo/src/reify/scripts/jcodemunch-index-reify.sh
+StandardOutput=journal
+StandardError=journal
+
+# No [Install] section: the timer owns activation. Enabling this unit directly
+# would give it a second, untimed activation path.
