@@ -158,3 +158,65 @@ fn arg_count_rejection_is_detected_for_the_builtin_rotate_arity_gate() {
          it — a matcher that fires here would make every gate below unconditionally red"
     );
 }
+
+/// Pins the extraction rule directly, on inline markdown with no chunk
+/// involved, before anything consumes it.
+///
+/// The genuine hazards are the two bracket cases: a comma nested inside a
+/// generic argument list must not split a parameter, and a generic list on the
+/// NAME must not be mistaken for the parameter list. Both are pinned here, as
+/// is the negative case that keeps this a declaration scan rather than a prose
+/// scan.
+#[test]
+fn declared_signatures_extracts_name_and_arity() {
+    let markdown = r#"
+# Function Declarations
+
+```
+fn clamp(x : Real, lo : Real, hi : Real) -> Real {
+    if x < lo then lo else if x > hi then hi else x
+}
+
+fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
+    sqrt(0.5)
+}
+```
+
+- **Type parameters supported:** `fn distance<Q: Dimension>(a: Point3<Q>, b: Point3<Q>) -> Scalar<Q>`
+
+```
+fn mover<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
+fn mover<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
+fn clamp(x : Real, lo : Real, hi : Real) -> Real { ... }
+```
+"#;
+
+    assert_eq!(
+        declared_signatures(markdown),
+        vec![
+            DocSignature {
+                name: "clamp".to_string(),
+                arity: 3
+            },
+            DocSignature {
+                name: "mover".to_string(),
+                arity: 2
+            },
+            DocSignature {
+                name: "mover".to_string(),
+                arity: 3
+            },
+            DocSignature {
+                name: "von_mises".to_string(),
+                arity: 1
+            },
+        ],
+        "the scan must: count a plain parameter list (clamp/3); NOT split on commas nested in \
+         generic brackets (von_mises/1, not /3); skip a generic list on the NAME and tolerate a \
+         `{{ ... }}` elision body (mover/3 and mover/2 — two DISTINCT arities under one name, \
+         which is the overloading this module exists to guard); ignore a signature that merely \
+         appears inside PROSE rather than starting its line (`distance` must be absent, so this \
+         stays a declaration scan and never a wording pin); and collapse a duplicate declaration \
+         to one sorted entry"
+    );
+}
