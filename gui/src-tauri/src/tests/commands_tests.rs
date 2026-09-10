@@ -3360,7 +3360,7 @@ fn multi_realization_partial_hide_retains_at_entity_granularity() {
 fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (path, _text) = rigid_mass_props_tempfile(dir.path());
-    let session = rigid_mass_props_session_seeded_then_failing(1..=2);
+    let (session, dispatch_log) = rigid_mass_props_session_seeded_then_failing(1..=2);
     let engine = Arc::new(Mutex::new(session));
 
     // (1) Cold load: the box realizes to seeded handle 1, so the mass props
@@ -3390,8 +3390,15 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
     //     dispatched — and its geometry queries now hit a handle the mock was
     //     explicitly configured to fail (`fail_after_n_dispatches(2)` above),
     //     regardless of which exact handle number the dispatch allocates.
+    let ops_before = dispatch_log.lock().unwrap().len();
     let state = crate::commands::set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
         .expect("set_parameter_impl");
+    assert!(
+        dispatch_log.lock().unwrap().len() > ops_before,
+        "the depth edit must have re-DISPATCHED the realization — with no new op the \
+         realization stayed hash-exempt, which is the sibling test's scenario and never \
+         reaches the degeneration guard this test exists to pin"
+    );
     let depth = state
         .values
         .iter()
