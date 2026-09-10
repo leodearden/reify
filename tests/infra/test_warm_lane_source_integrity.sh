@@ -4,17 +4,18 @@
 #
 # WHY THIS SUITE EXISTS.
 #   esc-7106-5 sighted a tracked source file gone from a warm lane's worktree,
-#   with no attribution. Task #7106 had earlier sighted a DIFFERENT failure --
-#   a poisoned git environment reporting many tracked files as deleted while
-#   every one of them was still on disk. `git status --porcelain` alone cannot
-#   tell those two apart: both print ` D <path>`. A detector that trusts git's
-#   answer therefore fires identically on both and yields another unattributed
-#   observation, which is the outcome the script under test exists to prevent.
+#   with no attribution. `git status --porcelain` prints the same ` D <path>`
+#   whether the file is really gone or git is merely answering about a
+#   DIFFERENT tree than the one on disk at the lane -- which is exactly what a
+#   foreign git view inherited from the environment makes it do. A detector
+#   that trusts git's answer fires identically on both and yields another
+#   unattributed observation, which is the outcome the script under test
+#   exists to prevent.
 #
 #   So the property pinned here is the DISCRIMINATION: every git-reported
 #   worktree deletion is re-checked against the filesystem and bucketed as
-#   `deleted` (absent on disk -- the esc-7106-5 signature) or `phantom`
-#   (present on disk -- the #7106 signature), and only the former raises the
+#   `deleted` (absent on disk -- the vanished-file signature) or `phantom`
+#   (present on disk -- a view artifact), and only the former raises the
 #   advisory exit-3 sentinel.
 #
 #   Deliberately NOT pinned: any claim about WHAT removes a file. Attribution
@@ -34,8 +35,8 @@
 #   B — REAL DELETION (the esc-7106-5 signature): exit 3, deleted=N phantom=0,
 #       offending paths on stderr -- verbatim, NOT git's C-quoted rendering --
 #       and never on stdout.
-#   C — PHANTOM DELETION (the #7106 discriminator, this suite's whole point):
-#       git reports ` D` while the path is still on disk => deleted=0
+#   C — PHANTOM DELETION (the foreign-view discriminator, this suite's whole
+#       point): git reports ` D` while the path is still on disk => deleted=0
 #       phantom=N and exit 0. The block asserts BOTH halves of its own fixture
 #       premise first so it cannot decay into a vacuous pass.
 #   D — MIXED: one of each in one tree; a real deletion anywhere dominates the
@@ -43,10 +44,13 @@
 #   E — NOISE IS NOT COUNTED: untracked, modified-but-present, staged addition,
 #       staged deletion (index column, not worktree column) and unmerged
 #       conflict entries all leave deleted=0 phantom=0 exit 0.
-#   F — FAIL-OPEN / USAGE: a missing lane, a non-worktree lane and a malformed
-#       command line all exit 2 with actionable stderr and never report a
-#       deletion. A detector that hard-fails an agent session start is worse
-#       than one that says nothing.
+#   F — FAIL-OPEN / USAGE: a missing lane, a non-worktree lane, a lane whose
+#       index has been poisoned into unreadability (task #7106's own
+#       mechanism) and a malformed command line all exit 2 with actionable
+#       stderr and never report a deletion. A detector that hard-fails an
+#       agent session start is worse than one that says nothing -- and one
+#       that turns a broken index into a four-figure deletion count is worse
+#       than either.
 #   G — NON-MUTATION: the lane's source tree is byte-identical (paths, modes,
 #       mtimes, sizes, contents) and its porcelain status unchanged across a
 #       run that DID find a real deletion -- the run most tempting to "fix".
@@ -145,6 +149,7 @@ run_detector_poisoned() {
 _has()   { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 _lacks() { case "$2" in *"$1"*) return 1 ;; *) return 0 ;; esac; }
 _one_line() { test "$(printf '%s\n' "$1" | wc -l)" -eq 1; }
+_git_status_fails() { ! git -C "$1" status --porcelain >/dev/null 2>&1; }
 
 # Expected stdout summary for a lane dir.
 _summary() { printf 'source-integrity: deleted=%s phantom=%s lane=%s' "$1" "$2" "$(basename "$3")"; }
@@ -268,13 +273,13 @@ echo "--- Block C: phantom deletion ---"
 
 # Fixture: two repos with the same path set. The files are removed from the
 # POISON worktree only; the lane's copies are untouched. Running the detector
-# with GIT_DIR/GIT_WORK_TREE aimed at the poison repo reproduces exactly the
-# #7106 shape -- git answers about a tree that is not the one on disk at the
-# lane, so it reports deletions for paths that are demonstrably present there.
-# The env-poisoning route is the faithful stand-in: #7106's GIT_INDEX_FILE
-# leak is the same class of defect (a foreign git view inherited from the
-# environment), and the detector is specified NOT to scrub such a view but to
-# observe it and classify it.
+# with GIT_DIR/GIT_WORK_TREE aimed at the poison repo makes git answer about a
+# tree that is not the one on disk at the lane, so it reports deletions for
+# paths that are demonstrably present there. That is the same class of defect
+# as the git-environment leaks scripts/lib_git_env_scrub.sh documents -- a
+# foreign view inherited from the environment -- and the detector is specified
+# NOT to scrub such a view but to observe it and classify it, because
+# classifying the agent's own view is the point.
 C_ROOT="$(_mktmpd C)"
 C_LANE="$C_ROOT/lane"
 C_POISON="$C_ROOT/poison"
@@ -413,6 +418,35 @@ assert "F11: ...and is actionable on stderr" test -n "$ERR_OUT"
 run_detector --help
 assert "F12: --help exits 0" test "$RC" -eq 0
 assert "F13: ...and documents the exit codes" _has 'Exit codes' "$OUT$ERR_OUT"
+
+# Task #7106's OWN mechanism, per scripts/lib_git_env_scrub.sh: an unscrubbed
+# GIT_INDEX_FILE lets one repo's `git add -A` overwrite another repo's index.
+# Measured on git 2.43.0 — the victim's index then names blobs living in the
+# FOREIGN object store, so `git status` in the victim is fatal. Reporting the
+# entries such an index makes git call deleted would be the loudest possible
+# false sentinel (#7106 measured 2010075 of them), so this must degrade to the
+# wiring-error exit instead. `env` runs the poisoning assignment on an EXTERNAL
+# command, which cannot leak back into this shell the way a prefix on a
+# function call would.
+F_POISON_ROOT="$(_mktmpd Fp)"
+F_VICTIM="$F_POISON_ROOT/victim"
+F_FOREIGN="$F_POISON_ROOT/foreign"
+_mk_repo "$F_VICTIM"  a.txt src/lib.rs
+_mk_repo "$F_FOREIGN" foreign-only.txt
+env GIT_INDEX_FILE="$F_VICTIM/.git/index" \
+    git -c user.name=t -c user.email=t@t -C "$F_FOREIGN" add -A
+
+assert "F14: FIXTURE — the poisoned index really makes git status fatal in the victim" \
+    _git_status_fails "$F_VICTIM"
+assert "F15: FIXTURE — ...while every one of the victim's files is still on disk" \
+    test -f "$F_VICTIM/src/lib.rs"
+
+run_detector --lane "$F_VICTIM"
+assert "F16: an unreadable index is a wiring error (exit 2), not a false sentinel" \
+    test "$RC" -eq 2
+assert "F17: ...and no deletion count is reported at all" _lacks 'deleted=' "$OUT"
+assert "F18: ...and git's own error is surfaced rather than swallowed" \
+    _has 'git:' "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block G — NON-MUTATION
