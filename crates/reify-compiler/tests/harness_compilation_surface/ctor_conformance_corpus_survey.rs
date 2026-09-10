@@ -2836,6 +2836,88 @@ fn debt_entry_describes(entry: &(&str, &str, &str), file: &str, param: Option<&s
         .is_some_and(|key| super::examples_smoke::debt_entry_matches(entry, key, param))
 }
 
+/// The reason every
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// site is deferred.
+///
+/// That table carries no `why` column — it predates this one, and every entry in
+/// it shares one reason — so the reason belongs to the TABLE, not to a row.
+/// Stated here once rather than copied into each rendered row, and deliberately
+/// not added as a fourth column there: #5847 and #5306 are both chartered
+/// against that list by name.
+const MIGRATION_DEBT_WHY: &str = "un-migrated examples/ call site that cannot be dimensioned \
+     in isolation; waived per-site in CTOR_CONFORMANCE_MIGRATION_DEBT and retired by its \
+     owning task's own diff";
+
+/// γ's per-site ruling on a surveyed site, resolved from the waiver tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// A live task owns retiring the site. `why` says what breaks if someone
+    /// migrates it here instead.
+    Deferred {
+        owning_task: &'static str,
+        why: &'static str,
+    },
+    /// No table names the site: it is actionable, and nobody has claimed it.
+    Unattributed,
+}
+
+impl Disposition {
+    /// The artifact cell for this disposition.
+    ///
+    /// A deferred cell names the owner and the reason so it reads standalone —
+    /// the artifact is consumed one row at a time, and a bare cite would send
+    /// the reader hunting for a table to find out why.
+    fn label(self) -> String {
+        match self {
+            Disposition::Deferred { owning_task, why } => {
+                format!("deferred — owned by {owning_task}: {why}")
+            }
+            Disposition::Unattributed => "unattributed — actionable".to_owned(),
+        }
+    }
+}
+
+/// Resolve `site`'s disposition from [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT).
+///
+/// The ONLY place the two tables are unioned. The tables are the single source
+/// of truth and the artifact is a projection of them, so nothing else re-derives
+/// this mapping — including the corpus-wide check in
+/// [`generate_ctor_conformance_corpus_survey`], which calls straight through.
+///
+/// Consultation order is immaterial:
+/// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] proves
+/// no site can be described by both.
+///
+/// A site whose param could not be recovered is [`Disposition::Unattributed`].
+/// Both tables key on `(file, param)`, so there is nothing to match on, and the
+/// conservative default is the one that does not invent an owner.
+fn disposition_of(site: &SurveySite) -> Disposition {
+    let Some(param) = site.field.as_deref() else {
+        return Disposition::Unattributed;
+    };
+
+    if let Some(&(_, _, owning_task, why)) = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .find(|entry| entry.0 == site.file && entry.1 == param)
+    {
+        return Disposition::Deferred { owning_task, why };
+    }
+
+    if let Some(&(_, _, owning_task)) = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .find(|entry| debt_entry_describes(entry, &site.file, Some(param)))
+    {
+        return Disposition::Deferred {
+            owning_task,
+            why: MIGRATION_DEBT_WHY,
+        };
+    }
+
+    Disposition::Unattributed
+}
+
 /// True when `cite` is the repo's canonical `#NNNN` task-cite form.
 ///
 /// Greek-letter aliases (`task ε`), PRD-relative indices (`task-5`) and prose
@@ -3085,6 +3167,15 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
           a non-identifier, identifier not followed by `(`, span out of range, …), so no\n\
           prose here has to guess a cause on a reader's behalf.\n\
         \n\
+        The **`disposition` column is γ's RULING**, projected from the two per-site\n\
+        waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL` in the generator,\n\
+        `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling `examples_smoke.rs`) rather\n\
+        than typed here. A `deferred` row names the LIVE task that owns retiring the\n\
+        site and the reason migrating it here would destroy something — most of these\n\
+        are committed RED before-images whose violation IS the fixture's content. An\n\
+        `unattributed` row is claimed by nobody: that is the actionable state, and\n\
+        after γ the corpus holds none at Warning severity.\n\
+        \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
         (1) *call-site bug* and class (2) *wrong declared field type* as \"per-case\n\
@@ -3156,13 +3247,13 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
             continue;
         }
         md.push_str(
-            "| site | def | def source | field | expected | found | code | severity | hint (advisory) | message |\n\
-             |---|---|---|---|---|---|---|---|---|---|\n",
+            "| site | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |\n\
+             |---|---|---|---|---|---|---|---|---|---|---|\n",
         );
         for s in group {
             let _ = writeln!(
                 md,
-                "| `{}:{}` | {} | {} | {} | {} | {} | `{}` | {} | {} | {} |",
+                "| `{}:{}` | {} | {} | {} | {} | {} | `{}` | {} | {} | {} | {} |",
                 cell(&s.file),
                 s.line,
                 opt_cell(s.def.as_ref()),
@@ -3173,6 +3264,7 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
                 cell(&s.code),
                 cell(&s.severity),
                 cell(&remedy_hint(s.expected.as_deref(), s.found.as_deref())),
+                cell(&disposition_of(s).label()),
                 cell(&s.message),
             );
         }
@@ -3576,7 +3668,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         "no cell may be rendered empty: {row:?}"
     );
     assert!(
-        cells[10].starts_with("E_CTOR_ARITY:"),
+        cells[11].starts_with("E_CTOR_ARITY:"),
         "the raw message must still be carried verbatim: {row:?}"
     );
 }
