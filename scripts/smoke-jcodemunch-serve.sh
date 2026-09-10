@@ -19,9 +19,13 @@
 #
 # Exits 0 on success (all assertions pass).
 # Exits 1 on first failed assertion (with a descriptive error message).
+# Exits 2 on CLI misuse.
 #
-# Run before activation to confirm RED; run after activation to confirm GREEN:
-#   bash scripts/smoke-jcodemunch-serve.sh
+# There is no persistent serve unit to activate against any more; bring one up
+# for the duration of the run with the lifecycle wrapper, and tell this script
+# which index identity that serve answers for:
+#   bash scripts/with-jcodemunch-serve.sh --port 8901 -- \
+#       bash scripts/smoke-jcodemunch-serve.sh --repo local/reify-4ae45bbd
 #
 # Prerequisites: curl, jq
 
@@ -29,22 +33,47 @@ set -euo pipefail
 
 usage() {
     cat <<'USAGE'
-Usage: scripts/smoke-jcodemunch-serve.sh [-h|--help]
+Usage: scripts/smoke-jcodemunch-serve.sh [--repo <id>] [-h|--help]
 
 Activation smoke test for the jcodemunch query-serve (L-SERVE).
 Asserts:
   1. MCP handshake at http://127.0.0.1:8901/mcp returns JSON-RPC body
      and a server-assigned Mcp-Session-Id header.
-  2. get_changed_symbols for reify returns NON-EMPTY symbol data.
+  2. get_changed_symbols for the queried repo returns NON-EMPTY symbol data.
   3. jcodemunch-watcher.service is active concurrently with assertion 2.
-Exits 0 on success, 1 on failure.
+
+Options:
+  --repo <id>   Index identity to query (default: leodearden/reify).
+                Pass local/reify-4ae45bbd against a serve spawned by
+                scripts/with-jcodemunch-serve.sh — see the note at REPO_ID.
+
+Exits 0 on success, 1 on a failed assertion, 2 on CLI misuse.
 USAGE
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    usage
-    exit 0
-fi
+cli_error() { echo "$(basename "$0"): $*" >&2; exit 2; }
+
+REPO_ID_ARG=""
+while [[ $# -gt 0 ]]; do
+    # Normalise --repo=X into --repo X, so the value is validated in one place.
+    if [[ "$1" == --repo=* ]]; then set -- --repo "${1#--repo=}" "${@:2}"; fi
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --repo)
+            # A valueless --repo must NOT fall back to the default: that would
+            # silently query the husk identity the note below warns about.
+            [[ $# -ge 2 && -n "$2" ]] || cli_error "--repo requires an index identity"
+            REPO_ID_ARG="$2"
+            shift 2
+            ;;
+        *)
+            cli_error "unexpected argument: $1"
+            ;;
+    esac
+done
 
 SERVE_URL="http://127.0.0.1:8901/mcp"
 MCP_TIMEOUT=15
@@ -56,7 +85,20 @@ WATCHER_SERVICE="jcodemunch-watcher"
 # (or /home/leo/src/reify once the watcher re-indexes the canonical checkout).
 # Commit range: 3 commits ending at the index HEAD 27b212c (Merge task/3773 into main).
 # Both commits exist in the canonical /home/leo/src/reify git history.
-REPO_ID="leodearden/reify"
+#
+# THE DEFAULT IS THE HUSK — PASS --repo AGAINST ANY SERVE YOU BRING UP TODAY.
+# `leodearden/reify` is what jcodemunch resolves for this checkout when nothing
+# forces the identity lever: the pinned release ships `git_root_identity: True`,
+# so a serve left to itself answers for the git remote. Every reify-owned
+# invocation now forces JCODEMUNCH_GIT_ROOT_IDENTITY=0 instead —
+# scripts/jcodemunch-index-reify.sh when indexing, scripts/with-jcodemunch-serve.sh
+# when spawning a serve — so a serve brought up the sanctioned way answers for the
+# per-path `local/reify-4ae45bbd` and holds NOTHING under the name below.
+# reify-audit already derives the per-path identity rather than defaulting
+# (task 6108, landed). This default survives only because the SINCE/UNTIL range
+# above was resolved against the husk's index HEAD and has never been re-resolved
+# against the per-path index — re-resolving it is what would let the default flip.
+REPO_ID="${REPO_ID_ARG:-leodearden/reify}"
 SINCE_SHA="00f56f1a20be3a66a0797663506280be4db9ccf3"
 UNTIL_SHA="27b212c61cfe86bf57055d769921805e34d8b467"
 
@@ -81,7 +123,13 @@ http_code=$(curl -s \
     echo "FAIL [1]: curl to $SERVE_URL failed (connection refused or timeout)." >&2
     echo "       There is no persistent serve unit any more.  The wrapper spawns" >&2
     echo "       one for the duration of a command and tears it down on exit:" >&2
-    echo "         bash scripts/with-jcodemunch-serve.sh --port 8901 -- bash scripts/smoke-jcodemunch-serve.sh" >&2
+    echo "         bash scripts/with-jcodemunch-serve.sh --port 8901 -- \\" >&2
+    echo "             bash scripts/smoke-jcodemunch-serve.sh --repo local/reify-4ae45bbd" >&2
+    echo "       --repo is not optional there: the wrapper forces" >&2
+    echo "       JCODEMUNCH_GIT_ROOT_IDENTITY=0, so its serve answers for the per-path" >&2
+    echo "       local/reify-<hash> index that scripts/jcodemunch-index-reify.sh" >&2
+    echo "       maintains, not for the default husk — which would clear assertion 1" >&2
+    echo "       and then fail assertion 2 with an empty result." >&2
     echo "       The wrapper owns the pinned jcodemunch version — do not pin one here." >&2
     echo "       See: docs/architecture-audit/jcodemunch-serve-activation.md" >&2
     exit 1
@@ -204,6 +252,10 @@ elif [[ -s "$result_text_file" ]]; then
         echo "FAIL [2]: get_changed_symbols returned empty symbol data." >&2
         echo "       Full response (first 400 chars): $(head -c 400 "$query_json" 2>/dev/null)" >&2
         echo "       Verify REPO_ID='$REPO_ID', SINCE_SHA='$SINCE_SHA', UNTIL_SHA='$UNTIL_SHA'" >&2
+        echo "       An empty result here is most often an IDENTITY mismatch, not a data" >&2
+        echo "       gap: a serve from scripts/with-jcodemunch-serve.sh answers for the" >&2
+        echo "       per-path local/reify-<hash> index.  Re-run with" >&2
+        echo "       --repo local/reify-4ae45bbd." >&2
         exit 1
     fi
 else

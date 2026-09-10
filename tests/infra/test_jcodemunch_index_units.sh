@@ -535,53 +535,80 @@ assert "E5b: no tracked file under deploy/ references jcodemunch-watcher" \
 #
 # scripts/smoke-jcodemunch-serve.sh's "start the serve first" hint was stale on
 # three independent axes: an unresolvable pinned git source, a wrong Python
-# version, and a systemd unit this diff deletes. F1-F4 ban each axis; F5 requires
-# the replacement recipe; F6 stops the correction becoming a fifth copy of the pin.
+# version, and a systemd unit this diff deletes.
+#
+# F1 bans the SHAPE of that defect — an inline jcodemunch invocation — rather
+# than the three specific stale literals. A literal-by-literal ban goes green on
+# a recipe re-introduced at the CURRENT pin, which is the same fifth-copy-of-the-
+# pin failure with a fresh version number on it; only the shape ban survives a
+# bump without an edit.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block F: smoke-script hint contract ---"
 
-# F1/F2: axis 1 — the unresolvable pinned git source
-assert "F1: smoke script names no v1.108.27 pin" \
-    bash -c '! grep -q "v1[.]108[.]27" "$1"' _ "$SMOKE"
-
-assert "F2: smoke script names no git+https://github.com/jgravelle source" \
-    bash -c '! grep -q "git+https://github[.]com/jgravelle" "$1"' _ "$SMOKE"
-
-# F3: axis 2 — the wrong Python version
-assert "F3: smoke script names no --python 3.12" \
-    bash -c '! grep -q -- "--python 3[.]12" "$1"' _ "$SMOKE"
-
-# F4: axis 3 — the unit this diff deletes
-assert "F4: smoke script names no jcodemunch-serve.service unit" \
-    bash -c '! grep -q "jcodemunch-serve[.]service" "$1"' _ "$SMOKE"
-
-# F5: the hint must actually tell the operator what to run instead. Deleting the
-# stale recipe without supplying the replacement would leave a worse hint than
-# the stale one — the failure mode this block is really guarding against.
-assert "F5: connection-failure hint names scripts/with-jcodemunch-serve.sh as the replacement recipe" \
-    bash -c 'grep -q "with-jcodemunch-serve[.]sh" "$1"' _ "$SMOKE"
-
-# F6: the corrected hint must carry NO version literal of its own.
+# F1: the script builds NO inline jcodemunch invocation, of any vintage.
 # scripts/with-jcodemunch-serve.sh:248-257 enumerates the four sites that copy
-# the pin and warns against a fifth; a hint that restated the version would be
-# that fifth copy, and would go stale again on the next bump.
-assert "F6: smoke script restates no jcodemunch version (no 'jcodemunch-mcp==' and no '1.108.' literal)" \
+# the pin and warns against a fifth. Every token banned here is one a fifth copy
+# would have to use, and none of them is a version literal — so this assertion
+# never needs editing when the pin moves.
+assert "F1: smoke script builds no inline jcodemunch invocation (no uvx / --from / == pin / --python / git+ source)" \
     bash -c '
-        ! grep -q "jcodemunch-mcp==" "$1" || exit 1
-        ! grep -q "1[.]108[.]"       "$1" || exit 1
+        ! grep -q    "uvx"                    "$1" || exit 1
+        ! grep -q -- "--from jcodemunch-mcp"  "$1" || exit 1
+        ! grep -q    "jcodemunch-mcp=="       "$1" || exit 1
+        ! grep -q -- "--python"               "$1" || exit 1
+        ! grep -q    "git+https://github.com" "$1" || exit 1
     ' _ "$SMOKE"
 
-# F7: the edit must leave a script that still parses and still answers --help,
+# F2: axis 3 — the unit this diff deletes
+assert "F2: smoke script names no jcodemunch-serve.service unit" \
+    bash -c '! grep -q "jcodemunch-serve[.]service" "$1"' _ "$SMOKE"
+
+# F3: the hint must actually tell the operator what to run instead. Deleting the
+# stale recipe without supplying the replacement would leave a worse hint than
+# the stale one — the failure mode this block is really guarding against.
+assert "F3: connection-failure hint names scripts/with-jcodemunch-serve.sh as the replacement recipe" \
+    bash -c 'grep -q "with-jcodemunch-serve[.]sh" "$1"' _ "$SMOKE"
+
+# F4: ...and naming the wrapper does NOT by itself make the recipe runnable.
+# The wrapper spawns its serve under JCODEMUNCH_GIT_ROOT_IDENTITY=0, so that
+# serve answers for the per-path local/reify-<hash> index, while this script's
+# default REPO_ID is the leodearden/reify husk. A recipe that omitted --repo
+# would clear assertion 1 and then fail assertion 2 for a non-obvious identity
+# reason — a misleading hint of exactly the class Block F exists to retire.
+# Anchored to the hint block itself, not the whole file, so the header's copy of
+# the recipe cannot satisfy it on the hint's behalf.
+assert "F4: the connection-failure hint's recipe passes --repo with the per-path identity" \
+    bash -c '
+        hint=$(sed -n "/FAIL \[1\]: curl to/,/See: docs/p" "$1")
+        printf "%s" "$hint" | grep -q    "with-jcodemunch-serve[.]sh --port" || exit 1
+        printf "%s" "$hint" | grep -q -- "--repo local/reify-"
+    ' _ "$SMOKE"
+
+# F5: the flag the recipe prints must be one the script really implements —
+# proven by RUNNING it, not by grepping for the string. --help must document it;
+# a valueless --repo must be REFUSED rather than falling back to the default
+# husk, which is how a nominally-runnable recipe would go silently vacuous again;
+# and an unknown flag must be rejected rather than ignored.
+assert "F5: --repo is implemented — documented by --help, refused without a value, unknown flags rejected (exit 2)" \
+    bash -c '
+        bash "$1" --help 2>&1 | grep -q -- "--repo" || exit 1
+        rc=0; bash "$1" --repo   >/dev/null 2>&1 || rc=$?
+        [ "$rc" = "2" ] || exit 1
+        rc=0; bash "$1" --bogus  >/dev/null 2>&1 || rc=$?
+        [ "$rc" = "2" ]
+    ' _ "$SMOKE"
+
+# F6: the edit must leave a script that still parses and still answers --help,
 # proven without needing a live serve.
-assert "F7: smoke script parses and --help exits 0" \
+assert "F6: smoke script parses and --help exits 0" \
     bash -c '
         bash -n "$1" || exit 1
         bash "$1" --help >/dev/null 2>&1
     ' _ "$SMOKE"
 
-# F8: watcher guardrail — the hint rewrite must not spill into assertion 3's site
-assert "F8: assertion-3 site still names jcodemunch-watcher.service" \
+# F7: watcher guardrail — the hint rewrite must not spill into assertion 3's site
+assert "F7: assertion-3 site still names jcodemunch-watcher.service" \
     bash -c 'grep -q "jcodemunch-watcher[.]service is not active" "$1"' _ "$SMOKE"
 
 
