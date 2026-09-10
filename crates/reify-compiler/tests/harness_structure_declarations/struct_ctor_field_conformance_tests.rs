@@ -1077,10 +1077,10 @@ structure def Root {
 /// `is_numeric_placeholder_leaf`'s `Point` branch, and until now pinned by
 /// nothing at all.
 ///
-/// `conformance/mod.rs` calls this cell "THE BOUNDED, DELIBERATE COST" and
-/// `crates/reify-core/src/ty.rs` calls it "the `Point` arm's tolerance of a bare
-/// numeric literal", but both said it in prose only. This fixture makes it a
-/// measured, held fact.
+/// `conformance/mod.rs` calls this cell "THE BOUNDED, DELIBERATE COST", and
+/// `crates/reify-core/src/ty.rs` files it under the same bounded-cost class as
+/// the `Vector` arm's dimensionless-direction tolerance — but both said it in
+/// prose only. This fixture makes it a measured, held fact.
 ///
 /// **Why it is needed.** The branch's most VISIBLE input — every corpus
 /// `point3(…)` arg — went away at 5344, leaving the `Point` case looking dead.
@@ -1097,20 +1097,24 @@ structure def Root {
 ///
 /// That "every other test stays green" is MEASURED, not assumed. Killing the
 /// `other => is_numeric_placeholder_leaf(other)` branch of the `Type::Point` arm
-/// in `conformance/mod.rs` (replacing it with `false`) fails THIS test and
-/// nothing else: 116/117 in this file still pass, all 84 in-module `conformance`
-/// probes pass, and the `no_example_emits_ctor_field_conformance_diagnostics`
-/// corpus gate stays green — because no `.ri` example passes a bare numeric
-/// literal to a `Point` param today. That is precisely why the branch needs a
-/// fixture rather than a comment.
+/// in `conformance/mod.rs` (replacing it with `false`) fails exactly this
+/// fixture and the two siblings named above —
+/// `dimensioned_scalar_at_point_param_stays_clean` and
+/// `scalar_returning_call_at_point_param_stays_clean`, one per surviving leg —
+/// while every other test in this file, every in-module `conformance` probe, and
+/// the `no_example_emits_ctor_field_conformance_diagnostics` corpus gate all
+/// stay green, because no `.ri` example passes a scalar to a `Point` param
+/// today. That is precisely why the branch needs these fixtures rather than a
+/// comment.
 ///
 /// **It is a RULING, not an oversight.** The tolerance is the deliberate
 /// `Type::Geometry`-class placeholder exclusion (GHR-γ): geometry constructors
 /// compile to a dimensionless-scalar placeholder and are excluded in the same
 /// way. Anyone tightening this arm must therefore treat this cell as a decision
 /// to be re-opened rather than a bug to be fixed — and must also account for
-/// `Type::ScalarParam(_)`, the branch's OTHER surviving input, which stands for
-/// a dimension that is not yet resolved rather than one that is absent.
+/// the branch's other legs: any `Type::Scalar { .. }`, and `Type::ScalarParam(_)`,
+/// which stands for a dimension that is not yet resolved rather than one that is
+/// absent.
 ///
 /// MEASURED at HEAD `2c449f5d6e`: CLEAN, zero compile errors.
 #[test]
