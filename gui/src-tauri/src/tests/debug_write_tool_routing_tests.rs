@@ -369,3 +369,53 @@ fn seam_named_only_in_a_comment_does_not_count() {
 fn compliant_fixtures_in_both_seam_shapes_are_clean() {
     assert_eq!(write_tool_bypasses(COMPLIANT_SOURCE), vec![]);
 }
+
+/// THE gate: the mechanized corpus sweep against the real `debug_server.rs`.
+#[test]
+fn every_debug_write_tool_routes_through_the_delta_choke_point() {
+    let source = debug_server_source();
+
+    // NON-VACUITY FLOOR — checked before the real assertion so a moved file
+    // or a parser that silently stopped matching reds instead of passing
+    // vacuously (same shape as `every_test_module_file_is_declared`'s floor).
+    // It also fail-closes the split debug_server.rs weighed at :1984-2000: if
+    // the write-tool cluster moves to its own module the arms vanish here,
+    // this fires, and someone must re-point the checker.
+    let arms = dispatch_arms(&strip_comments(&source));
+    assert!(
+        arms.len() >= 5,
+        "dispatch-arm scan of debug_server.rs found only {} `reify_*` tool(s) (expected >= 5) — \
+         the checker may be reading the wrong file, the arm parser may have stopped matching, \
+         or the write tools may have moved to another module",
+        arms.len()
+    );
+
+    let bypasses = write_tool_bypasses(&source);
+    if bypasses.is_empty() {
+        return;
+    }
+
+    let report = bypasses
+        .iter()
+        .map(|b| {
+            format!(
+                "  {} -> {} ({:?}) in gui/src-tauri/src/debug_server.rs",
+                b.tool, b.handler, b.kind
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if routing_check_bypassed() {
+        eprintln!("[REIFY_INV_GUI_2_BYPASS] DOWNGRADED to warn:\n{report}");
+        return;
+    }
+
+    panic!(
+        "INV-GUI-2: {} `reify_*` write tool(s) do not reach the delta baseline through one of \
+         the two shared `*_and_refresh_baseline` seams:\n{report}\n\n\
+         (set REIFY_INV_GUI_2_BYPASS=1 to downgrade this to a warning as a break-glass \
+         escape hatch)",
+        bypasses.len()
+    );
+}
