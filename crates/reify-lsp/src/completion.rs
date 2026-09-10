@@ -1277,11 +1277,13 @@ mod tests {
     /// diagnostic message from BOTH layers Contract C spans.
     /// `AnalysisContext` keeps `compiled` (COMPILE-time diagnostics — where
     /// box/cylinder/sphere/... are gated, per reify-compiler::builtin_signatures)
-    /// and `check_result` (EVAL-time diagnostics — the only place polygon's
-    /// variadic route and rounded_box/rounded_rect's lowered gate fire) as
-    /// separate fields, mirroring reify-lsp/src/diagnostics.rs's own
+    /// and `check_result` (the lightweight EVAL-time `check()` diagnostics)
+    /// as separate fields, mirroring reify-lsp/src/diagnostics.rs's own
     /// two-source merge for published diagnostics; a caller wanting the full
-    /// picture a user would see must combine them, same as here.
+    /// picture a user would see must combine them, same as here. Neither
+    /// field observes polygon's variadic route or rounded_box/rounded_rect's
+    /// lowered gate — see [`GateReach::BuildOnly`] for where those actually
+    /// fire and why that makes them structurally invisible here.
     fn eval_expr_diagnostics(expr: &str) -> Vec<String> {
         let source = format!("structure S {{\n    let v = {expr}\n}}");
         let ctx = AnalysisContext::new(&source, &test_uri());
@@ -1307,11 +1309,21 @@ mod tests {
         /// fires only from inside `reify-eval`'s realization loop
         /// (`engine_build.rs`), under `build()`/`realize_for_check()` — which
         /// `AnalysisContext::from_parsed` never calls (the "C2" lightweight
-        /// path). The requirement is REAL — `reify check` on
-        /// the bare form does print the hint via `merge_post_build_verdicts` —
-        /// but it is structurally invisible to reify-lsp, and reaching it here
-        /// would mean linking `reify-kernel-occt` into reify-lsp's dev-deps
-        /// purely to prove a doc string. So these rows assert (c) only.
+        /// path). It is structurally invisible to reify-lsp either way —
+        /// reaching it here would mean linking `reify-kernel-occt` into
+        /// reify-lsp's dev-deps purely to prove a doc string — so these rows
+        /// assert (c) only. The requirement itself is confirmed to varying
+        /// degrees per row, not by a comment here but by reify-eval's own
+        /// tests: `polygon`'s fully-bare form is pinned end-to-end, hint text
+        /// included, by `polygon_bare_vertex_drops_op_dimensioned_builds`
+        /// (crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs).
+        /// `rounded_box`'s MIXED-dimension form is pinned as dropped — though
+        /// under a different "unresolved" message, not the hint — by
+        /// `rounded_box_bare_corner_radius_reports_unresolved_not_non_finite`
+        /// in the same file; neither its nor `rounded_rect`'s fully-bare form
+        /// has a test pinning the hint text. That gap is filed as a
+        /// follow-up rather than fixed here — reify-eval is outside this
+        /// task's `reify-lsp`-only scope.
         BuildOnly,
     }
     use GateReach::{BuildOnly, CompileCheck};
