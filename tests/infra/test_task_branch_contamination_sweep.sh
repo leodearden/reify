@@ -19,6 +19,7 @@
 #   step-5  — arg-parsing / usage taxonomy
 #   step-7  — the batched task-store read (enumeration, declarations, tag
 #             scoping, engine interchangeability, degraded-store fallback)
+#   step-9  — per-branch git measurement and --task single mode
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -375,5 +376,117 @@ T6_PY_OUT="$(REIFY_TASK_BRANCH_SWEEP_SQLITE_BIN="" bash "$SCRIPT" \
     --audit --db "$T2_DB" --repo "$REPO" 2>"$T6_ERR_FILE")" || T6_PY_OUT="<failed rc=$?>"
 assert "T6: the python3 engine produces byte-identical output to the sqlite3 CLI" \
     bash -c '[ "$1" = "$2" ] && [ -n "$1" ]' _ "$T6_SQLITE_OUT" "$T6_PY_OUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 3 (step-9) — per-branch git measurement, --task single mode
+#
+# Every count is asserted against the SAME quantity computed independently in
+# the test with plain git, not against a number this suite hard-codes — a
+# hard-coded expectation would drift with any fixture edit and would not
+# actually pin the SUT's definition of `behind`.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 3: per-branch git measurement and --task mode ---"
+
+# _commit_main <subject> — one empty commit on main.
+_commit_main() { git -C "$REPO" commit -q --allow-empty -m "$1"; }
+
+# _git <args...> — read-only git in the fixture repo.
+_git() { git -C "$REPO" "$@"; }
+
+_mk_tasks_db
+_mk_repo
+G_DB="$DB"
+
+# main: initial + five more, so a branch can be cut a KNOWN distance back.
+for _n in 1 2 3 4 5; do _commit_main "main commit $_n"; done
+G_MAIN_TIP="$(_git rev-parse main)"
+G_MAIN_BACK3="$(_git rev-parse 'main~3')"
+
+_add_task 9301 in-progress '{"files":["x.rs"]}'
+_add_task 9302 pending     '{"files":["y.rs"]}'
+_add_task 9399 pending     '{"files":["z.rs"]}'
+
+# 9301 — cut at main's tip: behind must be 0.
+_branch_at "task/9301" "$G_MAIN_TIP"
+_commit_files "task/9301" "feat(9301): x" "x.rs"
+
+# 9302 — cut three commits back: behind must be exactly 3.
+_branch_at "task/9302" "$G_MAIN_BACK3"
+_commit_files "task/9302" "feat(9302): y" "y.rs"
+_commit_files "task/9302" "feat(9302): y again" "y.rs"
+
+# 9399 — a non-terminal task with NO branch ref at all.
+
+# (a) the row carries every measured field, each matching an independent
+#     computation over the same fixture.
+run_helper --task 9301 --db "$G_DB" --repo "$REPO"
+assert "G1: --task exits 0" test "$RC" -eq 0
+assert "G1: --task emits EXACTLY one row on stdout" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c .)" -eq 1 ]' _ "$OUT"
+assert "G1: --task emits no SWEEP: summary (that is fleet mode's line)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "^SWEEP:"' _ "$OUT"
+_assert_field "G1: task id"  9301 task   9301
+_assert_field "G1: status"   9301 status in-progress
+
+G1_MB="$(_git merge-base "task/9301" main)"
+_assert_field "G1: merge_base is the abbreviated git merge-base" \
+    9301 merge_base "$(_git rev-parse --short "$G1_MB")"
+_assert_field "G1: behind == rev-list --count <merge_base>..main" \
+    9301 behind "$(_git rev-list --count "$G1_MB..main")"
+_assert_field "G1: commits == rev-list --count main..<branch>" \
+    9301 commits "$(_git rev-list --count "main..task/9301")"
+_assert_field "G1: changed == count of diff --name-only <merge_base> <branch>" \
+    9301 changed "$(_git diff --name-only "$G1_MB" "task/9301" | grep -c .)"
+
+# (b) behind is asserted as an EXACT number in both directions, not merely
+#     "zero" versus "positive".
+_assert_field "G2: a branch cut at main's tip reports behind=0" 9301 behind 0
+
+run_helper --task 9302 --db "$G_DB" --repo "$REPO"
+assert "G2: --task 9302 exits 0" test "$RC" -eq 0
+_assert_field "G2: a branch cut three commits back reports behind=3" 9302 behind 3
+_assert_field "G2: ...and commits=2 (its own two)"                   9302 commits 2
+G2_MB="$(_git merge-base "task/9302" main)"
+_assert_field "G2: ...and behind still equals the independent count" \
+    9302 behind "$(_git rev-list --count "$G2_MB..main")"
+
+# (c) degradation — each exits 0, reports UNKNOWN, and warns on stderr.
+run_helper --task 9399 --db "$G_DB" --repo "$REPO"
+assert "G3[absent branch ref]: exits 0"        test "$RC" -eq 0
+assert "G3[absent branch ref]: warns on stderr" test -n "$ERR_OUT"
+_assert_field "G3[absent branch ref]: scope=UNKNOWN"  9399 scope UNKNOWN
+_assert_field "G3[absent branch ref]: signature='-'"  9399 signature -
+
+run_helper --task 9301 --db "$G_DB" --repo "$REPO" --main-ref no-such-ref
+assert "G3[unresolvable --main-ref]: exits 0"        test "$RC" -eq 0
+assert "G3[unresolvable --main-ref]: warns on stderr" test -n "$ERR_OUT"
+_assert_field "G3[unresolvable --main-ref]: scope=UNKNOWN" 9301 scope UNKNOWN
+_assert_field "G3[unresolvable --main-ref]: signature='-'" 9301 signature -
+
+G3_NOTGIT="$(mktemp -d "${TMPDIR:-/tmp}/task-branch-sweep-notgit-XXXXXX")"
+_TMPDIRS+=("$G3_NOTGIT")
+run_helper --task 9301 --db "$G_DB" --repo "$G3_NOTGIT"
+assert "G3[non-git --repo]: exits 0"        test "$RC" -eq 0
+assert "G3[non-git --repo]: warns on stderr" test -n "$ERR_OUT"
+_assert_field "G3[non-git --repo]: scope=UNKNOWN" 9301 scope UNKNOWN
+_assert_field "G3[non-git --repo]: signature='-'" 9301 signature -
+
+# (d) READ-ONLY on the repo. Captured before and after a run that touches every
+#     code path — both modes, both formats — and compared byte-for-byte.
+G4_REFS_BEFORE="$(_git for-each-ref --format='%(objectname) %(refname)')"
+G4_STATUS_BEFORE="$(_git status --porcelain --untracked-files=all)"
+G4_HEAD_BEFORE="$(_git rev-parse HEAD)"
+
+run_helper --task 9301 --db "$G_DB" --repo "$REPO"
+run_helper --audit --db "$G_DB" --repo "$REPO"
+run_helper --audit --db "$G_DB" --repo "$REPO" --format json
+
+assert "G4: every ref is byte-identical after the sweep" \
+    bash -c '[ "$1" = "$2" ]' _ "$G4_REFS_BEFORE" "$(_git for-each-ref --format='%(objectname) %(refname)')"
+assert "G4: git status --porcelain is byte-identical after the sweep" \
+    bash -c '[ "$1" = "$2" ]' _ "$G4_STATUS_BEFORE" "$(_git status --porcelain --untracked-files=all)"
+assert "G4: HEAD is unmoved after the sweep" \
+    bash -c '[ "$1" = "$2" ]' _ "$G4_HEAD_BEFORE" "$(_git rev-parse HEAD)"
 
 test_summary
