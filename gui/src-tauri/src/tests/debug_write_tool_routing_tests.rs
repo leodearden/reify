@@ -440,6 +440,53 @@ async fn handle_reify_update_source(
 }
 "#;
 
+/// A handler that looks perfectly compliant — it calls a
+/// `*_and_refresh_baseline` fn — where that fn never reaches `compute_delta`.
+/// Without this check the whole gate would rest on a NAME rather than on
+/// behaviour, and a seam whose name lies would green it falsely.
+const LYING_SEAM_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_export" => handle_reify_export(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let (format, output_path) = reify_export_params(&params)?;
+    let gs = reify_export_on_engine_and_refresh_baseline(
+        &state.engine,
+        &state.last_state,
+        &format,
+        &output_path,
+    )
+    .await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_export_envelope(&output_path))
+}
+
+pub async fn reify_export_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    format: &str,
+    output_path: &str,
+) -> Result<crate::types::GuiState, String> {
+    let format = format.to_owned();
+    let output_path = output_path.to_owned();
+    let _ = last_state;
+    run_on_engine(engine, move |s| {
+        let fmt = crate::commands::parse_export_format(&format)?;
+        s.export(fmt, std::path::Path::new(&output_path))?;
+        s.build_gui_state()
+    })
+    .await
+}
+"#;
+
 #[test]
 fn bypassing_fixture_is_flagged() {
     assert_eq!(
@@ -539,4 +586,35 @@ fn no_write_tool_handler_emits_privately() {
         .filter(|b| b.kind == BypassKind::PrivateEmit)
         .collect();
     assert_eq!(private_emits, vec![]);
+}
+
+#[test]
+fn every_refresh_baseline_seam_actually_refreshes() {
+    assert_eq!(
+        unrefreshing_seams(LYING_SEAM_SOURCE),
+        vec!["reify_export_on_engine_and_refresh_baseline".to_string()],
+    );
+
+    let source = debug_server_source();
+
+    // NON-VACUITY FLOOR — a renamed seam family or a broken fn-signature
+    // parser must red here, not pass by finding nothing to check. Seven seams
+    // exist today: write_on_engine_*, open_source_into_engine_* and
+    // set_fea_case_on_engine_* reach compute_delta directly, and the four
+    // reify_*_on_engine_* reach it via write_on_engine_and_refresh_baseline.
+    let seams = seam_fns(&strip_comments(&source));
+    assert!(
+        seams.len() >= 3,
+        "seam scan of debug_server.rs found only {} `*_and_refresh_baseline` fn(s) \
+         (expected >= 3) — the seam family may have been renamed, or the fn-signature \
+         parser may have stopped matching: {seams:?}",
+        seams.len()
+    );
+
+    assert_eq!(
+        unrefreshing_seams(&source),
+        Vec::<String>::new(),
+        "a fn named `*_and_refresh_baseline` never reaches `crate::diff::compute_delta`, \
+         so INV-GUI-2's routing check would be resting on that name rather than on behaviour"
+    );
 }
