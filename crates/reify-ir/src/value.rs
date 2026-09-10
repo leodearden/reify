@@ -2319,6 +2319,72 @@ impl Value {
         matches!(self, Value::Bool(_))
     }
 
+    /// The bare discriminant name for this value's variant (e.g. `"Scalar"`,
+    /// `"BoundingBox"`), with NO payload interpolated.
+    ///
+    /// This is the single source of truth for `Value`'s variant-name table:
+    /// `ri_literal`'s `.ri`-serializer rejection text and
+    /// `reify_constraints::value_kind_label` both delegate here rather than
+    /// spelling out their own copy of this match (task #6466).
+    ///
+    /// Deliberately a fixed `&'static str` per variant rather than
+    /// `{value:?}`: a `SampledField` or `Matrix` payload could be enormous,
+    /// and this string reaches user-facing surfaces — an MCP rejection error
+    /// from the serializer, a constraint diagnostic from the checker.
+    ///
+    /// **EXHAUSTIVE BY CONSTRUCTION — do not add a `_` arm.** A catch-all is
+    /// not a tidiness question here: it would collapse to one useless name
+    /// exactly the values a caller is most likely to be holding (a
+    /// `Direction`, a `Frame`, a `Range`), and would let a newly added
+    /// variant degrade silently instead of failing to compile. Listing every
+    /// variant makes the compiler the guard — the same shape
+    /// [`Value::format_hover`] already uses.
+    ///
+    /// That compile error fires **here only**. A delegating call site that
+    /// carries its own catch-all — `value_kind_label`'s
+    /// `other => other.kind_name()` — silently inherits a new variant's bare
+    /// name instead. So when a new variant carries a payload worth
+    /// interpolating (the way that function enriches `Scalar<{dimension}>`
+    /// and `Enum<{type_name}>`), review those call sites by hand: nothing
+    /// will prompt you. The name table itself is pinned variant-by-variant
+    /// by `kind_name_is_pinned_for_every_variant` in this file's tests.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Value::Bool(_) => "Bool",
+            Value::Int(_) => "Int",
+            Value::Real(_) => "Real",
+            Value::String(_) => "String",
+            Value::Scalar { .. } => "Scalar",
+            Value::Enum { .. } => "Enum",
+            Value::List(_) => "List",
+            Value::Set(_) => "Set",
+            Value::Map(_) => "Map",
+            Value::Option(_) => "Option",
+            Value::Field { .. } => "Field",
+            Value::Lambda { .. } => "Lambda",
+            Value::Tensor(_) => "Tensor",
+            Value::Point(_) => "Point",
+            Value::Vector(_) => "Vector",
+            Value::Complex { .. } => "Complex",
+            Value::Orientation { .. } => "Orientation",
+            Value::Frame { .. } => "Frame",
+            Value::Transform { .. } => "Transform",
+            Value::Plane { .. } => "Plane",
+            Value::Axis { .. } => "Axis",
+            Value::Direction { .. } => "Direction",
+            Value::BoundingBox { .. } => "BoundingBox",
+            Value::Range { .. } => "Range",
+            Value::Matrix(_) => "Matrix",
+            Value::SampledField(_) => "SampledField",
+            Value::StructureInstance(_) => "StructureInstance",
+            Value::GeometryHandle { .. } => "GeometryHandle",
+            Value::AffineMap { .. } => "AffineMap",
+            Value::Selector(_) => "Selector",
+            Value::Feature(_) => "Feature",
+            Value::Undef => "Undef",
+        }
+    }
+
     /// Format this value for user-friendly display (e.g., hover tooltips).
     ///
     /// Unlike the [`Display`](std::fmt::Display) impl which shows raw
@@ -10383,6 +10449,190 @@ mod tests {
                 panic!("content_hash collision: Value::{name} collides with {previous_name}");
             }
         }
+    }
+
+    // ── kind_name() name-table pin (task #6466) ────────────────────────────
+
+    /// The expected [`Value::kind_name`] string for `v`, spelled out
+    /// independently of the production table.
+    ///
+    /// Deliberately NOT `v.kind_name()` — a delegating "expectation" would
+    /// assert nothing. Exhaustive with no `_` arm, so a newly added `Value`
+    /// variant fails to compile here as well as in `kind_name` itself.
+    fn expected_kind_name(v: &Value) -> &'static str {
+        match v {
+            Value::Bool(_) => "Bool",
+            Value::Int(_) => "Int",
+            Value::Real(_) => "Real",
+            Value::String(_) => "String",
+            Value::Scalar { .. } => "Scalar",
+            Value::Enum { .. } => "Enum",
+            Value::List(_) => "List",
+            Value::Set(_) => "Set",
+            Value::Map(_) => "Map",
+            Value::Option(_) => "Option",
+            Value::Field { .. } => "Field",
+            Value::Lambda { .. } => "Lambda",
+            Value::Tensor(_) => "Tensor",
+            Value::Point(_) => "Point",
+            Value::Vector(_) => "Vector",
+            Value::Complex { .. } => "Complex",
+            Value::Orientation { .. } => "Orientation",
+            Value::Frame { .. } => "Frame",
+            Value::Transform { .. } => "Transform",
+            Value::Plane { .. } => "Plane",
+            Value::Axis { .. } => "Axis",
+            Value::Direction { .. } => "Direction",
+            Value::BoundingBox { .. } => "BoundingBox",
+            Value::Range { .. } => "Range",
+            Value::Matrix(_) => "Matrix",
+            Value::SampledField(_) => "SampledField",
+            Value::StructureInstance(_) => "StructureInstance",
+            Value::GeometryHandle { .. } => "GeometryHandle",
+            Value::AffineMap { .. } => "AffineMap",
+            Value::Selector(_) => "Selector",
+            Value::Feature(_) => "Feature",
+            Value::Undef => "Undef",
+        }
+    }
+
+    /// Every `Value` variant's `kind_name()` string, pinned one variant at a
+    /// time against an independently spelled expectation.
+    ///
+    /// `kind_name` is the single source of truth for the variant-name table
+    /// that `ri_literal`'s `.ri`-serializer rejection text and
+    /// `reify_constraints::value_kind_label` both delegate to (task #6466),
+    /// and neither consumer pins the whole thing: the serializer's test covers
+    /// only the variants it rejects, and `value_kind_label` ends in an
+    /// `other => other.kind_name()` catch-all. Without this test a rename of
+    /// any arm would reach a user-facing diagnostic with nothing red.
+    ///
+    /// Adding a `Value` variant breaks [`expected_kind_name`] to compile; the
+    /// coverage assertion at the end is what then forces a representative
+    /// into `variants` rather than leaving the new arm unexercised.
+    #[test]
+    fn kind_name_is_pinned_for_every_variant() {
+        let dim = DimensionVector::LENGTH;
+        let variants: Vec<Value> = vec![
+            Value::Bool(true),
+            Value::Int(42),
+            Value::Real(1.0),
+            Value::String("x".into()),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: dim,
+            },
+            Value::Enum {
+                type_name: "T".into(),
+                variant: "V".into(),
+                payload: vec![],
+            },
+            Value::List(vec![]),
+            Value::Set(BTreeSet::new()),
+            Value::Map(BTreeMap::new()),
+            Value::Option(None),
+            Value::Field {
+                domain_type: reify_core::ty::Type::dimensionless_scalar(),
+                codomain_type: reify_core::ty::Type::dimensionless_scalar(),
+                source: FieldSourceKind::Analytical,
+                lambda: Arc::new(Value::Undef),
+            },
+            Value::Lambda {
+                params: vec![],
+                body: Box::new(CompiledExpr {
+                    kind: crate::expr::CompiledExprKind::Literal(Value::Int(0)),
+                    result_type: reify_core::ty::Type::dimensionless_scalar(),
+                    content_hash: ContentHash::of(&[0]),
+                }),
+                captures: ValueMap::new(),
+            },
+            Value::Tensor(vec![]),
+            Value::Point(vec![]),
+            Value::Vector(vec![]),
+            Value::Complex {
+                re: 0.0,
+                im: 0.0,
+                dimension: dim,
+            },
+            orient(1.0, 0.0, 0.0, 0.0),
+            Value::Frame {
+                origin: Box::new(Value::Point(vec![])),
+                basis: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
+            },
+            Value::Transform {
+                rotation: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
+                translation: Box::new(Value::Vector(vec![])),
+            },
+            Value::Plane {
+                origin: Box::new(Value::Point(vec![])),
+                normal: Box::new(Value::Vector(vec![])),
+            },
+            Value::Axis {
+                origin: Box::new(Value::Point(vec![])),
+                direction: Box::new(Value::Vector(vec![])),
+            },
+            Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            Value::BoundingBox {
+                min: Box::new(Value::Point(vec![])),
+                max: Box::new(Value::Point(vec![])),
+            },
+            Value::range(None, None, false, false),
+            Value::Matrix(vec![]),
+            Value::SampledField(sample_field_1d_fixture()),
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: crate::StructureTypeId(0),
+                type_name: "S".into(),
+                version: 1,
+                fields: crate::PersistentMap::new(),
+            })),
+            Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
+            },
+            make_affine_identity(),
+            Value::Selector(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    GeometryHandleRef {
+                        realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
+                        upstream_values_hash: [0u8; 32],
+                        kernel_handle: None,
+                    },
+                    LeafQuery::ByNormal {
+                        dir: [0.0, 0.0, 1.0],
+                        tol_rad: 0.01,
+                    },
+                )
+                .expect("Face + ByNormal is a well-formed leaf selector"),
+            ),
+            Value::Feature(FeatureId::realization("Foo", 3)),
+            Value::Undef,
+        ];
+
+        let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+        for v in &variants {
+            let expected = expected_kind_name(v);
+            assert_eq!(
+                v.kind_name(),
+                expected,
+                "Value::kind_name drifted for a {expected} value"
+            );
+            assert!(
+                seen.insert(expected),
+                "two representatives for {expected} — one per variant, please"
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            32,
+            "every Value variant needs exactly one representative above; \
+             when you add a variant, add one here and bump this count"
+        );
     }
 
     // ── try_infer_type() tests: None for genuinely ambiguous cases ─────────
