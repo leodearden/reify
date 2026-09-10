@@ -119,12 +119,77 @@ fn identifiers(text: &str) -> impl Iterator<Item = &str> {
         .filter(|s| !s.is_empty())
 }
 
+/// Blanks every `//`/`///`/`//!` line comment and `/* … */` block comment,
+/// replacing each comment span with an equal number of ASCII spaces so byte
+/// offsets, line count and line lengths all survive unchanged — `fn_body`'s
+/// column-0 `}` sentinel therefore still means the same thing.
+///
+/// Stripping must be genuinely correct rather than merely conservative,
+/// because the two checks it feeds fail in OPPOSITE directions: leaving a
+/// comment in place false-GREENS the seam check (prose naming a seam reads as
+/// routing), while blanking too much false-GREENS the private-emit check.
+///
+/// It is a scanner, not a Rust lexer: it tracks `"` string literals — the
+/// only literal in this corpus that can contain a `//` (`"http://…"`) — with
+/// `\` escapes, across line boundaries. Raw strings (`r"…"`, `r#"…"#`) and
+/// the pathological `'"'` char literal, neither of which occurs in
+/// `debug_server.rs`, are not special-cased.
+fn strip_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut in_string = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        if in_string {
+            match rest[0] {
+                b'\\' => {
+                    // Copy the backslash and the char it escapes together, so
+                    // an escaped quote (`\"`) cannot close the string.
+                    let width = 1 + source[i + 1..].chars().next().map_or(0, char::len_utf8);
+                    out.push_str(&source[i..i + width]);
+                    i += width;
+                    continue;
+                }
+                b'"' => in_string = false,
+                _ => {}
+            }
+        } else if rest.starts_with(b"//") {
+            let end = source[i..].find('\n').map_or(source.len(), |n| i + n);
+            out.push_str(&" ".repeat(end - i));
+            i = end;
+            continue;
+        } else if rest.starts_with(b"/*") {
+            let end = source[i..]
+                .find("*/")
+                .map_or(source.len(), |n| i + n + "*/".len());
+            for c in source[i..end].chars() {
+                out.push(if c == '\n' { '\n' } else { ' ' });
+                for _ in 1..c.len_utf8() {
+                    out.push(' ');
+                }
+            }
+            i = end;
+            continue;
+        } else if rest[0] == b'"' {
+            in_string = true;
+        }
+        let width = source[i..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&source[i..i + width]);
+        i += width;
+    }
+    out
+}
+
 /// Every INV-GUI-2 violation in `source`, one per (write tool, defect).
 fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
-    dispatch_arms(source)
+    // Stripped ONCE here, at the single entry point, so every helper below
+    // sees code-only text and none can independently forget to.
+    let code = strip_comments(source);
+    dispatch_arms(&code)
         .into_iter()
         .filter(|(_, handler)| {
-            !fn_body(source, handler).is_some_and(|body| names_a_seam(body, handler))
+            !fn_body(&code, handler).is_some_and(|body| names_a_seam(body, handler))
         })
         .map(|(tool, handler)| Bypass {
             tool,
