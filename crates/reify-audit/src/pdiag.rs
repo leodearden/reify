@@ -38,31 +38,34 @@
 //!
 //! ## Why a bounded line window and not brace/paren matching
 //!
-//! Measured against the real corpus: only ~16% of sites fit on one line
-//! (multi-line `format!` wrapping is the norm), and both mechanics were run
-//! and diffed. A strict paren-depth chain scan and a 15-line window disagree
-//! on 7 of 730 code-less sites — and the strict scan is *wrong* on two of
-//! them: the `if {...} else {...}.with_code(code)` severity-dispatch shape
-//! closes its constructor paren before the chain resumes, so paren-matching
-//! declares a coded site code-less (a false RED). The remaining five are
-//! `#[cfg(test)]` bodies this detector excludes anyway.
+//! Most sites do NOT fit on one line — multi-line `format!` wrapping is the
+//! norm — so both mechanics were run over the real corpus and diffed. The
+//! decisive result: a strict paren-depth chain scan is *wrong* on the
+//! `if {...} else {...}.with_code(code)` severity-dispatch shape, which closes
+//! its constructor paren before the chain resumes, so paren-matching declares
+//! a coded site code-less (a false RED). Every other disagreement between the
+//! two sits in a `#[cfg(test)]` body this detector excludes anyway. The counts
+//! behind that comparison are a dated snapshot in
+//! `docs/notes/diagnostic-severity-policy.md` appendix A.
 //!
 //! ## Accepted residual imprecision
 //!
-//! Every entry below is deliberate, and all but the first are *permissive* —
-//! they under-count, so they can weaken the gate but not manufacture a RED.
-//! The leading bullet is the honest exception: a quoted anchor IS counted, so
-//! a false RED is possible there in principle. It is accepted rather than
-//! lexed away because none exists in the swept corpus and one `pdiag:allow`
-//! clears it. (The other false-RED route — a nested `/* /* */ */` region
-//! reading as live code — was a real defect and is now closed by
-//! [`comment_mask`]'s depth counter.)
+//! Every entry below is deliberate, and all but TWO are *permissive* — they
+//! under-count, so they can weaken the gate but not manufacture a RED. The two
+//! honest exceptions are the first bullet (a quoted anchor IS counted) and the
+//! tail of the comment-mask bullet (a string-literal `/*` can mask a site's own
+//! `.with_code(` line, which [`code_in_window`] then never sees). Both are
+//! accepted rather than lexed away because neither occurs in the swept corpus
+//! and one `pdiag:allow` clears either. (A third false-RED route — a nested
+//! `/* /* */ */` region reading as live code — was a real defect and is now
+//! closed by [`comment_mask`]'s depth counter.)
 //!
 //! - An anchor token inside a string literal on a code line is counted as a
 //!   site (none observed in the corpus; `pdiag:allow` escapes it). This is the
-//!   one entry here that errs toward a false RED rather than away from it.
-//! - An unrelated `.with_code(` inside a site's window can mark it coded —
-//!   7/730 sites repo-wide, all in `#[cfg(test)]` code this detector excludes.
+//!   first of the two entries here that err toward a false RED.
+//! - An unrelated `.with_code(` inside a site's window can mark it coded — a
+//!   handful of sites repo-wide, all of them in `#[cfg(test)]` code this
+//!   detector excludes (appendix A).
 //!   "Permissive" understates it: unlike the other entries here, this one can
 //!   also mask a BRAND-NEW code-less site placed above an existing coded one,
 //!   which is a hole in the hard gate rather than mere imprecision. It is the
@@ -73,22 +76,30 @@
 //!   non-whitespace token, so nothing mid-line is ever stripped. That is
 //!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
 //!   literal (`"a//b"`) swallow a real `.with_code(` and produce a false RED.
-//!   The cost is that a `//` or `/*` inside a string literal can still nudge the
-//!   block-region state — which only ever masks MORE lines, i.e. under-counts
-//!   (a string-literal `/*` opens a region rustc would not, and now needs a
-//!   `*/` to pop it; a string-literal `*/` at depth zero is simply ignored).
+//!   The cost is that a `//` or `/*` inside a string literal can still nudge
+//!   the block-region state (a string-literal `/*` opens a region rustc would
+//!   not and then needs a `*/` to pop it; a stray `*/` at depth zero is simply
+//!   ignored). Masking MORE lines is permissive in every direction but ONE:
+//!   [`code_in_window`] SKIPS masked lines, so a spurious region opened on an
+//!   ANCHOR line that swallows the `.with_code(` below it censuses a genuinely
+//!   coded site as code-less — `Diagnostic::error(format!("p {}", "/*"))` with
+//!   its `.with_code(c);` on the next line. That is this list's second
+//!   false-RED route; latent rather than live (no swept file ends at non-zero
+//!   depth, and no masked line in the corpus carries a `.with_code(`), and
+//!   `pdiag:allow` clears it.
 //! - A `.with_code(` sitting in a trailing `//` comment on the anchor line
 //!   itself marks the site coded. Permissive, and vanishingly rare.
 //! - The `* ` block-comment-continuation form also matches a WRAPPED
 //!   ARITHMETIC continuation (`let x = a\n    * b\n    + c;`), so such a line
-//!   is masked as comment-only. 19 real instances exist in the swept corpus
-//!   today (`shell_assembly.rs`, `modal/transient.rs`, …), none of them within
-//!   30 lines below an anchor, so the live census is unaffected — but the
-//!   window budget is "15 non-comment lines" only up to this, not strictly 15
-//!   lines of CODE. Permissive in every direction: a masked line consumes no
-//!   window budget (widening the code probe's reach), cannot terminate an
-//!   escape scan, and hides any anchor of its own from the census. Re-measure
-//!   this before re-measuring [`PDIAG_CODE_WINDOW`].
+//!   is masked as comment-only, so the window budget counts "non-comment
+//!   lines" as this mask defines them and not strictly 15 lines of CODE.
+//!   Permissive in every direction except the one the comment-mask bullet
+//!   names: a masked line consumes no window budget (widening the code probe's
+//!   reach), cannot terminate an escape scan, and hides any anchor of its own
+//!   from the census — but it hides its own `.with_code(` too. Corpus
+//!   incidence is a dated snapshot (`docs/notes/diagnostic-severity-policy.md`
+//!   appendix A) rather than a claim about the current tree; re-measure it
+//!   before re-measuring [`PDIAG_CODE_WINDOW`].
 //! - Brace counting for the `#[cfg(test)]` skip is literal-unaware: an
 //!   unbalanced `{` or `}` inside a string literal or a trailing comment can
 //!   drift the depth counter. The blast radius is bounded to where a skip
@@ -188,46 +199,27 @@ const CODE_PROBE: &str = ".with_code(";
 /// How many NON-COMMENT lines below a constructor are searched for its
 /// `.with_code(`.
 ///
-/// Measured against the real corpus: the widest constructor -> `.with_code(`
-/// gap the scanner resolves to its OWN attachment is 15 non-comment lines —
-/// `crates/reify-compiler/src/expr.rs`'s `let base_diag = Diagnostic::error(…)`
-/// / `base_diag.with_code(DiagnosticCode::SelectorKindMismatch)` pair — so 15
-/// covers 100% of observed offsets with ZERO headroom. Re-measure before
-/// trusting that figure: it was 13 when this detector was written and the
-/// corpus has since closed the gap. Counting non-comment lines
-/// (rather than physical ones) means an interleaved doc block cannot push a
-/// real code attachment out of reach.
+/// Two facts fix the value, both established by measurement rather than
+/// judgement, and neither of them a claim about the tree as it stands today —
+/// the numbers behind them are a dated snapshot in
+/// `docs/notes/diagnostic-severity-policy.md` appendix A, which also carries
+/// the re-measurement recipe:
 ///
-/// # Widening is NOT free — measured, not assumed
+/// 1. 15 is the WIDEST constructor -> `.with_code(` gap in the corpus that
+///    resolves to the site's OWN attachment, so it covers every observed offset
+///    with ZERO headroom. That bound moves: it was 13 when this detector was
+///    written. Counting non-comment lines rather than physical ones means an
+///    interleaved doc block cannot push a real attachment out of reach.
+/// 2. Widening is NOT free. Past 15 the extra reach stops finding own-chain
+///    attachments and starts letting an UNRELATED neighbouring constructor's
+///    `.with_code(` mark a site coded — the imprecision the module header
+///    enumerates — so a wider window silently RETIRES real code-less sites from
+///    the hard gate, whole files included.
 ///
-/// The tempting reading of "widening only ever makes the detector more
-/// permissive" is that headroom is free. It is not. Re-measured over the whole
-/// swept corpus by regenerating the baseline at each window (the census the
-/// generator prints, `<files> / <code-less sites>`):
-///
-/// | window | 13  | 14  | **15** | 25  | 30  |
-/// |--------|-----|-----|--------|-----|-----|
-/// | files  | 66  | 66  | **66** | 65  | 65  |
-/// | sites  | 640 | 640 | **639**| 627 | 622 |
-///
-/// Two readings, and the second is the load-bearing one:
-///
-/// 1. The 14 -> 15 step moves exactly one site (the `expr.rs` pair above), so
-///    15 really is the widest OWN-chain offset in the tree — not an estimate.
-/// 2. The 15 -> 25 step drops **12 further sites and a whole file**, and every
-///    one inspected is the unrelated-`.with_code(`-in-window imprecision the
-///    module header enumerates, NOT a genuine own-chain attachment. The
-///    cleanest specimen is `crates/reify-compiler/src/diagnostics.rs`, whose
-///    only site — `lossy_real_warning`'s `Diagnostic::warning(…)`, which ends
-///    its own chain at `.with_label(…)` — is falsely coded at window 25 by the
-///    `.with_code(` belonging to `dup_member_key_error`, a different function
-///    23 lines below. The file loses its baseline row entirely.
-///
-/// So the window trades hard-gate COVERAGE for headroom: 15 is the largest
-/// value that still counts every one of those 12 sites. Widening to buy slack
-/// for a hypothetical 16-line chain would silently retire 12 real ones. The
-/// residual false-RED risk in the other direction is handled where it belongs
-/// — `docs/notes/diagnostic-severity-policy.md` §3(a) names the bound and its
+/// So the window trades hard-gate COVERAGE for headroom, and 15 is the largest
+/// value that retires nothing. The residual false-RED risk in the other
+/// direction is handled where it belongs —
+/// `docs/notes/diagnostic-severity-policy.md` §3(a) names the bound and its
 /// remedies, so an author hit by it is not left guessing.
 ///
 /// Closing the leak properly (bounding the code probe below, as
@@ -256,12 +248,18 @@ fn line_escaped(line: &str) -> bool {
 ///
 /// Line-granular and keyed on the line's first non-whitespace token, which is
 /// what keeps it safe without a lexer: nothing mid-line is ever stripped, so a
-/// `//` or `/*` inside a string literal can never truncate a real
-/// `.with_code(` and manufacture a false RED. A line is comment-only when it
-/// begins inside an unclosed `/* ... */` region, or its first non-whitespace
-/// token is `//` (covering `///` and `//!`), `/*`, or `* ` (a block-comment
-/// continuation — the trailing space keeps `*out = ...` deref expressions
-/// live).
+/// `//` or `/*` inside a string literal can never TRUNCATE a real
+/// `.with_code(`. A line is comment-only when it begins inside an unclosed
+/// `/* ... */` region, or its first non-whitespace token is `//` (covering
+/// `///` and `//!`), `/*`, or `* ` (a block-comment continuation — the
+/// trailing space keeps `*out = ...` deref expressions live).
+///
+/// Over-masking is NOT unconditionally safe, though, because
+/// [`code_in_window`] skips masked lines outright: a line this mask wrongly
+/// marks as comment hides its own `.with_code(` from the code probe, so a
+/// coded site is censused as code-less. A string-literal `/*` on an anchor
+/// line reaches exactly that (module header, comment-mask bullet); it is
+/// latent in the corpus today and `pdiag:allow` clears it.
 ///
 /// The trailing space does NOT separate a block-comment continuation from a
 /// WRAPPED MULTIPLICATION (`let x = a\n    * b\n    + c;`), which is masked
@@ -272,11 +270,11 @@ fn line_escaped(line: &str) -> bool {
 /// The region state is a DEPTH COUNTER, not a boolean, because Rust block
 /// comments nest: in `/* outer /* inner */ still outer */` the first `*/`
 /// closes only the inner comment. A boolean cleared the region there and
-/// declared the remaining outer-comment lines live code, which is the one way
-/// this mask could manufacture a FALSE RED — commenting out a diagnostic-
-/// emitting block that already contains a `/* … */` note would census the
-/// commented-out constructor as a real code-less site, a hard-gate High on a
-/// new file. Depth-counting matches rustc's own left-to-right pairing.
+/// declared the remaining outer-comment lines live code — the UNDER-masking
+/// false RED, and a real defect until this counter closed it: commenting out a
+/// diagnostic-emitting block that already contains a `/* … */` note censused
+/// the commented-out constructor as a real code-less site, a hard-gate High on
+/// a new file. Depth-counting matches rustc's own left-to-right pairing.
 /// [`crate::pdoccover`] tracks the same depth for its (quote-aware, mid-line-
 /// stripping) purposes; sharing one tracker would mean exporting it across
 /// detectors and inheriting a stripping policy this mask deliberately refuses,
@@ -537,8 +535,9 @@ fn escaped_anchors(line: &str, anchors: &[usize], window: impl FnOnce() -> bool)
 /// Both orderings inside the loop are load-bearing. The anchor check runs
 /// BEFORE [`line_escaped`], so a line carrying both a later anchor and its own
 /// trailing escape terminates the scan instead of leaking that escape upwards
-/// — the lower site's escape is [`scan_file`]'s separate `line_escaped(line)`
-/// test. And the `!*is_comment` guard mirrors `scan_file`'s own anchoring rule,
+/// — that lower site's own escape is resolved positionally by
+/// [`escaped_anchors`], on the line itself. And the `!*is_comment` guard
+/// mirrors [`scan_file`]'s own anchoring rule,
 /// so an anchor token merely QUOTED in a comment cannot truncate a legitimate
 /// escape's reach (this module's header quotes `Diagnostic::error(` a dozen
 /// times).
@@ -763,7 +762,8 @@ pub const BASELINE_HEADER: &str = "\
 # Regenerating is NOT a remediation — it just re-blesses the new sites. If your
 # diff went RED, the three real fixes (attach a DiagnosticCode / take the
 # reviewed `// pdiag:allow — reason` opt-out / fix the sites and shrink the row
-# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3.
+# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3. The
+# one exception is a pure MOVE or RENAME, where regenerating IS the fix — §3(d).
 #
 # Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
 ";
@@ -930,9 +930,12 @@ impl RatchetVerdict {
         }
     }
 
-    /// Render to a [`Finding`]. High summaries carry BOTH remediations (attach
-    /// a code, or take the reviewed opt-out) and Medium summaries the exact
-    /// regeneration command, so no finding is a dead end.
+    /// Render to a [`Finding`]. High summaries carry both site remediations
+    /// (attach a code, or take the reviewed opt-out) and Medium summaries the
+    /// exact regeneration command, so no finding is a dead end. `NewFile` adds
+    /// the third: a moved or renamed file has no site to edit — every one of
+    /// its sites predates the move — and regeneration is the sanctioned fix
+    /// there, which is the one case where a High is answered that way.
     ///
     /// `lines` is the census's list of code-less site lines for this verdict's
     /// path ([`Census::sites`]), spelled into the two High summaries by
@@ -953,7 +956,9 @@ impl RatchetVerdict {
             Self::NewFile { path, live } => format!(
                 "pdiag-ratchet: {path} is new to the baseline and has {live} code-less \
                  Diagnostic::error/warning site(s){at} — attach a DiagnosticCode (see \
-                 {SEVERITY_POLICY_DOC}) or add a trailing `// {PDIAG_ALLOW} — reason`"
+                 {SEVERITY_POLICY_DOC}) or add a trailing `// {PDIAG_ALLOW} — reason`; \
+                 if this file was MOVED or RENAMED, regenerate instead \
+                 ({SEVERITY_POLICY_DOC} §3(d))"
             ),
             Self::Stale { path, live, baseline } => format!(
                 "pdiag-baseline-stale: {path} is down to {live} code-less site(s) from a baseline \
@@ -2023,8 +2028,9 @@ mod tests {
         // must keep working, or the fix has over-reached and every reviewed
         // multi-line escape in the tree turns RED.
 
-        // (i) Trailing the anchor line itself. This path is `scan_file`'s own
-        //     `line_escaped(line)` test — it never consults `escape_in_window`.
+        // (i) Trailing the anchor line itself. `escaped_anchors` resolves this
+        //     positionally on the line, so the lazy `escape_in_window` probe is
+        //     never even called.
         let src = "    let d = Diagnostic::error(m); // pdiag:allow — reviewed";
         assert_eq!(sites(src), none());
 

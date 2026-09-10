@@ -11,7 +11,8 @@
 # Regenerating is NOT a remediation — it just re-blesses the new sites. If your
 # diff went RED, the three real fixes (attach a DiagnosticCode / take the
 # reviewed `// pdiag:allow — reason` opt-out / fix the sites and shrink the row
-# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3.
+# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3. The
+# one exception is a pure MOVE or RENAME, where regenerating IS the fix — §3(d).
 #
 # Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
 crates/reify-compiler/src/annotations.rs 6

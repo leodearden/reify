@@ -148,7 +148,8 @@ The detector compares *counts*, so it cannot know which constructor you added:
 intersect that list with your own diff. The Medium advisories carry no lines,
 because their remedy is regeneration rather than an edit at a site.
 
-Three legitimate remedies, in preference order:
+Three legitimate remedies for a site you are responsible for, in preference
+order — plus (d), for a file that merely moved:
 
 ### (a) Attach a code — the default
 
@@ -161,15 +162,18 @@ window covers 100% of the sites in the tree today, but with no headroom — the
 widest landed constructor-to-`.with_code(` gap is exactly 15. So a genuinely
 coded diagnostic whose attachment lands 16+ non-comment lines below its
 constructor is counted code-less and turns your diff RED even though you did
-remedy (a). This is the one direction in which the detector is not permissive.
+remedy (a). It is the main direction in which the detector is not permissive;
+`crates/reify-audit/src/pdiag.rs`'s residual-imprecision list names the only
+other one, a rarer comment-masking case that takes the same escape.
 If it happens: move the `.with_code(` up the chain (nearly always possible —
 it is a builder method, and ordering among `.with_*` calls is free), or take
 remedy (b) with that as the stated reason. The window is not widened to buy
-headroom because widening is not free: measured over this corpus, going from
-15 to 25 drops 12 real code-less sites out of the census, because a wider
-window lets an *unrelated* neighbouring constructor's `.with_code(` mark this
-site coded. `PDIAG_CODE_WINDOW` in `crates/reify-audit/src/pdiag.rs` is the
-canonical value; that module header carries the measurement.
+headroom because widening is not free: past 15, the extra reach stops finding
+own-chain attachments and starts letting an *unrelated* neighbouring
+constructor's `.with_code(` mark this site coded, which silently retires real
+code-less sites from the gate. `PDIAG_CODE_WINDOW` in
+`crates/reify-audit/src/pdiag.rs` is the canonical value; appendix A below
+carries the measurements behind it.
 
 ### (b) Escape the site — only when code-less is deliberate
 
@@ -210,10 +214,39 @@ cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
 The generator runs the detector's own scan, so it is the single source of truth
 for site counts. Never hand-edit a count, and never re-derive counts in shell.
 
+### (d) You moved or renamed a file — regenerate
+
+A pure move, rename or module split is the one High finding that (a)/(b)/(c)
+do not answer. The ratchet keys on PATH, so relocating a baselined file
+produces two findings at once:
+
+- a **High `pdiag-ratchet`** at the NEW path — sites, no row, so it reads as
+  "new to the baseline" — carrying every pre-existing site the file has always
+  had. Moving `crates/reify-eval/src/engine_build.rs` reports 48 of them;
+  `geometry_ops.rs`, 138.
+- a **Medium `pdiag-baseline-stale`** orphan-row advisory at the OLD path.
+
+Attaching codes to sites you did not write is not the fix, and neither is
+opting all of them out one by one. Regenerate, **in the same commit as the
+move**:
+
+```
+cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
+  > crates/reify-audit/pdiag-baseline.txt
+```
+
+This is the exception to "regenerating is NOT a remediation", and it is a
+narrow one: nothing is re-blessed, because the same sites were already blessed
+under the old path. **The review check is that the two counts match** — the new
+row's count equals the count the orphaned row allowed. If the new count is
+higher, the diff added code-less sites on top of the move and those go back to
+(a)/(b). When that is hard to see in review, split the move and the edits into
+separate commits.
+
 ### When the finding is not about your diff
 
 Two High findings mean the ratchet could not run at all, rather than that you
-added a site. Neither is remedied by (a)/(b)/(c):
+added a site. Neither is remedied by (a)/(b)/(c)/(d):
 
 - **`pdiag-baseline-unreadable`** — the manifest does not parse. The summary
   names the offending line. Regenerate as in (c); never hand-repair a row.
@@ -242,6 +275,79 @@ with a `tests/` segment or a `tests.rs` / `*_tests.rs` file name, and minus
 `#[cfg(test)]` module bodies. INV-SF-6 governs *emitted* diagnostics; test
 scaffolding that fabricates a `Diagnostic` to assert on is out of scope by
 construction, not by exemption.
+
+---
+
+## Appendix A — corpus measurements behind the detector (snapshot)
+
+**Snapshot, not a claim about the current tree.** Everything below was measured
+once, on the tree as it stood when PDIAG was built (task #5405, 2026-08/09).
+These figures justify design choices that are now fixed in code; nothing
+re-derives them, and nothing should be taken as describing today's corpus. The
+committed `crates/reify-audit/pdiag-baseline.txt` is the only authority on
+current counts. Re-measure before citing any of it in a new argument.
+
+### Why a bounded line window rather than paren matching
+
+Only ~16% of construction sites fit on one line — multi-line `format!` wrapping
+is the norm — so a chain-matching mechanic was a real candidate. Both were run
+over the whole corpus and diffed: a strict paren-depth chain scan and the
+15-line window disagreed on **7 of 730** code-less sites. Two of the seven were
+the strict scan being *wrong* (the `if {…} else {…}.with_code(code)`
+severity-dispatch shape closes its constructor paren before the chain resumes,
+so paren matching declares a coded site code-less — a false RED); the other
+five sat in `#[cfg(test)]` bodies the detector excludes anyway.
+
+### Why `PDIAG_CODE_WINDOW` is 15
+
+Measured by regenerating the baseline at each window and reading the census the
+generator prints (`<files> / <code-less sites>`):
+
+| window | 13  | 14  | **15** | 25  | 30  |
+|--------|-----|-----|--------|-----|-----|
+| files  | 66  | 66  | **66** | 65  | 65  |
+| sites  | 640 | 640 | **639**| 627 | 622 |
+
+Two readings, the second load-bearing:
+
+1. The 14 → 15 step moves exactly one site — `crates/reify-compiler/src/expr.rs`'s
+   `let base_diag = Diagnostic::error(…)` / `base_diag.with_code(…)` pair — so
+   15 was the widest OWN-chain offset in the tree, not an estimate. That bound
+   moves with the corpus: it was 13 when the detector was first written.
+2. The 15 → 25 step drops **12 further sites and a whole file**, and every one
+   inspected was the unrelated-`.with_code(`-in-window imprecision, NOT a
+   genuine own-chain attachment. The cleanest specimen was
+   `crates/reify-compiler/src/diagnostics.rs`, whose only site —
+   `lossy_real_warning`'s `Diagnostic::warning(…)`, ending its own chain at
+   `.with_label(…)` — is falsely coded at window 25 by the `.with_code(`
+   belonging to `dup_member_key_error`, a different function 23 lines below.
+   The file loses its baseline row entirely.
+
+So the window trades hard-gate coverage for headroom, and 15 was the largest
+value that retired nothing.
+
+### Comment-mask incidence
+
+The `* ` block-comment-continuation rule also matches a wrapped arithmetic
+continuation (`let x = a\n    * b\n    + c;`), masking such a line as
+comment-only: **19** such lines existed in the swept corpus
+(`shell_assembly.rs`, `modal/transient.rs`, …), none within 30 lines below a
+constructor, so the live census was unaffected.
+
+The two false-RED routes the module header enumerates were both latent rather
+than live at this snapshot: no swept file ended at non-zero block-comment
+depth, and no masked line carried a `.with_code(`.
+
+### Re-measuring
+
+Change the constant in `crates/reify-audit/src/pdiag.rs`, then for each
+candidate window run the generator and read its stderr census line:
+
+```
+cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . > /dev/null
+```
+
+Do not commit a manifest generated at a non-canonical window.
 
 ---
 

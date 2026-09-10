@@ -41,7 +41,9 @@
 //! code-less diagnostic simply re-blesses it. The remediation triad — attach a
 //! `DiagnosticCode`, take the reviewed `// pdiag:allow — reason` opt-out, or
 //! shrink the row by fixing sites — is in
-//! `docs/notes/diagnostic-severity-policy.md` §3.
+//! `docs/notes/diagnostic-severity-policy.md` §3. The one High finding that IS
+//! answered by rerunning this is a pure move or rename, whose sites all predate
+//! the move and so have nothing to edit (§3(d) there).
 
 use std::path::PathBuf;
 
