@@ -25,7 +25,26 @@ Pick from the user's invocation and context:
 
 `--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
 
-**jcodemunch resilience:** The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are resilient to a down jcodemunch substrate. When jcodemunch-serve is unreachable, P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125. **PTODO is unaffected by jcodemunch outages** — it is deterministic (grep + read-only sqlite) and never contacts jcodemunch; only its liveness lane degrades when `tasks.db` is absent (stderr breadcrumb, structural lane still runs). Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
+**jcodemunch resilience — two arms, and they behave differently.**
+
+*Serve unreachable.* The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are all resilient. P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125.
+
+*Serve reachable but the index is not usable.* After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs, and here the outcome splits on what `--pattern` selected:
+
+- An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with a refusal token on stderr and emits **no JSON array**. Nothing in the run set could have survived, so nothing is salvaged.
+- A **mixed or pattern-less** run keeps fail-softing: the jcodemunch-backed detectors degrade to zero findings, P2/P5/PTODO still run, and the findings array is still emitted.
+
+The three refusal codes and their remedies:
+
+| Code | Meaning | Remedy |
+|---|---|---|
+| `E_JC_INDEX_STALE` | the index was built at a different commit than the working tree | re-index this checkout: `scripts/jcodemunch-index-reify.sh` (it forces `JCODEMUNCH_GIT_ROOT_IDENTITY=0`), or pass `--no-jcodemunch` |
+| `E_JC_INDEX_EMPTY` | the index carries no symbols, or does not exist at all | same as above |
+| `E_JC_INDEX_UNREADABLE` | the index file **exists** but could not be read — corrupt, permissions, WAL, or a jcodemunch schema change | repair or remove the file, *then* re-index. Deliberately a separate remedy: sending an operator to rebuild an intact corpus behind a permissions fault costs a full re-index to learn nothing |
+
+**Exit 125 is now overloaded.** It already meant infra/setup error and it already covered a serve that could not be reached; it now also covers a stale/empty/unreadable index. The marker token in stderr is the only discriminator — a reader who knows only the older meaning will misdiagnose an index refusal as a dead serve and go restart a serve that is fine.
+
+**PTODO is unaffected by jcodemunch outages** — it is deterministic (grep + read-only sqlite) and never contacts jcodemunch, so it is absent from the freshness gate's run set as well; only its liveness lane degrades when `tasks.db` is absent (stderr breadcrumb, structural lane still runs). Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
 
 ## Advisory jcodemunch patterns (PDEAD / PUNTESTED / PLAYER)
 
@@ -39,9 +58,16 @@ Three opt-in detectors backed by jcodemunch — invoked only when named explicit
 
 **Severity and routing:** All three patterns emit Severity **Low** only — log-only, advisory, **never auto-filed** as a follow-up task, and never promoted to Medium. See `references/severity-routing.md` for the Low row routing details.
 
-**Serve prerequisite:** These patterns require `jcodemunch-serve` to be running and reachable at the configured URL to produce real findings. When unreachable they degrade gracefully to zero findings (same fail-soft path as P1; P2/P5 are unaffected). For activation instructions (port 8901, unit name, enable/status commands) see `docs/architecture-audit/jcodemunch-serve-activation.md` — that document is the single source of truth for serve operational identifiers.
+**Serve prerequisite:** These patterns need two things to produce real findings. (1) A serve, for the duration of the run — there is no persistent unit; wrap the invocation in `scripts/with-jcodemunch-serve.sh`, which spawns one, readiness-polls it, runs the command, and tears it down on every exit path. When no serve answers, they degrade gracefully to zero findings (same fail-soft path as P1; P2/P5 are unaffected). (2) A **current index for this checkout**, kept warm by `scripts/jcodemunch-index-reify.sh` and the `reify-jcodemunch-index.timer` daily pass — a stale one is refused rather than answered, per the freshness arm above. See `docs/architecture-audit/jcodemunch-serve-activation.md` — that document is the single source of truth for serve operational identifiers.
 
-**Key flags:** `--jcodemunch-url <url>` (default: `$JCODEMUNCH_URL` or `http://127.0.0.1:8901/mcp`), `--jcodemunch-repo <id>` (default: `leodearden/reify`), `--no-jcodemunch` (force inert stub, offline/test). See `references/cli-invocation.md` §2 and §4.1 for full flag documentation and the trailing-slash gotcha.
+**Key flags:**
+
+- `--jcodemunch-url <url>` — default `$JCODEMUNCH_URL`, else `http://127.0.0.1:8901/mcp`.
+- `--jcodemunch-repo <id>` — **no default.** `reify-audit` DERIVES the per-path identity `local/<basename>-<sha1(abs project_root)[..8]>` from `--project-root`; for `/home/leo/src/reify` that is `local/reify-4ae45bbd`. The flag is retained purely as an explicit override. A `<owner>/<project>` git identity would name the **project**, not the **checkout**: reify's ~239 worktrees would all resolve to one `leodearden/reify` carrying different `git_root`s, and jcodemunch's `index_folder` collision guard hard-refuses on that mismatch. Per-path is also what makes the freshness comparison meaningful at all — one corpus per tree, so "built at a different commit" means something.
+- `--jcodemunch-index-dir <path>` — the directory the freshness gate probes. Resolution order: the flag, else `$JCODEMUNCH_INDEX_DIR`, else `$CODE_INDEX_PATH`, else `$HOME/.code-index`. The `CODE_INDEX_PATH` rung is load-bearing, not decorative: it is jcodemunch's own variable and the one `scripts/jcodemunch-index-reify.sh` resolves the DB under, so dropping it would let the gate probe a different directory than the indexer writes — reopening on the DIRECTORY axis exactly the mismatch the derived identity forbids on the IDENTITY axis.
+- `--no-jcodemunch` — force the inert stub (offline/test).
+
+See `references/cli-invocation.md` §2 and §4.1 for full flag documentation and the trailing-slash gotcha.
 
 **Not part of the default sweep:** PDEAD/PUNTESTED/PLAYER fire **only** when named explicitly via `--pattern`. Running `/audit` without a `--pattern` flag runs P1/P2/P5/PTODO (the four default-sweep detectors), not the advisory P-* patterns.
 
