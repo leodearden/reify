@@ -22,6 +22,7 @@
 #   step-9  — per-branch git measurement and --task single mode
 #   step-11 — the scope verdict and the declared-scope cross-check
 #   step-13 — the commit-citation census and the signature column
+#   step-15 — --audit fleet mode, the SWEEP: summary, and --format json
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -709,5 +710,170 @@ _assert_field "C7: a deeply stale branch reports its exact distance" 9530 behind
 _assert_field "C7: ...peer_commits=0"                                9530 peer_commits 0
 _assert_field "C7: ...and signature is STILL '-' — behind never triggers" \
     9530 signature -
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 6 (step-15) — --audit fleet mode, the SWEEP: summary, --format json
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 6: fleet mode, summary and json ---"
+
+# _orphan_branch <name> <file> — a branch with UNRELATED history, so it has no
+# merge base with main. That is the only way to reach scope=UNKNOWN inside an
+# otherwise-healthy repo, which the partition assertion needs.
+_orphan_branch() {
+    local name="$1" file="$2"
+    git -C "$REPO" checkout -q --orphan "$name"
+    git -C "$REPO" rm -rfq --cached . >/dev/null 2>&1 || true
+    find "$REPO" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+    printf 'orphan\n' > "$REPO/$file"
+    git -C "$REPO" add -- "$file"
+    git -C "$REPO" commit -q -m "feat: orphan root"
+    git -C "$REPO" checkout -q -f main
+}
+
+# _summary_field <key> — the value of <key> on the SWEEP: line of $OUT.
+_summary_field() {
+    printf '%s\n' "$OUT" | grep '^SWEEP:' | tr ' ' '\n' | sed -n "s/^$1=//p"
+}
+_assert_summary() {
+    assert "$1" bash -c '[ "$(printf "%s\n" "$1" | grep "^SWEEP:" | tr " " "\n" | sed -n "s/^$2=//p")" = "$3" ]' \
+        _ "$OUT" "$2" "$3"
+}
+
+_mk_tasks_db
+_mk_repo
+F_DB="$DB"
+F_MAIN="$(_git rev-parse main)"
+
+# A path carrying both a double quote and a backslash — the two bytes a
+# hand-rolled JSON escaper gets wrong.
+F_WEIRD='weird"path\x.rs'
+
+_add_task 9610 pending '{"files":["p3.rs"]}'          # peer declarer + citee
+_add_task 9601 pending '{"files":["c1.rs"]}'          # -> CLEAN
+_add_task 9602 pending '{"files":["c2.rs"]}'          # -> OUT-OF-SCOPE
+_add_task 9603 pending '{"files":["c3.rs"]}'          # -> PEER-FILES
+_add_task 9604 pending '{"files":[]}'                 # -> UNDECLARED
+_add_task 9605 pending '{"files":["c5.rs"]}'          # -> SUSPECT
+_add_task 9606 pending '{"files":["c6.rs"]}'          # -> UNKNOWN (orphan)
+_add_task 9607 done    '{"files":["c7.rs"]}'          # -> skipped_terminal
+_add_task 9609 pending '{"files":["c9.rs"]}'          # -> no branch, no row
+_add_task 9611 pending "$(printf '{"files":["weird\\"path\\\\x.rs"]}')"  # -> CLEAN
+
+_branch_at "task/9601" "$F_MAIN"; _commit_files "task/9601" "feat(9601): own" c1.rs
+_branch_at "task/9602" "$F_MAIN"; _commit_files "task/9602" "feat(9602): own" c2.rs orphan.rs
+_branch_at "task/9603" "$F_MAIN"; _commit_files "task/9603" "feat(9603): own" c3.rs p3.rs
+_branch_at "task/9604" "$F_MAIN"; _commit_files "task/9604" "feat(9604): own" c4.rs
+_branch_at "task/9605" "$F_MAIN"; _commit_files "task/9605" "feat(9605): own" c5.rs
+_commit_msg "task/9605" "chore: carries work for #9610"
+_orphan_branch "task/9606" c6.rs
+_branch_at "task/9607" "$F_MAIN"; _commit_files "task/9607" "feat(9607): own" c7.rs
+_branch_at "task/9608-recovered" "$F_MAIN"
+_branch_at "task/9611" "$F_MAIN"; _commit_files "task/9611" "feat(9611): own" "$F_WEIRD"
+
+run_helper --audit --db "$F_DB" --repo "$REPO"
+assert "F0: --audit exits 0" test "$RC" -eq 0
+
+# (a) one row per non-terminal-backed branch, ascending task id
+for _id in 9601 9602 9603 9604 9605 9606 9611; do
+    assert "F1: task $_id yields exactly one row" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -cE "^task=$2( |$)")" -eq 1 ]' _ "$OUT" "$_id"
+done
+assert "F1: rows are emitted in ascending task id order" \
+    bash -c 'ids="$(printf "%s\n" "$1" | sed -nE "s/^task=([0-9]+) .*/\1/p")"; [ "$ids" = "$(printf "%s\n" "$ids" | sort -n)" ]' \
+    _ "$OUT"
+
+# (b) skipped, counted, never dropped and never an error
+_assert_no_row "F2: a done-backed branch yields no row"      9607
+_assert_summary "F2: ...and is counted in skipped_terminal"  skipped_terminal 1
+assert "F2: a non-numeric branch suffix yields no row" \
+    bash -c '! printf "%s\n" "$1" | grep -q "9608"' _ "$OUT"
+_assert_summary "F2: ...and is counted in skipped_nonnumeric" skipped_nonnumeric 1
+
+# (c) a task with no branch is not a branch
+_assert_no_row "F3: a task with no branch ref yields no row" 9609
+_assert_no_row "F3: a peer declarer with no branch yields no row" 9610
+
+# (d) the summary partitions the rows
+_assert_summary "F4: branches=7"     branches 7
+_assert_summary "F4: suspect=1"      suspect 1
+_assert_summary "F4: peer_files=1"   peer_files 1
+_assert_summary "F4: out_of_scope=1" out_of_scope 1
+_assert_summary "F4: undeclared=1"   undeclared 1
+_assert_summary "F4: clean=2"        clean 2
+_assert_summary "F4: unknown=1"      unknown 1
+assert "F4: the six class counters PARTITION branches" \
+    bash -c 'v() { local x; x="$(printf "%s\n" "$1" | grep "^SWEEP:" | tr " " "\n" | sed -n "s/^$2=//p")";
+                   case "${x:-}" in ""|*[!0-9]*) echo "missing/non-numeric counter: $2" >&2; return 1 ;; esac
+                   printf "%s" "$x"; };
+             t="$(v "$1" branches)" || exit 1
+             sum=0
+             for k in suspect peer_files out_of_scope undeclared clean unknown; do
+                 n="$(v "$1" "$k")" || exit 1
+                 sum=$((sum + n))
+             done
+             [ "$t" -eq "$sum" ] || { echo "branches=$t but the six classes sum to $sum" >&2; exit 1; }' \
+    _ "$OUT"
+assert "F4: the SUSPECT row is counted ONLY under suspect (9605's scope is CLEAN)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^task=9605 .*scope=CLEAN signature=SUSPECT$"' _ "$OUT"
+
+# zeros are always emitted, never omitted
+_mk_tasks_db
+_mk_repo
+F_EMPTY_DB="$DB"
+run_helper --audit --db "$F_EMPTY_DB" --repo "$REPO"
+for _k in branches suspect peer_files out_of_scope undeclared clean unknown \
+          skipped_terminal skipped_nonnumeric; do
+    _assert_summary "F5: $_k=0 is emitted, not omitted, on an empty pool" "$_k" 0
+done
+
+# (e) --format json
+run_helper --audit --db "$F_DB" --repo "$REPO" --format json
+assert "F6: --format json exits 0" test "$RC" -eq 0
+assert "F6: --format json emits ONE parseable document" \
+    bash -c 'printf "%s" "$1" | python3 -c "import json,sys; json.load(sys.stdin)"' _ "$OUT"
+assert "F6: a path with a quote and a backslash does not corrupt the document" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+r=[b for b in d[\"branches\"] if b[\"task\"]==9611][0]
+assert r[\"changed\"]==1 and r[\"foreign\"]==0 and r[\"scope\"]==\"CLEAN\", r
+"' _ "$OUT"
+assert "F6: every column is its own key on every branch object" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+keys={\"task\",\"status\",\"merge_base\",\"behind\",\"commits\",\"peer_commits\",
+      \"changed\",\"foreign\",\"peer_files\",\"peers\",\"scope\",\"signature\"}
+d=json.load(sys.stdin)
+assert d[\"branches\"], \"no branches\"
+for b in d[\"branches\"]:
+    assert set(b)==keys, (set(b)^keys)
+"' _ "$OUT"
+assert "F6: summary is a sibling object holding the same counters" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+s=d[\"summary\"]
+assert s[\"branches\"]==7 and s[\"suspect\"]==1 and s[\"clean\"]==2, s
+assert s[\"skipped_terminal\"]==1 and s[\"skipped_nonnumeric\"]==1, s
+"' _ "$OUT"
+
+# (f) the two formats agree
+F7_JSON="$OUT"
+run_helper --audit --db "$F_DB" --repo "$REPO"
+F7_TABLE="$OUT"
+assert "F7: json and table report the SAME rows and counters" \
+    bash -c 'rendered="$(printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+cols=[\"task\",\"status\",\"merge_base\",\"behind\",\"commits\",\"peer_commits\",
+      \"changed\",\"foreign\",\"peer_files\",\"peers\",\"scope\",\"signature\"]
+for b in d[\"branches\"]:
+    print(\" \".join(f\"{c}={b[c]}\" for c in cols))
+s=d[\"summary\"]
+print(\"SWEEP: \" + \" \".join(f\"{k}={s[k]}\" for k in
+      [\"branches\",\"suspect\",\"peer_files\",\"out_of_scope\",\"undeclared\",
+       \"clean\",\"unknown\",\"skipped_terminal\",\"skipped_nonnumeric\"]))
+")"; [ "$rendered" = "$2" ]' _ "$F7_JSON" "$F7_TABLE"
 
 test_summary
