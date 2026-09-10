@@ -2673,6 +2673,145 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 
 // ─── γ (task #5305): the sites γ deferred, with their owners ─────────────────
 
+/// Per-SITE, owner-attributed deferrals for the ctor-conformance warnings that
+/// survive γ (task #5305) OUTSIDE `examples/`.
+///
+/// Each entry is `(repo_relative_path, param_name, owning_task, why)`.
+///
+/// # These are DELIBERATE before-images. Do not "fix" them.
+///
+/// Every site below is a committed RED before-image for another PRD, and the
+/// conformance violation IS the fixture's content. Several of these files say so
+/// in their own header, verbatim: *"This file must EVAL CLEAN (exit 0) today."*
+/// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
+/// show that the units-CORRECT `force: 1000N` contributes exactly ZERO force to
+/// `solve_elastic_static` while the bare control contributes 1000 N. Dimension
+/// the call site and the measurement it encodes is gone.
+///
+/// So these are NOT un-migrated call sites that nobody got around to. That
+/// distinction is the entire reason this table carries a `why` column.
+///
+/// # This is a γ RULING, recorded where it can be checked
+///
+/// PRD §4 D9 assigns the per-case judgment — call-site bug, or wrong declared
+/// field type — to γ. γ ruled: two sites were the call site's fault and are
+/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); these eleven
+/// are owned elsewhere and are deferred, per the shape
+/// `CTOR_CONFORMANCE_GATE_REMEDY` remedy 3 already mandates on main — *"Add a
+/// per-SITE entry naming the file, the param and the LIVE task that owns
+/// retiring it. Per-site, never per-file, and never without an owner."*
+///
+/// # Retirement
+///
+/// Each entry is deleted by its OWNING task's own diff, exactly as #5847 retires
+/// the two `CTOR_CONFORMANCE_MIGRATION_DEBT` entries. An entry left behind after
+/// its site is retired is caught by the corpus-wide check inside
+/// [`generate_ctor_conformance_corpus_survey`], which reports a stale entry and
+/// an unexplained warning as two different defects.
+///
+/// The `why` column's Greek leaf labels are
+/// `docs/prds/v0_6/dimension-checked-readers.md`'s, kept alongside the `#NNNN`
+/// cite so the attribution stays legible if those cluster tasks are re-split:
+/// γ1/ε/η are #6922, γ2/β/ζ are #6941.
+///
+/// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
+///
+/// That list is `examples/`-keyed BY CONSTRUCTION: its own doc forbids the
+/// repo-relative spelling, and the gate consuming it walks `EXAMPLES_DIR` only.
+/// It cannot name a path under `tests/prd-gate/fixtures/` at all. The two tables
+/// are joined at exactly one place — the disposition resolver — and
+/// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] keeps
+/// them from ever describing the same site.
+///
+/// # This is NOT `SKIP_SET`
+///
+/// Nothing here is dropped from any walk. Each entry excuses ONE
+/// `(file, param)` pair; every other diagnostic in these files stays unwaived,
+/// and a ctor-conformance diagnostic at a different param in the same file is
+/// an unexplained warning.
+const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] = &[
+    (
+        "tests/prd-gate/fixtures/curvature_rad_literal.ri",
+        "kc",
+        "#6179",
+        "angle-completion leaf α, boundary row B1: CURVATURE is m^-1 pre-α, so the \
+         rad·m^-1 initializer mismatches; the fixture's own header calls that \
+         check-time flip α's signal",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
+        "force",
+        "#6941",
+        "leaf γ2: PointLoad.force is declared `Real` in fea_multi_case.ri, so the \
+         units-CORRECT `force: 5000N` warns; γ2 retypes the FIELD, and the call site \
+         is already right",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
+        "traction",
+        "#6941",
+        "leaf γ2: TractionLoad.traction is declared `Real` in fea_multi_case.ri; same \
+         retype, and TractionLoad reaches no solver at all today (INV-SF-3)",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_material_dimension_silent.ri",
+        "youngs_modulus",
+        "#6941",
+        "leaf β, boundary row B4: `youngs_modulus: 200mm` is read as 0.2 Pa by \
+         material_field_si, measured 1e12x wrong at exit 0 with zero Error diagnostics",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "ex",
+        "#6922",
+        "leaf η: `FDMCouponOverride(ex: 2mm)` stores 0.002 m and the dimension-blind \
+         opt_f64 reads it as 0.002 Pa",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "line_width",
+        "#6922",
+        "leaf η: `AsPrintedOptions(line_width: 0.4)` is read as 0.4 METRES by \
+         field_scalar — a 1000x error on a 0.4mm extrusion",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "mass",
+        "#6922",
+        "leaf ε: `MassProperties(mass: 2m)` is read as 2.0 kg by the blind cell_f64 \
+         copy, while the dimension-checking cell_mass_f64 sits unused ~300 lines away",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "target_frequency",
+        "#6941",
+        "leaf ζ: `ZVShaper(target_frequency: 50rad/s)` is stored verbatim as rad·s^-1 \
+         and the Hz->rad/s marshalling then multiplies by 2π — a 6.28x error",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri",
+        "target_frequency",
+        "#6941",
+        "leaf ζ signal fixture: the same 6.28x error, but CONSUMED via input_shape so \
+         read_scalar_si actually runs — the ctor alone never reaches the reader",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri",
+        "force",
+        "#6922",
+        "leaf γ1 headline inversion: the units-CORRECT `force: 1000N` contributes \
+         EXACTLY ZERO force to solve_elastic_static (max_von_mises 0, iterations 0) \
+         where the bare control contributes 1000 N",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri",
+        "yield_stress",
+        "#6941",
+        "leaf β, boundary row B5: `yield_stress: 310mm` is stored as Some(0.31 m) and \
+         material_field_si reads it as 0.31 Pa, at exit 0 with zero diagnostics",
+    ),
+];
+
 /// The repo-relative prefix of the `examples/` corpus.
 ///
 /// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
