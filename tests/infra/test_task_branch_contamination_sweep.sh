@@ -21,6 +21,7 @@
 #             scoping, engine interchangeability, degraded-store fallback)
 #   step-9  — per-branch git measurement and --task single mode
 #   step-11 — the scope verdict and the declared-scope cross-check
+#   step-13 — the commit-citation census and the signature column
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -602,5 +603,111 @@ _assert_field "S7: a path this task declares is never foreign, even when a peer 
 _assert_field "S7: ...so peer_files=0" 9413 peer_files 0
 _assert_field "S7: ...and scope=CLEAN" 9413 scope CLEAN
 _assert_field "S7: ...and peers='-'"   9413 peers -
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 5 (step-13) — the commit-citation census and `signature`
+#
+# This is the sharp signal: the defect the sweep exists to find is foreign
+# COMMITS, so the census measures commits directly rather than inferring them
+# from files.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 5: commit-citation census and signature ---"
+
+# _commit_msg <branch> <subject> — one empty commit on <branch>, for a case
+# where only the MESSAGE matters.
+_commit_msg() {
+    git -C "$REPO" checkout -q "$1"
+    git -C "$REPO" commit -q --allow-empty -m "$2"
+    git -C "$REPO" checkout -q main
+}
+
+_mk_tasks_db
+_mk_repo
+C_DB="$DB"
+
+# Peers that exist in the store but need no branch of their own.
+_add_task 9501 pending   '{"files":["peer1.rs"]}'
+_add_task 9502 blocked   '{"files":["peer2.rs"]}'
+_add_task 9503 done      '{"files":["peer3.rs"]}'
+_add_task 9504 pending   '{"files":["shared2.rs"]}'
+
+# 9510 — the full mix. It also changes a file 9504 declares, so `peers` must
+# be the UNION of the file-derived and commit-derived ids.
+_add_task 9510 pending   '{"files":["own.rs"]}'
+_branch_at "task/9510" "$(_git rev-parse main)"
+_commit_files "task/9510" "feat(9510): own work"          own.rs
+_commit_files "task/9510" "feat(9510): touch a peer file" shared2.rs
+_commit_msg   "task/9510" "fix: follows up on #9501"
+_commit_msg   "task/9510" "Merge task/9502 into main"
+_commit_msg   "task/9510" "chore: relates to #9503"
+_commit_msg   "task/9510" "amend(9510): #9510 also touches #9501"
+
+run_helper --task 9510 --db "$C_DB" --repo "$REPO"
+assert "C1: the census exits 0" test "$RC" -eq 0
+
+# (a)+(c)+(d) exact count: two of the six commits cite a live peer.
+#   own work            -> no citation        (d)
+#   touch a peer file   -> no citation        (d)
+#   #9501               -> peer               (a)
+#   Merge task/9502     -> peer               (a)+(e)
+#   #9503 (done)        -> NOT a peer         (c)
+#   #9510 and #9501     -> cites own id, NOT a peer  (b)
+_assert_field "C1: peer_commits is the exact count of citing commits" \
+    9510 peer_commits 2
+_assert_field "C1: commits counts every commit on the branch" 9510 commits 6
+
+# (e) both citation forms, and (a) the union with the file-derived id 9504
+_assert_field "C2: peers is the sorted-unique UNION of commit- and file-derived ids" \
+    9510 peers 9501,9502,9504
+
+# (f) signature is set by peer_commits alone
+_assert_field "C3: peer_commits>0 -> signature=SUSPECT" 9510 signature SUSPECT
+
+# (b) isolated: a message that cites its OWN id must not flag even when it
+#     also names a live peer in the same message.
+_add_task 9520 pending '{"files":["o20.rs"]}'
+_branch_at "task/9520" "$(_git rev-parse main)"
+_commit_files "task/9520" "feat(9520): own" o20.rs
+_commit_msg   "task/9520" "amend(9520): re-lands #9520, coordinated with #9501"
+run_helper --task 9520 --db "$C_DB" --repo "$REPO"
+_assert_field "C4: a self-citing commit naming a peer is NOT a peer commit" \
+    9520 peer_commits 0
+_assert_field "C4: ...so signature='-'" 9520 signature -
+
+# (c) isolated: only a terminal citation
+_add_task 9521 pending '{"files":["o21.rs"]}'
+_branch_at "task/9521" "$(_git rev-parse main)"
+_commit_files "task/9521" "feat(9521): own" o21.rs
+_commit_msg   "task/9521" "chore: supersedes #9503"
+run_helper --task 9521 --db "$C_DB" --repo "$REPO"
+_assert_field "C5: a commit citing only a done task is NOT a peer commit" \
+    9521 peer_commits 0
+_assert_field "C5: ...so signature='-'" 9521 signature -
+
+# (d) isolated: no citation anywhere is not an error
+_add_task 9522 pending '{"files":["o22.rs"]}'
+_branch_at "task/9522" "$(_git rev-parse main)"
+_commit_files "task/9522" "feat: no citation at all" o22.rs
+run_helper --task 9522 --db "$C_DB" --repo "$REPO"
+assert "C6: a branch citing nothing exits 0"      test "$RC" -eq 0
+_assert_field "C6: ...peer_commits=0"             9522 peer_commits 0
+_assert_field "C6: ...signature='-'"              9522 signature -
+_assert_field "C6: ...and it still measured"      9522 changed 1
+
+# (g) `behind` NEVER contributes to `signature`. A deeply stale branch with no
+#     peer commits must read '-'. Measured justification: the median live task
+#     branch is 2201 commits behind main (n=351, p25 878, p90 5324), so a
+#     staleness-triggered signature would fire on ~98% of the pool.
+C_STALE_BASE="$(_git rev-parse main)"
+for _n in $(seq 1 40); do _commit_main "stale-maker $_n"; done
+_add_task 9530 pending '{"files":["o30.rs"]}'
+_branch_at "task/9530" "$C_STALE_BASE"
+_commit_files "task/9530" "feat(9530): own work only" o30.rs
+run_helper --task 9530 --db "$C_DB" --repo "$REPO"
+_assert_field "C7: a deeply stale branch reports its exact distance" 9530 behind 40
+_assert_field "C7: ...peer_commits=0"                                9530 peer_commits 0
+_assert_field "C7: ...and signature is STILL '-' — behind never triggers" \
+    9530 signature -
 
 test_summary
