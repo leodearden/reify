@@ -517,8 +517,9 @@ fn attr_gates_test_code(attr: &str) -> bool {
 /// Handles both shapes an attribute can gate: a braced item (`mod tests { … }`,
 /// `fn … { … }`) is blanked through its matching `}`, and a brace-less item
 /// (`use …;`) through its `;`. Operates on the comment-stripped buffer, so a
-/// brace inside a comment cannot unbalance the count; braces inside string
-/// literals are skipped using the collected literal spans.
+/// brace inside a comment cannot unbalance the count; every byte inside a
+/// string literal is skipped using the collected literal spans, so neither a
+/// brace nor attribute TEXT sitting there can steer either walk.
 fn mask_cfg_test_blocks(code: &mut [u8], lits: &[StrLit]) {
     // Byte-level membership mask, built once: the naive
     // "is `pos` inside any literal?" scan is O(bytes x literals), which on a
@@ -528,6 +529,14 @@ fn mask_cfg_test_blocks(code: &mut [u8], lits: &[StrLit]) {
 
     let mut i = 0usize;
     while i < code.len() {
+        // Attribute TEXT inside a literal is not an attribute. `StrLit.start`
+        // is the opening quote, so the mask covers the quote and every content
+        // byte. O(1) per byte, like the `!= b'#'` test it precedes, so the
+        // blowup the mask comment above warns about is not reintroduced.
+        if in_literal(i) {
+            i += 1;
+            continue;
+        }
         if code[i] != b'#' {
             i += 1;
             continue;
@@ -1702,11 +1711,19 @@ fn only_for_tests(name: &str) -> u8 {
 /// `crates/reify-audit/src/pdoccover.rs:479` is production code whose
 /// `is_cfg_test_attr` body is exactly this tail-expression shape, so the blank
 /// runs past its closing `}` into the following `blank_literals` fn and
-/// swallows the whole of it. Same shape at
-/// `crates/reify-audit/src/jcodemunch_client.rs:1382,1559`. Inert today only
-/// because reify-audit registers no seed name; a later τ registering a name
-/// that appears inside one of those blanked spans would get a GREEN gate over
-/// a real violation.
+/// swallows the whole of it. Measured on that real file: masking blanks 27679
+/// bytes without the literal guard and 27089 with it, so the guard hands 590
+/// bytes of production code back to the scan. Inert today only because
+/// reify-audit registers no seed name; a later τ registering a name that
+/// appears inside such a blanked span would get a GREEN gate over a real
+/// violation.
+///
+/// `crates/reify-audit/src/jcodemunch_client.rs:1382,1559` carry the same
+/// literal text but are NOT the same shape and were wrongly cited as such:
+/// both sit inside a genuine `#[cfg(test)] mod tests`, already masked wholesale
+/// by the real attribute above them, so the guard moves that file's blanked
+/// count by zero bytes (19741 either way). Recorded because an uncorrected
+/// cite invites a reader to "verify" it and conclude the guard does nothing.
 #[test]
 fn attribute_text_inside_a_string_literal_is_not_an_attribute() {
     let src = r###"
