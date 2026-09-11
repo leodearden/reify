@@ -102,8 +102,9 @@ GR-040 preserved: no method-call syntax (`x.foo()`); all analysis is free-functi
   instead registers as a `BindingKind::EvalBuiltin` row in
   `crates/reify-builtins/src/registry.rs`, with its eval arm bound in the exhaustive
   `crates/reify-stdlib/src/registry_dispatch.rs::dispatch` match over `EvalBuiltinId`, and
-  `analysis::eval_analysis`'s own arm goes away — it is the only family migrated off the chain
-  there; the rest of the chain stays (§3) — re-point when it lands.
+  `analysis::eval_analysis`'s own arm goes away, as does `parse::eval_parse`'s — those two
+  families are the only ones migrated off the chain there; the rest of the chain stays (§4.1)
+  — re-point when it lands.
 - `Value::Map(BTreeMap<Value,Value>)`, `Value::List`, `Value::Scalar` (dimensioned) —
   `reify-ir/src/value.rs:993+` (`Scalar` at `:999`, `List` at `:1017`, `Map` at `:1101`).
   The multi-field result is a `Value::Map` keyed by string
@@ -225,7 +226,7 @@ Each name below is dispatched by a `stackup::eval_stackup` arm on the `eval_buil
 **Pending #6001** (builtin-signature-registry leaf α; in flight on `task/6001`, unlanded as of
 2026-09-11): that task does **not** retire the name-string chain. `eval_builtin` survives
 (`lib.rs:226` there) and gains a registry-first `registry_dispatch::try_dispatch` hop ahead of
-the 22 family dispatchers that remain — `stackup::eval_stackup` among them — with a registry
+the 23 family dispatchers that remain — `stackup::eval_stackup` among them — with a registry
 `None` falling through exactly as any other family's decline does; that branch's own comment
 calls the shape "registry-first coexistence". A name leaves the chain only when it is registered
 as a `BindingKind::EvalBuiltin` row in `crates/reify-builtins/src/registry.rs` with its eval
