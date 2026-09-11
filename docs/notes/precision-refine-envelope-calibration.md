@@ -179,12 +179,14 @@ comfortable envelope. This is the trap the non-analytic classes could not escape
 | sweep | `sweep(circle(100mm), interp(…))` | 10 mm | 0.534 |
 | pipe | `pipe(helix(100mm,80mm,300mm), 20mm)` | 5 mm | 0.598 |
 | spline | `sweep(circle(100mm), bezier(…))` | 20 mm | 0.013 |
-| nurbs surface | `nurbs_surface(3x3 point3 net, …)` | 0.1 mm ‡ | 0.9975 @ 0.12 mm ‡ |
+| nurbs surface | `nurbs_surface(3x3 point3 net, …)` | 0.1 mm ‡ | 1.0010 @ 0.14386 mm ‡ |
 
 ‡ Unlike the other three rows, 0.1 mm is not where the 90 s budget stopped this class —
 it is merely where this task stopped walking it (see Not-budget-limited below). And the
 a/d quoted is not the value at that finest rung (0.1 mm itself reads 0.934): it is the
-highest value found anywhere on the full ladder, at 0.12 mm. See the full ladder below.
+highest value found anywhere on the ladder *or* on the dense sub-0.01 mm walk that
+followed it — **1.0010 at 0.14386 mm** (task #7128). 0.12 mm's 0.9975 was 6545's best and
+is superseded. See the full ladder and the dense walk below.
 
 sweep: 100 mm 0.148 (floor) · 50 mm 0.296 (floor) · 20 mm 0.379 · **10 mm 0.534**.
 pipe (shape-shrunk): 20 mm 0.135 · 10 mm 0.258 · **5 mm 0.598**; 2 mm timed out.
@@ -202,8 +204,9 @@ property of the budget — it is affordable far past the mandated 100/50/20/10 m
 which the extended ladder below demonstrates. Its §1.1 entry is nonetheless a **lower
 bound, not a supremum**, for the opposite reason: an initial pass read a two-rung fall as
 a turnover and entered `sup K = 0.996` as confirmed, but review correctly challenged that
-call, and a deeper walk (below) found a **higher** value, 0.9975 at 0.12 mm, in a dense,
-unresolved oscillation this task did not fully resolve. Full account — the original
+call, and a deeper walk (below) found a **higher** value, 0.9975 at 0.12 mm, in a dense
+oscillation task 6545 did not fully resolve (task #7128 later did, and found higher still
+— see the dense walk below). Full account — the original
 reading, why review challenged it, and the amended ladder — is under "Amendment" below.
 
 Not measurable, recorded honestly:
@@ -850,16 +853,19 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 | torus | 0.978 | 0 |
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
-| nurbs surface | ≥ 0.9975 † | 0 † |
+| nurbs surface | ≥ 1.0010 † | 1 † |
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
 | loft | no datum | — |
 
 **No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
-nurbs_surface's highest measured value, 0.9975 (§1.1, §1.5), is the closest any class
-comes to the K = 1 boundary that would flip `required n` from 0 to 1 — and per the † note
-below it is a lower bound, not a confirmed value, so a true supremum fractionally above 1
-is not excluded. Even so this changes nothing at the cap level: `n = 1` is nowhere near
-the cap-4 budget, and no plausible reading of this class's data approaches K ≈ 16. Cap 4
+nurbs_surface is the one class measured **above** the K = 1 boundary, and so the one whose
+`required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the true ratio at
+that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above 1, so the
+crossing is established rather than merely not excluded. Per the † note below that value is
+still a lower bound, so the true supremum can only be higher. Even so this changes nothing
+at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading of this
+class's data approaches K ≈ 16 — all 92 probes of its dense walk lie within [0.9623, 1.0010],
+with no second branch like the sphere's ~2.07 tread. Cap 4
 covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
@@ -867,11 +873,14 @@ unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justifi
 **headroom**, not by a claim of exhaustive coverage.
 
 † Lower bound for a different reason than the row above: nurbs_surface is not
-budget-limited (§1.5) — every rung tried, down to 0.1 mm, completed well under the 90 s
-wall. An amendment to this task's own ladder found a higher value than an earlier apparent
-peak and left the oscillation's period unresolved, so `required n = 0` holds only while
-the true K ≤ 1; a true K fractionally above 1 would make it 1, which — as above — does not
-change §3.3's decision either way.
+budget-limited (§1.5) — every rung tried completed well under the 90 s wall: down to
+0.1 mm on 6545's ladder, and across all 95 runs of #7128's dense walk. Task #7128 resolved the oscillation an earlier amendment left open (no period;
+`a` piecewise-constant on plateaus ~1e-4 mm wide; the ratio peaking at each plateau's lower
+edge) and pinned **1.0010 at `d` = 0.14386 mm**, which crosses the K = 1 boundary and is
+what moves `required n` from 0 to 1. The value stays a lower bound — four plateau edges of
+very many were pinned, and a dense search cannot prove a supremum over a continuum — so the
+true K can only be *higher* than 1.0010. That does not disturb the cap: `n = 1` is nowhere
+near the cap-4 budget, and no plausible reading of this class's data approaches K ≈ 16.
 
 ### 3.2 Cost
 
@@ -893,11 +902,22 @@ counting the initial pass so they are comparable:
 
 ### 3.3 Decision — keep the cap at 4
 
-*Buys over 3*: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the worst measured class. With
-four classes known only as lower bounds (sweep, pipe, spline and nurbs_surface) and one
-(loft) with no datum at all, the extra doubling is cheap insurance against classes this
-session could not fully pin down — three by the 90 s budget wall, one (nurbs_surface) by
-an unresolved oscillation.
+*Buys over 3*: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the worst measured class. That
+ratio is unchanged by task #7128: nurbs_surface rose from 0.9975 to 1.0010, but the worst
+measured class is still the sphere at 2.079, so 16/2.079 = 7.7× stands as derived.
+
+The *argument* around it does move, and is re-derived rather than left standing. Four
+classes are still known only as lower bounds (sweep, pipe, spline and nurbs_surface) and
+one (loft) still has no datum at all, so the extra doubling is still cheap insurance
+against classes this session could not fully pin down — but the reasons now differ: three
+by the 90 s budget wall, and nurbs_surface because a dense search cannot prove a supremum
+over a continuum. Its oscillation is no longer unresolved (§1.5, task #7128); four pinned
+plateau edges simply are not exhaustiveness. That class has also become the **worked
+example** for the insurance rather than merely a claimant on it: believed to peak at
+0.9975, it was found on denser walking to exceed 1 (1.0010, `n` = 1). A lower-bound row
+moving upward once walked properly is precisely the risk the extra doubling covers, and it
+has now happened once, measured — which strengthens the case for 4 rather than weakening
+it.
 
 *Costs*: worst-case ~6.0 min instead of ~2.9 min on the re-baselined sphere — a worst
 case reached only when **every** attempt fails. The measured classes converge at
