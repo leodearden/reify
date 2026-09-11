@@ -246,8 +246,14 @@ missing: a client cannot ask whether the baseline advanced, and does not need
 to. The invariant (a command following an AI write diffs against the
 AI-ADVANCED baseline, not a pre-AI stale one — INV-GUI-2, survey bug #7) is
 pinned where `compute_delta` and `last_state` both are, by
-`debug_boundary_tests::a_subsequent_command_does_not_re_report_an_ai_advanced_baseline`.
-Read an absent delta tool as this design decision, not as a gap to fill.
+`debug_server::tests::write_tools::write_helper_refreshes_the_delta_baseline` —
+which drives the real `write_on_engine_and_refresh_baseline` seam, not
+`compute_delta` directly, and asserts both that the baseline moved to S1 and
+that a second diff against S1 emits no events at all. Driving the SEAM is what
+gives it teeth: `compute_delta` advances the baseline unconditionally, so a test
+calling it directly would stay green against the very bug this guards — a write
+wrapper that mutates the engine and forgets to refresh. Read an absent delta
+tool as this design decision, not as a gap to fill.
 
 **`reify_save_file` and `reify_export` are pure I/O — but they still push.**
 Neither commits new engine state, yet both route through

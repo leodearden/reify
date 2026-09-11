@@ -845,8 +845,8 @@ describe("findEditableParams — (j) against the real prj/printer_v01/printer.ri
 // debug path discards the `StateDelta` by design (PRD §6.2 caveat (i), restated
 // on `write_on_engine_and_refresh_baseline`), so no debug tool can return one
 // and no JS predicate could ever be fed. It is asserted where the observable
-// actually lives — `debug_boundary_tests::
-// a_subsequent_command_does_not_re_report_an_ai_advanced_baseline`.
+// actually lives, driving that seam itself — `debug_server::tests::write_tools::
+// write_helper_refreshes_the_delta_baseline`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The post-edit source the B2 cases read, with both params already rewritten. */

@@ -115,28 +115,23 @@ fn boundary_gui_state() -> crate::types::GuiState {
     boundary_gui_state_from(reify_test_support::bracket_source())
 }
 
-/// The δ write tools push their rebuilt `GuiState` — and, for
-/// `reify_update_source`, the new editor buffer — across the SAME
-/// `DebugTransport` seam every other debug tool uses. Pinned end to end here
-/// (serialize → transport → deserialize) rather than on the serializer alone,
-/// because the failure this guards against is a payload that is well-formed
-/// in-process and lossy at the wire.
+/// Push one write-tool payload across a real `DebugTransport` and hand back what
+/// came out the far side, having pinned the key set on the way.
+///
+/// The key-set assertion lives HERE rather than at each call site, and that is
+/// the reason this is a helper at all: "a write-tool push carries exactly
+/// `guiState` + `file`" is ONE claim about the payload shape, so it is asserted
+/// in one place. Two copies would drift the moment the shape changes, and
+/// `apply_gui_state`'s handler must never have to guess which extra fields a
+/// write tool decided to attach.
+///
+/// The retry loop around `resolve` is the same spawn/insert race every transport
+/// test in this file runs into: `create_request` has not inserted the pending
+/// entry yet when the spawned task first fires. The id is deterministically 1 on
+/// a fresh transport.
 #[cfg(feature = "gui")]
-#[tokio::test]
-async fn write_tool_frontend_payload_survives_the_transport() {
-    let gui_state = boundary_gui_state();
-    assert!(
-        !gui_state.values.is_empty(),
-        "the fixture must carry values, or the round-trip below proves nothing"
-    );
-
-    let payload = crate::debug_server::write_tool_frontend_payload(
-        &gui_state,
-        Some(("/tmp/part.ri", "// new text")),
-    )
-    .expect("write_tool_frontend_payload must return Ok");
-
-    let raw = serde_json::to_string(&payload).expect("payload must serialize");
+async fn round_trip_write_tool_payload(payload: &serde_json::Value) -> serde_json::Value {
+    let raw = serde_json::to_string(payload).expect("payload must serialize");
 
     let transport = Arc::new(DebugTransport::new());
     let t = transport.clone();
@@ -158,8 +153,6 @@ async fn write_tool_frontend_payload_survives_the_transport() {
     let received: serde_json::Value =
         serde_json::from_str(&received).expect("received payload must be JSON");
 
-    // EXACTLY these keys: `apply_gui_state`'s handler must not have to guess
-    // which extra fields a write tool decided to attach.
     let mut keys: Vec<&str> = received
         .as_object()
         .expect("payload must be a JSON object")
@@ -172,6 +165,32 @@ async fn write_tool_frontend_payload_survives_the_transport() {
         vec!["file", "guiState"],
         "the write-tool payload must carry exactly guiState + file"
     );
+
+    received
+}
+
+/// The δ write tools push their rebuilt `GuiState` — and, for
+/// `reify_update_source`, the new editor buffer — across the SAME
+/// `DebugTransport` seam every other debug tool uses. Pinned end to end here
+/// (serialize → transport → deserialize) rather than on the serializer alone,
+/// because the failure this guards against is a payload that is well-formed
+/// in-process and lossy at the wire.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn write_tool_frontend_payload_survives_the_transport() {
+    let gui_state = boundary_gui_state();
+    assert!(
+        !gui_state.values.is_empty(),
+        "the fixture must carry values, or the round-trip below proves nothing"
+    );
+
+    let payload = crate::debug_server::write_tool_frontend_payload(
+        &gui_state,
+        Some(("/tmp/part.ri", "// new text")),
+    )
+    .expect("write_tool_frontend_payload must return Ok");
+
+    let received = round_trip_write_tool_payload(&payload).await;
 
     // The editor-sync half round-trips verbatim — the AI path writes the
     // engine's in-memory buffer, so nothing else will reconcile the editor.
@@ -356,37 +375,10 @@ async fn write_tool_payload_carries_a_flipped_constraint_status() {
         Some(("/tmp/bracket.ri", narrowed_source.as_str())),
     )
     .expect("write_tool_frontend_payload must return Ok");
-    let raw = serde_json::to_string(&payload).expect("payload must serialize");
 
-    let transport = Arc::new(DebugTransport::new());
-    let t = transport.clone();
-    tokio::spawn(async move {
-        loop {
-            if t.resolve(1, raw.clone()).is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        }
-    });
-    let (id, rx) = transport.create_request().unwrap();
-    assert_eq!(id, 1, "first id on a fresh transport should be 1");
-    let received = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
-        .await
-        .expect("resolve timed out")
-        .expect("channel dropped");
-    let received: serde_json::Value =
-        serde_json::from_str(&received).expect("received payload must be JSON");
-
-    // The key set is still EXACTLY guiState + file — carrying a constraint flip
-    // must not have added a channel of its own.
-    let mut keys: Vec<&str> = received
-        .as_object()
-        .expect("payload must be a JSON object")
-        .keys()
-        .map(|k| k.as_str())
-        .collect();
-    keys.sort_unstable();
-    assert_eq!(keys, vec!["file", "guiState"]);
+    // The helper re-asserts the key set: carrying a constraint flip must not
+    // have added a channel of its own.
+    let received = round_trip_write_tool_payload(&payload).await;
 
     let round_tripped: crate::types::GuiState =
         serde_json::from_value(received["guiState"].clone())
@@ -407,73 +399,26 @@ async fn write_tool_payload_carries_a_flipped_constraint_status() {
     );
 }
 
-/// PRD §7 B4 — **no stale baseline** (INV-GUI-2, gui-state-sync survey bug #7).
-///
-/// The postcondition is "the user command's delta diffs against the AI-advanced
-/// baseline (not a pre-AI stale one); no spurious over-reporting". This is the
-/// one B-row of the ζ gate that the LIVE driver cannot see, and that is by
-/// design rather than a gap in the debug surface: §6.2 caveat (i) — restated on
-/// `write_on_engine_and_refresh_baseline` itself — says the debug path
-/// deliberately DISCARDS the `StateDelta` and pushes the full `GuiState`
-/// instead. So no debug tool can return a delta, and the invariant is only
-/// observable where `compute_delta` and `last_state` both are: here.
-///
-/// `delta_to_events` is the observable, not the `changed_*` fields: it is what
-/// `main.rs::emit_delta` iterates to push to the frontend, so an event IS a
-/// re-report. Zero events is precisely "nothing was over-reported".
-///
-/// BOTH arms are asserted, because only the counterfactual gives the first one
-/// teeth: with the baseline advanced the next command is silent, and with it
-/// left stale the same command re-reports the AI's own edit.
-#[cfg(feature = "gui")]
-#[tokio::test]
-async fn a_subsequent_command_does_not_re_report_an_ai_advanced_baseline() {
-    use crate::diff::{compute_delta, delta_to_events};
-    use reify_test_support::{bracket_source, bracket_source_with_width};
-
-    let before = boundary_gui_state_from(bracket_source());
-    let after = boundary_gui_state_from(&bracket_source_with_width("20mm"));
-
-    /// Every `cell_id` a delta's events would push to the frontend.
-    fn reported_cells(events: &[(String, serde_json::Value)]) -> Vec<String> {
-        events
-            .iter()
-            .filter_map(|(_, payload)| payload["cell_id"].as_str().map(str::to_string))
-            .collect()
-    }
-
-    // ── Arm 1: the landed path — the write refreshes the baseline ──────────
-    let baseline = std::sync::Mutex::new(Some(before.clone()));
-
-    // The AI write itself, exactly as `write_on_engine_and_refresh_baseline`
-    // performs it: `compute_delta` for its SIDE EFFECT, delta dropped.
-    let ai_edit = delta_to_events(&compute_delta(&baseline, &after));
-    assert!(
-        reported_cells(&ai_edit).iter().any(|c| c == "Bracket.width"),
-        "the AI edit must itself move Bracket.width, or the silence below is \
-         vacuous rather than earned; reported: {:?}",
-        reported_cells(&ai_edit)
-    );
-
-    // The subsequent ordinary command, re-deriving the same state.
-    let next = delta_to_events(&compute_delta(&baseline, &after));
-    assert!(
-        next.is_empty(),
-        "a command following an AI write must diff against the ADVANCED \
-         baseline and report nothing; it re-reported: {:?}",
-        next.iter().map(|(name, _)| name).collect::<Vec<_>>()
-    );
-
-    // ── Arm 2: the counterfactual — baseline left stale (bug #7) ───────────
-    let stale = std::sync::Mutex::new(Some(before.clone()));
-    let over_reported = delta_to_events(&compute_delta(&stale, &after));
-    assert!(
-        reported_cells(&over_reported)
-            .iter()
-            .any(|c| c == "Bracket.width"),
-        "with the refresh skipped the SAME command must re-report the AI's own \
-         edit — if it does not, arm 1's silence proves nothing about the \
-         baseline; reported: {:?}",
-        reported_cells(&over_reported)
-    );
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// PRD §7 B4 — **no stale baseline** (INV-GUI-2, gui-state-sync survey bug #7) —
+// is NOT pinned here, and looking for it in this file is the mistake this note
+// exists to prevent.
+//
+// It is the one B-row of task 5098's ζ gate that the LIVE driver cannot see,
+// and that is by design rather than a gap in the debug surface: §6.2 caveat (i)
+// — restated on `write_on_engine_and_refresh_baseline` itself — has the debug
+// path DISCARD the `StateDelta` and push the full `GuiState` instead, so no
+// debug tool can return a delta. The invariant is therefore only observable
+// where `compute_delta` and `last_state` both are, and it is already pinned
+// there, driving the real production seam:
+// `debug_server::tests::write_tools::write_helper_refreshes_the_delta_baseline`
+// calls `write_on_engine_and_refresh_baseline` on a tempdir-backed engine and
+// asserts the baseline moved to S1 AND that a second diff against S1 emits no
+// events at all — which is exactly "no spurious over-reporting".
+//
+// A copy here that reached `compute_delta` directly instead of the seam would
+// be strictly weaker: `compute_delta` advances the baseline unconditionally
+// (`diff.rs`), so the silence it produces holds by construction, and the bug-#7
+// shape — a write wrapper that mutates the engine and forgets to refresh —
+// would leave such a test green.
+// ─────────────────────────────────────────────────────────────────────────────

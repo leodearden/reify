@@ -566,8 +566,8 @@ export function findEditableParams(source, cellNames) {
 // `write_on_engine_and_refresh_baseline` — says the debug path DISCARDS the
 // delta and pushes the full `GuiState` instead. So no debug tool can hand a
 // delta to a predicate here, and B4 is asserted where `compute_delta` and
-// `last_state` both are: `debug_boundary_tests::
-// a_subsequent_command_does_not_re_report_an_ai_advanced_baseline`.
+// `last_state` both are, against the real write seam: `debug_server::tests::
+// write_tools::write_helper_refreshes_the_delta_baseline`.
 //
 // Each predicate below returns a plain failure LIST rather than a verdict, so
 // {@link checkRailLengtheningGate} can fold them all into one `{ok, failures}`
