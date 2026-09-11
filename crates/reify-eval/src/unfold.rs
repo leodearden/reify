@@ -1,6 +1,6 @@
 // Recursive sub-component unfolding — unfold_recursive_sub and elaborate_child_* functions.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind, find_template};
@@ -16,6 +16,15 @@ use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
+
+/// Instance-scope reuse of a template's already-dispatched `@optimized` value —
+/// the gate, its decline report, and the shape probe they share (task #6662).
+pub(crate) mod optimized_instance_reuse;
+
+use optimized_instance_reuse::{
+    OptimizedInstanceResolution, OptimizedNameIndex, report_optimized_instance_decline,
+    resolve_optimized_instance_cell,
+};
 
 /// Single source of truth for sub-component template resolution: the user
 /// module's templates first (module definitions shadow the prelude), then the
@@ -221,12 +230,11 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // function entry avoids wasting budget on guard-false or depth-limited returns.
     *node_budget -= 1;
 
-    // ONE `@optimized`-name index for this recursion LEVEL's two phase calls
-    // (amend #6662 round-4 suggestion #4). It is not threaded across levels:
-    // `unfold_recursive_sub` is `pub(crate)` and called from `engine_eval.rs`,
-    // which is outside #6662's lock set, so adding a parameter to the recursive
-    // entry point is not available to this pass. See [`OptimizedNameIndex`].
-    let optimized_names = OptimizedNameIndex::new();
+    // ONE `@optimized`-name index for this recursion LEVEL's two phase calls.
+    // It is not threaded across levels: `unfold_recursive_sub` is `pub(crate)`
+    // and called from `engine_eval.rs`, so adding a parameter to the recursive
+    // entry point needs the hoist tracked by #7267.
+    let optimized_names = OptimizedNameIndex::new(functions);
 
     // Phase 1 (top-down): Set params for next_entity so the next recursion level
     // can evaluate its guard using the child's param values.
@@ -394,10 +402,9 @@ pub(crate) fn elaborate_child_instance<'t>(
     prelude: &'t [CompiledModule],
 ) {
     // ONE `@optimized`-name index for this whole instance TREE — phase 1,
-    // phase 1.5, phase 2, and every nested-sub recursion level below them
-    // share it (amend #6662 reviewer_comprehensive round 4, suggestion #4). See
-    // [`OptimizedNameIndex`] for what this does and does not eliminate.
-    let optimized_names = OptimizedNameIndex::new();
+    // phase 1.5, phase 2 and every nested-sub recursion level below them share
+    // it. See [`OptimizedNameIndex`] for the cost this does and does not remove.
+    let optimized_names = OptimizedNameIndex::new(functions);
     elaborate_child_instance_nested(
         values,
         snapshot,
@@ -725,7 +732,6 @@ fn elaborate_child_instance_nested<'t, 'f>(
                 // hash lookup instead of a full `extract_dependency_trace`.
                 let v = match resolve_optimized_instance_cell(
                     expr,
-                    functions,
                     optimized_names,
                     child_template,
                     &key.member,
@@ -1304,512 +1310,6 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
-/// The set of function NAMES in a `functions` slice that carry an
-/// `@optimized` attribute, built at most once per instance TREE.
-///
-/// amend (#6662 reviewer_comprehensive, suggestion #3 — efficiency). The
-/// pre-filter inside [`optimized_target_of`] was `functions.iter().any(|f|
-/// f.name == *name && f.optimized_target.is_some())` — O(|functions|) string
-/// comparisons against the STDLIB-INCLUSIVE set, run once per
-/// `UserFunctionCall` cell per instance, so its cost scaled as
-/// instances × cells × |stdlib functions|. Hoisting the name set turns the
-/// per-cell factor into one hash lookup.
-///
-/// A `OnceCell`, not an eagerly-built set, because the build is only worth
-/// paying for when the walk actually probes something: an instance whose cells
-/// contain no `UserFunctionCall` at all never reaches the lookup, and must not
-/// pay |functions| for the privilege. The lifetime `'f` ties the borrowed names
-/// to the `functions` slice they were read from, so a cache can never outlive
-/// or be paired with a different slice — which is also what makes SHARING one
-/// across phases safe to assert rather than merely believe.
-///
-/// # What this does and does not eliminate (round-4 suggestion #4)
-///
-/// The first cut declared one index per PHASE — three `OnceCell`s, in phase
-/// 1.5, `elaborate_child_params_only` and `elaborate_child_lets_only` — so the
-/// O(|functions|) build was still paid up to 3× per instance, once per
-/// collection element and once per nesting level included. Only the per-CELL
-/// factor had been removed, not the per-INSTANCE one, which the earlier wording
-/// ("one hash lookup") obscured.
-///
-/// [`elaborate_child_instance`] now owns ONE index and threads it through all
-/// three phases and every nested-sub recursion level, so a whole instance tree
-/// builds it at most once. `unfold_recursive_sub` owns one per recursion LEVEL
-/// (2 builds → 1), not one per unfolding: it is `pub(crate)` and recursive
-/// through a `pub(crate)` entry that `engine_eval.rs` calls, and `engine_eval.rs`
-/// was outside #6662's lock set.
-///
-/// RESIDUAL, stated rather than implied: the build is still paid once per
-/// top-level `elaborate_child_instance` call — i.e. once per sub, and once per
-/// COLLECTION ELEMENT, since `engine_eval.rs` loops elements at its own call
-/// site. Collapsing that last factor means building the index where the
-/// `functions` slice is owned for the whole pass (`engine_eval.rs`) and passing
-/// it in; the `'f` tie already makes that a signature change and nothing more.
-pub(crate) type OptimizedNameIndex<'f> = OnceCell<HashSet<&'f str>>;
-
-/// The ONE `@optimized`-cell probe: `Some(target)` iff `expr` is a
-/// `UserFunctionCall` that overload-resolves to a function carrying an
-/// `@optimized("target")` attribute.
-///
-/// amend (#6662 reviewer_comprehensive, suggestion #4 — code-reuse). This shape
-/// was written twice: here and as `engine_eval.rs::is_optimized_userfn_cell`,
-/// which the two TEMPLATE-scope lowering sites gate on. The two must agree
-/// exactly — a cell that is `@optimized` at one scope and not the other either
-/// re-folds a dispatched value through plain `eval_expr` (clobbering it) or
-/// leaves an instance cell body-inlined forever — and a doc comment asserting
-/// "a future change to overload resolution moves both together" enforced
-/// nothing. This function is the definition; `is_optimized_userfn_cell` is
-/// `optimized_target_of(..).is_some()` over the same inputs, and
-/// `optimized_probe_agrees_with_engine_eval_is_optimized_userfn_cell` (below)
-/// asserts the equivalence across every shape either one can see, so a
-/// divergence reds rather than silently splitting.
-///
-/// `is_optimized_userfn_cell` is not YET re-expressed as a call to this
-/// function — `engine_eval.rs` was outside #6662's lock set, a process
-/// constraint rather than a technical one (same crate; this fn is already
-/// `pub(crate)`). The test above is the binding half meanwhile: it fails if the
-/// two ever disagree on any of the shapes it enumerates. The collapse is
-/// tracked as a follow-up, filed from #6662's amendment pass as ticket
-/// `tkt_0RT53256ABFRYETNAXEJP3EN1T` — not cited as `#NNNN` because the curator
-/// assigns the task id asynchronously and an unresolvable cite would be an
-/// orphan under the repo's citation convention.
-///
-/// PERF (suggestion #3). The [`OptimizedNameIndex`] lookup runs BEFORE
-/// `find_matching_compiled_function`, whose multi-tier overload scan walks
-/// per-candidate param/arg types over the whole `functions` slice (stdlib
-/// included). Instance elaboration probes EVERY `UserFunctionCall` cell of
-/// every instance, and `eval_child_expr` then resolves the same call again on
-/// the fallback path — without the pre-filter an ordinary, non-`@optimized`
-/// function-call let pays full overload resolution twice per instance. The
-/// pre-filter is exact, not approximate: `find_matching_compiled_function` only
-/// ever returns a candidate with `f.name == function_name` (every tier's
-/// `arity_match` requires it), so if no candidate of that name carries an
-/// `optimized_target` the full scan cannot produce one either.
-pub(crate) fn optimized_target_of<'f>(
-    expr: &reify_ir::CompiledExpr,
-    functions: &'f [CompiledFunction],
-    optimized_names: &OptimizedNameIndex<'f>,
-) -> Option<String> {
-    let reify_ir::CompiledExprKind::UserFunctionCall {
-        function_name,
-        args,
-    } = &expr.kind
-    else {
-        return None;
-    };
-    let names = optimized_names.get_or_init(|| {
-        functions
-            .iter()
-            .filter(|f| f.optimized_target.is_some())
-            .map(|f| f.name.as_str())
-            .collect()
-    });
-    if !names.contains(function_name.as_str()) {
-        return None;
-    }
-    reify_expr::find_matching_compiled_function(functions, function_name, args)
-        .and_then(|f| f.optimized_target.clone())
-}
-
-/// Outcome of probing an instance-scope cell for `@optimized` reuse
-/// ([`resolve_optimized_instance_cell`]).
-enum OptimizedInstanceResolution {
-    /// Not an `@optimized` `UserFunctionCall` — evaluate normally.
-    NotOptimized,
-    /// The template-scope cell's dispatched value, safe to commit verbatim at
-    /// instance scope because every input this call reads compares equal
-    /// between the two scopes.
-    Reuse(Value),
-    /// An `@optimized` call whose template-scope value CANNOT be proven to
-    /// apply to this instance. The caller falls back to body-inlining (today's
-    /// behaviour) and reports `reason` — subject to
-    /// [`report_optimized_instance_decline`]'s filters, of which `cause` is one.
-    Unreusable {
-        target: String,
-        cause: DeclineCause,
-        reason: String,
-    },
-}
-
-/// WHICH of the two declining conditions [`resolve_optimized_instance_cell`]
-/// hit. Structural, so [`report_optimized_instance_decline`] can filter on the
-/// condition rather than on the human-readable `reason` text.
-///
-/// amend (#6662 reviewer_comprehensive, suggestion #1 — robustness). Before
-/// this split there was only a `reason` string, and the missing-template-value
-/// branch hard-coded ONE explanation ("structure not in module.templates — e.g.
-/// a prelude/stdlib structure"). That explanation is wrong in every case the
-/// warning could actually be PRINTED: see [`NoTemplateValue`]'s doc for why.
-///
-/// [`NoTemplateValue`]: DeclineCause::NoTemplateValue
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeclineCause {
-    /// A cell in the call's DIRECT read set has a different value at instance
-    /// scope than at template scope — a constructor override, virtually always.
-    /// Genuinely instance-specific and genuinely degrading (the instance falls
-    /// back to the `.ri` body's sentinel), so this is the cause that is
-    /// REPORTED.
-    InputsDiffer,
-    /// The template-scope OUTPUT cell holds no value at all. NOT reported —
-    /// under `report_optimized_instance_decline`'s registered-target gate this
-    /// cause has no honest message to print:
-    ///
-    /// * If the owning structure got NO template-scope pass (a prelude/stdlib
-    ///   structure — `engine_eval.rs` keys its lowering on `for template in
-    ///   &module.templates`), then no `ComputeNode` names the cell either, so
-    ///   the registered-target gate is already false and nothing is emitted.
-    /// * If a `ComputeNode` DOES name the cell, template scope registered a
-    ///   trampoline and DISPATCHED — and the value is missing because that
-    ///   dispatch Failed or was Cancelled (the Failed handler deliberately does
-    ///   not write to `values`; pinned by
-    ///   `e2e_registered_failed_trampoline_does_not_silently_body_inline`).
-    ///   Template scope has already surfaced the trampoline's own Error for
-    ///   exactly that cell. A second, instance-scope report would be the same
-    ///   class of misleading duplicate the registered-target gate was added to
-    ///   eliminate — and worse, it would attribute a failed solve to "a
-    ///   prelude/stdlib structure".
-    ///
-    /// So the two reachable readings are "nothing happened" and "template scope
-    /// already told you, more accurately". Neither wants a warning here; the
-    /// VALUE is body-inlined either way, unchanged.
-    NoTemplateValue,
-}
-
-/// Decide whether an instance-scope cell may carry the template-scope cell's
-/// already-dispatched `@optimized` value (task #6662).
-///
-/// WHY REUSE RATHER THAN RE-DISPATCH. `@optimized` → ComputeNode lowering
-/// exists only at template scope (`engine_eval.rs::evaluate_params_and_lets_unified`
-/// and `::evaluate_let_bindings`, both keyed on `for template in
-/// &module.templates`). Instance cells are elaborated here, through
-/// `cell_eval_ctx`, which carries no compute dispatch — so
-/// `reify_expr::try_compute_dispatch` returns `None` and the `.ri` function
-/// BODY runs. Every solver stdlib body is a bare sentinel constructor
-/// (`{ ElasticResult() }`), so an instantiated `sub` silently gets an empty
-/// shell where the template got the real solved value.
-///
-/// Re-dispatching here through the `ComputeDispatch` trait hook would be
-/// WORSE, not better: `OptimizedComputeDispatcher::dispatch` calls
-/// `f(args, &[], &Value::Undef, None, &cancellation)` — EMPTY realization
-/// inputs, `Undef` options, no warm state — whereas the template-scope
-/// lowering builds `realization_read_handles` via
-/// `build_compute_realization_inputs`, runs `insert_shell_extract_upstream`,
-/// and threads a persistent cache key plus warm state through
-/// `run_compute_dispatch`. That would trade a visibly-empty sentinel for an
-/// invisibly-wrong number on every realization-bearing / shell-route target,
-/// and would double every FEA solve. Reusing the template-scope value is
-/// bit-exact with the full lowering at zero extra solve cost.
-///
-/// SOUNDNESS. The arg expressions are literally the same `CompiledExpr`s at
-/// both scopes (compiled once, in the child template's scope), so the call's
-/// result is a pure function of the values its reads resolve to. Comparing the
-/// DIRECT read set is therefore sufficient — transitive dependencies are
-/// already folded into the direct reads' values. The comparison is conservative
-/// in the right direction: present-in-one-map vs absent-in-the-other compares
-/// unequal, so the helper declines rather than guesses.
-///
-/// STALENESS (amend #6662 reviewer_comprehensive, suggestion #5; narrowed by
-/// round 4 suggestion #1). `Reuse` copies the template-scope value as a
-/// ONE-TIME SNAPSHOT taken during sub elaboration; the copy itself is never
-/// re-run. `Engine::redispatch_geometry_consuming_compute_nodes`
-/// (engine_build.rs) re-dispatches a geometry-consuming compute node LATER,
-/// inside `build()`, once its args have hydrated to kernel-backed
-/// `GeometryHandle`s — and it writes only `node_data.output_value_cells[0]`,
-/// which is TEMPLATE-scoped because every `ComputeNode` is lowered at template
-/// scope. A reused instance cell would therefore keep the degraded
-/// first-dispatch result while the template cell got the corrected one: the
-/// "invisibly-wrong number" hazard this doc cites as the reason not to
-/// re-dispatch, reached by staleness instead.
-///
-/// The mechanism was a MISSING DEPENDENCY EDGE, not the snapshot as such: the
-/// trace committed for a reused cell was the raw
-/// `extract_dependency_trace(expr)`, which records the call's ARG reads and
-/// nothing about the cell the value was copied from, so `dirty.rs`'s
-/// `compute_eval_set` had no edge that could mark the instance cell dirty when
-/// the template cell moved. `elaborate_child_lets_only` — the one reuse site
-/// that commits a trace at all — now pushes `{child_template}.{member}` onto
-/// the committed trace's `reads` on the `Reuse` arm, so the existing dirty
-/// machinery invalidates the instance cell whenever the template cell is
-/// rewritten. The other two reuse sites need no counterpart: phase 1.5's
-/// scratch arm writes only the in-memory `overlay` (phase 2 owns the commit),
-/// and `elaborate_child_params_only` commits `DependencyTrace::default()` for
-/// EVERY param, reused or not — giving a param default an edge no other param
-/// carries would be a separate change to that site's provenance, not part of
-/// closing this hazard.
-///
-/// What remains unpinned is the narrower claim that the geometry case never
-/// reaches the reuse arm in the first place — BELIEVED so because a
-/// geometry-typed arg's instance value carries an instance-scoped realization
-/// ref, so the read comparison above declines first. The discriminator that
-/// belief rests on IS pinned at the helper by
-/// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`
-/// below; what no fixture on this branch reaches is the same path END TO END
-/// through `build()`, which needs a kernel-backed handle this crate's tests
-/// cannot mint. Tracked as ticket `tkt_0RT532KR05N0FNK05FJT69R2CA` (filed from
-/// #6662's amendment pass; not cited as `#NNNN` because the curator assigns the
-/// task id asynchronously and an unresolvable cite would be an orphan).
-///
-/// SHAPE-EXACTNESS is inherited from template scope, not re-invented: the probe
-/// is [`optimized_target_of`], the ONE definition `engine_eval.rs`'s
-/// `is_optimized_userfn_cell` is also expressed over (see that helper's doc for
-/// why there is exactly one). So a cell that merely WRAPS an `@optimized` call
-/// (`let m = limit - solve(..).x`) is left alone at BOTH scopes, and a future
-/// change to overload resolution moves both together.
-///
-/// `instance_values` is this instance's map (`child_values` in phase 2, the
-/// running `overlay` in phase 1.5); `global_values` is the global map holding
-/// the template-scope pass's results. Both are keyed template-scoped, so the
-/// same `ValueCellId` addresses the two scopes' copies of one cell.
-///
-/// ## Why the two instance maps reach the SAME decision
-///
-/// amend (#6662 reviewer_comprehensive, suggestion #7). The gate runs against
-/// two different instance maps — phase 1.5's `overlay` (params + scratch lets +
-/// ONE level of nested-sub member projections + the collapsed `__self` aliases)
-/// and phase 2's `child_values` (params + the multi-level projection BFS +
-/// collapsed values) — and a key one map carries while the other does not would
-/// compare `Some(v)` vs `None` and flip the gate. MEASURED on this branch, that
-/// divergence class is not reachable, because the only keys the two maps differ
-/// on are ones no read set can name:
-///
-/// * a read TWO levels down (`self.leaf.inner.x`) — the shape that would key on
-///   `Mid.leaf.inner.x`, which phase 2's BFS projects and phase 1.5's
-///   single-level loop does not — is REJECTED BY THE COMPILER:
-///   `unknown member 'inner' on sub 'leaf'`, followed by `no matching overload`.
-///   The deepest expressible cross-sub read is one hop (`self.leaf.ix`, keyed
-///   `Mid.leaf.ix`), which BOTH maps carry. Pinned by
-///   `phase15_phase2_parity_deepest_expressible_cross_sub_read` and
-///   `two_level_cross_sub_read_is_rejected_by_the_compiler` in
-///   `tests/compute_dispatch_registry.rs` — if the language ever gains the flat
-///   two-level form, the second of those reds and this note must be revisited.
-/// * params, same-template lets, one-level `{tmpl}.{sub}.{member}` projections
-///   and the collapsed `{tmpl}.{sub}` / `{tmpl}.{sub}.__self` aliases are in
-///   BOTH maps, and in both cases the producing node is a topological
-///   PREDECESSOR of the reading cell (`phase15_node_traces` normalises a
-///   cross-sub read onto its sub node), so ordering cannot make one map hold a
-///   key the other is still missing.
-/// * a SKIPPED sub (non-nestable / cycle cut / unresolvable) contributes to
-///   NEITHER map: phase 2's BFS is seeded from `elaborated_sub_names`, which
-///   excludes exactly the subs phase 1.5 skipped.
-// 8 args: the file's established shape for these elaboration helpers (five
-// siblings above carry the same allow). Each argument is an independent
-// capability — two value maps that must NOT be conflated, the probe index, the
-// cell's identity, and the lazy read trace — so bundling them into a struct
-// would only rename the coupling.
-#[allow(clippy::too_many_arguments)]
-fn resolve_optimized_instance_cell<'f, R>(
-    expr: &reify_ir::CompiledExpr,
-    functions: &'f [CompiledFunction],
-    optimized_names: &OptimizedNameIndex<'f>,
-    child_template: &TopologyTemplate,
-    member: &str,
-    reads: impl FnOnce() -> R,
-    instance_values: &ValueMap,
-    global_values: &ValueMap,
-) -> OptimizedInstanceResolution
-where
-    R: AsRef<[ValueCellId]>,
-{
-    let Some(target) = optimized_target_of(expr, functions, optimized_names) else {
-        return OptimizedInstanceResolution::NotOptimized;
-    };
-
-    // Input equality over the DIRECT read set. `reads` yields
-    // `extract_dependency_trace(expr).reads` — the same function that builds
-    // phase 2's topological-sort edges, so the reuse gate and the evaluation
-    // order can never disagree about what a cell depends on.
-    //
-    // amend (#6662 reviewer_comprehensive, suggestion #2 — efficiency). It is a
-    // `FnOnce`, not a slice, so the trace is materialised ONLY on the
-    // `@optimized` path. Two of the three call sites have no pre-built trace to
-    // hand over and were calling `extract_dependency_trace(expr)` eagerly for
-    // EVERY scratch let / param default of every instance (a full
-    // expression-tree walk plus a `Vec<ValueCellId>` allocation), discarding the
-    // result on the overwhelmingly common `NotOptimized` return. The third site
-    // (phase-2 lets) still passes its pre-built `child_let_traces` entry by
-    // reference — `&[ValueCellId]: AsRef<[ValueCellId]>` — so it keeps costing
-    // nothing.
-    let reads = reads();
-    for read in reads.as_ref() {
-        let instance_val = instance_values.get(read);
-        let global_val = global_values.get(read);
-        if instance_val != global_val {
-            return OptimizedInstanceResolution::Unreusable {
-                target,
-                cause: DeclineCause::InputsDiffer,
-                reason: format!(
-                    "input {}.{} differs from the template's ({:?} vs {:?})",
-                    read.entity, read.member, instance_val, global_val
-                ),
-            };
-        }
-    }
-
-    // The template-scope output cell. Absent under either of two conditions —
-    // the owning structure got no template-scope pass at all (a prelude/stdlib
-    // structure, not in `module.templates`), or template scope DID dispatch and
-    // the dispatch produced no value (Failed / Cancelled). This function cannot
-    // tell them apart (it holds no graph), and deliberately does not guess: the
-    // reason names both, and `DeclineCause::NoTemplateValue` carries the
-    // distinction structurally to the one place that CAN discriminate — see
-    // that variant's doc, and `report_optimized_instance_decline`.
-    let template_cell = ValueCellId::new(&child_template.name, member);
-    match global_values.get(&template_cell) {
-        Some(value) => OptimizedInstanceResolution::Reuse(value.clone()),
-        None => OptimizedInstanceResolution::Unreusable {
-            target,
-            cause: DeclineCause::NoTemplateValue,
-            reason: format!(
-                "template-scope cell {}.{} holds no value — either the structure \
-                 got no template-scope pass (not in module.templates, e.g. a \
-                 prelude/stdlib structure) or its template-scope dispatch \
-                 produced none (Failed/Cancelled)",
-                child_template.name, member
-            ),
-        },
-    }
-}
-
-/// Did TEMPLATE scope actually DISPATCH this cell through a compute trampoline,
-/// rather than body-inline it?
-///
-/// amend (#6662 reviewer_comprehensive, suggestion #1). `engine_eval.rs`'s
-/// lowering site inserts a `ComputeNode` carrying the cell in
-/// `output_value_cells` ONLY inside its `if self.compute_dispatch(&target)
-/// .is_some()` arm; the unregistered arm pushes its own
-/// `no registered compute trampoline` Error and falls straight through to
-/// body-inlining without ever touching the graph. The presence of that node is
-/// therefore an exact, structural answer to "is the template-scope value a
-/// dispatched one", needing neither the registry (which `unfold.rs` has no
-/// handle on) nor a re-evaluation to probe.
-fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId) -> bool {
-    snapshot
-        .graph
-        .compute_nodes
-        .values()
-        .any(|n| n.output_value_cells.contains(template_cell))
-}
-
-/// Report an instance-scope `@optimized` reuse DECLINE — once per authoring
-/// fact, and only when declining actually costs something.
-///
-/// The decline is LOUD but not fatal. The VALUE is byte-identical to pre-#6662
-/// behaviour, so no fixture changes outcome and no exit code moves — the
-/// warning removes only the silence, which is the actual defect class here.
-/// Escalating it to a hard failure is #6608's declared scope, and genuine
-/// per-instance dispatch under constructor overrides is #6592's.
-///
-/// Three filters, all from the #6662 amendment review:
-///
-/// * CAUSE GATE (round-2 suggestion #1). Only
-///   [`DeclineCause::InputsDiffer`] is reported.
-///   [`DeclineCause::NoTemplateValue`] is not: under the registered-target gate
-///   below, the only condition that reaches it is a template-scope dispatch
-///   that Failed or was Cancelled — which template scope has ALREADY reported
-///   as an Error naming the same cell — and the pre-fix message attributed that
-///   failure to "a prelude/stdlib structure", the one explanation that is
-///   provably NOT the cause whenever the gate lets the message through. See
-///   [`DeclineCause::NoTemplateValue`] for the full case split. Filtering on the
-///   structural cause rather than on the presence of a text-matching Error
-///   keeps this independent of any other site's diagnostic wording.
-///
-/// * REGISTERED-TARGET GATE (suggestion #1). Without it the warning fired, with
-///   actively misleading text, in the plain `reify check` shape — which
-///   registers NO trampolines — for every sub carrying a constructor override on
-///   a param an `@optimized` call reads. MEASURED: `Outer.a.r` got `Int(11)`,
-///   the correct per-instance body-inlined answer, alongside "falling back to
-///   body-inlining"; there was no dispatch to fall back FROM, and template scope
-///   had already emitted its own `no registered compute trampoline` Error for
-///   the same condition. `reify check` is the default CLI path, so that was a
-///   spurious warning on every model instantiating an `@optimized`-bearing
-///   structure with an override. The unregistered condition belongs to template
-///   scope's diagnostic and is not re-reported here.
-/// * PER-TEMPLATE-CELL DEDUPE (suggestion #2). The decline is a fact about
-///   `(target, child template, member)`, not about one instance: three subs of
-///   one template with three distinct overrides are one authoring fact, and a
-///   keyed/collection `sub` routes every element through the same site — N
-///   warnings for one fact, scaling with element count. `diagnostics` is the
-///   one vec `engine_eval.rs` threads through the whole sub-elaboration pass
-///   (collection elements included), so a prefix scan over it dedupes across
-///   sibling and collection instances alike, which a set scoped to one
-///   `elaborate_child_instance` call could not.
-///
-///   COST, stated rather than implied (round-4 suggestion #3). Both scans run
-///   on the decline path only, and dedupe keeps the scanned `diagnostics` vec
-///   short — but it does NOT bound how many times that vec is scanned: in the
-///   very shape the dedupe was added for (a keyed/collection `sub` where every
-///   element declines) the function is still entered once per element. The
-///   dedupe scan is therefore ordered FIRST, so a repeat entry costs one
-///   `starts_with` walk of a short vec and never touches
-///   `template_cell_was_dispatched`'s unbounded `compute_nodes` walk. Making
-///   the repeat case O(1) needs a memo (`HashSet<ValueCellId>` keyed on the
-///   template cell) with the same lifetime as `diagnostics` — i.e. owned by
-///   `engine_eval.rs`, which was outside #6662's lock set — so it is a
-///   signature change deferred to a follow-up, not a rewrite of this function.
-///
-///   THE KEY MUST BE DELIMITED (round-3 review). The key is a literal prefix of
-///   the message, and `target` is delimited by `{:?}`'s closing quote and the
-///   template name by the following `.` — but `{member}` sits at the end, so
-///   without a terminator it is open-ended. Two members of ONE child template
-///   sharing ONE target, where the shorter name is a proper prefix of the
-///   longer (`r`/`r2`, `k`/`k2`, `defl`/`deflection`), then collide: the longer
-///   member's already-emitted message matches the shorter member's key and the
-///   shorter cell's decline is SILENTLY DROPPED — defeating the LOUD contract
-///   for exactly the cells this report exists to surface. MEASURED on
-///   `let r2 = dblpc(x); let r = dblpc(r2)`: two degraded instance cells, ONE
-///   warning, naming only `InnerPC.r2`. The trailing `:` fixes it — `:` is not
-///   a valid identifier character, so `{member}:` is unambiguously terminated,
-///   and the key stays a literal prefix so the no-side-table property holds.
-///   Guarded by
-///   `instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix`
-///   in `crates/reify-eval/tests/compute_dispatch_registry.rs`.
-// 8 args: the reported fact IS this wide — the decline names a scoped instance
-// cell, the template cell behind it, the target, the structural cause and the
-// human reason, and needs the snapshot to gate and the diagnostics vec to
-// dedupe. A params struct would move the same seven fields one level down.
-#[allow(clippy::too_many_arguments)]
-fn report_optimized_instance_decline(
-    diagnostics: &mut Vec<Diagnostic>,
-    snapshot: &Snapshot,
-    child_template: &TopologyTemplate,
-    member: &str,
-    scoped_entity: &str,
-    target: &str,
-    cause: DeclineCause,
-    reason: &str,
-) {
-    if cause != DeclineCause::InputsDiffer {
-        return;
-    }
-    // The dedupe key is a literal PREFIX of the message, so the scan needs no
-    // side table and cannot drift from the text it keys. The trailing `:` is
-    // load-bearing — see the PER-TEMPLATE-CELL DEDUPE bullet above.
-    let key = format!(
-        "@optimized target {:?} on {}.{}:",
-        target, child_template.name, member
-    );
-    // DEDUPE BEFORE the graph scan (amend round-4 suggestion #3): both are pure
-    // predicates, so the emitted set is identical either way, but this ordering
-    // keeps the already-reported case — every element after the first in the
-    // keyed/collection shape this dedupe exists for — off
-    // `template_cell_was_dispatched`'s unbounded `compute_nodes` walk entirely.
-    if diagnostics.iter().any(|d| d.message.starts_with(&key)) {
-        return;
-    }
-    let template_cell = ValueCellId::new(&child_template.name, member);
-    if !template_cell_was_dispatched(snapshot, &template_cell) {
-        return;
-    }
-    diagnostics.push(Diagnostic::warning(format!(
-        "{key} instance scope {scoped_entity}.{member} cannot reuse the \
-         template's dispatched value ({reason}) — falling back to body-inlining. \
-         Reported once per template cell: every other instance of {} whose \
-         inputs differ declines the same way (per-instance dispatch under \
-         constructor overrides is tracked by #6592).",
-        child_template.name,
-    )));
-}
-
 /// Phase 1: Evaluate and store only the param cells for a child instance.
 ///
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
@@ -1900,7 +1400,6 @@ fn elaborate_child_params_only<'f>(
             // elements included — never walks the expression tree here.
             let resolution = resolve_optimized_instance_cell(
                 default_expr,
-                functions,
                 optimized_names,
                 child_template,
                 member,
@@ -1947,12 +1446,7 @@ fn elaborate_child_params_only<'f>(
             // then is to order this loop by dependency (reusing
             // `phase15_node_traces` + `topological_sort` as phase 2 does), not
             // to weaken the gate.
-            if let OptimizedInstanceResolution::Unreusable {
-                target,
-                cause,
-                reason,
-            } = &resolution
-            {
+            if let OptimizedInstanceResolution::Unreusable { target, cause } = &resolution {
                 report_optimized_instance_decline(
                     diagnostics,
                     snapshot,
@@ -1960,8 +1454,7 @@ fn elaborate_child_params_only<'f>(
                     member,
                     scoped_entity,
                     target,
-                    *cause,
-                    reason,
+                    cause,
                 );
             }
 
@@ -2242,7 +1735,6 @@ fn elaborate_child_lets_only<'t, 'f>(
             .unwrap_or(&no_reads);
         let resolution = resolve_optimized_instance_cell(
             expr,
-            functions,
             optimized_names,
             child_template,
             member,
@@ -2258,12 +1750,7 @@ fn elaborate_child_lets_only<'t, 'f>(
         // gate and the per-template-cell dedupe — see its doc comment; in
         // particular it is what keeps the plain `reify check` shape (no
         // trampolines registered at all) silent.
-        if let OptimizedInstanceResolution::Unreusable {
-            target,
-            cause,
-            reason,
-        } = &resolution
-        {
+        if let OptimizedInstanceResolution::Unreusable { target, cause } = &resolution {
             report_optimized_instance_decline(
                 diagnostics,
                 snapshot,
@@ -2271,8 +1758,7 @@ fn elaborate_child_lets_only<'t, 'f>(
                 member,
                 scoped_entity,
                 target,
-                *cause,
-                reason,
+                cause,
             );
         }
 
@@ -2695,353 +2181,5 @@ mod tests {
              the let-binding branch in elaborate_child_lets_only, not degrade to \
              Value::Undef as the pre-migration bare eval_ctx_with_meta context did"
         );
-    }
-
-    // ── #6662 amendment tests ────────────────────────────────────────────────
-
-    /// amend (#6662 reviewer_comprehensive, suggestion #4 — code-reuse).
-    ///
-    /// [`optimized_target_of`] and `engine_eval::is_optimized_userfn_cell` are
-    /// the SAME shape rule, and a divergence between them is silent and
-    /// expensive (a cell `@optimized` at one scope but not the other either has
-    /// its dispatched value re-folded through plain `eval_expr` or stays
-    /// body-inlined forever). `engine_eval.rs` is outside this task's lock set,
-    /// so the two cannot yet be collapsed into one call; this asserts the
-    /// equivalence directly instead, over every shape either probe can see:
-    /// an `@optimized` call, a plain call, a non-call expression, and a call
-    /// that merely WRAPS an `@optimized` call.
-    #[test]
-    fn optimized_probe_agrees_with_engine_eval_is_optimized_userfn_cell() {
-        let source = r#"
-            @optimized("test::probe")
-            fn opt_call(x : Int) -> Int {
-                x + 1
-            }
-
-            fn plain_call(x : Int) -> Int {
-                x + 2
-            }
-
-            structure ProbeShapes {
-                param x : Int = 3
-                let a_optimized = opt_call(x)
-                let b_plain = plain_call(x)
-                let c_not_a_call = x + 1
-                let d_wrapping = plain_call(opt_call(x))
-            }
-        "#;
-        let module = reify_test_support::compile_source_with_stdlib(source);
-        let errors = reify_test_support::collect_errors(&module.diagnostics);
-        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
-
-        // The probe must see the stdlib-inclusive function set the production
-        // sites see, not just the module's own — that is what makes the
-        // overload-resolution tiers actually run.
-        let functions = &module.functions;
-
-        for (cell, expect_optimized) in [
-            ("a_optimized", true),
-            ("b_plain", false),
-            ("c_not_a_call", false),
-            // `let d = plain_call(opt_call(x))` is a call to a NON-optimized fn;
-            // the `@optimized` call is an ARGUMENT. Both probes look at the
-            // top-level expression only, so both must say "not optimized" —
-            // this is the "merely WRAPS" case the doc comments promise is left
-            // alone at BOTH scopes.
-            ("d_wrapping", false),
-        ] {
-            let expr = reify_test_support::get_let_expr_in(&module, "ProbeShapes", cell);
-            // A fresh index per probe: this test is about the VERDICT, not the
-            // memoisation, and a per-call cache keeps the two probes' inputs as
-            // close to identical as the signatures allow.
-            let mine = optimized_target_of(expr, functions, &OptimizedNameIndex::new());
-            let theirs = crate::engine_eval::is_optimized_userfn_cell(expr, functions);
-            assert_eq!(
-                mine.is_some(),
-                theirs,
-                "optimized_target_of and engine_eval::is_optimized_userfn_cell \
-                 disagree on `{cell}` ({mine:?} vs {theirs}); the two probes have \
-                 split and one scope now treats this cell differently from the other"
-            );
-            assert_eq!(
-                mine.is_some(),
-                expect_optimized,
-                "probe verdict for `{cell}` is not the documented one (got {mine:?})"
-            );
-        }
-    }
-
-    /// amend (#6662 reviewer_comprehensive, suggestion #6 — test-coverage).
-    ///
-    /// The `Unreusable { reason: "template-scope cell … was never evaluated" }`
-    /// branch guards the case where the child structure got no template-scope
-    /// pass at all, because `engine_eval.rs` keys its `@optimized` lowering on
-    /// `for template in &module.templates` and a PRELUDE/stdlib structure is
-    /// deliberately not merged into that list (see
-    /// [`find_template_in_scope`]). It is not incidental — the FEA/solver
-    /// targets #6662 exists for live in the stdlib, and `find_template_in_scope`
-    /// shows prelude-typed subs ARE elaborated on this path — but no
-    /// end-to-end fixture could reach it, because building a prelude module
-    /// that a user module can also name at COMPILE time needs a `&'static`
-    /// prelude the test-support compile helpers do not expose. So the branch is
-    /// covered where it is decided: at the helper, with a `global_values` map
-    /// that simply lacks the template-scope output cell.
-    #[test]
-    fn resolve_optimized_instance_cell_reports_unevaluated_template_cell() {
-        let source = r#"
-            @optimized("test::prelude_target")
-            fn prelude_opt(x : Int) -> Int {
-                x + 1
-            }
-
-            structure PreludeLike {
-                param x : Int = 3
-                let r = prelude_opt(x)
-            }
-        "#;
-        let module = reify_test_support::compile_source_with_stdlib(source);
-        let errors = reify_test_support::collect_errors(&module.diagnostics);
-        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == "PreludeLike")
-            .expect("PreludeLike template");
-        let expr = reify_test_support::get_let_expr_in(&module, "PreludeLike", "r");
-
-        // Both maps agree on the INPUT (`PreludeLike.x`), so the read loop
-        // passes and the outcome is decided purely by the output cell's
-        // absence — which is exactly what a never-template-evaluated structure
-        // looks like.
-        let mut instance_values = ValueMap::new();
-        instance_values.insert(ValueCellId::new("PreludeLike", "x"), Value::Int(3));
-        let mut global_values = ValueMap::new();
-        global_values.insert(ValueCellId::new("PreludeLike", "x"), Value::Int(3));
-        assert!(
-            global_values
-                .get(&ValueCellId::new("PreludeLike", "r"))
-                .is_none(),
-            "the fixture's premise is that the template-scope OUTPUT cell is absent"
-        );
-
-        let resolution = resolve_optimized_instance_cell(
-            expr,
-            &module.functions,
-            &OptimizedNameIndex::new(),
-            template,
-            "r",
-            || extract_dependency_trace(expr).reads,
-            &instance_values,
-            &global_values,
-        );
-        match resolution {
-            OptimizedInstanceResolution::Unreusable {
-                target,
-                cause,
-                reason,
-            } => {
-                assert_eq!(target, "test::prelude_target");
-                assert_eq!(
-                    cause,
-                    DeclineCause::NoTemplateValue,
-                    "the missing-output-cell branch must carry the structural cause, \
-                     not just prose — `report_optimized_instance_decline` filters on it \
-                     (amend round-2 suggestion #1): {reason}"
-                );
-                // amend (#6662 reviewer_comprehensive round 2, suggestion #1).
-                // The reason must NOT hard-code the prelude/stdlib explanation:
-                // a template-scope dispatch that Failed lands in this same
-                // branch, and is in fact the ONLY reading under which the text
-                // could ever be printed. Both causes must be named.
-                assert!(
-                    reason.contains("template-scope cell PreludeLike.r holds no value"),
-                    "wrong decline reason for the no-template-value branch: {reason}"
-                );
-                assert!(
-                    reason.contains("prelude/stdlib structure")
-                        && reason.contains("Failed/Cancelled"),
-                    "the no-template-value reason must name BOTH causes — a missing \
-                     template-scope pass AND a template-scope dispatch that produced \
-                     no value — since this branch cannot tell them apart: {reason}"
-                );
-            }
-            OptimizedInstanceResolution::Reuse(v) => panic!(
-                "must not reuse a value the template scope never produced (got {v:?})"
-            ),
-            OptimizedInstanceResolution::NotOptimized => {
-                panic!("`prelude_opt` carries @optimized; the probe must see it")
-            }
-        }
-
-        // Same fixture, template cell PRESENT ⇒ the branch above is genuinely
-        // selected by absence and not by something else in the shape.
-        global_values.insert(ValueCellId::new("PreludeLike", "r"), Value::Int(777));
-        match resolve_optimized_instance_cell(
-            expr,
-            &module.functions,
-            &OptimizedNameIndex::new(),
-            template,
-            "r",
-            || extract_dependency_trace(expr).reads,
-            &instance_values,
-            &global_values,
-        ) {
-            OptimizedInstanceResolution::Reuse(v) => assert_eq!(v, Value::Int(777)),
-            other => panic!(
-                "with the template cell present and inputs equal this must Reuse, got {:?}",
-                match other {
-                    OptimizedInstanceResolution::Unreusable { reason, .. } => reason,
-                    _ => "NotOptimized".to_string(),
-                }
-            ),
-        }
-    }
-
-    /// amend (#6662 reviewer_comprehensive round 4, suggestion #2 —
-    /// test-coverage).
-    ///
-    /// [`resolve_optimized_instance_cell`]'s STALENESS note argues that the
-    /// geometry-consuming case never reaches the `Reuse` arm, because a
-    /// geometry-typed arg's INSTANCE value carries an instance-scoped
-    /// realization ref and the read comparison therefore declines first. That
-    /// is the load-bearing soundness claim for every geometry-consuming
-    /// `@optimized` target in the stdlib (`fdm::slice`,
-    /// `fdm::as_printed_material_r_fast`), and until now it rested on prose
-    /// alone.
-    ///
-    /// The blocker recorded there ("pinning it needs a kernel-backed handle
-    /// this crate's tests cannot mint") is real only for the END-TO-END path
-    /// through `build()`. The DISCRIMINATOR is fully expressible here:
-    /// `Value::GeometryHandle` equality is `GeometryHandleRef`'s, which compares
-    /// `realization_ref` + `upstream_values_hash` and deliberately EXCLUDES
-    /// `kernel_handle` (reify-ir/src/value.rs, GHR-β §DD), and
-    /// `RealizationNodeId::new(entity, index)` is entity-scoped — so two
-    /// symbolic (`kernel_handle: None`) handles differing only in their ref's
-    /// ENTITY are exactly the instance-vs-template shape the claim depends on.
-    ///
-    /// This test reds if `GeometryHandleRef`'s equality ever widens to include
-    /// `kernel_handle` (the `Reuse` arm would start declining), or if
-    /// realization ids stop being entity-scoped (the `InputsDiffer` arms would
-    /// start reusing — the actual staleness hazard).
-    #[test]
-    fn resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref() {
-        use reify_core::identity::RealizationNodeId;
-
-        let source = r#"
-            @optimized("test::geom_target")
-            fn geom_opt(g : Solid) -> Int {
-                7
-            }
-
-            structure GeomLike {
-                param g : Solid = box(1mm, 1mm, 1mm)
-                let r = geom_opt(g)
-            }
-        "#;
-        let module = reify_test_support::compile_source_with_stdlib(source);
-        let errors = reify_test_support::collect_errors(&module.diagnostics);
-        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == "GeomLike")
-            .expect("GeomLike template");
-        let expr = reify_test_support::get_let_expr_in(&module, "GeomLike", "r");
-
-        // Symbolic handles only — `kernel_handle: None` is the eval-path mint
-        // (task #4652), and is precisely what makes this shape constructible
-        // without a kernel.
-        let handle = |entity: &str, hash: u8| Value::GeometryHandle {
-            realization_ref: RealizationNodeId::new(entity, 0),
-            upstream_values_hash: [hash; 32],
-            kernel_handle: None,
-        };
-
-        // The template-scope map: the arg's own realization is entity-scoped to
-        // the TEMPLATE, and the output cell holds a dispatched value that would
-        // be reused if the gate let it through.
-        let mut global_values = ValueMap::new();
-        global_values.insert(ValueCellId::new("GeomLike", "g"), handle("GeomLike", 1));
-        global_values.insert(ValueCellId::new("GeomLike", "r"), Value::Int(777));
-
-        // (a) INSTANCE-SCOPED realization ref ⇒ decline. `Asm.beam` is the
-        // entity an instantiated `sub beam : GeomLike` realizes under, so its
-        // ref can never equal the template's.
-        let mut instance_values = ValueMap::new();
-        instance_values.insert(ValueCellId::new("GeomLike", "g"), handle("Asm.beam", 1));
-        match resolve_optimized_instance_cell(
-            expr,
-            &module.functions,
-            &OptimizedNameIndex::new(),
-            template,
-            "r",
-            || extract_dependency_trace(expr).reads,
-            &instance_values,
-            &global_values,
-        ) {
-            OptimizedInstanceResolution::Unreusable { cause, reason, .. } => assert_eq!(
-                cause,
-                DeclineCause::InputsDiffer,
-                "a geometry arg whose realization ref is instance-scoped must                  decline as InputsDiffer — this is the comparison the STALENESS                  note's 'should decline first' rests on: {reason}"
-            ),
-            OptimizedInstanceResolution::Reuse(v) => panic!(
-                "REUSED a geometry-consuming @optimized value across scopes ({v:?}) —                  the instance cell would keep the pre-hydration result while                  `redispatch_geometry_consuming_compute_nodes` corrected only the                  template cell"
-            ),
-            OptimizedInstanceResolution::NotOptimized => {
-                panic!("`geom_opt` carries @optimized; the probe must see it")
-            }
-        }
-
-        // (b) Same entity, DIFFERENT upstream hash ⇒ decline too. Pins the
-        // second of `GeometryHandleRef`'s two equality fields, so a widening of
-        // the ref's identity is caught from both sides.
-        let mut same_entity_other_hash = ValueMap::new();
-        same_entity_other_hash.insert(ValueCellId::new("GeomLike", "g"), handle("GeomLike", 2));
-        assert!(
-            matches!(
-                resolve_optimized_instance_cell(
-                    expr,
-                    &module.functions,
-                    &OptimizedNameIndex::new(),
-                    template,
-                    "r",
-                    || extract_dependency_trace(expr).reads,
-                    &same_entity_other_hash,
-                    &global_values,
-                ),
-                OptimizedInstanceResolution::Unreusable {
-                    cause: DeclineCause::InputsDiffer,
-                    ..
-                }
-            ),
-            "a geometry arg with the same realization ref but a different              upstream_values_hash must also decline"
-        );
-
-        // (c) Companion arm: identical refs ⇒ Reuse. Without this the two
-        // declines above would be satisfied by a gate that declines on EVERY
-        // geometry value, which would prove nothing about the discriminator.
-        match resolve_optimized_instance_cell(
-            expr,
-            &module.functions,
-            &OptimizedNameIndex::new(),
-            template,
-            "r",
-            || extract_dependency_trace(expr).reads,
-            &global_values.clone(),
-            &global_values,
-        ) {
-            OptimizedInstanceResolution::Reuse(v) => assert_eq!(
-                v,
-                Value::Int(777),
-                "with value-identical geometry inputs the template's dispatched                  value must be reused verbatim"
-            ),
-            other => panic!(
-                "identical geometry inputs must Reuse, got {:?}",
-                match other {
-                    OptimizedInstanceResolution::Unreusable { reason, .. } => reason,
-                    _ => "NotOptimized".to_string(),
-                }
-            ),
-        }
     }
 }
