@@ -347,3 +347,128 @@ fn select_pin_constraints<'a>(
         })
         .collect()
 }
+
+/// The four `(sub_name, member)` cells this file pins — the same ones the
+/// `PIN_CASES` member shapes name — reused here to derive BOTH namespace
+/// spellings from the SAME compile rather than asserting the correspondence
+/// by hand.
+const PINNED_CELLS: &[(&str, &str)] = &[
+    ("a_frame", "rail_span_m"),
+    ("motion", "y_rail_len"),
+    ("a_frame", "travel_avail"),
+    ("tool_dock", "yh_min_today"),
+];
+
+/// The two namespaces are distinct for every pinned cell, and the
+/// correspondence between them — which `Printer.<sub>.<member>` instance
+/// path names the same underlying cell as which `<TemplateName>.<member>`
+/// values-namespace id — is DERIVED from `sub_components`/`value_cells`,
+/// never hand-kept anywhere in this file. S1-S4 alone pin one namespace;
+/// this test is what makes it impossible to confuse the two.
+#[test]
+fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace() {
+    let module = compiled_printer();
+    let printer = printer_template(module);
+
+    for &(sub_name, member) in PINNED_CELLS {
+        // (a) the sub resolves to its declared structure — the entity half
+        // of a constraint ref is the SUB NAME, not the TYPE NAME, which is
+        // precisely the confusion behind esc-5098-6. The expected type name
+        // is never hard-coded here: whichever `type_name` this derives is
+        // exactly what (b) below must find `member` declared on.
+        let type_name = sub_structure_name(printer, sub_name).unwrap_or_else(|| {
+            panic!(
+                "sub_structure_name(printer, {sub_name:?}) returned None; \
+                 Printer.sub_components: {:?}",
+                printer
+                    .sub_components
+                    .iter()
+                    .map(|s| (s.name.as_str(), s.structure_name.as_str()))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+        // constraint namespace: Printer.<sub_name>.<member>. Must match one
+        // of the PIN_* constants, and must appear in the parameter_ids of
+        // the pin this cell belongs to (located by member shape, S2).
+        let constraint_spelling = format!("Printer.{sub_name}.{member}");
+        let all_pin_constants: Vec<&str> =
+            PIN_CASES.iter().flat_map(|c| c.required_scoped_ids.iter().copied()).collect();
+        assert!(
+            all_pin_constants.contains(&constraint_spelling.as_str()),
+            "constraint-namespace spelling '{constraint_spelling}' (derived from sub \
+             '{sub_name}' + member '{member}') does not match any PIN_* constant; PIN_* \
+             constants: {all_pin_constants:?}",
+        );
+        let case = PIN_CASES.iter().find(|c| c.member_shape.contains(&member)).unwrap_or_else(
+            || panic!("no PinCase has member {member:?} in its member_shape"),
+        );
+        for c in &pin_constraints_by_members(printer, case.member_shape) {
+            let ids = constraint_parameter_ids(c);
+            assert!(
+                ids.iter().any(|id| id.as_str() == constraint_spelling),
+                "constraint {} parameter_ids does not contain '{constraint_spelling}'; \
+                 parameter_ids: {:?}",
+                c.id,
+                ids,
+            );
+        }
+
+        // (b) the declaring template (type_name) really declares `member` as
+        // a value cell, and its values-namespace id renders as
+        // `<TemplateName>.<member>` — mirrors `build_values`
+        // (gui/src-tauri/src/engine.rs:4897).
+        let values_spelling =
+            values_namespace_id(module, type_name, member).unwrap_or_else(|| {
+                panic!("values_namespace_id(module, {type_name:?}, {member:?}) returned None")
+            });
+        assert_eq!(
+            values_spelling,
+            format!("{type_name}.{member}"),
+            "values-namespace id for sub '{sub_name}' member '{member}' must render as \
+             '<TemplateName>.<member>'",
+        );
+
+        // (c) the two spellings differ for every pinned cell.
+        assert_ne!(
+            constraint_spelling, values_spelling,
+            "constraint-namespace spelling '{constraint_spelling}' and values-namespace \
+             spelling '{values_spelling}' must DIFFER for a cross-sub cell — if they now \
+             match, the constraints panel and the values panel would silently agree on an \
+             id that means two different things",
+        );
+
+        // (d) the regression assertion: no values-namespace spelling may
+        // appear in the parameter_ids of ANY constraint of Printer. This is
+        // exactly the state the old (pre-#7450) selector strings assumed,
+        // and it is false.
+        for c in &printer.constraints {
+            let ids = constraint_parameter_ids(c);
+            assert!(
+                !ids.iter().any(|id| id.as_str() == values_spelling),
+                "constraint {} parameter_ids CONTAINS the values-namespace spelling \
+                 '{values_spelling}' (constraint-namespace spelling would be \
+                 '{constraint_spelling}') — a Printer constraint must only ever carry \
+                 constraint-namespace (instance-path) ids. parameter_ids: {:?}",
+                c.id,
+                ids,
+            );
+        }
+    }
+}
+
+/// STUB (S5): always `None` regardless of input — this is what makes
+/// `values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace`
+/// RED. Real body lands in S6.
+fn sub_structure_name<'a>(_template: &'a TopologyTemplate, _sub_name: &str) -> Option<&'a str> {
+    None
+}
+
+/// STUB (S5): always `None`. Real body lands in S6.
+fn values_namespace_id(
+    _module: &CompiledModule,
+    _structure_name: &str,
+    _member: &str,
+) -> Option<String> {
+    None
+}
