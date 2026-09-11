@@ -16,24 +16,14 @@
 //!
 //! ## Charter, widened by units-length λ (task 5755)
 //!
-//! This file is now the `Engine::build` leaf signal for LENGTH-semantic
-//! geometry arguments generally, not the pattern spacings alone — same
-//! headline behaviour, same mock-kernel harness, three subjects:
-//!
-//! 1. task 5214's original bare pattern spacings (`linear_pattern` /
-//!    `linear_pattern_2d`), above;
-//! 2. λ's DIAGNOSTIC LABEL probe — the label a real build shows the author must
-//!    be the builtin they typed (PRD §6 boundary row 18, decision D7);
-//! 3. λ's `isosurface(..., iso)` gate (decision D12), at the bottom.
-//!
-//! (3) LIVES HERE rather than in a file of its own because
-//! `scripts/check-harness-baseline-registration.sh` rejects a newly-ADDED
-//! standalone `crates/<c>/tests/<f>.rs` binary outright — task 5265's
-//! anti-re-accretion ratchet serving PRD `merge-gate-compile-cost.md`, whose
-//! whole point is to cut the merge-gate LINK count. Minting a new
-//! `harness_<subsystem>` root to hold four tests would clear the gate's letter
-//! while adding exactly the compile unit it exists to prevent. Co-locating λ's
-//! two `Engine::build` halves costs nothing and reads better.
+//! This file is the `Engine::build` leaf signal for LENGTH-semantic geometry
+//! arguments generally, not the pattern spacings alone — same headline
+//! behaviour, same mock-kernel harness, three subjects: task 5214's bare
+//! pattern spacings, above; λ's DIAGNOSTIC LABEL probe (PRD §6 boundary row 18,
+//! decision D7); and λ's `isosurface(..., iso)` gate (decision D12), at the
+//! bottom. λ's two halves live here rather than in a test binary of their own
+//! because `scripts/check-harness-baseline-registration.sh` refuses a
+//! newly-added one.
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{BuildResult, Engine};
@@ -601,7 +591,7 @@ fn absent_iso_keeps_the_ungated_default_and_stays_quiet() {
     assert!(
         built.iso_advisories.is_empty(),
         "\"quiet\" means quiet BELOW Error too — a missing-arg Warning naming \
-         `isosurface` here is precisely the regression `optional_length_arg`'s \
+         `isosurface` here is precisely the regression `optional_length_value`'s \
          `Ok(None)` arm exists to prevent; got: {:?}",
         built.iso_advisories
     );

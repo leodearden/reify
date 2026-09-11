@@ -1736,7 +1736,7 @@
     /// (`literal_length(0.005)` -> 0.005, zero diagnostics), which passes both
     /// before and after and is deliberately NOT duplicated here.
     ///
-    /// RED until step-4 routes a PRESENT `iso` through `optional_length_arg`.
+    /// RED until step-4 routes a PRESENT `iso` through `optional_length_value`.
     #[test]
     fn compile_geometry_op_isosurface_non_length_iso_is_rejected_not_read_as_metres() {
         let step_handles = vec![GeometryHandleId(42)];
@@ -1748,7 +1748,13 @@
         // pinned as an exact count, per row, so a hint that started firing on
         // the OTHER rows (where the author really did type a bare number and the
         // hint would be noise) fails here.
-        for (label, iso_expr, expected_diagnostics) in [
+        //
+        // Fourth column: the `got` token the rejection must NAME for this row.
+        // Without it the four rows would assert one identical message and the
+        // "names the actual type" claim above would be untested — every row
+        // still passes if `ArgRejection::message` renders the same `got` for
+        // all four.
+        for (label, iso_expr, expected_diagnostics, expected_got) in [
             (
                 "bare Int",
                 reify_ir::CompiledExpr::literal(
@@ -1756,14 +1762,16 @@
                     reify_core::Type::dimensionless_scalar(),
                 ),
                 1,
+                "Int",
             ),
-            ("bare Real", literal_f64(5.0), 1),
+            ("bare Real", literal_f64(5.0), 1, "Real"),
             (
                 "wrong-dimension Scalar (MASS)",
                 literal_scalar(5.0, reify_core::DimensionVector::MASS),
                 1,
+                "Mass Scalar",
             ),
-            ("Bool", literal_bool(true), 2),
+            ("Bool", literal_bool(true), 2, "Bool"),
         ] {
             let op = CompiledGeometryOp::Isosurface {
                 grid: GeomRef::Step(0),
@@ -1852,19 +1860,20 @@
             );
 
             // Wording is inherited from `ArgRejection::message` via
-            // `optional_length_arg` — the SINGLE owner (D9). No forked text.
-            for needle in [
-                "isosurface",
-                "iso",
-                "expects Length",
-                "pass a dimensioned length such as `5mm`",
-            ] {
-                assert!(
-                    rej.message.contains(needle),
-                    "{label}: rejection message must contain {needle:?}; got: {:?}",
-                    rej.message
-                );
-            }
+            // `optional_length_value` — the SINGLE owner (D9). No forked text.
+            //
+            // EXACT equality, restated through the same `format!` the owner uses
+            // (`expected_length_rejection`), rather than a needle list: a
+            // substring check for "iso" is satisfied by the builtin name
+            // `isosurface` alone, so renaming the SLOT would not have failed it,
+            // and the per-row `got` claim only becomes real once the whole
+            // string is pinned.
+            assert_eq!(
+                rej.message,
+                expected_length_rejection("isosurface", "iso", expected_got),
+                "{label}: the rejection must name the builtin, the SLOT, and the \
+                 actual type it received"
+            );
         }
     }
 
