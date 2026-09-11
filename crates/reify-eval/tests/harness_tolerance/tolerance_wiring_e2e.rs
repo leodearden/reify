@@ -626,8 +626,8 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     );
 }
 
-/// Step-15 (final integration smoke; pins all four wiring axes
-/// simultaneously against `Engine::tessellate_realizations`).
+/// Final integration smoke: pins all four wiring axes simultaneously
+/// against `Engine::tessellate_realizations`.
 ///
 /// Single test that builds the canonical fixture (`step_input_template(50µm)`,
 /// `step_output_template(1µm)`, `MyDesign` realization with one Box primitive
@@ -638,45 +638,51 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
 /// 1. **Imported-tolerance-promise diagnostic emission**: `TessellateResult.diagnostics`
 ///    contains exactly one `Severity::Warning` carrying
 ///    `DiagnosticCode::ImportedTolerancePromiseInsufficient` whose message
-///    names `"STEPInput"`. Pinned independently by step-1 against `build()`;
-///    this step pins the same emission contract on the `tessellate_realizations()`
-///    surface so a future refactor that splits the diagnostic emission helper
-///    between `build` and `tessellate_realizations` cannot disconnect one
-///    without the other.
+///    names `"STEPInput"`. Pinned independently by
+///    `build_emits_imported_tolerance_promise_insufficient_warning_when_demand_strictly_tighter_than_promise`
+///    against `build()`; this test pins the same emission contract on the
+///    `tessellate_realizations()` surface so a future refactor that splits
+///    the diagnostic emission helper between `build` and
+///    `tessellate_realizations` cannot disconnect one without the other.
 /// 2. **Demanded-tolerance routing through per-stage budget to kernel.tessellate**:
 ///    the recording mock kernel's `tessellate_tolerances` records exactly one
 ///    entry equal to `1e-6` (the demanded tolerance, routed through
 ///    `compute_realization_tolerance_budget` against the default registry's
 ///    empty-conversion plan, which passes the demand through unchanged).
-///    Pinned independently by step-11; this step locks it as part of the
-///    integration-axis bundle.
+///    Pinned independently by
+///    `tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget`;
+///    this test locks it as part of the integration-axis bundle.
 /// 3. **RealizationCache populated at the demanded tolerance**:
 ///    `engine.realization_cache().lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))`
 ///    returns `Some(_)` after `tessellate_realizations()` completes. Pinned
-///    independently by step-5 against `build()`; this step pins the same
-///    cache-population contract on the `tessellate_realizations()` surface.
+///    independently by `build_populates_realization_cache_keyed_on_demanded_tolerance`
+///    against `build()`; this test pins the same cache-population contract
+///    on the `tessellate_realizations()` surface.
 /// 4. **Per-realization budget consumption (implicitly pinned by axis 2)**:
 ///    the budget pipeline runs through `compute_realization_tolerance_budget`
 ///    with the inventory-collected registry — under the v0.2 occt-only
 ///    inventory the dispatch returns a 0-conversion plan and the demand
 ///    passes through bit-exactly; multi-kernel adapters will produce a
-///    real chain when they land. Step-9 pins the multi-stage primitive
-///    in isolation; this step's axis 2 pin asserts the integration carries
-///    the demand value through to the kernel correctly.
+///    real chain when they land.
+///    `per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_chain`
+///    pins the multi-stage primitive in isolation; this test's axis 2 pin
+///    asserts the integration carries the demand value through to the
+///    kernel correctly.
 ///
 /// **Why a single test for all four axes**: each axis is already
-/// independently pinned by a step-N regression test, but the integration
-/// shape — running them simultaneously through ONE invocation of
-/// `tessellate_realizations` — guards against a future refactor that
+/// independently pinned by its own regression test above, but the
+/// integration shape — running them simultaneously through ONE invocation
+/// of `tessellate_realizations` — guards against a future refactor that
 /// re-orders the build pipeline and disconnects one of the axes. A
 /// regression here flags an ordering bug in the wiring even when each
 /// individual unit test still passes.
 ///
 /// **Reuses the recording-extension on `MockGeometryKernel`**:
-/// `tessellate_tolerances_ref()` (added in step-11) gives shared access to
-/// the recorded `tessellate(handle, tol)` calls so the kernel can be
-/// transferred into the engine via `Box::new` and we can still observe
-/// the recorded tolerances after `tessellate_realizations()` returns.
+/// `MockGeometryKernel` exposes the recorded `tessellate(handle, tol)`
+/// calls via `tessellate_tolerances_ref()`, giving shared access so the
+/// kernel can be transferred into the engine via `Box::new` and we can
+/// still observe the recorded tolerances after `tessellate_realizations()`
+/// returns.
 #[test]
 fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -755,7 +761,8 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
             .is_some(),
         "axis 3: tessellate_realizations() must populate the RealizationCache \
          at (\"MyDesign\", ReprKind::BRep, 1e-6) after a successful realization \
-         (mirrors the build() population contract pinned by step-5). Cache \
+         (mirrors the build() population contract pinned by \
+         build_populates_realization_cache_keyed_on_demanded_tolerance). Cache \
          len={}, dump: {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
