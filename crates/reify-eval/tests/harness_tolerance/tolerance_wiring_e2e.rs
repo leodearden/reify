@@ -199,9 +199,11 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
         .build()
 }
 
-/// Step-5 (failing initially; passes once step-6 plumbs `demanded_tol` through
-/// `Engine::execute_realization_ops` and writes the resulting handle into
-/// `Engine::realization_cache` keyed on `(entity_id, ReprKind::BRep, demanded_tol)`).
+/// Pins the landed contract: `Engine::execute_realization_ops`
+/// (`src/engine_build.rs`) receives the threaded `demanded_tol` and, on
+/// post-realization success for a NAMED realization, inserts the terminal
+/// handle into `Engine::realization_cache` keyed on
+/// `(entity_id, ReprKind::BRep, demanded_tol)`.
 ///
 /// Build a module that pairs an `STEPOutput` template (1µm
 /// `RepresentationWithin` body bound) with a `MyDesign` template carrying a
@@ -215,12 +217,6 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
 /// "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`); a cache
 /// populated at exactly the requested tolerance must therefore return
 /// `Some(&handle)` for an exact-tolerance lookup.
-///
-/// Today (pre step-6) `execute_realization_ops` does not consult the cache and
-/// does not insert into it after a successful realization, so the lookup
-/// returns `None` and this test FAILS. Once step-6 wires the demanded
-/// tolerance through the helper and inserts the terminal handle on
-/// post-realization success, the assertion passes.
 #[test]
 fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -253,16 +249,20 @@ fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
     );
 }
 
-/// Step-7 (failing initially; passes once step-8 adds the cache-hit
-/// short-circuit at the top of `Engine::execute_realization_ops`).
+/// Pins the landed cache-hit short-circuit at the top of
+/// `Engine::execute_realization_ops`: on a cache hit it pushes the cached
+/// handle, writes `named_steps`, and returns early without dispatching the
+/// realization's ops to the kernel.
 ///
-/// Setup mirrors step-5 — `STEPOutput(1µm)` + `MyDesign` realization (one
-/// `Box` primitive op) + manufacturing purpose at 1µm. The cache key
+/// Setup mirrors `build_populates_realization_cache_keyed_on_demanded_tolerance`
+/// above — `STEPOutput(1µm)` + `MyDesign` realization (one `Box` primitive
+/// op) + manufacturing purpose at 1µm. The cache key
 /// `("MyDesign", ReprKind::BRep, 1e-6)` is populated on the first `build()`
-/// (verified by step-5's test), so a second `build()` with the same module
-/// and the same demand should see the cache lookup succeed at the top of
-/// `execute_realization_ops` and return the cached terminal handle without
-/// dispatching the realization's ops to the kernel.
+/// (see `build_populates_realization_cache_keyed_on_demanded_tolerance`),
+/// so a second `build()` with the same module and the same demand should
+/// see the cache lookup succeed at the top of `execute_realization_ops` and
+/// return the cached terminal handle without dispatching the realization's
+/// ops to the kernel.
 ///
 /// The test pins this contract by:
 /// 1. Constructing a `MockGeometryKernel` and grabbing its
@@ -272,25 +272,19 @@ fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
 ///    two `build()` calls.
 /// 2. Running the first `build()` and asserting the recorded-ops vector
 ///    grew by ≥1 entry (kernel was invoked: cache miss, op dispatched,
-///    cache populated by step-6's post-realization insert).
+///    cache populated by the post-realization insert in
+///    `execute_realization_ops`).
 /// 3. Re-activating the purpose because `build()` calls `check()` which
-///    calls `eval()` which clears `active_purpose_bindings` (engine_eval.rs
-///    around lines 1149-1150). Without re-activation the second build's
+///    calls `eval()` which clears `active_purpose_bindings` (`Engine::eval`
+///    in `src/engine_eval.rs`). Without re-activation the second build's
 ///    pre-`check()` precompute would observe an empty tolerance scope, the
 ///    threaded `demanded_tol` would be `None`, and the cache lookup at the
 ///    top of `execute_realization_ops` would not even fire — defeating the
-///    test's premise. (This mirrors the pattern step-13 documents for the
-///    cache-miss-on-tighter-demand case.)
+///    test's premise. (This mirrors the pattern
+///    `cache_lookup_misses_when_purpose_changes_demanded_tolerance`
+///    documents for the cache-miss-on-tighter-demand case.)
 /// 4. Running the second `build()` and asserting the recorded-ops vector
 ///    DID NOT grow — the realization was served entirely from cache.
-///
-/// Today (pre step-8) the cache short-circuit does not exist, so even
-/// though `realization_cache.lookup(…)` returns `Some(_)` at the top of
-/// `execute_realization_ops`, nothing consults that lookup before the op
-/// loop runs. The kernel re-executes the realization's ops on every
-/// build, so the second-build assertion FAILS. Once step-8 wires the
-/// realization-level short-circuit (push cached handle, write
-/// `named_steps`, return early), the assertion passes.
 #[test]
 fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -320,12 +314,13 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     );
 
     // Re-activate purpose: build() above called check() which called eval()
-    // which cleared `active_purpose_bindings` (engine_eval.rs:1149-1150). The
-    // pre-`check()` precompute on the second build would otherwise observe
-    // an empty scope and yield `demanded_tol = None`, suppressing the cache
-    // lookup. Re-activation puts the same `(manufacturing → MyDesign)`
-    // binding back so the second build observes `demanded_tol = Some(1e-6)`,
-    // matching the cache key populated by the first build.
+    // which cleared `active_purpose_bindings` (`Engine::eval`,
+    // `src/engine_eval.rs`). The pre-`check()` precompute on the second
+    // build would otherwise observe an empty scope and yield
+    // `demanded_tol = None`, suppressing the cache lookup. Re-activation
+    // puts the same `(manufacturing → MyDesign)` binding back so the second
+    // build observes `demanded_tol = Some(1e-6)`, matching the cache key
+    // populated by the first build.
     engine.activate_purpose("manufacturing", "MyDesign");
 
     let _build2 = engine.build(&module, ExportFormat::Step);
