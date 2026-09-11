@@ -137,6 +137,24 @@ impl Seeds {
     ///
     /// A `false` answer is a *proof* that the whole subtree is constant with
     /// respect to every seed.
+    ///
+    /// # Why `collect_value_refs` and not `expr.walk`
+    ///
+    /// `walk` is allocation-free and sits right here in [`subtree_has_kink`],
+    /// so reaching for it is the obvious optimisation — and it answers a
+    /// DIFFERENT question.  On a `Lambda`, `collect_value_refs` reports the
+    /// CAPTURES and does not descend into the body, while `walk` descends into
+    /// the body and never sees the captures (`reify-ir/src/expr.rs`, the two
+    /// `Lambda` arms).  A walk-based predicate would therefore answer `false`
+    /// for a lambda that captures a seed — and `false` here is a PROOF the fast
+    /// path acts on, so the subtree would be handed to `eval_expr` and lifted
+    /// with `Tangent::Zero`: a silently flat row for a residual that genuinely
+    /// moves.  (`Quantifier` differs too, in the safe direction: `walk` sees
+    /// the bound variable that `collect_value_refs` excludes.)
+    ///
+    /// The allocation-free shape wants a `contains_value_ref_matching`
+    /// predicate on `CompiledExpr` itself, beside the traversal it must mirror;
+    /// restating those 26 arms here would be the same defect one level down.
     pub fn depends_on_seed(&self, expr: &CompiledExpr) -> bool {
         if let Some(hit) = self.depends.borrow().get(&expr.content_hash) {
             return *hit;
@@ -184,9 +202,20 @@ impl Seeds {
 #[derive(Default)]
 pub struct DualEnv {
     bindings: HashMap<ValueCellId, Tangent>,
-    /// Memo for [`DualEnv::carries_tangent`], invalidated on every new binding.
-    /// Scoped to one body evaluation, which is exactly where it pays.
-    carries: RefCell<HashMap<ContentHash, bool>>,
+    /// Memo for [`DualEnv::carries_tangent`], scoped to one body evaluation,
+    /// which is exactly where it pays.
+    ///
+    /// Each answer carries the [`DualEnv::generation`] that produced it,
+    /// because the two answers age differently.  Bindings only ever GROW, so a
+    /// `true` is permanent: an expression that reaches a bound cell cannot stop
+    /// reaching it.  A `false` is only a claim about the binding set at the
+    /// time, so it is re-checked once that set changes.  Clearing the whole
+    /// memo per binding instead makes `eval_dual_fn_body`'s let-binding loop
+    /// re-walk the remaining body once per `let`.
+    carries: RefCell<HashMap<ContentHash, (u32, bool)>>,
+    /// Bumped once per newly bound cell — never on a rebind, which cannot
+    /// change a membership answer.
+    generation: u32,
 }
 
 impl DualEnv {
@@ -201,8 +230,9 @@ impl DualEnv {
         if tangent.is_zero() {
             return;
         }
-        self.bindings.insert(cell, tangent);
-        self.carries.borrow_mut().clear();
+        if self.bindings.insert(cell, tangent).is_none() {
+            self.generation += 1;
+        }
     }
 
     /// The tangent bound to `cell`, or `None` when it carries no tangent.
@@ -216,15 +246,21 @@ impl DualEnv {
     }
 
     /// True when `expr` references at least one bound cell.
+    ///
+    /// Uses `collect_value_refs` rather than `expr.walk` for the reason
+    /// [`Seeds::depends_on_seed`] states: the two traversals disagree on
+    /// `Lambda`, and this predicate's `false` also gates the fast path.
     fn carries_tangent(&self, expr: &CompiledExpr) -> bool {
         if self.bindings.is_empty() {
             return false;
         }
-        if let Some(hit) = self.carries.borrow().get(&expr.content_hash) {
-            return *hit;
+        if let Some(&(generation, hit)) = self.carries.borrow().get(&expr.content_hash)
+            && (hit || generation == self.generation)
+        {
+            return hit;
         }
         let answer = expr.collect_value_refs().iter().any(|id| self.bindings.contains_key(id));
-        self.carries.borrow_mut().insert(expr.content_hash, answer);
+        self.carries.borrow_mut().insert(expr.content_hash, (self.generation, answer));
         answer
     }
 }
