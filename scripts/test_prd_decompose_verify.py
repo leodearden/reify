@@ -1523,31 +1523,35 @@ console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
 
 
 # ---------------------------------------------------------------------------
-# task #4960 (RED): normalizeLeaves() pure-helper contract — mega-leaf trap
+# _HeadSliceHelperMixin — shared node harness for a single pure helper sliced
+# out of prd-decompose-verify.mjs (task #7369 review, SPOT): TestMjsNormalize-
+# Leaves and TestMjsDroppedLeafLabels each used to hand-roll the same slice/
+# extract/run/parse boilerplate. A subclass supplies only the helper's name,
+# any one-time setup JS it needs (default: none), and the `cases` object
+# literal to evaluate.
 # ---------------------------------------------------------------------------
 
-class TestMjsNormalizeLeaves(unittest.TestCase):
-    """Pure-unit tests for the normalizeLeaves(rawArgs, warn) helper, source-
-    sliced directly out of prd-decompose-verify.mjs (everything BEFORE the
-    `const _wfResult = await` IIFE anchor) and evaluated via `new Function` —
-    no injected-globals mock, no IIFE execution.
-
-    Guards the mega-leaf trap (task #4960): when Workflow args arrive
-    JSON-stringified, `Array.isArray(args)` is false and the whole stringified
-    batch collapses into ONE leaf. normalizeLeaves must detect a JSON-
-    stringified array and restore per-leaf fan-out, while leaving every
-    non-string input byte-for-byte unchanged (real array / single object /
-    undefined / null).
-
-    FAILS until normalizeLeaves is added to the .mjs: the head-slice eval
-    throws ReferenceError('normalizeLeaves is not defined'), the Node harness
-    exits non-zero, and the test fails on the returncode assertion.
+class _HeadSliceHelperMixin:
+    """Extracts ONE named function from everything in the .mjs BEFORE the
+    `const _wfResult = await` IIFE anchor (so the IIFE itself never runs), via
+    `new Function`, and runs it under node — no injected-globals mock.
     """
 
-    _MARK = "NORMALIZE_LEAVES_RESULT:"
+    _MARK = "HEAD_SLICE_RESULT:"
+
+    def _helper_name(self) -> str:
+        raise NotImplementedError
+
+    def _setup_js(self) -> str:
+        """Extra JS emitted after helper-extraction, before `cases` is built."""
+        return ""
+
+    def _cases_js(self) -> str:
+        raise NotImplementedError
 
     def _harness_source(self) -> str:
         mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        helper = self._helper_name()
         return f"""\
 import {{ readFileSync }} from "node:fs";
 
@@ -1564,46 +1568,26 @@ if (anchorIdx === -1) {{
 let head = src.slice(0, anchorIdx);
 head = head.replace("export const meta", "const meta");
 
-let normalizeLeaves;
+let {helper};
 try {{
-    normalizeLeaves = new Function(head + "\\nreturn normalizeLeaves;")();
+    {helper} = new Function(head + "\\nreturn {helper};")();
 }} catch (e) {{
     console.error("HELPER_EXTRACT_FAILED: " + e.message);
     process.exit(1);
 }}
-if (typeof normalizeLeaves !== "function") {{
-    console.error("HELPER_NOT_A_FUNCTION: " + typeof normalizeLeaves);
+if (typeof {helper} !== "function") {{
+    console.error("HELPER_NOT_A_FUNCTION: " + typeof {helper});
     process.exit(1);
 }}
 
-function run(rawArgs) {{
-    const warnCalls = [];
-    const warn = (...a) => {{ warnCalls.push(a.map(String).join(" ")); }};
-    const result = normalizeLeaves(rawArgs, warn);
-    return {{
-        length: Array.isArray(result) ? result.length : null,
-        isArray: Array.isArray(result),
-        warnCalls,
-    }};
-}}
-
-const L = [{{ signal: "leaf-1" }}, {{ signal: "leaf-2" }}, {{ signal: "leaf-3" }}];
-
-const cases = {{
-    stringified_array: run(JSON.stringify(L)),
-    real_array_passthrough: run(L),
-    non_json_string: run("not json {{["),
-    json_non_array_object: run(JSON.stringify({{ a: 1 }})),
-    undefined_input: run(undefined),
-    empty_string: run(""),
-    single_object_leaf: run({{ signal: "solo" }}),
-}};
+{self._setup_js()}
+const cases = {self._cases_js()};
 
 console.log(MARK + JSON.stringify(cases));
 """
 
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
-    def test_normalize_leaves_pure_helper_contract(self):
+    def _run_cases(self) -> dict:
+        """Run the harness under node; return the parsed `cases` object."""
         harness_src = self._harness_source()
         result = subprocess.run(
             ["node", "--input-type=module"],
@@ -1621,7 +1605,63 @@ console.log(MARK + JSON.stringify(cases));
             marker_lines,
             f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
         )
-        cases = json.loads(marker_lines[-1][len(self._MARK):])
+        return json.loads(marker_lines[-1][len(self._MARK):])
+
+
+# ---------------------------------------------------------------------------
+# task #4960 (RED): normalizeLeaves() pure-helper contract — mega-leaf trap
+# ---------------------------------------------------------------------------
+
+class TestMjsNormalizeLeaves(unittest.TestCase, _HeadSliceHelperMixin):
+    """Pure-unit tests for the normalizeLeaves(rawArgs, warn) helper, source-
+    sliced directly out of prd-decompose-verify.mjs via _HeadSliceHelperMixin
+    — no injected-globals mock, no IIFE execution.
+
+    Guards the mega-leaf trap (task #4960): when Workflow args arrive
+    JSON-stringified, `Array.isArray(args)` is false and the whole stringified
+    batch collapses into ONE leaf. normalizeLeaves must detect a JSON-
+    stringified array and restore per-leaf fan-out, while leaving every
+    non-string input byte-for-byte unchanged (real array / single object /
+    undefined / null).
+
+    FAILS until normalizeLeaves is added to the .mjs: the head-slice eval
+    throws ReferenceError('normalizeLeaves is not defined'), the Node harness
+    exits non-zero, and the test fails on the returncode assertion.
+    """
+
+    def _helper_name(self) -> str:
+        return "normalizeLeaves"
+
+    def _setup_js(self) -> str:
+        return """\
+function run(rawArgs) {
+    const warnCalls = [];
+    const warn = (...a) => { warnCalls.push(a.map(String).join(" ")); };
+    const result = normalizeLeaves(rawArgs, warn);
+    return {
+        length: Array.isArray(result) ? result.length : null,
+        isArray: Array.isArray(result),
+        warnCalls,
+    };
+}
+
+const L = [{ signal: "leaf-1" }, { signal: "leaf-2" }, { signal: "leaf-3" }];
+"""
+
+    def _cases_js(self) -> str:
+        return """{
+    stringified_array: run(JSON.stringify(L)),
+    real_array_passthrough: run(L),
+    non_json_string: run("not json {["),
+    json_non_array_object: run(JSON.stringify({ a: 1 })),
+    undefined_input: run(undefined),
+    empty_string: run(""),
+    single_object_leaf: run({ signal: "solo" }),
+}"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
+    def test_normalize_leaves_pure_helper_contract(self):
+        cases = self._run_cases()
 
         # (a) stringified array -> real per-leaf fan-out, no degradation warning.
         self.assertEqual(
@@ -1681,11 +1721,10 @@ console.log(MARK + JSON.stringify(cases));
 # positions, not an arithmetic guess at where they are
 # ---------------------------------------------------------------------------
 
-class TestMjsDroppedLeafLabels(unittest.TestCase):
+class TestMjsDroppedLeafLabels(unittest.TestCase, _HeadSliceHelperMixin):
     """Pure-unit tests for the droppedLeafLabels(leaves, leaf_verdicts) helper,
-    source-sliced directly out of prd-decompose-verify.mjs (everything BEFORE
-    the `const _wfResult = await` IIFE anchor) and evaluated via `new Function`
-    — same technique as TestMjsNormalizeLeaves above.
+    source-sliced directly out of prd-decompose-verify.mjs via
+    _HeadSliceHelperMixin — same technique as TestMjsNormalizeLeaves above.
 
     Guards the defect described in task #7369: the pre-fix expression derived
     each dropped leaf's label from `j >= (leaves.length - dropped - i)`, an
@@ -1700,80 +1739,53 @@ class TestMjsDroppedLeafLabels(unittest.TestCase):
     leaf_verdicts, so it is correct regardless of contiguity — the tail-only
     case (single drop at the last index) passed even before the fix and would
     not have caught this, hence the non-contiguous cases below.
+
+    Also covers (task #7369 review): the object-leaf label branches (signal /
+    text / neither-fallback), and the null-safety fix for leafLabelFor — a
+    leaf element that is itself null/undefined, or a leaves array shorter than
+    leaf_verdicts, must label via the index fallback rather than throwing.
     """
 
-    _MARK = "DROPPED_LEAF_LABELS_RESULT:"
+    def _helper_name(self) -> str:
+        return "droppedLeafLabels"
 
-    def _harness_source(self) -> str:
-        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
-        return f"""\
-import {{ readFileSync }} from "node:fs";
-
-const MARK = "{self._MARK}";
-const MJS_PATH = "{mjs_abs}";
-
-let src = readFileSync(MJS_PATH, "utf8");
-const ANCHOR = "const _wfResult = await";
-const anchorIdx = src.indexOf(ANCHOR);
-if (anchorIdx === -1) {{
-    console.error("ANCHOR_NOT_FOUND: " + ANCHOR);
-    process.exit(1);
-}}
-let head = src.slice(0, anchorIdx);
-head = head.replace("export const meta", "const meta");
-
-let droppedLeafLabels;
-try {{
-    droppedLeafLabels = new Function(head + "\\nreturn droppedLeafLabels;")();
-}} catch (e) {{
-    console.error("HELPER_EXTRACT_FAILED: " + e.message);
-    process.exit(1);
-}}
-if (typeof droppedLeafLabels !== "function") {{
-    console.error("HELPER_NOT_A_FUNCTION: " + typeof droppedLeafLabels);
-    process.exit(1);
-}}
-
+    def _setup_js(self) -> str:
+        return """\
 const LEAVES = ["leaf0", "leaf1", "leaf2", "leaf3", "leaf4"];
+const OBJECT_LEAVES = [{ signal: "sig-a" }, { text: "txt-b" }, {}];
+"""
 
-const cases = {{
+    def _cases_js(self) -> str:
+        return """{
     // non-contiguous: dropped at 0 and 4 (the case the pre-fix arithmetic got wrong twice over)
     non_contiguous_head_and_tail: droppedLeafLabels(
-        LEAVES, [null, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}, null]),
+        LEAVES, [null, {blocks: false}, {blocks: false}, {blocks: false}, null]),
     // knowable single mid-array drop (pre-fix reported "?" here)
     single_drop_mid_array: droppedLeafLabels(
-        LEAVES, [{{blocks: false}}, null, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}]),
+        LEAVES, [{blocks: false}, null, {blocks: false}, {blocks: false}, {blocks: false}]),
     // tail-contiguous single drop — passed even before the fix; regression guard
     single_drop_tail: droppedLeafLabels(
-        LEAVES, [{{blocks: false}}, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}, null]),
+        LEAVES, [{blocks: false}, {blocks: false}, {blocks: false}, {blocks: false}, null]),
     // no drops at all
     no_drops: droppedLeafLabels(
-        LEAVES, [{{blocks: false}}, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}, {{blocks: false}}]),
-}};
-
-console.log(MARK + JSON.stringify(cases));
-"""
+        LEAVES, [{blocks: false}, {blocks: false}, {blocks: false}, {blocks: false}, {blocks: false}]),
+    // object leaves: signal / text / neither-fallback branches of leafLabelFor
+    object_leaf_signal: droppedLeafLabels(
+        OBJECT_LEAVES, [null, {blocks: false}, {blocks: false}]),
+    object_leaf_text: droppedLeafLabels(
+        OBJECT_LEAVES, [{blocks: false}, null, {blocks: false}]),
+    object_leaf_neither: droppedLeafLabels(
+        OBJECT_LEAVES, [{blocks: false}, {blocks: false}, null]),
+    // null-safety: a leaf element that is itself null/undefined must not throw
+    null_leaf_element: droppedLeafLabels(
+        [null, "a"], [null, {blocks: false}]),
+    short_leaves_array: droppedLeafLabels(
+        ["a"], [null, null]),
+}"""
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
     def test_dropped_leaf_labels_pure_helper_contract(self):
-        harness_src = self._harness_source()
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            input=harness_src,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
-        )
-        marker_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._MARK)]
-        self.assertTrue(
-            marker_lines,
-            f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
-        )
-        cases = json.loads(marker_lines[-1][len(self._MARK):])
+        cases = self._run_cases()
 
         # The defect: index 0 never named, index 4 named twice.
         self.assertEqual(
@@ -1797,6 +1809,20 @@ console.log(MARK + JSON.stringify(cases));
         self.assertEqual(len(cases["single_drop_mid_array"]), 1)
         self.assertEqual(len(cases["single_drop_tail"]), 1)
         self.assertEqual(len(cases["no_drops"]), 0)
+
+        # Object-leaf branches: signal, then text, then the leaf-${idx} fallback.
+        self.assertEqual(cases["object_leaf_signal"], ["<dropped-leaf:sig-a>"])
+        self.assertEqual(cases["object_leaf_text"], ["<dropped-leaf:txt-b>"])
+        self.assertEqual(cases["object_leaf_neither"], ["<dropped-leaf:leaf-2>"])
+
+        # leafLabelFor must be total: a null leaf element, or a leaves array
+        # shorter than leaf_verdicts (so leaves[j] is undefined), must label
+        # via the index fallback rather than throwing.
+        self.assertEqual(cases["null_leaf_element"], ["<dropped-leaf:leaf-0>"])
+        self.assertEqual(
+            cases["short_leaves_array"],
+            ["<dropped-leaf:a>", "<dropped-leaf:leaf-1>"],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2554,13 +2580,19 @@ globalThis.agent = async (prompt, opts = {{}}) => {{
     return {{}};
 }};
 
-// ── mock: pipeline(items, ...stages) — threads each item through in order ────
+// ── mock: pipeline(items, ...stages) — threads each item through in order,
+// dropping to null (at the item's own index) if any stage throws — mirrors
+// the documented real-pipeline contract the aggregation code relies on ──────
 globalThis.pipeline = async (items, ...stages) => {{
     const results = [];
     for (const item of items) {{
         let val = item;
-        for (const stage of stages) {{
-            val = await stage(val, item, results.length);
+        try {{
+            for (const stage of stages) {{
+                val = await stage(val, item, results.length);
+            }}
+        }} catch (e) {{
+            val = null;
         }}
         results.push(val);
     }}
@@ -2974,6 +3006,46 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         self.assertEqual(leaf.get("executed"), 0)
         self.assertEqual(leaf.get("total"), 0)
         self.assertEqual(leaf.get("blocking"), ["null-synthesize leaf (zeta)"])
+
+    # ── (E) a leaf the pipeline itself dropped is named in `blocking` (#7369) ─
+
+    _E_LEAVES = '[{ signal: "ok leaf (eta)" }, { signal: "doomed leaf (theta)" }]'
+    _E_RESPONSES = """{
+    enumerate: (prompt) => {
+        if (prompt.includes("doomed")) { throw new Error("enumerator exploded"); }
+        return { premises: [{
+            text: "revolute rejects non-axis arg",
+            assertion_kind: "rejection",
+            fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            match: { exit_code: 1 },
+            capability: "arg-vs-param rejection (mock)",
+        }] };
+    },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "PASS",
+        command: ["reify", "check", "f.ri"], exit_code: 1,
+        stdout: "", stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 1, total: 1 },
+}"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_pipeline_dropped_leaf_is_named_in_batch_level_blocking(self):
+        """The dropped leaf's label must escape droppedLeafLabels() and reach
+        the return value a caller actually consumes (task #7369 review):
+        computing the label and then discarding it was behaviorally a no-op,
+        observable only by the pure-unit test on the helper itself.
+        """
+        verdict, _ = self._run_scenario(self._E_LEAVES, self._E_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertTrue(verdict["blocks"], "a pipeline-dropped leaf must fail closed")
+        self.assertEqual(verdict.get("disposition"), "BLOCKS")
+        self.assertIn("blocking", verdict,
+                      f"batch verdict has no blocking; keys {sorted(verdict)}")
+        self.assertEqual(verdict["blocking"], ["<dropped-leaf:doomed leaf (theta)>"])
 
 
 # ---------------------------------------------------------------------------
