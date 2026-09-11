@@ -348,6 +348,41 @@ the inference that the absence prevents realization: it resolves instead via the
 The full d-ladder for this class is recorded above and summarized in §1.1 and §3.1,
 closing out follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
 
+
+**Dense sub-0.01 mm walk, measured 2026-09-12** (task #7128), resolving the oscillation
+the 6545 amendment above left open. Same committed fixture, same method — edit
+`#precision(...)` in a scratch copy, re-run `reify check` — on a different binary, HEAD,
+kernel and session than either block above.
+
+**Provenance for this block** — own stamp; deliberately *not* §0's identity table, and
+not the 6545 block's:
+
+| | |
+|---|---|
+| binary | `target/release/reify`, built 2026-09-11 23:14 (newer than every `crates/` commit reachable from HEAD; no rebuild needed) |
+| HEAD | `ebecf20df5` (branch `task/7128`) |
+| kernel | OCCT 7.8 (26 `libTK*.so.7.8` ldd lines, 23 distinct sonames; `has_occt` live, confirmed functionally — every probe below realized and passed the §0 Caveat-2 datum gate). 27 `libTK*.so.7.9` lines are also linked, via gmsh; reify's own calls bind 7.8, which is why the counts here differ from §0's 56 and the 6545 block's 53 without the measurement differing |
+| machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0), Linux 7.0.0-28 — a **different kernel** than §0's 6.14.0-37 |
+| load | 368.83 – 424.17 1-min loadavg across this session — 3–5× the load of either block above, and per §0 Caveat 1 this moves wall clocks only |
+
+**Reproduction gate — cross-session, cross-binary, cross-HEAD, cross-kernel.** Before any
+new datum was trusted, three rungs already published in the 6545 ladder above were
+re-measured on this session's apparatus:
+
+| d | a (m) | a/d | published above |
+|---|---|---|---|
+| 20 mm | 1.713e-2 | 0.8565 | 1.713e-2 / 0.8565 |
+| 0.18 mm | 1.795e-4 | 0.9972 | 1.795e-4 / 0.9972 |
+| 0.12 mm | 1.197e-4 | 0.9975 | 1.197e-4 / 0.9975 |
+
+All three match the published strings exactly, and all three emitted the §0 Caveat-2
+datum line. This is a **stronger determinism datum than the same-session repetitions the
+6545 block records**: those establish that a fixed binary repeats itself, whereas these
+show the achieved value survives a rebuilt binary, a different HEAD, a different kernel
+and a 3–5× load change. It also validates the apparatus used below — a mismatched value
+here would have indicted the harness rather than the geometry, and the gate is
+genuinely falsifiable: a wrong binary, a stale fixture, the `E_MODULE_PATH_MISMATCH`
+scratch-file trap (§4) or a silent non-realization each fail it loudly.
 ### 1.6 Loft is unreachable from the source language
 
 Two mutually exclusive failure modes with no path between them:
