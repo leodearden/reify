@@ -92,7 +92,7 @@ GR-040 preserved: no method-call syntax (`x.foo()`); all analysis is free-functi
 (`seed: 42`), per the language convention.
 
 **Substrate that already exists** (each verified in-tree):
-- `reify eval` value-cell printing — `reify-cli/src/main.rs:350` (`cmd_eval` prints
+- `reify eval` value-cell printing — `reify-cli/src/main.rs:2056` (`cmd_eval` prints
   `id = value` for every top-level cell, sorted).
 - `eval_builtin` free-function dispatch chain — `reify-stdlib/src/lib.rs:225`; analysis-arm
   pattern at `analysis::eval_analysis` (`reify-stdlib/src/analysis.rs:27`, dispatched from the
@@ -103,9 +103,10 @@ GR-040 preserved: no method-call syntax (`x.foo()`); all analysis is free-functi
   `crates/reify-stdlib/src/registry_dispatch.rs::dispatch` match over `EvalBuiltinId`, and the
   name-string arm goes away — re-point when it lands.
 - `Value::Map(BTreeMap<Value,Value>)`, `Value::List`, `Value::Scalar` (dimensioned) —
-  `reify-ir/src/value.rs:366+`. The multi-field result is a `Value::Map` keyed by string
+  `reify-ir/src/value.rs:993+` (`Scalar` at `:999`, `List` at `:1017`, `Map` at `:1101`).
+  The multi-field result is a `Value::Map` keyed by string
   (deterministic `BTreeMap` ordering, so `reify eval` prints stable output).
-- `stdlib/tolerancing.ri` `DimensionalTolerance` (`nominal`, `upper_deviation`,
+- `reify-compiler/stdlib/tolerancing.ri:35` `DimensionalTolerance` (`nominal`, `upper_deviation`,
   `lower_deviation`, `tolerance_band`) — the declaration substrate this PRD's `Contributor`
   reuses / aligns with.
 - `Length` / dimensioned literals (`0.1mm`), `enum`, `trait`, `constraint`, list literals —
