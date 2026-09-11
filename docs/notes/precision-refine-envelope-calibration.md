@@ -513,6 +513,87 @@ deficit reaches the display floor: `a` equals `d` to all four significant figure
 plateau's lower edge lies in (0.143, 0.144] mm — and **any `d` below 0.144 mm that still
 returns 1.440e-4 yields a ratio strictly above 1**. That is the one measurement in reach
 that could settle the K = 1 question above the display floor, and it is Stage C's target.
+
+**Stage C — sub-0.001 mm plateau-edge bisection**, 31 probes. This is the stage that
+pins the answer, and it exploits the structure rather than gridding it. Where `a` is
+locally constant on a plateau, `d` falling inside that plateau leaves `a` fixed, so `a/d`
+rises to a local maximum at the plateau's **lower edge**. The supremum is therefore an
+edge property, findable by bisection — about ten probes per edge, against the ~600 a
+1e-4 mm grid over [0.12, 0.18] mm would need. Because Stage B showed `a` is not monotone
+in `d`, each bracket was scanned rather than blind-bisected, and each pinned edge is
+bracketed by a probe on both sides that returns a *different* `a`.
+
+**P1 — `a` = 1.440e-4, the leader.** Lower edge pinned to 1e-5 mm:
+
+| d | a (m) | a/d | |
+|---|---|---|---|
+| 0.14385 mm | 1.439e-4 | 1.0003 | below the edge — different `a` |
+| **0.14386 mm** | 1.440e-4 | **1.0010** | ← `d_lo`, pinned lower edge |
+| 0.14387 mm | 1.440e-4 | 1.0009 | |
+| 0.14388 mm | 1.440e-4 | 1.0008 | |
+| 0.14389 mm | 1.440e-4 | 1.0008 | |
+| 0.1439 mm | 1.440e-4 | 1.0007 | |
+| 0.14395 mm | 1.440e-4 | 1.0003 | |
+| 0.144 mm | 1.440e-4 | 1.0000 | Stage B's δ = 0 rung |
+| 0.1442 mm | 1.441e-4 | 0.9993 | above the plateau — different `a` |
+
+The ratio falls monotonically across the plateau exactly as the model predicts, and
+Stage B's 1.0000 at 0.144 mm is revealed as the plateau's *upper* end, not its peak.
+`d_lo` ∈ (0.14385, 0.14386] mm — edge resolution **1e-5 mm**. Measured plateau width
+≥ 0.00014 mm, upper edge bracketed in [0.144, 0.1442) mm, so width ∈ [0.00014, 0.00035) mm.
+The supremum over P1 is `1.440e-4 / d_lo` = **1.0010**, and that value is stable across
+the whole pinned edge bracket (1.0010 at both `d_lo` = 0.14386 and `d_lo` → 0.14385⁺), so
+pinning the edge finer would not change it at 4 dp.
+
+**P2 — `a` = 1.433e-4.** A narrow plateau confined to (0.14319, 0.14325) mm:
+
+| d | a (m) | a/d | |
+|---|---|---|---|
+| 0.14319 mm | 1.428e-4 | 0.9973 | below — different `a` |
+| 0.1432 mm | 1.433e-4 | 1.0007 | `d_lo` ∈ (0.14319, 0.1432] |
+| 0.14325 mm | 1.432e-4 | 0.9997 | above — different `a` |
+
+**P3 — `a` = 1.450e-4.** Stage B's other δ = 0 rung, likewise not its own plateau's peak:
+
+| d | a (m) | a/d | |
+|---|---|---|---|
+| 0.1449 mm | 1.449e-4 | 1.0000 | below — different `a` |
+| 0.14495 mm | 1.450e-4 | 1.0003 | `d_lo` ∈ (0.1449, 0.14495] |
+| 0.145 mm | 1.450e-4 | 1.0000 | Stage B's δ = 0 rung |
+
+**P4 — `a` = 1.428e-4**, walked as a control. It is a *low* plateau, and it shows the
+mechanism cleanly in the direction that does not flatter the result — `a` byte-identical
+across six probes spanning 0.00014 mm while the ratio falls monotonically with rising `d`:
+
+| d | 0.14305 | 0.1431 | 0.14315 | 0.14316 | 0.14317 | 0.14318 | 0.14319 |
+|---|---|---|---|---|---|---|---|
+| a (m) | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 |
+| a/d | 0.9983 | 0.9979 | 0.9976 | 0.9975 | 0.9974 | 0.9973 | 0.9973 |
+
+The 0.0002 mm scan of [0.179, 0.180] mm also corrected a Stage B reading: 0.1798 mm
+returns 1.796e-4 (0.9989), *above* the 1.795e-4 that 0.180 and 0.181 mm share, so the
+plateau Stage B saw there is not that bracket's local maximum either. The same scan over
+[0.1442, 0.1448] mm found 0.9993 / 0.9979 / 0.9972 / 0.9965 — falling away, confirming P1
+is left behind above 0.1442 mm.
+
+**Result: the achieved deviation exceeds the requested precision.** The best value found
+is **1.0010 at `d` = 0.14386 mm**, and it clears the display floor by a margin that makes
+it unambiguous rather than marginal. `a` prints as 1.440e-4, so the true achieved value
+lies in [1.4395e-4, 1.4405e-4); `d` is exact at 1.4386e-4 m because it is the *request*,
+not a measurement. The true ratio therefore lies in **[1.000626, 1.001321)** — an interval
+lying *entirely* above 1. Two further plateau edges (P2 at 1.0007, P3 at 1.0003) exceed 1
+independently, as do 0.1439, 0.14395 and 0.14385 mm, so the finding does not rest on a
+single probe.
+
+**What this is, and is not.** 1.0010 is a supremum **over the plateaus walked** — P1 to P4
+plus the brackets scanned around them. A dense search raises a lower bound; it can never
+prove a supremum over a continuum, and no claim of exhaustiveness is made here. Two
+distinct statements follow, and they should not be conflated: that **`K` > 1 for this
+class is established** — that is a lower-bound claim, and a lower bound above 1 settles
+it — while **the numeric value 1.0010 remains a lower bound** on the true supremum. All
+~90 probes in this block lie within [0.96, 1.002], with no sign of a second branch like
+the sphere's ~2.07 tread, but that is an observation about where these samples fell, not a
+bound on where others might.
 **Determinism and datum gates.** Every probe in this block passed the §0 Caveat-2 datum
 gate: the harness extracts `a` only from the `deviation <X> m` capture and emits a literal
 `NO-DATUM` token when that capture is empty, so a non-realization cannot enter a table as a
