@@ -803,9 +803,10 @@ fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Eng
             .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "test premise: expected RealizationCache to contain an entry at \
-         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
-         wiring). Without this premise the caller's post-op assertion is \
-         vacuous. Cache len={}, dump: {:?}",
+         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per the \
+         build-time realization-cache population contract). Without this \
+         premise the caller's post-op assertion is vacuous. Cache len={}, \
+         dump: {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
     );
@@ -816,11 +817,11 @@ fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Eng
 /// Pins the auto-invalidation contract on `Engine::edit_param`'s
 /// realization-cache hook (task 2874).
 ///
-/// Pins the production-correctness fix for the reviewer's blocking issue
-/// (engine_build.rs:511-516 + engine_admin.rs:218-230 + the field docstring on
-/// `Engine::realization_cache` at lib.rs:490-535): the cache MUST be reset on
-/// `edit_param` so a subsequent `build_snapshot()` cannot silently return a
-/// stale `GeometryHandleId` pointing at the OLD geometry. The current field
+/// Pins the production-correctness fix for the reviewer's blocking issue —
+/// `Engine::clear_realization_cache` (engine_admin.rs) and the field
+/// docstring on `Engine::realization_cache` (lib.rs): the cache MUST be
+/// reset on `edit_param` so a subsequent `build_snapshot()` cannot silently
+/// return a stale `GeometryHandleId` pointing at the OLD geometry. The current field
 /// docstring promises "Production callers must therefore either (a) avoid
 /// `build_snapshot` after `edit_param`, or (b) clear `realization_cache`
 /// themselves between the edit and the snapshot rebuild" — but the public
@@ -830,7 +831,7 @@ fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Eng
 /// `edit_param` hook point — mirroring the `feature_tag_table` /
 /// `topology_attribute_table` reset-at-hook-point pattern.
 ///
-/// Setup mirrors step-5 / step-7 / step-15: `step_output_template(1µm)` plus
+/// Setup mirrors the cache-population tests above: `step_output_template(1µm)` plus
 /// `MyDesign` template with one Box realization plus
 /// `manufacturing_purpose("manufacturing", 1e-6)`. `MyDesign.thickness : Real`
 /// is the param cell we mutate — it does not need to drive the Box's args for
@@ -862,9 +863,9 @@ fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Eng
 /// and the in-place-clear-vs-reseat rationale.
 #[test]
 fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot() {
-    // (a) Cold-start eval, activate purpose, build → cache populated by
-    // step-6; the helper asserts the cache-populated premise before
-    // returning so the post-edit assertion below is never vacuous.
+    // (a) Cold-start eval, activate purpose, build → cache populated by the
+    // build-time wiring; the helper asserts the cache-populated premise
+    // before returning so the post-edit assertion below is never vacuous.
     let mut engine =
         engine_with_populated_realization_cache("test_edit_param_clears_realization_cache");
 
@@ -965,10 +966,12 @@ fn edit_param_flushes_realization_cache_even_when_rejected_with_cell_not_found()
 /// producing one `Box` primitive with caller-specified dimensions (in mm).
 ///
 /// Mirrors `my_design_template_with_box_realization()` but parametrises the
-/// box dimensions so step-19 can build two structurally-identical modules
-/// that differ only in geometry literals (the "different parameter defaults,
-/// structurally identical realization graph" shape the plan asks for to
-/// pin edit_source's auto-invalidation behaviour against a non-trivial
+/// box dimensions so
+/// `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+/// can build two structurally-identical modules that differ only in
+/// geometry literals (the "different parameter defaults, structurally
+/// identical realization graph" shape the test needs to pin
+/// edit_source's auto-invalidation behaviour against a non-trivial
 /// content-diff).
 fn my_design_template_with_box_realization_dims(
     width_mm: f64,
@@ -999,7 +1002,7 @@ fn my_design_template_with_box_realization_dims(
 /// Pins the parallel auto-invalidation contract for the source-edit hot
 /// path, mirroring the parameter-edit contract above. `edit_param` and
 /// `edit_source` both reset the cache via the same `clear_realization_cache`
-/// call (task 2874 step-22 single-sourced the reset semantics there), but a
+/// call (task 2874 single-sourced the reset semantics there), but a
 /// separate test pin per function guards against a future refactor that
 /// keeps the reset in only one of the two functions and silently regresses
 /// the other.
@@ -1034,8 +1037,8 @@ fn my_design_template_with_box_realization_dims(
 /// and the in-place-clear-vs-reseat rationale.
 #[test]
 fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build() {
-    // (a) Cold-start eval, activate purpose, build → cache populated by
-    // step-6 (asserted as the test premise inside the helper). The first
+    // (a) Cold-start eval, activate purpose, build → cache populated
+    // (asserted as the test premise inside the helper). The first
     // module's shape — `my_design_template_with_box_realization_dims(10.0,
     // 20.0, 5.0)` — is dimension-for-dimension what the helper's
     // `my_design_template_with_box_realization()` builds.
@@ -1185,9 +1188,9 @@ fn edit_source_rejects_with_not_initialized_before_flushing_realization_cache() 
 ///   (c) Assert the cache is empty at `(MyDesign, BRep, 1e-6)`.
 #[test]
 fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
-    // (a) Cold-start eval, activate purpose, build → cache populated by
-    // step-6; the helper asserts the cache-populated premise before
-    // returning so the post-clear assertion below is never vacuous.
+    // (a) Cold-start eval, activate purpose, build → cache populated by the
+    // build-time wiring; the helper asserts the cache-populated premise
+    // before returning so the post-clear assertion below is never vacuous.
     let mut engine =
         engine_with_populated_realization_cache("test_clear_realization_cache_public_api");
 
