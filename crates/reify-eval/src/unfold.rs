@@ -727,9 +727,9 @@ fn elaborate_child_instance_nested<'t, 'f>(
                 // cross-sub reads onto their sub node) so `topological_sort` can
                 // see the edges, which is the wrong set for a value comparison.
                 // The raw trace is what the gate needs — and it is passed as a
-                // CLOSURE so the tree walk happens only on the `@optimized` path
-                // (amend suggestion #2); every other scratch let now pays one
-                // hash lookup instead of a full `extract_dependency_trace`.
+                // CLOSURE so the tree walk happens only on the `@optimized`
+                // path; every other scratch let pays one hash lookup instead of
+                // a full `extract_dependency_trace`.
                 let v = match resolve_optimized_instance_cell(
                     expr,
                     optimized_names,
@@ -1394,10 +1394,10 @@ fn elaborate_child_params_only<'f>(
             // instance and template agree, silently and correctly. Wiring it
             // here is what makes instance scope inherit a future template-scope
             // param fix with no further change.
-            // The read trace is materialised lazily (amend suggestion #2): a
-            // param default that is not an `@optimized` call — the common case,
-            // and one that runs for EVERY param of EVERY instance, collection
-            // elements included — never walks the expression tree here.
+            // The read trace is materialised lazily: a param default that is
+            // not an `@optimized` call — the common case, and one that runs for
+            // EVERY param of EVERY instance, collection elements included —
+            // never walks the expression tree here.
             let resolution = resolve_optimized_instance_cell(
                 default_expr,
                 optimized_names,
@@ -1408,9 +1408,8 @@ fn elaborate_child_params_only<'f>(
                 values,
             );
 
-            // amend (#6662 reviewer_comprehensive, suggestion #5). This site
-            // reports its OWN declines. The lets site's "phase 2 is the
-            // authoritative site and sees the same cell" justification for
+            // This site reports its OWN declines. The lets site's "phase 2 is
+            // the authoritative site and sees the same cell" justification for
             // staying silent does NOT cover a param: `elaborate_child_lets_only`
             // filters on `c.kind == ValueCellKind::Let`, so a Param cell is
             // never seen there and a decline here would otherwise be reported by
@@ -1425,27 +1424,33 @@ fn elaborate_child_params_only<'f>(
             // closes, the gate flips to true and this site starts reporting,
             // which is the point of wiring it now.
             //
-            // CAVEAT that #6750 must resolve before relying on that (amend
-            // round-4 suggestion #5). Unlike phase 2, which walks
+            // DECLARATION-ORDER CAVEAT. Unlike phase 2, which walks
             // `sorted_child_lets` in dependency order, THIS loop is plain
-            // DECLARATION order over `child_template.value_cells`, and the
-            // Auto-precedence branch above `continue`s without inserting at
-            // all. So for an `@optimized` param default that reads a SIBLING
-            // param declared after it, the gate compares `None` (instance,
-            // not yet inserted) against `Some(v)` (global) and returns
-            // `Unreusable` purely because of declaration order — not because
-            // anything is instance-specific.
+            // declaration order over `child_template.value_cells`, and the
+            // Auto-precedence branch above `continue`s without inserting at all.
+            // So for a param default that reads a SIBLING param declared after
+            // it, the gate compares `None` (instance, not yet inserted) against
+            // `Some(v)` (global) and returns `Unreusable` purely because of
+            // declaration order — not because anything is instance-specific.
             //
-            // That is benign TODAY for two independent reasons: the fallback
-            // `eval_child_expr` resolves the missing read from
-            // `snapshot.values` anyway, so the VALUE is unaffected, and the
-            // registered-target gate is unconditionally false here, so no
-            // warning is emitted either. Both reasons stop holding the moment
-            // #6750 lands, at which point a forward-referencing param default
-            // would produce a spurious decline AND a spurious warning. The fix
-            // then is to order this loop by dependency (reusing
-            // `phase15_node_traces` + `topological_sort` as phase 2 does), not
-            // to weaken the gate.
+            // The DECLINE is free: the registered-target gate is unconditionally
+            // false here, so nothing is reported. #6750 flips that gate, and
+            // `instance_scope_optimized_param_default_reading_a_later_sibling_is_silent`
+            // (tests/compute_dispatch_registry.rs) reds when it does — that is
+            // the point at which this loop must be ordered by dependency
+            // (reusing `phase15_node_traces` + `topological_sort` as phase 2
+            // does), not the point at which to weaken the gate.
+            //
+            // The VALUE is a DIFFERENT matter, and the earlier claim here — that
+            // the fallback `eval_child_expr` recovers the missing read from
+            // `snapshot.values` — is MEASURED FALSE by that same test: the
+            // instance cell degrades to `Undef` while the template cell holds
+            // the evaluated default. That gap is NOT this gate's: the test's
+            // plain, non-`@optimized` control degrades identically without ever
+            // reaching `resolve_optimized_instance_cell`. It is a pre-existing
+            // property of visiting params in declaration order, filed as ticket
+            // `tkt_0RTGVFCMK9K695TCM0WK00FCP9` (not cited as `#NNNN` because the
+            // curator assigns the task id asynchronously).
             if let OptimizedInstanceResolution::Unreusable { target, cause } = &resolution {
                 report_optimized_instance_decline(
                     diagnostics,
@@ -1725,9 +1730,9 @@ fn elaborate_child_lets_only<'t, 'f>(
         // let commit, so it is the site that decides the committed value.
         // `child_let_traces` already holds `extract_dependency_trace(expr)` for
         // exactly this `NodeId` (built above, consumed by `take_trace` below),
-        // so the gate borrows it rather than walking the expression again —
-        // amend suggestion #3. The `unwrap_or_default` is unreachable (both maps
-        // are built from `child_let_cells`) and only keeps the borrow total.
+        // so the gate borrows it rather than walking the expression again.
+        // The `unwrap_or_default` is unreachable (both maps are built from
+        // `child_let_cells`) and only keeps the borrow total.
         let no_reads: Vec<ValueCellId> = Vec::new();
         let reads: &[ValueCellId] = child_let_traces
             .get(&child_node_id)
@@ -1762,10 +1767,9 @@ fn elaborate_child_lets_only<'t, 'f>(
             );
         }
 
-        // amend (#6662 reviewer_comprehensive round 4, suggestion #1 —
-        // robustness). Whether this cell's value was COPIED from the template
-        // cell decides whether the committed trace needs the extra read edge
-        // below; captured before the `match` consumes `resolution`.
+        // Whether this cell's value was COPIED from the template cell decides
+        // whether the committed trace needs the extra read edge below; captured
+        // before the `match` consumes `resolution`.
         let reused_from_template = matches!(resolution, OptimizedInstanceResolution::Reuse(_));
 
         let val = match resolution {
@@ -1795,9 +1799,8 @@ fn elaborate_child_lets_only<'t, 'f>(
             "child_let_traces",
         );
 
-        // amend (#6662 reviewer_comprehensive round 4, suggestion #1 —
-        // robustness). On the `Reuse` arm the committed value did NOT come from
-        // evaluating `expr`: it was copied verbatim from
+        // On the `Reuse` arm the committed value did NOT come from evaluating
+        // `expr`: it was copied verbatim from
         // `{child_template}.{member}`. The raw `extract_dependency_trace(expr)`
         // trace records the call's ARG reads and says nothing about the cell the
         // value actually came from, and `dirty.rs`'s `compute_eval_set` /
