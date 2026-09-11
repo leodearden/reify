@@ -903,13 +903,21 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # the lane never was.
     [ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
 
-    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): a refused
-    # acquirer of an ordinary task lane should just try a different FREE
-    # lane (0 -> flock -n, non-blocking refuse) -- but the SINGLETON
-    # _merge-verify lane has no alternate to fall back to, so it can QUEUE
-    # instead: N>0 -> flock -w N (bounded queue, refuse on timeout);
-    # "unlimited" (case-insensitive) -> flock (block until acquired, never
-    # refuses). Validation mirrors lib_lane_x_flock.sh's
+    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): it governs THIS
+    # block, so it binds only a caller that REACHES it -- one that lets seed
+    # self-acquire. Neither production pool acquire does: both pass
+    # --assume-lane-lock-held, so the knob is inert for BOTH roles and DF's
+    # outer flock carries its own bounded wait (30s) and timeout code (124)
+    # instead (see the --lane-lock header note). The callers it does bind are
+    # tests/infra and DF's ephemeral warm-seed path (take_lane_lock=False).
+    # The 0 default suits a refused task-lane acquirer, which can just try a
+    # different FREE lane (0 -> flock -n, non-blocking refuse); N>0 -> flock -w N
+    # (bounded queue, refuse on timeout); "unlimited" (case-insensitive) ->
+    # flock (block until acquired, never refuses).
+    # Attribute NO wait policy to the singleton _merge-verify lane: it does not
+    # call this script at all, and the prescription that used to stand here was
+    # WITHDRAWN as advice addressed to a non-caller (MODE SPLIT note near the
+    # tail). Validation mirrors lib_lane_x_flock.sh's
     # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
     # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
     # bad knob can never touch the target.
@@ -1228,10 +1236,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         mv "$LANE_TARGET" "$RESEED_TRASH"
     fi
 else
-    # --reset-in-place: keep existing clobber-refusal.  The mode is NOT test-only (it
-    # is also the merge-spec acquire mode — MODE SPLIT note near the tail), so the
-    # refusal below is a contract a PRODUCTION caller can hit: this mode seeds a
-    # cold/empty lane only.
+    # --reset-in-place: keep existing clobber-refusal.  This mode seeds a cold/empty
+    # lane only.  It is NOT test-only (it is also the merge-spec acquire mode — MODE
+    # SPLIT note near the tail), and the refusal below is not merely a contract a
+    # PRODUCTION caller COULD hit: DF retains `target/` across a `_spec-` release and
+    # excludes it from the pre-seed clean, so the refusal IS reached on every acquire
+    # after a lane's create-once one, degrading that verify to cold.  Composition,
+    # evidence and the DF-side fix: PRD §9.5's 2026-09-11 ledger entry and task #7410.
+    # Do not "fix" it by relaxing the guard here — that is the open question 7410 owns.
     if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
         err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
         err "seed-warm-lane.sh --reset-in-place only seeds cold/empty lanes. Remove the lane first."
