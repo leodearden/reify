@@ -333,9 +333,13 @@ fn flat_sort_reorder_preserves_corpus_results() {
 /// site every build helper routes through — never called
 /// `reify_eval::compute_targets::register_compute_fns`. With no trampoline
 /// registered for `solver::form_find_free`, `engine_eval.rs`'s `@optimized`
-/// dispatch takes its documented else-branch: push a codeless Error diagnostic
+/// dispatch takes its documented else-branch: push a diagnostic coded
+/// `DiagnosticCode::NoRegisteredComputeTrampoline`
 /// ("no registered compute trampoline (falling back to body-inlining)") and
-/// body-inline the fn. `form_find_free`'s body is the never-run sentinel
+/// body-inline the fn. Since task 5311 that diagnostic is a `Severity::Warning`
+/// when the engine's compute registry is entirely empty — which is what
+/// `fresh_engine` produced here — and a `Severity::Error` otherwise; either way
+/// it does not stop the body-inlining that caused this defect. `form_find_free`'s body is the never-run sentinel
 /// `{ FormFindResult() }` (`crates/reify-compiler/stdlib/tensegrity.ri`), whose
 /// five params are ALL required with no defaults — so `TPrism.form` became a
 /// non-Undef struct whose every field is Undef, and its two FieldAccess

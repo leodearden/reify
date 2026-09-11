@@ -11,12 +11,14 @@
 //! `fixture_scaffolding` module rather than being duplicated here — see that
 //! module's header for why it is not owned by an unrelated pin test.
 
-use reify_core::{ConstraintNodeId, DiagnosticCode, Severity, ValueCellId};
+use reify_core::{ConstraintNodeId, DiagnosticCode, Severity};
 use reify_eval::CheckResult;
-use reify_ir::{Satisfaction, Value};
+use reify_ir::Satisfaction;
 use std::collections::HashSet;
 
-use super::fixture_scaffolding::{compile_and_build_with_occt, read_and_compile_fixture};
+use super::fixture_scaffolding::{
+    assert_bool_cell, assert_length_cell, compile_and_build_with_occt, read_and_compile_fixture,
+};
 
 const CLEARANCE_ORACLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -35,10 +37,12 @@ const CLEARANCE_ORACLE_PATH: &str = concat!(
 /// `audit_file` (iterating only over reported constraints) has no notion of.
 const EXPECTED_CONSTRAINT_COUNT: usize = 5;
 
-/// Compiles `clearance_oracle.ri` and runs the PURE check surface over it —
-/// kernel-less `Engine::check`, exactly what `reify check` runs, constructed
-/// via the shared `reify_test_support::make_simple_engine()` so this surface
-/// and the corpus gate's are the same engine by construction. Returns the
+/// Compiles `clearance_oracle.ri` and runs the KERNEL-LESS check surface over
+/// it — `Engine::check` with `kernel: None`, constructed via the shared
+/// `reify_test_support::make_simple_engine()` so this surface and the corpus
+/// gate's are the same engine by construction. NOT what the `reify check` CLI
+/// runs: since task 5748 (2026-08-28) `cmd_check` attaches a kernel for a
+/// geometry-bearing module and resolves these two constraints. Returns the
 /// whole `CheckResult` so a caller can read diagnostics and constraint results
 /// off ONE compile+check instead of re-deriving each separately.
 ///
@@ -106,17 +110,7 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
         return;
     };
 
-    let fouls_cell = ValueCellId::new("ClearanceOracle", "fouls");
-    let fouls_actual = result.values.get(&fouls_cell);
-    assert_eq!(
-        fouls_actual,
-        Some(&Value::Bool(false)),
-        "ClearanceOracle.fouls should be Value::Bool(false) per the file's own \
-         header comment, got: {fouls_actual:?}"
-    );
-
-    let gap_cell = ValueCellId::new("ClearanceOracle", "gap");
-    let gap_actual = result.values.get(&gap_cell);
+    assert_bool_cell(&result, "ClearanceOracle", "fouls", false);
 
     // Allow a small floating-point epsilon on the si_value while requiring the
     // LENGTH dimension. Unlike kernel_queries_distance_smoke.rs's box-point
@@ -127,28 +121,10 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
     // is chosen relative to the kernel's own extrema tolerance, not copied
     // from the planar box-point case. The semantic margin (min_gap = 1mm vs
     // gap = 10mm) is enormous, so 1µm is ample without being version-fragile.
-    match gap_actual {
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == reify_core::DimensionVector::LENGTH => {
-            let expected = 0.01_f64; // 10 mm in SI metres, per the header comment
-            let epsilon = 1e-6;
-            assert!(
-                (si_value - expected).abs() < epsilon,
-                "ClearanceOracle.gap si_value should be 0.01 (10 mm), \
-                 got {si_value:.15} (delta {delta:.3e})",
-                delta = (si_value - expected).abs()
-            );
-        }
-        other => panic!(
-            "ClearanceOracle.gap should be Value::Scalar{{LENGTH, ≈0.01}}, got: {:?}",
-            other
-        ),
-    }
+    assert_length_cell(&result, "ClearanceOracle", "gap", 0.01, 1e-6);
 
-    // Pin the fixture's own documented `reify check` behaviour (its
-    // "EVAL/BUILD ONLY" header section): `constraint not fouls` and
+    // Pin the fixture's own documented kernel-less behaviour (its "NEEDS A
+    // REALIZED KERNEL" header section): `constraint not fouls` and
     // `constraint gap > min_gap` are `Indeterminate` under `check()` alone
     // but must resolve on the build() surface once the geometry-consumer
     // builtins they depend on (`intersects`/`distance`) are realized (the
@@ -222,8 +198,8 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
 }
 
 /// Companion to `clearance_oracle_evals_expected_fouls_and_gap`: pins the
-/// OTHER half of the fixture header's "EVAL/BUILD ONLY" contract — the pure
-/// check/eval surface (kernel-less `Engine`), where `intersects`/`distance`
+/// OTHER half of the fixture header's "NEEDS A REALIZED KERNEL" contract — the
+/// kernel-less `Engine` surface, where `intersects`/`distance`
 /// are geometry-consumer builtins that CANNOT resolve. Runs unconditionally
 /// on every runner (no OCCT needed), so it also raises the value of the
 /// otherwise-unconditional half of the sibling test.

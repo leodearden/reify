@@ -254,6 +254,9 @@ Three consequences bind on the leaves:
    definite event: #7177 when the DWR PRD is authored (dep-gated on #4909, which owns replacing the
    uniform-refinement fallback that discards its own Dörfler marking); #7178 when the shift-invert PRD
    is authored; #7179 when `mode`/`auto_dense` are honored and leave the allowlist entirely.
+   *(#7178's condition was MET — the PRD was authored 2026-09-03 and landed in `1f0af462b5`. It is now
+   `done`, and its C1 ownership passed to leaf ζ #7263 on 2026-09-08 rather than lapsing, which is what
+   decision 3 requires of a closing owner.)*
 
 **D6 note — a limit of the gate, recorded so it is not rediscovered.** C1 declares sets over the
 *params* of a consumed structure, so an entire **unconsumed load type** is outside PDROP's reach by
@@ -281,12 +284,27 @@ checkable.
 | `mechanism_modal.element_order` | **not_applicable** | this PRD, leaf ζ |
 | `BucklingOptions.mode` | **honor** — dispatch dense vs shift-invert; both entry points already public | **#7179** (pending) |
 | `BucklingOptions.auto_dense` | **honor** — `false` becomes a coded error below the Lanczos floor, not a faer panic | **#7179** (pending) |
-| `BucklingOptions.sigma` | **allowlist**, owner live — σ≠0 needs an indefinite factorization, not plumbing | **#7178** (pending) |
-| `ModalOptions.sigma` → `shift_frequency` | **allowlist**, owner live — retype #6097, numerics #7178 | **#6097** + **#7178** (both pending) |
+| `BucklingOptions.sigma` | **allowlist**, owner live — σ≠0 needs an indefinite factorization, not plumbing | **#7263** (pending) |
+| `ModalOptions.sigma` → `shift_frequency` | **allowlist**, owner live — retype #6097, numerics #7263 | **#6097** + **#7263** (both pending) |
 | `force_tet` / `require_hex_wedge` | **allowlist**, owner live | **#4746** (pending) |
 | `ElasticOptions.mesh_size` | **allowlist**, owner live | **#7074** (pending) |
 | `ElasticOptions.element_order` (elastic path) | **allowlist**, owner live | **#7075** (pending) |
 | `target_quantity_of_interest` | **allowlist**, owner live (DWR) | **#7177** (pending, dep-gated on #4909) |
+
+*(Owner repointed 2026-09-08 on Leo's ruling: the `BucklingOptions.sigma` and `ModalOptions.sigma`
+rows previously named **#7178**, which authored the shift-invert-eigensolve PRD and held C1 ownership
+pending its leaves. Ownership moved to leaf ζ **#7263** — the task whose landing actually moves both
+params from the C1 `ignored` set to `honored`, which is what an `ignored` entry's owner must be.
+#7178 is now `done`; #7081 and #6097 were amended to cite #7263, and the two superseded Graphiti
+ownership edges were temporally invalidated as of the transfer rather than rewritten. Via esc-7305-1.)*
+
+*(SEQUENCING WARNING for leaf η, the task that lands the `reify-audit --pattern PDROP` gate.
+Check each row's owner status BEFORE emitting its allowlist entry. C4c makes it a gate FAILURE
+for "any allowlist entry whose owning task is absent, `done` or cancelled", so a row whose owner
+has reached a terminal status between this table being written and η landing will red main the
+moment η arrives — for doing exactly what this table says. Omit such a row rather than
+add-then-immediately-burn-it-down. Surfaced via esc-7074-5 against `ElasticOptions.mesh_size`
+/ **#7074**, but the hazard applies to every "owner live" row above, not just that one.)*
 
 ## 8. Pre-conditions
 
@@ -338,7 +356,8 @@ Phase 3 — remaining honors. Phase 4 — docs-truth + close.
   governs; this PRD adds codes, it does not sweep. **One scoped exception (D6, 2026-09-01):** leaving
   `BucklingOptions` un-migrated would permanently exempt the one struct `docs/legibility/design-invariants.md`
   holds up as "the house pattern" from the pattern it exemplifies. Its `mode` and `auto_dense` arms are
-  retired by #7179 when it honors them, and its `sigma` arm gains a live `#NNNN` cite (#7178) where it
+  retired by #7179 when it honors them, and its `sigma` arm gains a live `#NNNN` cite (#7263 — was
+  #7178 until the 2026-09-08 ownership transfer) where it
   cites no task today. That is opportunistic migration at the site, not a sweep.
 - **The `sub p = Ctor(...)` silent-accept family** (#6946, #6869, #6191) — ctor *binding* diagnostics,
   a different seam from trampoline *extraction*.

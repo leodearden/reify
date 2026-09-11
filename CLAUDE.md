@@ -44,7 +44,8 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 
 ## GUI launch
 
-- `scripts/run-gui.sh <file.ri>` — release-mode build+launch (what end users run). `scripts/run-gui-dev.sh <file.ri>` — vite dev server + debug binary with `REIFY_DEBUG=1`, which opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`; set `REIFY_DEBUG_PORT` per worktree to avoid collisions. Both export OCCT's `LD_LIBRARY_PATH` automatically.
+- `scripts/run-gui.sh <file.ri>` — release-mode build+launch (what end users run). `scripts/run-gui-dev.sh <file.ri>` — vite dev server + debug binary with `REIFY_DEBUG=1`, which opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`; set `REIFY_DEBUG_PORT` per worktree to avoid collisions. Both export OCCT's `LD_LIBRARY_PATH` automatically, prepend `/opt/reify-deps/tbb-pin` ahead of any **inherited** `LD_LIBRARY_PATH` (which is preserved, not scrubbed — the loader reads `LD_LIBRARY_PATH` before `DT_RUNPATH`, so a caller `/usr/lib` path would otherwise defeat #5192's tbb pin), and default `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+- Both preflight before any build — `run-gui-dev.sh` the display **and** the vite port, `run-gui.sh` the display — and refuse rather than build into a launch that cannot work; `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses.
 - With a built binary: `reify gui --debug <file.ri>` (`--mcp` is an alias) or `reify gui-debug <file.ri>`.
 
 ## GUI tests

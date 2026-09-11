@@ -727,54 +727,178 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
-/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+/// Retrieve the `ValueCellDecl` of a value cell by name from a named template.
+///
+/// Resolves any value cell — `let` bindings and `param`s (defaulted or `auto`) alike —
+/// since lookup keys on the cell's member name, not its kind.
+///
+/// This is the cell-level primitive: it returns the full declaration (kind,
+/// visibility, is_aux, cell_type, default_expr, ...) rather than just the
+/// compiled default expression. Callers needing only the compiled default
+/// expression should prefer [`get_let_expr_in`], which delegates here.
+///
+/// Resolution keys on `id.member` alone; `id.entity` is not considered. A
+/// template holding two value cells that share a member name under
+/// different entities cannot be resolved this way, and this function
+/// panics, naming the colliding entities (see # Panics). The realistic
+/// producer is a scoped sub/connect `Auto` cell (`id.entity =
+/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
+/// same-named cell — real `.ri` source produces this with zero diagnostics,
+/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
+/// If a specific entity's cell matters, disambiguate before calling, e.g.
+/// by searching `template.value_cells` directly for the desired
+/// `id.entity`. [`get_let_expr_in_template`] shares this same resolution
+/// walk and is subject to the identical ambiguity contract.
+///
+/// # Panics
+/// - `"no template named '{template_name}'"` if no template with that name exists.
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
+///   cell shares that member name, naming the colliding entities.
+#[track_caller]
+pub fn get_value_cell_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    template_name: &str,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let Some(template) = module.templates.iter().find(|t| t.name == template_name) else {
+        panic!("no template named '{template_name}'")
+    };
+    lookup_value_cell(template, cell_name)
+}
+
+/// THE single ambiguity-guarded cell walk, shared by [`get_value_cell_in`] and
+/// [`get_let_expr_in_template`]: resolves `cell_name` against
+/// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
+///
+/// See `get_value_cell_in`'s rustdoc for the full ambiguity contract —
+/// the realistic producer of a collision and the disambiguation route.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
+///   cell matches — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one
+///   value cell shares that member name, naming the colliding `id.entity` values.
+#[track_caller]
+fn lookup_value_cell<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let matching: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == cell_name)
+        .collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<String> = template
+                .value_cells
+                .iter()
+                .map(|vc| vc.id.to_string())
+                .collect();
+            panic!(
+                "no value cell named '{cell_name}' in template '{}'; has: {available:?}",
+                template.name
+            )
+        }
+        [only] => only,
+        many => {
+            let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
+            panic!(
+                "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
+                 member, under entities {entities:?}; this lookup resolves on id.member alone, \
+                 so disambiguate by searching `template.value_cells` for the desired id.entity",
+                template.name,
+                many.len()
+            )
+        }
+    }
+}
+
+/// THE single site of "has no default expr", shared by [`get_let_expr_in`] and
+/// [`get_let_expr_in_template`].
+///
+/// # Panics
+/// - `"value cell '{cell.id.member}' in '{template_name}' has no default expr"` if
+///   `default_expr` is `None`.
+#[track_caller]
+fn require_default_expr<'a>(
+    cell: &'a reify_compiler::ValueCellDecl,
+    template_name: &str,
+) -> &'a CompiledExpr {
+    cell.default_expr.as_ref().unwrap_or_else(|| {
+        let cell_name = &cell.id.member;
+        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
+    })
+}
+
+/// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
 ///
 /// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
 /// `param`s alike — since lookup keys on the cell's member name, not its kind. A
 /// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
+/// Reach for this when you're already holding a `&TopologyTemplate` directly — e.g. from
+/// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
+/// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
+/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). Shares its
+/// cell-resolution walk with [`get_value_cell_in`]; see that function's rustdoc for the
+/// full ambiguity contract.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value
+///   cell shares that member name (see [`get_value_cell_in`]'s rustdoc for the hazard).
+/// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
+pub fn get_let_expr_in_template<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a CompiledExpr {
+    require_default_expr(lookup_value_cell(template, cell_name), &template.name)
+}
+
+/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
 /// not be the desired template. `get_let_expr` delegates to this function.
 ///
+/// Delegates to [`get_value_cell_in`] for template and cell resolution.
+///
 /// # Panics
-/// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+/// - `"no template named '{template_name}'"` if no template with that name exists (raised by
+///   [`get_value_cell_in`]).
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the cell
+///   is absent (raised by [`get_value_cell_in`]).
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
+///   cell shares that member name (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == template_name)
-        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{template_name}'")
-        });
-    cell.default_expr.as_ref().unwrap_or_else(|| {
-        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    require_default_expr(
+        get_value_cell_in(module, template_name, cell_name),
+        template_name,
+    )
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from the first template.
-///
-/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
-/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
-/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
 /// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
 /// templates and you need to target a specific one.
 ///
+/// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
+///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
-/// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+/// - Panics from [`get_let_expr_in`] if the cell is absent, ambiguous, or its default expr is absent.
+#[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
     name: &str,
@@ -1708,20 +1832,267 @@ mod tests {
         super::assert_no_diagnostics(&diags, "guard compile");
     }
 
-    // ── get_let_expr_in ───────────────────────────────────────────────────
+    // ── get_value_cell_in ─────────────────────────────────────────────────
+    // get_value_cell_in, get_let_expr_in_template, get_let_expr_in, and
+    // get_let_expr all resolve through the shared lookup_value_cell walk, so
+    // the not-found and ambiguity panics pinned once below (on
+    // get_value_cell_in) apply identically at all four entry points — no
+    // per-entry-point duplicate is added for either panic.
 
-    /// get_let_expr_in should return the default_expr of the named cell in the
-    /// named template, even when the module has multiple templates.
-    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
-    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
-    /// they satisfy `*v == (*v as i64) as f64`.
+    /// Shared fixture: two templates both declare `w` with different values, so a
+    /// wrong-template resolution is observable in the assertion.
+    const ALPHA_BETA_W: &str = r#"
+        structure Alpha { let w = 1.5 }
+        structure Beta  { let w = 2.7 }
+    "#;
+
+    /// Asserts `expr` is `CompiledExprKind::Literal(Value::Real(expected))`.
+    /// Shared by every test that resolves a real-literal default expr and
+    /// checks its value — the module's single real-literal comparison policy
+    /// (exact equality: both sides come from the same literal parse, so no
+    /// epsilon is needed).
+    fn assert_real_literal(expr: &reify_ir::CompiledExpr, expected: f64) {
+        use reify_ir::{CompiledExprKind, Value};
+
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Real(v)) => {
+                assert_eq!(*v, expected, "expected literal {expected}, got {v}")
+            }
+            other => {
+                panic!("expected CompiledExprKind::Literal(Value::Real({expected})), got {other:?}")
+            }
+        }
+    }
+
+    /// Resolves `Beta.w` and asserts `kind`, `cell_type`, and the default expr literal.
     #[test]
-    fn test_get_let_expr_in_finds_named_template() {
+    fn test_get_value_cell_in_returns_cell_from_named_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
+        let cell = super::get_value_cell_in(&module, "Beta", "w");
+        assert_eq!(
+            cell.kind,
+            reify_compiler::ValueCellKind::Let,
+            "expected cell.kind == ValueCellKind::Let for Beta.w (pins that the \
+             helper returns the full declaration, not just an expr), got {:?}",
+            cell.kind
+        );
+        assert_eq!(
+            cell.cell_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected cell_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
+            cell.cell_type
+        );
+        assert_real_literal(
+            cell.default_expr
+                .as_ref()
+                .expect("Beta.w should have a default expr"),
+            2.7,
+        );
+    }
+
+    /// get_value_cell_in should panic with "no template named" when the template
+    /// name does not match any template in the module.
+    #[test]
+    #[should_panic(expected = "no template named")]
+    fn test_get_value_cell_in_panics_on_missing_template() {
+        let source = r#"structure S { let v = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "DoesNotExist", "v");
+    }
+
+    /// get_value_cell_in should panic with "no value cell named" when the cell
+    /// name does not match any value cell in the named template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_value_cell_in_panics_on_missing_cell() {
+        let source = r#"structure S { let x = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "S", "y");
+    }
+
+    /// Pins that the not-found panic enumerates the template's actual cells
+    /// as `entity.member`, rather than an empty or truncated list.
+    #[test]
+    #[should_panic(expected = "[\"First.x\", \"Second.x\"]")]
+    fn test_get_value_cell_in_missing_cell_panic_lists_available_cells() {
+        use reify_core::ModulePath;
+
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(ambiguous_x_template())
+            .build();
+        super::get_value_cell_in(&module, "Bracket", "y");
+    }
+
+    /// Shared fixture: a module with template `S` and an `auto_param` cell `x`,
+    /// the only way to produce a `default_expr: None` cell in compiled output.
+    fn auto_param_module() -> reify_compiler::CompiledModule {
+        use reify_core::{ModulePath, Type};
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::dimensionless_scalar())
+            .build();
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "x")
+            .expect("auto_param should have added cell 'x'");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param must produce default_expr = None for this fixture's intent"
+        );
+        crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build()
+    }
+
+    /// Asserts the cell is returned (not panicked on) when its default_expr is None.
+    #[test]
+    fn test_get_value_cell_in_returns_cell_with_no_default_expr() {
+        let module = auto_param_module();
+        let cell = super::get_value_cell_in(&module, "S", "x");
+        assert_eq!(
+            cell.id.member, "x",
+            "expected get_value_cell_in to return the cell named 'x', got {:?}",
+            cell.id.member
+        );
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param_module's fixture guarantees default_expr = None; \
+             get_value_cell_in must return the cell as-is, not synthesize a default"
+        );
+    }
+
+    /// Pins that two value cells sharing a member name under different
+    /// entities panic, rather than silently resolving to the first declared.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_value_cell_in_panics_on_ambiguous_member() {
+        use reify_core::ModulePath;
+
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(ambiguous_x_template())
+            .build();
+        super::get_value_cell_in(&module, "Bracket", "x");
+    }
+
+    // ── get_let_expr_in_template ────────────────────────────────────────────
+
+    /// get_let_expr_in_template should return the default_expr of the named
+    /// cell directly from a template the caller already holds (no module or
+    /// template-name resolution step).
+    /// The fixture uses a real-form literal (`1.5`) because the assertion is on
+    /// `result_type`: `classify_number_literal` (reify-ast/src/decl.rs) maps any
+    /// real-form token — one containing `.`, `e`, or `E`, whole-number or not —
+    /// to `Real`, and only integer-form tokens (`1`) reach the `Int` branch. So
+    /// `1.0` would work here too; `1` would not.
+    #[test]
+    fn test_get_let_expr_in_template_finds_cell() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        let expr = super::get_let_expr_in_template(&template, "v");
+        assert_eq!(
+            expr.result_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// Two value cells sharing member name "x" under different entities on
+    /// one "Bracket" template — the ambiguity fixture shared by the two
+    /// tests below. Both cells carry a default so a resolution failure can
+    /// only be the collision, never a missing default.
+    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build()
+    }
+
+    /// The two panic branches of `get_let_expr_in_template` ("no value cell
+    /// named" / "has no default expr") are intentionally NOT re-tested here.
+    /// `get_let_expr_in_template` and `get_let_expr_in` both resolve through
+    /// the shared `lookup_value_cell` / `require_default_expr` primitives, and
+    /// `test_get_let_expr_in_panics_on_missing_cell` /
+    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
+    /// exercise both branches through those primitives — duplicating them at
+    /// this layer would add coverage of the new entry point only, not of new
+    /// behavior (task #5831 review).
+    ///
+    /// What IS specific to this layer: `get_let_expr_in_template` matches on
+    /// `id.member` alone, so a template holding two value cells that share a
+    /// member name under different entities is unresolvable by member name
+    /// alone — there is no principled way to pick between them. This pins
+    /// that the lookup aborts rather than silently returning one of the two.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// Pins that the ambiguity panic is actionable: it enumerates the
+    /// colliding `id.entity` values, in `value_cells` order, in its message.
+    /// Without this, a maintainer hitting the panic from
+    /// `test_get_let_expr_in_template_panics_on_ambiguous_member` learns only
+    /// that a collision occurred, not which entities collided — forcing them
+    /// to reproduce it by hand before they can disambiguate.
+    #[test]
+    #[should_panic(expected = "[\"First\", \"Second\"]")]
+    fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// The realistic producer of a same-member collision is a scoped
+    /// sub/connect `Auto` cell (`id.entity = "Parent.sub"`, `default_expr:
+    /// None`) sitting alongside the parent's own same-named `let`/defaulted
+    /// `param` cell — real `.ri` source produces exactly this with zero
+    /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
+    /// `let area = ...`. With the `sub` declared first, as below, the scoped
+    /// `Manifold.v` cell precedes `Manifold`'s own cell in `value_cells`, so
+    /// the ambiguity check must fire before the `default_expr` deref — not
+    /// after — or this fixture would report a missing default instead of an
+    /// ambiguity.
+    ///
+    /// The zero-diagnostics assertion below is a precondition guard: it
+    /// keeps a fixture that stops compiling cleanly from being misread as
+    /// this test failing to detect the ambiguity, rather than failing on the
+    /// precondition with a message naming the actual diagnostics.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
         let source = r#"
-            structure Alpha { let v = 1.5 }
-            structure Beta  { let w = 2.7 }
+            structure def Vent { param area : Length = 1mm }
+            structure def Manifold {
+                sub v : Vent { area = auto }
+                let area = 2mm
+            }
         "#;
         let module = super::compile_source(source);
+        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+
+        let _ = super::get_let_expr_in(&module, "Manifold", "area");
+    }
+
+    // ── get_let_expr_in ───────────────────────────────────────────────────
+
+    /// Resolves `Beta.w` across multiple templates and asserts `result_type` and the literal.
+    #[test]
+    fn test_get_let_expr_in_finds_named_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
         let expr = super::get_let_expr_in(&module, "Beta", "w");
         assert_eq!(
             expr.result_type,
@@ -1729,10 +2100,14 @@ mod tests {
             "expected result_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             expr.result_type
         );
+        assert_real_literal(expr, 2.7);
     }
 
     /// get_let_expr_in should panic with "no template named" when the template
-    /// name does not match any template in the module.
+    /// name does not match any template in the module. This panic is now raised
+    /// by get_value_cell_in (see its own tests above); kept here too as a
+    /// deliberate API-contract guard on get_let_expr_in's own public panic
+    /// behaviour, independent of its current delegating implementation.
     #[test]
     #[should_panic(expected = "no template named")]
     fn test_get_let_expr_in_panics_on_missing_template() {
@@ -1742,7 +2117,9 @@ mod tests {
     }
 
     /// get_let_expr_in should panic with "no value cell named" when the cell
-    /// name does not match any value cell in the named template.
+    /// name does not match any value cell in the named template. Same
+    /// deliberate API-contract guard rationale as the "no template named" test
+    /// above.
     #[test]
     #[should_panic(expected = "no value cell named")]
     fn test_get_let_expr_in_panics_on_missing_cell() {
@@ -1751,35 +2128,11 @@ mod tests {
         super::get_let_expr_in(&module, "S", "y");
     }
 
-    /// get_let_expr_in should panic with "has no default expr" for a value cell
-    /// whose default_expr is None. Uses a builder-synthesized module with an
-    /// auto_param (which always has default_expr = None) rather than a compiled
-    /// source, since a source-level `param` always carries a default in well-formed
-    /// compiled output.  The inline `assert!` below makes the precondition explicit:
-    /// if `auto_param` ever changes to synthesize a placeholder default, the guard
-    /// will fire loudly rather than silently letting the test pass for the wrong reason.
+    /// Asserts a panic with "has no default expr" when the cell's default_expr is None.
     #[test]
     #[should_panic(expected = "has no default expr")]
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
-        use reify_core::{ModulePath, Type};
-        let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", Type::dimensionless_scalar())
-            .build();
-        // Precondition: auto_param must produce default_expr = None; if that ever
-        // changes this guard fires before get_let_expr_in, surfacing the broken
-        // assumption clearly instead of silently exercising the wrong branch.
-        let cell = template
-            .value_cells
-            .iter()
-            .find(|vc| vc.id.member == "x")
-            .expect("auto_param should have added cell 'x'");
-        assert!(
-            cell.default_expr.is_none(),
-            "auto_param must produce default_expr = None for this test's intent"
-        );
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
+        let module = auto_param_module();
         super::get_let_expr_in(&module, "S", "x");
     }
 
@@ -1790,7 +2143,6 @@ mod tests {
     #[test]
     fn test_get_let_expr_in_resolves_defaulted_param_cell() {
         use reify_compiler::ValueCellKind;
-        use reify_ir::{CompiledExprKind, Value};
 
         let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
         let module = super::compile_source(source);
@@ -1816,19 +2168,7 @@ mod tests {
         );
 
         let expr = super::get_let_expr_in(&module, "S", "pi");
-        match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => {
-                assert!(
-                    (*v - 1.5_f64).abs() < 1e-15,
-                    "expected param default 1.5, got {}",
-                    v
-                );
-            }
-            other => panic!(
-                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
-                other
-            ),
-        }
+        assert_real_literal(expr, 1.5);
     }
 
     // ── get_let_expr ─────────────────────────────────────────────────────
@@ -1881,24 +2221,10 @@ mod tests {
     /// resolve identically.
     #[test]
     fn test_get_let_expr_resolves_defaulted_param_cell() {
-        use reify_ir::{CompiledExprKind, Value};
-
         let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
         let module = super::compile_source(source);
         let expr = super::get_let_expr(&module, "pi");
-        match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => {
-                assert!(
-                    (*v - 1.5_f64).abs() < 1e-15,
-                    "expected param default 1.5, got {}",
-                    v
-                );
-            }
-            other => panic!(
-                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
-                other
-            ),
-        }
+        assert_real_literal(expr, 1.5);
     }
 
     // ── assert_no_type_cascade ────────────────────────────────────────────

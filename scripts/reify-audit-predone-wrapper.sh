@@ -25,11 +25,14 @@
 # docs/architecture-audit/f-infra-design.md §11 (D-1 row), §11.1
 # Root-cause: task 3731
 #
-# SYSTEMD WIRING (operator action required)
-# ------------------------------------------
-# /home/leo/.config/systemd/user/fused-memory.service must have:
+# SYSTEMD WIRING (live since 2026-08-30; see design §11.1.3)
+# ----------------------------------------------------------
+# /home/leo/.config/systemd/user/fused-memory.service line 54 carries:
 #   Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done
-# Then: systemctl --user daemon-reload && systemctl --user restart fused-memory
+# Deploy/re-deploy that wiring with scripts/deploy-reify-audit-predone-hook.sh
+# (task 6939) -- idempotent; installs the binary, asserts freshness, rewrites the
+# unit with a backup, reloads + restarts, and re-probes end-to-end. Do NOT
+# hand-edit the unit. Verify with: bash scripts/smoke-predone-hook.sh
 #
 # USAGE
 # -----

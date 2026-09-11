@@ -2,10 +2,17 @@
 # scripts/seed-warm-lane.sh — CoW clone + warmth-transfer helper for warm-lane pool.
 #
 # D10 always-re-seed-at-acquire contract (PRD §9.3, 2026-06-18 amendment):
-#   The seed primitive itself is UNCHANGED.  The acquire path (pool consumer, DF ζ)
-#   MUST always pass --fresh-checkout so a staled lane is rescued to warm rather
-#   than rebuilt near-cold via --reset-in-place.  --reset-in-place is retained only
-#   as a control arm in the B13 re-seed warmth delta test.
+#   The seed primitive itself is UNCHANGED.  The TASK-lane acquire path (pool
+#   consumer, DF ζ `_acquire_warm_lane_impl`) MUST always pass --fresh-checkout so a
+#   staled lane is rescued to warm rather than rebuilt near-cold via --reset-in-place.
+#   The merge-spec `_spec-` acquire (DF `acquire_spec_lane`) always passes
+#   --reset-in-place instead, so --reset-in-place is NOT "B13 control arm only":
+#   it is the control arm AND a production acquire mode.
+#   TWO homes, do not restate the split anywhere else in this file: the MODE SPLIT
+#   note near the tail is the in-file home for what the split MEANS HERE (the
+#   consequence rule for anything gated on one mode); PRD §9.5's 2026-09-11 ledger
+#   entry is the normative home for the measurement and the spec/implementation
+#   divergence it records.
 #
 #   Resolve convention (D8 seam): the caller MUST resolve <base>/target (a symlink
 #   to a .gen.N dir) to its CONCRETE .gen.N path before passing it to this script.
@@ -32,14 +39,27 @@
 #     consumer already holds it -- with EX_TEMPFAIL (75) by default, or 77 under
 #     --distinct-lock-refusal-rc (task #5568). Either way the refusal is
 #     prefixed `LANE_LOCK_CONTENDED:` on stderr.
-#   --lane-lock: still accepted (now implied under --fresh-checkout; still the
-#     explicit opt-in for the --reset-in-place control arm, which does not lock
-#     by default).
+#   --lane-lock: still accepted (implied under --fresh-checkout; still the
+#     explicit opt-in for --reset-in-place -- the B13 control arm).  But whether
+#     THIS script self-acquires is settled by the OPT-OUT, not by the mode:
+#     --assume-lane-lock-held clears the default-on flag AFTER --fresh-checkout
+#     has set it, and DF's `_seed_warm_lane` appends that flag on EVERY
+#     `take_lane_lock=True` call (capability-probed; reify-5556 livelock fix) --
+#     which is BOTH production pool acquires, task and merge-spec alike.  So on
+#     the production pool path seed never takes the lane lock for EITHER role,
+#     and inv.11 is held for both by DF's own OUTER
+#     `flock -x -w 30 -E 124 <lane_dir>.lock` on this same sibling path.  The
+#     mode split changes seed's DEFAULT only; do not read it as a live
+#     task-vs-merge-spec difference in who locks.  Seed does still self-acquire
+#     for a caller that omits the opt-out: tests/infra, and DF's ephemeral
+#     warm-seed path (`take_lane_lock=False`), which is not a pool lane.
 #     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is acquired): 0
 #     (default) = non-blocking refuse; N>0 = queue up to N seconds (flock -w N)
-#     before refusing; "unlimited" = block until acquired, never refuses. A
-#     refused acquirer of a task lane can just try a different FREE lane, but
-#     the SINGLETON _merge-verify lane has no alternate -- it QUEUEs instead.
+#     before refusing; "unlimited" = block until acquired, never refuses. The
+#     default is tuned for the task-lane acquirer, which can just try a different
+#     FREE lane.  It is INERT on BOTH production pool acquires per the paragraph
+#     above -- DF's outer flock carries its own bounded wait (30s) and its own
+#     timeout code (124) instead.
 #     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): a caller that
 #     lets seed acquire the lock MUST NOT itself hold a load-bearing FD 9 open
 #     across this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
@@ -252,17 +272,23 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --fresh-checkout    Replace non-empty <lane_dir>/target (mv to trash, reflink-clone,
                       rm trash); then bulk-stamp sources to 2020-01-01 and touch
                       changed files to now (D5).
-  --reset-in-place    Refuse a non-empty <lane_dir>/target (B13 control arm only;
-                      production acquires always use --fresh-checkout).  No bulk stamp.
+  --reset-in-place    Refuse a non-empty <lane_dir>/target.  No bulk stamp.  Serves BOTH
+                      the B13 warmth-delta control arm and the merge-spec `_spec-`
+                      acquire mode; task-lane acquires use --fresh-checkout.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
-  --lane-lock         Accepted; IMPLIED under --fresh-checkout, where the lane lock
-                      is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
-                      explicit opt-in for the --reset-in-place control arm. Holds an
-                      exclusive flock on the sibling ${LANE_DIR}.lock across the whole
-                      run, BEFORE any target mutation; refuses if a live consumer
-                      already holds it (inv.2 one-consumer-per-lane) -- with
-                      EX_TEMPFAIL 75 by default, 77 under --distinct-lock-refusal-rc.
+  --lane-lock         Accepted; IMPLIED under --fresh-checkout, which turns seed's own
+                      acquire ON by default (esc-5214/task 5354 fail-safe); still the
+                      explicit opt-in under --reset-in-place.  That default settles
+                      NOTHING on either production pool acquire, task or merge-spec:
+                      DF's `_seed_warm_lane` passes --assume-lane-lock-held on both, so
+                      seed takes the lock for NEITHER role and inv.11 is held by DF's
+                      own outer flock instead -- see the --lane-lock note in the header.
+                      Where seed DOES acquire, it holds an exclusive flock on the
+                      sibling ${LANE_DIR}.lock across the whole run, BEFORE any target
+                      mutation; refuses if a live consumer already holds it (inv.2
+                      one-consumer-per-lane) -- with EX_TEMPFAIL 75 by default, 77
+                      under --distinct-lock-refusal-rc.
                       REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is
                       acquired): 0 (default) = non-blocking refuse (flock -n); N>0 =
                       queue up to N seconds before refusing (flock -w N); "unlimited"
@@ -277,7 +303,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --assume-lane-lock-held
                       Opt OUT of the default acquire for a caller that ALREADY holds
                       ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on
-                      FD 8). flock is not re-entrant across a process tree, so having
+                      FD 8, and -- the caller that dominates in production -- DF
+                      `_seed_warm_lane`, on BOTH pool acquires regardless of mode).
+                      flock is not re-entrant across a process tree, so having
                       seed re-acquire the same file would self-refuse; this makes seed
                       skip its own acquire. Mutually exclusive with --lane-lock (usage
                       error, exit 2). Seed never unlocks an FD 9 it did not open, so
@@ -858,7 +886,9 @@ if [ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]; then
     _should_acquire_lane_lock=1
 fi
 # --assume-lane-lock-held (opt-out): the caller asserts it ALREADY holds
-# ${LANE_DIR}.lock (thin --reseed on FD 9, gc reclaim on FD 8). flock is not
+# ${LANE_DIR}.lock (thin --reseed on FD 9, gc reclaim on FD 8, and -- the caller
+# that dominates in production -- DF _seed_warm_lane's outer flock, which passes
+# this on BOTH pool acquires, so the default above is live for neither). flock is not
 # re-entrant across a process tree, so seed re-opening+flocking the same file
 # would self-refuse against the caller's own held lock. Skip our own acquire
 # entirely; the caller's held lock already provides the inv.2 exclusivity.
@@ -873,13 +903,21 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # the lane never was.
     [ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
 
-    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): a refused
-    # acquirer of an ordinary task lane should just try a different FREE
-    # lane (0 -> flock -n, non-blocking refuse) -- but the SINGLETON
-    # _merge-verify lane has no alternate to fall back to, so it can QUEUE
-    # instead: N>0 -> flock -w N (bounded queue, refuse on timeout);
-    # "unlimited" (case-insensitive) -> flock (block until acquired, never
-    # refuses). Validation mirrors lib_lane_x_flock.sh's
+    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): it governs THIS
+    # block, so it binds only a caller that REACHES it -- one that lets seed
+    # self-acquire. Neither production pool acquire does: both pass
+    # --assume-lane-lock-held, so the knob is inert for BOTH roles and DF's
+    # outer flock carries its own bounded wait (30s) and timeout code (124)
+    # instead (see the --lane-lock header note). The callers it does bind are
+    # tests/infra and DF's ephemeral warm-seed path (take_lane_lock=False).
+    # The 0 default suits a refused task-lane acquirer, which can just try a
+    # different FREE lane (0 -> flock -n, non-blocking refuse); N>0 -> flock -w N
+    # (bounded queue, refuse on timeout); "unlimited" (case-insensitive) ->
+    # flock (block until acquired, never refuses).
+    # Attribute NO wait policy to the singleton _merge-verify lane: it does not
+    # call this script at all, and the prescription that used to stand here was
+    # WITHDRAWN as advice addressed to a non-caller (MODE SPLIT note near the
+    # tail). Validation mirrors lib_lane_x_flock.sh's
     # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
     # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
     # bad knob can never touch the target.
@@ -1198,8 +1236,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         mv "$LANE_TARGET" "$RESEED_TRASH"
     fi
 else
-    # --reset-in-place: keep existing clobber-refusal (B13 warmth-delta control arm).
-    # reset-in-place is a test-only path; production acquires always use --fresh-checkout.
+    # --reset-in-place: keep existing clobber-refusal.  This mode seeds a cold/empty
+    # lane only.  It is NOT test-only (it is also the merge-spec acquire mode — MODE
+    # SPLIT note near the tail), and the refusal below is not merely a contract a
+    # PRODUCTION caller COULD hit: DF retains `target/` across a `_spec-` release and
+    # excludes it from the pre-seed clean, so the refusal IS reached on every acquire
+    # after a lane's create-once one, degrading that verify to cold.  Composition,
+    # evidence and the DF-side fix: PRD §9.5's 2026-09-11 ledger entry and task #7410.
+    # Do not "fix" it by relaxing the guard here — that is the open question 7410 owns.
     if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
         err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
         err "seed-warm-lane.sh --reset-in-place only seeds cold/empty lanes. Remove the lane first."
@@ -1582,12 +1626,39 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     fi
 fi
 # --reset-in-place: no bulk stamp AND no build-dir invalidation.
-#   reset-in-place is a test-only control arm (B13 warmth-delta test) whose lane
-#   was built at its own path — build dirs already hold correct lane-K paths.
-#   Invalidating them would waste build-script re-runs for no benefit.
-#   Per D10 always-re-seed-at-acquire: production acquires (task lanes AND
-#   merge-spec slots) ALWAYS use --fresh-checkout, so the invalidation above
-#   covers both lane classes without extra code.
+#   A --reset-in-place lane was built at its own path, so its build dirs already
+#   hold correct lane-K paths; invalidating them would waste build-script re-runs
+#   for no benefit.  That reasoning holds for BOTH of this mode's callers (below),
+#   which is why the skip needs no caller-dependent condition.
+#
+# MODE SPLIT — the single in-file home for what the mode split means HERE; every
+# other mention in this script points at it rather than restating it (G7/SPOT).
+# The MEASUREMENT behind it, its liveness, and the spec/implementation divergence it
+# records are normative in PRD §9.5's 2026-09-11 ledger entry (task 7045) — read that
+# before amending this, and amend it THERE, not here.
+#   task lanes  → --fresh-checkout   DF `_acquire_warm_lane_impl`
+#   merge-spec  → --reset-in-place   DF `acquire_spec_lane`, ALWAYS (the call sits at
+#                                    an indent common to both its branches)
+# Resolve both by SYMBOL, never by line number: the cross-repo coordinates this note
+# used to carry drifted 26 lines in twelve days, which is why they are gone.
+#
+#   Do NOT read the split as "the merge-spec lane skips re-seeding" — D10's
+#   always-re-seed PROPERTY holds for BOTH classes (`acquire_spec_lane`'s own docstring
+#   asserts inv.8); only the mode differs.  And the split is LIVE in this deployment,
+#   not latent: `git.merge_spec_warm_lane_pool: true` in `dark-factory-orchestrator.yaml`
+#   (cited by KEY, and that file is tracked in THIS repo, so one grep re-checks it —
+#   deployment state can flip, so re-read the key rather than trusting a date).
+#
+# CONSEQUENCE RULE for anything gated on $FRESH_CHECKOUT (e.g. the rerere pin below):
+#   the gate reaches every acquire only for a SHARED-STORE scoped effect.  Any
+#   LANE-SCOPED effect — a per-lane config write, marker, or sweep — silently excludes
+#   the merge-spec slot, PRESENT TENSE, not hypothetically.  ONE live instance, and
+#   it is benign for its own reason rather than by luck of the gate: the build-dir
+#   invalidation above (lane-scoped, task lanes only — correct here for the first
+#   paragraph's reason).  The lane lock is NOT a second instance, though it reads
+#   like one: seed's own acquire is default-on under $FRESH_CHECKOUT, but DF's
+#   `--assume-lane-lock-held` clears it on BOTH production pool acquires, so that
+#   gate decides nothing for either role — see the --lane-lock note in the header.
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
 #
@@ -1645,17 +1716,13 @@ fi
 #
 # MODE GATE — $FRESH_CHECKOUT, not a new flag. It reuses the discriminator this
 # script already switches on at the three sites above rather than inventing a
-# mode flag, and it covers every TASK-lane acquire: dark-factory drives those
-# through _seed_warm_lane(lane, '--fresh-checkout') at seven call sites in
-# orchestrator/src/orchestrator/git_ops.py.
+# mode flag, and it covers every TASK-lane acquire: dark-factory drives the pooled
+# task-lane acquire through _seed_warm_lane(lane, '--fresh-checkout') in
+# `_acquire_warm_lane_impl`.
 #
-# It does NOT cover the merge-spec lane. MEASURED 2026-08-30, correcting the
-# claim in this script's own --reset-in-place block below (and in the PRD prose
-# it quotes) that production acquires "task lanes AND merge-spec slots" always
-# use --fresh-checkout: acquire_spec_lane (git_ops.py:5923) calls
-# _seed_warm_lane(lane, '--reset-in-place') at :6076, at an indent common to
-# BOTH its create and its reset branch — so the merge-spec acquire is
-# ALWAYS --reset-in-place and never reaches this block.
+# It does NOT cover the merge-spec lane: that acquire is always --reset-in-place,
+# so it never reaches this block (it still re-seeds — MODE SPLIT note above, the
+# single in-file home for the split and its consequence rule).
 #
 # That gap is harmless for THIS defence, which is why the gate stays as it is:
 # the pin is a property of the ONE shared .git/config, not of a lane, so any

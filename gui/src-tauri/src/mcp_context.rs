@@ -217,6 +217,21 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(ToolError::EngineError)
     }
 
+    /// EPHEMERAL engine-state edit — deliberately NOT the source-canonical
+    /// write path (task 5097 δ).
+    ///
+    /// This overrides the cell's value in the live engine session only; the
+    /// user's `.ri` on disk is untouched, exactly like dragging the
+    /// property-panel slider. The INV-GUI-3 path that rewrites the parameter's
+    /// default literal in the source is the reify-debug `reify_set_parameter`
+    /// tool (`debug_server.rs`), via `EngineSession::apply_param_to_source_str`
+    /// — which shares this method's dimension-aware value parse (#5757), so the
+    /// two can never disagree about what a value string denotes.
+    ///
+    /// Re-homing this Tauri-invoke context onto the source-canonical path is
+    /// η's Phase 3, not δ's: `tests/mcp_dispatch_tests.rs` drives an in-memory
+    /// session with no on-disk `.ri` to write back to, so switching the
+    /// mechanism here would break it. No behaviour change intended here.
     fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
         let mut session = self
             .engine
@@ -278,16 +293,8 @@ impl ReifyToolContext for TauriToolContext {
     }
 
     fn export(&self, format: &str, output_path: &str) -> Result<bool, ToolError> {
-        let export_format = match format {
-            "step" | "stp" => reify_ir::ExportFormat::Step,
-            "stl" => reify_ir::ExportFormat::Stl,
-            _ => {
-                return Err(ToolError::InvalidParams(format!(
-                    "Unknown export format: {}",
-                    format
-                )));
-            }
-        };
+        let export_format =
+            crate::commands::parse_export_format(format).map_err(ToolError::InvalidParams)?;
         let mut session = self
             .engine
             .lock()
