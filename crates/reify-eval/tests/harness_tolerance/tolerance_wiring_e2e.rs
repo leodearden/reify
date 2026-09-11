@@ -31,25 +31,22 @@ use reify_test_support::{
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
 
-/// Step-1 (failing initially; passes once step-2's
-/// `emit_imported_tolerance_promise_diagnostics_for_module` helper is wired
-/// into the production `build()` path).
+/// Pins the landed contract: `build()` routes every (input template,
+/// subject, output template) triple through
+/// `Engine::check_imported_tolerance_promise` and forwards any `Some(diag)`
+/// into `BuildResult.diagnostics`.
 ///
 /// The fixture is the canonical "promise loose, demand tight" pairing: a
 /// `STEPInput` template carries a 50µm imported-geometry tolerance promise,
 /// the `STEPOutput` template's body constraint is `RepresentationWithin(…, 1µm)`,
-/// and a manufacturing purpose at 1µm is activated against `MyDesign`. Per the
-/// `Engine::check_imported_tolerance_promise` truth table (engine_tolerance.rs:
-/// 36-67), `min(1µm, 1µm) = 1µm` is strictly tighter than the 50µm promise, so
-/// the runtime must surface a single `Severity::Warning` carrying
-/// `DiagnosticCode::ImportedTolerancePromiseInsufficient` whose message names
-/// the input template (`"STEPInput"`) so authors can locate the import site.
-///
-/// Today (pre step-2) the production `build()` path never invokes
-/// `Engine::check_imported_tolerance_promise`, so this assertion FAILS — no
-/// matching diagnostic is present in `BuildResult.diagnostics`. After step-2
-/// adds the dispatcher helper and wires it from `build` /
-/// `build_snapshot` / `tessellate_realizations`, the assertion passes.
+/// and a manufacturing purpose at 1µm is activated against `MyDesign`. Per
+/// the truth table in `Engine::check_imported_tolerance_promise`
+/// (`src/engine_tolerance.rs`), `min(1µm, 1µm) = 1µm` is strictly tighter
+/// than the 50µm promise, so the runtime must surface a single
+/// `Severity::Warning` carrying
+/// `DiagnosticCode::ImportedTolerancePromiseInsufficient` whose message
+/// names the input template (`"STEPInput"`) so authors can locate the
+/// import site.
 #[test]
 fn build_emits_imported_tolerance_promise_insufficient_warning_when_demand_strictly_tighter_than_promise()
  {
@@ -94,28 +91,29 @@ fn build_emits_imported_tolerance_promise_insufficient_warning_when_demand_stric
     );
 }
 
-/// Step-3 (locks the second branch of `Engine::check_imported_tolerance_promise`'s
-/// dispatch — the zero-promise lint introduced by task 2833 — into the production
-/// emission path).
+/// Pins the second branch of `Engine::check_imported_tolerance_promise`'s
+/// dispatch — the zero-promise lint introduced by task 2833 — in the
+/// production emission path.
 ///
-/// Setup mirrors step-1 but with `step_input_template(0.0)`: the `STEPInput`
-/// template's `param tolerance : Length = 0m` is a placeholder-default
-/// footgun where authors leave the promise at zero and silently disable the
-/// strict-`<` insufficient-promise warning. With `promise == 0.0` and a
-/// positive demanded (1µm via STEPOutput body + manufacturing purpose), the
+/// Setup mirrors
+/// `build_emits_imported_tolerance_promise_insufficient_warning_when_demand_strictly_tighter_than_promise`
+/// above but with `step_input_template(0.0)`: the `STEPInput` template's
+/// `param tolerance : Length = 0m` is a placeholder-default footgun where
+/// authors leave the promise at zero and silently disable the strict-`<`
+/// insufficient-promise warning. With `promise == 0.0` and a positive
+/// demanded (1µm via STEPOutput body + manufacturing purpose), the
 /// `Engine::check_imported_tolerance_promise` dispatcher takes its
 /// zero-promise branch and emits a `Severity::Warning` carrying
 /// `DiagnosticCode::InputTolerancePromiseIsZero` (NOT
 /// `ImportedTolerancePromiseInsufficient` — the two codes are mutually
-/// exclusive per the dispatch order pinned at engine_tolerance.rs:31-67).
+/// exclusive per the dispatch order in
+/// `Engine::check_imported_tolerance_promise`, `src/engine_tolerance.rs`).
 ///
-/// The test asserts the emitted code is `InputTolerancePromiseIsZero`. Pre-
-/// step-2 wiring this assertion failed because nothing in `build()` invoked
-/// the dispatcher. After step-2's helper threads any `Some(diag)` from the
-/// dispatcher through to `BuildResult.diagnostics` (code-agnostic
-/// forwarding), this assertion passes — guarding against a future refactor
-/// that filters `code == ImportedTolerancePromiseInsufficient` only and
-/// drops the zero-promise branch.
+/// The test asserts the emitted code is `InputTolerancePromiseIsZero`. The
+/// dispatcher forwards any `Some(diag)` through to `BuildResult.diagnostics`
+/// code-agnostically, which this test guards: a future refactor that
+/// filters `code == ImportedTolerancePromiseInsufficient` only would
+/// silently drop the zero-promise branch.
 #[test]
 fn build_emits_input_tolerance_promise_is_zero_warning_when_promise_zero_and_demand_positive() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
