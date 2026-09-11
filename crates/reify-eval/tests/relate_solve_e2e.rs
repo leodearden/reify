@@ -35,7 +35,7 @@ use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
     partition_driving_set, pose_from_frame,
 };
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
     realize_operand_datums, solve_relate_scope, trace_to_ground,
@@ -1301,6 +1301,154 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
         (centre_distance - expected).abs() < 1e-6,
         "the placed roller axis must stand r1 + r2 = {expected} m from the idler axis \
          (external tangency), measured {centre_distance} m"
+    );
+}
+
+// ─── task 7050 — a non-FunctionCall relate member must not corrupt diagnostics ───
+//
+// `Relation` is a first-class nameable type — a user-defined wrapper such as
+// `fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }` type-checks and is
+// accepted inside a `relate {}` block — so a relate member need not be a bare
+// geometric-relation `FunctionCall`; it can be a `CompiledExprKind::UserFunctionCall`
+// the solve cannot build a [`RelationInstance`] for.
+//
+// `build_relation_instances`'s `filter_map` silently DROPS such a member, making
+// `instances` SHORTER than `scope.relations`. Pre-fix, `solve_relate_scope` and
+// `conflict_diagnostic` nonetheless cross from an INSTANCE position back to
+// `scope.relations` using that SAME position as if it were a source index — so
+// from the first dropped member onward the two addressings disagree, and the
+// conflict diagnostic's name, subjects and shares-a-datum test are all read off
+// the WRONG relation.
+//
+// step-1 (below) pins the invariant an unconsumable member must satisfy: it must
+// change NOTHING about the conflict diagnostic a scope without it would produce.
+// step-3 pins the complementary invariant — the drop itself must be diagnosed, not
+// silent (INV-SF-3) — and step-5 pins that the diagnosis survives the B6
+// global-float short-circuit.
+
+/// step-1 — a relate member the solve cannot consume (a user-defined `Relation`-
+/// typed wrapper) must not change WHICH relation the conflict diagnostic names.
+/// RED until step-2 makes the instance→source crossing single-point (task 7050).
+#[test]
+fn conflict_diagnostic_unshifted_by_a_non_call_relate_member() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping conflict_diagnostic_unshifted_by_a_non_call_relate_member: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const CONCENTRIC: &str = "concentric(bolt.shank_axis, plate.hole_axis)";
+    const PERPENDICULAR: &str = "perpendicular(bolt.shank_axis, plate.hole_axis)";
+    const FLUSH: &str = "flush(bolt.seat_plane, plate.top_plane)";
+    const MATE_FN: &str = "fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }";
+
+    let baseline_source = bolt_plate_scope_source(None, &[CONCENTRIC, PERPENDICULAR, FLUSH]);
+    let shifted_source = bolt_plate_scope_source(
+        Some(MATE_FN),
+        &["mate(bolt.shank_axis, plate.hole_axis)", CONCENTRIC, PERPENDICULAR, FLUSH],
+    );
+
+    // (p1) the shifted module compiles with NO Error-severity diagnostics — the
+    // non-call member is a supported authoring surface, accepted by the compiler.
+    let shifted_module = compile_source_with_stdlib(&shifted_source);
+    let shifted_compile_errors: Vec<&str> = shifted_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        shifted_compile_errors.is_empty(),
+        "the shifted module (leading `mate(...)` relate member) must compile with no \
+         Error diagnostics, got: {shifted_compile_errors:?}"
+    );
+
+    // (p2) the collected scope carries all 4 members; the leading one is NOT a
+    // FunctionCall (the solve cannot build a RelationInstance for it) yet still
+    // type-checks to Type::Relation (the reachability premise).
+    let shifted_bp = template(&shifted_module, "BoltPlate");
+    let shifted_scope = collect_relate_scope(shifted_bp);
+    assert_eq!(
+        shifted_scope.relations.len(),
+        4,
+        "the shifted scope must collect all 4 relate-block members, got kinds {:?}",
+        shifted_scope.relations.iter().map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>()
+    );
+    assert!(
+        !matches!(shifted_scope.relations[0].kind, CompiledExprKind::FunctionCall { .. }),
+        "the leading `mate(...)` member must NOT be a FunctionCall, got {:?}",
+        shifted_scope.relations[0].kind
+    );
+    assert_eq!(
+        shifted_scope.relations[0].result_type,
+        Type::Relation,
+        "the leading `mate(...)` member must type-check to Type::Relation, got {:?}",
+        shifted_scope.relations[0].result_type
+    );
+
+    let baseline_solution = solve_bolt_plate(&baseline_source);
+    let shifted_solution = solve_bolt_plate(&shifted_source);
+
+    // The single Error diagnostic whose message opens with "conflicting relations".
+    let conflict_message = |solution: &RelateSolution, label: &str| -> String {
+        let matches: Vec<&str> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error && d.message.starts_with("conflicting relations")
+            })
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "{label}: expected exactly one 'conflicting relations' Error diagnostic, got: {:?}",
+            solution.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        matches[0].to_string()
+    };
+
+    let baseline_msg = conflict_message(&baseline_solution, "baseline");
+    let shifted_msg = conflict_message(&shifted_solution, "shifted");
+
+    // (a) the shifted diagnostic names BOTH mutually-inconsistent relations …
+    assert!(
+        shifted_msg.contains("perpendicular") && shifted_msg.contains("concentric"),
+        "the conflict diagnostic must name both `perpendicular` and `concentric`, \
+         got: {shifted_msg:?}"
+    );
+    // (b) … and excludes `flush`, the consistent, independent driving relation.
+    assert!(
+        !shifted_msg.contains("flush"),
+        "the consistent, independent `flush` relation must be excluded from the \
+         minimal conflict set, got: {shifted_msg:?}"
+    );
+    // (c) `perpendicular` — the newest-declared member OF THE CONFLICT SET — is
+    //     flagged as the primary conflict.
+    assert!(
+        shifted_msg.contains("`perpendicular` is")
+            && (shifted_msg.contains("newest") || shifted_msg.contains("primary")),
+        "`perpendicular` must be flagged as the newest-declared/primary conflict, \
+         got: {shifted_msg:?}"
+    );
+    // (d) the primary's rendered subjects are perpendicular's REAL operands …
+    assert!(
+        shifted_msg.contains("`perpendicular` requires bolt.shank_axis and plate.hole_axis"),
+        "the primary conflict's rendered subjects must be perpendicular's own \
+         operands (bolt.shank_axis, plate.hole_axis), got: {shifted_msg:?}"
+    );
+    // … NOT flush's operands (which the misaligned read would substitute in).
+    assert!(
+        !shifted_msg.contains("bolt.seat_plane") && !shifted_msg.contains("plate.top_plane"),
+        "flush's operands must not appear in the conflict diagnostic, got: {shifted_msg:?}"
+    );
+    // (e) an unconsumable member shifts NOTHING — the message is identical to the
+    //     baseline scope that never had one.
+    assert_eq!(
+        shifted_msg, baseline_msg,
+        "a relate member the solve cannot consume must not change the conflict diagnostic"
     );
 }
 
