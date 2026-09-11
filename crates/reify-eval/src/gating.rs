@@ -10,10 +10,20 @@
 //! accepts a pre-built candidate gated set and does NOT import
 //! `NodePolicyOverrides` from `reify-runtime`.  The dependency arrow is
 //! `reify-runtime → reify-eval → reify-types`, so importing from `reify-runtime`
-//! would introduce a cycle.  A runtime-layer scheduler would compute the
-//! candidate gated set via `NodePolicyOverrides::resolve()` and feed it to
-//! these helpers; no such consumer exists today — the concurrent scheduler
-//! was deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065).  See
+//! would introduce a cycle.  A runtime-layer caller computes the candidate
+//! gated set via `NodePolicyOverrides::resolve_with_traits` and feeds it to
+//! these helpers.
+//!
+//! ## Why this module is retained without a caller
+//!
+//! The concurrent scheduler that used to call it was deleted with
+//! `concurrent.rs` in c1b8dba3f7 (task ο, #5065).  Its named replacement is
+//! async-recalc Phase A (#5023): a compute completion transaction records the
+//! result, runs a `propagate_freshness_only` walk, then re-evaluates the
+//! dirty cone — and must ask which gated nodes that walk just unblocked,
+//! which is exactly what [`unblocked_gated_nodes`] answers.  That walk,
+//! `freshness_walk::propagate_freshness_only`, is being retained for the same
+//! consumer, so these helpers and it are one pair, not two orphans.  See
 //! [`has_non_final_inputs`] for the integration-test witness.
 
 use std::collections::HashSet;
@@ -68,7 +78,7 @@ fn entry_has_non_final_inputs(cache: &CacheStore, entry: &NodeCache) -> bool {
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
 /// See arch §7.3 and §3.5.
-// G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see module doc above
+// G-allow: retained for async-recalc Phase A (#5023), whose completion transaction gates a node on all-Final inputs before re-running it; no production caller until that lands.
 pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
     match cache.get(node) {
         Some(entry) => entry_has_non_final_inputs(cache, entry),
@@ -101,7 +111,7 @@ pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
 /// See arch §3.5 ("freshness propagation can unlock gated work").
-// G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see module doc above
+// G-allow: retained for async-recalc Phase A (#5023), whose completion transaction runs a propagate_freshness_only walk and must then ask which gated nodes it unblocked; no production caller until that lands.
 pub fn unblocked_gated_nodes<'a, I>(cache: &CacheStore, gated: I) -> HashSet<NodeId>
 where
     I: IntoIterator<Item = &'a NodeId>,
