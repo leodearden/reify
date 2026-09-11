@@ -1,9 +1,11 @@
 /**
  * CI cover for `./smokeDriverConventions.ts` — the structural conventions the
  * live `smoke_*.mjs` drivers must follow: today, the `open_file` retry policy
- * living in one home (task 5857) and the post-open `store_state` payload bound
- * as `storeAfterOpen` being diagnosed before it is read (task 5884) — the
- * narrow wording on purpose, since that is the rule the regexes actually ship.
+ * living in one home (task 5857), the post-open `store_state` payload bound as
+ * `storeAfterOpen` being diagnosed before it is read (task 5884), and
+ * `gradePhase`'s extras never being spelled as an object literal (task 5098) —
+ * the narrow wording on purpose, since that is the rule the regexes actually
+ * ship.
  *
  * Read that module's header for WHY a source-level check is the only executable
  * signal available here: a driver needs a live reify-gui (WebKit WebView +
@@ -23,6 +25,9 @@
  *     read to diagnose. Its raw-vs-stripped asymmetry — the thing that keeps
  *     those from false-alarming — is pinned in BOTH directions, so a later
  *     "make it consistent" edit flips a case instead of reversing an argument.
+ *   - the extras check's false alarm is the COMPLIANT spelling itself: an
+ *     `async () => ({…})` thunk opens with `(` where the literal opens with `{`,
+ *     one character apart, so a regex that slips reports every migrated driver.
  *
  * The accepted BLIND SPOTS get the same treatment for the opposite reason. Every
  * shape these checks knowingly let through — a `//` comment containing `/*`, a
@@ -353,6 +358,150 @@ describe("findSmokeDriverConventionViolations — the post-open `store_state` di
   });
 });
 
+describe("findSmokeDriverConventionViolations — `gradePhase`'s extras argument", () => {
+  // One case per spelling of the literal. An object literal passed as an
+  // ARGUMENT is fully evaluated — its `await`s included — BEFORE the callee
+  // runs, so a `{sourceCanonical: await readSourceCanonical(…)}` in this
+  // position issues `reify_open_file` -> `reify_save_file` -> `reify_open_file`
+  // ahead of the phase's own reads, and the first of those reloads the file
+  // from disk (`open_path_into_engine`, debug_server.rs:1525). PRD §7 B1 — the
+  // viewport following WITHOUT a file reload — then passes whatever the write
+  // did. Perfectly valid JavaScript; fails only live, only silently, only in
+  // the direction that PASSES.
+  it.each([
+    [
+      "the one-line literal spelling",
+      "  const v = await gradePhase('baseline', subject, { requires: ['fieldCoverage'] });",
+    ],
+    [
+      "the multi-line literal the driver carried before task 5098's fix",
+      [
+        "    const afterYRail = await gradePhase('after-y-rail', subject, {",
+        "      requires: ['sourceCanonical', 'fieldCoverage'],",
+        "      sourceCanonical: await readSourceCanonical('after-y-rail', subject, {}),",
+        "      fieldCoverage: await rpc('engine_state'),",
+        "    });",
+      ].join("\n"),
+    ],
+    [
+      "an argument-per-line form a formatter could introduce at any time",
+      ["  await gradePhase(", "    'baseline',", "    subject,", "    { requires: [] },", "  );"].join(
+        "\n",
+      ),
+    ],
+  ])("flags %s", (_form, source) => {
+    expect(codesFor(source)).toEqual(["awaited-extras-literal"]);
+  });
+
+  // THE FALSE POSITIVES. The compliant thunk opens with `(` exactly where the
+  // literal opens with `{` — one character apart — so a regex that slips here
+  // reports every MIGRATED driver as a violator, the direction this module
+  // refuses to err in.
+  it.each([
+    [
+      "the compliant thunk spelling, which is what migration produces",
+      "  const v = await gradePhase('baseline', subject, async () => ({ requires: [] }));",
+    ],
+    [
+      "a multi-line thunk",
+      [
+        "    const afterYRail = await gradePhase('after-y-rail', subject, async () => ({",
+        "      requires: ['fieldCoverage'],",
+        "      fieldCoverage: await rpc('engine_state'),",
+        "    }));",
+      ].join("\n"),
+    ],
+    ["a two-argument call with no extras at all", "  await gradePhase('baseline', subject);"],
+    [
+      "an object literal in the same position of some OTHER call",
+      "  await requirePhase('baseline', subject, { requires: [] });",
+    ],
+    ["the function's own declaration", "async function gradePhase(phase, subject, gatherExtras) {"],
+  ])("does not flag %s", (_form, source) => {
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+  });
+
+  it("does not flag the literal spelling shown inside a comment", () => {
+    // The same `stripComments` mitigation its two siblings rely on: a comment
+    // may legitimately show the shape being retired — this suite's own header
+    // does — and a driver's call-site note is the likeliest place for it.
+    for (const source of [
+      "  // never: gradePhase('baseline', subject, { fieldCoverage: await rpc('engine_state') })",
+      "  /* e.g. gradePhase('baseline', subject, { requires: [] }) — use a thunk instead */",
+    ]) {
+      expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+      // The discriminating half, as on every sibling case: the same text minus
+      // the comment marker IS flagged, so this pins the stripping rather than an
+      // inert predicate.
+      expect(codesFor(source.replace("// never: ", "").replace("/* e.g. ", ""))).toEqual([
+        "awaited-extras-literal",
+      ]);
+    }
+  });
+
+  it("does not flag extras hoisted to a variable before the call", () => {
+    // THE BLIND SPOT, pinned BY NAME so it stays a known one. Hoisting reorders
+    // IDENTICALLY — the awaits still run before `gradePhase` is entered — and
+    // this check, a positive-presence regex over the call shape, sees nothing at
+    // all. Widening it would mean tracking the binding, which means parsing, and
+    // this module is a regex pass by design.
+    //
+    // Asserted as CURRENT behaviour, not as desirable. It is accepted only
+    // because the RUNTIME half covers it: routing through `observeThenExtras`
+    // (./railLengtheningGate.mjs) refuses any non-thunk extras and parks a
+    // `read-order` record, which reds the live run whatever spelling produced
+    // it. Source-level and runtime are two halves of one rule; this case is
+    // where the seam between them is written down.
+    const source = [
+      "  const extras = { fieldCoverage: await rpc('engine_state') };",
+      "  const v = await gradePhase('baseline', subject, extras);",
+    ].join("\n");
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+    // The discriminating counter-assertion: inline the same object and it IS
+    // flagged. Without it this would pass for a predicate that never fires.
+    expect(
+      codesFor("  const v = await gradePhase('baseline', subject, { fieldCoverage: 1 });"),
+    ).toEqual(["awaited-extras-literal"]);
+  });
+
+  it("reports the convention once for a driver carrying several literal calls", () => {
+    // The at-most-once contract, as for its two siblings: a driver with five
+    // un-migrated call sites has one problem, not five.
+    const source = [
+      "  const a = await gradePhase('baseline', subject, { requires: [] });",
+      "  const b = await gradePhase('after-y-rail', subject, { requires: [] });",
+      "  const c = await gradePhase('after-rail-span', subject, { requires: [] });",
+    ].join("\n");
+    expect(codesFor(source)).toEqual(["awaited-extras-literal"]);
+  });
+
+  it("carries a human-readable message alongside the code", () => {
+    // The code is the contract; this is the ONE place this convention's prose is
+    // pinned, so rewording stays a one-line edit.
+    expect(
+      findSmokeDriverConventionViolations("await gradePhase('p', subject, { requires: [] });"),
+    ).toEqual([
+      { code: "awaited-extras-literal", message: expect.stringContaining("observeThenExtras") },
+    ]);
+  });
+
+  it("reports all three conventions exactly once for a driver tripping every one", () => {
+    // The at-most-once contract across the WIDENED predicate, and the report
+    // ORDER `codesFor` documents.
+    const source = [
+      "  openResult = await rpc('open_file', { path: FIXTURE });",
+      "  const storeAfterOpen = await rpc('store_state');",
+      "  if (!storeAfterOpen?.editor?.activeFile) fail('nope');",
+      "  const v = await gradePhase('baseline', subject, { requires: [] });",
+    ].join("\n");
+    expect(codesFor(source)).toEqual([
+      "inline-open-file",
+      "undiagnosed-store-state",
+      "awaited-extras-literal",
+    ]);
+  });
+});
+
 describe("stripComments — the mitigation the predicate is built on", () => {
   // Exported and therefore pinned directly, not only through the predicate: its
   // header makes two claims a caller could rely on, and both are load-bearing
@@ -429,7 +578,11 @@ describe("the conventions the live drivers are held to, across the whole corpus"
   // as exit 2 instead of the clean exit-1 verdict. Each unguarded post-open
   // `store_state` read, in turn, reports `activeFile: undefined` when the RPC
   // itself failed, sending whoever reads the run at the frontend instead of at
-  // the tool. Nothing else in CI can observe either: these drivers need a live GUI.
+  // the tool. Each object literal in `gradePhase`'s extras position, in turn, is
+  // evaluated — awaits and all — BEFORE the phase's own reads, so the
+  // `reify_open_file` inside it reloads the file from disk and the "no reload"
+  // row it was meant to test passes vacuously. Nothing else in CI can observe
+  // any of the three: these drivers need a live GUI.
   it.each(SMOKE_DRIVERS)("%s breaks none of the driver conventions", (name) => {
     // Rendering the messages (not the codes) is the suite's job — the helper
     // stays vitest-free, and a failure here should read as prose naming which
