@@ -19,8 +19,13 @@
 //! commented-out line — delete the real call, keep its explanation above it,
 //! and the test stays green — and its negative form pins one SPELLING, so
 //! `rel.ends_with("parser.c")` reintroduces a defect that
-//! `!contains("rel == \"src/parser.c\"")` was watching for. Comment-stripping
-//! fixes only the first half. Contracts about what build.rs DOES belong in
+//! `!contains("rel == \"src/parser.c\"")` was watching for.
+//!
+//! Routing such a scan through the comment-stripper this file already owns
+//! (`find_bare_build_rs_violations`) was considered and REJECTED: it closes the
+//! comment-satisfiability half and leaves the spelling-variance half — the
+//! deeper of the two — exactly as open, while making the result look guarded.
+//! Contracts about what build.rs DOES belong in
 //! `tests/infra/test_tree_sitter_pipeline.sh`, whose subjects are runtime
 //! values: the directives cargo actually captured in
 //! `target/*/build/tree-sitter-reify-*/output`, and the stamp bytes on disk
