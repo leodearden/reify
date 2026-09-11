@@ -524,6 +524,59 @@ ts_generate_grammar_stamp() {
     printf '%s' "$1/tree-sitter-reify/src/.grammar_hash.stamp"
 }
 
+# ts_assert_outputs_manifest_matches_disk <src-dir>
+#
+# The ONE verifier for `.generated_outputs.stamp`: it exists and is non-empty,
+# it names EXACTLY the three EXPECTED_OUTPUTS sorted by relpath, and every
+# recorded hash equals the sha256 of the bytes sitting in <src-dir> RIGHT NOW.
+#
+# Shared deliberately (SPOT). The manifest has two independent renderers —
+# `_render_outputs_manifest` in scripts/tree-sitter-generate.sh and
+# `outputs_manifest_render` in tree-sitter-reify/build_support.rs — and a
+# per-site verifier would let one of them drift into a shape only its own test
+# accepts. One verifier, both writers.
+#
+# Nothing a COMMENT can satisfy: the subject is the manifest's bytes on disk,
+# not the source text of whatever wrote them.
+#
+# Deliberately NOT named test_* — run_tests discovers cases by matching 'test_'
+# against the whole `declare -F` line, so any helper carrying that substring
+# would be executed as a test case.
+ts_assert_outputs_manifest_matches_disk() {
+    local src="$1" stamp="$1/.generated_outputs.stamp"
+    assert_file_nonempty "$stamp" || return 1
+
+    local expected_rels="grammar.json
+node-types.json
+parser.c"
+    local actual_rels
+    actual_rels=$(awk '{print $2}' "$stamp")
+    if [ "$actual_rels" != "$expected_rels" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: manifest must name exactly the three generated outputs, sorted"
+        echo "  manifest: $stamp"
+        echo "  --- expected ---"; printf '%s\n' "$expected_rels"
+        echo "  --- actual ---";   printf '%s\n' "$actual_rels"
+        return 1
+    fi
+
+    local rel recorded actual
+    while read -r recorded rel; do
+        [ -n "$rel" ] || continue
+        actual=$(ts_sha256 "$src/$rel") || {
+            echo ""; echo "  SKIP: no sha256sum/shasum on PATH"; return 0
+        }
+        if [ "$recorded" != "$actual" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: manifest hash for $rel does not match the file on disk"
+            echo "  manifest: $stamp"
+            echo "  recorded: $recorded"
+            echo "  actual:   $actual"
+            return 1
+        fi
+    done < "$stamp"
+}
+
 # mk_ts_build_fixture <grammar-variant-file> [crate-subdir]
 #
 # A STANDALONE cargo crate that runs the REAL build.rs and build_support.rs
@@ -3342,39 +3395,10 @@ test_generate_writes_a_content_manifest_for_its_outputs() {
     assert_cmd_success "generate script succeeds in a throwaway fixture" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
-    local stamp
-    stamp=$(ts_generate_outputs_stamp "$fix")
-    assert_file_nonempty "$stamp" || return 1
-
-    # Exactly the three EXPECTED_OUTPUTS, sorted, and every hash must match the
-    # file actually on disk.
-    local expected_rels="grammar.json
-node-types.json
-parser.c"
-    local actual_rels
-    actual_rels=$(awk '{print $2}' "$stamp")
-    if [ "$actual_rels" != "$expected_rels" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: manifest must name exactly the three generated outputs, sorted"
-        echo "  --- expected ---"; printf '%s\n' "$expected_rels"
-        echo "  --- actual ---";   printf '%s\n' "$actual_rels"
-        return 1
-    fi
-
-    local rel recorded actual
-    while read -r recorded rel; do
-        [ -n "$rel" ] || continue
-        actual=$(ts_sha256 "$fix/tree-sitter-reify/src/$rel") || {
-            echo ""; echo "  SKIP: no sha256sum/shasum on PATH"; return 0
-        }
-        if [ "$recorded" != "$actual" ]; then
-            echo ""
-            echo "  ASSERTION FAILED: manifest hash for $rel does not match the file on disk"
-            echo "  recorded: $recorded"
-            echo "  actual:   $actual"
-            return 1
-        fi
-    done < "$stamp"
+    # Exactly the three EXPECTED_OUTPUTS, sorted, every hash matching the file
+    # actually on disk — checked by the SAME verifier that checks the manifest
+    # build.rs writes (see ts_assert_outputs_manifest_matches_disk).
+    ts_assert_outputs_manifest_matches_disk "$fix/tree-sitter-reify/src" || return 1
 }
 
 test_generate_keeps_the_grammar_stamp_format_intact() {
@@ -3589,6 +3613,144 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
         echo "  ASSERTION FAILED: parser.c matches neither variant after the build"
         echo "  expected (variant A): $hash_a"
         echo "  actual:               $after"
+        return 1
+    fi
+
+    # --- RE-ATTESTATION (Hole B) ---
+    #
+    # Repairing parser.c is only half the contract. build.rs shells straight out
+    # to `tree-sitter generate`, which touches neither shell stamp — so before
+    # `#6992` a build could leave parser.c(B) beside a .grammar_hash.stamp still
+    # reading sha256(A), and a later merge restoring grammar.js == A made that
+    # stamp MATCH again and actively vouch for a parser the grammar never
+    # produced. Whatever regenerates must also re-attest.
+    #
+    # Asserted on the STAMPS THEMSELVES rather than on build.rs's source text.
+    # The source scan this replaces (`after_generate.contains("write_shell_stamps(")`)
+    # was satisfied by a comment or a commented-out line: deleting the real call
+    # while keeping its explanation passed green.
+    local grammar_sha stamp_content stamp_bytes
+    grammar_sha=$(ts_sha256 "$fix/grammar.js")
+    stamp_content=$(cat "$fix/src/.grammar_hash.stamp" 2>/dev/null || true)
+    # Byte count, not just the regex. `$(cat ...)` strips trailing newlines, so a
+    # writer that appended one would satisfy the pattern while emitting 65 bytes
+    # (measured: it did). build_support.rs documents these bytes as identical to
+    # what `echo -n "$GRAMMAR_HASH"` in scripts/tree-sitter-generate.sh writes;
+    # that is the claim being pinned.
+    stamp_bytes=$(wc -c < "$fix/src/.grammar_hash.stamp" 2>/dev/null || echo -1)
+    if ! [[ "$stamp_content" =~ ^[0-9a-f]{64}$ ]] || [ "$stamp_bytes" -ne 64 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: .grammar_hash.stamp must stay exactly 64 hex bytes after a"
+        echo "  build.rs regeneration — three live consumers assert that shape"
+        echo "  (scripts/test_tree_sitter_generate.sh, tests/infra/test_verify_semaphore_e2e.sh x2)."
+        echo "  got ($stamp_bytes bytes): $stamp_content"
+        return 1
+    fi
+    if [ "$stamp_content" != "$grammar_sha" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: .grammar_hash.stamp does not describe the grammar on disk"
+        echo "  expected sha256(grammar.js): $grammar_sha"
+        echo "  stamp:                       $stamp_content"
+        return 1
+    fi
+
+    # The manifest was DELETED before this build, so its presence here can only
+    # mean build.rs wrote it — and the shared verifier requires it to describe
+    # the REPAIRED bytes, not the ones it replaced.
+    ts_assert_outputs_manifest_matches_disk "$fix/src" || return 1
+
+    # --- CONVERGENCE ---
+    #
+    # build.rs now watches src/parser.c, a file it WRITES, so the regeneration
+    # above necessarily makes cargo re-run the build script once more. That cost
+    # is bounded and convergent, not a loop — but only because both gating
+    # predicates read the stamps this build just wrote. A predicate that
+    # regenerates unconditionally turns one extra run into an unbounded rebuild
+    # loop on every `cargo build` of this crate, which is why the property is
+    # pinned here rather than argued for in a comment.
+    local manifest_before manifest_after mtime_before mtime_after
+    manifest_before=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$manifest_before'")
+    cp "$fix/src/.generated_outputs.stamp" "$manifest_before" || return 1
+    mtime_before=$(ts_mtime "$fix/src/parser.c") || return 1
+
+    guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    mtime_after=$(ts_mtime "$fix/src/parser.c") || return 1
+    if [ "$mtime_after" != "$mtime_before" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build after a repair regenerated parser.c again."
+        echo "  Watching a build-script output costs ONE extra run; the run after a"
+        echo "  regeneration must find both stamps current and write nothing. A moving"
+        echo "  mtime here means every cargo build of this crate now pays a full"
+        echo "  tree-sitter generate, forever."
+        echo "  mtime before: $mtime_before"
+        echo "  mtime after:  $mtime_after"
+        return 1
+    fi
+    manifest_after=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$manifest_after'")
+    cp "$fix/src/.generated_outputs.stamp" "$manifest_after" || return 1
+    if ! cmp -s "$manifest_before" "$manifest_after"; then
+        echo ""
+        echo "  ASSERTION FAILED: the settled build rewrote .generated_outputs.stamp"
+        echo "  --- before (cat -A) ---"; cat -A "$manifest_before"
+        echo "  --- after (cat -A) ---";  cat -A "$manifest_after"
+        return 1
+    fi
+
+    # One more build with `$OUT_DIR/grammar_hash.stamp` cleared — the CoW-seeding
+    # shape, a target/ cloned from one base beside a src/ from another. It
+    # isolates the SECOND gate: `needs_generate` can no longer short-circuit, so
+    # only `shell_stamp_is_current` reading the manifest stands between this
+    # build and a needless full regeneration.
+    #
+    # The `touch` is load-bearing, not decoration. Clearing a file inside target/
+    # gives cargo no reason to re-run the build script at all, and a build script
+    # that never runs trivially leaves parser.c's mtime alone — i.e. without it
+    # this whole block passes vacuously (measured: it did, under the mutation
+    # probe that should have red it). Touching grammar.js is the re-run trigger
+    # a merge supplies in the real sequence; its CONTENT is unchanged, so the
+    # grammar stamp still matches.
+    local out_stamp
+    out_stamp=$(find "$fix/target" -name grammar_hash.stamp -print -quit 2>/dev/null || true)
+    if [ -z "$out_stamp" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: no \$OUT_DIR/grammar_hash.stamp under $fix/target —"
+        echo "  build.rs must write it whenever it takes the needs_generate branch."
+        return 1
+    fi
+    rm -f "$out_stamp"
+    touch "$fix/grammar.js"
+    mtime_before=$(ts_mtime "$fix/src/parser.c") || return 1
+
+    guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    # Non-vacuity: build.rs writes this stamp on every needs_generate branch, so
+    # its reappearance proves the build script really ran and really took that
+    # branch. Without this the mtime check below could pass on a build that did
+    # nothing at all.
+    if [ ! -f "$out_stamp" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build did not re-run build.rs (no \$OUT_DIR stamp"
+        echo "  was rewritten), so the fast-path assertion below would be vacuous."
+        return 1
+    fi
+    mtime_after=$(ts_mtime "$fix/src/parser.c") || return 1
+    if [ "$mtime_after" != "$mtime_before" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: with \$OUT_DIR/grammar_hash.stamp gone, the build"
+        echo "  regenerated rather than believing the shell stamps beside the outputs."
+        echo "  Every warm lane seeded from a foreign target/ would pay a full"
+        echo "  tree-sitter generate on its first build of this crate."
+        echo "  mtime before: $mtime_before"
+        echo "  mtime after:  $mtime_after"
         return 1
     fi
 }
