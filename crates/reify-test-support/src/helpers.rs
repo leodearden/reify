@@ -737,15 +737,25 @@ pub fn run_modify_pipeline(
 /// compiled default expression. Callers needing only the compiled default
 /// expression should prefer [`get_let_expr_in`], which delegates here.
 ///
-/// Resolves via [`lookup_value_cell`]; see that function's rustdoc for the
-/// full ambiguity contract.
+/// Resolution keys on `id.member` alone; `id.entity` is not considered. A
+/// template holding two value cells that share a member name under
+/// different entities cannot be resolved this way, and this function
+/// panics, naming the colliding entities (see # Panics). The realistic
+/// producer is a scoped sub/connect `Auto` cell (`id.entity =
+/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
+/// same-named cell — real `.ri` source produces this with zero diagnostics,
+/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
+/// If a specific entity's cell matters, disambiguate before calling, e.g.
+/// by searching `template.value_cells` directly for the desired
+/// `id.entity`. [`get_let_expr_in_template`] shares this same resolution
+/// walk and is subject to the identical ambiguity contract.
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
 ///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
 /// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
-///   cell shares that member name (see [`lookup_value_cell`]'s rustdoc for the hazard).
+///   cell shares that member name, naming the colliding entities.
 #[track_caller]
 pub fn get_value_cell_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -762,16 +772,8 @@ pub fn get_value_cell_in<'a>(
 /// [`get_let_expr_in_template`]: resolves `cell_name` against
 /// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
 ///
-/// A template holding two value cells that share a member name under
-/// different entities cannot be resolved this way, and this function
-/// panics, naming the colliding entities (see # Panics). The realistic
-/// producer is a scoped sub/connect `Auto` cell (`id.entity =
-/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
-/// same-named cell — real `.ri` source produces this with zero diagnostics,
-/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
-/// If a specific entity's cell matters, disambiguate before calling, e.g.
-/// by searching `template.value_cells` directly for the desired
-/// `id.entity`.
+/// See `get_value_cell_in`'s rustdoc for the full ambiguity contract —
+/// the realistic producer of a collision and the disambiguation route.
 ///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
@@ -840,15 +842,15 @@ fn require_default_expr<'a>(
 /// Reach for this when you're already holding a `&TopologyTemplate` directly — e.g. from
 /// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
 /// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
-/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). Composes
-/// [`lookup_value_cell`] with [`require_default_expr`]; see [`lookup_value_cell`]'s rustdoc
-/// for the full ambiguity contract.
+/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). Shares its
+/// cell-resolution walk with [`get_value_cell_in`]; see that function's rustdoc for the
+/// full ambiguity contract.
 ///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
 ///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
 /// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value
-///   cell shares that member name (see [`lookup_value_cell`]'s rustdoc for the hazard).
+///   cell shares that member name (see [`get_value_cell_in`]'s rustdoc for the hazard).
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in_template<'a>(
@@ -1831,6 +1833,11 @@ mod tests {
     }
 
     // ── get_value_cell_in ─────────────────────────────────────────────────
+    // get_value_cell_in, get_let_expr_in_template, get_let_expr_in, and
+    // get_let_expr all resolve through the shared lookup_value_cell walk, so
+    // the not-found and ambiguity panics pinned once below (on
+    // get_value_cell_in) apply identically at all four entry points — no
+    // per-entry-point duplicate is added for either panic.
 
     /// Shared fixture: two templates both declare `w` with different values, so a
     /// wrong-template resolution is observable in the assertion.
@@ -1903,19 +1910,8 @@ mod tests {
         super::get_value_cell_in(&module, "S", "y");
     }
 
-    /// Pins that the not-found panic's enrichment — the `; has: [...]` list
-    /// of every cell the template does carry, as `entity.member` — actually
-    /// appears, mirroring
-    /// `test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities`'s
-    /// pin on the sibling ambiguity branch. Without this, `available` could
-    /// silently regress to empty (e.g. a wrong `.filter` or an accidental
-    /// `Vec::new()`) and neither this test's sibling
-    /// `test_get_value_cell_in_panics_on_missing_cell` nor
-    /// `test_get_let_expr_in_panics_on_missing_cell` would notice, since both
-    /// assert only the `"no value cell named"` prefix. One pin suffices here
-    /// rather than one per entry point: `get_value_cell_in`,
-    /// `get_let_expr_in_template`, `get_let_expr_in`, and `get_let_expr` all
-    /// resolve through the shared `lookup_value_cell` walk.
+    /// Pins that the not-found panic enumerates the template's actual cells
+    /// as `entity.member`, rather than an empty or truncated list.
     #[test]
     #[should_panic(expected = "[\"First.x\", \"Second.x\"]")]
     fn test_get_value_cell_in_missing_cell_panic_lists_available_cells() {
@@ -1965,15 +1961,8 @@ mod tests {
         );
     }
 
-    /// Pins that `get_value_cell_in` shares #7295's ambiguity guard: two value
-    /// cells sharing member name "x" under different entities must panic
-    /// rather than silently resolve to the first declared. Reuses
-    /// `ambiguous_x_template()` (below), whose two colliding cells both carry
-    /// a default, so a resolution failure here can only be the collision,
-    /// never a missing default. Deliberately not mirrored: main's entity-
-    /// naming pin (`test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities`)
-    /// — once `get_value_cell_in` and `get_let_expr_in_template` share one
-    /// walk, that coverage applies to both entry points already.
+    /// Pins that two value cells sharing a member name under different
+    /// entities panic, rather than silently resolving to the first declared.
     #[test]
     #[should_panic(expected = "ambiguous cell name")]
     fn test_get_value_cell_in_panics_on_ambiguous_member() {
