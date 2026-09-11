@@ -744,6 +744,83 @@ b2_python_agrees() {
     return 1
 }
 
+# -- δ CITES α BY ITEM NAME, NEVER BY LINE RANGE ----------------------------
+#
+# δ leans on α for nine separate design decisions and cites it throughout. Those
+# cites used to be LINE RANGES, and a hand-maintained line range is the same
+# drift class this whole hoist exists to close: α gaining a 20-line const forced
+# every one of them to be bumped by hand, and the ones that were missed pointed
+# at unrelated code with full confidence — strictly worse than no cite at all,
+# because a reader trusts it. An ITEM NAME survives reflow for free AND is
+# checkable, which is what these two assertions make of it.
+#
+# The pairs below are (the cite AS δ SPELLS IT, the spelling that must still
+# exist in α), consumed two at a time. Hand-maintained on purpose, exactly like
+# the literal pin needles: it is the independent statement of what δ claims
+# about α, so adding a cite to δ means adding a pair here.
+JC_ALPHA_CITES=(
+    'Serve::spawn'         'fn spawn() -> Self'
+    'Serve::await_ready'   'fn await_ready(&mut self)'
+    'Serve::output'        'fn output(&self) -> String'
+    'Drop for Serve'       'impl Drop for Serve'
+    'finish_teardown'      'fn finish_teardown('
+    'signal_process_group' 'fn signal_process_group('
+    'READY_TIMEOUT'        'const READY_TIMEOUT'
+    'READY_POLL_INTERVAL'  'const READY_POLL_INTERVAL'
+    '.process_group(0)'    '.process_group(0)'
+    'try_wait'             '.try_wait()'
+)
+
+b2_delta_alpha_cites_resolve() {
+    local i cite def rc=0
+    if [ ! -f "$JC_PIN_ALPHA_FILE" ]; then
+        printf '%s\n' "α is GONE: $JC_PIN_ALPHA_FILE does not exist." \
+            "  Every cite δ makes into it is now dangling."
+        return 1
+    fi
+    for ((i = 0; i < ${#JC_ALPHA_CITES[@]}; i += 2)); do
+        cite="${JC_ALPHA_CITES[i]}"
+        def="${JC_ALPHA_CITES[i + 1]}"
+        if ! grep -qF -- "$cite" "$JC_SERVE"; then
+            printf '%s\n' "δ no longer cites α's [$cite]." \
+                "  Drop the pair from JC_ALPHA_CITES in this suite in the same change."
+            rc=1
+        fi
+        if ! grep -qF -- "$def" "$JC_PIN_ALPHA_FILE"; then
+            printf '%s\n' "DANGLING CITE: δ points at α's [$cite], but [$def] is gone from" \
+                "  $JC_PIN_ALPHA_FILE" \
+                "  Renaming an α item silently invalidates every δ comment that names it."
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
+# The ban that keeps the cites checkable. Two shapes, both unfindable-by-grep
+# once α reflows:
+#   * any `jcodemunch_session_live.rs:<n>` range — a cite into α by position;
+#   * any ANONYMOUS range (`(:361-362)`) — a range that does not even name its
+#     file, so a reader cannot tell which file went stale. δ's remaining ranges
+#     all name their file (reify-audit.rs, the upstream python package,
+#     run-gui-dev.sh) and are deliberately untouched by this.
+b2_delta_cites_alpha_by_name() {
+    local by_line anon rc=0
+    by_line="$(grep -n 'jcodemunch_session_live\.rs:[0-9]' "$JC_SERVE" || true)"
+    if [ -n "$by_line" ]; then
+        printf '%s\n' "δ cites α by LINE RANGE:" "$by_line" \
+            "  Cite the Rust item by NAME instead (Serve::spawn, finish_teardown, …) and add" \
+            "  the pair to JC_ALPHA_CITES above, so the cite is checked rather than merely hoped."
+        rc=1
+    fi
+    anon="$(grep -nE '[^A-Za-z0-9_./-]:[0-9]+-[0-9]+' "$JC_SERVE" || true)"
+    if [ -n "$anon" ]; then
+        printf '%s\n' "δ carries an ANONYMOUS line range — one that does not name its file:" "$anon" \
+            "  A reader cannot tell what it points at, so nobody can tell when it goes stale."
+        rc=1
+    fi
+    return "$rc"
+}
+
 b2_dry_run_exits_zero() { "$JC_SERVE" --dry-run >/dev/null 2>&1; }
 
 # --dry-run must SPAWN NOTHING. Checked on the port it would have used, so a
@@ -798,6 +875,10 @@ assert "δ's constructed argv uses the interpreter the lib pins (JC_PYTHON)" \
     b2_python_agrees "δ's constructed argv" "$JC_SERVE" jc_python_delta
 assert "α's interpreter agrees with the lib (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
     b2_python_agrees "α" "$JC_PIN_ALPHA_FILE" jc_python_alpha
+assert "every α item δ cites by name still exists in α (no dangling cite)" \
+    b2_delta_alpha_cites_resolve
+assert "δ cites α by item NAME, never by line range, and carries no anonymous range" \
+    b2_delta_cites_alpha_by_name
 assert "--dry-run exits 0" b2_dry_run_exits_zero
 assert "--dry-run spawns nothing (its port is still free afterwards)" b2_dry_run_spawns_nothing
 assert "--dry-run does not run the wrapped command" b2_dry_run_skips_wrapped_command

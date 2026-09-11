@@ -41,8 +41,8 @@
 #
 # A bare TCP connect is answered happily by ANY port squatter, so the probe
 # requires `result.serverInfo.name == "jcodemunch-mcp"` before declaring ready —
-# `crates/reify-audit/tests/jcodemunch_session_live.rs:230-284` (α) makes the
-# same demand for the same reason. α picks an ephemeral port; this script
+# α's `Serve::await_ready` (crates/reify-audit/tests/jcodemunch_session_live.rs)
+# makes the same demand for the same reason. α picks an ephemeral port; this script
 # DEFAULTS to a fixed 8901, so the squatter risk here is strictly higher, not
 # lower.
 #
@@ -238,8 +238,8 @@ fi
 
 # ── The serve command ────────────────────────────────────────────────────────
 #
-# The BARE transient-serve form and nothing more. Mirrors α's spawn at
-# `crates/reify-audit/tests/jcodemunch_session_live.rs:176-193`:
+# The BARE transient-serve form and nothing more. Mirrors α's `Serve::spawn`
+# (`crates/reify-audit/tests/jcodemunch_session_live.rs`):
 #
 #     uvx --python 3.13 --from jcodemunch-mcp==1.108.54 jcodemunch-mcp serve \
 #         --transport streamable-http --host 127.0.0.1 --port <PORT> --watcher=false
@@ -311,8 +311,8 @@ require_tools() {
 
 # port_is_free <port> — does NOTHING accept a connection there right now?
 #
-# A bounded pure-bash /dev/tcp connect, the same primitive α's Drop uses
-# (`TcpStream::connect_timeout`, jcodemunch_session_live.rs:386-390) and
+# A bounded pure-bash /dev/tcp connect, the same primitive α's `Drop for Serve`
+# uses (`TcpStream::connect_timeout`) and
 # deliberately not a second dependency: this is called both here in preflight
 # and in the teardown free-wait, so one implementation serves both and the two
 # cannot drift. `timeout 1` bounds it — a loopback connect to a closed port is
@@ -339,9 +339,9 @@ require_tools
 # is out of scope and unsafe — on 8901 the listener could be a hand-started
 # serve someone is mid-debug on. The operator, not this script, decides.
 #
-# The diagnostic names `ss -ltnp` for the same reason α's does
-# (jcodemunch_session_live.rs:340-344): the port number alone does not tell an
-# operator WHICH process to reclaim.
+# The diagnostic names `ss -ltnp` for the same reason α's `finish_teardown`
+# does: the port number alone does not tell an operator WHICH process to
+# reclaim.
 if ! port_is_free "$PORT"; then
     refuse E_JC_SERVE_PORT_BUSY \
         "something is already accepting on 127.0.0.1:$PORT. This script never adopts a serve it did not spawn (unknown pin, unknown identity lever — it may answer for leodearden/reify instead of local/reify-4ae45bbd) and never kills one either. Find the listener with 'ss -ltnp | grep $PORT' and stop it, or pass --port N to use a different port."
@@ -349,8 +349,8 @@ fi
 
 # ── Readiness constants ──────────────────────────────────────────────────────
 #
-# Inherited from α's MEASURED values, not guessed: `READY_TIMEOUT` /
-# `READY_POLL_INTERVAL` at jcodemunch_session_live.rs:113-117, where a cold start
+# Inherited from α's MEASURED values, not guessed: its `READY_TIMEOUT` /
+# `READY_POLL_INTERVAL` consts, where a cold start
 # with the wheels already in the uv cache was ~37 s and the ceiling is generous
 # because a cold uv cache must also fetch from PyPI. Exceeding it is a hard
 # refusal, never a skip.
@@ -365,7 +365,7 @@ READY_TIMEOUT="${REIFY_JC_SERVE_READY_TIMEOUT:-180}"
 READY_POLL_INTERVAL=1
 
 # Teardown deadlines, in WALL-CLOCK SECONDS (see the free-wait loop in cleanup).
-# α's Drop constants (:361-362): give the group 10 s to release the port and
+# α's `Drop for Serve` deadlines: give the group 10 s to release the port and
 # exit, escalating ONCE from -TERM to -KILL at the 5 s mark.
 #
 # REIFY_JC_SERVE_TEARDOWN_DEADLINE / _KILL_AFTER are TEST-ONLY overrides, the
@@ -389,7 +389,7 @@ PROBE_BODY="$SCRATCH/probe.body"
 PROBE_HEAD="$SCRATCH/probe.head"
 
 # Whatever the serve has written so far, for a failure message (α's
-# `Serve::output`, :197-208). Only ever called on a refusal path.
+# `Serve::output`). Only ever called on a refusal path.
 serve_output() {
     printf -- '--- serve stdout ---\n%s\n--- serve stderr ---\n%s\n' \
         "$(cat "$SERVE_OUT" 2>/dev/null || echo '<unreadable>')" \
@@ -399,8 +399,7 @@ serve_output() {
 # ── Teardown ─────────────────────────────────────────────────────────────────
 #
 # Armed HERE, the moment the pgid is known, so no window exists in which a
-# spawned serve has no reaper. Ported from α's `Drop`
-# (jcodemunch_session_live.rs:364-422).
+# spawned serve has no reaper. Ported from α's `Drop for Serve`.
 #
 # THE `--` IS MANDATORY AND UNCONDITIONAL — do not tidy it away. MEASURED on
 # this host during planning:
@@ -413,7 +412,8 @@ serve_output() {
 # procps-ng's `kill` swallows the negated pgid as an unknown option cluster and
 # never delivers, while still exiting 0. `--` ends option parsing so the group
 # is read as a target, and it is the only spelling correct under BOTH
-# resolutions. This is α's finding at :277-283, re-measured here for bash.
+# resolutions. This is α's finding in `signal_process_group`, re-measured here
+# for bash.
 #
 # THE VERDICT RESTS ON OBSERVED OUTCOMES, NEVER on `kill`'s exit status. The
 # buggy bare form returns 0 for a group it never reached, so a status gate would
@@ -505,7 +505,7 @@ cleanup() {
     TERM_STATUS="$(signal_group -TERM)"
 
     # Bounded free-wait to a 10 s deadline, escalating ONCE to -KILL at the 5 s
-    # mark — α's Drop constants (:361-362). Both conditions are re-observed each
+    # mark — α's `Drop for Serve` deadlines. Both conditions are re-observed each
     # iteration: -TERM is asynchronous, so the port and the group stop at
     # slightly different moments and either can be the laggard. port_is_free is
     # the same probe preflight used, so "free" means the same thing at both ends
@@ -574,7 +574,7 @@ cleanup() {
 # a leak; the CALLER decides what that does to the exit status, so this function
 # never touches it.
 #
-# Inherits α's `finish_teardown` split (jcodemunch_session_live.rs:322-353),
+# Inherits α's `finish_teardown` split,
 # including the reason the decision rests on the OBSERVED outcomes — the port
 # and the group — and never on `kill`'s exit status, which is why TERM_STATUS
 # and KILL_STATUS appear only as diagnostic detail on the line above the
@@ -589,9 +589,9 @@ cleanup() {
 # A LEAK MUST NOT REPORT SUCCESS. A leaked serve keeps holding $PORT, so the
 # very next invocation refuses E_JC_SERVE_PORT_BUSY with nothing in the log to
 # say why. An otherwise-successful run therefore exits non-zero — cleanup does
-# that promotion, and only when the status is still 0. That is α's unwinding
-# case at :325-331, which likewise refuses to raise a panic that would swallow
-# the assertion message the reader actually needs.
+# that promotion, and only when the status is still 0. That is α's
+# `finish_teardown` unwinding case, which likewise refuses to raise a panic that
+# would swallow the assertion message the reader actually needs.
 #
 # The markers below are inline literals on purpose: usage() is a quoted heredoc
 # that carries them as literals too, so a variable here would buy a second
@@ -644,8 +644,8 @@ trap 'INTENDED_RC=143; cleanup; exit 143' TERM
 # THE PROCESS GROUP IS THE POINT. `uvx` fronts a child python that actually
 # holds the port, and a bare kill of the direct child orphans it. Putting the
 # serve in a process group of its OWN lets teardown signal `uvx` *and* the
-# python by group id alone — this is the bash equivalent of α's
-# `.process_group(0)` (jcodemunch_session_live.rs:197-202), and the alternative
+# python by group id alone — this is the bash equivalent of the
+# `.process_group(0)` in α's `Serve::spawn`, and the alternative
 # it rejects is a `pkill -f` pattern match, which is an unanchored substring
 # test against every command line on the host (`--port 8917` also matches a
 # `--port 89170` serve, and the blast radius is somebody else's watcher).
@@ -676,8 +676,8 @@ done
 
 # ── Readiness ────────────────────────────────────────────────────────────────
 #
-# IDENTITY, NOT LIVENESS. Ported from α's `await_ready`
-# (jcodemunch_session_live.rs:230-284). `result.serverInfo.name ==
+# IDENTITY, NOT LIVENESS. Ported from α's `Serve::await_ready`.
+# `result.serverInfo.name ==
 # "jcodemunch-mcp"` is positive proof that the endpoint answering is the serve
 # THIS script spawned; a bare TCP connect is answered happily by any squatter,
 # and this script defaults to a FIXED port, so that risk is higher here than in
@@ -704,8 +704,9 @@ probe_once() {
         return 1
     fi
 
-    # SSE-vs-plain-JSON body routing, reusing scripts/smoke-jcodemunch-serve.sh's
-    # shape (:96-102): a streamable-http serve may answer with
+    # SSE-vs-plain-JSON body routing, reusing the shape of
+    # scripts/smoke-jcodemunch-serve.sh's `text/event-stream` branch: a
+    # streamable-http serve may answer with
     # `text/event-stream`, in which case the JSON-RPC payload is the first
     # `data:` line rather than the whole body.
     if grep -qi 'text/event-stream' "$PROBE_HEAD" 2>/dev/null; then
@@ -740,7 +741,7 @@ probe_once() {
 
     # The server must ASSIGN a session id. Its absence means the session
     # contract is not being honoured server-side, so nothing downstream of here
-    # could be trusted (α's assertion at :240-245). Header names are
+    # could be trusted (α's assertion in `Serve::await_ready`). Header names are
     # case-insensitive per RFC 7230, hence `grep -i`.
     session="$(grep -i '^mcp-session-id:' "$PROBE_HEAD" 2>/dev/null | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)"
     if [ -z "$session" ]; then
@@ -766,7 +767,7 @@ await_ready() {
         # A serve that died (bad pin, no network, port taken between preflight
         # and spawn) will NEVER become ready — refuse now rather than burn the
         # whole deadline and then blame a timeout for what was really a spawn
-        # failure (α's try_wait check at :224-230).
+        # failure (α's `try_wait` check in `Serve::await_ready`).
         if ! kill -0 "$SERVE_PGID" 2>/dev/null; then
             status=0
             wait "$SERVE_JOB" 2>/dev/null || status=$?
