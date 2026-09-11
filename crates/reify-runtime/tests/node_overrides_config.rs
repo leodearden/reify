@@ -1,6 +1,6 @@
 //! Integration tests for `NodePolicyOverrides::from_config_overrides` (GR-007 G4 boundary).
 //!
-//! Pins the full Manifest→from_config_overrides→SchedulerConfig.resolve pipeline:
+//! Pins the full Manifest→from_config_overrides→NodePolicyOverrides::resolve_with_traits pipeline:
 //! - Kind selector (`"value"`) → type override applied to all Value nodes.
 //! - Instance selector (`"Entity.member"`) → instance override for that specific node.
 //! - Unresolvable selector and malformed dotted selector → `NodeOverrideConfigError`.
@@ -28,7 +28,7 @@ commitment_policy = \"always_cancel_when_stale\"
     // Value node → overridden to AlwaysCancelWhenStale
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve(&value_node),
+        overrides.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
         NodeCommitmentOverride::AlwaysCancelWhenStale,
         "Value kind selector must override all Value nodes"
     );
@@ -36,7 +36,7 @@ commitment_policy = \"always_cancel_when_stale\"
     // Constraint node → not overridden → default CommitIfSlow (kind isolation)
     let constraint_node = NodeId::Constraint(reify_core::ConstraintNodeId::new("Bracket", 0));
     assert_eq!(
-        overrides.resolve(&constraint_node),
+        overrides.resolve_with_traits(&constraint_node, NodeTraits::COMMITTABLE),
         NodeCommitmentOverride::CommitIfSlow,
         "kind selector for Value must not affect Constraint nodes"
     );
@@ -48,7 +48,7 @@ fn g2b_default_config_resolves_to_commit_if_slow() {
     let default_config = NodePolicyOverrides::default();
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        default_config.resolve(&value_node),
+        default_config.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
         NodeCommitmentOverride::CommitIfSlow,
         "default overrides must resolve to CommitIfSlow (no overrides)"
     );
@@ -68,7 +68,7 @@ fn instance_selector_overrides_exact_node_and_isolates_siblings() {
     // The targeted node is overridden.
     let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve(&width),
+        overrides.resolve_with_traits(&width, NodeTraits::COMMITTABLE),
         NodeCommitmentOverride::OnlyRunOnFinalInputs,
         "instance selector must override the named node"
     );
@@ -76,7 +76,7 @@ fn instance_selector_overrides_exact_node_and_isolates_siblings() {
     // A sibling node resolves to the default (instance isolation).
     let height = NodeId::Value(ValueCellId::new("Bracket", "height"));
     assert_eq!(
-        overrides.resolve(&height),
+        overrides.resolve_with_traits(&height, NodeTraits::COMMITTABLE),
         NodeCommitmentOverride::CommitIfSlow,
         "instance selector must not affect sibling nodes"
     );
@@ -196,7 +196,7 @@ fn duplicate_kind_selector_last_entry_wins() {
 
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve(&value_node),
+        overrides.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
         NodeCommitmentOverride::OnlyRunOnFinalInputs,
         "last duplicate kind selector must win"
     );
@@ -220,7 +220,7 @@ fn duplicate_instance_selector_last_entry_wins() {
 
     let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve(&width),
+        overrides.resolve_with_traits(&width, NodeTraits::COMMITTABLE),
         NodeCommitmentOverride::OnlyRunOnFinalInputs,
         "last duplicate instance selector must win"
     );
