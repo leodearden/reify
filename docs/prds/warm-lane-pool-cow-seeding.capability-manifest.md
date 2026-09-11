@@ -23,7 +23,7 @@ Legend: PASS evidence per binding; a FAIL value (`producer-absent`, `declared-on
 | cargo freshness hash is path-independent (warmth transfers across the path boundary) | memo §4/§6.1 decisive control: 383==383 Fresh, identical unit hashes in-place vs renamed clone | PASS (spike-proven) — **the load-bearing G6 premise** |
 | mtime normalization makes a fresh-checkout lane skip the rebuild | memo §2/§5 | PASS (spike-proven) |
 | RUSTFLAGS-mismatch guard fires (fail-closed) | β implements the assert; rejection-mechanism is **this task's own deliverable** (B5), verified by the δ gate observing a non-zero exit on mismatch | PASS (rejection-mechanism built+observed in δ) |
-| seed source (Phase-1 warm base) exists | `dark-factory-orchestrator.yaml:234` + `dark_factory:1692` landed; `_merge-verify` on disk | PASS (host-check) |
+| seed source (Phase-1 warm base) exists | `git.persistent_merge_worktree: true` in `dark-factory-orchestrator.yaml` (by key — tracked in reify, so one grep re-checks it) + `dark_factory:1692` landed; `_merge-verify` on disk | PASS (host-check) |
 
 ## γ — base refresh + defrag signal + preflight guard *(intermediate)*
 
