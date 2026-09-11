@@ -1540,6 +1540,77 @@ fn non_call_relate_member_is_diagnosed_not_silently_dropped() {
     );
 }
 
+/// step-5 — the B6 global-float short-circuit must not MASK the un-consumable
+/// member: both diagnostics must fire, distinct. RED until step-6 moves the skip
+/// detection ahead of the `trace_to_ground` short-circuit (task 7050).
+#[test]
+fn non_call_relate_member_is_diagnosed_even_when_the_assembly_floats() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_is_diagnosed_even_when_the_assembly_floats: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    // The relate block holds ONLY `mate(...)` — `trace_to_ground` also skips
+    // non-FunctionCall members, so the auto `bolt` reaches no anchor and the B6
+    // global-float short-circuit fires before any instance is built.
+    let source = bolt_plate_scope_source(
+        Some("fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }"),
+        &["mate(bolt.shank_axis, plate.hole_axis)"],
+    );
+
+    let solution = solve_bolt_plate(&source);
+
+    // (a) B6 still fires — this step must not weaken the existing global-float
+    //     contract.
+    let float_diags: Vec<&Diagnostic> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AssemblyGlobalFloat))
+        .collect();
+    assert_eq!(
+        float_diags.len(),
+        1,
+        "the B6 global-float diagnostic must still fire, got: {:?}",
+        solution.diagnostics
+    );
+
+    // (b) the un-consumable-member diagnostic is ALSO present, naming position 1.
+    let skip_diags: Vec<&Diagnostic> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation))
+        .collect();
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "the un-consumable-member diagnostic must fire even when the assembly \
+         floats, got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags[0].message.contains("member 1"),
+        "the skip diagnostic must name the member's 1-based declaration position \
+         (member 1), got: {:?}",
+        skip_diags[0].message
+    );
+
+    // (c) the two are DISTINCT diagnostics — the float error is not repurposed to
+    //     carry the skip message.
+    assert_ne!(
+        float_diags[0].message, skip_diags[0].message,
+        "the B6 float diagnostic and the skip diagnostic must be distinct messages"
+    );
+    assert_eq!(
+        solution.diagnostics.len(),
+        2,
+        "exactly the B6 float diagnostic + the skip diagnostic, nothing else, got: {:?}",
+        solution.diagnostics
+    );
+}
+
 // ─── OCCT-coverage guard (amendment) ─────────────────────────────────────────
 //
 // Every OCCT-gated e2e test above returns early and PASSES when
