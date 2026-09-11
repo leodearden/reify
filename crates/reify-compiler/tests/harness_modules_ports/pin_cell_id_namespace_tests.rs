@@ -258,3 +258,81 @@ fn constraint_parameter_ids(c: &CompiledConstraint) -> Vec<String> {
     ids.dedup();
     ids
 }
+
+/// The GUI's superset selector (`selectPinConstraints`,
+/// `gui/test/visual/railLengtheningGate.mjs:409` on the unmerged `task/5098`
+/// branch — cited via #5098, not a `main` path; see module doc), replayed in
+/// Rust over the SAME compiled `Printer` template as the shape locator. This
+/// is the assertion that would have caught esc-5098-6 directly: the previous
+/// selector strings (values-namespace ids) matched no constraint's
+/// `parameter_ids`, `foldPinStatus` reported PIN_ABSENT, and the gate's
+/// constraint half was inert at every phase.
+#[test]
+fn gui_pin_selectors_select_exactly_the_shape_located_pins() {
+    let module = compiled_printer();
+    let printer = printer_template(module);
+
+    for case in PIN_CASES {
+        let shape_located = pin_constraints_by_members(printer, case.member_shape);
+        let id_selected = select_pin_constraints(&printer.constraints, case.required_scoped_ids);
+
+        // (a) Non-emptiness is asserted SEPARATELY from (b): an empty
+        // selection is the PIN_ABSENT condition itself, and esc-5098-6 is
+        // exactly a case where it must red loudly on its own rather than
+        // fold into a same-message set-mismatch below.
+        assert!(
+            !id_selected.is_empty(),
+            "{}: select_pin_constraints(&constraints, {:?}) selected ZERO constraints \
+             — this is the PIN_ABSENT condition (esc-5098-6): the selector ids named a \
+             namespace no constraint's parameter_ids carries. values-namespace spelling \
+             of each selector id: {:?}. Constraints located by member shape {:?} (ground \
+             truth) and their actual parameter_ids: {:#?}",
+            case.pin_name,
+            case.required_scoped_ids,
+            case.required_scoped_ids
+                .iter()
+                .map(|id| values_namespace_spelling_hint(printer, id))
+                .collect::<Vec<_>>(),
+            case.member_shape,
+            shape_located
+                .iter()
+                .map(|c| (c.id.to_string(), constraint_parameter_ids(c)))
+                .collect::<Vec<_>>(),
+        );
+
+        let shape_ids: std::collections::BTreeSet<String> =
+            shape_located.iter().map(|c| c.id.to_string()).collect();
+        let selected_ids: std::collections::BTreeSet<String> =
+            id_selected.iter().map(|c| c.id.to_string()).collect();
+
+        assert_eq!(
+            selected_ids,
+            shape_ids,
+            "{}: select_pin_constraints(&constraints, {:?}) must select EXACTLY the \
+             constraints located by member shape {:?} (by ConstraintNodeId). \
+             shape-located: {:#?}; id-selected: {:#?}",
+            case.pin_name,
+            case.required_scoped_ids,
+            case.member_shape,
+            shape_located
+                .iter()
+                .map(|c| (c.id.to_string(), constraint_parameter_ids(c)))
+                .collect::<Vec<_>>(),
+            id_selected
+                .iter()
+                .map(|c| (c.id.to_string(), constraint_parameter_ids(c)))
+                .collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// STUB (S3): always empty regardless of input — this is what makes
+/// `gui_pin_selectors_select_exactly_the_shape_located_pins` RED with the
+/// PIN_ABSENT message. Real body (the faithful mirror of the GUI's
+/// `selectPinConstraints`) lands in S4.
+fn select_pin_constraints<'a>(
+    _constraints: &'a [CompiledConstraint],
+    _cells: &[&str],
+) -> Vec<&'a CompiledConstraint> {
+    Vec::new()
+}
