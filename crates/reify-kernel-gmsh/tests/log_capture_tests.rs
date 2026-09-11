@@ -127,6 +127,41 @@ fn an_over_cap_capture_keeps_the_tail_and_reports_the_full_count() {
     );
 }
 
+/// Exactly at the cap: nothing is elided, and the header reports
+/// `{shown} of {total}` in the same uniform form as the two cases either
+/// side of it.
+///
+/// This is the boundary neither of those can see. Here
+/// `lines.len().saturating_sub(MAX_APPENDED_LOG_LINES)` is 0, so an
+/// off-by-one in the slice pivot would silently drop `line-0` while leaving
+/// both the under-cap and over-cap tests green.
+#[test]
+fn an_exactly_at_cap_capture_keeps_every_line() {
+    let lines: Vec<String> = (0..MAX_APPENDED_LOG_LINES)
+        .map(|i| format!("line-{i}"))
+        .collect();
+
+    let msg = operation_failed_message(annotated(
+        GeometryError::OperationFailed("boom".into()),
+        &lines,
+    ));
+
+    let header = format!("gmsh log ({MAX_APPENDED_LOG_LINES} of {MAX_APPENDED_LOG_LINES} lines):");
+    assert!(
+        msg.contains(&header),
+        "expected header {header:?} in: {msg}",
+    );
+    assert!(
+        msg.lines().any(|l| l.trim() == "line-0"),
+        "nothing may be elided at exactly the cap, but the first line is missing; got: {msg}",
+    );
+    assert_eq!(
+        msg.lines().filter(|l| l.trim().starts_with("line-")).count(),
+        MAX_APPENDED_LOG_LINES,
+        "every captured line must survive at exactly the cap; got: {msg}",
+    );
+}
+
 /// Only `OperationFailed` carries a gmsh message worth extending. Every
 /// other variant passes through untouched — appending a log tail to, say, an
 /// `InvalidReference(handle)` would change the error's shape for no gain.
@@ -217,7 +252,8 @@ fn log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop() {
 /// `tet_indices.len() = 0` failures, and filtering it back out restored
 /// 14/14. Cargo gives each `tests/*.rs` its own process, so the poison is
 /// contained here, where nothing is susceptible: the cases above are pure,
-/// and the guard test's `mesh_generate(1)` is 1D work HXT never touches.
+/// and the guard test meshes nothing at all — its only gmsh call is
+/// `ffi::clear()`.
 ///
 /// Assertion (iii) is the crisp statement of "more than the last-error
 /// line": `gmshLoggerGetLastError` only ever holds the last ERROR, so an

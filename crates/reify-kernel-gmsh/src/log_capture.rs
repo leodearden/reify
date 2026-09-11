@@ -41,6 +41,34 @@
 //! [`crate::ffi::logger_start`] for that measurement. Silencing the
 //! terminal is precisely what makes the capture the ONLY route by which a
 //! caller can see gmsh's diagnosis.
+//!
+//! # What the cap bounds, and what it does not
+//!
+//! [`MAX_APPENDED_LOG_LINES`] bounds the tail folded into an error message.
+//! It does not bound the capture itself: gmsh buffers every line it emits
+//! while armed and offers no knob to cap that buffer, so a caller that arms
+//! unconditionally — as
+//! [`crate::kernel_real::GmshKernel::mesh_to_volume`] does — pays for the
+//! buffering on its SUCCESS path too, where not one line is ever read.
+//!
+//! That cost is accepted, on measurement rather than assumption. Replicating
+//! `mesh_to_volume`'s gmsh sequence on a unit cube at three mesh sizes and
+//! reading the capture just before stopping it: 1,160 tets → 113 lines /
+//! 4.8 KB; 4,575 tets → 120 lines / 5.1 KB; 63,746 tets → 133 lines /
+//! 5.8 KB. Fifty-five times the elements cost 18% more log — gmsh narrates
+//! meshing PHASES, not elements. The absolute counts shift with mesh size
+//! and with where the capture is read (the 95 above is the same span at the
+//! size `mesh_to_volume` auto-derives); what these three points establish is
+//! the SLOPE. So the buffer is kilobytes on any mesh this kernel produces,
+//! and `drop` frees them at the end of the call that allocated them.
+//!
+//! Two ways of paying less were considered and declined. Arming only when a
+//! caller opts in puts the diagnosis behind a flag that would have to be set
+//! BEFORE the failure it explains — and a caller who could predict which
+//! mesh fails would not need it. Filtering by `General.Verbosity` discards
+//! `Info:` lines, which is to say exactly the lines this module exists to
+//! surface (the measured diagnosis is `Info: all vertices are coplanar or
+//! nearly coplanar`).
 
 use reify_ir::GeometryError;
 
@@ -53,9 +81,10 @@ use reify_ir::GeometryError;
 /// capture ENTIRE, and for a larger one keeps the part that carries the
 /// diagnosis — gmsh states its conclusion at the END of the stream.
 ///
-/// A cap is needed at all because gmsh logs per-entity `Info:` and
-/// `Progress:` lines, so a large model failing late would otherwise append
-/// thousands of lines to a message that flows on into logs and the GUI.
+/// A cap is needed at all because the capture has no ceiling of its own
+/// (see the module doc): how much gmsh narrates is gmsh's choice, and the
+/// message it lands in flows on into logs and the GUI, where an unbounded
+/// tail is a cost paid by every reader.
 ///
 /// `pub` (like [`crate::mesh_size_clamp`]'s defaults, and for the same
 /// reason) so this crate's `tests/` binaries — separate compilation units —

@@ -551,4 +551,5 @@ fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
 // filtered out was 14/14 green (task #6969). The test it describes does
 // exist — as `mesh_to_volume_failure_reports_gmsh_log_not_just_the_last_error_line`
 // in `tests/log_capture_tests.rs`, whose other tests are immune by
-// construction (pure formatting, plus one 1D mesh that HXT never touches).
+// construction: pure formatting, plus one guard test whose only gmsh call
+// is `ffi::clear()` — no meshing at all.
