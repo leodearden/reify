@@ -9,6 +9,7 @@
 use reify_config::{Manifest, NodeCommitmentPolicy, NodePolicyOverride};
 use reify_core::ValueCellId;
 use reify_eval::cache::NodeId;
+use reify_ir::NodeTraits;
 use reify_runtime::commitment::{NodeCommitmentOverride, NodeOverrideConfigError, NodePolicyOverrides};
 
 // --- G4 boundary + G2(b) distinguishability ---
@@ -78,6 +79,38 @@ fn instance_selector_overrides_exact_node_and_isolates_siblings() {
         overrides.resolve(&height),
         NodeCommitmentOverride::CommitIfSlow,
         "instance selector must not affect sibling nodes"
+    );
+}
+
+#[test]
+fn config_override_wins_over_traits_default_while_unoverridden_node_follows_traits() {
+    // A config-derived instance override sits at level 1, so it wins whatever the
+    // node's traits are; an unoverridden sibling falls through to the level-4
+    // kind+traits default, whose two branches are the COMMITTABLE-presence test.
+    let entry = NodePolicyOverride {
+        node_id_pattern: "Bracket.width".into(),
+        commitment_policy: NodeCommitmentPolicy::OnlyRunOnFinalInputs,
+    };
+    let overrides = NodePolicyOverrides::from_config_overrides(&[entry])
+        .expect("instance selector must succeed");
+
+    let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
+    assert_eq!(
+        overrides.resolve_with_traits(&width, NodeTraits::empty()),
+        NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        "a config override is level 1 and must win regardless of traits"
+    );
+
+    let height = NodeId::Value(ValueCellId::new("Bracket", "height"));
+    assert_eq!(
+        overrides.resolve_with_traits(&height, NodeTraits::COMMITTABLE),
+        NodeCommitmentOverride::CommitIfSlow,
+        "an unoverridden node with COMMITTABLE falls through to level 4 → CommitIfSlow"
+    );
+    assert_eq!(
+        overrides.resolve_with_traits(&height, NodeTraits::empty()),
+        NodeCommitmentOverride::AlwaysCancelWhenStale,
+        "an unoverridden node lacking COMMITTABLE falls through to level 4 → AlwaysCancelWhenStale"
     );
 }
 
