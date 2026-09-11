@@ -2,10 +2,15 @@
 # scripts/seed-warm-lane.sh — CoW clone + warmth-transfer helper for warm-lane pool.
 #
 # D10 always-re-seed-at-acquire contract (PRD §9.3, 2026-06-18 amendment):
-#   The seed primitive itself is UNCHANGED.  The acquire path (pool consumer, DF ζ)
-#   MUST always pass --fresh-checkout so a staled lane is rescued to warm rather
-#   than rebuilt near-cold via --reset-in-place.  --reset-in-place is retained only
-#   as a control arm in the B13 re-seed warmth delta test.
+#   The seed primitive itself is UNCHANGED.  The TASK-lane acquire path (pool
+#   consumer, DF ζ `_acquire_warm_lane_impl`) MUST always pass --fresh-checkout so a
+#   staled lane is rescued to warm rather than rebuilt near-cold via --reset-in-place.
+#   Both lane classes honour always-re-seed-at-acquire; it is the MODE that splits —
+#   the merge-spec `_spec-` acquire (DF `acquire_spec_lane`) always passes
+#   --reset-in-place.  So --reset-in-place is NOT "B13 control arm only": it is the
+#   control arm AND the merge-spec acquire mode.  Full measurement and the
+#   consequence rule for anything gated on one mode: the mode-split note above the
+#   rerere MODE GATE near the tail of this file.
 #
 #   Resolve convention (D8 seam): the caller MUST resolve <base>/target (a symlink
 #   to a .gen.N dir) to its CONCRETE .gen.N path before passing it to this script.
@@ -252,8 +257,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --fresh-checkout    Replace non-empty <lane_dir>/target (mv to trash, reflink-clone,
                       rm trash); then bulk-stamp sources to 2020-01-01 and touch
                       changed files to now (D5).
-  --reset-in-place    Refuse a non-empty <lane_dir>/target (B13 control arm only;
-                      production acquires always use --fresh-checkout).  No bulk stamp.
+  --reset-in-place    Refuse a non-empty <lane_dir>/target.  No bulk stamp.  Serves
+                      BOTH the B13 warmth-delta control arm and the merge-spec
+                      `_spec-` acquire mode; task-lane acquires use --fresh-checkout.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
   --lane-lock         Accepted; IMPLIED under --fresh-checkout, where the lane lock
@@ -1198,8 +1204,10 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         mv "$LANE_TARGET" "$RESEED_TRASH"
     fi
 else
-    # --reset-in-place: keep existing clobber-refusal (B13 warmth-delta control arm).
-    # reset-in-place is a test-only path; production acquires always use --fresh-checkout.
+    # --reset-in-place: keep existing clobber-refusal.  The mode is NOT test-only — it
+    # serves both the B13 warmth-delta control arm and the merge-spec `_spec-` acquire
+    # (DF `acquire_spec_lane` always passes it).  So the refusal below is a contract a
+    # non-test caller can hit: this mode seeds a cold/empty lane only.
     if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
         err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
         err "seed-warm-lane.sh --reset-in-place only seeds cold/empty lanes. Remove the lane first."
@@ -1582,12 +1590,36 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     fi
 fi
 # --reset-in-place: no bulk stamp AND no build-dir invalidation.
-#   reset-in-place is a test-only control arm (B13 warmth-delta test) whose lane
-#   was built at its own path — build dirs already hold correct lane-K paths.
-#   Invalidating them would waste build-script re-runs for no benefit.
-#   Per D10 always-re-seed-at-acquire: production acquires (task lanes AND
-#   merge-spec slots) ALWAYS use --fresh-checkout, so the invalidation above
-#   covers both lane classes without extra code.
+#   A --reset-in-place lane was built at its own path, so its build dirs already
+#   hold correct lane-K paths; invalidating them would waste build-script re-runs
+#   for no benefit.  That reasoning holds for BOTH of this mode's callers (below),
+#   which is why the skip needs no caller-dependent condition.
+#
+# MODE SPLIT — measured 2026-09-11 against dark-factory
+# orchestrator/src/orchestrator/git_ops.py.  Resolve these by SYMBOL, never by line
+# number: the coordinates this note used to carry drifted 26 lines in twelve days,
+# which is why they are gone.
+#   task lanes  → --fresh-checkout   `_acquire_warm_lane_impl` (3 call sites)
+#   merge-spec  → --reset-in-place   `acquire_spec_lane` (1 call site, at an indent
+#                                    common to BOTH its create-once and its reset
+#                                    branch — so ALWAYS, never --fresh-checkout)
+#   The four other --fresh-checkout sites are neither class: an ephemeral worktree,
+#   an interactive-session worktree, a pool prewarm, and a lane-recycle helper.
+#
+#   D10's always-re-seed-at-acquire PROPERTY holds for BOTH classes — `acquire_spec_lane`'s
+#   own docstring asserts inv.8 — so nothing here means "the merge-spec lane skips
+#   re-seeding".  It re-seeds; only the mode differs.  (The `_spec-` pool is itself
+#   gated behind DF's `merge_spec_warm_lane_pool`, default False and unset in the live
+#   config, so the path is dormant in this deployment — dormant, not absent: it goes
+#   live the moment that flag is set, and the old "task lanes AND merge-spec slots
+#   ALWAYS use --fresh-checkout" claim was already false about the code.)
+#
+# CONSEQUENCE RULE for anything gated on $FRESH_CHECKOUT (e.g. the rerere pin below):
+#   the gate reaches every acquire only for a SHARED-STORE scoped effect.  Any
+#   LANE-SCOPED effect — a per-lane config write, marker, or sweep — silently excludes
+#   the merge-spec slot.  The build-dir invalidation above is lane-scoped and so
+#   reaches task lanes only; that is correct here for the first paragraph's reason,
+#   not because the gate happens to cover everything.
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
 #
@@ -1645,17 +1677,16 @@ fi
 #
 # MODE GATE — $FRESH_CHECKOUT, not a new flag. It reuses the discriminator this
 # script already switches on at the three sites above rather than inventing a
-# mode flag, and it covers every TASK-lane acquire: dark-factory drives those
-# through _seed_warm_lane(lane, '--fresh-checkout') at seven call sites in
-# orchestrator/src/orchestrator/git_ops.py.
+# mode flag, and it covers every TASK-lane acquire: dark-factory drives the pooled
+# task-lane acquire through _seed_warm_lane(lane, '--fresh-checkout') in
+# `_acquire_warm_lane_impl`.
 #
-# It does NOT cover the merge-spec lane. MEASURED 2026-08-30, correcting the
-# claim in this script's own --reset-in-place block below (and in the PRD prose
-# it quotes) that production acquires "task lanes AND merge-spec slots" always
-# use --fresh-checkout: acquire_spec_lane (git_ops.py:5923) calls
-# _seed_warm_lane(lane, '--reset-in-place') at :6076, at an indent common to
-# BOTH its create and its reset branch — so the merge-spec acquire is
-# ALWAYS --reset-in-place and never reaches this block.
+# It does NOT cover the merge-spec lane. MEASURED 2026-08-30, re-measured
+# 2026-09-11: `acquire_spec_lane` calls _seed_warm_lane(lane, '--reset-in-place')
+# at an indent common to BOTH its create-once and its reset branch — so the
+# merge-spec acquire is ALWAYS --reset-in-place and never reaches this block.
+# It still re-seeds (inv.8); only the mode differs. See the MODE SPLIT note above
+# for the full measurement and why symbols, not line numbers, pin it.
 #
 # That gap is harmless for THIS defence, which is why the gate stays as it is:
 # the pin is a property of the ONE shared .git/config, not of a lane, so any
