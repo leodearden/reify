@@ -856,11 +856,10 @@ structure def RevoluteTOTSShaper : Shaper {
 //
 // Constraint:
 //   target_frequency > 0Hz — rejects degenerate zero or negative frequency.
-//   The constraint RHS MUST be the dimensioned literal `0Hz` → Value::Scalar
-//   {si_value:0.0, dimension:FREQUENCY}; a bare `0` is Type::Real, which is
-//   dim-incompatible with Frequency per the esc-3115 rule documented at
-//   `StepForce.magnitude`'s `constraint magnitude > 0N` note in
-//   modal_analysis.ri.
+//   `0Hz` is retained because it reads as an explicit frequency bound; a bare
+//   `0` compiles to the same Value::Scalar{si_value:0.0, dimension:FREQUENCY}.
+//   DIMENSIONED-ZERO CONVENTION — see
+//   docs/notes/dimensioned-zero-coercion.md.
 structure def ZVShaper : Shaper {
     param target_frequency : Frequency
     param damping_ratio : Real = 0.0
@@ -883,7 +882,7 @@ structure def ZVShaper : Shaper {
 //                                     must supply per PRD §5.1 / task spec).
 //
 // Constraint:
-//   target_frequency > 0Hz — same dimensioned literal as ZVShaper (0Hz, not 0).
+//   target_frequency > 0Hz — `0Hz` by the same convention as ZVShaper above.
 structure def ZVDShaper : Shaper {
     param target_frequency : Frequency
     param damping_ratio : Real
@@ -915,7 +914,8 @@ structure def ZVDShaper : Shaper {
 //                                        as `TOTSShaper.vibration_tolerance`.
 //
 // Constraints:
-//   target_frequency > 0Hz     — dimensioned literal (esc-3115 rule).
+//   target_frequency > 0Hz     — `0Hz` by the same convention as ZVShaper
+//                                above.
 //   vibration_tolerance > 0    — lower bound of (0, 1] interval.
 //   vibration_tolerance <= 1   — upper bound of (0, 1] interval.
 structure def EIShaper : Shaper {
