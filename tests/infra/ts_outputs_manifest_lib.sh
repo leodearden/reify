@@ -15,6 +15,18 @@
 # once, and both scripts/test_tree_sitter_generate.sh and
 # tests/infra/test_tree_sitter_pipeline.sh source it.
 #
+# THE TWO PRODUCTION READERS STAY WHERE THEY ARE, and are not a fourth and fifth
+# copy of this to be folded in: `_stamp_is_current` in
+# scripts/tree-sitter-generate.sh and `outputs_manifest_matches` in
+# tree-sitter-reify/build_support.rs are the SUBJECTS under test.  A test that
+# shares code with its subject cannot catch that subject's bugs — which is the
+# precise weakness `#6992` removed from tree-sitter-reify/tests/build_logic_tests.rs,
+# where hand-copied build.rs logic let a test pass while build.rs was wrong.
+# Sourcing this from the production script would also put a transitively-sourced
+# lib on the verify pipeline that scripts/verify-pipeline-guard.sh cannot
+# auto-derive (the scripts/lib_slot_acquire.sh class), silently making
+# generate-script edits fast-path eligible.
+#
 # NO FUNCTION DEFINED HERE MAY CONTAIN THE SUBSTRING `test_` IN ITS NAME.
 # test_tree_sitter_pipeline.sh's run_tests discovers cases with
 # `declare -F | awk '/test_/{print $3}'`, which matches anywhere on the line, so
