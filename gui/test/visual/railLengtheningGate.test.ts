@@ -52,16 +52,19 @@ import {
   RAIL_GATE_MIN_DISPATCHES,
   RAIL_GATE_MIN_VALUES,
   RAIL_GATE_PHASES,
+  PIN_ABSENT,
   PIN_RAIL_SPAN_CELL,
   PIN_TRAVEL_AVAIL_CELL,
   PIN_Y_RAIL_LEN_CELL,
   PIN_YH_MIN_TODAY_CELL,
+  RAIL_GATE_LENGTH_TOLERANCE_MM,
   RAIL_SPAN_CELL,
   RAIL_SPAN_PIN,
   SUBJECT_BASENAME,
   TOOL_DOCK_PIN,
   TRAVEL_AVAIL_CELL,
   X_RAIL_LEN_CELL,
+  YH_MIN_TODAY_CELL,
   Y_RAIL_LEN_CELL,
   checkFieldCoverage,
   checkIdempotentReload,
@@ -70,8 +73,10 @@ import {
   checkSourceCanonical,
   extractGateInputs,
   findEditableParams,
+  foldPinStatus,
   formatFailures,
   observeThenExtras,
+  selectPinConstraints,
 } from "./railLengtheningGate.mjs";
 
 type Failure = {
@@ -276,14 +281,18 @@ describe("checkRailLengtheningGate — (b) the value gate", () => {
     expect(failures.map((f) => f.field)).toEqual([`values[${Y_RAIL_LEN_CELL}].mm`]);
   });
 
-  it("tolerates float noise in the SI round trip", () => {
+  it("tolerates float noise in the SI round trip, and nothing larger", () => {
     // si_value arrives in metres and is scaled by 1000, so 0.51 m can land a few
-    // ulps off 510. An exact === here would red on a correct run.
-    const { ok } = checkRailLengtheningGate({
-      ...BASELINE,
-      cells: { ...BASELINE.cells, [TRAVEL_AVAIL_CELL]: { mm: 510 + 1e-9, freshness: "final" } },
-    }) as Verdict;
-    expect(ok).toBe(true);
+    // ulps off 510. An exact === here would red on a correct run — and a
+    // tolerance wide enough to swallow a real drift would be worse, so both
+    // sides of RAIL_GATE_LENGTH_TOLERANCE_MM are pinned.
+    const at = (drift: number) =>
+      checkRailLengtheningGate({
+        ...BASELINE,
+        cells: { ...BASELINE.cells, [TRAVEL_AVAIL_CELL]: { mm: 510 + drift, freshness: "final" } },
+      }) as Verdict;
+    expect(at(RAIL_GATE_LENGTH_TOLERANCE_MM / 2).ok).toBe(true);
+    expect(at(RAIL_GATE_LENGTH_TOLERANCE_MM * 10).ok).toBe(false);
   });
 
   it("names a cell whose reading is not a finite number as a shape failure, not a value one", () => {
@@ -392,23 +401,33 @@ describe("checkRailLengtheningGate — (d) the constraint gate", () => {
     ]);
   });
 
-  it("reports an absent pin as a constraint failure naming 'absent'", () => {
+  it("reports an absent pin as a constraint failure naming PIN_ABSENT", () => {
     const { failures } = checkRailLengtheningGate({
       ...BASELINE,
-      railSpanPinStatus: "absent",
+      railSpanPinStatus: PIN_ABSENT,
     }) as Verdict;
-    expect(forField(failures, `constraints[${RAIL_SPAN_PIN}].status`)![0]!.observed).toBe("absent");
+    expect(forField(failures, `constraints[${RAIL_SPAN_PIN}].status`)![0]!.observed).toBe(
+      PIN_ABSENT,
+    );
   });
 
   it("never asserts a global 'no constraints violated' — only the two named pins", () => {
     // The scenario legitimately leaves a violated pin behind at the last phase,
     // and printer.ri carries eleven indeterminate constraints at baseline. Any
-    // gate keyed on a global count would red on correct behaviour.
-    const { ok } = checkRailLengtheningGate({
-      ...AFTER_RAIL_SPAN,
-      constraintCount: 120,
-    }) as Verdict;
-    expect(ok).toBe(true);
+    // gate keyed on a global count would red on correct behaviour — so this
+    // drives the whole extract-then-check path over a constraints list that is
+    // genuinely full of red, none of it on either named pin.
+    const payloads = payloadsFor("after-rail-span", 1100, 1100, 810, "Satisfied", "Violated");
+    payloads.engineState.constraints = [
+      ...payloads.engineState.constraints,
+      ...new Array(11)
+        .fill(0)
+        .map((_, i) => constraint(`Printer#constraint[${200 + i}]`, "Indeterminate", ["Printer.env.build_z"])),
+      constraint("Printer#constraint[300]", "Violated", ["Printer.d_toolhead.peak_accel"]),
+    ];
+    const { inputs, failures } = extractGateInputs(payloads) as Extraction;
+    expect(failures).toEqual([]);
+    expect(checkRailLengtheningGate(inputs)).toEqual({ ok: true, failures: [] });
   });
 });
 
@@ -459,11 +478,23 @@ describe("checkRailLengtheningGate — (f) the subject gate", () => {
     ]);
   });
 
-  it("accepts the temp-directory copy the live driver actually opens", () => {
+  it.each([
+    ["a mkdtemp copy under /tmp", "/tmp/reify-rail-lengthening-9Xq2/printer_v01/printer.ri"],
+    ["the same copy with /tmp's symlink resolved", "/private/tmp/reify-x/printer_v01/printer.ri"],
+    ["the bare basename", SUBJECT_BASENAME],
+  ])("accepts %s — only the basename is stable", (_name, activeFile) => {
     // The driver never mutates the tracked design file; it drives a mkdtemp
-    // copy, and canonicalize resolves /tmp's symlink, so only the basename is
-    // stable across the round trip.
-    expect(checkRailLengtheningGate({ ...BASELINE, activeFile: SUBJECT_PATH }).ok).toBe(true);
+    // copy, and canonicalize resolves /tmp's symlink, so the path that comes
+    // back is not the one that went in.
+    expect(checkRailLengtheningGate({ ...BASELINE, activeFile }).ok).toBe(true);
+  });
+
+  it("rejects a path that merely CONTAINS the basename mid-segment", () => {
+    // `endsWith('/printer.ri')`, not `includes`: a sibling named
+    // `printer.ri.bak` — or a directory of that name — is not the subject.
+    expect(
+      checkRailLengtheningGate({ ...BASELINE, activeFile: `/tmp/x/${SUBJECT_BASENAME}.bak` }).ok,
+    ).toBe(false);
   });
 });
 
@@ -523,7 +554,7 @@ function payloadsFor(
         value(Y_RAIL_LEN_CELL, yRailLenMm),
         value(RAIL_SPAN_CELL, railSpanMm),
         value(TRAVEL_AVAIL_CELL, travelAvailMm),
-        value("ToolDock.yh_min_today", 145),
+        value(YH_MIN_TODAY_CELL, 145),
       ],
       constraints: constraintsFor(railSpanStatus, toolDockStatus),
     },
@@ -592,7 +623,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
       (c) => !c.parameter_ids.includes(PIN_Y_RAIL_LEN_CELL),
     );
     const { inputs } = extractGateInputs(payloads) as Extraction;
-    expect(inputs["railSpanPinStatus"]).toBe("absent");
+    expect(inputs["railSpanPinStatus"]).toBe(PIN_ABSENT);
   });
 
   it("classifies an in-band tool error as an OUTAGE, not a shape problem", () => {
@@ -665,6 +696,56 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
   });
 });
 
+describe("selectPinConstraints / foldPinStatus — (h2) the selector's own halves", () => {
+  const pinCells = [PIN_RAIL_SPAN_CELL, PIN_Y_RAIL_LEN_CELL];
+  const half = (status: string) =>
+    constraint("Printer#constraint[45]", status, [...pinCells, "Printer.o1_pin_slack"]);
+
+  it("matches on a SUPERSET of the named cells, never on one of them", () => {
+    const matched = selectPinConstraints(
+      [
+        half("Satisfied"),
+        constraint("Printer#constraint[7]", "Violated", [PIN_RAIL_SPAN_CELL]),
+        constraint("Printer#constraint[8]", "Violated", [PIN_Y_RAIL_LEN_CELL]),
+      ],
+      pinCells,
+    );
+    expect(matched.map((c) => c.node_id)).toEqual(["Printer#constraint[45]"]);
+  });
+
+  it.each([
+    ["a non-array constraints list", "many", pinCells],
+    ["a null constraints list", null, pinCells],
+    ["a non-array cells list", [half("Satisfied")], "Printer.a_frame.rail_span_m"],
+    ["an entry that is not an object", [null, 7, "x"], pinCells],
+    ["an entry whose parameter_ids is not an array", [{ node_id: "a", parameter_ids: "x" }], pinCells],
+  ])("yields no matches for %s rather than throwing", (_name, constraints, cells) => {
+    expect(selectPinConstraints(constraints as never, cells as never)).toEqual([]);
+  });
+
+  it.each([
+    ["Violated wins over every other half", ["Satisfied", "Indeterminate", "Violated"], "Violated"],
+    ["Indeterminate wins when no half is Violated", ["Satisfied", "Indeterminate"], "Indeterminate"],
+    ["Satisfied only when EVERY half is", ["Satisfied", "Satisfied"], "Satisfied"],
+  ])("folds a pin pair: %s", (_name, statuses, want) => {
+    expect(foldPinStatus((statuses as string[]).map(half))).toBe(want);
+  });
+
+  it.each([
+    ["a status outside the engine's vocabulary", [half("Unknown"), half("Satisfied")]],
+    ["a status that is not a string at all", [{ ...half("Satisfied"), status: 7 }]],
+    ["an entry that is not an object", [null]],
+    ["no match at all", []],
+    ["a non-array argument", "Satisfied"],
+  ])("reports %s as PIN_ABSENT, never as a silent pass", (_name, matched) => {
+    // `build_constraints` emits exactly Satisfied / Violated / Indeterminate, so
+    // anything else is not a pin reading. Folding it to "Satisfied" by omission
+    // would be the disarmed-assertion failure the whole selector exists to
+    // avoid: the gate would go green on a payload it did not understand.
+    expect(foldPinStatus(matched as never)).toBe(PIN_ABSENT);
+  });
+});
+
 // ─── formatFailures ──────────────────────────────────────────────────────────
 
 describe("formatFailures — the single site where a record becomes English", () => {
@@ -674,7 +755,14 @@ describe("formatFailures — the single site where a record becomes English", ()
       meshCount: 0,
       railSpanPinStatus: "Violated",
     }) as Verdict;
-    expect(formatFailures(failures)).toHaveLength(failures.length);
+    // ORDER, not length: `formatFailures` is an `Array.map`, so a length check
+    // holds for any implementation at all. Each line must be the rendering of
+    // the record at the SAME index, which is what a caller printing the list
+    // alongside the records relies on.
+    expect(failures.length).toBeGreaterThan(1);
+    expect(formatFailures(failures)).toEqual(
+      failures.map((f) => expect.stringContaining(f.field === undefined ? f.tool : f.field)),
+    );
   });
 
   it("explains a constraint failure in terms of the pin, the phase and both statuses", () => {
@@ -704,6 +792,31 @@ describe("formatFailures — the single site where a record becomes English", ()
     ] as Failure[])[0]!;
     expect(line).toContain("engine_state");
     expect(line).toContain("boom");
+  });
+
+  it.each([
+    ["a boolean-valued coverage record", { gate: "coverage", tool: "engine_state", field: "stale", observed: true, expected: false }, ["true", "false"]],
+    ["a boolean-valued canonical record", { gate: "canonical", tool: "reify_save_file", field: "success", observed: false, expected: true }, ["false", "true"]],
+  ])("renders %s with both of its values, not with 'boolean'", (_name, record, wanted) => {
+    // `describeValue` had no boolean branch, so it fell through to `typeof` and
+    // the only diagnostic a live run prints for `stale` / `reload_error` /
+    // `reify_save_file.success` read "is boolean, expected boolean" — both
+    // numbers erased from the one sentence that had to carry them.
+    const line = formatFailures([record] as Failure[])[0]!;
+    for (const want of wanted) expect(line).toContain(want);
+    expect(line).not.toContain("is boolean, expected boolean");
+  });
+
+  it("renders a shape token's prose without resolving an INHERITED object key", () => {
+    // `SHAPE_PROSE[f.expected]` reached `Object.prototype`, so a record whose
+    // `expected` happened to be `constructor` rendered the Object constructor's
+    // source where a token's prose belongs — the opposite of the "a malformed
+    // record degrades to a dump" contract directly below.
+    const line = formatFailures([
+      { gate: "shape", tool: "t", field: "f", observed: 1, expected: "constructor" },
+    ] as Failure[])[0]!;
+    expect(line).not.toContain("native code");
+    expect(line).toContain("constructor");
   });
 
   it("degrades a malformed record to a dump rather than throwing", () => {
@@ -840,6 +953,99 @@ describe("findEditableParams — (j) against the real prj/printer_v01/printer.ri
   });
 });
 
+/**
+ * THE CONSTANT-DRIFT GUARD the pin-selection cases above cannot be.
+ *
+ * `constraintsFor` builds its fixture `parameter_ids` from the very constants
+ * the selector consumes, so every selection case passes identically if all four
+ * spellings are wrong together — the trap `railLengtheningGate.mjs`'s
+ * second-namespace docblock names in so many words ("a hand-built fixture
+ * reproduces perfectly if it is written from the same wrong assumption"). It is
+ * not hypothetical: this branch carries a commit fixing exactly that, and a
+ * re-regression would surface only as PIN_ABSENT on a run that needs a GUI.
+ *
+ * So the spellings are re-derived from the SOURCE here. A constraint id
+ * `Printer.<sub>.<member>` is well-formed only if printer.ri's `Printer` block
+ * declares `sub <sub> = <Type>()` and pins `self.<sub>.<member>` — and `<Type>`
+ * is what makes the values-namespace constant beside it right, which ties the
+ * two namespaces to one reading of one file instead of to two assumptions.
+ */
+describe("the constraint-namespace constants — (j2) re-derived from printer.ri", () => {
+  const PRINTER_RI = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", PRINTER_RELPATH),
+    "utf8",
+  );
+
+  /** The body of `pub structure <name> { … }`, by brace depth, comments stripped. */
+  function entityBody(source: string, name: string): string[] {
+    const lines = source.split("\n").map((l) => l.replace(/\/\/.*$/, ""));
+    const start = lines.findIndex((l) =>
+      new RegExp(`^\\s*(?:pub\\s+)?structure\\s+(?:def\\s+)?${name}\\b`).test(l),
+    );
+    expect(start, `printer.ri must declare structure ${name}`).toBeGreaterThanOrEqual(0);
+    const body: string[] = [];
+    let depth = 0;
+    for (let i = start; i < lines.length; i += 1) {
+      for (const ch of lines[i]!) {
+        if (ch === "{") depth += 1;
+        else if (ch === "}") depth -= 1;
+      }
+      if (i > start) body.push(lines[i]!);
+      if (i > start && depth <= 0) break;
+    }
+    return body;
+  }
+
+  const PRINTER_BODY = entityBody(PRINTER_RI, "Printer");
+  const CONSTRAINTS = PRINTER_BODY.filter((l) => /^\s*constraint\b/.test(l));
+
+  /** `Printer.a_frame.rail_span_m` -> `self.a_frame.rail_span_m`. */
+  const asSelfPath = (cell: string) => `self.${cell.slice("Printer.".length)}`;
+
+  it("has a Printer block carrying constraints at all", () => {
+    // Without this every assertion below is vacuous: an empty list satisfies no
+    // `.some`, and `entityBody` returning nothing would look like a rename.
+    expect(CONSTRAINTS.length).toBeGreaterThan(20);
+  });
+
+  it.each([
+    ["the rail-span pin's A-frame half", PIN_RAIL_SPAN_CELL, "a_frame", "AFrame", RAIL_SPAN_CELL],
+    ["the rail-span pin's motion half", PIN_Y_RAIL_LEN_CELL, "motion", "CoreXY", Y_RAIL_LEN_CELL],
+    ["the ToolDock pin's travel half", PIN_TRAVEL_AVAIL_CELL, "a_frame", "AFrame", TRAVEL_AVAIL_CELL],
+    ["the ToolDock pin's dock half", PIN_YH_MIN_TODAY_CELL, "tool_dock", "ToolDock", YH_MIN_TODAY_CELL],
+  ])("%s is a real sub path, and its type matches the values-namespace constant", (
+    _name,
+    pinCell,
+    sub,
+    type,
+    valuesCell,
+  ) => {
+    const [, member] = /^Printer\.(\w+)\.(\w+)$/.exec(pinCell)!.slice(1);
+    expect(pinCell).toBe(`Printer.${sub}.${member}`);
+    // The SUB really is declared, with the type the values-namespace constant
+    // names — `build_values` keys on the TYPE, `build_constraints` on the sub.
+    expect(PRINTER_BODY.some((l) => new RegExp(`^\\s*sub\\s+${sub}\\s*=\\s*${type}\\(`).test(l))).toBe(
+      true,
+    );
+    expect(valuesCell).toBe(`${type}.${member}`);
+  });
+
+  it.each([
+    ["the rail-span pin", [PIN_RAIL_SPAN_CELL, PIN_Y_RAIL_LEN_CELL]],
+    ["the ToolDock pin", [PIN_YH_MIN_TODAY_CELL, PIN_TRAVEL_AVAIL_CELL]],
+  ])("%s names a real ± slack constraint PAIR in the Printer block", (_name, cells) => {
+    const paths = cells.map(asSelfPath);
+    const matched = CONSTRAINTS.filter((l) => paths.every((path) => l.includes(path)));
+    // A PAIR, not one line: printer.ri writes `x < y + slack` and
+    // `x > y - slack`, which is why `foldPinStatus` reduces a list. One match
+    // would mean the pin lost a half; none would mean a rename the live gate
+    // could only report as PIN_ABSENT, on a run that needs a GUI.
+    expect(matched).toHaveLength(2);
+    expect(matched.filter((l) => l.includes("<"))).toHaveLength(1);
+    expect(matched.filter((l) => l.includes(">"))).toHaveLength(1);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The remaining PRD §7 rows. B4 is deliberately ABSENT from this file: the
 // debug path discards the `StateDelta` by design (PRD §6.2 caveat (i), restated
@@ -848,6 +1054,24 @@ describe("findEditableParams — (j) against the real prj/printer_v01/printer.ri
 // actually lives, driving that seam itself — `debug_server::tests::write_tools::
 // write_helper_refreshes_the_delta_baseline`.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One complete B5 reading — every tracked cell and both pin statuses.
+ *
+ * Shared by the B5 block and the fold-into-one-verdict block below, because
+ * `checkIdempotentReload` now demands a COMPLETE reading on both sides: a pair
+ * of empty observations agrees on every key it was asked about, so grading them
+ * clean was a pass on nothing at all.
+ */
+const SETTLED_READING = {
+  cells: {
+    [Y_RAIL_LEN_CELL]: { mm: 1100, freshness: "final" },
+    [RAIL_SPAN_CELL]: { mm: 1100, freshness: "final" },
+    [TRAVEL_AVAIL_CELL]: { mm: 810, freshness: "final" },
+  },
+  railSpanPinStatus: "Satisfied",
+  toolDockPinStatus: "Violated",
+};
 
 /** The post-edit source the B2 cases read, with both params already rewritten. */
 const EDITED_SOURCE = [
@@ -933,6 +1157,33 @@ describe("checkSourceCanonical — (k) B2, the edit is canonical ON DISK", () =>
     expect(failures[0].field).toBe("source-after-save");
   });
 
+  it.each([
+    ["absent", undefined],
+    ["null", null],
+    ["an array", []],
+    ["an object with no entries", {}],
+  ])("faults an `expected` that is %s — a B2 reading with nothing to compare", (_name, expected) => {
+    // Without this the whole literal-canonicity assertion — the POINT of B2 —
+    // drops silently and the predicate returns clean having checked only the
+    // save. `requires: ['sourceCanonical']` does not help: it asks whether the
+    // reading is present, not whether it carries anything to grade.
+    const failures = checkSourceCanonical({
+      source: EDITED_SOURCE,
+      expected,
+      saveFile: { success: true },
+      sourceAfterSave: EDITED_SOURCE,
+    }) as Failure[];
+    expect(forGate(failures, "shape")).toEqual([
+      {
+        gate: "shape",
+        tool: "railLengtheningGate",
+        field: "sourceCanonical.expected",
+        observed: expected,
+        expected: "object-with-at-least-one-entry",
+      },
+    ]);
+  });
+
   it("reports a failed save as an OUTAGE, not as a canonical violation", () => {
     const failures = checkSourceCanonical({
       source: EDITED_SOURCE,
@@ -1000,18 +1251,45 @@ describe("checkFieldCoverage — (l) B3, fields beyond meshes/values stay live",
 });
 
 describe("checkIdempotentReload — (m) B5, the watcher re-read adds no churn", () => {
-  const settled = {
-    cells: {
-      [Y_RAIL_LEN_CELL]: { mm: 1100, freshness: "final" },
-      [RAIL_SPAN_CELL]: { mm: 1100, freshness: "final" },
-      [TRAVEL_AVAIL_CELL]: { mm: 810, freshness: "final" },
-    },
-    railSpanPinStatus: "Satisfied",
-    toolDockPinStatus: "Violated",
-  };
+  const settled = SETTLED_READING;
 
   it("passes when the post-debounce re-read is identical to the pre-debounce one", () => {
     expect(checkIdempotentReload({ before: settled, after: { ...settled } })).toEqual([]);
+  });
+
+  it.each([
+    ["a reading carrying no cells at all", { before: { cells: {} }, after: { cells: {} } }],
+    ["a reading with no `cells` key", { before: {}, after: {} }],
+    ["one side missing a single tracked cell", {
+      before: settled,
+      after: { ...settled, cells: { [Y_RAIL_LEN_CELL]: settled.cells[Y_RAIL_LEN_CELL] } },
+    }],
+    ["a reading carrying no pin statuses", {
+      before: { cells: settled.cells },
+      after: { cells: settled.cells },
+    }],
+  ])("faults %s rather than grading two absences as agreement", (_name, observed) => {
+    // THE VACUITY THIS ROW EXISTS TO REFUSE. Reading each key off two raw
+    // objects compares `undefined` with `undefined` wherever a reading is
+    // missing, so an empty pair agrees on everything and B5 passes having
+    // observed nothing. Every fault here is `shape` — never tested — not
+    // `reload`, which would claim the re-read moved something.
+    const failures = checkIdempotentReload(observed) as Failure[];
+    expect(failures.length).toBeGreaterThan(0);
+    expect(forGate(failures, "reload")).toEqual([]);
+    expect(failures.every((f) => f.gate === "shape")).toBe(true);
+  });
+
+  it("names the SIDE a missing reading is on, so the diagnosis is actionable", () => {
+    const failures = checkIdempotentReload({
+      before: settled,
+      after: { ...settled, cells: {} },
+    }) as Failure[];
+    expect(failures.map((f) => f.field)).toEqual([
+      `after.values[${Y_RAIL_LEN_CELL}]`,
+      `after.values[${RAIL_SPAN_CELL}]`,
+      `after.values[${TRAVEL_AVAIL_CELL}]`,
+    ]);
   });
 
   it("faults a cell whose value MOVED across the debounce — a double-apply", () => {
@@ -1113,6 +1391,28 @@ describe("checkRejectionAtomicity — (n) B7, a refused write mutates nothing", 
     expect(forGate(failures, "rejection")).toHaveLength(1);
   });
 
+  it.each([
+    ["neither side", { sourceBefore: undefined, sourceAfter: undefined }],
+    ["the before side", { sourceBefore: undefined, sourceAfter: SRC }],
+    ["the after side", { sourceBefore: SRC, sourceAfter: undefined }],
+    ["either side, when the file read back empty", { sourceBefore: "", sourceAfter: "" }],
+  ])("faults a reading that observed the source on %s", (_name, sources) => {
+    // `undefined !== undefined` is false, so a well-shaped `reify_open_file`
+    // answer carrying no `source` string graded a full "the refused write
+    // mutated nothing" pass having looked at the file on neither side. Every
+    // sibling predicate here faults a non-string source by name; this one did
+    // not, which made the omission inconsistent as well as vacuous.
+    const failures = checkRejectionAtomicity({
+      tool: "reify_set_parameter",
+      error: { error: "no default literal" },
+      ...sources,
+    }) as Failure[];
+    expect(failures.length).toBeGreaterThan(0);
+    expect(failures.every((f) => f.gate === "shape" && f.expected === "non-empty-string")).toBe(
+      true,
+    );
+  });
+
   it("reports BOTH a wrong verdict and a moved source in one call", () => {
     const failures = checkRejectionAtomicity({
       tool: "reify_set_parameter",
@@ -1197,6 +1497,42 @@ describe("checkRailLengtheningGate — (o) the four rows fold into ONE verdict",
     expect(verdict.failures[0].gate).toBe("shape");
   });
 
+  it.each([
+    ["a bare string", "rejectionAtomicity"],
+    ["a number", 4],
+    ["an object", { rejectionAtomicity: true }],
+    ["null", null],
+  ])("faults a `requires` that is %s rather than discarding it", (_name, requires) => {
+    // Reading a malformed container as "promised nothing" reopens the exact
+    // silent-skip hole `requires` exists to close, and does it wholesale: ONE
+    // misspelling disarms every promise the run meant to make.
+    const verdict = checkRailLengtheningGate({ ...AFTER_RAIL_SPAN, requires }) as Verdict;
+    expect(verdict.ok).toBe(false);
+    expect(forField(verdict.failures, "requires")).toEqual([
+      {
+        gate: "shape",
+        tool: "railLengtheningGate",
+        field: "requires",
+        observed: requires,
+        expected: "array",
+      },
+    ]);
+  });
+
+  it("refuses `readOrder` as a PROMISE — it grades the harness, not the subject", () => {
+    // A healthy run parks no read-order marker, so promising the row would fail
+    // every correct run. Naming it is a mistake about what `requires` means, and
+    // is reported as one instead of becoming an unsatisfiable promise.
+    const verdict = checkRailLengtheningGate({
+      ...AFTER_RAIL_SPAN,
+      requires: ["readOrder"],
+    }) as Verdict;
+    expect(forField(verdict.failures, "requires")).toHaveLength(1);
+    expect(verdict.failures[0]).toMatchObject({ gate: "shape", observed: "readOrder" });
+    // …and the vacuity row it would otherwise have triggered did not fire.
+    expect(forGate(verdict.failures, "vacuity")).toEqual([]);
+  });
+
   it("grades EVERY B7 rejection when a list is supplied, not just the last", () => {
     const bad = { tool: "reify_set_parameter", error: { success: true }, sourceBefore: "a", sourceAfter: "a" };
     const verdict = checkRailLengtheningGate({
@@ -1227,7 +1563,7 @@ describe("checkRailLengtheningGate — (o) the four rows fold into ONE verdict",
         stale: false,
         reload_error: null,
       },
-      idempotentReload: { before: { cells: {} }, after: { cells: {} } },
+      idempotentReload: { before: SETTLED_READING, after: { ...SETTLED_READING } },
       rejectionAtomicity: [
         { tool: "reify_set_parameter", error: { error: "no default literal" }, sourceBefore: "a", sourceAfter: "a" },
       ],
@@ -1346,9 +1682,16 @@ describe("observeThenExtras — (p) the READ ORDER contract the driver cannot st
     }
   });
 
-  it("renders the read-order record by naming the reload it would have hidden", async () => {
+  it("renders the read-order record from its own fields, not from a fixed sentence", async () => {
+    // The DATA reaches the line: the failure path the record identifies and the
+    // `expected` token it carries. The surrounding explanation is prose owned by
+    // `formatFailures` and pinned nowhere, so rewording it stays a one-line edit
+    // — the same split every other rendering case in this file asserts on.
     const disarmed = await observeThenExtras(async () => AFTER_RAIL_SPAN, {} as never);
-    const line = formatFailures(forGate((checkRailLengtheningGate(disarmed) as Verdict).failures, "read-order"))[0]!;
-    expect(line).toContain("reify_open_file");
+    const line = formatFailures(
+      forGate((checkRailLengtheningGate(disarmed) as Verdict).failures, "read-order"),
+    )[0]!;
+    expect(line).toContain("railLengtheningGate.extras");
+    expect(line).toContain("observeThenExtras");
   });
 });

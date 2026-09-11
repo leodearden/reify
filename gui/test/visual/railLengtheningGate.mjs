@@ -66,8 +66,6 @@ export const RAIL_SPAN_CELL = "AFrame.rail_span_m";
 export const TRAVEL_AVAIL_CELL = "AFrame.travel_avail";
 /** The ToolDock literal that edit 2 knocks out of range — the expected cascade. */
 export const YH_MIN_TODAY_CELL = "ToolDock.yh_min_today";
-/** `AFrame.centre_y`, the other half of the ToolDock pin's right-hand side. */
-export const CENTRE_Y_CELL = "AFrame.centre_y";
 /**
  * The B7 rejection subject: `x_rail_len = y_rail_offset * 2`, a derived `let`
  * with no default literal of its own. A plausible-looking cell id that
@@ -255,6 +253,7 @@ const NUMBER = "finite-number";
 const NON_EMPTY_STRING = "non-empty-string";
 const KNOWN_PHASE = "one-of-RAIL_GATE_PHASES";
 const IN_BAND_ERROR = "in-band-error-envelope";
+const NON_EMPTY_OBJECT = "object-with-at-least-one-entry";
 
 /** Token → prose, used only when rendering. */
 const SHAPE_PROSE = Object.freeze({
@@ -264,6 +263,7 @@ const SHAPE_PROSE = Object.freeze({
   [NON_EMPTY_STRING]: "a non-empty string",
   [KNOWN_PHASE]: `one of ${Object.keys(RAIL_GATE_PHASES).join(", ")}`,
   [IN_BAND_ERROR]: "an in-band {error} envelope (docs/debug-mcp-contract.md §2a)",
+  [NON_EMPTY_OBJECT]: "an object carrying at least one entry to compare",
 });
 
 /**
@@ -275,6 +275,11 @@ const SHAPE_PROSE = Object.freeze({
 function describeValue(v) {
   if (typeof v === "string") return JSON.stringify(v);
   if (typeof v === "number") return String(v);
+  // Booleans are not a formality here: `stale`, `reload_error` and
+  // `reify_save_file.success` are the boolean-valued readings, so without this
+  // branch the only diagnostic the live gate prints for them reads
+  // "stale is boolean, expected boolean" — both numbers erased.
+  if (typeof v === "boolean") return String(v);
   if (v === null) return "null";
   if (v === undefined) return "undefined";
   if (Array.isArray(v)) return `array(length ${v.length})`;
@@ -321,7 +326,15 @@ export function formatFailures(failures) {
           `invariant; it is not evidence either way)`
         );
       case "shape": {
-        const want = SHAPE_PROSE[/** @type {string} */ (f.expected)] ?? describeValue(f.expected);
+        // OWN keys only, and strings only: a bare `SHAPE_PROSE[f.expected]`
+        // resolves an INHERITED one, so `expected: 'constructor'` renders the
+        // Object constructor's source where a token's prose belongs — the
+        // opposite of the "a malformed record degrades to a dump" contract.
+        const want =
+          typeof f.expected === "string" &&
+          Object.prototype.hasOwnProperty.call(SHAPE_PROSE, f.expected)
+            ? SHAPE_PROSE[f.expected]
+            : describeValue(f.expected);
         const verb = f.observed === undefined ? "is missing or not" : "is not";
         return `${failurePath(f)} ${verb} ${want}: ${describeValue(f.observed)}`;
       }
@@ -451,9 +464,16 @@ const ENTITY_OPEN = /^\s*(?:pub\s+)?structure\s+(?:def\s+)?([A-Za-z_]\w*)\b/;
 
 /**
  * A member declaration: the keyword, the name, an optional `: Type` annotation,
- * and the default literal when one follows. `[^=]*` on the annotation is what
- * keeps the `=` group meaning "there is a default", rather than matching an `=`
- * buried inside the type.
+ * and the default literal when one follows.
+ *
+ * `[^=]*` on the annotation run means the FIRST `=` on the line always opens the
+ * default group — including one buried inside a type argument. Measured:
+ * `param p : Vec<N = 3>` reads as a param whose default literal is `3>`. That is
+ * the false-PASS direction for the `hasDefaultLiteral` half of the precondition,
+ * and it is accepted rather than narrowed because telling the two apart means
+ * parsing type arguments, and no `.ri` type syntax carries an `=` today (the
+ * generic annotations in the tree — `Option<Pressure>`, `Result<Length, String>`
+ * — do not). The cells this module is asked about are annotated `: Length`.
  *
  * The trailing group captures the literal TEXT — `800mm`, not just "there was
  * one" — because B2 is a unit-PRESERVING assertion: `1.1m` and `1100mm` are the
@@ -470,7 +490,9 @@ const MEMBER_DECL = /^\s*(param|let)\s+([A-Za-z_]\w*)\s*(?::[^=]*)?(?:=\s*(.*?))
  * desynchronise the depth), but a brace inside a string literal is not seen; a
  * `.ri` source carrying one would mis-scope the members after it. Only depth-1
  * declarations count, so a `let` inside a `realize` block is not a member of the
- * entity. The first declaration of a name wins.
+ * entity — and an entity whose opening `{` sits on the line AFTER its header
+ * loses every member, because the end-of-line `depth <= 0` reset clears the
+ * entity before its body ever opens. The first declaration of a name wins.
  *
  * The failure mode is benign in both directions: a member the scan misses reads
  * as `absent`, and a mis-scoped one reads under the wrong entity — either way
@@ -601,8 +623,19 @@ export function checkSourceCanonical(observed) {
     failures.push(shapeFailure("reify_open_file", "source", src.source, NON_EMPTY_STRING));
   }
 
+  // A B2 reading with nothing to compare is a VACUITY, not a pass: without this
+  // a missing, null or array-valued `expected` drops the entire literal-
+  // canonicity assertion — the whole point of the row — and the predicate
+  // returns clean having checked only the save.
+  const expected = asObject(src.expected);
+  if (expected === null || Object.keys(expected).length === 0) {
+    failures.push(
+      shapeFailure("railLengtheningGate", "sourceCanonical.expected", src.expected, NON_EMPTY_OBJECT),
+    );
+  }
+
   const declarations = scanDeclarations(src.source);
-  for (const [cell, want] of Object.entries(asObject(src.expected) ?? {})) {
+  for (const [cell, want] of Object.entries(expected ?? {})) {
     const found = declarations.get(cell);
     // One reading, three reasons it can differ: wrong literal, wrong keyword,
     // or not there at all. Reporting them in the same slot keeps the record
@@ -720,6 +753,60 @@ export function checkFieldCoverage(engineState) {
 }
 
 /**
+ * The projection B5 compares — every tracked cell's `{mm, freshness}` and both
+ * pin statuses, flattened to `field -> value` — or `null`, having faulted by
+ * name whatever `reading` did not carry.
+ *
+ * BOTH SIDES GO THROUGH HERE, and that is what makes the comparison below an
+ * equality over PRESENT data. Reading each key straight off two raw objects
+ * compares `undefined` with `undefined` wherever a reading is missing, so a pair
+ * of empty observations agrees on every key and B5 grades clean having observed
+ * nothing at all — the same vacuity the gate's own floors exist to close.
+ *
+ * @param {unknown} reading
+ * @param {string} side  `before` or `after`, used verbatim in failure fields.
+ * @param {RailGateFailure[]} failures  Accumulator, mutated in place.
+ * @returns {Record<string, unknown> | null}
+ */
+function railProjection(reading, side, failures) {
+  const mark = failures.length;
+  const src = asObject(reading);
+  if (src === null) {
+    failures.push(shapeFailure("engine_state", side, reading, OBJECT));
+    return null;
+  }
+  const cells = asObject(src.cells) ?? {};
+
+  /** @type {Record<string, unknown>} */
+  const projection = {};
+  for (const cell of TRACKED_CELLS) {
+    const entry = asObject(cells[cell]);
+    if (entry === null) {
+      failures.push(shapeFailure("engine_state", `${side}.values[${cell}]`, cells[cell], OBJECT));
+      continue;
+    }
+    projection[`values[${cell}].mm`] = entry.mm;
+    projection[`values[${cell}].freshness`] = entry.freshness;
+  }
+  for (const [pin, key] of /** @type {const} */ ([
+    [RAIL_SPAN_PIN, "railSpanPinStatus"],
+    [TOOL_DOCK_PIN, "toolDockPinStatus"],
+  ])) {
+    const status = src[key];
+    if (typeof status !== "string" || status.length === 0) {
+      failures.push(
+        shapeFailure("engine_state", `${side}.constraints[${pin}].status`, status, NON_EMPTY_STRING),
+      );
+      continue;
+    }
+    projection[`constraints[${pin}].status`] = status;
+  }
+  // A projection is returned only when nothing was faulted, so the caller never
+  // compares a partial reading against a complete one.
+  return failures.length === mark ? projection : null;
+}
+
+/**
  * PRD §7 B5 — the FS watcher's post-debounce re-read adds no churn.
  *
  * The AI write already wrote disk, so the watcher re-read must be a no-op: any
@@ -736,47 +823,20 @@ export function checkIdempotentReload(observed) {
   const src = asObject(observed) ?? {};
   /** @type {RailGateFailure[]} */
   const failures = [];
-  const before = asObject(src.before);
-  const after = asObject(src.after);
-  for (const [field, side] of /** @type {const} */ ([
-    ["before", before],
-    ["after", after],
-  ])) {
-    if (side === null) failures.push(shapeFailure("engine_state", field, src[field], OBJECT));
-  }
+  const before = railProjection(src.before, "before", failures);
+  const after = railProjection(src.after, "after", failures);
   if (before === null || after === null) return failures;
 
-  const beforeCells = asObject(before.cells) ?? {};
-  const afterCells = asObject(after.cells) ?? {};
-  for (const cell of TRACKED_CELLS) {
-    const was = asObject(beforeCells[cell]) ?? {};
-    const now = asObject(afterCells[cell]) ?? {};
-    for (const key of /** @type {const} */ (["mm", "freshness"])) {
-      // `Object.is` so a NaN reading on both sides reads as unchanged rather
-      // than as churn it is not.
-      if (!Object.is(now[key], was[key])) {
-        failures.push({
-          gate: "reload",
-          tool: "engine_state",
-          field: `values[${cell}].${key}`,
-          observed: now[key],
-          expected: was[key],
-        });
-      }
-    }
-  }
-
-  for (const [pin, was, now] of /** @type {const} */ ([
-    [RAIL_SPAN_PIN, before.railSpanPinStatus, after.railSpanPinStatus],
-    [TOOL_DOCK_PIN, before.toolDockPinStatus, after.toolDockPinStatus],
-  ])) {
-    if (now !== was) {
+  for (const field of Object.keys(before)) {
+    // `Object.is` so a NaN reading on both sides reads as unchanged rather than
+    // as churn it is not.
+    if (!Object.is(after[field], before[field])) {
       failures.push({
         gate: "reload",
         tool: "engine_state",
-        field: `constraints[${pin}].status`,
-        observed: now,
-        expected: was,
+        field,
+        observed: after[field],
+        expected: before[field],
       });
     }
   }
@@ -793,6 +853,11 @@ export function checkIdempotentReload(observed) {
  *
  * "Structured" is the §2a in-band `{error}` envelope carrying a non-empty
  * message — an empty one is a refusal the caller cannot act on or diagnose.
+ *
+ * The atomicity half needs BOTH sources to be real readings before comparing
+ * them: `undefined !== undefined` is false, so a `reify_open_file` answer that
+ * is well-shaped but carries no `source` string graded a full B7 pass having
+ * observed the file on neither side.
  *
  * @param {{tool?: unknown, error?: unknown, sourceBefore?: unknown,
  *          sourceAfter?: unknown}} observed
@@ -822,7 +887,18 @@ export function checkRejectionAtomicity(observed) {
     });
   }
 
-  if (src.sourceAfter !== src.sourceBefore) {
+  let bothRead = true;
+  for (const [field, value] of /** @type {const} */ ([
+    ["sourceBefore", src.sourceBefore],
+    ["sourceAfter", src.sourceAfter],
+  ])) {
+    if (typeof value !== "string" || value.length === 0) {
+      failures.push(shapeFailure(tool, field, value, NON_EMPTY_STRING));
+      bothRead = false;
+    }
+  }
+
+  if (bothRead && src.sourceAfter !== src.sourceBefore) {
     failures.push({
       gate: "rejection",
       tool,
@@ -958,8 +1034,19 @@ const EXTRA_GATES = Object.freeze({
   [READ_ORDER]: { check: checkReadOrder, list: false },
 });
 
+/**
+ * The rows a run may PROMISE to exercise — every {@link EXTRA_GATES} row except
+ * {@link READ_ORDER}.
+ *
+ * `readOrder` is excluded because promising it is never satisfiable: a healthy
+ * run parks no marker, so `requires: ['readOrder']` would fail every correct
+ * run. It grades the harness, not the subject, and rides EXTRA_GATES only for
+ * the "a supplied reading is what asks to be graded" half of the mechanism.
+ */
+const REQUIRABLE_ROWS = Object.freeze(Object.keys(EXTRA_GATES).filter((n) => n !== READ_ORDER));
+
 /** Shape token for an unrecognised entry in `requires`. */
-const KNOWN_EXTRA = `one-of-${Object.keys(EXTRA_GATES).join("|")}`;
+const KNOWN_EXTRA = `one-of-${REQUIRABLE_ROWS.join("|")}`;
 
 // ─── The verdict ─────────────────────────────────────────────────────────────
 
@@ -979,7 +1066,7 @@ const KNOWN_EXTRA = `one-of-${Object.keys(EXTRA_GATES).join("|")}`;
  * @property {unknown} cells             Cell id → {@link RailGateCellReading}.
  * @property {unknown} railSpanPinStatus Folded status of {@link RAIL_SPAN_PIN}.
  * @property {unknown} toolDockPinStatus Folded status of {@link TOOL_DOCK_PIN}.
- * @property {unknown} [requires]           Names of {@link EXTRA_GATES} rows this run promises
+ * @property {unknown} [requires]           Names of {@link REQUIRABLE_ROWS} this run promises
  *                                          to exercise; a promised row with no reading fails.
  * @property {unknown} [sourceCanonical]    B2 reading — see {@link checkSourceCanonical}.
  * @property {unknown} [fieldCoverage]      B3 reading — see {@link checkFieldCoverage}.
@@ -1135,16 +1222,25 @@ export function checkRailLengtheningGate(inputs) {
   // that MEANT to exercise a row and passed nothing would otherwise be graded
   // as a pass on a row it never ran — the same vacuity trap gate 2 closes for
   // an empty scene.
-  const requires = Array.isArray(src.requires) ? src.requires : [];
-  for (const name of requires) {
-    if (!Object.prototype.hasOwnProperty.call(EXTRA_GATES, name)) {
-      failures.push(shapeFailure("railLengtheningGate", "requires", name, KNOWN_EXTRA));
-    }
+  // A present-but-non-array `requires` is faulted rather than discarded: reading
+  // it as "promised nothing" would reopen the very silent-skip hole the field
+  // exists to close, and one misspelled container would disarm every promise the
+  // run meant to make.
+  if (src.requires !== undefined && !Array.isArray(src.requires)) {
+    failures.push(shapeFailure("railLengtheningGate", "requires", src.requires, ARRAY));
+  }
+  // A name is either a PROMISE or a MISTAKE, never both: a rejected name must
+  // not also raise the "you promised this and supplied nothing" vacuity below,
+  // which would report one error twice under two different gates.
+  const promised = [];
+  for (const name of Array.isArray(src.requires) ? src.requires : []) {
+    if (REQUIRABLE_ROWS.includes(name)) promised.push(name);
+    else failures.push(shapeFailure("railLengtheningGate", "requires", name, KNOWN_EXTRA));
   }
   for (const [name, { check, list }] of Object.entries(EXTRA_GATES)) {
     const reading = src[name];
     if (reading === undefined) {
-      if (requires.includes(name)) {
+      if (promised.includes(name)) {
         failures.push({
           gate: "vacuity",
           tool: "railLengtheningGate",
