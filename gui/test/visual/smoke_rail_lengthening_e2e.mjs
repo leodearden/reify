@@ -117,9 +117,22 @@ function log(msg) {
   stepNum++;
   console.log(`[step ${stepNum}] ${msg}`);
 }
+/**
+ * An ASSERTED failure — a gate row that was tested and violated — as opposed to
+ * an unexpected throw. `main().catch` tells them apart and exits 1 vs 2.
+ *
+ * It is a THROW, not a `process.exit(1)`, and that is load-bearing rather than
+ * stylistic: `process.exit` terminates synchronously and runs no pending
+ * `finally`, so exiting here would skip `main`'s cleanup and leak a full
+ * `mkdtemp` copy of `prj/printer_v01/` on every failing run — precisely the runs
+ * this file's header promises to clean up after. `fail` is reachable from every
+ * asserted failure (openFileWithRetry, requireLiveRead, requirePhase, the
+ * extraction branch), so that was every failing run.
+ */
+class AssertedFailure extends Error {}
+
 function fail(msg) {
-  console.error(`\nFAIL: ${msg}`);
-  process.exit(1);
+  throw new AssertedFailure(msg);
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -163,11 +176,18 @@ async function waitForIdle(what) {
  * absolute path of the COPY's `printer.ri`.
  *
  * The caller removes the directory in a `finally`; see this file's header for
- * why the tracked design is never the subject.
+ * why the tracked design is never the subject. A copy that FAILS half way
+ * (EACCES, ENOSPC) is reclaimed here instead, because at that point the caller
+ * has no handle to reclaim it with.
  */
 function copySubject() {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-rail-lengthening-'));
-  fs.cpSync(SUBJECT_DIR, path.join(work, path.basename(SUBJECT_DIR)), { recursive: true });
+  try {
+    fs.cpSync(SUBJECT_DIR, path.join(work, path.basename(SUBJECT_DIR)), { recursive: true });
+  } catch (err) {
+    fs.rmSync(work, { recursive: true, force: true });
+    throw err;
+  }
   return { work, subject: path.join(work, path.basename(SUBJECT_DIR), SUBJECT_BASENAME) };
 }
 
@@ -214,8 +234,11 @@ async function observePhase(phase, subject) {
   // sails past an outage to `undefined` and the run blames the frontend for what
   // was a tool failure (./smokeDriverGuards.mjs). Spelled out one call per
   // payload rather than looped, so each diagnosis names its own tool and the
-  // `describeRpcFailure(storeAfterOpen, …)` pairing ./smokeDriverConventions.ts
-  // checks for is visible where a reader — and its regex — expects it.
+  // `describeRpcFailure` / `storeAfterOpen` pairing ./smokeDriverConventions.ts
+  // checks for is visible where a reader — and its regex — expects it. That
+  // pairing is deliberately NOT spelled as a call here: the convention matches
+  // the RAW source, comments included, so writing it out would satisfy the
+  // check from a comment and leave the real diagnosis below unguarded.
   requireLiveRead(phase, describeRpcFailure(engineState, 'engine_state'));
   requireLiveRead(phase, describeRpcFailure(storeAfterOpen, 'store_state (post-open)'));
   requireLiveRead(phase, describeRpcFailure(demandDispatch, 'demand_dispatch'));
@@ -474,6 +497,14 @@ async function main() {
 }
 
 main().catch((err) => {
+  // The two exit codes the house convention distinguishes: 1 = a row was tested
+  // and violated, 2 = the run never rendered a verdict. Routing `fail` through
+  // the same unwind as a real throw is what keeps `main`'s `finally` on the path
+  // for both.
+  if (err instanceof AssertedFailure) {
+    console.error(`\nFAIL: ${err.message}`);
+    process.exit(1);
+  }
   console.error('\nUnexpected error:', err);
   process.exit(2);
 });

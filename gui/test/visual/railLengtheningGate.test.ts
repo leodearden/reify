@@ -52,6 +52,10 @@ import {
   RAIL_GATE_MIN_DISPATCHES,
   RAIL_GATE_MIN_VALUES,
   RAIL_GATE_PHASES,
+  PIN_RAIL_SPAN_CELL,
+  PIN_TRAVEL_AVAIL_CELL,
+  PIN_Y_RAIL_LEN_CELL,
+  PIN_YH_MIN_TODAY_CELL,
   RAIL_SPAN_CELL,
   RAIL_SPAN_PIN,
   SUBJECT_BASENAME,
@@ -120,12 +124,12 @@ function constraint(nodeId: string, status: string, parameterIds: string[]) {
  * that actually flips.
  */
 function constraintsFor(railSpanStatus: string, toolDockStatus: string) {
-  const railCells = [RAIL_SPAN_CELL, Y_RAIL_LEN_CELL, "Printer.o1_pin_slack"];
+  const railCells = [PIN_RAIL_SPAN_CELL, PIN_Y_RAIL_LEN_CELL, "Printer.o1_pin_slack"];
   const dockCells = [
-    "AFrame.centre_y",
-    TRAVEL_AVAIL_CELL,
+    "Printer.a_frame.centre_y",
+    PIN_TRAVEL_AVAIL_CELL,
     "Printer.o1_pin_slack",
-    "ToolDock.yh_min_today",
+    PIN_YH_MIN_TODAY_CELL,
   ];
   return [
     constraint("Printer#constraint[44]", "Satisfied", railCells),
@@ -134,7 +138,10 @@ function constraintsFor(railSpanStatus: string, toolDockStatus: string) {
     constraint("Printer#constraint[89]", "Satisfied", dockCells),
     // An unrelated pin that must never be selected: it names ONE of the two
     // rail cells, so a match-any selector would pick it up.
-    constraint("Printer#constraint[7]", "Satisfied", [RAIL_SPAN_CELL, "AFrame.brg_len_m"]),
+    constraint("Printer#constraint[7]", "Satisfied", [
+      PIN_RAIL_SPAN_CELL,
+      "Printer.a_frame.brg_len_m",
+    ]),
   ];
 }
 
@@ -582,7 +589,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
   it("reports an unmatched pin as 'absent' rather than silently passing", () => {
     const payloads = payloadsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied");
     payloads.engineState.constraints = payloads.engineState.constraints.filter(
-      (c) => !c.parameter_ids.includes(Y_RAIL_LEN_CELL),
+      (c) => !c.parameter_ids.includes(PIN_Y_RAIL_LEN_CELL),
     );
     const { inputs } = extractGateInputs(payloads) as Extraction;
     expect(inputs["railSpanPinStatus"]).toBe("absent");
@@ -1307,7 +1314,6 @@ describe("observeThenExtras — (p) the READ ORDER contract the driver cannot st
       tool: "railLengtheningGate",
       field: "extras",
       observed: "object",
-      expected: "a thunk — see observeThenExtras",
     });
   });
 

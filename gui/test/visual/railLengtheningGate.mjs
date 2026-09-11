@@ -75,20 +75,51 @@ export const CENTRE_Y_CELL = "AFrame.centre_y";
  */
 export const X_RAIL_LEN_CELL = "CoreXY.x_rail_len";
 
+/**
+ * THE SECOND NAMESPACE. The constants above address `engine_state.values`,
+ * where a cell id is `<TYPE>.<member>` — `build_values` walks
+ * `compiled.templates[].value_cells` and a template is per STRUCTURE, so the
+ * entity half is the type name (`CoreXY`, `AFrame`). A constraint's
+ * `parameter_ids` is a different thing entirely: `build_constraints` fills it
+ * from `collect_value_refs(&c.expr)`, and a `self.<sub>.<member>` access lowers
+ * to `ValueCellId::new(format!("{}.{}", scope.entity_name, sub_name), member)`
+ * — so the ids are INSTANCE PATHS rooted at the declaring entity
+ * (`Printer.a_frame.rail_span_m`), naming the SUB (`motion`), not the type
+ * (`CoreXY`).
+ *
+ * The two namespaces are therefore never interchangeable, and the spellings
+ * below are deliberately separate constants rather than a reuse of the `values`
+ * ones: selecting a pin with a `values`-namespace id matches nothing, which
+ * `foldPinStatus` reports as {@link PIN_ABSENT} — a loud failure at every phase,
+ * but one a hand-built fixture reproduces perfectly if it is written from the
+ * same wrong assumption. Provenance: crates/reify-compiler/src/expr.rs
+ * (`scoped_entity`), gui/src-tauri/src/engine.rs (`build_values`,
+ * `build_constraints`), and printer.ri's own `pub structure Printer` block,
+ * whose pins read `self.a_frame.rail_span_m < self.motion.y_rail_len + o1_pin_slack`.
+ */
+export const PIN_RAIL_SPAN_CELL = "Printer.a_frame.rail_span_m";
+/** @see PIN_RAIL_SPAN_CELL — the `motion` sub is a `CoreXY`. */
+export const PIN_Y_RAIL_LEN_CELL = "Printer.motion.y_rail_len";
+/** @see PIN_RAIL_SPAN_CELL */
+export const PIN_TRAVEL_AVAIL_CELL = "Printer.a_frame.travel_avail";
+/** @see PIN_RAIL_SPAN_CELL */
+export const PIN_YH_MIN_TODAY_CELL = "Printer.tool_dock.yh_min_today";
+
 /** Stable NAME of the pin tying the A-frame's rail span to the motion rail length. */
 export const RAIL_SPAN_PIN = "rail-span-pin";
 /** Stable NAME of the pin tying the ToolDock's Y reach to the A-frame's travel. */
 export const TOOL_DOCK_PIN = "tool-dock-pin";
 
 /**
- * How each pin is FOUND: the cells its expression must reference. A constraint
+ * How each pin is FOUND: the cells its expression must reference, in the
+ * CONSTRAINT namespace documented on {@link PIN_RAIL_SPAN_CELL}. A constraint
  * matches when its `parameter_ids` is a superset of the listed cells, so an
  * expression that also names `Printer.o1_pin_slack` still matches while an
  * unrelated constraint mentioning only one of them does not.
  */
 const PIN_SELECTORS = Object.freeze({
-  [RAIL_SPAN_PIN]: Object.freeze([RAIL_SPAN_CELL, Y_RAIL_LEN_CELL]),
-  [TOOL_DOCK_PIN]: Object.freeze([YH_MIN_TODAY_CELL, TRAVEL_AVAIL_CELL]),
+  [RAIL_SPAN_PIN]: Object.freeze([PIN_RAIL_SPAN_CELL, PIN_Y_RAIL_LEN_CELL]),
+  [TOOL_DOCK_PIN]: Object.freeze([PIN_YH_MIN_TODAY_CELL, PIN_TRAVEL_AVAIL_CELL]),
 });
 
 // ─── Non-vacuity floors ──────────────────────────────────────────────────────

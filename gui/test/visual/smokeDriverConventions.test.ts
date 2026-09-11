@@ -601,6 +601,29 @@ describe("the conventions the live drivers are held to, across the whole corpus"
     ).toEqual([]);
   });
 
+  it.each(SMOKE_DRIVERS)("%s is held by its CODE, not by its own prose", (name) => {
+    // The DIAG half is matched against the RAW source, comments included — a
+    // blind spot ./smokeDriverConventions.ts documents and accepts, because
+    // matching it post-strip would false-alarm a compliant driver. Accepted is
+    // not unobserved: a driver that spells the pairing as a call inside a
+    // comment satisfies the check from that comment, and the real diagnosis
+    // below it could then be deleted with the guard still green. So for every
+    // driver that reads `storeAfterOpen.editor`, removing its actual
+    // `describeRpcFailure(storeAfterOpen, …)` CALLS must turn the convention
+    // red. This is the pin that caught it once (task 5098 review): the
+    // rail-lengthening driver shipped the corpus's first live instance of the
+    // hole, in a comment explaining the very convention it disarmed.
+    const source = readSharedModuleSource(name);
+    const disarmed = stripComments(source).replace(/describeRpcFailure\(\s*storeAfterOpen/g, "x(");
+    if (!/storeAfterOpen\s*[?.]/.test(disarmed)) return; // driver never reads it
+    expect(
+      codesFor(disarmed),
+      `${name} still passes the store_state diagnosis check with every real ` +
+        `describeRpcFailure(storeAfterOpen, …) call removed — something other than a ` +
+        `call is satisfying it`,
+    ).toContain("undiagnosed-store-state");
+  });
+
   it("names the known drivers — an empty table is not a pass", () => {
     // Without this, an edit that empties the table turns the `it.each` above
     // into zero registered tests: a vacuously green suite with the convention
