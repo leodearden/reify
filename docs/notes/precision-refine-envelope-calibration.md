@@ -64,7 +64,7 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 | torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
 | cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
 | fillet blend | `fillet_r/feature` | 0.925 | 0.49, `d/R` = 6e-4 | supremum |
-| nurbs surface | `d/span` † | 0.9975 | `d/span` = 1.2e-4 | **lower bound** |
+| nurbs surface | `d/span` † | **1.0010** | `d/span` = 1.4386e-4 | **lower bound**, `K` > 1 |
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
 | spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound** |
@@ -74,11 +74,18 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 committed **1000 mm × 1000 mm control net** only (§1.5) — unlike cone/torus/fillet, whose
 shape regime (`top/bottom`, `minor/major`, `r/feature`) was independently walked, this
 task scoped a d-ladder only, and the net shape itself was not walked. Second, unlike
-pipe/sweep/spline, this class is not budget-limited: an initial ladder read a fall from
-0.996 at 0.5 mm as a turnover and entered it here as a supremum, but a deeper walk
-following review found a **higher** value, 0.9975 at 0.12 mm, inside a dense, unresolved
-oscillation — so `lower bound` here means the oscillation's period was not resolved
-within this task, not that a wall was hit.
+pipe/sweep/spline, this class is not budget-limited, and `lower bound` here carries a
+weaker meaning than on any other row. The oscillation that made an earlier ladder's
+`sup K = 0.996` wrong **has since been resolved** (§1.5, task #7128): it has no period —
+local maxima recur at irregular spacing — and `a` is piecewise-constant on plateaus
+~1e-4 mm wide, with the ratio peaking at each plateau's **lower edge**. Bisecting those
+edges to 1e-5 mm pins **1.0010 at `d` = 0.14386 mm**, the one measurement in this note
+where achieved *exceeds* requested; the true ratio there lies in [1.000626, 1.001321),
+entirely above 1, so **`K` > 1 is established** for this class. What is still not proven
+is the *value*: a dense search raises a lower bound and cannot prove a supremum over a
+continuum, and only four plateau edges of the very many in [0.12, 0.18] mm were pinned.
+So `lower bound` no longer means the structure is un-understood, and never meant a wall
+was hit — it means 1.0010 is a floor that further walking can only raise.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
