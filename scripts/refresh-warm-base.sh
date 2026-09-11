@@ -368,6 +368,51 @@ if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
 fi
 ok "Reflink copy complete (gen ${_next_gen})."
 
+# Step 3b: prune superseded cargo hash-generations from the staging copy.
+#
+# Keeps only the newest _PRUNE_KEEP_GENERATIONS (by mtime) per group under
+# debug/deps, where a group is the set of filenames sharing a stem after
+# stripping a trailing `-<16 lowercase hex>` extra-filename suffix (cargo's
+# hashed-artefact naming). Reclaims the bulk of the warm base's bytes (mostly
+# extensionless test/bench binaries); N=2 rather than N=1 is a deliberate
+# ruling that keeps a fallback generation so a lane whose fingerprint misses
+# the single newest survivor does not rebuild cold — not a tunable, so no CLI
+# flag or env override.
+#
+# Sited on the .partial STAGING dir (never the live base, never the final gen
+# dir) — a failure here is covered for free by the existing EXIT trap's
+# `.gen.*.partial` sweep above, with no new cleanup code needed.
+readonly _PRUNE_KEEP_GENERATIONS=2
+_prune_deps="${_new_gen_partial}/debug/deps"
+if [ -d "$_prune_deps" ]; then
+    info "Pruning superseded hash-generations under $_prune_deps (keep newest ${_PRUNE_KEEP_GENERATIONS}) ..."
+    find "$_prune_deps" -maxdepth 1 -type f -printf '%T@\t%f\n' \
+        | sort \
+        | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" '
+            BEGIN { ORS = "\0" }
+            {
+                fname = $2
+                base_no_ext = fname
+                sub(/\.[^.]*$/, "", base_no_ext)
+                if (base_no_ext !~ /^.+-[0-9a-f]{16}$/) next
+                stem = substr(base_no_ext, 1, length(base_no_ext) - 17)
+                n[stem]++
+                list[stem, n[stem]] = fname
+            }
+            END {
+                for (key in n) {
+                    cnt = n[key]
+                    for (i = 1; i <= cnt - keep; i++) {
+                        print list[key, i]
+                    }
+                }
+            }
+        ' \
+        | (cd "$_prune_deps" && xargs -0 rm -f --)
+else
+    info "No debug/deps under staging copy — skipping hash-generation prune."
+fi
+
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"
 mv "$_new_gen_partial" "$_new_gen_dir"
