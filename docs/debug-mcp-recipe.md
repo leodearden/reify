@@ -100,6 +100,17 @@ the interim socket bridges INVERT at 1100mm rails — `brf_y1` is independent of
 takes `AFrame.vol_vs_analytic` `Indeterminate`. A green run means the value-flow
 chain carried the edit, not that the design is consistent at the new length.
 
+**B1 is an ORDERING property, not a payload property.** "Without a file reload"
+holds only because every read that observes engine-held state precedes the
+phase's own `reify_open_file`, which re-reads the file from disk
+(`open_path_into_engine`, `debug_server.rs:1525`). Hoist any read above them —
+an object literal in argument position is evaluated, `await`s and all, before
+the callee runs — and the row passes whatever the write did. Two things enforce
+the order: `observeThenExtras`' thunk seam in `railLengtheningGate.mjs` (runtime,
+vitest-covered) and the `awaited-extras-literal` convention in
+`smokeDriverConventions.ts` (source-level, CI-gated). Edit the driver with both
+in view.
+
 Its decision function is pure and IS CI-gated, separately:
 `gui/test/visual/railLengtheningGate.mjs` is covered by
 `railLengtheningGate.test.ts` on every verify run, so a regression in what the
