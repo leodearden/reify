@@ -433,6 +433,23 @@ misses the other.
 **[0.148, 0.152]**, **[0.158, 0.162]** and **[0.178, 0.182] mm** around the three
 near-ties at 0.15, 0.16 and 0.18 mm. The trough at 0.135 mm is not walked — it is the one
 rung in this bracket that is unambiguously far from the leaders.
+
+**Determinism and datum gates.** Every probe in this block passed the §0 Caveat-2 datum
+gate: the harness extracts `a` only from the `deviation <X> m` capture and emits a literal
+`NO-DATUM` token when that capture is empty, so a non-realization cannot enter a table as a
+number. That sentinel was checked against a live failure before use — a scratch file whose
+basename does not match its `module` declaration exits **0** with `E_MODULE_PATH_MISMATCH`
+and no deviation line, which is exactly the shape §0 Caveat 2 warns about, and the harness
+reported `NO-DATUM` for it rather than an empty field.
+
+*Stage A:* all six new rungs were re-run for a second repetition — matching the rep count
+§1.5 records for 6545's own sub-0.3 mm rungs — and returned **byte-identical achieved
+strings**, including the new 1.0000 leader at 0.145 mm. Zero divergence. Each repetition
+regenerates its scratch `.ri` from the committed fixture rather than re-running a cached
+file, so the rep exercises the whole path, not just the kernel. Wall clocks varied
+substantially with load (the sweeps below ran between 122 and 424 1-min loadavg); no
+achieved value did, which is §0 Caveat 1's standing distinction holding at this
+resolution too.
 ### 1.6 Loft is unreachable from the source language
 
 Two mutually exclusive failure modes with no path between them:
