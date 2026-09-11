@@ -189,10 +189,23 @@ const STORE_STATE_DIAG = /\bdescribeRpcFailure\s*\(\s*storeAfterOpen\b/;
  *
  * THE COMPLIANT SPELLING IS ONE CHARACTER AWAY. Migration produces
  * `gradePhase(p, s, async () => ({…}))`, which opens with `(` exactly where the
- * literal opens with `{`, so this matches the brace and nothing else. The
- * `[^,]*` runs cannot cross a comma, which is what keeps a two-argument call and
- * `gradePhase`'s own declaration out of reach. Pinned in both directions in
- * `./smokeDriverConventions.test.ts`.
+ * literal opens with `{`, so this matches the brace and nothing else.
+ *
+ * The argument runs exclude `(`, `)` and newline as well as the comma, and the
+ * parenthesis half is what CONFINES the match to one call. Excluding the comma
+ * alone is not enough: a run could then swallow the call's own `)` and every
+ * line after it, so a COMPLIANT two-argument `gradePhase(p, s);` followed
+ * anywhere below by an unrelated `, {` — an options object, an array of records
+ * — read as a violation. That is a false alarm on already-correct code, the one
+ * direction this module refuses to err in. With `)` excluded a run cannot leave
+ * the argument list at all, so the literal has to be in the real third
+ * position; `async () => ({` is then out of reach because its `(` stops the run
+ * before the brace. Pinned in both directions in
+ * `./smokeDriverConventions.test.ts`, including the trailing-`, {` shape.
+ *
+ * Excluding `(` costs one detection: `gradePhase(mk(p), s, {…})` — a call whose
+ * own arguments are calls — goes unseen. That errs toward a MISSED violation,
+ * the accepted direction, and no driver writes it today.
  *
  * THE HOISTING GAP, stated rather than papered over, exactly as
  * {@link STORE_STATE_READ} and {@link STORE_STATE_DIAG} state theirs:
@@ -208,7 +221,7 @@ const STORE_STATE_DIAG = /\bdescribeRpcFailure\s*\(\s*storeAfterOpen\b/;
  * and parks a `read-order` record that reds the live run. Source-level and
  * runtime are two halves of one rule; neither is complete alone.
  */
-const AWAITED_EXTRAS_LITERAL = /\bgradePhase\s*\(\s*[^,]*,\s*[^,]*,\s*\{/;
+const AWAITED_EXTRAS_LITERAL = /\bgradePhase\s*\(\s*[^,()\n]*,\s*[^,()\n]*,\s*\{/;
 
 /**
  * Every convention `source` breaks, as a driver in this directory.

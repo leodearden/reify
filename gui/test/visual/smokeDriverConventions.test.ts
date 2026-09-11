@@ -413,6 +413,19 @@ describe("findSmokeDriverConventionViolations — `gradePhase`'s extras argument
     ],
     ["a two-argument call with no extras at all", "  await gradePhase('baseline', subject);"],
     [
+      // THE REGRESSION THIS CASE EXISTS FOR. The argument runs once excluded
+      // only the comma, so the second run could swallow the call's `)` and every
+      // line below it and stop at the NEXT comma anywhere in the file — making a
+      // compliant two-argument call plus any later `, {` read as a violation.
+      // The sibling case above misses it because it is a single line with no
+      // following comma; this one supplies both.
+      "a two-argument call followed by an unrelated `, {` further down the file",
+      [
+        "  await gradePhase('baseline', subject);",
+        "  const pins = ['rail-span-pin', { fold: 'both-halves' }];",
+      ].join("\n"),
+    ],
+    [
       "an object literal in the same position of some OTHER call",
       "  await requirePhase('baseline', subject, { requires: [] });",
     ],
@@ -462,6 +475,24 @@ describe("findSmokeDriverConventionViolations — `gradePhase`'s extras argument
     expect(
       codesFor("  const v = await gradePhase('baseline', subject, { fieldCoverage: 1 });"),
     ).toEqual(["awaited-extras-literal"]);
+  });
+
+  it("does not flag a literal call whose own arguments are calls", () => {
+    // THE SECOND BLIND SPOT, pinned BY NAME like the first. Excluding `(` and
+    // `)` from the argument runs is what confines a match to one call — without
+    // it a compliant two-argument call plus a later `, {` false-alarms — and the
+    // price is that an argument which is ITSELF a call stops the run early. A
+    // MISSED violation, the accepted direction, and no driver writes this shape.
+    expect(
+      findSmokeDriverConventionViolations(
+        "  const v = await gradePhase(namePhase(i), subject, { requires: [] });",
+      ),
+    ).toEqual([]);
+    // The discriminating counter-assertion: the same call with plain arguments
+    // IS flagged, so this pins the gap rather than an inert predicate.
+    expect(codesFor("  const v = await gradePhase(phase, subject, { requires: [] });")).toEqual([
+      "awaited-extras-literal",
+    ]);
   });
 
   it("reports the convention once for a driver carrying several literal calls", () => {
