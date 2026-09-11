@@ -8,6 +8,10 @@
 #              else prints an error + exits 1.
 #   mv       — NOT stubbed; real mv so filesystem postconditions are observable.
 #   xfs_bmap — records argv + emits REIFY_TEST_FRAG_EXTENTS extent rows per file.
+#   rm       — records argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fails a non-recursive
+#              call (the prune stage's own `rm -f`) while a recursive call (the
+#              EXIT trap's `rm -rf` cleanup) always execs the real rm — isolates a
+#              simulated prune-unlink failure from the trap's own cleanup.
 #
 # run_helper captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script
@@ -121,6 +125,32 @@ done
 exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/xfs_bmap"
+
+# rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY a
+# non-recursive invocation (the prune stage's own `xargs -0 rm -f -- <files>`,
+# first arg "-f") while a recursive invocation (the EXIT trap's cleanup
+# `rm -rf "$_p"`, first arg "-rf") always execs the real rm. This isolates
+# "the prune's own unlink failed" from "the trap's cleanup afterward also
+# failed for an unrelated reason" — a filesystem-permission fault (e.g. a
+# write-protected debug/deps) cannot make that distinction: verified
+# empirically that it defeats `rm -rf` identically, since both are the same
+# unlink operation under the same directory permission, which would fail the
+# "no residue" assertion for the wrong reason. Real rm path embedded at
+# stub-creation time (mirrors the cp stub).
+_REAL_RM="$(command -v rm)"
+cat > "$STUB_DIR/rm" << STUB_EOF
+#!/usr/bin/env bash
+echo "rm \$*" >> "\${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "\${REIFY_TEST_PRUNE_RM_FAIL:-}" = "1" ]; then
+    case "\$1" in
+        -*r*) exec "${_REAL_RM}" "\$@" ;;
+    esac
+    echo "rm: SIMULATED failure (REIFY_TEST_PRUNE_RM_FAIL=1)" >&2
+    exit 1
+fi
+exec "${_REAL_RM}" "\$@"
+STUB_EOF
+chmod +x "$STUB_DIR/rm"
 
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH.
@@ -1042,6 +1072,132 @@ assert "J3h: debug/deps directory itself still present (not rm -rf'd)" \
     test -d "$J3H_GEN/debug/deps"
 assert "J3h: debug/deps is empty (no phantom files created)" \
     bash -c '[ -z "$(find "$1" -maxdepth 1 -type f)" ]' _ "$J3H_GEN/debug/deps"
+
+# J4a-c — the operator-facing prune summary on stderr: a machine-greppable
+# line naming both the deleted-file count and the reclaimed bytes (the signal
+# an operator reads to apply the E19 stop rule), stdout stays empty (B7), and
+# the no-debug/deps path is non-silent about the (skipped) stage.
+J4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4-XXXXXX)"
+_TMPDIRS+=("$J4_TMP")
+J4_LANE="$(mk_git_advancing "$J4_TMP")"
+J4_ADV="$J4_LANE/advancing"
+J4_HEAD="$(git -C "$J4_LANE" rev-parse HEAD)"
+mkdir -p "$J4_ADV/debug/deps"
+echo "gen1 content" > "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111"
+echo "gen2 content" > "$J4_ADV/debug/deps/reify_summary_unit-2222222222222222"
+echo "gen3 content" > "$J4_ADV/debug/deps/reify_summary_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-3333333333333333"
+# Computed, not hardcoded, so the assertion tracks the fixture's actual content.
+J4_VICTIM_BYTES="$(stat -c %s "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111")"
+J4_BASE="$J4_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J4_ADV" "$J4_BASE" --landed-commit "$J4_HEAD"
+assert "J4a: refresh exits 0" test "$RC" -eq 0
+assert "J4a: stderr carries a machine-greppable prune summary (prune...deps...files=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "prune.*deps.*files=1"' _ "$ERR_OUT"
+assert "J4a: prune summary names the reclaimed bytes (exact victim size)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "bytes=$2([^0-9]|\$)"' _ "$ERR_OUT" "$J4_VICTIM_BYTES"
+assert "J4b: stdout stays empty on the refresh path (B7 contract)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+J4C_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4c-XXXXXX)"
+_TMPDIRS+=("$J4C_TMP")
+J4C_LANE="$(mk_git_advancing "$J4C_TMP")"
+J4C_ADV="$J4C_LANE/advancing"
+J4C_HEAD="$(git -C "$J4C_LANE" rev-parse HEAD)"
+echo "content" > "$J4C_ADV/f.txt"
+J4C_BASE="$J4C_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J4C_ADV" "$J4C_BASE" --landed-commit "$J4C_HEAD"
+assert "J4c: refresh with no debug/deps exits 0" test "$RC" -eq 0
+assert "J4c: stderr is non-silent about the (skipped) prune stage" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "skip"' _ "$ERR_OUT"
+
+# J4d-f — staging placement (fail-closed): refresh over a PRE-EXISTING base
+# with its own (unpruned) debug/deps generations. The prune reads/writes only
+# the .partial staging copy — the previous generation is never edited in
+# place. A shared flock on the retired gen's lock file (the documented
+# reader-refcount protocol, script Step 6) defers the GC reap so this test
+# can observe gen.1's untouched content instead of racing its removal.
+J4D_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4d-XXXXXX)"
+_TMPDIRS+=("$J4D_TMP")
+J4D_LANE="$(mk_git_advancing "$J4D_TMP")"
+J4D_ADV="$J4D_LANE/advancing"
+J4D_HEAD="$(git -C "$J4D_LANE" rev-parse HEAD)"
+mkdir -p "$J4D_ADV/debug/deps"
+echo "new1" > "$J4D_ADV/debug/deps/reify_new_unit-7777777777777777"
+echo "new2" > "$J4D_ADV/debug/deps/reify_new_unit-8888888888888888"
+echo "new3" > "$J4D_ADV/debug/deps/reify_new_unit-9999999999999999"
+touch -d '2026-01-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-7777777777777777"
+touch -d '2026-02-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-8888888888888888"
+touch -d '2026-03-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-9999999999999999"
+
+J4D_BASE="$J4D_TMP/base"
+mkdir -p "$J4D_BASE/debug/deps"
+echo "old1" > "$J4D_BASE/debug/deps/reify_old_unit-1111111111111111"
+echo "old2" > "$J4D_BASE/debug/deps/reify_old_unit-2222222222222222"
+echo "old3" > "$J4D_BASE/debug/deps/reify_old_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-3333333333333333"
+
+# Bootstrap numbering (mirrors Block B8): a pre-existing REAL base dir becomes
+# .gen.1 on the FIRST refresh, and the new gen becomes .gen.2.
+J4D_RETIRED_GEN="${J4D_BASE}.gen.1"
+J4D_RETIRED_LOCK="${J4D_RETIRED_GEN}.lock"
+touch "$J4D_RETIRED_LOCK"
+exec {J4D_LOCK_FD}<>"$J4D_RETIRED_LOCK"
+flock -s "$J4D_LOCK_FD"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J4D_ADV" "$J4D_BASE" --landed-commit "$J4D_HEAD"
+assert "J4d: refresh over a pre-existing base exits 0" test "$RC" -eq 0
+assert "J4d: retired gen.1 (the old base) still has all 3 of its OWN generations — prune never touched it" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_old_unit-*" | wc -l)" -eq 3 ]' _ "$J4D_RETIRED_GEN/debug/deps"
+
+J4D_NEW_GEN="$(readlink "$J4D_BASE")"
+assert "J4e: new gen carries the pruned (2-file) set of the advancing unit" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_new_unit-*" | wc -l)" -eq 2 ] && [ ! -f "$1/reify_new_unit-7777777777777777" ]' _ "$J4D_NEW_GEN/debug/deps"
+
+assert "J4f: no <base>.gen.*.partial remains after refresh" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$J4D_BASE"
+assert "J4f: <base> is a symlink to a <base>.gen.N dir" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$J4D_BASE"
+
+# Release the shared lock now that assertions are done (fixture cleanup no
+# longer needs to race the GC this was deferring).
+flock -u "$J4D_LOCK_FD"
+exec {J4D_LOCK_FD}<&-
+
+# J4g — PRUNE FAILURE LEAVES NO RESIDUE. The REIFY_TEST_PRUNE_RM_FAIL=1 rm
+# stub fails only the prune stage's own non-recursive `rm -f` (never the EXIT
+# trap's recursive `rm -rf` cleanup — see the stub's own comment), so the
+# refusal is isolated to the prune's own unlink and the trap's cleanup is
+# genuinely exercised with the real rm.
+J4G_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4g-XXXXXX)"
+_TMPDIRS+=("$J4G_TMP")
+J4G_LANE="$(mk_git_advancing "$J4G_TMP")"
+J4G_ADV="$J4G_LANE/advancing"
+J4G_HEAD="$(git -C "$J4G_LANE" rev-parse HEAD)"
+mkdir -p "$J4G_ADV/debug/deps"
+echo "g1" > "$J4G_ADV/debug/deps/reify_fail_unit-1111111111111111"
+echo "g2" > "$J4G_ADV/debug/deps/reify_fail_unit-2222222222222222"
+echo "g3" > "$J4G_ADV/debug/deps/reify_fail_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-3333333333333333"
+J4G_BASE="$J4G_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PRUNE_RM_FAIL=1 run_helper "$J4G_ADV" "$J4G_BASE" --landed-commit "$J4G_HEAD"
+assert "J4g: prune rm failure makes the refresh exit non-zero" test "$RC" -ne 0
+assert "J4g: <base> not created/advanced after prune failure" test ! -e "$J4G_BASE"
+assert "J4g: no <base>.gen.*.partial residue after prune failure (EXIT trap cleanup)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$J4G_BASE"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
