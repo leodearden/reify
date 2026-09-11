@@ -147,21 +147,16 @@ fn pin_parameter_ids_are_printer_scoped_instance_paths() {
 /// (`SubComponentDecl { name, structure_name, .. }`,
 /// crates/reify-compiler/src/types.rs:1080), the same field `build_values`
 /// would need to render its own namespace (gui/src-tauri/src/engine.rs:4897).
-/// Falls back to the raw sub name when unresolvable. S5/S6 add the real,
-/// asserted namespace correspondence (`sub_structure_name`,
-/// `values_namespace_id`); this stays a separate, tolerant, display-only
-/// helper rather than one more caller of those `Option`-returning helpers.
+/// Falls back to the raw sub name when unresolvable (e.g. a malformed
+/// `scoped_id`). Reuses `sub_structure_name` for the sub→type lookup rather
+/// than re-deriving it a second time; this helper's only remaining job is
+/// the id-string split and the display fallback, never an assertion.
 fn values_namespace_spelling_hint(printer: &TopologyTemplate, scoped_id: &str) -> String {
     let mut parts = scoped_id.splitn(3, '.');
     let _printer_name = parts.next().unwrap_or_default();
     let sub_name = parts.next().unwrap_or_default();
     let member = parts.next().unwrap_or_default();
-    let type_name = printer
-        .sub_components
-        .iter()
-        .find(|s| s.name == sub_name)
-        .map(|s| s.structure_name.as_str())
-        .unwrap_or(sub_name);
+    let type_name = sub_structure_name(printer, sub_name).unwrap_or(sub_name);
     format!("{type_name}.{member}")
 }
 
@@ -422,6 +417,9 @@ fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace
             values_namespace_id(module, type_name, member).unwrap_or_else(|| {
                 panic!("values_namespace_id(module, {type_name:?}, {member:?}) returned None")
             });
+        eprintln!(
+            "EVIDENCE {sub_name} -> {type_name}: constraint={constraint_spelling} values={values_spelling}"
+        );
         assert_eq!(
             values_spelling,
             format!("{type_name}.{member}"),
@@ -457,18 +455,37 @@ fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace
     }
 }
 
-/// STUB (S5): always `None` regardless of input — this is what makes
-/// `values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace`
-/// RED. Real body lands in S6.
-fn sub_structure_name<'a>(_template: &'a TopologyTemplate, _sub_name: &str) -> Option<&'a str> {
-    None
+/// The derived sub→type map: `sub_name`'s declared structure in `template`,
+/// e.g. `a_frame` → `AFrame`. This is the single fact that makes the
+/// correspondence between the two namespaces DERIVED rather than hand-kept —
+/// nothing in this file hard-codes `a_frame` → `AFrame` anywhere; every use
+/// of a type name upstream of this function's return value traces back to
+/// `SubComponentDecl::structure_name` (crates/reify-compiler/src/types.rs:1080).
+fn sub_structure_name<'a>(template: &'a TopologyTemplate, sub_name: &str) -> Option<&'a str> {
+    template.sub_components.iter().find(|s| s.name == sub_name).map(|s| s.structure_name.as_str())
 }
 
-/// STUB (S5): always `None`. Real body lands in S6.
+/// The values-namespace id of the value cell named `member` on the template
+/// named `structure_name`, mirroring `build_values`
+/// (gui/src-tauri/src/engine.rs:4897): walks that template's OWN
+/// `value_cells`, so the entity half of the returned id is the DECLARING
+/// TEMPLATE's name. Deliberately not `reify_test_support::get_value_cell_in`
+/// / `get_let_expr_in`: those resolve by `id.member` alone across the WHOLE
+/// module and `#[track_caller]`-panic on ambiguity, whereas this lookup must
+/// stay scoped to one named template (several templates in printer.ri
+/// declare a `travel_avail`-shaped member family) and must return `Option`
+/// so callers can report a clean miss instead of panicking inside a helper.
 fn values_namespace_id(
-    _module: &CompiledModule,
-    _structure_name: &str,
-    _member: &str,
+    module: &CompiledModule,
+    structure_name: &str,
+    member: &str,
 ) -> Option<String> {
-    None
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == structure_name)?
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .map(|vc| vc.id.to_string())
 }
