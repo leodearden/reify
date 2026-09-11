@@ -174,19 +174,40 @@ pub(crate) fn eval_named_arg(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    match args.iter().find(|(n, _)| n == name) {
-        Some((_, expr)) => Some(reify_expr::eval_expr(
-            expr,
-            &eval_ctx_with_meta(values, functions, meta_map),
-        )),
-        None => {
-            diagnostics.push(Diagnostic::warning(format!(
-                "missing required geometry argument '{}' for {}",
-                name, kind_label
-            )));
-            None
-        }
+    let value = lookup_named_arg_value(name, args, values, functions, meta_map);
+    if value.is_none() {
+        diagnostics.push(Diagnostic::warning(format!(
+            "missing required geometry argument '{}' for {}",
+            name, kind_label
+        )));
     }
+    value
+}
+
+/// The SINGLE owner of the name-to-expression binding rule for a geometry
+/// builtin's named argument: find it in `args`, evaluate it, and return the
+/// `Value`. Absent is `None`, and this helper has no opinion about that — it
+/// pushes no diagnostic, so each arity layers its OWN absent-arg policy on top.
+///
+/// That split is the whole reason it exists: [`eval_named_arg`] adds the
+/// missing-arg Warning (REQUIRED), [`optional_length_value`]'s callers pass the
+/// `None` straight through to a documented default (OPTIONAL), and
+/// `isosurface`'s `adaptive` defaults to `false`. Only the POLICY differs, so
+/// only the policy is written three times. It matters that the lookup itself is
+/// written once, because live task #6313 is a proposal to CHANGE this rule —
+/// geometry builtins bind by position today, not by label.
+fn lookup_named_arg_value(
+    name: &str,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) -> Option<reify_ir::Value> {
+    let (_, expr) = args.iter().find(|(n, _)| n == name)?;
+    Some(reify_expr::eval_expr(
+        expr,
+        &eval_ctx_with_meta(values, functions, meta_map),
+    ))
 }
 
 /// Look up a named argument, evaluate it, and convert to a finite `f64`.
@@ -411,7 +432,7 @@ pub(crate) fn accept_length_value(
 /// The SINGLE owner of the caller-facing `Err` wording for a LENGTH-semantic
 /// argument (decision D9) — previously copy-pasted at six call sites, now
 /// minted here and here only, for BOTH arities of the named-arg route
-/// ([`required_length_arg`] and [`optional_length_arg`]).
+/// ([`required_length_arg`] and [`optional_length_value`]).
 ///
 /// An `Unresolved` argument gets its own message: asserting "missing or
 /// non-Length" for a cell that is merely not yet resolved is actively
@@ -438,7 +459,7 @@ fn length_arg_to_result(
 /// `Result` adapter over [`eval_named_arg_length`] for a REQUIRED
 /// LENGTH-semantic argument: an absent arg is a diagnosed failure.
 ///
-/// See [`optional_length_arg`] for the sibling arity, and
+/// See [`optional_length_value`] for the sibling arity, and
 /// [`length_arg_to_result`] for the shared wording both inherit.
 pub(crate) fn required_length_arg(
     name: &str,
@@ -464,8 +485,8 @@ pub(crate) fn required_length_arg(
     )
 }
 
-/// The OPTIONAL arity of the named-arg Contract C route: a slot that may be
-/// omitted entirely, but is LENGTH-gated the moment it is present.
+/// The OPTIONAL arity of the Contract C length gate: a slot that may be omitted
+/// entirely, but is LENGTH-gated the moment it is present.
 ///
 /// `Ok(None)` means ABSENT — no diagnostic, no rejection, and the caller
 /// supplies its own documented default (`…?.unwrap_or(default)`). A PRESENT
@@ -473,36 +494,29 @@ pub(crate) fn required_length_arg(
 /// on failure produces the identical `Err` text via the shared
 /// [`length_arg_to_result`], so an optional slot is not a second dialect.
 ///
-/// Distinct from [`required_length_arg`] in exactly one respect, and that
-/// respect is the whole point: routing an absent optional arg through the
-/// required form would push [`eval_named_arg`]'s "missing required geometry
-/// argument" Warning at every call site that legitimately omits it.
-/// Open-coding the shape instead — a `args.iter().any(…)` presence probe
-/// followed by [`required_length_arg`] — scans `args` twice and invites the
-/// next optional dimensioned slot to copy the idiom rather than reuse it.
+/// Distinct from the required arity in exactly one respect, and that respect is
+/// the whole point: routing an absent optional arg through
+/// [`required_length_arg`] would push [`eval_named_arg`]'s "missing required
+/// geometry argument" Warning at every call site that legitimately omits it.
+///
+/// Takes an already-evaluated `Option<&Value>` rather than reading `args`,
+/// mirroring [`accept_length_value`]'s position under [`eval_named_arg_length`]:
+/// the caller pairs it with [`lookup_named_arg_value`], and one that must also
+/// INSPECT the offending value (as `isosurface` does, to hint at the #6313
+/// positional misbind) then has it in hand without a second lookup.
 ///
 /// First caller: `isosurface`'s `iso` (task 5755, decision D12).
-pub(crate) fn optional_length_arg(
+pub(crate) fn optional_length_value(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
-    args: &[(String, reify_ir::CompiledExpr)],
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    meta_map: &HashMap<String, HashMap<String, String>>,
+    value: Option<&reify_ir::Value>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Option<f64>, String> {
-    // ONE scan of `args`, and one `eval_expr`. The required form cannot be
-    // reused wholesale here because its absent arm is diagnosed rather than
-    // defaulted; what IS reused is everything downstream of the lookup —
-    // `accept_length_value` (the shared `accept_arg(&value, &length_spec())`
-    // call, so the rejection text is byte-identical by construction) and
-    // `length_arg_to_result` (the `Err` wording).
-    let Some((_, expr)) = args.iter().find(|(n, _)| n == name) else {
+    let Some(value) = value else {
         return Ok(None);
     };
-    let value = reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map));
     length_arg_to_result(
-        accept_length_value(name, kind_label, &value, diagnostics),
+        accept_length_value(name, kind_label, value, diagnostics),
         name,
         kind_label,
     )
@@ -2505,82 +2519,57 @@ pub(crate) fn compile_geometry_op(
         // `iso` is OPTIONAL-but-LENGTH-GATED (units-length λ, task 5755,
         // decision D12): ABSENT keeps the un-gated 0.0 default, PRESENT goes to
         // the shared Contract C chokepoint so a bare `5` is REJECTED rather than
-        // read as 5 SI metres. `optional_length_arg` is that shape, and owns the
-        // rationale for keeping the two halves apart.
+        // read as 5 SI metres. `optional_length_value` is that shape, and owns
+        // the rationale for keeping the two halves apart.
         CompiledGeometryOp::Isosurface { grid, args } => {
             let grid_id = resolve_geom_ref(grid, step_handles)?;
 
-            let iso_level = match optional_length_arg(
-                "iso",
-                "isosurface",
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            ) {
-                Ok(present) => present.unwrap_or(0.0),
-                Err(e) => {
-                    // Positional-lowering quirk (live task #6313, pre-existing —
-                    // λ did not introduce it): `isosurface`'s optional args are
-                    // lowered by POSITION, so `isosurface(g, adaptive: true)`
-                    // binds `Bool(true)` to the `iso` SLOT and is rejected under
-                    // a name the author never wrote. The rejection text itself is
-                    // left untouched — `length_arg_to_result` solely owns it (D9)
-                    // — and a supplementary Info names the real spelling, so the
-                    // message is actionable before #6313 lands.
-                    // Re-evaluating to classify costs nothing on the happy path:
-                    // this branch is already dropping the op.
-                    if matches!(
-                        args.iter().find(|(n, _)| n == "iso").map(|(_, expr)| {
-                            reify_expr::eval_expr(
-                                expr,
-                                &eval_ctx_with_meta(values, functions, meta_map),
-                            )
-                        }),
-                        Some(reify_ir::Value::Bool(_))
-                    ) {
-                        diagnostics.push(Diagnostic::info(
-                            "isosurface: geometry builtins currently bind arguments by \
-                             POSITION, not by label, so an `adaptive:` written without \
-                             an isovalue lands in the `iso` slot — write the isovalue \
-                             explicitly, e.g. `isosurface(g, 0mm, true)` (#6313)"
-                                .to_string(),
-                        ));
-                    }
-                    return Err(e);
-                }
-            };
-
-            // `adaptive` deliberately KEEPS its pre-λ warn-and-default-to-false
-            // behaviour, so the divergence from `iso` above is intentional rather
-            // than an oversight: Contract C gates DIMENSIONED positions, and
-            // `adaptive` is a dimensionless `Bool` with no unit to get wrong —
-            // there is no silent-1000x failure to close here. Tightening it into
-            // a typed rejection is a separate (unfiled) call about Bool argument
-            // strictness across the whole builtin surface, NOT part of the
-            // units-length gate; do not read the surviving warn-and-default as
-            // the intended pattern for `iso`.
-            let adaptive = match args.iter().find(|(n, _)| n == "adaptive").map(|(_, e)| e) {
-                None => false,
-                Some(expr) => {
-                    let v = reify_expr::eval_expr(
-                        expr,
-                        &eval_ctx_with_meta(values, functions, meta_map),
-                    );
-                    match v {
-                        reify_ir::Value::Bool(b) => b,
-                        _ => {
-                            diagnostics.push(Diagnostic::warning(
-                                "isosurface: 'adaptive' argument evaluated to a \
-                                 non-Bool value — defaulting to false"
+            let iso = lookup_named_arg_value("iso", args, values, functions, meta_map);
+            let iso_level =
+                match optional_length_value("iso", "isosurface", iso.as_ref(), diagnostics) {
+                    Ok(present) => present.unwrap_or(0.0),
+                    Err(e) => {
+                        // A Bool in a LENGTH slot is the observable signature of
+                        // the pre-existing positional-lowering quirk owned by
+                        // live task #6313: optional args bind by POSITION, so a
+                        // lone `isosurface(g, adaptive: true)` lands its `Bool`
+                        // in `iso` and is rejected under a name the author never
+                        // wrote. The rejection text is untouched —
+                        // `length_arg_to_result` solely owns it (D9) — and this
+                        // supplementary Info states what ARRIVED rather than
+                        // what was typed, so it stays true for any spelling that
+                        // reaches the slot.
+                        if matches!(iso, Some(reify_ir::Value::Bool(_))) {
+                            diagnostics.push(Diagnostic::info(
+                                "isosurface: a Bool reached the `iso` slot — geometry \
+                                 builtins currently bind arguments by POSITION, not by \
+                                 label, so an `adaptive:` written without an isovalue \
+                                 lands there; write the isovalue explicitly, e.g. \
+                                 `isosurface(g, 0mm, true)` (#6313)"
                                     .to_string(),
                             ));
-                            false
                         }
+                        return Err(e);
                     }
-                }
-            };
+                };
+
+            // `adaptive` is a dimensionless `Bool` with no unit to get wrong, so
+            // Contract C does not reach it and it keeps its pre-λ
+            // warn-and-default-to-false behaviour (decision D12 gates `iso`
+            // alone) — the asymmetry above is deliberate.
+            let adaptive =
+                match lookup_named_arg_value("adaptive", args, values, functions, meta_map) {
+                    None => false,
+                    Some(reify_ir::Value::Bool(b)) => b,
+                    Some(_) => {
+                        diagnostics.push(Diagnostic::warning(
+                            "isosurface: 'adaptive' argument evaluated to a \
+                             non-Bool value — defaulting to false"
+                                .to_string(),
+                        ));
+                        false
+                    }
+                };
 
             Ok(reify_ir::GeometryOp::Surface {
                 grid: grid_id,
