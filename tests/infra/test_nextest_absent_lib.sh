@@ -24,6 +24,13 @@ LIB="$SCRIPT_DIR/nextest_absent_lib.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# load_tolerance_lib.sh (task 6247) — supplies load_tolerant_attempts for arm
+# 10c's probe budget. See _t10c_probe below for why that arm, alone in this
+# file, needs one.
+[ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
+# shellcheck source=tests/infra/load_tolerance_lib.sh
+source "$SCRIPT_DIR/load_tolerance_lib.sh"
+
 echo "=== nextest_absent_lib.sh unit tests (task 5602) ==="
 
 # -- Existence guard: lib must exist before sourcing ---------------------------
@@ -803,45 +810,116 @@ kill -KILL $$
 echo "SURVIVED_KILL" >> "$_m"
 TRAP_SIG
 
-_t10c() {
-    local sig m wd rc=0
-    for sig in INT TERM HUP; do
-        m="$NX_TRAP_DIR/signal-$sig.marker"
-        rm -f "$m"
-        # 2>/dev/null: the parent shell reports the child's death as "Killed",
-        # which is the expected outcome here, not evidence.
-        bash "$NX_TRAP_SIG" "$REPO_ROOT" "$m" "$sig" 2>/dev/null || true
-        echo "--- SIG$sig ---"
-        if [ ! -f "$m" ]; then
-            echo "SIG$sig: the probe wrote no marker at all"
-            rc=1
-            continue
-        fi
-        cat "$m"
+# THE PER-ATTEMPT VERDICT TRAVELS ON THE EXIT CODE, not in a diagnostic string,
+# so the retry policy below branches on a value instead of re-parsing prose:
+#   _T10C_RC_OK        the trap contract held for this signal.
+#   _T10C_RC_CONTRACT  a contract verdict -- CALLER_RAN absent, or a leaked
+#                      workdir. A real regression: retrying it would MASK a
+#                      broken lib, so it is reported on the first attempt.
+#   _T10C_RC_STARVED   a starvation signature -- no marker at all, SURVIVED_KILL,
+#                      or no WORKDIR= line. The probe never got far enough to say
+#                      anything about the contract, which is what makes this the
+#                      only outcome a retry may absorb.
+_T10C_RC_OK=0
+_T10C_RC_CONTRACT=1
+_T10C_RC_STARVED=2
 
-        if grep -q '^SURVIVED_KILL$' "$m"; then
-            echo "SIG$sig: the probe outlived its own SIGKILL, so CALLER_RAN could"
-            echo "have come from the EXIT trap — this arm would be vacuous."
-            rc=1
+# _t10c_probe_once SIG MARKER — ONE attempt at the SIG arm. Echoes the same
+# diagnostics this arm has always echoed and returns one of the three verdict
+# codes above.
+#
+# PRECEDENCE, when an attempt shows both classes at once: STARVATION DOMINATES.
+# A probe that wrote no marker, outlived its own SIGKILL, or never reached its
+# `echo WORKDIR=` line did not get far enough for its CALLER_RAN / leaked-workdir
+# evidence to mean anything, so promoting that evidence to a contract verdict
+# would report a conclusion the run does not support. Every diagnostic is still
+# emitted, and a leaked workdir is still removed, whichever verdict wins.
+_t10c_probe_once() {
+    local _sig="$1" _m="$2" _wd="" _starved=0 _contract=0
+    rm -f "$_m"
+    # 2>/dev/null: the parent shell reports the child's death as "Killed",
+    # which is the expected outcome here, not evidence.
+    bash "$NX_TRAP_SIG" "$REPO_ROOT" "$_m" "$_sig" 2>/dev/null || true
+    echo "--- SIG$_sig ---"
+    if [ ! -f "$_m" ]; then
+        echo "SIG$_sig: the probe wrote no marker at all"
+        return "$_T10C_RC_STARVED"
+    fi
+    cat "$_m"
+
+    if grep -q '^SURVIVED_KILL$' "$_m"; then
+        echo "SIG$_sig: the probe outlived its own SIGKILL, so CALLER_RAN could"
+        echo "have come from the EXIT trap — this arm would be vacuous."
+        _starved=1
+    fi
+    if ! grep -q '^CALLER_RAN$' "$_m"; then
+        echo "SIG$_sig: the caller's pre-init handler never fired on SIG$_sig. The"
+        echo "lib stashes a handler PER SIGNAL and this caller registered one"
+        echo "only for EXIT, so SIG$_sig's stash is empty and the dispatcher ran"
+        echo "lib teardown alone — the documented 'upgraded to all four signals'"
+        echo "half of the trap contract (nextest_absent_lib.sh, TRAP OWNERSHIP)"
+        echo "is not implemented."
+        _contract=1
+    fi
+    _wd="$(sed -n 's/^WORKDIR=//p' "$_m" | tail -1)"
+    if [ -z "$_wd" ]; then
+        echo "SIG$_sig: probe never reported its workdir"
+        _starved=1
+    elif [ -d "$_wd" ]; then
+        echo "SIG$_sig: the signal left the lib's own workdir behind: $_wd"
+        rm -rf "$_wd"
+        _contract=1
+    fi
+
+    if [ "$_starved" -eq 1 ]; then
+        return "$_T10C_RC_STARVED"
+    fi
+    if [ "$_contract" -eq 1 ]; then
+        return "$_T10C_RC_CONTRACT"
+    fi
+    return "$_T10C_RC_OK"
+}
+
+# _t10c_probe SIG MARKER — retry _t10c_probe_once over STARVATION SIGNATURES
+# ONLY, within a load-scaled budget (esc-6426-2, task 6247).
+#
+# `load_tolerant_attempts 1` is exactly 1 on an idle host, so this arm behaves
+# byte-for-byte as it did before the retry existed; under load it rises with the
+# measured factor, to the lib's cap of 8. A contract verdict returns on the FIRST
+# attempt at every factor — retrying one would dilute a genuine regression into
+# an intermittent, which is the failure mode a retry must never introduce.
+#
+# This is a RESOURCE budget, not a barrier and not a timing assertion. Unlike the
+# rest of task 6247 there is nothing here to wait FOR: the arm's correctness core
+# is scheduler-independent, and what a saturated host breaks is delivery of the
+# fork, not an ordering the test could observe.
+_t10c_probe() {
+    local _sig="$1" _marker="$2"
+    local _attempts _n=0 _rc=0
+    _attempts="$(load_tolerant_attempts 1)"
+    while [ "$_n" -lt "$_attempts" ]; do
+        _n=$(( _n + 1 ))
+        _rc=0
+        _t10c_probe_once "$_sig" "$_marker" || _rc=$?
+        if [ "$_rc" -ne "$_T10C_RC_STARVED" ]; then
+            return "$_rc"
         fi
-        if ! grep -q '^CALLER_RAN$' "$m"; then
-            echo "SIG$sig: the caller's pre-init handler never fired on SIG$sig. The"
-            echo "lib stashes a handler PER SIGNAL and this caller registered one"
-            echo "only for EXIT, so SIG$sig's stash is empty and the dispatcher ran"
-            echo "lib teardown alone — the documented 'upgraded to all four signals'"
-            echo "half of the trap contract (nextest_absent_lib.sh, TRAP OWNERSHIP)"
-            echo "is not implemented."
-            rc=1
-        fi
-        wd="$(sed -n 's/^WORKDIR=//p' "$m" | tail -1)"
-        if [ -z "$wd" ]; then
-            echo "SIG$sig: probe never reported its workdir"
-            rc=1
-        elif [ -d "$wd" ]; then
-            echo "SIG$sig: the signal left the lib's own workdir behind: $wd"
-            rm -rf "$wd"
-            rc=1
-        fi
+    done
+
+    # Exhausted. Name BOTH readings and the count, so a reviewer can tell a load
+    # event from a regression instead of silently reading one as the other.
+    echo "SIG$_sig: every attempt ended in a starvation signature (attempts=$_n)."
+    echo "TWO READINGS FIT and this evidence cannot separate them: the trap"
+    echo "contract may genuinely be broken, or this host may have starved the"
+    echo "probe before it could write its marker, $_n time(s) running. Re-run on a"
+    echo "quiet host to decide; a repeat there is a contract regression."
+    return "$_rc"
+}
+
+_t10c() {
+    local sig rc=0
+    for sig in INT TERM HUP; do
+        _t10c_probe "$sig" "$NX_TRAP_DIR/signal-$sig.marker" || rc=1
     done
     return "$rc"
 }
@@ -923,10 +1001,133 @@ _t10d() {
     return "$rc"
 }
 
+# -- Test 10e-10h: arm 10c's retry policy, hermetically ------------------------
+#
+# WHY A RETRY AT ALL (esc-6426-2, task 6247). Arm 10c forks three full
+# nextest_absent_init probes -- a mktemp -d plus a 21-entry symlink farm apiece,
+# torn down again -- with no budget of its own, and EVERY failure branch above is
+# phrased as a verdict about the trap contract. On a saturated host a probe can be
+# starved before it writes its marker, and that reads as "the trap contract is
+# broken" when nothing about the lib changed. 10c's correctness core is
+# scheduler-INDEPENDENT, so the barrier technique the rest of task 6247 uses has
+# nothing to wait for here; what fails is delivery, and the honest repair is a
+# bounded retry over the starvation signatures ALONE.
+#
+# WHY THESE CASES ARE HERMETIC. The race is not deterministically reproducible
+# (44/44 green on this host, 4/4 in esc-6426-2), so a case that tried to force a
+# kernel signal race would itself be the flake. These replace _t10c_probe_once
+# with a counting stub and assert the POLICY -- how many attempts the wrapper
+# makes, and on which verdicts -- which the exit codes it sees fully determine.
+# They assert call COUNTS; no case here compares a measured magnitude.
+NX_RETRY_COUNTER="$NX_TRAP_DIR/retry-stub.count"
+
+# _t10c_stub_run FACTOR CODES OUTFILE
+# Runs _t10c_probe once with _t10c_probe_once replaced by a counting stub, at a
+# forced load-tolerance factor. CODES is a space-separated list of exit codes the
+# stub returns on successive calls, the LAST entry repeating for every further
+# call -- so "$_T10C_RC_STARVED" is a permanently starved probe and
+# "$_T10C_RC_STARVED $_T10C_RC_OK" is one that recovers on its second attempt.
+# Echoes the wrapper's exit code; leaves the call count in NX_RETRY_COUNTER and
+# the wrapper's own diagnostics in OUTFILE.
+#
+# The stub is defined INSIDE a subshell, so the real probe -- which forks a full
+# nextest_absent_init -- is never invoked and the parent's definition is
+# untouched. bash resolves _t10c_probe_once by name at call time, so the override
+# is what _t10c_probe runs.
+_t10c_stub_run() {
+    local _factor="$1" _codes="$2" _out="$3" _rc=0
+    echo 0 > "$NX_RETRY_COUNTER"
+    (
+        _t10c_probe_once() {
+            local _n _code=0 _i=0 _c
+            _n=$(( $(cat "$NX_RETRY_COUNTER") + 1 ))
+            echo "$_n" > "$NX_RETRY_COUNTER"
+            for _c in $_codes; do
+                _i=$(( _i + 1 ))
+                _code="$_c"
+                [ "$_i" -ge "$_n" ] && break
+            done
+            echo "stub attempt $_n -> rc=$_code"
+            return "$_code"
+        }
+        REIFY_LOAD_TOLERANCE_FACTOR="$_factor"
+        _t10c_probe TERM "$NX_TRAP_DIR/hermetic.marker"
+    ) > "$_out" 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+# _t10c_retry_expect LABEL FACTOR CODES WANT_RC_ZERO WANT_CALLS [PATTERN...]
+# One assertion shape for all four cases: run the stub at FACTOR over CODES, then
+# require the wrapper's success/failure verdict, the exact number of attempts it
+# made, and that its own output carries every PATTERN.
+_t10c_retry_expect() {
+    local _label="$1" _factor="$2" _codes="$3" _want_zero="$4" _want_calls="$5"
+    shift 5
+    local _out="$NX_TRAP_DIR/retry-$_label.out" _rc _calls _pat _bad=0
+    _rc="$(_t10c_stub_run "$_factor" "$_codes" "$_out")"
+    _calls="$(cat "$NX_RETRY_COUNTER")"
+    echo "--- $_label: factor=$_factor codes='$_codes' -> rc=$_rc calls=$_calls ---"
+    cat "$_out"
+
+    if [ "$_want_zero" = "yes" ] && [ "$_rc" != "0" ]; then
+        echo "$_label: the wrapper reported FAILURE (rc=$_rc) for a probe that"
+        echo "succeeded on attempt $_want_calls -- a load blip is not absorbed."
+        _bad=1
+    fi
+    if [ "$_want_zero" = "no" ] && [ "$_rc" = "0" ]; then
+        echo "$_label: the wrapper reported SUCCESS for a probe that never"
+        echo "succeeded -- retrying has turned a failure green."
+        _bad=1
+    fi
+    if [ "$_calls" != "$_want_calls" ]; then
+        echo "$_label: the wrapper made $_calls attempt(s), expected $_want_calls."
+        _bad=1
+    fi
+    for _pat in "$@"; do
+        grep -qi -- "$_pat" "$_out" || {
+            echo "$_label: the wrapper's diagnostic never mentions '$_pat'."
+            _bad=1
+        }
+    done
+    return "$_bad"
+}
+
 assert "10a: a handler registered BEFORE nextest_absent_init still fires, after the lib's own teardown" _t10a
 assert "10b: nextest_absent_cleanup lets a handler registered AFTER init tear the env down itself" _t10b
 assert "10c: the composed trap is armed on INT/TERM/HUP as well as EXIT" _t10c
 assert "10d: a timeout kill of a semaphore_wiring-shaped consumer removes the CALLER's temp dirs too" _t10d
+
+echo ""
+echo "--- Test 10e-10h: arm 10c's per-signal probe retries starvation, not regressions ---"
+
+assert "10e: the arm-10c retry wrapper _t10c_probe() is defined" \
+    declare -F _t10c_probe
+assert "10e: the single-attempt _t10c_probe_once() it wraps is defined" \
+    declare -F _t10c_probe_once
+
+# (e) A load blip is ABSORBED: three starved attempts, then the probe gets a
+#     scheduler slot and reports the contract held.
+assert "10e: at factor 4, three starved attempts then a good one -> PASS on the 4th attempt" \
+    _t10c_retry_expect absorb 4 "$_T10C_RC_STARVED $_T10C_RC_STARVED $_T10C_RC_STARVED $_T10C_RC_OK" yes 4
+
+# (f) NO-MASKING CONTROL: on an idle host `load_tolerant_attempts 1` yields
+#     exactly one attempt, so this arm's behaviour is byte-identical to what it
+#     was before the retry existed -- a real regression is still reported at once.
+assert "10f: at factor 1 an always-starved probe FAILS after exactly one attempt (idle-host behaviour unchanged)" \
+    _t10c_retry_expect idle 1 "$_T10C_RC_STARVED" no 1
+
+# (g) ANTI-MASKING CONTROL: the budget is bounded, so a permanently starved probe
+#     still FAILS -- and the exhaustion diagnostic must name BOTH candidate causes
+#     with the attempt count, so a reviewer can tell a load event from a
+#     regression instead of reading one as the other.
+assert "10g: at factor 4 an always-starved probe FAILS after exactly 4 attempts, naming starvation AND the contract" \
+    _t10c_retry_expect exhaust 4 "$_T10C_RC_STARVED" no 4 'attempts=4' 'starv' 'contract'
+
+# (h) A CONTRACT VERDICT IS NEVER RETRIED. This is the half that keeps the retry
+#     honest: a broken trap contract fails identically at every factor, so the
+#     budget cannot dilute a genuine regression into an intermittent one.
+assert "10h: at factor 4 a contract verdict FAILS after exactly one attempt (a real regression is never retried)" \
+    _t10c_retry_expect contract 4 "$_T10C_RC_CONTRACT" no 1
 
 # -- Test 11: nextest_absent_init fails loudly on a SECOND, non-mirror-source --
 # -- PATH directory that still exposes cargo-nextest (task 5645) -------------

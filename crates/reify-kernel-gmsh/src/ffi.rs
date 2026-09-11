@@ -17,6 +17,23 @@
 //! returns into a `GeometryError::OperationFailed` annotated with the
 //! function name, the `ierr` value, and the message extracted from
 //! `gmshLoggerGetLastError`.
+//!
+//! # Diagnostics
+//!
+//! Beyond the lifecycle/mesh-I/O surface above, this module also binds two
+//! diagnostic-only surfaces: the gmsh logger CAPTURE family
+//! ([`logger_start`]/[`logger_get`]/[`logger_stop`]) and
+//! [`get_element_types`], a dim-scoped element-type census. Both exist for
+//! debugging gmsh misbehaviour from Rust, not for production control flow —
+//! they are deliberately test-only consumers (see the `// G-allow:` markers
+//! on each wrapper, which keep a future dead-code sweep from deleting them).
+//!
+//! Concrete precedent: diagnosing #6200 (`classify_surfaces` at exactly 90°
+//! finding 2 model surfaces instead of 6, HXT building 206 tets while the
+//! model retained only 91) required hand-declaring these same externs in a
+//! throwaway integration test, which was then deleted. #6205 makes them
+//! permanent so the next investigation starts from a bound API instead of
+//! re-declaring externs from scratch.
 
 #![allow(non_snake_case, non_camel_case_types)]
 
@@ -63,6 +80,15 @@ unsafe extern "C" {
 
     /// `void gmshLoggerGetLastError(char** error, int* ierr)`
     pub fn gmshLoggerGetLastError(error: *mut *mut c_char, ierr: *mut c_int);
+
+    /// `void gmshLoggerStart(int* ierr)` — gmshc.h:3638
+    pub fn gmshLoggerStart(ierr: *mut c_int);
+
+    /// `void gmshLoggerGet(char*** log, size_t* log_n, int* ierr)` — gmshc.h:3641
+    pub fn gmshLoggerGet(log: *mut *mut *mut c_char, log_n: *mut usize, ierr: *mut c_int);
+
+    /// `void gmshLoggerStop(int* ierr)` — gmshc.h:3645
+    pub fn gmshLoggerStop(ierr: *mut c_int);
 
     // ---- model + mesh I/O ----
 
@@ -130,6 +156,20 @@ unsafe extern "C" {
         tag: c_int,
         task: usize,
         numTasks: usize,
+        ierr: *mut c_int,
+    );
+
+    /// Get the types of elements in the entity of dimension `dim` and tag
+    /// `tag`. If `tag < 0`, get the types for all entities of dimension
+    /// `dim`. If `dim` and `tag` are negative, get all the types in the
+    /// mesh. — gmshc.h:886-889
+    ///
+    /// `void gmshModelMeshGetElementTypes(int** elementTypes, size_t* elementTypes_n, const int dim, const int tag, int* ierr)`
+    pub fn gmshModelMeshGetElementTypes(
+        elementTypes: *mut *mut c_int,
+        elementTypes_n: *mut usize,
+        dim: c_int,
+        tag: c_int,
         ierr: *mut c_int,
     );
 
@@ -309,6 +349,60 @@ fn check_ierr(name: &str, ierr: c_int) -> Result<(), GeometryError> {
     Err(GeometryError::OperationFailed(format!(
         "{name}: ierr={ierr} ({msg})"
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Buffer helpers
+// ---------------------------------------------------------------------------
+
+/// Copy a gmsh-allocated out-buffer into an owned `Vec`, then free it via
+/// `gmshFree`.
+///
+/// Matches the guard convention every out-param reader in this module used
+/// before this helper existed: a null `ptr` returns an empty `Vec` and is
+/// never passed to `gmshFree` (nothing was allocated); a non-null `ptr` is
+/// freed unconditionally, even when `n == 0`, since gmsh may still have
+/// allocated an empty buffer.
+///
+/// Centralises the free-*before*-check ordering every call site needs:
+/// callers must run this (and copy any data out) before propagating a
+/// non-zero `ierr` via `?`, or the gmsh-allocated buffer leaks on the error
+/// path.
+///
+/// # Safety
+/// `ptr` must be null, or a valid pointer previously returned by a gmsh
+/// out-param call, addressing at least `n` contiguous, initialised `T`s,
+/// not aliased, and not already freed.
+unsafe fn take_gmsh_buf<T: Copy>(ptr: *mut T, n: usize) -> Vec<T> {
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    let v = if n == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(ptr, n) }.to_vec()
+    };
+    unsafe {
+        gmshFree(ptr as *mut c_void);
+    }
+    v
+}
+
+/// Free a gmsh-allocated out-buffer without copying it into a `Vec` first —
+/// for out-params a caller requested but will never read (e.g. `paramCoord`
+/// with `returnParametricCoord=0`), where [`take_gmsh_buf`]'s copy would be
+/// wasted work.
+///
+/// # Safety
+/// Same contract as [`take_gmsh_buf`]: `ptr` must be null, or a valid
+/// pointer previously returned by a gmsh out-param call, not aliased and
+/// not already freed.
+unsafe fn free_gmsh_buf<T>(ptr: *mut T) {
+    if !ptr.is_null() {
+        unsafe {
+            gmshFree(ptr as *mut c_void);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -515,27 +609,17 @@ pub fn get_nodes_all() -> Result<(Vec<u64>, Vec<f64>), GeometryError> {
             &mut ierr,
         );
     }
-    let node_tags: Vec<u64> = if node_tags_ptr.is_null() || node_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(node_tags_ptr as *const u64, node_tags_n) }.to_vec()
-    };
-    let coords: Vec<f64> = if coord_ptr.is_null() || coord_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(coord_ptr, coord_n) }.to_vec()
-    };
-    unsafe {
-        if !node_tags_ptr.is_null() {
-            gmshFree(node_tags_ptr as *mut c_void);
-        }
-        if !coord_ptr.is_null() {
-            gmshFree(coord_ptr as *mut c_void);
-        }
-        if !param_ptr.is_null() {
-            gmshFree(param_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: each pointer is either null or was just populated by the
+    // gmshModelMeshGetNodes call above, owning at least `*_n` contiguous,
+    // initialised elements — take_gmsh_buf's precondition.
+    let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
+    let coords: Vec<f64> = unsafe { take_gmsh_buf(coord_ptr, coord_n) };
+    // paramCoord was requested with returnParametricCoord=0 above, so its
+    // contents are never read — free-only, via free_gmsh_buf, rather than
+    // paying take_gmsh_buf's copy for a buffer we immediately discard.
+    // SAFETY: param_ptr is either null or was just populated by the
+    // gmshModelMeshGetNodes call above.
+    unsafe { free_gmsh_buf(param_ptr) };
     check_ierr("gmshModelMeshGetNodes", ierr)?;
     Ok((node_tags, coords))
 }
@@ -641,16 +725,10 @@ pub fn get_entity_tags(dim: i32) -> Result<Vec<i32>, GeometryError> {
     unsafe {
         gmshModelGetEntities(&mut dim_tags_ptr, &mut dim_tags_n, dim, &mut ierr);
     }
-    let pairs: Vec<c_int> = if dim_tags_ptr.is_null() || dim_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(dim_tags_ptr, dim_tags_n) }.to_vec()
-    };
-    unsafe {
-        if !dim_tags_ptr.is_null() {
-            gmshFree(dim_tags_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: dim_tags_ptr is either null or was just populated by the
+    // gmshModelGetEntities call above, owning at least dim_tags_n
+    // contiguous, initialised elements.
+    let pairs: Vec<c_int> = unsafe { take_gmsh_buf(dim_tags_ptr, dim_tags_n) };
     check_ierr("gmshModelGetEntities", ierr)?;
     // gmsh returns flat (dim, tag) pairs — collect every odd index.
     let tags: Vec<i32> = pairs.chunks_exact(2).map(|p| p[1]).collect();
@@ -681,24 +759,11 @@ pub fn get_elements_by_type(element_type: i32) -> Result<(Vec<u64>, Vec<u64>), G
             &mut ierr,
         );
     }
-    let elem_tags: Vec<u64> = if elem_tags_ptr.is_null() || elem_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(elem_tags_ptr as *const u64, elem_tags_n) }.to_vec()
-    };
-    let node_tags: Vec<u64> = if node_tags_ptr.is_null() || node_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(node_tags_ptr as *const u64, node_tags_n) }.to_vec()
-    };
-    unsafe {
-        if !elem_tags_ptr.is_null() {
-            gmshFree(elem_tags_ptr as *mut c_void);
-        }
-        if !node_tags_ptr.is_null() {
-            gmshFree(node_tags_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: each pointer is either null or was just populated by the
+    // gmshModelMeshGetElementsByType call above, owning at least `*_n`
+    // contiguous, initialised elements.
+    let elem_tags: Vec<u64> = unsafe { take_gmsh_buf(elem_tags_ptr as *mut u64, elem_tags_n) };
+    let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
     check_ierr("gmshModelMeshGetElementsByType", ierr)?;
     Ok((elem_tags, node_tags))
 }
@@ -829,27 +894,123 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
             &mut ierr,
         );
     }
-    let node_tags: Vec<u64> = if node_tags_ptr.is_null() || node_tags_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(node_tags_ptr as *const u64, node_tags_n) }.to_vec()
-    };
-    let coords: Vec<f64> = if coord_ptr.is_null() || coord_n == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(coord_ptr, coord_n) }.to_vec()
-    };
-    unsafe {
-        if !node_tags_ptr.is_null() {
-            gmshFree(node_tags_ptr as *mut c_void);
-        }
-        if !coord_ptr.is_null() {
-            gmshFree(coord_ptr as *mut c_void);
-        }
-        if !param_ptr.is_null() {
-            gmshFree(param_ptr as *mut c_void);
-        }
-    }
+    // SAFETY: each pointer is either null or was just populated by the
+    // gmshModelMeshGetNodes call above, owning at least `*_n` contiguous,
+    // initialised elements.
+    let node_tags: Vec<u64> = unsafe { take_gmsh_buf(node_tags_ptr as *mut u64, node_tags_n) };
+    let coords: Vec<f64> = unsafe { take_gmsh_buf(coord_ptr, coord_n) };
+    // paramCoord was requested with returnParametricCoord=0 above, so its
+    // contents are never read — free-only, via free_gmsh_buf, rather than
+    // paying take_gmsh_buf's copy for a buffer we immediately discard.
+    // SAFETY: param_ptr is either null or was just populated by the
+    // gmshModelMeshGetNodes call above.
+    unsafe { free_gmsh_buf(param_ptr) };
     check_ierr("gmshModelMeshGetNodes(entity)", ierr)?;
     Ok((node_tags, coords))
+}
+
+/// Start capturing gmsh's Info/Warning/Progress message stream into an
+/// in-memory buffer, drained by [`logger_get`].
+///
+/// This capture is INDEPENDENT of the `"General.Terminal"` option — every
+/// production mesher in this crate (`kernel_real::mesh_to_volume`,
+/// `mesh_boundary::mesh_surface_to_volume_with_attribution`,
+/// `refine_volume::refine_volume_with_size_field`,
+/// `mesh_profile_2d::mesh_plane_2d`) sets that option to `0` to silence
+/// gmsh's own stdout/stderr writes, which would otherwise leave gmsh
+/// diagnostics unreachable from Rust. A probe against
+/// `/opt/reify-deps/lib/libgmsh.so.4.15.2` measured 85 captured lines
+/// across one `mesh_generate(3)` call with `General.Terminal = 0` — the
+/// capture buffer is a separate switch gmsh keeps regardless of that
+/// option.
+///
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
+pub fn logger_start() -> Result<(), GeometryError> {
+    gmsh_call!("gmshLoggerStart", ierr, gmshLoggerStart(&mut ierr))
+}
+
+/// Stop capturing gmsh's message stream (started by [`logger_start`]).
+///
+/// Measured: calling [`logger_get`] after `logger_stop` returns an empty
+/// `Vec` with `ierr=0` — stopping the logger drains the buffer, it does not
+/// merely pause capture.
+///
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
+pub fn logger_stop() -> Result<(), GeometryError> {
+    gmsh_call!("gmshLoggerStop", ierr, gmshLoggerStop(&mut ierr))
+}
+
+/// Read every message gmsh has logged since [`logger_start`] was called,
+/// as owned `String`s.
+///
+/// Measured edge cases: if the logger was never started, this returns an
+/// empty `Vec` with `ierr=0` (not an error); likewise after [`logger_stop`]
+/// has drained the buffer. `gmshLoggerGet` returns a `char***` — gmsh
+/// allocates both the outer array of `log_n` pointers and every string it
+/// points at, so both levels are freed here (the outer array via
+/// [`take_gmsh_buf`], each string via `gmshFree`) before `check_ierr`,
+/// mirroring the free-before-check ordering in [`get_nodes_all`] and
+/// [`get_elements_by_type`] (this avoids leaking the buffers on the `ierr
+/// != 0` path, since `check_ierr` returns early via `?`).
+///
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
+pub fn logger_get() -> Result<Vec<String>, GeometryError> {
+    let mut log_ptr: *mut *mut c_char = ptr::null_mut();
+    let mut log_n: usize = 0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshLoggerGet(&mut log_ptr, &mut log_n, &mut ierr);
+    }
+    // SAFETY: log_ptr is either null or was just populated by the
+    // gmshLoggerGet call above, owning at least log_n contiguous,
+    // initialised `*mut c_char` entries — take_gmsh_buf's precondition.
+    // `*mut c_char` is `Copy`, so the outer array is a plain take_gmsh_buf
+    // call; only the per-string free below is special (each entry is
+    // itself a separate gmsh allocation take_gmsh_buf's `T: Copy` bound
+    // cannot express).
+    let entries: Vec<*mut c_char> = unsafe { take_gmsh_buf(log_ptr, log_n) };
+    let mut lines: Vec<String> = Vec::with_capacity(entries.len());
+    for s in entries {
+        if s.is_null() {
+            continue;
+        }
+        lines.push(unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned());
+        unsafe {
+            gmshFree(s as *mut c_void);
+        }
+    }
+    check_ierr("gmshLoggerGet", ierr)?;
+    Ok(lines)
+}
+
+/// Read the element-type codes present in the mesh, scoped by `dim` and
+/// `tag`.
+///
+/// Per gmshc.h:886-888: if `tag < 0`, returns the types for ALL entities of
+/// dimension `dim`; if `dim` AND `tag` are both negative, returns EVERY
+/// type in the mesh. This is the cheap census that discriminates "readback
+/// dropped a mixed element type" from "gmsh never had the elements".
+///
+/// Measured type codes (geo-built unit box, no recombination/extrusion):
+/// dim 3 -> `4` = P1 4-node tet, `11` = P2 10-node tet (agreeing with
+/// `kernel_real::mesh_to_volume`'s element-order comment); dim 2 -> `2` =
+/// 3-node triangle (measured `[2]` on the same box). Whole-mesh `(-1, -1)`
+/// measured `[1, 2, 4, 15]` at P1 and `[8, 9, 11, 15]` at P2 — that pins
+/// gmsh's whole B-rep decomposition and is far more version-sensitive than
+/// a dim-scoped census.
+///
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
+pub fn get_element_types(dim: i32, tag: i32) -> Result<Vec<i32>, GeometryError> {
+    let mut types_ptr: *mut c_int = ptr::null_mut();
+    let mut types_n: usize = 0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshModelMeshGetElementTypes(&mut types_ptr, &mut types_n, dim, tag, &mut ierr);
+    }
+    // SAFETY: types_ptr is either null or was just populated by the
+    // gmshModelMeshGetElementTypes call above, owning at least types_n
+    // contiguous, initialised elements.
+    let types: Vec<i32> = unsafe { take_gmsh_buf(types_ptr, types_n) };
+    check_ierr("gmshModelMeshGetElementTypes", ierr)?;
+    Ok(types)
 }

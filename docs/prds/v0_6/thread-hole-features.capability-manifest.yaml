@@ -175,7 +175,13 @@ tasks:
       → 0.5·π·r²·L_helix by #5580 (half-round rope seat, arc centre on the land
       surface — only the radially INNER half of the swept tube is ever stock; the
       outer half sweeps through air above the land, except where it emerges into the
-      flanges at the band ends), band width and L_helix formula unchanged'
+      flanges at the band ends), band width and L_helix formula unchanged;
+      symbols re-anchored onto the DIN 15061 oversize seat arc by #5683 — r is
+      the seat ARC radius 0.53·rope_dia, not the rope radius, and R is the
+      arc-centre radius seat_c = pitch_r + r − rope_dia/2, not pitch_r; the arc
+      centre still lies ON the land surface (land_r = seat_c), so the INNER-half
+      reasoning above holds verbatim, and the formula shape and the ±15% band
+      width are both unchanged'
     verdict: PASS
     delivered_check:
       kind: manual

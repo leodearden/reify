@@ -14,6 +14,7 @@
 #   plan_is_narrowing_axis_line — narrowing-axis line classification (#6391)
 #   plan_narrowing_axis_match / plan_offaxis_match / plan_narrowing_axis_count
 #                         — dump-level axis predicates (#6391)
+#   plan_strip_comments   — fork-free comment stripper (#6247)
 
 set -euo pipefail
 
@@ -462,5 +463,124 @@ assert "plan_narrowing_axis_count (i): empty dump -> 0" \
 # (j) Comment-only dump -> 0.
 assert "plan_narrowing_axis_count (j): comment-only dump -> 0" \
     test "$(plan_narrowing_axis_count "$_AXIS_COMMENTS_ONLY")" = "0"
+
+# ---------------------------------------------------------------------------
+# Section 9: plan_strip_comments — fork-free comment stripper (#6247)
+#
+# WHY THIS EXISTS: the occt suite's --print-plan captures ran
+# `verify.sh --print-plan | grep -v '^#'` in a single shot, and that post-filter
+# strips BOTH structural markers plan_capture_complete looks for
+# (`# verify.sh plan`, `# --- commands`).  A truncated capture therefore could
+# not be DETECTED — it just read as "pattern absent" and fired a misleading
+# assertion failure.  The two operations only compose one way round: certify
+# completeness on the RAW dump first, THEN reduce to command lines.  This helper
+# is the second half, kept fork-free for the same esc-4574-42 reason as the rest
+# of the lib (plan_capture_lib.sh:8-14).
+#
+# Comment stripping is load-bearing for the migration, not cosmetic: several occt
+# assertions (test_occt_flock_gate.sh:131,148,296,299,302) assert a pattern is
+# ABSENT, and a retained comment line could satisfy the pattern and flip them.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_strip_comments: fork-free comment stripping ---"
+
+# (a) Mixed dump -> only the non-comment, non-empty lines survive, in order.
+_STRIP_MIXED="# verify.sh plan — action=all profile=debug scope=all
+# --- commands (executed in order) ---
+cargo clippy --workspace --all-targets
+./scripts/check-manifold-deps.sh
+# trailing comment"
+assert "plan_strip_comments (a): mixed dump keeps only command lines, in order" \
+    test "$(plan_strip_comments "$_STRIP_MIXED")" = "cargo clippy --workspace --all-targets
+./scripts/check-manifold-deps.sh"
+
+# (b) Comment-only dump -> empty.
+_STRIP_ALLCOMMENT="# verify.sh plan — action=all
+# scope decision — RUN_RUST=1
+# --- commands ---"
+assert "plan_strip_comments (b): comment-only dump -> empty" \
+    test "$(plan_strip_comments "$_STRIP_ALLCOMMENT")" = ""
+
+# (c) Empty dump -> empty.
+assert "plan_strip_comments (c): empty dump -> empty" \
+    test "$(plan_strip_comments "")" = ""
+
+# (d) A '#' that is not in column 1 does NOT make the line a comment. Real
+# --print-plan command lines carry inline '#' (shell comments inside a quoted
+# `bash -c`, fragment identifiers in paths), and dropping them would silently
+# shrink the plan a caller is asserting over.
+_STRIP_INLINE_HASH="# --- commands ---
+timeout 45m bash -c 'echo \"#not-a-comment\" && cargo check'"
+assert "plan_strip_comments (d): '#' outside column 1 keeps the line" \
+    test "$(plan_strip_comments "$_STRIP_INLINE_HASH")" = "timeout 45m bash -c 'echo \"#not-a-comment\" && cargo check'"
+
+# (e) EQUIVALENCE CONTROL — the case that actually licenses the migration.
+# On a REAL captured dump the fork-free stripper must be byte-identical to the
+# `grep -v '^#'` post-filter the occt call sites use today, so replacing them
+# cannot change what their absence assertions see.
+_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+_real_print_plan() { ( cd "$_REPO_ROOT" && bash scripts/verify.sh lint --print-plan 2>/dev/null ); }
+_REAL_DUMP=""
+capture_print_plan _REAL_DUMP 3 _real_print_plan || true
+
+assert "plan_strip_comments (e0): the real --print-plan capture is complete (precondition)" \
+    plan_capture_complete "$_REAL_DUMP"
+
+# `|| true` for the same reason capture_print_plan documents: a failing capture
+# must leave the ASSERTIONS below as the visible failure surface, not abort the
+# suite under `set -e` and hide every case after this point.
+_STRIP_FORKFREE="$(plan_strip_comments "$_REAL_DUMP")" || true
+_STRIP_VIA_GREP="$(printf '%s\n' "$_REAL_DUMP" | grep -v '^#')" || true
+assert "plan_strip_comments (e): real dump -> byte-identical to the grep -v '^#' post-filter" \
+    test "$_STRIP_FORKFREE" = "$_STRIP_VIA_GREP"
+
+# (e2) Non-vacuity for (e): the real dump really does carry both comment and
+# command lines, so (e) is not comparing two empty strings.
+assert "plan_strip_comments (e2): the real dump has command lines left after stripping" \
+    test "$(plan_count_noncomment_lines "$_REAL_DUMP")" -gt 0
+assert "plan_strip_comments (e3): stripping the real dump removed something" \
+    refute test "$_STRIP_FORKFREE" = "$_REAL_DUMP"
+
+# (f) FORK-FREEDOM. The lib's whole rationale is that a pipe forks a subshell
+# and a filter which, under concurrent load, can fail with EINTR even when the
+# content matches (esc-4574-42). What LICENSES the migration is the behavioural
+# equivalence control (e) above; (f1) and (f2) keep a future "simplification"
+# back to `| grep` from silently reintroducing the fork that (e) alone would
+# still accept, since a forking implementation can be byte-identical in output.
+#
+# (f1) is BEHAVIOURAL, not a scan of the rendered source: each external filter
+# is shadowed by a marker-writing function, so a real call is recorded however
+# it is spelled, while a body that merely mentions `grep` in a local name or a
+# comment records nothing. A source-text scan gets both of those backwards.
+# The shadows live inside a subshell so they cannot leak into later cases --
+# `_body_has` below itself runs `grep`.
+_STRIP_FILTER_CALLS="$(mktemp)"
+(
+    grep() { printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
+    sed()  { printf 'sed\n'  >> "$_STRIP_FILTER_CALLS"; }
+    awk()  { printf 'awk\n'  >> "$_STRIP_FILTER_CALLS"; }
+    plan_strip_comments "$_STRIP_MIXED" >/dev/null
+)
+assert "plan_strip_comments (f1): invokes no external filter (grep/sed/awk shadowed and never called)" \
+    test ! -s "$_STRIP_FILTER_CALLS"
+
+# NON-VACUITY for (f1): the shadows really do fire when something calls them,
+# so the empty marker above is evidence of absence rather than of a probe that
+# never worked.
+(
+    grep() { printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
+    printf '%s\n' "$_STRIP_MIXED" | grep -v '^#' >/dev/null
+)
+assert "plan_strip_comments (f1n): the filter shadows DO record a real call (f1 is not vacuous)" \
+    test -s "$_STRIP_FILTER_CALLS"
+rm -f "$_STRIP_FILTER_CALLS"
+
+# (f2) The one STRUCTURAL check worth keeping: a command substitution is a
+# subshell by definition, so its absence is exactly the property (f1) cannot
+# observe (a `$( ... )` that forks but calls no external filter).
+_body_has() { declare -f "$1" | grep -qF -- "$2"; }
+
+assert "plan_strip_comments (f2): body contains no command substitution" \
+    refute _body_has plan_strip_comments '$('
 
 test_summary

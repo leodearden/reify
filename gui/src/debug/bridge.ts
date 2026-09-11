@@ -64,12 +64,105 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // `notFound` reproduces the pre-#5891 message byte for byte — it was duplicated
 // inline in click_element/focus_element/scroll/element_screenshot, and callers
 // (including the visual-regression harness) match on it.
+//
+// THE BOUNDARY RULE. `notFound` asserts that no such element EXISTS, so it must
+// never be the answer to a WRONG-TYPED request: `{"testId": 3}` would otherwise
+// coerce to `"3"` and come back as `element with data-testid="3" not found`,
+// sending a harness author hunting in the DOM instead of fixing the payload.
+// Every tool that resolves an element from a caller-supplied value therefore
+// rejects a non-string at its OWN boundary, BEFORE resolution, reusing that
+// tool's existing required-param wording rather than adding a seventh error
+// constant. The rule is a universal over that family, and the family has TWO
+// arms — the distinction is about the ESCAPE, never about the guard:
+//
+//  * INTERPOLATED value — the value is spliced into a selector this file
+//    builds, so it is both type-guarded here and escaped by `escapeAttrValue`.
+//  * WHOLE selector — the value IS the selector (`params.selector`), so it is
+//    type-guarded and NOT escaped: its metacharacters are the caller's own
+//    syntax, and escaping them would break every legitimate request. The guard
+//    still binds, because querySelector takes a WebIDL DOMString and coerces:
+//    `{"selector": ["div"]}` stringifies to `div`, matches a real element, and
+//    would answer a malformed REQUEST with a true-looking OBSERVATION.
+//
+// The canonical enumeration is the exported `TYPE_GUARDED_RESOLVER_TOOLS`
+// below — FOURTEEN tool names, served by ELEVEN guard copies. It lives there
+// as a VALUE, not here as prose, so that a tool added without a guard fails a
+// test instead of merely making a comment stale; see its docblock. What the
+// flat list cannot express, and what this comment therefore carries, is the
+// COPY structure:
+//
+//  * six copies on `testId`, one per tool — dom_query, click_element,
+//    focus_element, scroll, wait_for_selector, and wait_for's selector arm
+//    (which guards the NESTED `predicate.testId`, hence its own wording);
+//  * element_screenshot's own `testId` copy, spelled the other way round as
+//    `!testId || typeof testId !== 'string'` and kept as it stood — the other
+//    ten all spell it `typeof … !== 'string' || … === ''`;
+//  * open_menu's copy, on `name`;
+//  * `driveTreeNode`'s single copy, on `path`, SHARED by expand_tree_node and
+//    collapse_tree_node — one function serves both;
+//  * `resolveElement`'s single copy, on the whole-selector `selector`, SHARED
+//    by query_selector, get_layout_metrics and get_computed_style;
+//  * query_selector_all's own inline copy of that same `selector` guard — it
+//    needs the whole NodeList, so it never routes through `resolveElement`.
+//
+// (Grep `typeof .* !== 'string'` in this file and you will also hit wait_for's
+// `predicate.path is required for store kind` — that one is NOT in this list:
+// a store path is a dotted store address, resolving a STORE value rather than
+// an element, and is never interpolated into a selector nor used as one.)
+// Those guards are also what makes `resolveByTestId(testId: string, …)` honest:
+// the call sites used to reach it through a `params.testId as string` cast that
+// the JSON payload could falsify. `escapeAttrValue`'s `String()` coercion sits
+// BELOW this boundary as a backstop, not as the validation (task #6178, and its
+// review amendment for driveTreeNode).
+//
+// The guards are INDEPENDENT COPIES, not one shared helper, so each needs its
+// own coverage or it can be reverted alone with the suite green. That makes the
+// unit of coverage the guard COPY, not the tool name: the `boundary guards above
+// the escape` block of debugBridge.test.tsx carries one row per copy — twelve
+// rows for eleven copies, since driveTreeNode's single copy interpolates two
+// different testid prefixes and so earns a row each. A new tool joining this
+// list needs its own row unless it demonstrably SHARES an existing copy, as
+// collapse_tree_node shares expand_tree_node's and get_layout_metrics /
+// get_computed_style share query_selector's — in which case name the sharer.
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
     `element with data-testid="${testId}" not found for viewport '${id}'`,
   viewportIdNotString: 'viewportId must be a string',
 } as const;
+
+/**
+ * THE BOUNDARY RULE's enumeration, as a VALUE rather than as prose.
+ *
+ * The rule above is a universal, and a universal stated only in a comment
+ * cannot be checked: adding an unguarded tool would leave both the comment and
+ * the test table silently stale with the suite green — the same
+ * revert-it-alone failure the per-copy rows exist to close, moved up one level.
+ * `every enumerated tool is dispatched by a row or shares a named row's copy`
+ * in debugBridge.test.tsx's `boundary guards above the escape` block reads this
+ * list and fails on either drift direction, so the list is the single source
+ * and the comments point at it instead of restating it.
+ *
+ * Order follows the rule's own prose: the seven `testId` tools, `open_menu`'s
+ * `name`, the two tree tools' shared `path`, then the four whole-selector
+ * tools. NOT a dispatch table — nothing reads it at runtime.
+ */
+export const TYPE_GUARDED_RESOLVER_TOOLS = [
+  'dom_query',
+  'click_element',
+  'focus_element',
+  'scroll',
+  'element_screenshot',
+  'wait_for_selector',
+  'wait_for',
+  'open_menu',
+  'expand_tree_node',
+  'collapse_tree_node',
+  'query_selector',
+  'query_selector_all',
+  'get_layout_metrics',
+  'get_computed_style',
+] as const;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
@@ -100,9 +193,10 @@ function validXY(v: unknown): v is { x: number; y: number } {
  * Uses PointerEvent when available (real browser), falls back to MouseEvent in
  * jsdom (which lacks the PointerEvent constructor). The event TYPE string —
  * not the constructor class — determines which listeners fire, so a MouseEvent
- * dispatched as 'pointerdown' still triggers pointerdown listeners (debugContract
- * .test.ts:340 / selection.test.ts pattern). Both PointerEvent and MouseEvent
- * accept clientX/clientY in their init dict, so coordinates propagate correctly.
+ * dispatched as 'pointerdown' still triggers pointerdown listeners — the jsdom
+ * note in debugContract.test.ts's `pointerdown+pointerup at canvas center` case,
+ * and the selection.test.ts pattern. Both PointerEvent and MouseEvent accept
+ * clientX/clientY in their init dict, so coordinates propagate correctly.
  */
 function dispatchPointer(target: Element, type: string, x: number, y: number): void {
   const init = { clientX: x, clientY: y, bubbles: true, cancelable: true };
@@ -190,16 +284,12 @@ function pickFeaChannelSelect(
 
   if (id !== undefined) {
     if (typeof id !== 'string') return { error: SET_FEA_CHANNEL_ERRORS.viewportIdNotString };
-    // Escape before interpolating: an id carrying a quote or backslash would
-    // otherwise build an invalid selector and make querySelector THROW, which
-    // the dispatcher would surface as an opaque CSS-parser message instead of
-    // the intended selectNotFoundForViewport. Same CSS.escape-with-jsdom-
-    // fallback pattern as buildSelectorPredicate above.
-    const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-      ? CSS.escape(id)
-      : id.replace(/["\\]/g, '\\$&');
+    // Escape before interpolating (`escapeAttrValue`): an id carrying a quote or
+    // backslash would otherwise build an invalid selector and make querySelector
+    // THROW, which the dispatcher would surface as an opaque CSS-parser message
+    // instead of the intended selectNotFoundForViewport.
     const scoped = document.querySelector(
-      `${FEA_CHANNEL_SELECT}[data-viewport-id="${escaped}"]`,
+      `${FEA_CHANNEL_SELECT}[data-viewport-id="${escapeAttrValue(id)}"]`,
     ) as HTMLSelectElement | null;
     if (!scoped) return { error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(id) };
     return { select: scoped };
@@ -215,15 +305,46 @@ function pickFeaChannelSelect(
  * Escape a value for interpolation into an `[attr="…"]` selector.
  *
  * CSS.escape is absent in some environments (notably jsdom), so fall back to a
- * minimal escape of the two characters that can terminate or corrupt a quoted
- * attribute value. Without this, a value carrying a quote or backslash makes
- * querySelector THROW a DOMException, which the dispatcher surfaces as an
+ * minimal escape of the two characters MOST LIKELY to terminate or corrupt a
+ * quoted attribute value. Without this, a value carrying a quote or backslash
+ * makes querySelector THROW a DOMException, which the dispatcher surfaces as an
  * opaque CSS-parser message instead of the intended not-found diagnostic.
+ *
+ * The fallback is deliberately NOT exhaustive: a raw newline or other raw
+ * control character is also invalid inside a CSS string, so `escapeAttrValue`
+ * can still yield a throwing selector under that arm. CSS.escape handles those
+ * too, and it is present in every real webview — the fallback runs only where
+ * `CSS` is undefined, which today is jsdom alone. That gap is pinned by `the
+ * fallback arm is NOT exhaustive…` in debugBridge.test.tsx's
+ * `debug bridge escapeAttrValue` block; note it measures the JSDOM symptom, a
+ * silent non-match, because jsdom's selector engine is more lenient than a
+ * webview's CSS parser.
+ *
+ * TWO LAYERS GUARD THE INPUT TYPE, and the ORDER between them is the point.
+ *
+ * The parameter stays `string` so that the FIRST layer is tsc: an unvalidated
+ * `escapeAttrValue(params.foo)` is a compile error at author time, loud and free
+ * and before review. Widening this to `unknown` would delete that check — the
+ * unvalidated call site would compile, and `undefined` would coerce into the
+ * literal selector `[data-testid="undefined"]`, reading downstream as a plain
+ * not-found. A compile error is strictly the better failure.
+ *
+ * `String(v)` is the SECOND layer: a backstop for a caller that defeats the
+ * first with an `as string` cast the JSON payload falsifies — how every
+ * pre-#6178 call site reached here. Unreachable today, and undiscriminatable by
+ * any test, because every call site now type-guards above it (THE BOUNDARY RULE
+ * on `RESOLVE_BY_TESTID_ERRORS`).
+ *
+ * NEITHER layer is the validation: the per-tool boundary guards are, and they
+ * are what turns a wrong-typed request into that tool's own required-param
+ * error (`testId is required`, or `path is required` for the tree-node tools)
+ * rather than into any diagnostic about the DOM.
  */
 function escapeAttrValue(v: string): string {
+  const s = String(v);
   return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(v)
-    : v.replace(/["\\]/g, '\\$&');
+    ? CSS.escape(s)
+    : s.replace(/["\\]/g, '\\$&');
 }
 
 export interface ResolvedByTestId {
@@ -273,6 +394,16 @@ export interface ResolvedByTestId {
  * element matching both arms of the scoped selector list is counted once — the
  * root, which carries `data-testid` and `data-viewport-id` on the SAME node, is
  * the common case — and `matchCount` stays truthful.
+ *
+ * THAT COMPENSATING CONTROL DOES NOT REACH EVERY CALLER. `paneDiagnostics` makes
+ * the guess visible only to callers that spread it into a payload — the DRIVE
+ * tools. `buildSelectorPredicate` takes `el` and drops the rest, and the two
+ * tools built on it report no viewportId/matchCount by design, so on the OBSERVE
+ * path first-match is a SILENT guess rather than a reported one. How it misleads
+ * is enumerated once in docs/debug-mcp-recipe.md under "wait_for_selector: the
+ * unscoped-wait trap"; widening this resolver to expose the full match list is
+ * tracked by #6564. Any such fix must leave the DRIVE path first-match — that is
+ * #5891's back-compat promise, argued in the divergence note above.
  */
 function resolveByTestId(
   testId: string,
@@ -442,6 +573,19 @@ async function pollUntil(
  * a timeout. The cost is that a typo'd id reads as instant success, so callers
  * proving a teardown should confirm the pane exists first. Under 'visible' the
  * same typo fails loudly (timeout), which is why only this arm needs the note.
+ *
+ * THE OTHER KNOWN TRAP, and the one this predicate OWNS — the UNSCOPED path.
+ * With no `viewportId`, `resolveByTestId` commits to the document-order-FIRST
+ * match and only THEN does this closure evaluate `state` on that one element;
+ * it never looks for the first element that SATISFIES the state. So an unscoped
+ * wait is not proof about any one pane in either direction. It misleads in three
+ * distinct ways, enumerated once in docs/debug-mcp-recipe.md under
+ * "wait_for_selector: the unscoped-wait trap" and pinned as behaviour by
+ * waitFor.test.ts cases (h)/(i)/(j) — do not read the asymmetry above as the
+ * whole list. Unlike that asymmetry this is a known limitation rather than a
+ * deliberate contract: first-match is #5891's back-compat promise for the DRIVE
+ * tools, but this predicate only OBSERVES, so quantifying over all matches here
+ * would break no caller. That fix is tracked by #6564.
  */
 function buildSelectorPredicate(opts: {
   testId: string;
@@ -473,9 +617,17 @@ function buildSelectorPredicate(opts: {
 
 // Validates selector param, queries the DOM, and returns either an error, the
 // matched element, or null (no match). Handlers map null → {exists:false}.
+//
+// The `typeof` half is THE BOUNDARY RULE's WHOLE-SELECTOR arm (see
+// `RESOLVE_BY_TESTID_ERRORS`): querySelector takes a WebIDL DOMString and
+// coerces, so `{"selector": ["div"]}` would otherwise stringify to `div`, match
+// a real element, and answer a malformed REQUEST with a true-looking
+// OBSERVATION about the DOM — the same failure `{"testId": 3}` produces one
+// layer down. This is ONE guard copy serving three tools: query_selector,
+// get_layout_metrics and get_computed_style.
 function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
-  const selector = params.selector as string;
-  if (!selector) return { error: 'selector is required' };
+  const selector = params.selector;
+  if (typeof selector !== 'string' || selector === '') return { error: 'selector is required' };
   try {
     return { el: document.querySelector(selector) };
   } catch (e) {
@@ -510,9 +662,17 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
    * then re-reads the state post-click for the truthful return value.
    */
   function driveTreeNode(params: Record<string, unknown>, wantExpanded: boolean): unknown {
-    const path = params.path as string | undefined;
-    if (!path) return { error: 'path is required' };
+    // Boundary guard, per THE BOUNDARY RULE on RESOLVE_BY_TESTID_ERRORS: `path`
+    // is interpolated into a `[data-testid=…]` lookup below, so a non-string
+    // must be rejected HERE rather than coerced into a claim about the DOM. The
+    // wording is unchanged, so nothing previously rejected is newly accepted —
+    // `undefined`, `''` and `0` all still get this message.
+    const path = params.path;
+    if (typeof path !== 'string' || path === '') return { error: 'path is required' };
 
+    // `panel` needs no such guard: the equality check below already rejects any
+    // non-string with `unknown panel '3'`, a schema-violation answer rather than
+    // a DOM claim — so it is type-safe as it stands and only `path` gained one.
     const panelParam = params.panel ?? 'design';
     if (panelParam !== 'design' && panelParam !== 'constraint') {
       return { error: `unknown panel '${String(panelParam)}'; expected 'design' or 'constraint'` };
@@ -543,11 +703,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
     const expandedNow = accessor().has(path);
     if (expandedNow !== wantExpanded) {
-      // CSS.escape is not available in jsdom — use the same fallback as buildSelectorPredicate.
-      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-        ? CSS.escape(testid)
-        : testid.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      const el = document.querySelector(`[data-testid="${escapeAttrValue(testid)}"]`);
       if (!el) return { error: `tree node control not found: ${path}` };
       (el as HTMLElement).click();
     }
@@ -788,8 +944,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     dom_query: (params) => {
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') return { error: 'testId is required' };
 
       // #5891: dom_query is an existence PROBE, not a driver, so it collapses BOTH
       // absence errors — `notFound` (no such testid anywhere) and
@@ -847,8 +1003,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     query_selector_all: (params) => {
-      const selector = params.selector as string;
-      if (!selector) return { error: 'selector is required' };
+      // Its own copy of `resolveElement`'s guard — this tool needs the whole
+      // NodeList, so it never routes through that helper. See THE BOUNDARY RULE.
+      const selector = params.selector;
+      if (typeof selector !== 'string' || selector === '') return { error: 'selector is required' };
       let nodes: NodeListOf<Element>;
       try {
         nodes = document.querySelectorAll(selector);
@@ -918,12 +1076,24 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // --- App-chrome commands (frontend-mediated, C1) ---
 
     open_menu: (params) => {
-      const name = params.name as string;
-      if (!name) return { error: 'name is required' };
+      const name = params.name;
+      if (typeof name !== 'string' || name === '') return { error: 'name is required' };
 
-      // Menu names are simple lowercase identifiers — no CSS-escaping needed,
-      // and CSS.escape is absent in jsdom (unit-test environment).
-      const el = document.querySelector(`[data-testid="menu-trigger-${name}"]`);
+      // Menu names are simple lowercase identifiers by convention, but that
+      // convention is caller-side and this tool boundary does not enforce it —
+      // so `name` goes through the same `escapeAttrValue` as every other
+      // caller-supplied interpolation in this file. Unescaped, a quote or
+      // backslash makes querySelector THROW a DOMException, which the dispatcher
+      // surfaces as an opaque CSS-parser message instead of the
+      // `menu trigger not found` diagnostic below. Pinned by the
+      // `open_menu name` row of the `debug bridge escapeAttrValue` table in
+      // debugBridge.test.tsx. The separate property that the guard above rejects
+      // `{"name": 3}` outright — rather than letting it coerce and open a menu
+      // that was never asked for — is that file's `boundary guards above the
+      // escape` block: THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS`.
+      const el = document.querySelector(
+        `[data-testid="menu-trigger-${escapeAttrValue(name)}"]`,
+      );
       if (!el) return { error: `menu trigger not found: ${name}` };
 
       // Idempotency: if the requested menu is already open, skip the click.
@@ -1005,8 +1175,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // --- Write commands (frontend-mediated) ---
 
     click_element: (params) => {
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') return { error: 'testId is required' };
 
       const r = resolveByTestId(testId, params.viewportId);
       if ('error' in r) return r;
@@ -1174,8 +1344,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     focus_element: (params) => {
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') return { error: 'testId is required' };
       const r = resolveByTestId(testId, params.viewportId);
       if ('error' in r) return r;
       (r.el as HTMLElement).focus();
@@ -1212,8 +1382,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // `viewportId` — it resolves no testid, so scoping is meaningless there and
       // must not become a spurious rejection for a caller threading the param
       // through generically.
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId or target:"editor" is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') {
+        return { error: 'testId or target:"editor" is required' };
+      }
       // Guard order is unchanged from pre-#5891: testId presence, then element
       // resolution, then the finite-number checks. The viewport ladder lives
       // INSIDE resolution, so it takes the slot the old not-found check held and
@@ -1350,18 +1522,81 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       return { ok: true, path };
     },
 
-    // Frontend landing point for the Rust `query_frontend("apply_gui_state", ...)` push
-    // from `handle_set_fea_case`.  Applies the re-sourced GuiState (new scalar_channels
-    // from the active FEA case) WITHOUT resetting the view — geometry is shared across
-    // cases so the camera must stay fixed; only the contour colours change per screenshot.
+    // Frontend landing point for the Rust `query_frontend("apply_gui_state", ...)`
+    // push.  TWO classes of caller:
+    //
+    //  1. `handle_set_fea_case` — applies the re-sourced GuiState (new
+    //     scalar_channels from the active FEA case), no `file` member.
+    //  2. the five `reify_*` AI write tools (task 5097 δ, INV-GUI-2 AI path) —
+    //     `reify_set_parameter` and `reify_update_source` push their rebuilt
+    //     GuiState here after a write.
+    //
+    // The OPTIONAL `file` member exists for `reify_update_source` specifically:
+    // PRD §6.3 routes that tool through the IN-MEMORY
+    // `EngineSession::update_source`, which writes no disk, so no FS-watcher
+    // re-fire will reconcile the editor buffer.  Without it the AI's source edit
+    // recompiles and re-renders while the editor still shows the OLD text —
+    // exactly the silent desync INV-GUI-2 exists to prevent.  Reconciliation
+    // rides `editorStore.openFile`'s existing already-open reopen path
+    // (editorStore.ts, task-5359), which owns the dirty/clean split; adding a
+    // second reconciliation here would be a fork of that rule.
+    //
+    // WHAT THAT SPLIT MEANS HERE — deliberate, and pinned by the
+    // `apply_gui_state` cases in debugContract.test.ts (task 5097 δ amendment,
+    // review finding).  `openFile`'s contract is "reopen from DISK", but this
+    // caller's `content` is an IN-MEMORY buffer that no disk write produced, so
+    // the two arms land differently from a watcher re-fire:
+    //
+    //  - CLEAN tab → the buffer is replaced and the tab stays CLEAN, so it now
+    //    differs from disk with no unsaved-changes indicator, and a later clean
+    //    reopen of the same path (an FS-watcher re-fire from
+    //    `reify_set_parameter`, File→Open) overwrites the AI's edit.  Accepted:
+    //    the engine holds the same text, `reify_save_file` is the commit step,
+    //    and forcing the tab dirty from here would fork `openFile`'s rule and
+    //    mean a debug push could block the user's own save behind a conflict
+    //    prompt.  `reify_update_source` is explicitly the volatile,
+    //    try-it-and-read-the-diagnostics tool; `reify_set_parameter` is the
+    //    durable one (it writes disk, so its push carries no `file` member).
+    //  - DIRTY tab → `openFile` does NOT clobber unsaved edits; it raises
+    //    `externallyChanged` when the incoming text diverges.  The engine then
+    //    holds the AI's text while the editor keeps the user's, and that
+    //    divergence is SURFACED as the existing conflict rather than silently
+    //    resolved in either direction.  Resolving it here would be this
+    //    handler picking a winner between the user and the AI.
+    //
+    // A malformed `file` is refused BEFORE either store moves: applying the
+    // GuiState but not the buffer is the very desync this member exists to
+    // close, so a half-applied push is worse than a refused one.
     apply_gui_state: (params) => {
       const rawGuiState = params.guiState as RawGuiState | undefined;
       if (!rawGuiState) return { error: 'guiState is required' };
 
+      const rawFile = params.file as { path?: unknown; content?: unknown } | undefined;
+      let file: { path: string; content: string } | undefined;
+      if (rawFile !== undefined) {
+        if (
+          rawFile === null ||
+          typeof rawFile !== 'object' ||
+          typeof rawFile.path !== 'string' ||
+          typeof rawFile.content !== 'string'
+        ) {
+          return { error: 'file requires path and content' };
+        }
+        file = { path: rawFile.path, content: rawFile.content };
+      }
+
+      // Editor BEFORE engine: the buffer is what the user reads the design
+      // out of, and both stores end up consistent either way, so the ordering
+      // is chosen to keep the visible text and the rendered geometry from
+      // being observably out of step mid-push.
+      if (file) ctx.stores.editor.openFile(file);
+
       const guiState = convertRawGuiState(rawGuiState);
       ctx.stores.engine.initFromState(guiState);
       // Intentionally NO viewState.resetToDefaultView() — preserves camera so the
-      // three per-case visual-regression screenshots differ only in the contour colours.
+      // three per-case visual-regression screenshots differ only in the contour
+      // colours.  The same reasoning covers the AI write path: a parameter tweak
+      // or a source edit must leave the user's camera where they put it.
 
       return { ok: true, case: params.case };
     },

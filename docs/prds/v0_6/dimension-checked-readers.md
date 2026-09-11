@@ -202,7 +202,13 @@ positive/negative lists are in the leaf bodies):
   `target_frequency` → FREQUENCY · waypoint `t` → TIME · `velocity_limit` → VELOCITY ·
   `acceleration_limit`/`max_accel` → ACCELERATION · `force_limit`, `reference_load`,
   `PointLoad.force` → FORCE · `PressureLoad.magnitude`, `TractionLoad.traction` → PRESSURE ·
-  `BodyForce.force_density` → FORCE_DENSITY.
+  `BodyForce.force_density` → FORCE_DENSITY. (`density`'s registry const is named
+  `MASS_DENSITY` at the Rust level, disambiguated from the pre-existing
+  `MAGNETIC_FLUX_DENSITY` constant; its `.ri`-facing / §4 `NAMED_DIMENSIONS` name is
+  `Density` — the two spellings name the same dimension, not a drift.) §7's twelve spec
+  constructors do not include a damping spec: `translational_damping_spec` /
+  `rotational_damping_spec` are not chartered in α and are added by whichever leaf adopts a
+  `damping` reader position (ε, per §9 Phase 4) when it does so.
 - **Deliberately bare** (stay dimensionless-accepting, gated to `dimensionless_spec` so a
   *dimensioned* Scalar is still rejected): `poisson_ratio`, `damping_ratio`,
   `vibration_tolerance`, `tol`, `max_iters`, `Gravity.direction` / `PointLoad.direction`
@@ -529,7 +535,8 @@ waiver. No G7 waivers are required.
 **Phase 1 — foundation**
 
 - **α — relocate `arg_acceptance` to `reify-ir`; add the PRD-5 spec constructors,
-  `accept_field`, and the two `DiagnosticCode` variants.** *(reify-ir, reify-core, reify-eval,
+  `accept_field`, and one `DiagnosticCode` variant (`FeaLoadKindUnsupported`); reader/field
+  dimension rejections reuse `DimensionedArgRejected`.** *(reify-ir, reify-core, reify-eval,
   reify-stdlib.)* INTERMEDIATE — unlocks β…ι. Downstream consumers: every leg-B/C/D leaf.
   Includes making `helpers.rs:229` an adapter so there is one rule.
 

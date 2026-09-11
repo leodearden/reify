@@ -257,3 +257,35 @@ plan_count_noncomment_lines() {
     done <<< "$dump"
     printf '%s' "$_n"
 }
+
+# plan_strip_comments <dump>
+#
+# Prints <dump> with comment lines (leading '#') and empty lines removed,
+# preserving order. The fork-free equivalent of
+# `printf '%s\n' "$dump" | grep -v '^#'` — no pipe, no subshell, no grep, so it
+# carries none of the EINTR surface documented at the top of this file
+# (esc-4574-42). Fork-free sibling of plan_count_noncomment_lines above, which
+# counts exactly the lines this one keeps.
+#
+# WHY A CALLER WANTS THIS RATHER THAN THE grep POST-FILTER: the structural
+# markers plan_capture_complete certifies on (`# verify.sh plan`,
+# `# --- commands`) are themselves comment lines, so stripping comments destroys
+# the evidence of completeness. A capture that was truncated mid-plan then reads
+# as "pattern absent" and fires a misleading assertion failure instead of a
+# retry. The two operations compose in one direction only: certify completeness
+# on the RAW dump via capture_print_plan / plan_capture_complete, and only then
+# reduce it to command lines with this helper.
+#
+# Only a '#' in COLUMN 1 starts a comment, matching `grep -v '^#'`: real plan
+# command lines carry inline '#' (shell comments inside a quoted `bash -c`,
+# fragment identifiers in paths) and must survive intact.
+plan_strip_comments() {
+    local dump="$1" _out="" _line
+    while IFS= read -r _line; do
+        case "$_line" in
+            '#'* | '') ;;                       # drop comment and empty lines
+            *) _out+="${_out:+$'\n'}$_line" ;;  # keep, newline-joined in order
+        esac
+    done <<< "$dump"
+    printf '%s' "$_out"
+}

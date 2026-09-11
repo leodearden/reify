@@ -3,10 +3,17 @@
 //! Include in a test binary with `mod common;` at the top of the file.
 //! Helpers are `pub` so they are visible after `use common::{...}`.
 //!
-//! Most helpers have migrated to `reify_test_support`. This module retains only:
+//! Most helpers have migrated to `reify_test_support`. This module retains:
 //! - `compile_with_stdlib_helper` — delegates to `reify_test_support::compile_source_with_stdlib`
-//! - `assert_single_non_empty_label` — specific to unit collision diagnostic tests
 //! - `compile_errors` / `compile_errors_with_stdlib` — compile a project and return Error-severity diagnostics
+//! - `assert_prelude_collision_labels` — specific to unit collision diagnostic tests
+//! - `expect_scalar` / `expect_binop` — unwrap a `CompiledExpr` into its `Scalar` or `BinOp` shape
+//! - `stdlib_param_si_value` / `stdlib_let_si_value` — compile a one-cell `structure def S`
+//!   (typed `param` or untyped `let`) and return the cell's (si_value, dimension)
+//! - `units_module` / `assert_simple_unit` — read a named unit's dimension/factor/offset from
+//!   the cached `std/units` module
+//! - `assert_eq_rel` / `UNIT_EPSILON` — relative-tolerance float comparison and its default epsilon
+//! - `assert_trait_constraint_binop` — assert a trait's constraint default has an expected `BinOp` shape
 
 use std::path::Path;
 
@@ -182,35 +189,56 @@ pub fn assert_simple_unit(
 ///
 /// Source compiled: `structure def S { param x : <param_type> = <literal> }`
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
+#[track_caller]
 pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVector) {
     let source = format!(
         "structure def S {{ param x : {} = {} }}",
         param_type, literal
     );
-    let module = compile_with_stdlib_helper(&source);
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    single_cell_si_value(&source, compile_with_stdlib_helper, "x")
+}
+
+/// Compile a structure with a single untyped-`let` binding and return the
+/// value cell's (si_value, dimension) from its default expression.
+///
+/// Source compiled: `structure def S { let x = <quantity> }`
+///
+/// Uses `compile_source_with_stdlib_allow_parse_errors` rather than the plain
+/// `compile_source_with_stdlib` helper, which panics on a parse error before
+/// this function's own error assertion can report which probe was bad.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+#[track_caller]
+pub fn stdlib_let_si_value(quantity: &str) -> (f64, DimensionVector) {
+    let source = format!("structure def S {{ let x = {quantity} }}");
+    single_cell_si_value(
+        &source,
+        reify_test_support::compile_source_with_stdlib_allow_parse_errors,
+        "x",
+    )
+}
+
+/// Shared core of [`stdlib_param_si_value`] and [`stdlib_let_si_value`]:
+/// compiles `source` via `compile`, asserts a clean compile, and returns
+/// `member`'s `(si_value, dimension)` from its default expression in the `S`
+/// template.
+///
+/// Takes `compile` rather than an already-compiled module so `source` and the
+/// module it produces cannot drift apart — the two callers differ only in
+/// the source template they format and the compile helper they invoke; this
+/// is everything after that.
+#[track_caller]
+fn single_cell_si_value(
+    source: &str,
+    compile: impl FnOnce(&str) -> CompiledModule,
+    member: &str,
+) -> (f64, DimensionVector) {
+    let module = compile(source);
+    let errs = reify_test_support::errors_only(&module);
     assert!(
         errs.is_empty(),
-        "source `{}` produced errors: {:?}",
-        source,
-        errs
+        "source `{source}` produced errors: {errs:?}"
     );
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("S template not found");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "x")
-        .expect("x cell not found");
-    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
-    expect_scalar(expr)
+    expect_scalar(reify_test_support::get_let_expr_in(&module, "S", member))
 }
 
 /// Extract an `(op, left, right)` triple from a `BinOp` expression.

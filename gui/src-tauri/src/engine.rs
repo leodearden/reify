@@ -766,6 +766,64 @@ pub(crate) fn module_key(name: &str) -> String {
     format!("{}.ri", name)
 }
 
+/// Does `spelling` name the same source file as the filesystem path `path`?
+///
+/// **The two positions are NOT interchangeable — this predicate is
+/// asymmetric.** `spelling` is the loose side: either a real path, or the
+/// stem-only `"<stem>.ri"` module key. `path` is the strict side: the real
+/// filesystem path whose stem is authoritative. `f("part.ri",
+/// "/tmp/x/part.ri")` is `true`; `f("/tmp/x/part.ri", "part.ri")` is `false`,
+/// because only the SECOND argument's stem is ever taken. Both live call
+/// directions honour that (see below); do not "simplify" the call order.
+///
+/// Why the loose side exists: diagnostics and `source_map` entries are stamped
+/// with [`module_key`]`(module_name)` = `"<stem>.ri"` — see `resolve_source`
+/// (:3259-3265), which is what `get_diagnostics` hands to
+/// `diagnostics_to_info`, and `UnresolvedGuiState`'s note at commands.rs:539 —
+/// while the reify-debug write tools receive a caller-supplied REAL path
+/// (`/tmp/x/part.ri`), which is what their ToolDefs advertise. So a bare `==`
+/// between the two is **VACUOUS**: it matches nothing and silently drops every
+/// diagnostic, which is exactly the bug this predicate exists to close. It
+/// accepts either spelling on the loose side and still discriminates on the
+/// stem — `"other.ri"` does not match
+/// `/tmp/x/part.ri`.
+///
+/// The comparison spelling is built with [`module_key`] itself rather than a
+/// second `format!("{}.ri", ...)`, so the matcher and the minter of the key
+/// can never drift.
+///
+/// # The two live call directions
+///
+/// Both put the possibly-stem-only spelling FIRST and the real path SECOND:
+///
+///  * `debug_server::filter_diagnostics_for_file` —
+///    `f(&d.file_path, requested)`: the STAMPED key is the loose side, the
+///    caller's path the strict one.
+///  * `debug_server::update_source_target_matches_active` —
+///    `f(requested, active)`: the CALLER's spelling is the loose side (an AI
+///    client may echo back the stem-only key it read off a diagnostic), the
+///    session's own entry path the strict one.
+///
+/// Both are pinned by `source_key_matches_path_is_directional`, including the
+/// asymmetry itself, so a future tightening (rejecting an absolute `spelling`,
+/// or taking stems on both sides) cannot silently break the active-file guard
+/// while the diagnostics filter stays green.
+///
+/// Gated to match its consumers: `debug_server` is the only one and is itself
+/// `#[cfg(feature = "gui")]` in lib.rs, so an ungated definition is dead code
+/// in the default-feature build that `scripts/verify.sh`'s
+/// `clippy ... -- -D warnings` pass runs.
+#[cfg(feature = "gui")]
+pub(crate) fn source_key_matches_path(spelling: &str, path: &str) -> bool {
+    spelling == path
+        || Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(module_key)
+            .as_deref()
+            == Some(spelling)
+}
+
 /// Returns `true` for any `std` or `std.*` import path.
 ///
 /// Used by `compile_entry_with_imports` at two filter sites (prelude-ref
@@ -2511,6 +2569,69 @@ impl EngineSession {
         Ok(state)
     }
 
+    /// The canonical on-disk `.ri` this session was launched from, or `None`
+    /// for a `load_from_source`-only session.
+    ///
+    /// Exposed because `GuiState.files[].path` is NOT this: those are
+    /// `source_map` keys, i.e. stem-only module keys (`"part.ri"`), and the
+    /// abs-path rewrite lives in `commands::UnresolvedGuiState::resolve`,
+    /// which only the open-file funnel runs. A caller that needs the file to
+    /// WRITE — the reify-debug `reify_save_file` tool (task 5097 δ), whose
+    /// "save the active file" arm would otherwise write a stray relative path
+    /// into the process CWD — must ask for it here.
+    pub fn canonical_file_path(&self) -> Option<&Path> {
+        self.core.file_path()
+    }
+
+    /// The STRING-typed front door to [`Self::apply_param_to_source`]: parse
+    /// `value_str` against the cell's declared type, then write it back into
+    /// the canonical `.ri` source.
+    ///
+    /// This exists because the reify-debug MCP `reify_set_parameter` write tool
+    /// (task 5097 δ, the INV-GUI-2 AI path; PRD
+    /// `docs/prds/v0_6/ai-native-editing.md` §6.1/§6.3) carries JSON strings,
+    /// while `apply_param_to_source` takes a `&Value` — and the three helpers
+    /// that compose the gap ([`parse_cell_id`],
+    /// [`Self::resolve_known_cell_type`], [`parse_value_string_for_cell`]) are
+    /// private to this module. The debug server therefore cannot compose them
+    /// itself; it asks for the composed front door instead of growing a second
+    /// copy of the parse.
+    ///
+    /// # It is deliberately `set_parameter`'s parse
+    ///
+    /// The body is `set_parameter`'s resolve-then-parse prefix verbatim
+    /// (cell lookup BEFORE parse, so "Unknown parameter" stays ahead of any
+    /// parse diagnostic; the `Type` cloned at this call site for the same
+    /// borrow reason `set_parameter` documents), differing only in what it
+    /// hands the parsed value to. That sharing is the point (task #5757): the
+    /// AI path and the property-panel slider must never disagree about what a
+    /// value string denotes, and a bare `"120"` on a `Length` cell must be
+    /// refused with the SAME ladder-rung suggestion on both. No new parsing
+    /// and no new rejection taxonomy is introduced here — every refusal comes
+    /// from a helper that already owns its rule.
+    ///
+    /// # Unit contract
+    ///
+    /// INPUT is a unit-bearing literal (`"120mm"`), because
+    /// `parse_value_string_for_cell` refuses a bare number on any cell whose
+    /// dimension a curated ladder covers. OUTPUT preserves the unit of the
+    /// literal being REPLACED, via `apply_param_to_source`'s
+    /// [`unit_hint_from_default_literal`] — so `param width: Length = 80mm`
+    /// stays millimetres, and `param depth: Length = 0.5m` stays metres, no
+    /// matter which unit the caller wrote. The two are independent: the input
+    /// unit fixes the magnitude, the replaced literal's unit fixes the
+    /// spelling.
+    pub fn apply_param_to_source_str(
+        &mut self,
+        cell_id_str: &str,
+        value_str: &str,
+    ) -> Result<GuiState, String> {
+        let cell_id = parse_cell_id(cell_id_str)?;
+        let cell_type = self.resolve_known_cell_type(&cell_id, cell_id_str)?.clone();
+        let value = parse_value_string_for_cell(value_str, &cell_type)?;
+        self.apply_param_to_source(cell_id_str, &value)
+    }
+
     /// Resolve the byte range [`Self::apply_param_to_source`] may splice over,
     /// or a DISCRIMINATED rejection saying which of the four preconditions
     /// failed (PRD §7 B7 — δ, the MCP `set_parameter` tool, is the consumer
@@ -3051,6 +3172,43 @@ impl EngineSession {
     /// when the session is not stale.
     pub fn reload_error(&self) -> Option<&str> {
         self.last_reload_error.as_deref()
+    }
+
+    /// Is the session holding source it FAILED to compile?
+    ///
+    /// The guard consumers must consult before PERSISTING
+    /// `build_gui_state().files[].content`. That content is NOT
+    /// unconditionally the committed buffer: both
+    /// [`Self::build_files_with_live_edit`] and `build_gui_state`'s cold-start
+    /// early-return deliberately surface the FAILED source there, so
+    /// `files[]` and `compile_diagnostics` come from the same snapshot (the
+    /// one-snapshot invariant). That is right for a read-only `engine_state`
+    /// read — the editor must be able to see the text it just failed to
+    /// compile — and catastrophic for a write-back, which would replace a
+    /// user's canonical `.ri` with source that does not compile (task #5097 δ,
+    /// review finding; the interlock lives in
+    /// `debug_server::reify_save_file_on_engine_and_refresh_baseline`).
+    ///
+    /// Gated on `is_some()` regardless of [`CompileFailureKind`]: `ColdStart`
+    /// reaches `files_early` by the same route, so a kind-specific guard would
+    /// leave that arm open.
+    ///
+    /// Transient, not a wedge: [`Self::commit_state`] clears `compile_failure`,
+    /// so any successful recompile lifts it.
+    ///
+    /// Distinct from [`Self::is_stale`], which reports the *hot-reload* banner
+    /// (`last_reload_error`) rather than the recorded failing SOURCE.
+    ///
+    /// Gated to match its consumers, exactly as [`source_key_matches_path`] is:
+    /// the only production caller is `debug_server`, which is itself
+    /// `#[cfg(feature = "gui")]` in lib.rs, so an ungated definition is dead
+    /// code in the default-feature build that `scripts/verify.sh`'s
+    /// `clippy … -- -D warnings` pass runs. `test` is in the `any` so
+    /// `engine_tests::holds_rejected_source_tracks_the_compile_failure` still
+    /// runs in BOTH feature configurations rather than only under `gui`.
+    #[cfg(any(test, feature = "gui"))]
+    pub(crate) fn holds_rejected_source(&self) -> bool {
+        self.compile_failure.is_some()
     }
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.

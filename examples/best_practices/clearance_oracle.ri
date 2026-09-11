@@ -22,17 +22,23 @@ module clearance_oracle
 //   intersects_smoke.ri` ships a live `undef_inline` cell demonstrating exactly
 //   this; read it there rather than trusting a green check here.
 //
-//   EVAL/BUILD ONLY — `intersects` and `distance` are geometry-consumer
-//   builtins: they need a realized kernel and only resolve on the
-//   build()/tessellate() path, not on the pure value-eval surface. Under
-//   `reify check` this file reports
-//       INDETERMINATE ClearanceOracle#constraint[0]
-//       INDETERMINATE ClearanceOracle#constraint[1]
-//   plus "`intersects` could not be resolved: geometry-consumer builtins
-//   require a realized geometry kernel". THAT IS EXPECTED, NOT A FAILURE. The
-//   real answers come from `reify eval` / the GUI, which resolve the same cells
-//   to `false` and `0.01 m`. Do not "fix" an indeterminate clearance constraint
-//   by deleting it — run it on a surface that can answer it.
+//   NEEDS A REALIZED KERNEL — `intersects` and `distance` are geometry-consumer
+//   builtins: they resolve only once a kernel has realized the model, never on
+//   a bare value-eval surface. `reify check` REALIZES geometry for any module
+//   that carries some (task 5748, landed 2026-08-28), so on an OCCT build this
+//   file reports
+//       OK ClearanceOracle#constraint[0]
+//       OK ClearanceOracle#constraint[1]
+//   and those verdicts are real, not a shrug: flip `gap > min_gap` to
+//   `gap > 100mm` and check reports VIOLATED. `reify eval` agrees — `fouls =
+//   false`, `gap = 0.01 m`. Gating clearance under `reify check` is correct.
+//
+//   Two surfaces still answer INDETERMINATE here, and THAT IS EXPECTED, NOT A
+//   FAILURE: a build without OCCT, and any kernel-less in-process engine
+//   (`Engine::new(.., None)` — what `reify_test_support::check_source_with_stdlib`
+//   and therefore the corpus constraint gate run). Both degrade rather than
+//   guess; neither ever prints a false verdict. Do not "fix" an indeterminate
+//   clearance constraint by deleting it — run it on a surface that can answer it.
 //
 //   CONTAINMENT — `intersects` and `distance` DO see full containment, not just
 //   boundary-crossing overlap. A solid fully nested inside another, with no
@@ -71,8 +77,8 @@ structure def ClearanceOracle {
     let gap   = distance(housing, bracket)
 
     // The clearance requirement, stated as a constraint so it is re-checked on
-    // every edit rather than re-eyeballed. INDETERMINATE under `reify check`
-    // (see above); genuinely evaluated by `reify eval` and the GUI.
+    // every edit rather than re-eyeballed. Answered by `reify check` on an OCCT
+    // build, and by `reify eval` / the GUI (see above).
     constraint not fouls
     constraint gap > min_gap
 

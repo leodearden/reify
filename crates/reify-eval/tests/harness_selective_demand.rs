@@ -13,7 +13,7 @@
 //! `reify-eval::harness_selective_demand`; no repo-resident selector names either
 //! (mechanically gated by that guard's §7, PRD §6 BT-2).
 //!
-//! WHY THE BOUNDARY IS HERE. `#[path = "common/differential.rs"]` (2128 lines) is compiled
+//! WHY THE BOUNDARY IS HERE. `#[path = "common/differential.rs"]` is compiled
 //! into every binary that includes it, so under the C2 kLOC cap it is charged to the whole
 //! unit — which put `harness_topology_selector` at 21470 lines, over CAP_LINES = 20000. Rule
 //! (a)'s own remedy is a SPLIT, never a cap bump. `differential` is referenced by exactly the
