@@ -19,6 +19,11 @@
 //! the process, and the next unrelated gmsh failure would report this
 //! call's lines as its own.
 //!
+//! [`LogCapture`] is how that invariant is kept rather than remembered: a
+//! caller arms one guard and the stop rides on `drop`, covering every `?`,
+//! every explicit `return Err`, the success path and an unwinding panic
+//! alike.
+//!
 //! # Why capture at all
 //!
 //! `ffi`'s [`gmsh_call!`](crate::ffi) macro already annotates every failure
@@ -93,5 +98,70 @@ pub fn annotated(err: GeometryError, lines: &[String]) -> GeometryError {
             GeometryError::OperationFailed(message_with_log)
         }
         unannotated => unannotated,
+    }
+}
+
+/// RAII arm/stop of gmsh's process-global message capture, covering the
+/// early-`?`-return paths as well as success.
+///
+/// A caller holding [`crate::init::GMSH_LOCK`] arms one of these, then folds
+/// the capture into any error it is about to return via [`Self::annotate`].
+/// The stop rides on `drop`, so the module invariant above is kept
+/// structurally rather than re-derived at each of the caller's exit points.
+///
+/// # Why it borrows the lock guard
+///
+/// The FFI call in `drop` flips a process-global gmsh switch and must
+/// therefore happen while `GMSH_LOCK` is held. The
+/// `PhantomData<&'g MutexGuard<'g, ()>>` makes that structural rather than a
+/// comment a refactor can quietly violate: [`Self::armed`] can only be
+/// called with a live guard in hand, so the binding cannot be hoisted above
+/// the `let _guard = …` line, and because this type has a `Drop` impl (no
+/// `#[may_dangle]`) dropck requires the borrow to still be live when it
+/// drops — which forces the stop to land *before* the lock is released.
+/// Copied from [`crate::mesh_size_clamp::MeshSizeClampReset`], which guards
+/// a sibling process-global for the same reason.
+///
+/// # The one contract a caller can still break
+///
+/// Gmsh's capture is a SINGLE process-global switch, not a stack, so two
+/// live `LogCapture`s under one lock hold would not nest: the inner one's
+/// `drop` stops the outer one's capture and drains the buffer out from under
+/// it, leaving the outer `annotate` with nothing. Arm at most one per lock
+/// hold. Today there is exactly one call site,
+/// [`crate::kernel_real::GmshKernel::mesh_to_volume`].
+pub struct LogCapture<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
+
+impl<'g> LogCapture<'g> {
+    /// Arm the capture. Takes the live `GMSH_LOCK` guard by reference purely
+    /// for its lifetime — the guard itself is never touched.
+    ///
+    /// Best-effort on purpose: a diagnostic that cannot be armed must never
+    /// turn a mesh that would have succeeded into a failure, so a
+    /// `logger_start` error is dropped rather than propagated. The
+    /// degradation is graceful and needs no branch downstream —
+    /// [`crate::ffi::logger_get`] on a logger that was never started returns
+    /// an empty `Vec` (measured; see its doc), which is exactly
+    /// [`annotated`]'s pass-through path, so the caller gets back the error
+    /// it would have got without capture at all.
+    pub fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
+        let _ = crate::ffi::logger_start();
+        Self(std::marker::PhantomData)
+    }
+
+    /// Fold everything captured so far into `err`.
+    ///
+    /// Reads without draining — the drain is `drop`'s job — so this may be
+    /// called at any point while the guard is live.
+    pub fn annotate(&self, err: GeometryError) -> GeometryError {
+        annotated(err, &crate::ffi::logger_get().unwrap_or_default())
+    }
+}
+
+impl Drop for LogCapture<'_> {
+    fn drop(&mut self) {
+        // Best-effort, like `MeshSizeClampReset::drop`: a failure here cannot
+        // be reported from `drop` and must not mask the real result.
+        let _ = crate::ffi::logger_stop();
     }
 }
