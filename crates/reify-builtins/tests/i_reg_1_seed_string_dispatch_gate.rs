@@ -1675,6 +1675,78 @@ fn only_for_tests(name: &str) -> u8 {
     );
 }
 
+/// Attribute TEXT inside a string literal is not an attribute: the outer walk
+/// of [`mask_cfg_test_blocks`] must skip literals exactly as its own inner
+/// forward walk already does.
+///
+/// [`strip_comments_and_collect_literals`] blanks comments and RAW strings but
+/// only COLLECTS ordinary string literals — their bytes stay in place. So a
+/// production `fn` that tests for the text `"#[cfg(test)]"` reads, to a walk
+/// that never consults the literal mask, as a genuine attribute; the
+/// item-finding walk then blanks forward to the first `;`/`{` outside a
+/// literal, deleting a contiguous span of real production code from the scan.
+/// That is the silent direction the classification test below names: a clean
+/// report over a residue the gate never looked at.
+///
+/// THE FIXTURE SHAPE IS LOAD-BEARING, AND ITS ALTERNATIVE WAS MEASURED, NOT
+/// ASSUMED. The obvious spelling — `let s = "#[cfg(test)]";` followed by the
+/// dispatch arm — is VACUOUS: the `;` closing the `let` is the first terminator
+/// outside a literal, so the blank covers that statement's tail only and never
+/// reaches the arm, which therefore survives on the UNFIXED code and makes the
+/// test pass either way. The literal must instead sit in a TAIL EXPRESSION with
+/// no terminating `;`, so the walk runs past the enclosing `}` and swallows the
+/// NEXT item's braced body. Do not "simplify" this back into a shape that
+/// cannot fail.
+///
+/// This models a live in-tree instance, not a hypothesis:
+/// `crates/reify-audit/src/pdoccover.rs:479` is production code whose
+/// `is_cfg_test_attr` body is exactly this tail-expression shape, so the blank
+/// runs past its closing `}` into the following `blank_literals` fn and
+/// swallows the whole of it. Same shape at
+/// `crates/reify-audit/src/jcodemunch_client.rs:1382,1559`. Inert today only
+/// because reify-audit registers no seed name; a later τ registering a name
+/// that appears inside one of those blanked spans would get a GREEN gate over
+/// a real violation.
+#[test]
+fn attribute_text_inside_a_string_literal_is_not_an_attribute() {
+    let src = r###"
+fn is_cfg_test_attr(code: &str) -> bool {
+    code.starts_with("#[cfg(test)]")
+}
+
+fn dispatch(name: &str) -> u8 {
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+"###;
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+
+    let names: BTreeSet<String> = ["von_mises"].into_iter().map(str::to_string).collect();
+
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let found: Vec<(String, SiteKind)> = lits
+        .iter()
+        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+        .filter_map(|l| {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
+                Some((l.content.clone(), SiteKind::MatchArm))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        found,
+        vec![("von_mises".to_string(), SiteKind::MatchArm)],
+        "the `#[cfg(test)]` TEXT is a string literal in production code, not an \
+         attribute — masking on it blanks the following item out of the scan"
+    );
+}
+
 /// Pins the two violation shapes the module docs name, so a scanner that
 /// silently stopped recognising guarded arms or `eval_builtin` calls fails
 /// loudly instead of reporting a clean workspace.
