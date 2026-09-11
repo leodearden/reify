@@ -289,12 +289,14 @@ info "Provenance guard: OK (worktree clean, HEAD=$_prov_head)"
 
 # ── EXIT trap: clean up .gen.*.partial + restore prior base on failure ────────
 # State variables set during the swap; used by the trap for targeted recovery.
-_SWAP_PRIOR_LINK=""    # prior symlink target (if base was a symlink pre-swap)
-_SWAP_BOOTSTRAP_DIR="" # if bootstrap renamed a real base dir to a gen dir
+_SWAP_PRIOR_LINK=""     # prior symlink target (if base was a symlink pre-swap)
+_SWAP_BOOTSTRAP_DIR=""  # if bootstrap renamed a real base dir to a gen dir
+_PRUNE_SUMMARY_FILE=""  # Step 3b's summary temp file, if one was created
 
 _cleanup_on_exit() {
     local exit_code=$?
     [ $exit_code -eq 0 ] && return
+    [ -n "${_PRUNE_SUMMARY_FILE:-}" ] && rm -f "$_PRUNE_SUMMARY_FILE" 2>/dev/null || true
     if [ -n "${BASE_DIR:-}" ]; then
         # Restore prior base state on failure:
         if [ -n "${_SWAP_BOOTSTRAP_DIR:-}" ] \
@@ -396,9 +398,17 @@ if [ -d "$_prune_deps" ]; then
     # -maxdepth 1 -type f confines the sweep to regular files directly in
     # deps/, excluding the nested dir (e.g. deps/rustc*/), its contents, and
     # any symlink — never descended into, never followed.
-    find "$_prune_deps" -maxdepth 1 -type f -printf '%T@\t%f\n' \
+    #
+    # The victim-count/byte-total summary crosses from awk back into this
+    # shell via a temp file (never stdout, which xargs below consumes as the
+    # NUL-delimited deletion list) so it can be logged through the real
+    # info() helper — reusing it rather than re-implementing its formatting
+    # a second time inside the awk program (SPOT).
+    _prune_summary_file="$(mktemp)"
+    _PRUNE_SUMMARY_FILE="$_prune_summary_file"  # let the EXIT trap reclaim it on a mid-prune failure
+    find "$_prune_deps" -maxdepth 1 -type f -printf '%T@\t%s\t%f\n' \
         | sort \
-        | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" '
+        | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" -v summary_file="$_prune_summary_file" '
             BEGIN { ORS = "\0" }
             {
                 # Split on the FINAL dot only (last dot, never the first, never
@@ -407,7 +417,8 @@ if [ -d "$_prune_deps" ]; then
                 # the hashed-artefact grammar (SPOT) — the stem must match
                 # ^(.+)-[0-9a-f]{16}$ exactly: 16 lowercase-hex chars, anchored
                 # both ends, so a short/long/uppercase pseudo-hash never matches.
-                fname = $2
+                fsize = $2
+                fname = $3
                 base_no_ext = fname
                 sub(/\.[^.]*$/, "", base_no_ext)
                 ext = substr(fname, length(base_no_ext) + 1)
@@ -419,19 +430,27 @@ if [ -d "$_prune_deps" ]; then
                 key = stem SUBSEP ext
                 n[key]++
                 list[key, n[key]] = fname
+                size[key, n[key]] = fsize
             }
             END {
+                total_files = 0
+                total_bytes = 0
                 for (key in n) {
                     cnt = n[key]
                     for (i = 1; i <= cnt - keep; i++) {
                         print list[key, i]
+                        total_files++
+                        total_bytes += size[key, i]
                     }
                 }
+                printf "files=%d bytes=%d\n", total_files, total_bytes > summary_file
             }
         ' \
         | (cd "$_prune_deps" && xargs -r -0 rm -f --)
+    info "prune deps=$_prune_deps $(cat "$_prune_summary_file")"
+    rm -f "$_prune_summary_file"
 else
-    info "No debug/deps under staging copy — skipping hash-generation prune."
+    info "No debug/deps under staging copy — skipping hash-generation prune (files=0)."
 fi
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
