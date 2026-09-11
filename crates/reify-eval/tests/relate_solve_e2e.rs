@@ -1611,6 +1611,180 @@ fn non_call_relate_member_is_diagnosed_even_when_the_assembly_floats() {
     );
 }
 
+/// amendment (review finding: test-coverage) — the skip-detection/diagnosis logic
+/// is pure (kernel-free): it branches on `CompiledExprKind`/`result_type` alone,
+/// never on `realized`, and `solve_relate_scope` is documented as pure given
+/// `realized`. Unlike its OCCT-gated neighbours above, this test needs no kernel —
+/// so it is real coverage in a kernel-less build, where the neighbours vacuously
+/// pass. Same fixture as `non_call_relate_member_is_diagnosed_even_when_the_assembly_floats`
+/// (the ONLY relate member is the un-consumable `mate(...)` call, so B6's
+/// global-float short-circuit fires before any datum would be read — see that
+/// test's comment), but drives `solve_relate_scope` directly against
+/// `RealizedDatums::default()` instead of realizing against a real OCCT kernel.
+#[test]
+fn non_call_relate_member_is_diagnosed_without_a_kernel() {
+    let source = bolt_plate_scope_source(
+        Some("fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }"),
+        &["mate(bolt.shank_axis, plate.hole_axis)"],
+    );
+    let module = compile_source_with_stdlib(&source);
+    let bp = template(&module, "BoltPlate");
+    let scope = collect_relate_scope(bp);
+
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+
+    let skip_diags: Vec<&Diagnostic> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation))
+        .collect();
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "the un-consumable-member diagnostic must fire with no geometry kernel \
+         involved, got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags[0].message.contains("member 1"),
+        "the skip diagnostic must name the member's 1-based declaration position \
+         (member 1), got: {:?}",
+        skip_diags[0].message
+    );
+}
+
+/// amendment (review finding: test-coverage) — steps 1/3/5 all place the
+/// unconsumable `mate(...)` member at declaration index 0, so every position
+/// assertion is `contains("member 1")` — indistinguishable from a skip-ordinal
+/// counter over just the skipped members, or a hard-coded literal. Interleave two
+/// `mate(...)` members with the two real driving relations —
+/// `[concentric, mate, flush, mate]` — so the reported positions (2 and 4) can only
+/// come from the DECLARATION index, matching `unconsumable_relation_diagnostic`'s
+/// documented contract.
+#[test]
+fn non_call_relate_member_position_is_the_declaration_index_not_a_skip_ordinal() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_position_is_the_declaration_index_not_a_skip_ordinal: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const MATE_CALL: &str = "mate(bolt.shank_axis, plate.hole_axis)";
+    let source = bolt_plate_scope_source(
+        Some("fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }"),
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            MATE_CALL,
+            "flush(bolt.seat_plane, plate.top_plane)",
+            MATE_CALL,
+        ],
+    );
+
+    let solution = solve_bolt_plate(&source);
+
+    // The solve itself is unaffected — the two CONSUMED relations (positions 1, 3)
+    // are still the driving set and the bolt is still placed.
+    assert_eq!(solution.driving, 2, "concentric + flush are still the driving set");
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the bolt must still receive a solved Frame"
+    );
+
+    let skip_diags: Vec<&Diagnostic> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation))
+        .collect();
+    assert_eq!(
+        skip_diags.len(),
+        2,
+        "expected exactly two RelateExpectsRelation diagnostics (one per skipped \
+         `mate(...)` member), got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags.iter().any(|d| d.message.contains("member 2")),
+        "one skip diagnostic must name declaration position 2 (the FIRST \
+         `mate(...)`, right after the leading `concentric`), got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        skip_diags.iter().any(|d| d.message.contains("member 4")),
+        "one skip diagnostic must name declaration position 4 (the SECOND \
+         `mate(...)`, last in the block), got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        !skip_diags
+            .iter()
+            .any(|d| d.message.contains("member 1") || d.message.contains("member 3")),
+        "neither skip diagnostic may name position 1 or 3 — those are the CONSUMED \
+         concentric/flush members, got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// amendment (review finding: robustness/diagnostic-accuracy) —
+/// `unconsumable_relation_diagnostic` must fire ONLY for a `Type::Relation` member
+/// that the solve still can't build an instance for. A member the compiler already
+/// rejected as NOT `Type::Relation` (`check_relate_relations`,
+/// `crates/reify-compiler/src/entity.rs`) already carries an accurate
+/// `RelateExpectsRelation` diagnostic there; piling a second, differently-worded one
+/// on top would contradict it (the pre-amendment wording — "a function that RETURNS
+/// one ... is not itself a relation call" — is simply false for e.g. a boolean
+/// expression). Kernel-free: skip detection never touches `realized`, and the
+/// relate block's only member is not a `FunctionCall` so B6's global-float
+/// short-circuit fires before any datum would be read (same shape as the
+/// kernel-free test above).
+#[test]
+fn non_relation_typed_member_is_left_to_the_compilers_own_diagnostic() {
+    let source = bolt_plate_scope_source(None, &["1mm == 1mm"]);
+    let module = compile_source_with_stdlib(&source);
+
+    // The compiler's own check already flags this member — a `Bool`, not a
+    // `Relation` — with `RelateExpectsRelation` (`check_relate_relations`).
+    let compiler_diags: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation))
+        .collect();
+    assert_eq!(
+        compiler_diags.len(),
+        1,
+        "the compiler must flag the non-Relation relate member once, got: {:?}",
+        module.diagnostics
+    );
+
+    let bp = template(&module, "BoltPlate");
+    let scope = collect_relate_scope(bp);
+    assert_eq!(scope.relations.len(), 1, "the ill-typed member is still threaded onto the scope");
+    assert_ne!(
+        scope.relations[0].result_type,
+        Type::Relation,
+        "the member must type-check to something other than Relation (Bool), got {:?}",
+        scope.relations[0].result_type
+    );
+
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+
+    // The eval side must NOT also diagnose it — a second, differently-worded
+    // RelateExpectsRelation diagnostic would contradict the compiler's.
+    let eval_skip_diags: Vec<&Diagnostic> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation))
+        .collect();
+    assert!(
+        eval_skip_diags.is_empty(),
+        "a non-Relation-typed relate member is already diagnosed by the compiler; \
+         the relate-solve must not pile a second RelateExpectsRelation diagnostic \
+         on top, got: {:?}",
+        eval_skip_diags
+    );
+}
+
 // ─── OCCT-coverage guard (amendment) ─────────────────────────────────────────
 //
 // Every OCCT-gated e2e test above returns early and PASSES when
